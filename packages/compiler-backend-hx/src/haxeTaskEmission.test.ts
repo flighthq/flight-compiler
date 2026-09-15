@@ -52,7 +52,7 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
       function(awaitValue) {
         var value = awaitValue;
         try {
-          resolveTask(value);
+          resolveTask(cast(value));
           return;
         } catch (taskError_2:Dynamic) {
           rejectTask(taskError_2);
@@ -106,7 +106,7 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
     expect(source.match(/taskJoin\(\);/gu)).toHaveLength(2);
     expect(source).toContain('if (truthy(flag)) {');
     expect(source).toContain('} else {');
-    expect(source).toContain('resolveTask(total);');
+    expect(source).toContain('resolveTask(cast(total));');
   });
 
   it('emits a loop header as a named local function the back edge can re-enter', () => {
@@ -164,7 +164,7 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
     expect(actions).toContain('value = awaitValue;');
     expect(actions).toContain('rejectTask(value);');
     expect(actions.match(/\.resolve\(input\)\.then\(/gu)).toHaveLength(2);
-    expect(empty).toContain('resolveTask(null);');
+    expect(empty).toContain('resolveTask(cast(null));');
   });
 
   it('declares an executed local before an initializer that captures itself', () => {
@@ -306,8 +306,8 @@ describe('emitCompilerHaxeTaskLoweringFunction', () => {
 
     expect(source).toContain('var taskRejected = function(taskRejection:Dynamic) {');
     expect(source).toContain('var error = taskRejection;');
-    expect(source).toContain('resolveTask(0);');
-    expect(source).toContain('resolveTask(value);');
+    expect(source).toContain('resolveTask(cast(0));');
+    expect(source).toContain('resolveTask(cast(value));');
   });
 
   it('emits guarded try-finally with carrier, cleanup function, and rethrow', () => {

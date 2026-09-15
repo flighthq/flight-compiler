@@ -7,5 +7,6 @@ export interface CompilerHaxeTaskEmissionCapabilities {
   readonly emitStatement: (statement: Readonly<IrStatement>) => readonly string[];
   readonly fail: (message: string) => never;
   readonly getBindingName: (binding: Readonly<IrBindingIdentity>) => string;
+  readonly getBindingType?: (binding: Readonly<IrBindingIdentity>) => string | undefined;
   readonly getGeneratedName: (preferredName: string) => string;
 }

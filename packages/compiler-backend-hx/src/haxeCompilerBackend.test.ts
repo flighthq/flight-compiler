@@ -2162,7 +2162,7 @@ describe('emitIrModuleHaxe', () => {
 
     expect(output).toContain('return new flighthq._internal._Promise(function(resolveTask, rejectTask)');
     expect(output).toContain('flighthq._internal._Promise.resolve(input).then(');
-    expect(output).toContain('value = awaitValue;');
+    expect(output).toContain('var value:Float = cast(awaitValue);');
     expect(output).toContain('resolveTask(awaitValue_2);');
     expect(output).toContain('rejectTask(awaitError);');
     expect(output).not.toContain('await ');
@@ -2633,10 +2633,12 @@ describe('emitIrModuleHaxe', () => {
       'export function widest(values: number[], first: number): number { return Math.max(first, ...values); }',
     );
 
-    expect(emitIrModuleHaxe(simple.module).contents).toContain('HaxeReflect.callMethod(Math, cast(Math.max), values)');
+    expect(emitIrModuleHaxe(simple.module).contents).toContain(
+      'HaxeReflect.callMethod(Math, cast(Math.max), (cast values : Array<Dynamic>))',
+    );
     // Fixed arguments around the spread keep their source order.
     expect(emitIrModuleHaxe(mixed.module).contents).toContain(
-      'HaxeReflect.callMethod(Math, cast(Math.max), [first].concat(values))',
+      'HaxeReflect.callMethod(Math, cast(Math.max), ([first] : Array<Dynamic>).concat((cast values : Array<Dynamic>)))',
     );
   });
 });
@@ -9235,7 +9237,7 @@ describe('emitIrModuleHaxe spread call emission', () => {
       lower('spread-push.ts', 'export function append(out: number[], values: number[]): void { out.push(...values); }')
         .module,
     ).contents;
-    expect(output).toContain('HaxeReflect.callMethod(out, cast(out.push), values)');
+    expect(output).toContain('HaxeReflect.callMethod(out, cast(out.push), (cast values : Array<Dynamic>))');
   });
 
   it('routes mixed fixed and spread array pushes through reflective arity', () => {
@@ -9245,7 +9247,9 @@ describe('emitIrModuleHaxe spread call emission', () => {
         'export function append(out: number[], first: number, middle: number[], last: number): void { out.push(first, ...middle, last); }',
       ).module,
     ).contents;
-    expect(output).toContain('HaxeReflect.callMethod(out, cast(out.push), [first].concat(middle).concat([last]))');
+    expect(output).toContain(
+      'HaxeReflect.callMethod(out, cast(out.push), ([first] : Array<Dynamic>).concat((cast middle : Array<Dynamic>)).concat(([last] : Array<Dynamic>)))',
+    );
   });
 });
 
@@ -11525,7 +11529,7 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('? cast(true) : cast(');
+    expect(output).toContain('? (cast true : Dynamic) : (cast ');
     expect(output).toContain('(cast function(value:Float) return value : (Float, Float)->Float)');
     expect(output).toContain('(cast source.callback : Null<(Float, Float)->Float>)');
     expect(output).toContain('(cast identity : (Float, Float)->Float)');

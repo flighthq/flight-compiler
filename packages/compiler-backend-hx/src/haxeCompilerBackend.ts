@@ -138,6 +138,7 @@ interface EmitContext {
   returnType: Readonly<IrType> | undefined;
   returnsAbsent: boolean;
   dynamicBindingIds: Set<string>;
+  dynamicThis: boolean;
   packageName: string;
   sourceModules: readonly Readonly<IrModule>[];
   sourceModuleFacadeTypeTargetNames: Map<string, ReadonlyMap<string, string>>;
@@ -410,6 +411,7 @@ function emitIrModuleHaxeWithContext(
     options,
     importedTypeTargetNames: new Map(),
     dynamicBindingIds: new Set<string>(),
+    dynamicThis: false,
     packageName,
     returnType: undefined,
     returnsAbsent: false,
@@ -757,6 +759,10 @@ function emitCompilerHaxeTaskFunctionBody(source: object, context: EmitContext):
     emitStatement: (statement) => emitStatement(statement, context),
     fail: (message) => emissionError(context, message),
     getBindingName: (binding) => getBindingTargetNameHaxe(binding, context),
+    getBindingType: (binding) => {
+      const type = context.bindingTypes.get(binding.id);
+      return type ? emitType(type, context) : undefined;
+    },
     getGeneratedName: (preferredName) => getGeneratedTargetNameHaxe(preferredName, context),
   });
 }
@@ -915,6 +921,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(${left} ${op} ${right})`;
     }
     case 'call': {
+      if (isHaxeMapIteratorNextCallHaxe(expression, context)) {
+        return `${emitExpression(expression.callee.object, context)}.next()`;
+      }
       if (expression.optional) {
         if (expression.arguments.some((argument) => argument.kind === 'spread')) {
           return emitSpreadCallHaxe(expression, context);
@@ -954,6 +963,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const target = getCompilerRuntimeExternalMemberTargetHaxe('Object', 'assign', context.options.runtimeModule);
         if (!target) emissionError(context, 'Object.assign has no Haxe runtime binding');
         return `${target}(${expression.arguments.map((argument) => `cast(${emitExpression(argument, context)})`).join(', ')})`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.name === 'call' &&
+        isIrTypeFunctionShapedHaxe(
+          getIrExpressionTypeHaxe(expression.callee.object, context) ?? { kind: 'unknown', source: 'unknown' },
+          context,
+        ) &&
+        expression.arguments[0]
+      ) {
+        const [receiver, ...arguments_] = expression.arguments;
+        return `${context.haxeReflectName}.callMethod(${emitExpression(receiver!, context)}, cast(${emitExpression(expression.callee.object, context)}), [${arguments_.map((argument) => emitExpression(argument, context)).join(', ')}])`;
       }
       if (
         expression.callee.kind === 'property' &&
@@ -1005,7 +1026,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (
         expression.callee.kind === 'property' &&
         expression.callee.name === 'reverse' &&
-        isIrArrayExpressionHaxe(expression.callee.object, context) &&
+        (expression.callee.member?.receiver === 'array' ||
+          isIrArrayExpressionHaxe(expression.callee.object, context)) &&
         expression.arguments.length === 0
       ) {
         const target = getGeneratedTargetNameHaxe('reversedArray', context);
@@ -1102,7 +1124,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           const receiver = emitExpression(expression.callee.object, context);
           const arguments_ = expression.arguments.map((argument, index) => {
             const emitted = emitHaxeCallArgument(argument, context);
-            return intArguments.includes(index) ? `Std.int(${emitted})` : emitted;
+            return intArguments.includes(index) ? emitHaxeIntegerArgument(argument, emitted, context) : emitted;
           });
           return `${receiver}.${safeHaxeName(expression.callee.name)}(${arguments_.join(', ')})`;
         }
@@ -1151,7 +1173,21 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         });
         return `${emitExpression(expression.callee.object, context)}.${safeHaxeName(expression.callee.name)}(${arguments_.join(', ')})`;
       }
-      const ambient = expression.callee.kind === 'property' ? expression.callee.member : undefined;
+      const inferredArrayMember =
+        expression.callee.kind === 'property' &&
+        isIrArrayExpressionHaxe(expression.callee.object, context) &&
+        getCompilerHaxeAmbientMemberBinding({ name: expression.callee.name, receiver: 'array' })
+          ? { name: expression.callee.name, receiver: 'array' as const }
+          : undefined;
+      const ambient =
+        expression.callee.kind === 'property'
+          ? (expression.callee.member ??
+            inferredArrayMember ??
+            (isIrExpressionStringBackedHaxe(expression.callee.object, context) &&
+            getCompilerHaxeAmbientMemberBinding({ name: expression.callee.name, receiver: 'string' })
+              ? { name: expression.callee.name, receiver: 'string' as const }
+              : undefined))
+          : undefined;
       if (ambient && expression.callee.kind === 'property') {
         const binding = getCompilerHaxeAmbientMemberBinding(ambient);
         if (binding && binding.kind !== 'property') {
@@ -1176,21 +1212,6 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             binding.kind === 'method' || binding.kind === 'runtimeCall' ? (binding.intArguments ?? []) : [];
           const values = expression.arguments.map((argument, position) => {
             const emitted = emitHaxeCallArgument(argument, context);
-            if (
-              (ambient.receiver === 'map' || ambient.receiver === 'set') &&
-              receiverType?.kind === 'named' &&
-              receiverType.reference.kind === 'ambient'
-            ) {
-              const expected =
-                ambient.receiver === 'set'
-                  ? receiverType.typeArguments[0]
-                  : position === 0
-                    ? receiverType.typeArguments[0]
-                    : ambient.name === 'set' && position === 1
-                      ? receiverType.typeArguments[1]
-                      : undefined;
-              if (expected) return emitExpressionAsExpectedTypeHaxe(argument, expected, context, emitted);
-            }
             if (
               ambient.receiver === 'array' &&
               (ambient.name === 'push' || ambient.name === 'unshift') &&
@@ -1251,6 +1272,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (expression.semantics.statementValue) return emitStatementValueExpressionHaxe(expression, context);
       if (
+        expression.callee.kind === 'property' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'ambient' &&
+        expression.callee.object.reference.name === 'Promise' &&
+        expression.callee.name === 'resolve' &&
+        expression.arguments.length === 0
+      ) {
+        return `${emitExpression(expression.callee, context)}(js.Syntax.code("undefined"))`;
+      }
+      if (
         expression.callee.kind === 'identifier' &&
         expression.callee.reference.kind === 'ambient' &&
         expression.callee.reference.name === 'String' &&
@@ -1264,6 +1295,31 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.callee.reference.name === 'Symbol'
       ) {
         return `new ${emitExpression(expression.callee, context)}(${emitCallArgumentsHaxe(expression, context)})`;
+      }
+      if (
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'ambient' &&
+        expression.callee.reference.name === 'Object' &&
+        expression.arguments.length === 1
+      ) {
+        return `js.Syntax.code("Object({0})", ${emitExpression(expression.arguments[0]!, context)})`;
+      }
+      if (expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'ambient') {
+        const intArguments = haxeGlobalFunctionIntArgumentPositions.get(expression.callee.reference.name);
+        if (intArguments) {
+          const values = expression.arguments.map((argument, index) => {
+            const emitted = emitHaxeCallArgument(argument, context);
+            return intArguments.includes(index) ? emitHaxeIntegerArgument(argument, emitted, context) : emitted;
+          });
+          return `${emitExpression(expression.callee, context)}(${values.join(', ')})`;
+        }
+      }
+      if (expression.callee.kind === 'identifier') {
+        const calleeType = getIrExpressionTypeHaxe(expression.callee, context);
+        if (calleeType && hasIrTypeAbsentMember(calleeType) && isIrTypeFunctionShapedHaxe(calleeType, context)) {
+          const concrete = getIrSingleConcreteTypeHaxe(calleeType);
+          return `(cast ${emitExpression(expression.callee, context)} : ${emitType(concrete, context)})(${emitCallArgumentsHaxe(expression, context)})`;
+        }
       }
       return `${expression.callee.kind === 'function' ? `(${emitExpression(expression.callee, context)})` : emitExpression(expression.callee, context)}${expression.optional ? '?.' : ''}(${emitCallArgumentsHaxe(expression, context)})`;
     }
@@ -1329,6 +1385,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           : expression.returns;
       const functionContext: EmitContext = {
         ...context,
+        dynamicThis: expression.thisMode === 'dynamic' || (expression.thisMode === 'lexical' && context.dynamicThis),
         finallyCompletion: undefined,
         returnType: expressionReturns,
         returnsAbsent: canIrTypeReturnAbsentHaxe(expressionReturns, context.module),
@@ -1415,6 +1472,9 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `(function() { final ${name} = ${context.haxeReflectName}.copy(${emitExpression(expression.object, context)}); ${exclusions} return ${name}; })()`;
     }
     case 'property': {
+      if (expression.name === 'value' && isHaxeMapIteratorResultValueHaxe(expression, context)) {
+        return emitExpression(expression.object, context);
+      }
       const webGlConstantOwner = getWebGlStaticConstantOwnerHaxe(expression, context);
       if (webGlConstantOwner) return `${webGlConstantOwner}.${safeHaxeName(expression.name)}`;
       const nativeSyntaxProperty = emitHaxeNativeSyntaxProperty(expression, context);
@@ -1597,7 +1657,14 @@ function emitHaxeNativeSyntaxMethodCall(
 ): string | undefined {
   if (expression.callee.kind !== 'property') return undefined;
   const key = getHaxeNativeSyntaxMemberKey(expression.callee, context);
-  if (!key || !haxeNativeSyntaxMethods.has(key)) return undefined;
+  const canvasCreatedByDocument =
+    expression.callee.name === 'getContext' &&
+    expression.callee.object.kind === 'call' &&
+    expression.callee.object.callee.kind === 'property' &&
+    expression.callee.object.callee.name === 'createElement' &&
+    expression.callee.object.arguments[0]?.kind === 'literal' &&
+    expression.callee.object.arguments[0].value === 'canvas';
+  if ((!key || !haxeNativeSyntaxMethods.has(key)) && !canvasCreatedByDocument) return undefined;
   const receiver = emitExpression(expression.callee.object, context);
   const arguments_ = expression.arguments.map((argument) => emitHaxeCallArgument(argument, context));
   const invocation = `{0}.${expression.callee.name}(${arguments_
@@ -1831,6 +1898,7 @@ function emitArrayExpressionHaxe(
           : [];
       }),
     );
+    if (expression.type) return `(${literal} : ${emitType(expression.type, context)})`;
     const dynamicallyTypedArray = expression.type && emitType(expression.type, context) === 'Array<Dynamic>';
     return elementTypes.size > 1 || dynamicallyTypedArray ? `(${literal} : Array<Dynamic>)` : literal;
   }
@@ -1864,7 +1932,8 @@ function emitArrayExpressionHaxe(
   const [first, ...rest] = groups;
   if (!first) return '[]';
   const initial = first.kind === 'spread' && first.copy ? `${first.value}.copy()` : first.value;
-  return `${initial}${rest.map((group) => `.concat(${group.value})`).join('')}`;
+  const result = `${initial}${rest.map((group) => `.concat(${group.value})`).join('')}`;
+  return expression.type ? `(cast ${result} : ${emitType(expression.type, context)})` : result;
 }
 
 function hasIrFunctionValueReturnHaxe(statements: readonly Readonly<IrStatement>[]): boolean {
@@ -1932,7 +2001,6 @@ function emitDynamicAccessPropertyAssignmentHaxe(
 ): string | undefined {
   const left = expression.left;
   if (
-    expression.operator !== '=' ||
     left.kind !== 'property' ||
     left.member !== undefined ||
     (left.structuralAccess !== 'narrowed' && !isReflectiveHaxePropertyReceiver(left.object, context))
@@ -1941,7 +2009,18 @@ function emitDynamicAccessPropertyAssignmentHaxe(
   }
   const receiver = getGeneratedTargetNameHaxe('dynamicAccessReceiver', context);
   const value = getGeneratedTargetNameHaxe('dynamicAccessValue', context);
-  return `(function() { final ${receiver} = ${emitExpression(left.object, context)}; final ${value}:Dynamic = ${emitExpression(expression.right, context)}; ${context.haxeReflectName}.setField(${receiver}, ${emitHaxeStringLiteral(left.name)}, ${value}); return ${value}; })()`;
+  const right = emitExpression(expression.right, context);
+  const current = `${context.haxeReflectName}.field(${receiver}, ${emitHaxeStringLiteral(left.name)})`;
+  const updated =
+    expression.operator === '='
+      ? right
+      : expression.operator === '+=' &&
+          expression.semantics.left.flow === 'number' &&
+          expression.semantics.right.flow === 'number'
+        ? `${current} + ${right}`
+        : undefined;
+  if (!updated) return undefined;
+  return `(function() { final ${receiver} = ${emitExpression(left.object, context)}; final ${value}:Dynamic = ${updated}; ${context.haxeReflectName}.setField(${receiver}, ${emitHaxeStringLiteral(left.name)}, ${value}); return ${value}; })()`;
 }
 
 function isReflectiveHaxePropertyReceiver(expression: Readonly<IrExpression>, context: EmitContext): boolean {
@@ -1956,7 +2035,9 @@ function isIrTypeReflectiveHaxe(
   seen: ReadonlySet<string> = new Set(),
 ): boolean {
   const concrete = getIrSingleConcreteTypeHaxe(type);
-  if (emitType(concrete, context).startsWith('haxe.DynamicAccess<')) return true;
+  const targetType = emitType(concrete, context);
+  if (targetType.startsWith('haxe.DynamicAccess<') || concrete.kind === 'unknown') return true;
+  if (concrete.kind === 'named' && concrete.reference.kind === 'ambient' && targetType === 'Dynamic') return true;
   if (concrete.kind !== 'named' || concrete.reference.kind !== 'binding') return false;
   const target = getIrNamedDeclarationTargetHaxe(concrete, context);
   if (!target || target.declaration.kind !== 'typeAlias' || seen.has(target.binding.id)) return false;
@@ -2466,9 +2547,14 @@ function emitExpressionAsExpectedTypeHaxe(
 ): string {
   if (!expectedType) return emitted;
   const concreteExpected = getIrSingleConcreteTypeHaxe(expectedType);
-  if (concreteExpected.kind === 'array' && expression.kind === 'array' && expression.elements.length === 0) {
+  if (
+    (concreteExpected.kind === 'array' || concreteExpected.kind === 'tuple') &&
+    expression.kind === 'array' &&
+    expression.elements.length === 0
+  ) {
     return `(cast [] : ${emitType(concreteExpected, context)})`;
   }
+  const expressionType = getIrExpressionTypeHaxe(expression, context);
   const expectedStringNominal =
     isIrNamedUnionAliasHaxe(concreteExpected, context) ||
     (concreteExpected.kind === 'named' &&
@@ -2485,12 +2571,19 @@ function emitExpressionAsExpectedTypeHaxe(
       ) ?? 'Dynamic',
     );
   const expectedFunction = isIrTypeFunctionShapedHaxe(concreteExpected, context);
-  const functionBoundary = expectedFunction && isIrExpressionFunctionValuedHaxe(expression, context);
+  const functionBoundary =
+    expectedFunction &&
+    isIrExpressionFunctionValuedHaxe(expression, context) &&
+    (expressionType !== undefined ||
+      (expression.kind === 'identifier' &&
+        expression.reference.kind === 'binding' &&
+        expression.reference.binding.kind === 'function') ||
+      (expression.kind === 'identifier' && expression.presence === 'narrowedPresent') ||
+      (expression.kind === 'property' && expression.presence === 'narrowedPresent'));
   if (functionBoundary) {
     const direct = emitted.startsWith('cast(') && emitted.endsWith(')') ? emitted.slice(5, -1) : emitted;
     return `(cast ${normalizeHaxeExpressionGrouping(direct)} : ${emitType(concreteExpected, context)})`;
   }
-  const expressionType = getIrExpressionTypeHaxe(expression, context);
   const alreadyExpectedStructuralType =
     expressionType !== undefined &&
     emitType(getIrSingleConcreteTypeHaxe(expressionType), context) === emitType(concreteExpected, context);
@@ -2513,11 +2606,14 @@ function emitExpressionAsExpectedTypeHaxe(
       (isIrExpressionStringBackedHaxe(expression, context) ||
         expression.kind === 'object' ||
         expression.kind === 'call')) ||
-    (concreteExpected.kind === 'array' &&
+    ((concreteExpected.kind === 'array' || concreteExpected.kind === 'tuple') &&
+      !alreadyExpectedStructuralType &&
       (expression.kind === 'undefinedDefault' ||
+        expression.kind === 'array' ||
+        expression.kind === 'tuple' ||
         (expression.kind === 'binary' && expression.operator === '??') ||
-        !expressionType ||
-        emitType(getIrSingleConcreteTypeHaxe(expressionType), context) !== emitType(concreteExpected, context)))
+        (expressionType !== undefined &&
+          emitType(getIrSingleConcreteTypeHaxe(expressionType), context) !== emitType(concreteExpected, context))))
   ) {
     return `(cast ${normalizeHaxeExpressionGrouping(emitted)} : ${emitType(concreteExpected, context)})`;
   }
@@ -2531,6 +2627,10 @@ function isIrStructuralRecordTypeHaxe(
 ): boolean {
   const concrete = getIrSingleConcreteTypeHaxe(type);
   if (concrete.kind === 'object') return true;
+  if (concrete.kind === 'union') {
+    const members = concrete.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    return members.length > 0 && members.every((member) => isIrStructuralRecordTypeHaxe(member, context, seen));
+  }
   if (concrete.kind !== 'named') return false;
   if (
     concrete.reference.kind === 'ambient' &&
@@ -3779,7 +3879,7 @@ function emitCastExpressionHaxe(
 
 function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
   if (reference.kind === 'super') return 'super';
-  if (reference.kind === 'this') return 'this';
+  if (reference.kind === 'this') return context.dynamicThis ? 'js.Syntax.code("this")' : 'this';
   if (reference.kind === 'ambient') {
     if (reference.name === 'undefined') {
       return 'js.Syntax.code("undefined")';
@@ -4091,6 +4191,9 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
           ),
         );
       }
+      if (!statement.cases.some((clause) => clause.expression === undefined)) {
+        lines.push('  default: {}');
+      }
       lines.push('}');
       return lines;
     }
@@ -4171,14 +4274,15 @@ function emitForOfIterableHaxe(
       : statement.iterable.kind === 'element'
         ? getIrExpressionTypeHaxe(statement.iterable.object, context)
         : undefined;
-  const receiverLosesStaticType =
-    receiverType !== undefined && emitType(getIrSingleConcreteTypeHaxe(receiverType), context) === 'Dynamic';
+  const receiverLosesStaticType = receiverType !== undefined && isIrTypeReflectiveHaxe(receiverType, context);
   const needsIterableProof =
     (iterableType.kind === 'named' &&
       iterableType.reference.kind === 'ambient' &&
       ['Iterable', 'Map', 'ReadonlyMap', 'ReadonlySet', 'Set'].includes(iterableType.reference.name)) ||
     receiverLosesStaticType ||
-    (statement.iterable.kind === 'property' && isReflectiveHaxePropertyReceiver(statement.iterable.object, context));
+    (statement.iterable.kind === 'property' &&
+      (statement.iterable.structuralAccess === 'narrowed' ||
+        isReflectiveHaxePropertyReceiver(statement.iterable.object, context)));
   // A property read from a union, generic, or structurally erased owner is Dynamic in Haxe even
   // when the checker proved its member iterable. Carry only that otherwise-lost proof; direct Array
   // and typed-array expressions already satisfy Haxe's for-loop protocol without an extra cast.
@@ -4537,6 +4641,23 @@ function getIrExpressionTypeHaxe(
       return expression.type;
     case 'call':
       return expression.semantics.resultType;
+    case 'element': {
+      const objectType = getIrExpressionTypeHaxe(expression.object, context);
+      return objectType ? getIrIndexedElementTypeHaxe(objectType, expression.index, context) : undefined;
+    }
+    case 'function':
+      return {
+        kind: 'function',
+        parameters: expression.parameters.map((parameter) =>
+          parameter.rest
+            ? { name: parameter.binding.name, optional: false, rest: true, type: parameter.type }
+            : parameter.optional
+              ? { name: parameter.binding.name, optional: true, rest: false, type: parameter.type }
+              : { name: parameter.binding.name, optional: false, rest: false, type: parameter.type },
+        ),
+        returns: expression.returns,
+        typeParameters: expression.typeParameters,
+      };
     case 'identifier':
       return expression.reference.kind === 'binding'
         ? (context.bindingTypes.get(expression.reference.binding.id) ??
@@ -4565,14 +4686,119 @@ function getIrExpressionTypeHaxe(
         const declaredType = objectType ? getIrObjectPropertyTypeHaxe(objectType, expression.name, context) : undefined;
         return declaredType ?? expression.type;
       }
+    case 'tuple':
+      return {
+        elements: expression.elements.map((element) => ({
+          optional: element.optional,
+          rest: false,
+          type: element.expression
+            ? (getIrExpressionTypeHaxe(element.expression, context) ?? { kind: 'unknown', source: 'unknown' })
+            : { kind: 'undefined' },
+        })),
+        kind: 'tuple',
+        readonly: false,
+      };
+    case 'tupleSpread':
+      return expression.type;
+    case 'unary':
+      return expression.semantics.result === 'boolean' ||
+        expression.semantics.result === 'number' ||
+        expression.semantics.result === 'string'
+        ? { kind: 'primitive', name: expression.semantics.result }
+        : undefined;
+    case 'undefinedValue':
+      return expression.type;
     default:
       return undefined;
   }
 }
 
+function getIrIndexedElementTypeHaxe(
+  type: Readonly<IrType>,
+  index: Readonly<IrExpression>,
+  context: EmitContext,
+  seen: ReadonlySet<string> = new Set(),
+): Readonly<IrType> | undefined {
+  const concrete = getIrSingleConcreteTypeHaxe(type);
+  if (concrete.kind === 'array') return concrete.element;
+  if (concrete.kind === 'tuple') {
+    if (index.kind === 'literal' && typeof index.value === 'number' && Number.isInteger(index.value)) {
+      return concrete.elements[index.value]?.type;
+    }
+    const members = concrete.elements.map((element) => element.type);
+    return members.length === 1
+      ? members[0]
+      : members.length > 1
+        ? { kind: 'union', types: members as [IrType, IrType, ...IrType[]] }
+        : undefined;
+  }
+  if (concrete.kind !== 'named') return undefined;
+  if (concrete.reference.kind === 'ambient') {
+    if (['Record', 'ReadonlyRecord'].includes(concrete.reference.name)) return concrete.typeArguments[1];
+    if (['Partial', 'Readonly', 'Required'].includes(concrete.reference.name) && concrete.typeArguments[0]) {
+      return getIrIndexedElementTypeHaxe(concrete.typeArguments[0], index, context, seen);
+    }
+    if (haxeConstructedAmbientValueTypeNames.has(concrete.reference.name)) {
+      return { kind: 'primitive', name: 'number' };
+    }
+    return undefined;
+  }
+  const target = getIrNamedDeclarationTargetHaxe(concrete, context);
+  if (!target || target.declaration.kind !== 'typeAlias' || seen.has(target.binding.id)) return undefined;
+  const substituted = resolveIrTypeStructuralSubstitution(
+    target.declaration.type,
+    createIrTypeParameterSubstitutionPlan(target.declaration.typeParameters, concrete.typeArguments),
+  );
+  return getIrIndexedElementTypeHaxe(substituted, index, context, new Set(seen).add(target.binding.id));
+}
+
+function isHaxeMapIteratorResultValueHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): boolean {
+  if (
+    expression.object.kind !== 'call' ||
+    expression.object.arguments.length !== 0 ||
+    expression.object.callee.kind !== 'property' ||
+    expression.object.callee.name !== 'next'
+  ) {
+    return false;
+  }
+  return isHaxeMapIteratorFactoryCallHaxe(expression.object.callee.object, context);
+}
+
+function isHaxeMapIteratorNextCallHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context?: EmitContext,
+): expression is Readonly<Extract<IrExpression, { kind: 'call' }>> & {
+  callee: Readonly<Extract<IrExpression, { kind: 'property' }>>;
+} {
+  if (expression.arguments.length !== 0 || expression.callee.kind !== 'property' || expression.callee.name !== 'next') {
+    return false;
+  }
+  const iterator = expression.callee.object;
+  if (!context) {
+    return (
+      iterator.kind === 'call' && iterator.callee.kind === 'property' && iterator.callee.member?.receiver === 'map'
+    );
+  }
+  return isHaxeMapIteratorFactoryCallHaxe(iterator, context);
+}
+
+function isHaxeMapIteratorFactoryCallHaxe(iterator: Readonly<IrExpression>, context: EmitContext): boolean {
+  return (
+    iterator.kind === 'call' &&
+    iterator.arguments.length === 0 &&
+    iterator.callee.kind === 'property' &&
+    ['entries', 'keys', 'values'].includes(iterator.callee.name) &&
+    (iterator.callee.member?.receiver === 'map' ||
+      ['Map', 'ReadonlyMap'].includes(getIrExpressionAmbientTypeNameHaxe(iterator.callee.object, context) ?? ''))
+  );
+}
+
 function isIrArrayExpressionHaxe(expression: Readonly<IrExpression>, context: EmitContext): boolean {
   const type = getIrExpressionTypeHaxe(expression, context);
-  if (type && getIrSingleConcreteTypeHaxe(type).kind === 'array') return true;
+  if (type && ['array', 'tuple'].includes(getIrSingleConcreteTypeHaxe(type).kind)) return true;
   if (expression.kind !== 'call' || expression.callee.kind !== 'property') return false;
   if (expression.callee.member?.receiver === 'array') return true;
   return (
@@ -4647,8 +4873,22 @@ function emitConditionalExpressionHaxe(
   ]);
   const whenTrue = emitExpression(expression.whenTrue, context);
   const whenFalse = emitExpression(expression.whenFalse, context);
-  const eraseBranches = branchTypes.size > 1;
-  return `(${emitConditionHaxe(expression.condition, context)} ? ${eraseBranches ? `cast(${whenTrue})` : whenTrue} : ${eraseBranches ? `cast(${whenFalse})` : whenFalse})`;
+  const objectMembersDiffer =
+    expression.whenTrue.kind === 'object' &&
+    expression.whenFalse.kind === 'object' &&
+    getIrObjectExpressionMemberShapeHaxe(expression.whenTrue) !==
+      getIrObjectExpressionMemberShapeHaxe(expression.whenFalse);
+  const eraseBranches = branchTypes.size > 1 || objectMembersDiffer;
+  return `(${emitConditionHaxe(expression.condition, context)} ? ${eraseBranches ? `(cast ${whenTrue} : Dynamic)` : whenTrue} : ${eraseBranches ? `(cast ${whenFalse} : Dynamic)` : whenFalse})`;
+}
+
+function getIrObjectExpressionMemberShapeHaxe(expression: Readonly<IrObjectExpression>): string {
+  return expression.members
+    .map((member) =>
+      member.kind === 'property' || member.kind === 'getAccessor' ? `${member.kind}:${member.name}` : member.kind,
+    )
+    .sort()
+    .join('|');
 }
 
 function getIrConditionalBranchTypesHaxe(expression: Readonly<IrExpression>, context: EmitContext): readonly string[] {
@@ -4703,6 +4943,11 @@ function emitArrayIndexHaxe(index: Readonly<IrExpression>, context: EmitContext)
     : `Std.int(${emitted})`;
 }
 
+function emitHaxeIntegerArgument(expression: Readonly<IrExpression>, emitted: string, context: EmitContext): string {
+  const type = getIrExpressionTypeHaxe(expression, context);
+  return type && hasIrTypeAbsentMemberHaxe(type, context.module) ? `Std.int(cast(${emitted}))` : `Std.int(${emitted})`;
+}
+
 function emitNewArgumentsHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
   context: EmitContext,
@@ -4719,6 +4964,13 @@ function emitNewArgumentsHaxe(
   const castArguments = ambientConstructorName
     ? (haxeNativeConstructorCastArgumentPositions.get(ambientConstructorName) ?? [])
     : [];
+  if (
+    expression.arguments.length === 0 &&
+    ambientConstructorName !== undefined &&
+    haxeZeroLengthTypedArrayConstructorNames.has(ambientConstructorName)
+  ) {
+    return ['0'];
+  }
   return expression.arguments.map((argument, index) => {
     const emitted = emitExpression(argument, context);
     const type = getIrExpressionTypeHaxe(argument, context);
@@ -4747,11 +4999,21 @@ const haxeNativeConstructorCastArgumentPositions = new Map<string, readonly numb
   ['Proxy', [1]],
 ]);
 
+const haxeGlobalFunctionIntArgumentPositions = new Map<string, readonly number[]>([
+  ['cancelAnimationFrame', [0]],
+  ['clearInterval', [0]],
+  ['clearTimeout', [0]],
+  ['setInterval', [1]],
+  ['setTimeout', [1]],
+]);
+
 const haxeNativeMethodIntArgumentPositions = new Map<string, readonly number[]>([
   ['AudioBuffer.copyToChannel', [1]],
   ['AudioBuffer.getChannelData', [0]],
   ['Element.releasePointerCapture', [0]],
   ['Element.setPointerCapture', [0]],
+  ['HTMLElement.releasePointerCapture', [0]],
+  ['HTMLElement.setPointerCapture', [0]],
   ['Window.cancelAnimationFrame', [0]],
   ['Window.clearInterval', [0]],
   ['Window.clearTimeout', [0]],
@@ -4766,6 +5028,7 @@ const haxeNativeSyntaxConstantExpressions = new Map<string, string>([
 ]);
 
 const haxeNativeSyntaxMethods = new Set([
+  'CanvasRenderingContext2D.clip',
   'CanvasRenderingContext2D.getContextAttributes',
   'CanvasRenderingContext2D.getTransform',
   'CanvasRenderingContext2D.roundRect',
@@ -4780,11 +5043,13 @@ const haxeNativeSyntaxProperties = new Set([
   'HTMLCanvasElement.prototype',
   'Navigator.gpu',
   'Navigator.wakeLock',
+  'WebSocket.binaryType',
 ]);
 
 const haxeNativeSyntaxWritableProperties = new Set([
   'CanvasRenderingContext2D.globalCompositeOperation',
   'CanvasRenderingContext2D.imageSmoothingQuality',
+  'WebSocket.binaryType',
 ]);
 
 const haxeNativeValueOwnerNames = new Map<string, string>([
@@ -4834,6 +5099,20 @@ const haxeIntegerTypedArrayConstructorNames = new Set([
   'Uint32Array',
 ]);
 
+const haxeZeroLengthTypedArrayConstructorNames = new Set([
+  'BigInt64Array',
+  'BigUint64Array',
+  'Float32Array',
+  'Float64Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Uint16Array',
+  'Uint32Array',
+]);
+
 // A spread of an unbounded collection has no arity until run time, so the call itself becomes a
 // reflective one: Haxe's reflection helper takes the arguments as an array, which is exactly the
 // shape a spread already has. Fixed arguments around the spread are concatenated in source order.
@@ -4848,14 +5127,14 @@ function emitSpreadCallHaxe(
   let fixed: string[] = [];
   for (const argument of expression.arguments) {
     if (argument.kind === 'spread') {
-      if (fixed.length > 0) groups.push(`[${fixed.join(', ')}]`);
+      if (fixed.length > 0) groups.push(`([${fixed.join(', ')}] : Array<Dynamic>)`);
       fixed = [];
-      groups.push(emitExpression(argument.expression, context));
+      groups.push(`(cast ${emitExpression(argument.expression, context)} : Array<Dynamic>)`);
       continue;
     }
     fixed.push(emitExpression(argument, context));
   }
-  if (fixed.length > 0) groups.push(`[${fixed.join(', ')}]`);
+  if (fixed.length > 0) groups.push(`([${fixed.join(', ')}] : Array<Dynamic>)`);
   const args =
     groups.length === 1
       ? groups[0]!
@@ -5095,7 +5374,9 @@ function getIrModuleDeclaredTypeNameHaxe(name: string, context: EmitContext): st
     (candidate) =>
       (candidate.kind === 'interface' || candidate.kind === 'typeAlias') && candidate.binding.name === name,
   );
-  return declaration && (declaration.kind === 'interface' || declaration.kind === 'typeAlias')
+  return declaration &&
+    (declaration.kind === 'interface' || declaration.kind === 'typeAlias') &&
+    declaration.typeParameters.length === 0
     ? getBindingTargetNameHaxe(declaration.binding, context)
     : undefined;
 }
@@ -5130,10 +5411,14 @@ function getIrUnionTypeFlattenedPropertiesHaxe(
       // Two alternatives spelling one field differently have no single Haxe type, so the union keeps
       // its untyped form rather than picking one of them.
       if (existing && emitType(existing.type, context) !== emitType(property.type, context)) return undefined;
+      if (existing && property.optional && !existing.optional) {
+        flattened[flattened.indexOf(existing)] = { ...existing, optional: true };
+      }
       if (!existing) {
         flattened.push({
           ...property,
-          optional: !members.every((candidate) => candidate.some((entry) => entry.name === property.name)),
+          optional:
+            property.optional || !members.every((candidate) => candidate.some((entry) => entry.name === property.name)),
         });
       }
     }

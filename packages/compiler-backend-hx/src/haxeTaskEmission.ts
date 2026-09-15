@@ -318,10 +318,12 @@ function emitCompilerHaxeTaskLoweringStep(
       return [`${joinName}();`, 'return;'];
     }
     case 'executeSource':
-      return emitCompilerHaxeTaskSourceStatement(
-        getCompilerHaxeTaskEmissionSourceValue<IrStatement>(module, step.path, capabilities),
-        capabilities,
-      );
+      return [
+        ...emitCompilerHaxeTaskSourceStatement(
+          getCompilerHaxeTaskEmissionSourceValue<IrStatement>(module, step.path, capabilities),
+          capabilities,
+        ),
+      ];
     case 'rejectTask':
     case 'resolveTask': {
       const value = emitCompilerHaxeTaskCompletionValue(step.value, module, capabilities, undefined);
@@ -458,7 +460,12 @@ function emitCompilerHaxeTaskSuspensionFulfillment(
     case 'discard':
       break;
     case 'initializeBinding':
-      lines.push(`var ${capabilities.getBindingName(step.fulfillment.binding)} = ${awaitValueName};`);
+      {
+        const type = capabilities.getBindingType?.(step.fulfillment.binding);
+        lines.push(
+          `var ${capabilities.getBindingName(step.fulfillment.binding)}${type ? `:${type}` : ''} = ${type ? `cast(${awaitValueName})` : awaitValueName};`,
+        );
+      }
       break;
     case 'rebind':
       lines.push(`${capabilities.getBindingName(step.fulfillment.binding)} = ${awaitValueName};`);
