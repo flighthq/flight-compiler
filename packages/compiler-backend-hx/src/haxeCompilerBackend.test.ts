@@ -6024,7 +6024,7 @@ describe('emitIrModuleHaxe re-export facade', () => {
       options: {},
     })[0]!.contents;
 
-    expect(output).toContain('typedef FacadeImageChannel = flighthq.math.Channel.ImageChannel;');
+    expect(output).toContain('typedef FacadeImageChannel = flighthq.math.Channel.ImageChannel_2;');
     expect(output).toContain('final ImageChannel:');
   });
 
