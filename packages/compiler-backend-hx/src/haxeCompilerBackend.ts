@@ -1329,17 +1329,14 @@ function getWebGlStaticConstantOwnerHaxe(
   if (!/^[A-Z][A-Z0-9_]*$/u.test(expression.name) || expression.optional) return undefined;
   const type = getIrExpressionTypeHaxe(expression.object, context);
   if (!type || type.kind !== 'named') return undefined;
-  if (type.reference.kind === 'ambient') {
-    const owner = getCompilerRuntimeExternalSymbolTargetHaxe(
-      type.reference.name,
-      'type',
-      context.options.runtimeModule,
-    );
+  const reference = type.reference;
+  if (reference.kind === 'ambient') {
+    const owner = getCompilerRuntimeExternalSymbolTargetHaxe(reference.name, 'type', context.options.runtimeModule);
     return owner?.startsWith('js.html.webgl.') ? owner : undefined;
   }
   const local = context.module.declarations.find(
     (candidate): candidate is IrInterfaceDeclaration =>
-      candidate.kind === 'interface' && candidate.binding.id === type.reference.binding.id,
+      candidate.kind === 'interface' && candidate.binding.id === reference.binding.id,
   );
   if (local) {
     const owner = context.ambientUtilityHeritageTargets.get(local.binding.id);
@@ -1347,7 +1344,7 @@ function getWebGlStaticConstantOwnerHaxe(
   }
   const imported = context.module.imports
     .flatMap((entry) => entry.bindings.map((binding) => ({ binding, entry })))
-    .find(({ binding }) => binding.binding.id === type.reference.binding.id);
+    .find(({ binding }) => binding.binding.id === reference.binding.id);
   const sourceModule = imported
     ? getHaxeResolvedImportModule(imported.entry.specifier, context, imported.binding.imported)
     : undefined;
@@ -3436,7 +3433,10 @@ function getIrImportedOrModuleBindingTypeHaxe(
   const sourceModule = getHaxeResolvedImportModule(imported.entry.specifier, context, imported.candidate.imported);
   if (!sourceModule) return undefined;
   const direct = sourceModule.declarations.find(
-    (declaration) => declaration.kind === 'variable' && declaration.binding.name === imported.candidate.imported,
+    (declaration) =>
+      declaration.kind === 'variable' &&
+      'binding' in declaration &&
+      declaration.binding.name === imported.candidate.imported,
   );
   if (direct?.kind === 'variable') return direct.type;
   const facade = context.getModuleFacade?.(sourceModule);
