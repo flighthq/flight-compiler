@@ -1425,6 +1425,10 @@ function getWebGlNativeOwnerForExpressionHaxe(
   context: EmitContext,
 ): string | undefined {
   let type = getIrExpressionTypeHaxe(expression, context);
+  if (type?.kind === 'union') {
+    const inhabited = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    if (inhabited.length === 1) type = inhabited[0];
+  }
   while (
     type?.kind === 'named' &&
     type.reference.kind === 'ambient' &&
@@ -1903,7 +1907,16 @@ function emitJavaScriptBinaryOperatorHaxe(
   if (isBinaryOperatorDirectHaxe(expression.operator, expression.semantics)) return undefined;
   const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
   const left = emitExpression(expression.left, context);
-  const right = emitExpression(expression.right, context);
+  const nativeInstanceofTarget =
+    expression.operator === 'instanceof' &&
+    expression.right.kind === 'identifier' &&
+    expression.right.reference.kind === 'ambient'
+      ? haxeNativeInstanceofConstructorTargets.get(expression.right.reference.name)
+      : undefined;
+  // Portable typed-array adapters are Haxe abstracts and therefore cannot be passed as class
+  // values. The JavaScript operator still needs the native constructor identity; ordinary
+  // source-declared constructor values continue through the runtime unchanged.
+  const right = nativeInstanceofTarget ?? emitExpression(expression.right, context);
   if (expression.operator === '&&' || expression.operator === '||') {
     const value = getGeneratedTargetNameHaxe('logicalLeftValue', context);
     const whenTruthy = expression.operator === '&&' ? right : value;
@@ -1912,6 +1925,20 @@ function emitJavaScriptBinaryOperatorHaxe(
   }
   return emitJavaScriptBinaryRuntimeCallHaxe(expression.operator, left, right, runtime);
 }
+
+const haxeNativeInstanceofConstructorTargets = new Map<string, string>([
+  ['BigInt64Array', 'js.lib.BigInt64Array'],
+  ['BigUint64Array', 'js.lib.BigUint64Array'],
+  ['Float32Array', 'js.lib.Float32Array'],
+  ['Float64Array', 'js.lib.Float64Array'],
+  ['Int16Array', 'js.lib.Int16Array'],
+  ['Int32Array', 'js.lib.Int32Array'],
+  ['Int8Array', 'js.lib.Int8Array'],
+  ['Uint16Array', 'js.lib.Uint16Array'],
+  ['Uint32Array', 'js.lib.Uint32Array'],
+  ['Uint8Array', 'js.lib.Uint8Array'],
+  ['Uint8ClampedArray', 'js.lib.Uint8ClampedArray'],
+]);
 
 function emitJavaScriptBinaryRuntimeCallHaxe(
   operator: IrBinaryOperator,
@@ -2813,18 +2840,33 @@ function getIrNamedDeclarationTargetHaxe(
     return exact;
   }
   const importedBindings = context.module.imports.flatMap((entry) =>
-    entry.bindings.map((binding) => ({ binding, entry })),
+    entry.bindings.map((binding) => ({ binding, entry, owner: context.module })),
   );
   const exactImported = importedBindings.find(({ binding }) => binding.binding.id === reference.binding.id);
+  const foreignOwner = context.sourceModules.find(
+    (module) =>
+      module.packageName === reference.binding.packageName &&
+      normalizePathPortable(module.source) === normalizePathPortable(reference.binding.source),
+  );
+  const exactForeignImported = foreignOwner?.imports
+    .flatMap((entry) => entry.bindings.map((binding) => ({ binding, entry, owner: foreignOwner })))
+    .find(({ binding }) => binding.binding.id === reference.binding.id);
   const sameNamedImports = importedBindings.filter(
     ({ binding }) => binding.binding.name === reference.binding.name && binding.binding.space === 'type',
   );
-  const imported = exactImported ?? (sameNamedImports.length === 1 ? sameNamedImports[0] : undefined);
+  const imported =
+    exactImported ?? exactForeignImported ?? (sameNamedImports.length === 1 ? sameNamedImports[0] : undefined);
   if (!imported || imported.binding.imported === '*' || imported.binding.imported === 'default') {
     context.namedDeclarationTargets.set(reference.binding.id, null);
     return undefined;
   }
-  const sourceModule = getHaxeResolvedImportModule(imported.entry.specifier, context, imported.binding.imported);
+  const sourceModule = getHaxeResolvedImportModuleFrom(
+    imported.owner,
+    imported.entry.specifier,
+    context.sourceModules,
+    context.moduleResolution,
+    imported.binding.imported,
+  );
   if (!sourceModule) {
     context.namedDeclarationTargets.set(reference.binding.id, null);
     return undefined;
@@ -4192,13 +4234,22 @@ function emitNewArgumentsHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
   context: EmitContext,
 ): string[] {
+  const ambientConstructorName =
+    expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'ambient'
+      ? expression.callee.reference.name
+      : undefined;
   const integerLengthConstructor =
-    expression.callee.kind === 'identifier' &&
-    expression.callee.reference.kind === 'ambient' &&
-    haxeIntegerLengthConstructorNames.has(expression.callee.reference.name);
+    ambientConstructorName !== undefined && haxeIntegerLengthConstructorNames.has(ambientConstructorName);
+  const integerArguments = ambientConstructorName
+    ? (haxeNativeConstructorIntArgumentPositions.get(ambientConstructorName) ?? [])
+    : [];
+  const castArguments = ambientConstructorName
+    ? (haxeNativeConstructorCastArgumentPositions.get(ambientConstructorName) ?? [])
+    : [];
   return expression.arguments.map((argument, index) => {
     const emitted = emitExpression(argument, context);
     const type = getIrExpressionTypeHaxe(argument, context);
+    if (castArguments.includes(index)) return `cast(${emitted})`;
     if (
       index === 0 &&
       expression.callee.kind === 'identifier' &&
@@ -4208,11 +4259,17 @@ function emitNewArgumentsHaxe(
     ) {
       return `cast(${emitted})`;
     }
-    return integerLengthConstructor && index === 0 && type?.kind === 'primitive' && type.name === 'number'
+    return (integerArguments.includes(index) || (integerLengthConstructor && index === 0)) &&
+      type?.kind === 'primitive' &&
+      type.name === 'number'
       ? `Std.int(${emitted})`
       : emitted;
   });
 }
+
+const haxeNativeConstructorIntArgumentPositions = new Map<string, readonly number[]>([['ImageData', [1, 2]]]);
+
+const haxeNativeConstructorCastArgumentPositions = new Map<string, readonly number[]>([['Proxy', [1]]]);
 
 const haxeIntegerLengthConstructorNames = new Set([
   'Array',

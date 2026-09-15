@@ -2510,6 +2510,33 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).not.toContain('Type.createInstance');
   });
 
+  it('adapts native constructor integer and structural callback arguments', () => {
+    const result = lower(
+      'native-constructor-arguments.ts',
+      `export function image(data: Uint8ClampedArray, width: number, height: number): ImageData {
+         return new ImageData(data, width, height);
+       }
+       export function guard(target: object): object {
+         return new Proxy(target, { set(target, property, value): boolean { return true; } });
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('new js.html.ImageData(data, Std.int(width), Std.int(height))');
+    expect(output).toContain('new flighthq._internal._Proxy(target, cast({ set:'));
+  });
+
+  it('uses native typed-array constructor identities for instanceof', () => {
+    const result = lower(
+      'typed-array-instanceof.ts',
+      'export function isFloat32(value: unknown): boolean { return value instanceof Float32Array; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain(
+      'flighthq._internal._Js.instanceOf(value, js.lib.Float32Array)',
+    );
+  });
+
   it('emits empty template literal as an empty string', () => {
     const result = lower('empty-template.ts', 'export function empty(): string { return ``; }');
 
@@ -7898,6 +7925,73 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('gl.clear(js.html.webgl.WebGL2RenderingContext.COLOR_BUFFER_BIT);');
   });
 
+  it('retains widened WebGL identity through a foreign container property', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './context',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/context.ts' },
+        },
+        {
+          specifier: './state',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/state.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/context.ts',
+          "type Member = 'clear' | 'COLOR_BUFFER_BIT'; export interface Context extends Pick<WebGL2RenderingContext, Member> {}",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/state.ts',
+          "import type { Context } from './context'; export interface State { gl: Context }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './state';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/render',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/render/src/use.ts',
+          "import type { State } from '@flighthq/types/contract'; export function clear(state: State): void { state.gl.clear(state.gl.COLOR_BUFFER_BIT); }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[3]!)[0]!.contents;
+
+    expect(output).toContain('state.gl.clear(js.html.webgl.WebGL2RenderingContext.COLOR_BUFFER_BIT);');
+  });
+
   it('uses source-module parameter types for WebGL defaults in facade forwarders', () => {
     const moduleResolution = {
       edges: [
@@ -8221,6 +8315,73 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
     const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
     const output = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(output).toContain('(target.color = (cast source.color : TargetColor))');
+  });
+
+  it('resolves string aliases imported by a foreign declaration owner', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './colors',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/colors.ts' },
+        },
+        {
+          specifier: './shape',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/shape.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/colors.ts',
+          "export type SourceColor = 'srgb' | 'linear'; export type TargetColor = 'srgb' | 'linear';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/shape.ts',
+          "import type { SourceColor, TargetColor } from './colors'; export interface Source { color: SourceColor } export interface Target { color: TargetColor }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './shape';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/render',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/render/src/use.ts',
+          "import type { Source, Target } from '@flighthq/types/contract'; export function copy(source: Source, target: Target): void { target.color = source.color; }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[3]!)[0]!.contents;
 
     expect(output).toContain('(target.color = (cast source.color : TargetColor))');
   });
