@@ -2499,6 +2499,17 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(emitIrModuleHaxe(result.module).contents).toContain('Type.createInstance(cast factory, [1])');
   });
 
+  it('constructs ambient typed arrays through their runtime adapters', () => {
+    const result = lower(
+      'typed-array-constructor.ts',
+      'export function copy(values: Float32Array): Float32Array { return new Float32Array(values); }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('new flighthq._internal._Float32Array(values)');
+    expect(output).not.toContain('Type.createInstance');
+  });
+
   it('emits empty template literal as an empty string', () => {
     const result = lower('empty-template.ts', 'export function empty(): string { return ``; }');
 

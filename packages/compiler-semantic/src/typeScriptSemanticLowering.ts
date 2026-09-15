@@ -1066,6 +1066,7 @@ function lowerExpression(
         ...lowerInvocationSemantics(node, signature, context),
         ...(signature?.resolved &&
         ts.isConstructSignatureDeclaration(signature.resolved) &&
+        !isTypeScriptAmbientSymbol(context.checker.getSymbolAtLocation(node.expression), context) &&
         signature.resolved.getSourceFile().fileName !== getCompilerAmbientSurfaceFileName()
           ? { construction: 'factory' as const }
           : {}),
