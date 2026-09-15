@@ -11410,8 +11410,8 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('create: (cast function');
-    expect(output).toContain('supports: (cast function');
+    expect(output).toContain('create: cast(function');
+    expect(output).toContain('supports: cast(function');
   });
 
   it('writes non-numeric typed-array indexes through the reflective property ABI', () => {
@@ -11530,7 +11530,7 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     ).contents;
 
     expect(output).toContain('? (cast true : Dynamic) : (cast ');
-    expect(output).toContain('(cast function(value:Float) return value : (Float, Float)->Float)');
+    expect(output).toContain('cast(function(value:Float) return value)');
     expect(output).toContain('(cast source.callback : Null<(Float, Float)->Float>)');
     expect(output).toContain('(cast identity : (Float, Float)->Float)');
   });
