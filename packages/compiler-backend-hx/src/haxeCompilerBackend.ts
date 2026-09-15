@@ -5125,9 +5125,14 @@ function getHaxeResolvedImportModuleFrom(
     path.posix.join(path.posix.dirname(importer.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
   );
   const candidates = new Set([source, `${source}.ts`, `${source}/index.ts`]);
-  return modules.find(
-    (module) => module.packageName === importer.packageName && candidates.has(path.posix.normalize(module.source)),
-  );
+  const matchingModules = modules.filter((module) => candidates.has(path.posix.normalize(module.source)));
+  const samePackage = matchingModules.filter((module) => module.packageName === importer.packageName);
+  if (samePackage.length === 1) return samePackage[0];
+  // Semantic lowering can materialize an inferred direct import for a public type which appears
+  // only inside another package's declaration. Those requests are repository-relative but are not
+  // present in the authored module-resolution graph, so recover the unique source owner across the
+  // complete emission session instead of incorrectly assigning the consumer's Haxe package.
+  return matchingModules.length === 1 ? matchingModules[0] : undefined;
 }
 
 function isHaxeCompilerModuleIdentityEqual(
