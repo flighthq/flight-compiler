@@ -1942,8 +1942,13 @@ function emitAssignmentRightHaxe(
     return 'js.Syntax.code("undefined")';
   }
   const emitted = emitExpression(expression.right, context);
-  return expression.operator === '=' && isIrExpressionFunctionValuedHaxe(expression.right, context)
-    ? `cast(${emitted})`
+  return expression.operator === '='
+    ? emitExpressionAsExpectedTypeHaxe(
+        expression.right,
+        getIrExpressionTypeHaxe(expression.left, context),
+        context,
+        emitted,
+      )
     : emitted;
 }
 
@@ -2026,12 +2031,38 @@ function emitHaxeCallArgument(expression: Readonly<IrExpression>, context: EmitC
 }
 
 function emitReturnedExpressionHaxe(expression: Readonly<IrExpression>, context: EmitContext): string {
-  const emitted = normalizeHaxeExpressionGrouping(emitExpression(expression, context));
-  return context.returnType &&
-    isIrTypeFunctionShapedHaxe(context.returnType, context) &&
-    isIrExpressionFunctionValuedHaxe(expression, context)
-    ? `cast(${emitted})`
-    : emitted;
+  return normalizeHaxeExpressionGrouping(
+    emitExpressionAsExpectedTypeHaxe(expression, context.returnType, context),
+  );
+}
+
+function emitExpressionAsExpectedTypeHaxe(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+  emitted: string = emitExpression(expression, context),
+): string {
+  if (!expectedType) return emitted;
+  const concreteExpected = getIrSingleConcreteTypeHaxe(expectedType);
+  if (
+    (isIrTypeFunctionShapedHaxe(concreteExpected, context) &&
+      isIrExpressionFunctionValuedHaxe(expression, context)) ||
+    (isIrNamedUnionAliasHaxe(concreteExpected, context) &&
+      (isIrExpressionStringBackedHaxe(expression, context) || expression.kind === 'object' || expression.kind === 'call')) ||
+    (concreteExpected.kind === 'array' &&
+      (expression.kind === 'undefinedDefault' ||
+        (expression.kind === 'binary' && expression.operator === '??') ||
+        !getIrExpressionTypeHaxe(expression, context)))
+  ) {
+    return `(cast ${normalizeHaxeExpressionGrouping(emitted)} : ${emitType(concreteExpected, context)})`;
+  }
+  return emitted;
+}
+
+function getIrSingleConcreteTypeHaxe(type: Readonly<IrType>): Readonly<IrType> {
+  if (type.kind !== 'union') return type;
+  const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  return concrete.length === 1 ? concrete[0]! : type;
 }
 
 function isIrExpressionFunctionValuedHaxe(expression: Readonly<IrExpression>, context: EmitContext): boolean {
@@ -2102,15 +2133,19 @@ function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, cont
   }
   if (expression.members.every((member) => member.kind === 'property')) {
     return `{ ${expression.members
-      .map((member) => `${safeHaxeName(member.name)}: ${emitExpression(member.value, context)}`)
+      .map((member) => {
+        const expected = getIrObjectPropertyTypeHaxe(expression.type, member.name, context);
+        return `${safeHaxeName(member.name)}: ${emitExpressionAsExpectedTypeHaxe(member.value, expected, context)}`;
+      })
       .join(', ')} }`;
   }
   const target = getGeneratedTargetNameHaxe('objectSpreadValue', context);
   const lines = [`final ${target}:Dynamic = {};`];
   for (const member of expression.members) {
     if (member.kind === 'property') {
+      const expected = getIrObjectPropertyTypeHaxe(expression.type, member.name, context);
       lines.push(
-        `Reflect.setField(${target}, ${emitHaxeStringLiteral(safeHaxeName(member.name))}, ${emitExpression(member.value, context)});`,
+        `Reflect.setField(${target}, ${emitHaxeStringLiteral(safeHaxeName(member.name))}, ${emitExpressionAsExpectedTypeHaxe(member.value, expected, context)});`,
       );
       continue;
     }
@@ -2133,6 +2168,36 @@ function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, cont
   }
   lines.push(`return ${target};`);
   return `(function() {\n${indentSourceLines(lines).join('\n')}\n})()`;
+}
+
+function getIrObjectPropertyTypeHaxe(
+  type: Readonly<IrType>,
+  name: string,
+  context: EmitContext,
+  seen: ReadonlySet<string> = new Set(),
+): Readonly<IrType> | undefined {
+  const concrete = getIrSingleConcreteTypeHaxe(type);
+  if (concrete.kind === 'object') return concrete.properties.find((property) => property.name === name)?.type;
+  if (
+    concrete.kind === 'named' &&
+    concrete.reference.kind === 'ambient' &&
+    ['Partial', 'Readonly', 'Required'].includes(concrete.reference.name) &&
+    concrete.typeArguments[0]
+  ) {
+    return getIrObjectPropertyTypeHaxe(concrete.typeArguments[0], name, context, seen);
+  }
+  if (concrete.kind !== 'named' || concrete.reference.kind !== 'binding') return undefined;
+  const target = getIrNamedDeclarationTargetHaxe(concrete, context);
+  if (!target || seen.has(target.binding.id)) return undefined;
+  if (target.declaration.kind === 'interface') {
+    return target.declaration.properties.find((property) => property.name === name)?.type;
+  }
+  if (target.declaration.kind !== 'typeAlias') return undefined;
+  const substituted = resolveIrTypeStructuralSubstitution(
+    target.declaration.type,
+    createIrTypeParameterSubstitutionPlan(target.declaration.typeParameters, concrete.typeArguments),
+  );
+  return getIrObjectPropertyTypeHaxe(substituted, name, context, new Set(seen).add(target.binding.id));
 }
 
 function emitObjectAccessorExpressionHaxe(expression: Readonly<IrObjectExpression>, context: EmitContext): string {
@@ -2540,6 +2605,91 @@ function getModuleFacadeBindingTargetHaxe(
   );
   if (!declaration) emissionError(context, `re-exporting ${slot.exportName} requires its source declaration`);
   return { binding: route.binding, declaration, module };
+}
+
+function getIrNamedDeclarationTargetHaxe(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+):
+  | Readonly<{
+      binding: IrBindingIdentity | IrTypeBindingIdentity;
+      declaration: Readonly<IrDeclaration>;
+      module: Readonly<IrModule>;
+    }>
+  | undefined {
+  if (type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
+  for (const module of context.sourceModules) {
+    const declaration = module.declarations.find(
+      (candidate) => 'binding' in candidate && candidate.binding.id === type.reference.binding.id,
+    );
+    if (declaration && 'binding' in declaration) return { binding: declaration.binding, declaration, module };
+  }
+  const imported = context.module.imports
+    .flatMap((entry) => entry.bindings.map((binding) => ({ binding, entry })))
+    .find(({ binding }) => binding.binding.id === type.reference.binding.id);
+  if (!imported || imported.binding.imported === '*' || imported.binding.imported === 'default') return undefined;
+  const sourceModule = getHaxeResolvedImportModule(imported.entry.specifier, context, imported.binding.imported);
+  if (!sourceModule) return undefined;
+  const direct = sourceModule.declarations.find(
+    (candidate) => 'binding' in candidate && candidate.binding.name === imported.binding.imported,
+  );
+  if (direct && 'binding' in direct) return { binding: direct.binding, declaration: direct, module: sourceModule };
+  const facade = context.getModuleFacade?.(sourceModule);
+  const slot = facade?.modules
+    .find((module) => isHaxeCompilerModuleIdentityEqual(module.module, sourceModule))
+    ?.slots.find(
+      (candidate) => candidate.exportName === imported.binding.imported && candidate.lane === 'type',
+    );
+  return slot ? getModuleFacadeBindingTargetHaxe(slot, context) : undefined;
+}
+
+function isIrNamedUnionAliasHaxe(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  const target = getIrNamedDeclarationTargetHaxe(type, context);
+  return target?.declaration.kind === 'typeAlias' && target.declaration.type.kind === 'union';
+}
+
+function isIrExpressionStringBackedHaxe(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  const type = getIrExpressionTypeHaxe(expression, context);
+  if (type && isIrTypeStringBackedHaxe(type, context)) return true;
+  if (expression.kind === 'binary' && expression.operator === '??') {
+    return (
+      isIrExpressionStringBackedHaxe(expression.left, context) &&
+      isIrExpressionStringBackedHaxe(expression.right, context)
+    );
+  }
+  if (expression.kind === 'conditional') {
+    return (
+      isIrExpressionStringBackedHaxe(expression.whenTrue, context) &&
+      isIrExpressionStringBackedHaxe(expression.whenFalse, context)
+    );
+  }
+  if (expression.kind === 'undefinedDefault') {
+    return (
+      isIrExpressionStringBackedHaxe(expression.value, context) &&
+      isIrExpressionStringBackedHaxe(expression.fallback, context)
+    );
+  }
+  return false;
+}
+
+function isIrTypeStringBackedHaxe(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  seen: ReadonlySet<string> = new Set(),
+): boolean {
+  const concrete = getIrSingleConcreteTypeHaxe(type);
+  if (concrete.kind === 'primitive') return concrete.name === 'string';
+  if (concrete.kind === 'literal') return typeof concrete.value === 'string';
+  if (concrete.kind === 'union') return concrete.types.every((member) => isIrTypeStringBackedHaxe(member, context, seen));
+  if (concrete.kind !== 'named' || concrete.reference.kind !== 'binding') return false;
+  const target = getIrNamedDeclarationTargetHaxe(concrete, context);
+  if (!target || target.declaration.kind !== 'typeAlias' || seen.has(target.binding.id)) return false;
+  const substituted = resolveIrTypeStructuralSubstitution(
+    target.declaration.type,
+    createIrTypeParameterSubstitutionPlan(target.declaration.typeParameters, concrete.typeArguments),
+  );
+  return isIrTypeStringBackedHaxe(substituted, context, new Set(seen).add(target.binding.id));
 }
 
 function emitFacadeTypeAliasHaxe(

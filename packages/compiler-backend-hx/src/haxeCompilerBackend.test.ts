@@ -10215,6 +10215,61 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     ).not.toThrow();
   });
 
+  it('casts compatible string-union aliases at nominal Haxe boundaries', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'string-union-boundaries.ts',
+        `type Source = 'linear' | 'srgb';
+         type Target = 'linear' | 'srgb';
+         interface SourceBox { value: Source }
+         interface TargetBox { value: Target }
+         export function copy(target: TargetBox, source: SourceBox): Target {
+           target.value = source.value;
+           return source.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('(cast source.value : Target)');
+  });
+
+  it('casts union constituents and structural array branches to their contextual target', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'structural-union-boundaries.ts',
+        `interface Perspective { kind: 'perspective'; fov: number }
+         interface Orthographic { kind: 'orthographic'; height: number }
+         type Projection = Perspective | Orthographic;
+         interface Camera { projection: Projection }
+         interface BaseChannel { id: number }
+         interface DetailedChannel extends BaseChannel { detail: number }
+         function perspective(): Perspective { return { kind: 'perspective', fov: 1 }; }
+         export function configure(camera: Camera): Camera { camera.projection = perspective(); return { projection: perspective() }; }
+         export function channels(primary: DetailedChannel[] | null, fallback: BaseChannel[]): BaseChannel[] { return primary ?? fallback; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('(cast perspective() : Projection)');
+    expect(output).toContain(': Array<BaseChannel>)');
+  });
+
+  it('casts contextually assigned object methods with wider callable shapes', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'object-method-context.ts',
+        `interface Result { value: number; optional?: boolean }
+         interface Registration { create(): Result; supports(value: number): boolean }
+         export const registration: Registration = {
+           create() { return { value: 1 }; },
+           supports() { return true; },
+         };`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('create: cast(function');
+    expect(output).toContain('supports: cast(function');
+  });
+
   it('writes non-numeric typed-array indexes through the reflective property ABI', () => {
     const output = emitIrModuleHaxe(
       lower(
