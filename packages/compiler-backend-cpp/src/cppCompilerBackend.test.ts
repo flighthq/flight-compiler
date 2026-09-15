@@ -8860,6 +8860,28 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('.seen = flight::Set<flight::String>()');
   });
 
+  it('stores a locally built Map in its readonly structural result view', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-readonly-map.ts',
+        `interface Range { length: number; offset: number }
+         interface Directory { tables: ReadonlyMap<string, Readonly<Range>> }
+         export function read(): Directory {
+           const tables = new Map<string, { length: number; offset: number }>();
+           tables.set('head', { length: 4, offset: 8 });
+           return { tables };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    const mapType =
+      'flight::Map<flight::String, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Range>>>>>';
+    expect(output).toContain(`${mapType} tables = ${mapType}()`);
+    expect(output).toContain('tables.set(flight::String("head"), flight::make_structural_ref');
+    expect(output).toContain('.tables = tables');
+  });
+
   it('materializes a narrowed optional object assignment with its declared referent', () => {
     const output = emitIrModuleCpp(
       lower(

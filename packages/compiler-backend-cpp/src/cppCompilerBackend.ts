@@ -2289,13 +2289,10 @@ function emitExpression(
       const contextualConstructedType = expectedType
         ? getCppNonNullableType(expectedType, context, new Set())
         : undefined;
-      const contextualNamedTypeArguments =
-        ambientConstructorName !== undefined &&
-        contextualConstructedType?.kind === 'named' &&
-        contextualConstructedType.reference.kind === 'ambient' &&
-        contextualConstructedType.reference.name === ambientConstructorName
-          ? contextualConstructedType.typeArguments
-          : [];
+      const contextualNamedTypeArguments = getCppContextualAmbientConstructorTypeArgumentsCpp(
+        ambientConstructorName,
+        contextualConstructedType,
+      );
       const eraseRuntimeTypeArguments =
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
         ambientConstructorName !== undefined &&
@@ -2303,12 +2300,12 @@ function emitExpression(
       const typeArguments = emitCppTypeArguments(
         eraseRuntimeTypeArguments
           ? []
-          : expression.typeArguments.length > 0
-            ? expression.typeArguments
-            : constructedType && constructedType.typeArguments.length > 0
-              ? constructedType.typeArguments
-              : contextualNamedTypeArguments.length > 0
-                ? contextualNamedTypeArguments
+          : contextualNamedTypeArguments.length > 0
+            ? contextualNamedTypeArguments
+            : expression.typeArguments.length > 0
+              ? expression.typeArguments
+              : constructedType && constructedType.typeArguments.length > 0
+                ? constructedType.typeArguments
                 : contextualArrayTypeArguments,
         context,
       );
@@ -6356,10 +6353,39 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       ) {
         eligible.add(variable.binding.id);
       }
+      if (
+        'binding' in variable &&
+        !variable.mutable &&
+        variable.initializer?.kind === 'new' &&
+        getIrAmbientConstructorNameCpp(variable.initializer.callee) === 'Map'
+      ) {
+        eligible.add(variable.binding.id);
+      }
     },
   });
   analyzeIrModuleTraversal(module, {
     expression(expression) {
+      if (expression.kind === 'object') {
+        for (const member of expression.members) {
+          if (
+            member.kind !== 'property' ||
+            member.value.kind !== 'identifier' ||
+            member.value.reference.kind !== 'binding' ||
+            !eligible.has(member.value.reference.binding.id)
+          ) {
+            continue;
+          }
+          const bindingId = member.value.reference.binding.id;
+          const sourceType = context.bindingTypes.get(bindingId);
+          const targetType = getIrObjectPropertyTypeCpp(expression.type, member.name, context);
+          if (!sourceType || !targetType || !isCppReadonlyCollectionProjectionCpp(sourceType, targetType, context)) {
+            continue;
+          }
+          const targets = candidates.get(bindingId) ?? new Map<string, Readonly<IrType>>();
+          targets.set(normalizeCompilerStructuralValueCanonical(targetType), targetType);
+          candidates.set(bindingId, targets);
+        }
+      }
       if (expression.kind !== 'call') return;
       expression.arguments.forEach((argument, index) => {
         if (
@@ -6400,6 +6426,20 @@ function collectCppContextualBindingStorageTargetTypesCpp(
     [...candidates].flatMap(([bindingId, targets]) =>
       targets.size === 1 ? ([[bindingId, [...targets.values()][0]!] as const] as const) : [],
     ),
+  );
+}
+
+function isCppReadonlyCollectionProjectionCpp(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const sourceCollection = getIrAmbientCollectionTypeCpp(source, context, new Set());
+  const targetCollection = getIrAmbientCollectionTypeCpp(target, context, new Set());
+  if (!sourceCollection || !targetCollection) return false;
+  return (
+    (sourceCollection.reference.name === 'Map' && targetCollection.reference.name === 'ReadonlyMap') ||
+    (sourceCollection.reference.name === 'Set' && targetCollection.reference.name === 'ReadonlySet')
   );
 }
 
@@ -6911,6 +6951,28 @@ function getIrNewExpressionTypeEvidenceCpp(
     };
   }
   return { kind: 'named', reference: { kind: 'ambient', name }, typeArguments: [] };
+}
+
+function getCppContextualAmbientConstructorTypeArgumentsCpp(
+  constructorName: string | undefined,
+  contextualType: Readonly<IrType> | undefined,
+): readonly Readonly<IrType>[] {
+  if (
+    constructorName === undefined ||
+    contextualType?.kind !== 'named' ||
+    contextualType.reference.kind !== 'ambient'
+  ) {
+    return [];
+  }
+  const contextualName = contextualType.reference.name;
+  if (
+    contextualName === constructorName ||
+    (constructorName === 'Map' && contextualName === 'ReadonlyMap') ||
+    (constructorName === 'Set' && contextualName === 'ReadonlySet')
+  ) {
+    return contextualType.typeArguments;
+  }
+  return [];
 }
 
 function getCppObjectProjectionCallResultTypeCpp(
