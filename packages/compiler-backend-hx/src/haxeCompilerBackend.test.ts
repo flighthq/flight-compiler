@@ -8079,7 +8079,7 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     const output = emitIrModuleHaxe(
       lower(
         'async-return.ts',
-        'declare function load(): Promise<number>; export async function read(): Promise<number> { return load(); }',
+        'function load(): Promise<number> { return Promise.resolve(1); } export async function read(): Promise<number> { return load(); }',
       ).module,
     )[0]!.contents;
 
