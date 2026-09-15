@@ -901,8 +901,17 @@ function lowerExpression(
     return { kind: 'literal', value: node.text };
   if (ts.isArrayLiteralExpression(node)) {
     const targetShape = getIrTypeConstructionTargetShape(contextualTargetType ?? contextualType, context);
-    const contextualShape =
+    const writtenContextualShape =
       contextualType?.kind === 'union' ? getIrTypeConstructionTargetShape(contextualType, context) : contextualType;
+    const checkedContextualType = context.checker.getContextualType(node);
+    const checkedContextualEvidence = checkedContextualType
+      ? getTypeScriptCheckerTypeEvidence(checkedContextualType, context, 0, true, node)
+      : undefined;
+    const contextualShape =
+      writtenContextualShape ??
+      (checkedContextualEvidence?.kind === 'union'
+        ? getIrTypeConstructionTargetShape(checkedContextualEvidence, context)
+        : checkedContextualEvidence);
     if (contextualShape?.kind === 'tuple') {
       return lowerTupleExpression(
         node,
@@ -1191,7 +1200,21 @@ function isIrExpressionValueTypeEvidence(type: Readonly<IrType>): boolean {
     case 'tuple':
       return type.elements.every((element) => isIrExpressionValueTypeEvidence(element.type));
     case 'named':
-      return type.reference.kind === 'binding' && type.typeArguments.every(isIrExpressionValueTypeEvidence);
+      return (
+        (type.reference.kind === 'binding' || getIrResolvedMemberReceiver(type) !== undefined) &&
+        type.typeArguments.every(isIrExpressionValueTypeEvidence)
+      );
+    case 'function':
+      return (
+        type.typeParameters.length === 0 &&
+        type.parameters.every((parameter) => isIrExpressionValueTypeEvidence(parameter.type)) &&
+        isIrExpressionValueTypeEvidence(type.returns)
+      );
+    case 'object':
+      return type.properties.every(
+        (property) =>
+          property.computedKey?.kind !== 'ambient' && isIrExpressionValueTypeEvidence(property.type),
+      );
     case 'literal':
     case 'never':
     case 'null':
@@ -1200,10 +1223,8 @@ function isIrExpressionValueTypeEvidence(type: Readonly<IrType>): boolean {
     case 'unknown':
       return true;
     case 'conditionalFacet':
-    case 'function':
     case 'indexedAccess':
     case 'keyof':
-    case 'object':
     case 'typeOf':
       return false;
   }

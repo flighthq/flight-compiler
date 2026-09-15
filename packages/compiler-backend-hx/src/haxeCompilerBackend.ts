@@ -366,15 +366,7 @@ function emitIrModuleHaxeWithContext(
   const sourceModuleTargetNames = new Map(sessionSourceModuleTargetNames);
   sourceModuleTargetNames.set(getHaxeCompilerModuleKey(module), targetNames);
   const facadeTypeTargetNames = createHaxeFacadeTypeTargetNames(module, moduleFacade, targetNames);
-  const bindingTypes = new Map<string, IrType>();
-  analyzeIrModuleTraversal(module, {
-    parameter(parameter) {
-      bindingTypes.set(parameter.binding.id, parameter.type);
-    },
-    variable(variable) {
-      if ('binding' in variable && variable.type) bindingTypes.set(variable.binding.id, variable.type);
-    },
-  });
+  const bindingTypes = collectIrModuleBindingTypesHaxe(module);
   const context: EmitContext = {
     ambientUtilityHeritageTargets,
     bindingTypes,
@@ -1392,7 +1384,15 @@ function getWebGlNativeOwnerForExpressionHaxe(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): string | undefined {
-  const type = getIrExpressionTypeHaxe(expression, context);
+  let type = getIrExpressionTypeHaxe(expression, context);
+  while (
+    type?.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    ['Partial', 'Readonly', 'Required'].includes(type.reference.name) &&
+    type.typeArguments[0]
+  ) {
+    type = type.typeArguments[0];
+  }
   if (!type || type.kind !== 'named') return undefined;
   const reference = type.reference;
   if (reference.kind === 'ambient') {
@@ -1925,7 +1925,8 @@ function emitAssignmentRightHaxe(
   if (
     expression.operator === '=' &&
     expression.left.kind === 'element' &&
-    expression.left.semantics.receivers.every((receiver) => haxeIntegerTypedArrayReceivers.has(receiver))
+    (expression.left.semantics.receivers.every((receiver) => haxeIntegerTypedArrayReceivers.has(receiver)) ||
+      isIrIntegerTypedArrayHaxe(getIrExpressionTypeHaxe(expression.left.object, context)))
   ) {
     return `Std.int(${emitExpression(expression.right, context)})`;
   }
@@ -1956,9 +1957,28 @@ const haxeIntegerTypedArrayReceivers = new Set([
   'uint32Array',
 ]);
 
+const haxeConstructedAmbientValueTypeNames = new Set([
+  'ArrayBuffer',
+  'BigInt64Array',
+  'BigUint64Array',
+  'DataView',
+  'Float32Array',
+  'Float64Array',
+  'Int16Array',
+  'Int32Array',
+  'Int8Array',
+  'Uint16Array',
+  'Uint32Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+]);
+
 function isIrIntegerTypedArrayHaxe(type: Readonly<IrType> | undefined): boolean {
   if (!type) return false;
-  if (type.kind === 'union') return type.types.length > 0 && type.types.every(isIrIntegerTypedArrayHaxe);
+  if (type.kind === 'union') {
+    const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    return concrete.length > 0 && concrete.every(isIrIntegerTypedArrayHaxe);
+  }
   if (type.kind !== 'named' || type.reference.kind !== 'ambient') return false;
   if (['Partial', 'Readonly', 'Required'].includes(type.reference.name) && type.typeArguments[0]) {
     return isIrIntegerTypedArrayHaxe(type.typeArguments[0]);
@@ -2640,6 +2660,7 @@ function createFacadeSourceContextHaxe(module: Readonly<IrModule>, context: Emit
   return {
     ...context,
     ambientUtilityHeritageTargets: createAmbientUtilityHeritageTargetsHaxe(module),
+    bindingTypes: collectIrModuleBindingTypesHaxe(module),
     facadeBindingTargetNames: qualifiedBindings,
     facadeTypeTargetNames,
     generatedNames: new Set([...targetNames.values(), ...facadeTypeTargetNames.values()]),
@@ -2652,6 +2673,19 @@ function createFacadeSourceContextHaxe(module: Readonly<IrModule>, context: Emit
     packageName: convertPackageNameToHaxePackageName(module.packageName, context.options.rootPackage),
     targetNames,
   };
+}
+
+function collectIrModuleBindingTypesHaxe(module: Readonly<IrModule>): ReadonlyMap<string, IrType> {
+  const bindingTypes = new Map<string, IrType>();
+  analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      bindingTypes.set(parameter.binding.id, parameter.type);
+    },
+    variable(variable) {
+      if ('binding' in variable && variable.type) bindingTypes.set(variable.binding.id, variable.type);
+    },
+  });
+  return bindingTypes;
 }
 
 function emitValueReexportForwardingHaxe(
@@ -3594,11 +3628,12 @@ function getIrExpressionTypeHaxe(
             ? { kind: 'primitive', name: 'number' }
             : { kind: 'primitive', name: 'string' };
     case 'new':
-      return expression.callee.kind === 'identifier' &&
-        expression.callee.reference.kind === 'ambient' &&
-        expression.callee.reference.name === 'Array' &&
-        expression.typeArguments[0]
-        ? { element: expression.typeArguments[0], kind: 'array', readonly: false }
+      if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'ambient') return undefined;
+      if (expression.callee.reference.name === 'Array' && expression.typeArguments[0]) {
+        return { element: expression.typeArguments[0], kind: 'array', readonly: false };
+      }
+      return haxeConstructedAmbientValueTypeNames.has(expression.callee.reference.name)
+        ? { kind: 'named', reference: expression.callee.reference, typeArguments: [] }
         : undefined;
     case 'property':
       return expression.type ??
