@@ -1654,7 +1654,15 @@ function emitArrayExpressionHaxe(
       });
       continue;
     }
-    fixed.push(element ? emitExpression(element, context) : 'null');
+    if (!element) {
+      fixed.push('null');
+      continue;
+    }
+    const emitted = emitExpression(element, context);
+    const elementType = getIrExpressionTypeHaxe(element, context);
+    fixed.push(
+      elementType?.kind === 'primitive' && elementType.name === 'number' ? `(cast ${emitted} : Float)` : emitted,
+    );
   }
   if (fixed.length > 0) groups.push({ copy: false, kind: 'fixed', value: `[${fixed.join(', ')}]` });
   const [first, ...rest] = groups;
