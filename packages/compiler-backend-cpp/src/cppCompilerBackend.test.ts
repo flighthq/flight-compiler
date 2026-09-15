@@ -5399,6 +5399,22 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
+  it('does not flatten an already-optional property from a Partial structural row', () => {
+    const result = lower(
+      'partial-nullable-property.ts',
+      `interface Texture { width: number }
+       interface Options { texture: Texture | null }
+       export function texture(opts?: Readonly<Partial<Options>>): Texture | null {
+         return opts?.texture ?? null;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"texture">>(optional_chain_receiver.value())');
+    expect(emitted).not.toContain('flight::row_get<flight::RowKey<"texture">>(optional_chain_receiver.value()).value_or');
+  });
+
   it('emits C++ keywords with trailing underscore', () => {
     const result = lower(
       'keywords.ts',

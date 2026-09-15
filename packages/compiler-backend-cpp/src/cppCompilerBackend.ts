@@ -8941,7 +8941,11 @@ function emitOptionalPropertyExpressionCpp(
   const object = emitOptionalChainReceiverCpp(expression.object, context);
   const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';
   let projected: string;
-  if (context.referenceRepresentationPlanner.resolveStructuralRow(receiverType, context.module)) {
+  const structuralReceiver = context.referenceRepresentationPlanner.resolveStructuralRow(
+    receiverType,
+    context.module,
+  );
+  if (structuralReceiver) {
     context.includes.add('flight/structural_ref.hpp');
     projected = `flight::row_get<flight::RowKey<${JSON.stringify(expression.name)}>>(optional_chain_receiver.value())`;
   } else if (expression.member) {
@@ -8975,7 +8979,8 @@ function emitOptionalPropertyExpressionCpp(
     declaredProperty?.optional === true &&
     (declaredUnionPlan?.kind === 'optionalSingle' || declaredUnionPlan?.kind === 'optionalVariant');
   const returned =
-    nestedOptionalStorage || projectedStorageType === `std::optional<${resultType}>`
+    !structuralReceiver &&
+    (nestedOptionalStorage || projectedStorageType === `std::optional<${resultType}>`)
       ? `${projected}.value_or(std::nullopt)`
       : projected;
   context.includes.add('optional');
