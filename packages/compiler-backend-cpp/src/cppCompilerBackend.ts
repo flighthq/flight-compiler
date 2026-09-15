@@ -180,6 +180,7 @@ interface EmitContext {
   options: Readonly<CppCompilerBackendOptions>;
   preservedInitializerTypes: Map<string, Readonly<IrType>>;
   referenceRepresentationPlanner: CompilerCppReferenceRepresentationPlanner;
+  recursiveTypeAliasBindingIds: ReadonlySet<string>;
   resolvingInitializerBindingIds: Set<string>;
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
@@ -297,6 +298,7 @@ function emitIrModuleCppWithContext(
     options,
   );
   const closureCapturePlan = createIrModuleClosureCapturePlanCpp(module);
+  const recursiveTypeAliasBindingIds = collectCppRecursiveTypeAliasBindingIds(module);
   const sharedCaptureTargetNames = new Map<string, string>();
   const contextualBindingStorageTargetTypes = new Map<string, Readonly<IrType>>();
   const nullableBindingIds = new Set(collectIrModuleNullableBindingIds(module));
@@ -328,6 +330,7 @@ function emitIrModuleCppWithContext(
     referenceRepresentationPlanner:
       referenceRepresentationPlanner ??
       createIrTypeReferenceRepresentationPlannerCpp(sourceModules, moduleResolution, options.externalBindings),
+    recursiveTypeAliasBindingIds,
     resolvingInitializerBindingIds: new Set(),
     returnsAbsent: false,
     sharedCaptureTargetNames,
@@ -370,7 +373,7 @@ function emitIrModuleCppWithContext(
     const targetName = targetNames.get(bindingPlan.binding.id) ?? safeCppName(bindingPlan.binding.name);
     sharedCaptureTargetNames.set(bindingPlan.binding.id, generateUniqueName(`${targetName}_capture`, context));
   }
-  const declarations = orderIrModuleDeclarationsCpp(module)
+  const declarations = orderIrModuleDeclarationsCpp(module, recursiveTypeAliasBindingIds)
     .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
     .map((declaration) => {
       const existingAnonymousStructs = new Set(context.anonymousStructs.keys());
@@ -1120,6 +1123,21 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
     const lines: string[] = [];
     if (typeParams) lines.push(`template ${typeParams}`);
     lines.push(`using ${name} = ${emitCppConditionalFacetReferenceTypeCpp(conditionalFacet, context)};`);
+    return lines;
+  }
+  if (context.recursiveTypeAliasBindingIds.has(declaration.binding.id)) {
+    const name = getBindingTargetName(declaration.binding, context);
+    const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
+    const base = emitType(declaration.type, context);
+    const lines: string[] = [];
+    if (typeParams) lines.push(`template ${typeParams}`);
+    lines.push(
+      `struct ${name} : public ${base} {`,
+      `  using Base = ${base};`,
+      '  using Base::Base;',
+      '  using Base::operator=;',
+      '};',
+    );
     return lines;
   }
   const stringLiterals = getIrUnionTypeStringLiteralValues(declaration.type);
@@ -7131,10 +7149,9 @@ function getIrUnionMemberNameCpp(type: Readonly<IrType>): string | undefined {
   return type.reference.kind === 'binding' ? type.reference.binding.name : type.reference.name;
 }
 
-function orderIrModuleDeclarationsCpp(module: Readonly<IrModule>): readonly Readonly<IrDeclaration>[] {
-  // Source order is the module-evaluation order for variables, classes, enums, and side-effect
-  // carriers. Move a later declaration only when an earlier declaration actually depends on it.
-  const ranked = [...module.declarations];
+function collectIrModuleDeclarationDependenciesCpp(
+  module: Readonly<IrModule>,
+): ReadonlyMap<Readonly<IrDeclaration>, ReadonlySet<Readonly<IrDeclaration>>> {
   const declarationsByBindingId = new Map(
     module.declarations.flatMap((declaration) =>
       'binding' in declaration ? [[declaration.binding.id, declaration] as const] : [],
@@ -7145,7 +7162,7 @@ function orderIrModuleDeclarationsCpp(module: Readonly<IrModule>): readonly Read
     const referenced = new Set<Readonly<IrDeclaration>>();
     const addBindingDependency = (bindingId: string) => {
       const dependency = declarationsByBindingId.get(bindingId);
-      if (dependency && dependency !== declaration) referenced.add(dependency);
+      if (dependency) referenced.add(dependency);
     };
     analyzeIrModuleTraversal(
       { ...module, declarations: [declaration], exports: [] },
@@ -7164,6 +7181,37 @@ function orderIrModuleDeclarationsCpp(module: Readonly<IrModule>): readonly Read
     );
     dependencies.set(declaration, referenced);
   }
+  return dependencies;
+}
+
+function collectCppRecursiveTypeAliasBindingIds(module: Readonly<IrModule>): ReadonlySet<string> {
+  const dependencies = collectIrModuleDeclarationDependenciesCpp(module);
+  const recursive = new Set<string>();
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'typeAlias' || declaration.type.kind !== 'union') continue;
+    const seen = new Set<Readonly<IrDeclaration>>();
+    const reachesAlias = (current: Readonly<IrDeclaration>): boolean => {
+      for (const dependency of dependencies.get(current) ?? []) {
+        if (dependency === declaration) return true;
+        if (seen.has(dependency)) continue;
+        seen.add(dependency);
+        if (reachesAlias(dependency)) return true;
+      }
+      return false;
+    };
+    if (reachesAlias(declaration)) recursive.add(declaration.binding.id);
+  }
+  return recursive;
+}
+
+function orderIrModuleDeclarationsCpp(
+  module: Readonly<IrModule>,
+  recursiveTypeAliasBindingIds: ReadonlySet<string>,
+): readonly Readonly<IrDeclaration>[] {
+  // Source order is the module-evaluation order for variables, classes, enums, and side-effect
+  // carriers. Move a later declaration only when an earlier declaration actually depends on it.
+  const ranked = [...module.declarations];
+  const dependencies = collectIrModuleDeclarationDependenciesCpp(module);
 
   const pending = new Set(ranked);
   const ordered: Readonly<IrDeclaration>[] = [];
@@ -7172,8 +7220,17 @@ function orderIrModuleDeclarationsCpp(module: Readonly<IrModule>): readonly Read
       ranked.find(
         (declaration) =>
           pending.has(declaration) &&
-          [...(dependencies.get(declaration) ?? [])].every((dependency) => !pending.has(dependency)),
-      ) ?? ranked.find((declaration) => pending.has(declaration));
+          [...(dependencies.get(declaration) ?? [])].every(
+            (dependency) => dependency === declaration || !pending.has(dependency),
+          ),
+      ) ??
+      ranked.find(
+        (declaration) =>
+          pending.has(declaration) &&
+          declaration.kind === 'typeAlias' &&
+          recursiveTypeAliasBindingIds.has(declaration.binding.id),
+      ) ??
+      ranked.find((declaration) => pending.has(declaration));
     if (!next) break;
     pending.delete(next);
     ordered.push(next);

@@ -3212,6 +3212,28 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(literalEmitted.contents).toContain('using Status = std::string');
   });
 
+  it('emits recursive union aliases as named carriers before their dependents', () => {
+    const result = lower(
+      'recursive-alias.ts',
+      `export interface Group { layers: readonly Layer[] }
+       export interface Tile { gid: number }
+       export type Layer = Group | Tile;
+       export type Value = string | readonly Value[] | null;`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain(
+      'struct Layer : public std::variant<flight::Ref<Group>, flight::Ref<Tile>>',
+    );
+    expect(output).toContain(
+      'struct Value : public std::optional<std::variant<flight::Array<Value>, flight::String>>',
+    );
+    expect(output.indexOf('struct Layer : public')).toBeLessThan(output.indexOf('struct Group : public'));
+    expect(output).not.toContain('using Layer =');
+    expect(output).not.toContain('using Value =');
+  });
+
   it('emits checker-resolved indexed-access aliases', () => {
     const result = lower(
       'indexed-alias.ts',
