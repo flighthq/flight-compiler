@@ -8114,6 +8114,53 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('values: (cast [] : Array<Null<T>>)');
   });
 
+  it('instantiates imported generic property evidence with the caller type parameter', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          `export interface Signal<T extends (...args: any[]) => void> { data: SignalData<T> | null }
+           export interface SignalData<T extends (...args: any[]) => void> { slots: (T | null)[] }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/signals',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/signals/src/safe.ts',
+          `import type { Signal } from '@flighthq/types/contract';
+           export function emitSignalSafe<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+             const data = signal.data;
+             if (data === null) return;
+             const slots = data.slots.slice();
+             void slots;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(output).toContain('final data:Null<SignalData<T>>');
+    expect(output).not.toContain('SignalData<Dynamic>');
+  });
+
   it('casts between string aliases recovered through one facade import identity', () => {
     const moduleResolution = {
       edges: [

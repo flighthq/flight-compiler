@@ -7771,7 +7771,9 @@ function hasTypeBindingDeclarationInModule(symbol: ts.Symbol, context: LoweringC
     symbol.declarations?.some(
       (declaration) =>
         isTypeBindingDeclaration(declaration) &&
-        declaration.getSourceFile().fileName === context.moduleSourceFile.fileName,
+        (declaration.getSourceFile().fileName === context.moduleSourceFile.fileName ||
+          (ts.isTypeParameterDeclaration(declaration) &&
+            declaration.getSourceFile().fileName === context.sourceFile.fileName)),
     ) ?? false
   );
 }
