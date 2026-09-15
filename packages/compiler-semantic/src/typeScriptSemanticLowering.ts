@@ -988,9 +988,7 @@ function lowerExpression(
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
     const receiverShape = getIrTypeConstructionTargetShape(receiver, context);
     const memberSymbol = context.checker.getSymbolAtLocation(node.name);
-    const memberDeclaration = memberSymbol
-      ? getTypeScriptPreferredSymbolDeclaration(memberSymbol, context)
-      : undefined;
+    const memberDeclaration = memberSymbol ? getTypeScriptPreferredSymbolDeclaration(memberSymbol, context) : undefined;
     // Result evidence belongs on data fields. Asking the checker to structurally materialize a
     // generic method value can revisit library mapped types (for example Promise.allSettled) even
     // though the call result already has its own instantiated evidence. Besides being redundant,
@@ -1228,8 +1226,7 @@ function isIrExpressionValueTypeEvidence(type: Readonly<IrType>): boolean {
       );
     case 'object':
       return type.properties.every(
-        (property) =>
-          property.computedKey?.kind !== 'ambient' && isIrExpressionValueTypeEvidence(property.type),
+        (property) => property.computedKey?.kind !== 'ambient' && isIrExpressionValueTypeEvidence(property.type),
       );
     case 'literal':
     case 'never':
@@ -5368,11 +5365,15 @@ function lowerBindingPattern(
   sourceType?: Readonly<IrType>,
 ): IrBindingPattern {
   if (ts.isIdentifier(node)) {
-    if (sourceType) addTypeScriptBindingTypeEvidence(node, sourceType, context);
+    const checkerType = sourceType
+      ? undefined
+      : getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0, false, node);
+    const bindingType = sourceType ?? (checkerType?.kind === 'unknown' ? undefined : checkerType);
+    if (bindingType) addTypeScriptBindingTypeEvidence(node, bindingType, context);
     return {
       binding: lowerBindingIdentity(node, context),
       kind: 'binding',
-      ...(sourceType ? { type: sourceType } : {}),
+      ...(bindingType ? { type: bindingType } : {}),
     };
   }
   if (ts.isObjectBindingPattern(node)) {

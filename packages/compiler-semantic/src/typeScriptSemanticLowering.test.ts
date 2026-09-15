@@ -10755,6 +10755,43 @@ it('lowers object destructuring binding with optional property type evidence', (
   expect(result.diagnostics).toEqual([]);
 });
 
+it('recovers checker evidence for a binding projected from a named union', () => {
+  const result = lower(
+    'destructure-named-union.ts',
+    `
+      interface Meta { image: string; size: { width: number; height: number } }
+      interface ArrayDocument { frames: number[]; meta: Meta }
+      interface RecordDocument { frames: Record<string, number>; meta: Meta }
+      type Document = ArrayDocument | RecordDocument;
+      export function image(document: Document): string {
+        const { meta } = document;
+        return meta.image;
+      }
+    `,
+  );
+  const image = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'image',
+  );
+  const statement = image?.kind === 'function' ? image.body[0] : undefined;
+  const variable = statement?.kind === 'variable' ? statement.declarations[0] : undefined;
+  const pattern = variable && 'pattern' in variable ? variable.pattern : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(pattern).toMatchObject({
+    kind: 'object',
+    properties: [
+      {
+        key: { kind: 'named', name: 'meta' },
+        pattern: {
+          binding: { name: 'meta' },
+          kind: 'binding',
+          type: { kind: 'named', reference: { binding: { name: 'Meta' }, kind: 'binding' } },
+        },
+      },
+    ],
+  });
+});
+
 it('lowers object destructuring with rest element', () => {
   const result = lower(
     'destructure-rest.ts',
