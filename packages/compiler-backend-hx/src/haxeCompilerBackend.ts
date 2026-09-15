@@ -1015,10 +1015,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           if (intArrayArguments.includes(position)) return `cast(${emitted})`;
           if (!intArguments.includes(position)) return emitted;
           const type = getIrExpressionTypeHaxe(argument, context);
-          return type?.kind === 'primitive' && type.name === 'number' &&
-            !(argument.kind === 'literal' && Number.isInteger(argument.value))
-            ? `Std.int(${emitted})`
-            : emitted;
+          if (
+            (type?.kind === 'primitive' && type.name === 'boolean') ||
+            (type?.kind === 'literal' && typeof type.value === 'boolean')
+          ) {
+            return `(${emitConditionHaxe(argument, context)} ? 1 : 0)`;
+          }
+          if (argument.kind === 'literal' && typeof argument.value === 'number' && Number.isInteger(argument.value)) {
+            return emitted;
+          }
+          // The native signature itself is authoritative when source evidence is unavailable. A
+          // known non-number selects another overload and must remain untouched; an unresolved
+          // numeric field still needs the JavaScript-number to Haxe-Int boundary conversion.
+          return !type || (type.kind === 'primitive' && type.name === 'number') ? `Std.int(${emitted})` : emitted;
         });
         return `${emitExpression(expression.callee.object, context)}.${safeHaxeName(expression.callee.name)}(${arguments_.join(', ')})`;
       }
@@ -1566,6 +1575,9 @@ function emitArrayExpressionHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'array' }>>,
   context: EmitContext,
 ): string {
+  if (expression.elements.length === 0 && expression.type) {
+    return `(cast [] : ${emitType(expression.type, context)})`;
+  }
   if (!expression.elements.some((element) => element?.kind === 'spread')) {
     // Source `number` is represented by Float. A literal containing only integral spellings would
     // otherwise be inferred by Haxe as Array<Int> before its surrounding Array<Float> annotation
@@ -3522,7 +3534,16 @@ function emitFunctionStatementsHaxe(statements: readonly IrStatement[], context:
   const canCompleteNormally = getIrStatementListCompletionSet(statements).completions.some(
     (completion) => completion.kind === 'normal',
   );
-  if (!canCompleteNormally || !returnType || returnType === 'Void' || returnType === 'Dynamic') return emitted;
+  if (!returnType || returnType === 'Void' || returnType === 'Dynamic') return emitted;
+  if (!canCompleteNormally) {
+    const finalLine = emitted.at(-1)?.trimStart();
+    if (finalLine?.startsWith('return') || finalLine?.startsWith('throw')) return emitted;
+    // Completion-record lowering can make a source-level guaranteed return conditional in target
+    // syntax. The IR proof says this point is unreachable, but Haxe's local analysis cannot recover
+    // that proof from the synthetic finally flags. Keep the target fail-loud while satisfying its
+    // non-void control-flow check.
+    return [...emitted, 'throw new haxe.Exception("unreachable control flow");'];
+  }
   return [...emitted, context.returnsAbsent ? 'return null;' : 'return cast(js.Syntax.code("undefined"));'];
 }
 
@@ -3547,6 +3568,8 @@ function getIrExpressionTypeHaxe(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   switch (expression.kind) {
+    case 'array':
+      return expression.type;
     case 'binary':
       return expression.semantics.result === 'boolean' ||
         expression.semantics.result === 'number' ||
@@ -3578,7 +3601,8 @@ function getIrExpressionTypeHaxe(
         ? { element: expression.typeArguments[0], kind: 'array', readonly: false }
         : undefined;
     case 'property':
-      return expression.member?.name === 'length' ? { kind: 'primitive', name: 'number' } : undefined;
+      return expression.type ??
+        (expression.member?.name === 'length' ? { kind: 'primitive', name: 'number' } : undefined);
     default:
       return undefined;
   }

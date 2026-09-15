@@ -215,6 +215,9 @@ function analyzeIrExpressionTraversal(
   observeIrTraversalValue(observer.expression, expression, path);
   switch (expression.kind) {
     case 'array':
+      if (expression.type) {
+        analyzeIrTypeTraversal(expression.type, observer, createIrTraversalPath(path, 'type'));
+      }
       expression.elements.forEach((element, index) => {
         if (element) {
           analyzeIrExpressionTraversal(element, observer, createIrTraversalPath(path, 'elements', index));
@@ -325,6 +328,9 @@ function analyzeIrExpressionTraversal(
       break;
     case 'property':
       analyzeIrExpressionTraversal(expression.object, observer, createIrTraversalPath(path, 'object'));
+      if (expression.type) {
+        analyzeIrTypeTraversal(expression.type, observer, createIrTraversalPath(path, 'type'));
+      }
       analyzeIrOptionalChainTraversal(expression.optionalChain, observer, createIrTraversalPath(path, 'optionalChain'));
       break;
     case 'template':

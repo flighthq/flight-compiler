@@ -107,7 +107,14 @@ export type IrTupleSpreadSegment =
     }>;
 
 export type IrExpression =
-  | Readonly<{ kind: 'array'; elements: ReadonlyArray<IrExpression | undefined> }>
+  | Readonly<{
+      elements: ReadonlyArray<IrExpression | undefined>;
+      kind: 'array';
+      // The contextual array shape is part of the construction. Empty source literals have no
+      // element from which a nominal target can recover it, and later backends no longer have a
+      // checker available to reconstruct that context.
+      type?: Extract<IrType, { kind: 'array' }> | undefined;
+    }>
   | Readonly<{
       kind: 'assignment';
       left: IrExpression;
@@ -195,6 +202,9 @@ export type IrExpression =
       // The checker proved a property introduced only by control-flow narrowing (for example an
       // `in` test or a user-defined type predicate), so nominal target storage cannot name it.
       structuralAccess?: 'narrowed' | undefined;
+      // The value selected by this access. Receiver classification answers which runtime member is
+      // involved; it cannot answer the value type of ordinary fields or nested host bindings.
+      type?: IrType | undefined;
     }>
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
   | Readonly<{ expression: IrExpression; kind: 'spread' }>

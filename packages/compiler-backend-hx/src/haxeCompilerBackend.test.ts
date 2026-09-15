@@ -3150,6 +3150,7 @@ describe('emitIrModuleHaxe statement coverage', () => {
     expect(output).toContain('throw finallyReturnSignal;');
     expect(output).toContain('if (finallyFailed) throw finallyFailure;');
     expect(output).toContain('if (finallyReturned) return cast(finallyReturnValue);');
+    expect(output).toContain('throw new haxe.Exception("unreachable control flow");');
   });
 
   it('keeps synthetic finally returns out of source catch clauses and nested functions', () => {
@@ -7885,6 +7886,26 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('gl.viewport(Std.int(x), 0, Std.int(x), 1);');
     expect(output).toContain('gl.clear(js.html.webgl.WebGL2RenderingContext.COLOR_BUFFER_BIT);');
   });
+
+  it('retains nested WebGL receiver and field types at native integer boundaries', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'nested-webgl-context.ts',
+        `type Member = 'pixelStorei' | 'UNPACK_PREMULTIPLY_ALPHA_WEBGL' | 'viewport';
+         interface Context extends Pick<WebGL2RenderingContext, Member> {}
+         interface State { gl: Context; width: number }
+         export function configure(state: State, enabled: boolean): void {
+           state.gl.viewport(0, 0, state.width, 1);
+           state.gl.pixelStorei(state.gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, enabled);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('state.gl.viewport(0, 0, Std.int(state.width), 1);');
+    expect(output).toContain(
+      'state.gl.pixelStorei(js.html.webgl.WebGL2RenderingContext.UNPACK_PREMULTIPLY_ALPHA_WEBGL, (enabled ? 1 : 0));',
+    );
+  });
 });
 
 describe('emitIrModuleHaxe interface with function property', () => {
@@ -10097,6 +10118,17 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     expect(output).toContain('[(cast 0 : Float), 1, 2].filter');
     expect(output).toContain('out.set(cast(values))');
     expect(output).toContain('new flighthq._internal._UInt32Array(cast(values))');
+  });
+
+  it('retains contextual element types for empty array assignments', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'empty-array-assignment.ts',
+        'interface State { values: number[] } export function reset(state: State): void { state.values = []; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('state.values = (cast [] : Array<Float>)');
   });
 
   it('writes non-numeric typed-array indexes through the reflective property ABI', () => {

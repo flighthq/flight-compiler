@@ -923,6 +923,7 @@ function lowerExpression(
             ),
       ),
       kind: 'array',
+      ...(contextualShape?.kind === 'array' ? { type: contextualShape } : {}),
     };
   }
   if (ts.isObjectLiteralExpression(node)) {
@@ -971,6 +972,7 @@ function lowerExpression(
   if (ts.isPropertyAccessExpression(node)) {
     const optional = node.questionDotToken !== undefined;
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
+    const type = getTypeScriptExpressionBindingTypeEvidence(node, context);
     const resolved =
       getIrResolvedMemberReceiver(receiver) ??
       getIrResolvedMemberReceiver(getIrTypeConstructionTargetShape(receiver, context)) ??
@@ -990,6 +992,7 @@ function lowerExpression(
       name: node.name.text,
       object: lowerExpression(node.expression, context),
       optional,
+      ...(type ? { type } : {}),
       ...(optional ? { optionalChain: createTypeScriptOptionalChainSemantics(node.expression, node, context) } : {}),
     };
   }

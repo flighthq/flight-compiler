@@ -449,6 +449,7 @@ function validateDeclarationOrigin(
 function visitExpression(expression: Readonly<IrExpression>, path: string, state: IrModuleValidationState): void {
   switch (expression.kind) {
     case 'array':
+      if (expression.type) visitType(expression.type, `${path}.type`, state);
       expression.elements.forEach((element, index) => {
         if (element) visitExpression(element, `${path}.elements[${String(index)}]`, state);
       });
@@ -606,6 +607,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
     case 'property':
       validateIrOptionalChainEvidence(expression.optional, expression.optionalChain, path, state);
       visitExpression(expression.object, `${path}.object`, state);
+      if (expression.type) visitType(expression.type, `${path}.type`, state);
       break;
     case 'template':
       expression.parts.forEach((part, index) => {
