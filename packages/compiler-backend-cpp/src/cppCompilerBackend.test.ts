@@ -1276,6 +1276,32 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('return match.value().element(1.0);');
   });
 
+  it('uses capture presence and JavaScript string truthiness for regexp parsing', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'regexp-exec-captures.ts',
+        `export function parse(input: string): string {
+           const expression = /(a)?(b)?/g;
+           let match: RegExpExecArray | null;
+           while ((match = expression.exec(input)) !== null) {
+             const value = match[1] !== undefined ? match[1] : (match[2] ?? '');
+             if (!value) return '';
+             let quote = '';
+             if (value === 'a') quote = value;
+             if (quote) return quote;
+           }
+           return '';
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('.capture(1.0).has_value()');
+    expect(emitted).toContain('.capture(2.0)');
+    expect(emitted).toContain('!flight::to_boolean(value)');
+    expect(emitted).toContain('if (flight::to_boolean(quote))');
+  });
+
   it('refuses unresolved auto placeholders in flight-cpp type positions', () => {
     const alias = lower('unknown-alias.ts', 'export type UnknownAlias = unknown;').module;
     const property = lower('unknown-property.ts', 'export interface UnknownProperty { value?: unknown }').module;
@@ -1935,8 +1961,28 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted).toContain('std::optional<flight::String> second');
     expect(emitted).toContain('double offset');
     expect(emitted).toContain('flight::String input');
-    expect(emitted).toContain('return (capture ? input.slice(offset) : match);');
+    expect(emitted).toContain('return (flight::to_boolean(capture) ? input.slice(offset) : match);');
     expect(emitted).not.toContain('first.value().value_or');
+  });
+
+  it('updates Records and unwraps compiler-optionalized regexp keys', () => {
+    const result = lower(
+      'regexp-record.ts',
+      `export function replace(value: string): string {
+         return value.replace(/(?:(a)|(b)|(c))/, (match, first, second, name) => {
+           const names: Record<string, string> = {};
+           const numeric = first ?? second;
+           if (numeric !== undefined) return match;
+           names[name] = 'present';
+           return names[name] ?? match;
+         });
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('names.set(name.value(), assignment_value)');
+    expect(emitted).toContain('names.get(name.value()).value_or(match)');
+    expect(emitted).not.toContain('names.get(name.value()).value() =');
   });
 
   it('emits typed-array instanceof narrowing and byte lengths through the runtime contract', () => {

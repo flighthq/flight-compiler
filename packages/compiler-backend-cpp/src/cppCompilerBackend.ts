@@ -1460,6 +1460,11 @@ function emitExpression(
           ? emitCppStructuralRowAssignment(expression.left, right, context)
           : undefined;
       if (structuralRowAssignment) return structuralRowAssignment;
+      const recordIndexedAssignment =
+        expression.operator === '=' && getCppRuntimeProfile(context.options) === 'flight-cpp'
+          ? emitCppRecordIndexedAssignmentCpp(expression.left, right, context)
+          : undefined;
+      if (recordIndexedAssignment) return recordIndexedAssignment;
       const sharedCaptureTargetName = getSharedCaptureTargetNameCpp(expression.left, context);
       if (sharedCaptureTargetName && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         return emitSharedCaptureAssignmentCpp(
@@ -1578,7 +1583,8 @@ function emitExpression(
               context.arrayElementBindingIds.has(expression.left.reference.binding.id))) ||
           (expression.left.kind === 'element' &&
             getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-            (hasIndexedRuntimeReceiverCpp(expression.left, context) ||
+            (hasCppRegExpExecArrayIndexedReceiverCpp(expression.left, context) ||
+              hasIndexedRuntimeReceiverCpp(expression.left, context) ||
               Boolean(
                 getCppRecordTypeArgumentsCpp(
                   getIrExpressionTypeEvidenceCpp(expression.left.object, context),
@@ -2039,7 +2045,7 @@ function emitExpression(
             }
           : context;
       };
-      return `(${emitExpression(expression.condition, context)} ? ${emitCppConditionalBranchCpp(expression.whenTrue, branchContext(true), expectedType)} : ${emitCppConditionalBranchCpp(expression.whenFalse, branchContext(false), expectedType)})`;
+      return `(${emitCppTruthinessExpression(expression.condition, context)} ? ${emitCppConditionalBranchCpp(expression.whenTrue, branchContext(true), expectedType)} : ${emitCppConditionalBranchCpp(expression.whenFalse, branchContext(false), expectedType)})`;
     }
     case 'element': {
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
@@ -2088,7 +2094,7 @@ function emitExpression(
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
       const record = getCppRecordTypeArgumentsCpp(objectType, context, new Set());
       if (record && getCppRuntimeProfile(context.options) === 'flight-cpp') {
-        return `${object}.get(${index}).value()`;
+        return `${object}.get(${emitCppRequiredRecordKeyCpp(expression.index, record.key, context)}).value()`;
       }
       return record || expression.semantics.receivers.every((receiver) => receiver === 'object')
         ? `${object}[${index}]`
@@ -2686,6 +2692,14 @@ function emitExpression(
       const operator = expression.postfix
         ? emitPostfixUnaryOperator(expression.operator)
         : emitPrefixUnaryOperator(expression.operator);
+      if (
+        operator === '!' &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        !isCppBooleanExpressionTypeCpp(expression.operand, context)
+      ) {
+        context.includes.add('flight/boolean.hpp');
+        return `!flight::to_boolean(${operand})`;
+      }
       if (!expression.postfix && (operator === '-' || operator === '+') && operand.startsWith(operator)) {
         return `${operator}(${operand})`;
       }
@@ -3242,7 +3256,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return [
         'do {',
         ...indentSourceLines(emitStatementBody(statement.body, context)),
-        `} while (${emitExpression(statement.condition, context)});`,
+        `} while (${emitCppTruthinessExpression(statement.condition, context)});`,
       ];
     case 'expression':
       return [`${emitExpression(statement.expression, context)};`];
@@ -3396,7 +3410,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
     }
     case 'if': {
       const lines = [
-        `if (${emitExpression(statement.condition, context)}) {`,
+        `if (${emitCppTruthinessExpression(statement.condition, context)}) {`,
         ...indentSourceLines(emitStatementBody(statement.consequent, context)),
         '}',
       ];
@@ -3467,7 +3481,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return statement.declarations.map((variable) => emitVariable(variable, context));
     case 'while':
       return [
-        `while (${emitExpression(statement.condition, context)}) {`,
+        `while (${emitCppTruthinessExpression(statement.condition, context)}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ];
@@ -4920,7 +4934,7 @@ function emitNullishComparisonCpp(
   }
   context.includes.add('optional');
   const negated = expression.operator === '!=' || expression.operator === '!==';
-  return `${negated ? '' : '!'}${emitExpression(operand, context)}.has_value()`;
+  return `${negated ? '' : '!'}${emitOptionalExpressionCpp(operand, context, operandType)}.has_value()`;
 }
 
 function emitCppInferredOptionalNullishComparison(
@@ -4942,7 +4956,7 @@ function emitCppInferredOptionalNullishComparison(
   if (strict && !union.types.some((member) => member.kind === sentinel)) return undefined;
   context.includes.add('optional');
   const present = expression.operator === '!=' || expression.operator === '!==';
-  return `${present ? '' : '!'}${emitExpression(operand, context)}.has_value()`;
+  return `${present ? '' : '!'}${emitOptionalExpressionCpp(operand, context, operandType)}.has_value()`;
 }
 
 function getCppNullishLiteralKind(expression: Readonly<IrExpression>): 'null' | 'undefined' | undefined {
@@ -8395,6 +8409,19 @@ function isCppBooleanExpressionTypeCpp(expression: Readonly<IrExpression>, conte
   return type?.kind === 'primitive' && type.name === 'boolean';
 }
 
+function emitCppTruthinessExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const emitted = emitExpression(expression, context);
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    isCppBooleanExpressionTypeCpp(expression, context) ||
+    (expression.kind === 'unary' && expression.operator === '!')
+  ) {
+    return emitted;
+  }
+  context.includes.add('flight/boolean.hpp');
+  return `flight::to_boolean(${emitted})`;
+}
+
 function isCppStructuralWriteProxyComputedKeyCpp(
   type: Readonly<IrType>,
   key: Readonly<IrExpression>,
@@ -8626,6 +8653,42 @@ function emitCppValueLogicalOrExpression(
   return `([&]() -> ${emitType(resultType, context)} { ${lines.join(' ')} return ${last}; }())`;
 }
 
+function emitCppRecordIndexedAssignmentCpp(
+  target: Readonly<IrExpression>,
+  value: string,
+  context: EmitContext,
+): string | undefined {
+  if (target.kind !== 'element') return undefined;
+  const receiverType = getIrExpressionTypeEvidenceCpp(target.object, context);
+  const record = getCppRecordTypeArgumentsCpp(receiverType, context, new Set());
+  if (!record) return undefined;
+  const receiver = emitExpression(target.object, context);
+  const key = emitCppRequiredRecordKeyCpp(target.index, record.key, context);
+  return `([&]() { auto assignment_value = ${value}; ${receiver}.set(${key}, assignment_value); return assignment_value; }())`;
+}
+
+function emitCppRequiredRecordKeyCpp(
+  expression: Readonly<IrExpression>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): string {
+  const sourceType =
+    getIrExpressionBindingTypeCpp(expression, context) ?? getIrExpressionTypeEvidenceCpp(expression, context);
+  const sourceUnion = sourceType ? getIrUnionTypeCpp(sourceType, context, new Set()) : undefined;
+  const sourcePlan = sourceUnion ? getCppUnionRepresentationPlan(sourceUnion, context) : undefined;
+  const presentSource = sourceType ? getCppNonNullableType(sourceType, context, new Set()) : undefined;
+  const target = emitType(targetType, context);
+  if (
+    sourcePlan?.kind === 'optionalSingle' &&
+    presentSource &&
+    emitType(presentSource, context) === target &&
+    !hasIrTypeAbsentMember(targetType)
+  ) {
+    return `${emitExpression(expression, context, sourceType)}.value()`;
+  }
+  return emitExpression(expression, context, targetType);
+}
+
 function emitCppConditionalBranchCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -8670,14 +8733,22 @@ function emitOptionalExpressionCpp(
   if (
     expression.kind === 'element' &&
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    hasCppRegExpExecArrayIndexedReceiverCpp(expression, context)
+  ) {
+    return `${emitExpression(expression.object, context)}.capture(${emitExpression(expression.index, context)})`;
+  }
+  if (
+    expression.kind === 'element' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
     hasIndexedRuntimeReceiverCpp(expression, context)
   ) {
     return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
   }
   if (expression.kind === 'element' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
     const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
-    if (getCppRecordTypeArgumentsCpp(objectType, context, new Set())) {
-      return `${emitExpression(expression.object, context)}.get(${emitExpression(expression.index, context)})`;
+    const record = getCppRecordTypeArgumentsCpp(objectType, context, new Set());
+    if (record) {
+      return `${emitExpression(expression.object, context)}.get(${emitCppRequiredRecordKeyCpp(expression.index, record.key, context)})`;
     }
   }
   if (
