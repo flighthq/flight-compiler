@@ -6798,6 +6798,17 @@ function getTypeScriptExpressionBindingTypeEvidence(
       getTypeScriptExpressionBindingTypeEvidence(expression.expression, context),
       context,
     );
+    if (getIrResolvedMemberReceiver(receiver) === 'typedArray' && expression.name.text === 'buffer') {
+      // Project-mode TypeScript may select the generic lib declaration (`buffer: TArrayBuffer`)
+      // instead of the compiler ambient declaration even though both describe the same member.
+      // Retain the portable ambient result so a following ArrayBuffer member (for example slice)
+      // remains resolvable without depending on which merged declaration the checker returned.
+      return {
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'ArrayBuffer' },
+        typeArguments: [],
+      };
+    }
     if (receiver?.kind === 'object') {
       const property = receiver.properties.find((candidate) => candidate.name === expression.name.text);
       if (property) return property.optional ? addIrTypeBindingPatternUndefined(property.type) : property.type;

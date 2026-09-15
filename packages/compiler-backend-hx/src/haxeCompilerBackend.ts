@@ -1046,6 +1046,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             ) {
               return `cast(${emitted})`;
             }
+            if (
+              ambient.receiver === 'typedArray' &&
+              ambient.name === 'set' &&
+              position === 0 &&
+              expression.semantics.typedArraySet?.receivers.every((receiver) =>
+                haxeIntegerTypedArrayReceivers.has(receiver),
+              )
+            ) {
+              // Haxe integer typed-array adapters expose integer input lanes, while the neutral
+              // source collection is Array<Float>. The underlying typed array performs the source
+              // language's integer coercion, so erase only this call-site mismatch.
+              return `cast(${emitted})`;
+            }
             if (intPositions.includes(position)) {
               return argument.kind === 'literal' &&
                 typeof argument.value === 'number' &&
@@ -1380,7 +1393,9 @@ function emitJavaScriptUpdateOperatorHaxe(
   context: EmitContext,
 ): string | undefined {
   const reflectiveProperty =
-    expression.operand.kind === 'property' && isReflectiveHaxePropertyReceiver(expression.operand.object, context);
+    expression.operand.kind === 'property' &&
+    (expression.operand.structuralAccess === 'narrowed' ||
+      isReflectiveHaxePropertyReceiver(expression.operand.object, context));
   if (
     (expression.operator !== '++' && expression.operator !== '--') ||
     (expression.semantics.operand.flow === 'number' && expression.semantics.result === 'number' && !reflectiveProperty)
@@ -1441,7 +1456,26 @@ function emitArrayExpressionHaxe(
   context: EmitContext,
 ): string {
   if (!expression.elements.some((element) => element?.kind === 'spread')) {
-    const literal = `[${expression.elements.map((element) => (element ? emitExpression(element, context) : 'null')).join(', ')}]`;
+    // Source `number` is represented by Float. A literal containing only integral spellings would
+    // otherwise be inferred by Haxe as Array<Int> before its surrounding Array<Float> annotation
+    // can constrain it (notably `[0, 1, 2].filter(...)`). Give the first numeric element a Float
+    // witness while leaving heterogeneous/Dynamic arrays alone.
+    const numericElements = expression.elements.filter((element): element is IrExpression => {
+      if (!element) return false;
+      const type = getIrExpressionTypeHaxe(element, context);
+      return type?.kind === 'primitive' && type.name === 'number';
+    });
+    const floatWitness =
+      numericElements.length > 0 && numericElements.length === expression.elements.filter(Boolean).length
+        ? numericElements[0]
+        : undefined;
+    const literal = `[${expression.elements
+      .map((element) => {
+        if (!element) return 'null';
+        const emitted = emitExpression(element, context);
+        return element === floatWitness ? `(cast ${emitted} : Float)` : emitted;
+      })
+      .join(', ')}]`;
     const primitiveFlows = new Set(
       expression.elements.flatMap((element) => {
         if (!element) return [];

@@ -9988,6 +9988,26 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     expect(output).toContain('return Reflect.field(value, "value");');
   });
 
+  it('updates flow-introduced numeric properties through the reflective lane', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'narrowed-structural-update.ts',
+        `interface Base { kind: string }
+         interface Detailed extends Base { depth: number }
+         function isDetailed(value: Base): value is Detailed { return 'depth' in value; }
+         export function update(value: Base): void {
+           if (!isDetailed(value)) return;
+           value.depth++;
+           --value.depth;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Reflect.field(updateReceiver, "depth")');
+    expect(output).toContain('Reflect.setField(updateReceiver, "depth", updateResult)');
+    expect(output).not.toContain('Reflect.field(value, "depth")++');
+  });
+
   it('retains numeric Math result types on inferred locals', () => {
     const output = emitIrModuleHaxe(
       lower(
@@ -10009,6 +10029,18 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
 
     expect(output).toContain('new flighthq._internal._ArrayBuffer(Std.int((length * 2)))');
     expect(output).toContain('flighthq._internal._ArrayBuffer.slice(source.buffer, 0, Std.int(length))');
+  });
+
+  it('keeps numeric array literals and integer typed-array set inputs compatible with Haxe', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'integer-typed-array-set.ts',
+        'export function copy(): Uint32Array { const values = [0, 1, 2].filter(value => value > 0); const out = new Uint32Array(values.length); out.set(values); return out; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('[(cast 0 : Float), 1, 2].filter');
+    expect(output).toContain('out.set(cast(values))');
   });
 
   it('writes non-numeric typed-array indexes through the reflective property ABI', () => {
