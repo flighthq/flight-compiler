@@ -559,6 +559,24 @@ function encodeCppPublicNameComponent(value: string): string {
 function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitContext): string[] {
   return module.declarations.flatMap((declaration): string[] => {
     if (declaration.kind !== 'class' && declaration.kind !== 'interface') return [];
+    if (
+      declaration.kind === 'interface' &&
+      getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+      context.referenceRepresentationPlanner.resolveFacetReference(
+        {
+          kind: 'named',
+          reference: { binding: declaration.binding, kind: 'binding', path: [] },
+          typeArguments: declaration.typeParameters.map((parameter) => ({
+            kind: 'named',
+            reference: { binding: parameter.binding, kind: 'binding', path: [] },
+            typeArguments: [],
+          })),
+        },
+        context.module,
+      )
+    ) {
+      return [];
+    }
     const typeParameters = emitTypeParameters(declaration.typeParameters, context, true);
     const declarationLine = `struct ${getBindingTargetName(declaration.binding, context)};`;
     return typeParameters ? [`template ${typeParameters}`, declarationLine] : [declarationLine];

@@ -11409,6 +11409,7 @@ describe('emitIrModuleCpp conditional capability facets', () => {
     expect(emitted).toContain('#include <flight/conditional_facet_ref.hpp>');
     expect(emitted).toContain('struct tray_with_image_facet final {};');
     expect(emitted).toContain('using TrayWithImage = flight::FacetRef<TrayIcon, tray_with_image_facet>;');
+    expect(emitted).not.toContain('struct TrayWithImage;');
     expect(emitted).toContain(
       'flight::RequiredMemberFacet<tray_with_image_facet, flight::MemberPath<[]<typename Value>(Value& value) -> decltype((value.tray)) { return value.tray; }, []<typename Value>(Value& value) -> decltype((value.image)) { return value.image; }>>',
     );
