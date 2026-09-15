@@ -6330,6 +6330,15 @@ function collectCppContextualBindingStorageTargetTypesCpp(
   const eligible = new Set<string>();
   analyzeIrModuleTraversal(module, {
     variable(variable) {
+      if ('binding' in variable && !variable.mutable && variable.initializer) {
+        const runtimeMemberType = getCppRuntimeMemberStorageTypeCpp(variable.initializer, context);
+        if (runtimeMemberType) {
+          candidates.set(
+            variable.binding.id,
+            new Map([[normalizeCompilerStructuralValueCanonical(runtimeMemberType), runtimeMemberType]]),
+          );
+        }
+      }
       if (
         'binding' in variable &&
         !variable.mutable &&
@@ -6384,6 +6393,26 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       targets.size === 1 ? ([[bindingId, [...targets.values()][0]!] as const] as const) : [],
     ),
   );
+}
+
+function getCppRuntimeMemberStorageTypeCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    expression.kind !== 'property' ||
+    expression.optional ||
+    expression.member?.receiver !== 'typedArray' ||
+    expression.member.name !== 'buffer'
+  ) {
+    return undefined;
+  }
+  return {
+    kind: 'named',
+    reference: { kind: 'ambient', name: 'ArrayBufferLike' },
+    typeArguments: [],
+  };
 }
 
 function isCppUnresolvedExternalStorageTypeCpp(type: Readonly<IrType>): boolean {

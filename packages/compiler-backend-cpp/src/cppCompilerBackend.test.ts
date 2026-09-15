@@ -1845,6 +1845,36 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted.contents).toContain('flight::IntlCollator(locale, options).compare(left, right)');
   });
 
+  it('retains the runtime buffer carrier for an inferred typed-array buffer binding', () => {
+    const result = lower(
+      'typed-array-buffer-binding.ts',
+      `export function byteLength(bytes: Uint8Array): number {
+         const buffer = bytes.buffer;
+         return new DataView(buffer).byteLength;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['flight/array_buffer.hpp'],
+            nullability: 'non-null',
+            ownership: 'shared',
+            sourceName: 'ArrayBufferLike',
+            space: 'type',
+            targetName: 'flight::ArrayBufferLike',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      runtimeProfile: 'flight-cpp',
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('flight::ArrayBufferLike buffer = bytes.buffer;');
+    expect(emitted.contents).not.toContain('flight::ArrayBuffer buffer = bytes.buffer;');
+  });
+
   it('emits optional literal regexp captures and concrete offset and input parameters', () => {
     const result = lower(
       'regexp-replacement.ts',
