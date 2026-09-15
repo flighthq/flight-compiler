@@ -3323,8 +3323,16 @@ function emitFacadeTypeHaxe(type: Readonly<IrType>, module: Readonly<IrModule>, 
       for (const imported of module.imports) {
         const importedBinding = imported.bindings.find((candidate) => candidate.binding.id === binding.id);
         if (!importedBinding) continue;
-        const modulePath = haxeImportModule(imported.specifier, moduleContext, importedBinding.imported);
-        const importedName = getImportedTargetNameHaxe(imported, importedBinding, moduleContext);
+        const forwardedTarget = getLocalImportedExportTargetHaxe(
+          imported.specifier,
+          importedBinding.imported,
+          importedBinding.binding.space,
+          moduleContext,
+        );
+        const modulePath =
+          forwardedTarget?.modulePath ?? haxeImportModule(imported.specifier, moduleContext, importedBinding.imported);
+        const importedName =
+          forwardedTarget?.importedName ?? getImportedTargetNameHaxe(imported, importedBinding, moduleContext);
         return `${modulePath}.${importedName}`;
       }
       return binding.space === 'type' || binding.kind === 'class' || binding.kind === 'enum'

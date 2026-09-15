@@ -718,6 +718,7 @@ describe('createHaxeCompilerBackend', () => {
       'prewarm.ts',
       "import type { Callbacks } from './update'; export function prewarm(callbacks?: Callbacks): void {}",
     ).module;
+    const contract = lowerPackage('@flighthq/particles', 'contract.ts', "export * from './prewarm';").module;
     const moduleResolution = {
       edges: [
         {
@@ -730,17 +731,26 @@ describe('createHaxeCompilerBackend', () => {
           specifier: './update',
           target: { packageName: bridge.packageName, source: bridge.source },
         },
+        {
+          importer: { name: contract.name, packageName: contract.packageName, source: contract.source },
+          specifier: './prewarm',
+          target: { packageName: consumer.packageName, source: consumer.source },
+        },
       ],
       schema: 'flight-compiler-module-resolution/1' as const,
     };
-    const output = createHaxeCompilerBackend().createEmissionSession!({
+    const session = createHaxeCompilerBackend().createEmissionSession!({
       moduleResolution,
-      modules: [consumer, bridge, callbacks],
+      modules: [contract, consumer, bridge, callbacks],
       options: {},
-    }).emitModule(consumer)[0]!.contents;
+    });
+    const output = session.emitModule(consumer)[0]!.contents;
+    const facade = session.emitModule(contract)[0]!.contents;
 
     expect(output).toContain('import flighthq.types.Callbacks.Callbacks;');
     expect(output).not.toContain('flighthq.particles.Update.Callbacks');
+    expect(facade).toContain('?callbacks:flighthq.types.Callbacks.Callbacks');
+    expect(facade).not.toContain('flighthq.particles.Update.Callbacks');
   });
 
   it('recovers a unique cross-package declaration home outside the frozen import graph', () => {
