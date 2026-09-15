@@ -1443,40 +1443,8 @@ function getWebGlNativeOwnerForExpressionHaxe(
     const owner = getCompilerRuntimeExternalSymbolTargetHaxe(reference.name, 'type', context.options.runtimeModule);
     return owner?.startsWith('js.html.webgl.') ? owner : undefined;
   }
-  const local = context.module.declarations.find(
-    (candidate): candidate is IrInterfaceDeclaration =>
-      candidate.kind === 'interface' && candidate.binding.id === reference.binding.id,
-  );
-  if (local) {
-    const owner = context.ambientUtilityHeritageTargets.get(local.binding.id);
-    return owner?.startsWith('js.html.webgl.') ? owner : undefined;
-  }
-  const imported = context.module.imports
-    .flatMap((entry) => entry.bindings.map((binding) => ({ binding, entry })))
-    .find(({ binding }) => binding.binding.id === reference.binding.id);
-  const sourceModule = imported
-    ? getHaxeResolvedImportModule(imported.entry.specifier, context, imported.binding.imported)
-    : undefined;
-  const direct = sourceModule?.declarations.find(
-    (candidate): candidate is IrInterfaceDeclaration =>
-      candidate.kind === 'interface' && candidate.binding.name === imported?.binding.imported,
-  );
-  if (direct && sourceModule) {
-    const owner = getCompilerAmbientUtilityHeritageTargetHaxe(direct, sourceModule);
-    return owner?.startsWith('js.html.webgl.') ? owner : undefined;
-  }
-  const facade = sourceModule ? context.getModuleFacade?.(sourceModule) : undefined;
-  const slot = facade?.modules
-    .find((module) => sourceModule && isHaxeCompilerModuleIdentityEqual(module.module, sourceModule))
-    ?.slots.find(
-      (candidate) =>
-        candidate.exportName === imported?.binding.imported &&
-        candidate.lane === 'type' &&
-        candidate.route.kind === 'binding',
-    );
-  if (!slot) return undefined;
-  const target = getModuleFacadeBindingTargetHaxe(slot, context);
-  if (target.declaration.kind !== 'interface') return undefined;
+  const target = getIrNamedDeclarationTargetHaxe(type, context);
+  if (!target || target.declaration.kind !== 'interface') return undefined;
   const owner = getCompilerAmbientUtilityHeritageTargetHaxe(target.declaration, target.module);
   return owner?.startsWith('js.html.webgl.') ? owner : undefined;
 }
