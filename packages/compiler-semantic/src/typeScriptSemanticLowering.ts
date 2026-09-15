@@ -1864,7 +1864,7 @@ function getTypeScriptKnownAmbientCallResultTypeEvidence(
     receiver?.kind === 'named' &&
     receiver.reference.kind === 'ambient' &&
     receiver.reference.name === 'Document' &&
-    (node.expression.name.text === 'querySelector' || node.expression.name.text === 'createElement') &&
+    node.expression.name.text === 'querySelector' &&
     first &&
     ts.isStringLiteralLike(first) &&
     first.text === 'canvas'
@@ -1876,6 +1876,17 @@ function getTypeScriptKnownAmbientCallResultTypeEvidence(
         { kind: 'null' },
       ],
     };
+  }
+  if (
+    receiver?.kind === 'named' &&
+    receiver.reference.kind === 'ambient' &&
+    receiver.reference.name === 'Document' &&
+    node.expression.name.text === 'createElement' &&
+    first &&
+    ts.isStringLiteralLike(first) &&
+    first.text === 'canvas'
+  ) {
+    return { kind: 'named', reference: { kind: 'ambient', name: 'HTMLCanvasElement' }, typeArguments: [] };
   }
   return undefined;
 }

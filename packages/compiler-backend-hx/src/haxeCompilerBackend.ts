@@ -2070,14 +2070,60 @@ function emitCallArgumentsHaxe(
   const defaulted = new Map(
     expression.semantics.defaultParameters?.provided.map((provided) => [provided.position, provided]) ?? [],
   );
+  const parameterTypes = getIrCallParameterTypesHaxe(expression, context);
   return expression.arguments
     .map((argument, index) => {
       if (defaulted.get(index)?.value === 'undefined') {
         emissionError(context, 'explicit undefined default arguments require Haxe omission lowering');
       }
-      return emitHaxeCallArgument(argument, context);
+      const emitted = emitHaxeCallArgument(argument, context);
+      return emitExpressionAsExpectedTypeHaxe(argument, parameterTypes?.[index], context, emitted);
     })
     .join(', ');
+}
+
+function getIrCallParameterTypesHaxe(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): readonly Readonly<IrType>[] | undefined {
+  if (expression.callee.kind === 'function') {
+    return expression.callee.parameters.map((parameter) => parameter.type);
+  }
+  if (expression.callee.kind === 'property') {
+    const objectType = getIrExpressionTypeHaxe(expression.callee.object, context);
+    const memberType = objectType
+      ? getIrObjectPropertyTypeHaxe(objectType, expression.callee.name, context)
+      : undefined;
+    const concrete = memberType ? getIrSingleConcreteTypeHaxe(memberType) : undefined;
+    return concrete?.kind === 'function' ? concrete.parameters.map((parameter) => parameter.type) : undefined;
+  }
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
+  const binding = expression.callee.reference.binding;
+  const local = context.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.id === binding.id,
+  );
+  if (local?.kind === 'function') return local.parameters.map((parameter) => parameter.type);
+  const imported = context.module.imports
+    .flatMap((entry) => entry.bindings.map((candidate) => ({ candidate, entry })))
+    .find(({ candidate }) => candidate.binding.id === binding.id);
+  if (!imported || imported.candidate.imported === '*' || imported.candidate.imported === 'default') return undefined;
+  const sourceModule = getHaxeResolvedImportModule(imported.entry.specifier, context, imported.candidate.imported);
+  if (!sourceModule) return undefined;
+  const direct = sourceModule.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === imported.candidate.imported,
+  );
+  if (direct?.kind === 'function') return direct.parameters.map((parameter) => parameter.type);
+  const facade = context.getModuleFacade?.(sourceModule);
+  const slot = facade?.modules
+    .find((module) => isHaxeCompilerModuleIdentityEqual(module.module, sourceModule))
+    ?.slots.find(
+      (candidate) => candidate.exportName === imported.candidate.imported && candidate.lane === 'value',
+    );
+  if (!slot) return undefined;
+  const target = getModuleFacadeBindingTargetHaxe(slot, context);
+  return target.declaration.kind === 'function'
+    ? target.declaration.parameters.map((parameter) => parameter.type)
+    : undefined;
 }
 
 function emitHaxeCallArgument(expression: Readonly<IrExpression>, context: EmitContext): string {
@@ -2120,6 +2166,7 @@ function emitExpressionAsExpectedTypeHaxe(
   if (
     (isIrTypeFunctionShapedHaxe(concreteExpected, context) &&
       isIrExpressionFunctionValuedHaxe(expression, context)) ||
+    isIrStructuralRecordTypeHaxe(concreteExpected, context) ||
     (expectedStringNominal &&
       (isIrExpressionStringBackedHaxe(expression, context) || expression.kind === 'object' || expression.kind === 'call')) ||
     (concreteExpected.kind === 'array' &&
@@ -2130,6 +2177,25 @@ function emitExpressionAsExpectedTypeHaxe(
     return `(cast ${normalizeHaxeExpressionGrouping(emitted)} : ${emitType(concreteExpected, context)})`;
   }
   return emitted;
+}
+
+function isIrStructuralRecordTypeHaxe(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  seen: ReadonlySet<string> = new Set(),
+): boolean {
+  const concrete = getIrSingleConcreteTypeHaxe(type);
+  if (concrete.kind === 'object') return true;
+  if (concrete.kind !== 'named' || concrete.reference.kind !== 'binding') return false;
+  const target = getIrNamedDeclarationTargetHaxe(concrete, context);
+  if (!target || seen.has(target.binding.id)) return false;
+  if (target.declaration.kind === 'interface') return true;
+  if (target.declaration.kind !== 'typeAlias') return false;
+  const substituted = resolveIrTypeStructuralSubstitution(
+    target.declaration.type,
+    createIrTypeParameterSubstitutionPlan(target.declaration.typeParameters, concrete.typeArguments),
+  );
+  return isIrStructuralRecordTypeHaxe(substituted, context, new Set(seen).add(target.binding.id));
 }
 
 function getIrSingleConcreteTypeHaxe(type: Readonly<IrType>): Readonly<IrType> {
@@ -2251,6 +2317,20 @@ function getIrObjectPropertyTypeHaxe(
 ): Readonly<IrType> | undefined {
   const concrete = getIrSingleConcreteTypeHaxe(type);
   if (concrete.kind === 'object') return concrete.properties.find((property) => property.name === name)?.type;
+  if (
+    concrete.kind === 'named' &&
+    concrete.reference.kind === 'ambient' &&
+    concrete.reference.name === 'WebGLContextAttributes' &&
+    name === 'powerPreference'
+  ) {
+    return {
+      kind: 'union',
+      types: [
+        { kind: 'named', reference: { kind: 'ambient', name: 'WebGLPowerPreference' }, typeArguments: [] },
+        { kind: 'undefined' },
+      ],
+    };
+  }
   if (
     concrete.kind === 'named' &&
     concrete.reference.kind === 'ambient' &&
@@ -3965,11 +4045,13 @@ function getIrExpressionTypeHaxe(
         ? { kind: 'named', reference: expression.callee.reference, typeArguments: [] }
         : undefined;
     case 'property':
-      if (expression.type) return expression.type;
       if (expression.member?.name === 'length') return { kind: 'primitive', name: 'number' };
       {
         const objectType = getIrExpressionTypeHaxe(expression.object, context);
-        return objectType ? getIrObjectPropertyTypeHaxe(objectType, expression.name, context) : undefined;
+        const declaredType = objectType
+          ? getIrObjectPropertyTypeHaxe(objectType, expression.name, context)
+          : undefined;
+        return declaredType ?? expression.type;
       }
     default:
       return undefined;

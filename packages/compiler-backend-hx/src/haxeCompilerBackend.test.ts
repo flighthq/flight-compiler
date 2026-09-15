@@ -8256,6 +8256,45 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('flighthq.types.Types.Color');
   });
 
+  it('casts arguments to imported function structural parameter types', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './factory',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/factory.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/factory.ts',
+          'export interface Options { value: number } export function create(options: Options): Options { return options; }',
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/core',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/core/src/use.ts',
+          "import { create } from './factory'; interface Input { value: number; extra: string } export function run(input: Input): void { create(input); }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(output).toContain('create((cast input : flighthq.types.Factory.Options))');
+  });
+
   it('materializes non-array iterables before array spread concatenation', () => {
     const output = emitIrModuleHaxe(
       lower(
