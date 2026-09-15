@@ -1246,7 +1246,7 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output.indexOf('var value:Float;')).toBeLessThan(output.indexOf('final read'));
+    expect(output.indexOf('var value:Float = js.Syntax.code("undefined");')).toBeLessThan(output.indexOf('final read'));
     expect(output).toContain('value = 1;');
   });
 
@@ -1261,7 +1261,7 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output.indexOf('var cursor:Cursor;')).toBeLessThan(output.indexOf('cursor ='));
+    expect(output.indexOf('var cursor:Cursor = js.Syntax.code("undefined");')).toBeLessThan(output.indexOf('cursor ='));
     expect(output).not.toContain('final cursor:Cursor =');
   });
 
@@ -1280,7 +1280,9 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output.indexOf('var walk:(Array<Float>)->Float;')).toBeLessThan(output.indexOf('walk = function'));
+    expect(output.indexOf('var walk:(Array<Float>)->Float = js.Syntax.code("undefined");')).toBeLessThan(
+      output.indexOf('walk = function'),
+    );
     expect(output).not.toContain('final walk');
   });
 
@@ -1642,7 +1644,7 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(rest.module).contents).toContain(
       'final rest:Array<Float> = (cast arrayPatternValue.slice(1) : Array<Float>);',
     );
-    expect(emitIrModuleHaxe(nestedDefault.module).contents).toContain('(arrayPatternValue[0] ?? [1])');
+    expect(emitIrModuleHaxe(nestedDefault.module).contents).toContain('(arrayPatternValue[0] ?? [(cast 1 : Float)])');
     expect(emitIrModuleHaxe(fixedRest.module).contents).toContain(
       'final rest:Array<Dynamic> = arrayPatternValue.slice(1);',
     );
@@ -1712,17 +1714,19 @@ describe('emitIrModuleHaxe', () => {
     const patternOutput = emitIrModuleHaxe(pattern.module).contents;
     const iterationOutput = emitIrModuleHaxe(iteration.module).contents;
 
-    expect(namedOutput).toContain('var value:Float;\n  {\n    (value = 1);\n  }\n  return value;');
+    expect(namedOutput).toContain(
+      'var value:Float = js.Syntax.code("undefined");\n  {\n    (value = 1);\n  }\n  return value;',
+    );
     expect(patternOutput).toContain(
-      'var first:Float;\n  var second:String;\n  final arrayPatternValue:Array<Dynamic> = values;\n  (first = arrayPatternValue[0]);\n  (second = arrayPatternValue[1]);',
+      'var first:Float = js.Syntax.code("undefined");\n  var second:String = js.Syntax.code("undefined");\n  final arrayPatternValue:Array<Dynamic> = values;\n  (first = arrayPatternValue[0]);\n  (second = arrayPatternValue[1]);',
     );
     expect(iterationOutput).toContain(
-      'var value:Float;\n  for (variableHoistingIterationValue in values) {\n    (value = variableHoistingIterationValue);\n    (value += 1);',
+      'var value:Float = js.Syntax.code("undefined");\n  for (variableHoistingIterationValue in values) {\n    (value = variableHoistingIterationValue);\n    (value += 1);',
     );
     // A written shape has a known key set, so iteration is over that set rather than over whatever
     // reflection reports at runtime.
     expect(iterationOutput).toContain(
-      'var key:String;\n  for (variableHoistingIterationValue in ["value"]) {\n    (key = variableHoistingIterationValue);\n    key;',
+      'var key:String = js.Syntax.code("undefined");\n  for (variableHoistingIterationValue in ["value"]) {\n    (key = variableHoistingIterationValue);\n    key;',
     );
   });
 
@@ -1736,7 +1740,9 @@ describe('emitIrModuleHaxe', () => {
     expect(emitIrModuleHaxe(result.module).contents).toContain(
       'final present:Array<Dynamic> = ([1, "flight"] : Array<Dynamic>);',
     );
-    expect(emitIrModuleHaxe(result.module).contents).toContain('final value:Array<Dynamic> = [2, null];');
+    expect(emitIrModuleHaxe(result.module).contents).toContain(
+      'final value:Array<Dynamic> = [(cast 2 : Float), null];',
+    );
   });
 
   it('emits statically ordered pure-object for-in keys', () => {
@@ -1816,6 +1822,15 @@ describe('emitIrModuleHaxe', () => {
     (variable as { initialValue?: 'undefined' }).initialValue = 'undefined';
 
     expect(emitIrModuleHaxe(result.module).contents).toContain('var value:Float = js.Syntax.code("undefined");');
+  });
+
+  it('initializes an initializer-less unknown local to its JavaScript value', () => {
+    const result = lower(
+      'unknown-entry-undefined.ts',
+      'export function read(): unknown { let value: unknown; return value; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('var value:Dynamic = js.Syntax.code("undefined");');
   });
 
   it('emits fixed tuple spreads with collision-free sequential evaluation carriers', () => {
@@ -2225,11 +2240,32 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('var value:Float;');
+    expect(output).toContain('var value:Float = js.Syntax.code("undefined");');
     expect(output).toContain('if (flag)');
     expect(output).toContain('_Promise.resolve(first).then(');
     expect(output).toContain('_Promise.resolve(second).then(');
     expect(output).not.toContain('await ');
+  });
+
+  it('initializes async outcome carriers assigned by success and failure continuations', () => {
+    const result = lower(
+      'await-outcome-carriers.ts',
+      `interface Outcome { reason: string; }
+       function failed(): Outcome { return { reason: 'failed' }; }
+       export async function settle(firstTask: Promise<Outcome>, secondTask: Promise<Outcome>): Promise<string> {
+         let first: Outcome;
+         let second: Outcome;
+         try { first = await firstTask; } catch { first = failed(); }
+         try { second = await secondTask; } catch { second = failed(); }
+         return first.reason + second.reason;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('var first:Outcome = js.Syntax.code("undefined");');
+    expect(output).toContain('var second:Outcome = js.Syntax.code("undefined");');
+    expect(output).toContain('_Promise.resolve(firstTask).then(');
+    expect(output).toContain('_Promise.resolve(secondTask).then(');
   });
 
   it('emits a conditional await initializer inside a guarded task region', () => {
@@ -3135,7 +3171,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('(cast (arrayPatternValue[0] ?? [1]) : Array<Float>)');
+    expect(output).toContain('(cast (arrayPatternValue[0] ?? [(cast 1 : Float)]) : Array<Float>)');
   });
 
   it('emits annotation cast when target is typedef interface', () => {

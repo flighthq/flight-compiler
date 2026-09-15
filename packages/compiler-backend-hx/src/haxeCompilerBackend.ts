@@ -4550,7 +4550,11 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
   const bodyContext: EmitContext = forward.length === 0 ? context : { ...context, forwardDeclaredBindingIds: ids };
   const prefix = forward.map(({ variable }) => {
     const type = variable.type ? emitType(variable.type, bodyContext) : 'Dynamic';
-    return `var ${getBindingTargetNameHaxe(variable.binding, bodyContext)}:${type};`;
+    // These declarations precede a closure that captures the binding; source evaluation assigns
+    // them before the closure can be invoked, but Haxe checks the closure at its declaration and
+    // reports WVarInit. JavaScript bindings occupy `undefined` until that source assignment, so an
+    // explicit target initialization preserves the state while carrying the source ordering proof.
+    return `var ${getBindingTargetNameHaxe(variable.binding, bodyContext)}:${type} = js.Syntax.code("undefined");`;
   });
   return [...prefix, ...statements.flatMap((statement) => emitStatement(statement, bodyContext)).filter(Boolean)];
 }
@@ -5604,10 +5608,11 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     if (!variable.initializer) return '';
     return `${target} = ${normalizeHaxeExpressionGrouping(emitExpression(variable.initializer, context))};`;
   }
-  if (
-    variable.initialValue === 'undefined' ||
-    (variable.initializer === undefined && variable.type && hasIrTypeAbsentMemberHaxe(variable.type, context.module))
-  ) {
+  // A JavaScript `let`/`var` declaration with no initializer receives `undefined` when its
+  // declaration executes. Haxe instead leaves the local definitely uninitialized and rejects a
+  // later read even when source control flow correlates it with an assignment (for example an
+  // error value guarded by a boolean flag, or two awaited outcomes joined after their catches).
+  if (variable.initializer === undefined) {
     const type = variable.type ? `:${emitType(variable.type, context)}` : ':Dynamic';
     return `var ${getBindingTargetNameHaxe(variable.binding, context)}${type} = js.Syntax.code("undefined");`;
   }
