@@ -2523,7 +2523,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('new js.html.ImageData(data, Std.int(width), Std.int(height))');
-    expect(output).toContain('new flighthq._internal._Proxy(target, cast({ set:'));
+    expect(output).toContain('new flighthq._internal._Proxy(target, cast({ set:');
   });
 
   it('uses native typed-array constructor identities for instanceof', () => {
