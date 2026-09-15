@@ -44,10 +44,12 @@ interface StructuralModuleRecord {
 }
 
 interface StructuralModuleSet {
+  readonly exportResolutions: Map<string, StructuralExportResolution>;
   readonly moduleByIdentity: ReadonlyMap<string, StructuralModuleRecord>;
   readonly modules: readonly StructuralModuleRecord[];
   readonly replacement?: StructuralModuleRecord | undefined;
   readonly resolution: Readonly<CompilerModuleResolutionPlan>;
+  readonly specifierModules: Map<string, readonly StructuralModuleRecord[]>;
 }
 
 type StructuralBindingTypeReference = Readonly<
@@ -96,7 +98,12 @@ export function createIrModuleStructuralObjectCompatibilityAnalyzer(
     if (!moduleSet.moduleByIdentity.has(replacement.identity)) {
       throw new TypeError('Structural compatibility subject must belong to the explicit module set');
     }
-    return analyzeIrModuleStructuralObjectCompatibilityWithModuleSet(module, { ...moduleSet, replacement });
+    return analyzeIrModuleStructuralObjectCompatibilityWithModuleSet(module, {
+      ...moduleSet,
+      exportResolutions: new Map(),
+      replacement,
+      specifierModules: new Map(),
+    });
   };
 }
 
@@ -418,15 +425,20 @@ function getStructuralExportResolution(
   moduleSet: Readonly<StructuralModuleSet>,
   ancestors: ReadonlySet<string>,
 ): StructuralExportResolution {
+  const cacheKey = ancestors.size === 0 ? `${from.identity}\0${specifier}\0${exportName}` : undefined;
+  const cached = cacheKey ? moduleSet.exportResolutions.get(cacheKey) : undefined;
+  if (cached) return cached;
   const targets = getStructuralSpecifierModules(from, specifier, moduleSet);
   const resolutions = targets.map((target) =>
     getStructuralModuleExportResolution(target, exportName, moduleSet, ancestors),
   );
-  return {
+  const result = {
     cycle: resolutions.some((resolution) => resolution.cycle),
     locations: deduplicateStructuralDeclarationLocations(resolutions.flatMap((resolution) => resolution.locations)),
     unresolved: targets.length === 0 || resolutions.some((resolution) => resolution.unresolved),
   };
+  if (cacheKey) moduleSet.exportResolutions.set(cacheKey, result);
+  return result;
 }
 
 function getStructuralModuleExportResolution(
@@ -480,21 +492,28 @@ function getStructuralSpecifierModules(
   specifier: string,
   moduleSet: Readonly<StructuralModuleSet>,
 ): readonly StructuralModuleRecord[] {
+  const cacheKey = `${from.identity}\0${specifier}`;
+  const cached = moduleSet.specifierModules.get(cacheKey);
+  if (cached) return cached;
   const candidates = getStructuralSpecifierSourceCandidates(from.source, specifier);
   const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
   const exact = matching.filter(
     (edge) => edge.importer && getStructuralModuleIdentityKey(edge.importer) === from.identity,
   );
-  const resolutionTargets = (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
-    (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
+  const resolutionTargets = new Set(
+    (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
+      (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
+    ),
   );
-  return moduleSet.modules
+  const result = moduleSet.modules
     .map((candidate) => (moduleSet.replacement?.identity === candidate.identity ? moduleSet.replacement : candidate))
     .filter(
       (candidate) =>
         (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
-        resolutionTargets.includes(`${candidate.module.packageName}\0${candidate.source}`),
+        resolutionTargets.has(`${candidate.module.packageName}\0${candidate.source}`),
     );
+  moduleSet.specifierModules.set(cacheKey, result);
+  return result;
 }
 
 function getStructuralSpecifierSourceCandidates(source: string, specifier: string): ReadonlySet<string> {
@@ -542,9 +561,11 @@ function createStructuralModuleSet(
     throw new TypeError('Structural module set contains a duplicate module identity');
   }
   return {
+    exportResolutions: new Map(),
     moduleByIdentity: new Map(records.map((record) => [record.identity, record])),
     modules: records,
     resolution,
+    specifierModules: new Map(),
   };
 }
 

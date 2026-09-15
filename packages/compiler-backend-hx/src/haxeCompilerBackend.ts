@@ -5554,17 +5554,23 @@ function formatRuntimeExternalSymbolIdentity(identity: Readonly<{ sourceName: st
 }
 
 function pascalCase(value: string): string {
+  const cached = haxePascalCaseCache.get(value);
+  if (cached !== undefined) return cached;
   const match = /^(?<prefix>_*)(?<name>.*)$/u.exec(value);
   const prefix = match?.groups?.prefix ?? '';
   const name = match?.groups?.name ?? value;
-  return `${prefix}${name
+  const result = `${prefix}${name
     .split(/[-_]/u)
     .filter(Boolean)
     .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
     .join('')}`;
+  haxePascalCaseCache.set(value, result);
+  return result;
 }
 
 function safeHaxeName(name: string): string {
+  const cached = haxeSafeNameCache.get(name);
+  if (cached !== undefined) return cached;
   const stripped = name.startsWith('#') ? name.slice(1) : name;
   const escaped = [...stripped]
     .map((character, index) =>
@@ -5574,12 +5580,17 @@ function safeHaxeName(name: string): string {
     )
     .join('');
   const identifier = escaped || '_';
-  return haxeKeywords.has(identifier) ? `${identifier}_` : identifier;
+  const result = haxeKeywords.has(identifier) ? `${identifier}_` : identifier;
+  haxeSafeNameCache.set(name, result);
+  return result;
 }
 
 function safeHaxeTypeName(name: string): string {
   return safeHaxeName(pascalCase(name));
 }
+
+const haxePascalCaseCache = new Map<string, string>();
+const haxeSafeNameCache = new Map<string, string>();
 
 const haxeKeywords = new Set([
   'abstract',

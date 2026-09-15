@@ -2766,7 +2766,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
 
     expect(output).toContain('return HaxeReflect.field(record, "value");');
     expect(output).toContain('function readGeneric<Value:');
-    expect(output.match(/return Reflect\.field\(record, "value"\);/gu)).toHaveLength(3);
+    expect(output.match(/return HaxeReflect\.field\(record, "value"\);/gu)).toHaveLength(3);
   });
 
   it('reflects fields read through structural casts and numeric updates on generic records', () => {
