@@ -6508,11 +6508,8 @@ function getIrCallArgumentExpectedTypeCpp(
   if (semanticType) return semanticType;
   if (expression.callee.kind === 'function') return expression.callee.parameters[index]?.type;
   if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
-  const bindingId = expression.callee.reference.binding.id;
-  const declaration = context.module.declarations.find(
-    (candidate) => candidate.kind === 'function' && candidate.binding.id === bindingId,
-  );
-  return declaration?.kind === 'function' ? declaration.parameters[index]?.type : undefined;
+  return getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context)?.parameters[index]
+    ?.type;
 }
 
 function getCppCollectionCallArgumentExpectedTypeCpp(

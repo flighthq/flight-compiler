@@ -187,6 +187,37 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flighthq_library::DEFAULTCOUNT');
   });
 
+  it('recovers imported function parameter context for local structural storage', () => {
+    const geometry = lowerPackage(
+      '@flighthq/geometry',
+      'point.ts',
+      'export interface Point { x: number; y: number } export function write(out: Point): void { out.x = 1; }',
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/render',
+      'render.ts',
+      "import { write } from '@flighthq/geometry'; const point = { x: 0, y: 0 }; export function render(): number { write(point); return point.x; }",
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: consumer,
+          specifier: '@flighthq/geometry',
+          target: { packageName: geometry.packageName, source: geometry.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, geometry],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('flight::Ref<flighthq_geometry::Point> point = flight::make_ref');
+    expect(emitted).toContain('flighthq_geometry::write(point)');
+  });
+
   it('recovers imported optional callback evidence for null checks and calls', () => {
     const guards = lowerPackage(
       '@flighthq/geometry',
