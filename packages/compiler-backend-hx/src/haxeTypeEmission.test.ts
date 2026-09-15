@@ -85,7 +85,7 @@ describe('emitIrTypeHaxe', () => {
     ).toBe('String');
   });
 
-  it.each(['Exclude', 'Extract', 'NoInfer', 'NonNullable', 'Partial', 'Readonly', 'Required'])(
+  it.each(['Exclude', 'Extract', 'NoInfer', 'NonNullable', 'Readonly', 'Required'])(
     'erases the representation-only utility %s to its subject type',
     (name) => {
       expect(
@@ -111,6 +111,26 @@ describe('emitIrTypeHaxe', () => {
       ).toBe('String');
     },
   );
+
+  it('widens Partial to Dynamic because its subject fields are not all required', () => {
+    expect(
+      emitIrTypeHaxe(
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Partial' },
+          typeArguments: [
+            {
+              kind: 'object',
+              properties: [
+                { name: 'value', optional: false, readonly: false, type: { kind: 'primitive', name: 'number' } },
+              ],
+            },
+          ],
+        },
+        context,
+      ),
+    ).toBe('Dynamic');
+  });
 
   it.each(['Omit', 'Pick'])('widens structural projection utility %s to Dynamic', (name) => {
     expect(

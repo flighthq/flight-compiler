@@ -1004,6 +1004,24 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (expression.arguments.some((argument) => argument.kind === 'spread')) {
         return emitSpreadCallHaxe(expression, context);
       }
+      if (
+        expression.callee.kind === 'property' &&
+        getWebGlNativeOwnerForExpressionHaxe(expression.callee.object, context)
+      ) {
+        const intArguments = haxeWebGlIntArgumentPositions.get(expression.callee.name) ?? [];
+        const intArrayArguments = haxeWebGlIntArrayArgumentPositions.get(expression.callee.name) ?? [];
+        const arguments_ = expression.arguments.map((argument, position) => {
+          const emitted = emitHaxeCallArgument(argument, context);
+          if (intArrayArguments.includes(position)) return `cast(${emitted})`;
+          if (!intArguments.includes(position)) return emitted;
+          const type = getIrExpressionTypeHaxe(argument, context);
+          return type?.kind === 'primitive' && type.name === 'number' &&
+            !(argument.kind === 'literal' && Number.isInteger(argument.value))
+            ? `Std.int(${emitted})`
+            : emitted;
+        });
+        return `${emitExpression(expression.callee.object, context)}.${safeHaxeName(expression.callee.name)}(${arguments_.join(', ')})`;
+      }
       const ambient = expression.callee.kind === 'property' ? expression.callee.member : undefined;
       if (ambient && expression.callee.kind === 'property') {
         const binding = getCompilerHaxeAmbientMemberBinding(ambient);
@@ -1358,7 +1376,14 @@ function getWebGlStaticConstantOwnerHaxe(
   context: EmitContext,
 ): string | undefined {
   if (!/^[A-Z][A-Z0-9_]*$/u.test(expression.name) || expression.optional) return undefined;
-  const type = getIrExpressionTypeHaxe(expression.object, context);
+  return getWebGlNativeOwnerForExpressionHaxe(expression.object, context);
+}
+
+function getWebGlNativeOwnerForExpressionHaxe(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  const type = getIrExpressionTypeHaxe(expression, context);
   if (!type || type.kind !== 'named') return undefined;
   const reference = type.reference;
   if (reference.kind === 'ambient') {
@@ -1379,14 +1404,100 @@ function getWebGlStaticConstantOwnerHaxe(
   const sourceModule = imported
     ? getHaxeResolvedImportModule(imported.entry.specifier, context, imported.binding.imported)
     : undefined;
-  const declaration = sourceModule?.declarations.find(
+  const direct = sourceModule?.declarations.find(
     (candidate): candidate is IrInterfaceDeclaration =>
       candidate.kind === 'interface' && candidate.binding.name === imported?.binding.imported,
   );
-  if (!declaration || !sourceModule) return undefined;
-  const owner = getCompilerAmbientUtilityHeritageTargetHaxe(declaration, sourceModule);
+  if (direct && sourceModule) {
+    const owner = getCompilerAmbientUtilityHeritageTargetHaxe(direct, sourceModule);
+    return owner?.startsWith('js.html.webgl.') ? owner : undefined;
+  }
+  const facade = sourceModule ? context.getModuleFacade?.(sourceModule) : undefined;
+  const slot = facade?.modules
+    .find((module) => sourceModule && isHaxeCompilerModuleIdentityEqual(module.module, sourceModule))
+    ?.slots.find(
+      (candidate) =>
+        candidate.exportName === imported?.binding.imported &&
+        candidate.lane === 'type' &&
+        candidate.route.kind === 'binding',
+    );
+  if (!slot) return undefined;
+  const target = getModuleFacadeBindingTargetHaxe(slot, context);
+  if (target.declaration.kind !== 'interface') return undefined;
+  const owner = getCompilerAmbientUtilityHeritageTargetHaxe(target.declaration, target.module);
   return owner?.startsWith('js.html.webgl.') ? owner : undefined;
 }
+
+// Haxe's WebGL extern follows the platform's integer ABI, while the portable source surface uses
+// its single `number` type. Only the integer positions are narrowed; uniforms and other genuine
+// floating-point lanes remain Float. Overloaded methods list every position that is integer in any
+// numeric overload, and type evidence keeps buffer/source arguments out of the conversion.
+const haxeWebGlIntArgumentPositions = new Map<string, readonly number[]>([
+  ['activeTexture', [0]],
+  ['bindAttribLocation', [1]],
+  ['bindBuffer', [0]],
+  ['bindFramebuffer', [0]],
+  ['bindRenderbuffer', [0]],
+  ['bindTexture', [0]],
+  ['blendEquation', [0]],
+  ['blendEquationSeparate', [0, 1]],
+  ['blendFunc', [0, 1]],
+  ['blendFuncSeparate', [0, 1, 2, 3]],
+  ['blitFramebuffer', [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]],
+  ['bufferData', [0, 1, 2, 3, 4]],
+  ['bufferSubData', [0, 1, 3, 4]],
+  ['checkFramebufferStatus', [0]],
+  ['clear', [0]],
+  ['clearBufferfi', [0, 1, 3]],
+  ['clearBufferfv', [0, 1, 3]],
+  ['compressedTexImage2D', [0, 1, 2, 3, 4, 5, 7, 8]],
+  ['compressedTexSubImage3D', [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11]],
+  ['createShader', [0]],
+  ['cullFace', [0]],
+  ['depthFunc', [0]],
+  ['disable', [0]],
+  ['disableVertexAttribArray', [0]],
+  ['drawArrays', [0, 1, 2]],
+  ['drawArraysInstanced', [0, 1, 2, 3]],
+  ['drawElements', [0, 1, 2, 3]],
+  ['drawElementsInstanced', [0, 1, 2, 3, 4]],
+  ['enable', [0]],
+  ['enableVertexAttribArray', [0]],
+  ['framebufferRenderbuffer', [0, 1, 2]],
+  ['framebufferTexture2D', [0, 1, 2, 4]],
+  ['frontFace', [0]],
+  ['generateMipmap', [0]],
+  ['getActiveUniform', [1]],
+  ['getParameter', [0]],
+  ['getProgramParameter', [1]],
+  ['getShaderParameter', [1]],
+  ['isEnabled', [0]],
+  ['pixelStorei', [0, 1]],
+  ['readBuffer', [0]],
+  ['readPixels', [0, 1, 2, 3, 4, 5, 7]],
+  ['renderbufferStorage', [0, 1, 2, 3]],
+  ['renderbufferStorageMultisample', [0, 1, 2, 3, 4]],
+  ['scissor', [0, 1, 2, 3]],
+  ['stencilFunc', [0, 1, 2]],
+  ['stencilFuncSeparate', [0, 1, 2, 3]],
+  ['stencilMask', [0]],
+  ['stencilMaskSeparate', [0, 1]],
+  ['stencilOp', [0, 1, 2]],
+  ['stencilOpSeparate', [0, 1, 2, 3]],
+  ['texImage2D', [0, 1, 2, 3, 4, 5, 6, 7, 9]],
+  ['texImage3D', [0, 1, 2, 3, 4, 5, 6, 7, 8, 10]],
+  ['texParameterf', [0, 1]],
+  ['texParameteri', [0, 1, 2]],
+  ['texStorage3D', [0, 1, 2, 3, 4, 5]],
+  ['texSubImage2D', [0, 1, 2, 3, 4, 5, 6, 7, 9]],
+  ['uniform1i', [1]],
+  ['vertexAttrib4f', [0]],
+  ['vertexAttribDivisor', [0, 1]],
+  ['vertexAttribPointer', [0, 1, 2, 4, 5]],
+  ['viewport', [0, 1, 2, 3]],
+]);
+
+const haxeWebGlIntArrayArgumentPositions = new Map<string, readonly number[]>([['drawBuffers', [0]]]);
 
 function emitJavaScriptUpdateOperatorHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'unary' }>>,
@@ -3579,6 +3690,15 @@ function emitNewArgumentsHaxe(
   return expression.arguments.map((argument, index) => {
     const emitted = emitExpression(argument, context);
     const type = getIrExpressionTypeHaxe(argument, context);
+    if (
+      index === 0 &&
+      expression.callee.kind === 'identifier' &&
+      expression.callee.reference.kind === 'ambient' &&
+      haxeIntegerTypedArrayConstructorNames.has(expression.callee.reference.name) &&
+      type?.kind === 'array'
+    ) {
+      return `cast(${emitted})`;
+    }
     return integerLengthConstructor && index === 0 && type?.kind === 'primitive' && type.name === 'number'
       ? `Std.int(${emitted})`
       : emitted;
@@ -3590,6 +3710,16 @@ const haxeIntegerLengthConstructorNames = new Set([
   'ArrayBuffer',
   'Float32Array',
   'Float64Array',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Uint8Array',
+  'Uint8ClampedArray',
+  'Uint16Array',
+  'Uint32Array',
+]);
+
+const haxeIntegerTypedArrayConstructorNames = new Set([
   'Int8Array',
   'Int16Array',
   'Int32Array',

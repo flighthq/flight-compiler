@@ -37,6 +37,7 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       return typeof type.value === 'boolean' ? 'Bool' : typeof type.value === 'number' ? 'Float' : 'String';
     case 'named': {
       const sourceName = type.reference.kind === 'ambient' ? type.reference.name : undefined;
+      if (sourceName === 'Partial') return 'Dynamic';
       if (sourceName !== undefined && haxeErasedUtilityTypeNames.has(sourceName) && type.typeArguments[0]) {
         return emitIrTypeHaxe(type.typeArguments[0], context);
       }
@@ -125,7 +126,6 @@ const haxeErasedUtilityTypeNames = new Set([
   'Extract',
   'NoInfer',
   'NonNullable',
-  'Partial',
   'Readonly',
   'Required',
   'ThisType',

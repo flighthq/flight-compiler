@@ -3016,6 +3016,7 @@ describe('emitIrModuleHaxe type coverage', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('config:Config');
+    expect(output).toContain('function partial(config:Dynamic)');
     expect(output).toContain('config:haxe.DynamicAccess<Float>');
     expect(output).toContain('config:flighthq._internal._Map<String, Float>');
   });
@@ -7830,6 +7831,60 @@ describe('emitIrModuleHaxe interface extends chain', () => {
 
     expect(output).toContain('gl.clear(js.html.webgl.WebGL2RenderingContext.COLOR_BUFFER_BIT);');
   });
+
+  it('retains widened WebGL identity through a contract barrel and narrows native integer arguments', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './context',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/context.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/context.ts',
+          "type Member = 'clear' | 'COLOR_BUFFER_BIT' | 'viewport'; export interface Context extends Pick<WebGL2RenderingContext, Member> {}",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './context';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/render',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/render/src/use.ts',
+          "import type { Context } from '@flighthq/types/contract'; export function clear(gl: Context, x: number): void { gl.viewport(x, 0, x, 1); gl.clear(gl.COLOR_BUFFER_BIT); }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(output).toContain('gl.viewport(Std.int(x), 0, Std.int(x), 1);');
+    expect(output).toContain('gl.clear(js.html.webgl.WebGL2RenderingContext.COLOR_BUFFER_BIT);');
+  });
 });
 
 describe('emitIrModuleHaxe interface with function property', () => {
@@ -10035,12 +10090,13 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     const output = emitIrModuleHaxe(
       lower(
         'integer-typed-array-set.ts',
-        'export function copy(): Uint32Array { const values = [0, 1, 2].filter(value => value > 0); const out = new Uint32Array(values.length); out.set(values); return out; }',
+        'export function copy(): Uint32Array { const values = [0, 1, 2].filter(value => value > 0); const out = new Uint32Array(values.length); out.set(values); return new Uint32Array(values); }',
       ).module,
     ).contents;
 
     expect(output).toContain('[(cast 0 : Float), 1, 2].filter');
     expect(output).toContain('out.set(cast(values))');
+    expect(output).toContain('new flighthq._internal._UInt32Array(cast(values))');
   });
 
   it('writes non-numeric typed-array indexes through the reflective property ABI', () => {
