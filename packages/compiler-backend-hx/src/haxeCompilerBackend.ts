@@ -3917,6 +3917,10 @@ function getForeignNamedTypeLocalTargetHaxe(
       return targetName;
     }
   }
+  if (isHaxeCompilerModuleIdentityEqual(target.module, context.module)) {
+    context.foreignNamedTypeLocalTargetNames.set(cacheKey, null);
+    return undefined;
+  }
   const qualified = `${getHaxeModulePath(target.module, context.options)}.${getSourceBindingTargetNameHaxe(target.module, target.binding, context)}`;
   context.foreignNamedTypeLocalTargetNames.set(cacheKey, qualified);
   return qualified;
