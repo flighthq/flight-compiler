@@ -1329,7 +1329,9 @@ function collectCppExplicitCollectionConstructionBindingTypesCpp(
       const constructorName = getIrAmbientConstructorNameCpp(variable.initializer.callee);
       const expectedArity =
         constructorName === 'Map' || constructorName === 'WeakMap' ? 2 : constructorName === 'Set' ? 1 : 0;
-      if (expectedArity === 0 || variable.initializer.typeArguments.length !== expectedArity) return;
+      if (!constructorName || expectedArity === 0 || variable.initializer.typeArguments.length !== expectedArity) {
+        return;
+      }
       types.set(variable.binding.id, {
         kind: 'named',
         reference: { kind: 'ambient', name: constructorName },
