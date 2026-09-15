@@ -8983,6 +8983,22 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('return total(rectangles)');
   });
 
+  it('keeps erased index-signature parameters generic over indexable carriers', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'indexed-output.ts',
+        `export function write(out: { [index: number]: number }, offset: number): void {
+           out[offset] = 1;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('inline void write(auto out, double offset)');
+    expect(output).toContain('(out[offset] = 1.0)');
+    expect(output).not.toContain('flight::Ref<anonymous_');
+  });
+
   it('projects structurally assignable nominal arguments through their shared row owner', () => {
     const output = emitIrModuleCpp(
       lower(

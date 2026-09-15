@@ -172,6 +172,7 @@ interface EmitContext {
   externalBindingStorageTargetTypes: ReadonlyMap<string, string>;
   importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
   importedBindingTypes: Map<string, Readonly<IrType> | null>;
+  indexedObjectParameterBindingIds: ReadonlySet<string>;
   finallyReturnVar?: string | undefined;
   facetTagNames: Map<string, string>;
   includes: Set<string>;
@@ -325,6 +326,7 @@ function emitIrModuleCppWithContext(
     facetTagNames: new Map(),
     importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
     importedBindingTypes: new Map(),
+    indexedObjectParameterBindingIds: collectCppIndexedObjectParameterBindingIds(module, bindingTypes),
     includes: new Set<string>(),
     module,
     namespaceScope: true,
@@ -695,6 +697,7 @@ function emitCppImportedFunctionForwardDeclarations(context: EmitContext): strin
 
 function emitCppForwardParameterCpp(parameter: Readonly<IrParameter>, context: EmitContext): string {
   const name = getBindingTargetName(parameter.binding, context);
+  if (context.indexedObjectParameterBindingIds.has(parameter.binding.id)) return `auto ${name}`;
   if (parameter.dependentCallablePack) {
     const pack = getCppDependentCallablePack(parameter, context);
     return `${pack.typeName}&&... ${name}`;
@@ -7659,6 +7662,38 @@ function collectIrModuleBindingInitializersCpp(
   return result;
 }
 
+// TypeScript index signatures are intentionally erased from closed object shapes in neutral IR.
+// An otherwise-empty object parameter that is actually indexed therefore cannot be materialized as
+// an empty nominal C++ struct. Keep the structural call boundary as an abbreviated function
+// template: arrays, typed arrays, and host-provided indexable carriers then retain their own storage
+// and identity while the generated body uses the proven indexed operations directly.
+function collectCppIndexedObjectParameterBindingIds(
+  module: Readonly<IrModule>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+): ReadonlySet<string> {
+  const eligible = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      const type = bindingTypes.get(parameter.binding.id) ?? parameter.type;
+      if (type.kind === 'object' && type.properties.length === 0) eligible.add(parameter.binding.id);
+    },
+  });
+  const indexed = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (
+        expression.kind === 'element' &&
+        expression.object.kind === 'identifier' &&
+        expression.object.reference.kind === 'binding' &&
+        eligible.has(expression.object.reference.binding.id)
+      ) {
+        indexed.add(expression.object.reference.binding.id);
+      }
+    },
+  });
+  return indexed;
+}
+
 function collectIrModuleArrayElementBindingIdsCpp(module: Readonly<IrModule>): ReadonlySet<string> {
   const candidates = new Set<string>();
   const nullishUsed = new Set<string>();
@@ -9481,6 +9516,7 @@ function statementDefinitelyCompletesCpp(statement: Readonly<IrStatement>): bool
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
   const name = getBindingTargetName(parameter.binding, context);
+  if (context.indexedObjectParameterBindingIds.has(parameter.binding.id)) return `auto ${name}`;
   if (parameter.dependentCallablePack) {
     if (!context.activeDependentCallablePackIds.has(parameter.binding.id)) {
       emissionError(context, 'dependent callable parameter packs require a generic function or closure boundary');
