@@ -18,7 +18,7 @@ describe('createCompilerHaxeRuntimeAbiManifest', () => {
       tasks: { contract: 'flight-runtime-task-capability-abi/1' },
     });
     expect(manifest.ambientMembers.bindings).toContainEqual({
-      binding: { kind: 'runtimeCall', targetName: '_TypedArray.copyWithin' },
+      binding: { intArguments: [0, 1, 2], kind: 'runtimeCall', targetName: '_TypedArray.copyWithin' },
       receiver: 'typedArray',
       sourceMember: 'copyWithin',
     });
