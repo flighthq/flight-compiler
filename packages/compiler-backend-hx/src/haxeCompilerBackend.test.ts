@@ -2561,6 +2561,40 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
   });
 
+  it('adapts host members missing or narrower in the Haxe standard externs', () => {
+    const result = lower(
+      'host-member-boundaries.ts',
+      `export async function bytes(blob: Blob): Promise<ArrayBuffer> { return blob.arrayBuffer(); }
+       export function gamut(image: ImageData): string { return image.colorSpace; }
+       export function channel(buffer: AudioBuffer, data: Float32Array, index: number): Float32Array {
+         buffer.copyToChannel(data, index);
+         return buffer.getChannelData(index);
+       }
+       export function audio(length: number, channels: number, rate: number): AudioBuffer {
+         return new AudioBuffer({ length, numberOfChannels: channels, sampleRate: rate });
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('js.Syntax.code("{0}.arrayBuffer()", blob)');
+    expect(output).toContain('js.Syntax.code("{0}.colorSpace", image)');
+    expect(output).toContain('buffer.copyToChannel(data, Std.int(index))');
+    expect(output).toContain('buffer.getChannelData(Std.int(index))');
+    expect(output).toContain('new js.html.audio.AudioBuffer(cast({');
+  });
+
+  it('adapts unary and variadic String.fromCharCode calls', () => {
+    const result = lower(
+      'string-from-char-code.ts',
+      `export function one(code: number): string { return String.fromCharCode(code); }
+       export function two(first: number, second: number): string { return String.fromCharCode(first, second); }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('String.fromCharCode(Std.int(code))');
+    expect(output).toContain('js.Syntax.code("String.fromCharCode({0}, {1})", first, second)');
+  });
+
   it('emits empty template literal as an empty string', () => {
     const result = lower('empty-template.ts', 'export function empty(): string { return ``; }');
 

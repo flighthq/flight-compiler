@@ -923,6 +923,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.callee.kind === 'property' &&
         expression.callee.object.kind === 'identifier' &&
         expression.callee.object.reference.kind === 'ambient' &&
+        expression.callee.object.reference.name === 'String' &&
+        expression.callee.name === 'fromCharCode'
+      ) {
+        const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context));
+        if (arguments_.length === 1) return `String.fromCharCode(Std.int(${arguments_[0]}))`;
+        const source = `String.fromCharCode(${arguments_.map((_, index) => `{${String(index)}}`).join(', ')})`;
+        return `js.Syntax.code(${emitHaxeStringLiteral(source)}${arguments_.length > 0 ? `, ${arguments_.join(', ')}` : ''})`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'ambient' &&
         expression.callee.object.reference.name === 'Reflect' &&
         expression.callee.name === 'callMethod' &&
         expression.arguments.length === 3
@@ -1024,6 +1036,28 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           emissionError(context, 'AbortSignal.throwIfAborted takes no arguments');
         }
         return `js.Syntax.code("{0}.throwIfAborted()", ${emitExpression(expression.callee.object, context)})`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.name === 'arrayBuffer' &&
+        expression.arguments.length === 0 &&
+        getIrExpressionAmbientTypeNameHaxe(expression.callee.object, context) === 'Blob'
+      ) {
+        return `js.Syntax.code("{0}.arrayBuffer()", ${emitExpression(expression.callee.object, context)})`;
+      }
+      if (expression.callee.kind === 'property') {
+        const owner = getIrExpressionAmbientTypeNameHaxe(expression.callee.object, context);
+        const intArguments = owner
+          ? haxeNativeMethodIntArgumentPositions.get(`${owner}.${expression.callee.name}`)
+          : undefined;
+        if (intArguments) {
+          const receiver = emitExpression(expression.callee.object, context);
+          const arguments_ = expression.arguments.map((argument, index) => {
+            const emitted = emitHaxeCallArgument(argument, context);
+            return intArguments.includes(index) ? `Std.int(${emitted})` : emitted;
+          });
+          return `${receiver}.${safeHaxeName(expression.callee.name)}(${arguments_.join(', ')})`;
+        }
       }
       if (
         expression.callee.kind === 'property' &&
@@ -1311,6 +1345,12 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'property': {
       const webGlConstantOwner = getWebGlStaticConstantOwnerHaxe(expression, context);
       if (webGlConstantOwner) return `${webGlConstantOwner}.${safeHaxeName(expression.name)}`;
+      if (
+        expression.name === 'colorSpace' &&
+        getIrExpressionAmbientTypeNameHaxe(expression.object, context) === 'ImageData'
+      ) {
+        return `js.Syntax.code("{0}.colorSpace", ${emitExpression(expression.object, context)})`;
+      }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
         const sourceName = expression.object.reference.name;
         const target = getCompilerRuntimeExternalMemberTargetHaxe(
@@ -1427,6 +1467,23 @@ function getWebGlStaticConstantOwnerHaxe(
 ): string | undefined {
   if (!/^[A-Z][A-Z0-9_]*$/u.test(expression.name) || expression.optional) return undefined;
   return getWebGlNativeOwnerForExpressionHaxe(expression.object, context);
+}
+
+function getIrExpressionAmbientTypeNameHaxe(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  let type = getIrExpressionTypeHaxe(expression, context);
+  if (type) type = getIrSingleConcreteTypeHaxe(type);
+  while (
+    type?.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    ['Partial', 'Readonly', 'Required'].includes(type.reference.name) &&
+    type.typeArguments[0]
+  ) {
+    type = getIrSingleConcreteTypeHaxe(type.typeArguments[0]);
+  }
+  return type?.kind === 'named' && type.reference.kind === 'ambient' ? type.reference.name : undefined;
 }
 
 function getWebGlNativeOwnerForExpressionHaxe(
@@ -4294,7 +4351,15 @@ function emitNewArgumentsHaxe(
 
 const haxeNativeConstructorIntArgumentPositions = new Map<string, readonly number[]>([['ImageData', [1, 2]]]);
 
-const haxeNativeConstructorCastArgumentPositions = new Map<string, readonly number[]>([['Proxy', [1]]]);
+const haxeNativeConstructorCastArgumentPositions = new Map<string, readonly number[]>([
+  ['AudioBuffer', [0]],
+  ['Proxy', [1]],
+]);
+
+const haxeNativeMethodIntArgumentPositions = new Map<string, readonly number[]>([
+  ['AudioBuffer.copyToChannel', [1]],
+  ['AudioBuffer.getChannelData', [0]],
+]);
 
 const haxeIntegerLengthConstructorNames = new Set([
   'Array',
