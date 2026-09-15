@@ -1876,17 +1876,29 @@ function emitExpression(
         expression.type,
         context.module,
       );
-      if (structuralTarget && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+      const structuralSourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+      const structuralSource = structuralSourceType
+        ? context.referenceRepresentationPlanner.resolveStructuralRow(structuralSourceType, context.module)
+        : undefined;
+      const structuralProjectionTarget = structuralSource
+        ? getCppStructuralProjectionRowCpp(expression.type, context)
+        : undefined;
+      if (
+        (structuralTarget || structuralProjectionTarget) &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp'
+      ) {
         if (expression.expression.kind === 'object') {
           return emitExpression(expression.expression, context, expression.type);
         }
-        return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
+        const target = structuralProjectionTarget
+          ? emitCppStructuralRowReferenceTypeCpp(structuralProjectionTarget, context)
+          : emitType(expression.type, context);
+        return `flight::structural_ref_cast<${target}>(${emitExpression(expression.expression, context)})`;
       }
-      const structuralSourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
       if (
-        structuralSourceType &&
+        structuralSource &&
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        context.referenceRepresentationPlanner.resolveStructuralRow(structuralSourceType, context.module)
+        structuralSourceType
       ) {
         const targetPlan = context.referenceRepresentationPlanner.plan(expression.type, context.module);
         if (
@@ -8730,7 +8742,44 @@ function getCppStructuralRowExpressionPlanCpp(
 ): Readonly<CompilerCppStructuralRowPlan> | undefined {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
   const type = getIrExpressionTypeEvidenceCpp(expression, context);
-  return type ? context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module) : undefined;
+  const row = type ? context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module) : undefined;
+  if (row || expression.kind !== 'cast') return row;
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+  const sourceRow = sourceType
+    ? context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module)
+    : undefined;
+  return sourceRow ? getCppStructuralProjectionRowCpp(expression.type, context) : undefined;
+}
+
+function getCppStructuralProjectionRowCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CompilerCppStructuralRowPlan> | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'ambient' ||
+    type.typeArguments.length !== 1 ||
+    !type.typeArguments[0]
+  ) {
+    return undefined;
+  }
+  if (type.reference.name === 'NoInfer' || type.reference.name === 'Readonly') {
+    const row = getCppStructuralProjectionRowCpp(type.typeArguments[0], context);
+    if (!row) return undefined;
+    return type.reference.name === 'Readonly' ? { kind: 'readonly', row } : row;
+  }
+  if (type.reference.name !== 'Partial') return undefined;
+  const object = type.typeArguments[0];
+  const plan = context.referenceRepresentationPlanner.plan(object, context.module);
+  if (
+    !context.referenceRepresentationPlanner.resolveObjectShape(object, context.module) ||
+    plan.kind !== 'represented' ||
+    plan.identityDomain !== 'object' ||
+    plan.valueRepresentation !== 'flightReference'
+  ) {
+    return undefined;
+  }
+  return { kind: 'partial', row: { kind: 'rowOf', type: object } };
 }
 
 function hasFlightFacetReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {

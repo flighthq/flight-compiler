@@ -6432,6 +6432,21 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('value = std::optional<flight::Array<double>>{static_cast');
   });
 
+  it('projects a structural source through a concrete Partial assertion', () => {
+    const result = lower(
+      'partial-structural-cast.ts',
+      `interface Adjustment { kind: string; colorMatrix: readonly number[]; }
+       export function matrix(operation: Readonly<{ kind: string }>): readonly number[] | undefined {
+         return (operation as Readonly<Partial<Adjustment>>).colorMatrix;
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<Adjustment>>>>>>(operation)');
+    expect(output).toContain('flight::row_get<flight::RowKey<"colorMatrix">>');
+    expect(output).not.toContain('flight::structural_ref_cast<flight::Ref<color_matrix_');
+  });
+
   it('returns a narrowed Partial property through its reexported function alias union', () => {
     const transformSource = ts.createSourceFile(
       '/flight/packages/types/src/ColorTransformFunction.ts',
