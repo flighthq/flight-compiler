@@ -8292,7 +8292,7 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
     const output = session.emitModule(modules[1]!)[0]!.contents;
 
-    expect(output).toContain('create((cast input : flighthq.types.Factory.Options))');
+    expect(output).toContain('create((cast input : Options))');
   });
 
   it('materializes non-array iterables before array spread concatenation', () => {
