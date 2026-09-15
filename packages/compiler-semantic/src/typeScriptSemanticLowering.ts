@@ -6079,7 +6079,13 @@ function getTypeScriptReferencePresence(
     (member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void)) !== 0,
   );
   const recordedType = context.bindingTypes.get(symbol);
-  if (!checkerDeclaredAbsent && (!recordedType || !hasIrTypeAbsentMemberSemantic(recordedType))) return {};
+  if (!checkerDeclaredAbsent) {
+    return recordedType &&
+      hasIrTypeAbsentMemberSemantic(recordedType) &&
+      hasTypeScriptSyntacticReferencePresence(node, symbol, recordedType, context)
+      ? { presence: 'narrowedPresent' }
+      : {};
+  }
   const flow = context.checker.getTypeAtLocation(node);
   const members = flow.isUnion() ? flow.types : [flow];
   const absent = members.some(
@@ -6515,6 +6521,8 @@ function getTypeScriptContextualParameterType(
   node: ts.ParameterDeclaration,
   context: LoweringContext,
 ): Readonly<IrType> | undefined {
+  const regexpReplacementType = getTypeScriptRegExpReplacementParameterType(node);
+  if (regexpReplacementType) return regexpReplacementType;
   const checkerType = getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0);
   if (checkerType && checkerType.kind !== 'unknown') return checkerType;
   const callback = node.parent;
@@ -6537,6 +6545,76 @@ function getTypeScriptContextualParameterType(
     if (parameterIndex === 1) return { kind: 'primitive', name: 'number' };
   }
   return checkerType;
+}
+
+function getTypeScriptRegExpReplacementParameterType(
+  node: ts.ParameterDeclaration,
+): Readonly<IrType> | undefined {
+  const callback = node.parent;
+  const call = callback.parent;
+  if (
+    (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) ||
+    !ts.isCallExpression(call) ||
+    call.arguments[1] !== callback ||
+    !ts.isPropertyAccessExpression(call.expression) ||
+    call.expression.name.text !== 'replace' ||
+    !call.arguments[0] ||
+    !ts.isRegularExpressionLiteral(call.arguments[0])
+  ) {
+    return undefined;
+  }
+  const parameterIndex = callback.parameters.indexOf(node);
+  if (parameterIndex === 0) return { kind: 'primitive', name: 'string' };
+  const captureCount = getTypeScriptRegularExpressionCaptureCount(call.arguments[0]);
+  if (parameterIndex <= captureCount) {
+    return {
+      kind: 'union',
+      types: [{ kind: 'primitive', name: 'string' }, { kind: 'undefined' }],
+    };
+  }
+  if (parameterIndex === captureCount + 1) return { kind: 'primitive', name: 'number' };
+  if (parameterIndex === captureCount + 2) return { kind: 'primitive', name: 'string' };
+  return undefined;
+}
+
+function getTypeScriptRegularExpressionCaptureCount(node: ts.RegularExpressionLiteral): number {
+  const lastSlash = node.text.lastIndexOf('/');
+  const pattern = node.text.slice(1, lastSlash);
+  let captureCount = 0;
+  let characterClass = false;
+  let escaped = false;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character === '[') {
+      characterClass = true;
+      continue;
+    }
+    if (character === ']' && characterClass) {
+      characterClass = false;
+      continue;
+    }
+    if (characterClass || character !== '(') continue;
+    if (pattern[index + 1] !== '?') {
+      captureCount += 1;
+      continue;
+    }
+    if (
+      pattern[index + 2] === '<' &&
+      pattern[index + 3] !== '=' &&
+      pattern[index + 3] !== '!'
+    ) {
+      captureCount += 1;
+    }
+  }
+  return captureCount;
 }
 
 // A type the checker resolved to something this module declares. The declaration's own name is what

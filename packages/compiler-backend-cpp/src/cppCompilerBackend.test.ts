@@ -1845,6 +1845,26 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted.contents).toContain('flight::IntlCollator(locale, options).compare(left, right)');
   });
 
+  it('emits optional literal regexp captures and concrete offset and input parameters', () => {
+    const result = lower(
+      'regexp-replacement.ts',
+      `export function replace(value: string): string {
+         return value.replace(/(a)?(b)?/, (match, first, second, offset, input) => {
+           const capture = first ?? second;
+           return capture ? input.slice(offset) : match;
+         });
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('std::optional<flight::String> first');
+    expect(emitted).toContain('std::optional<flight::String> second');
+    expect(emitted).toContain('double offset');
+    expect(emitted).toContain('flight::String input');
+    expect(emitted).toContain('return (capture ? input.slice(offset) : match);');
+    expect(emitted).not.toContain('first.value().value_or');
+  });
+
   it('emits typed-array instanceof narrowing and byte lengths through the runtime contract', () => {
     const result = lower(
       'binary-view.ts',

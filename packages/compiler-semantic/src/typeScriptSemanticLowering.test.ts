@@ -7368,6 +7368,34 @@ it('lowers regexp literal expressions with pattern and flags', () => {
   expect(varStmt.declarations[0]?.initializer).toMatchObject({ flags: 'gi', kind: 'regexp', pattern: 'hello' });
 });
 
+it('types literal regexp replacement captures, offset, and input', () => {
+  const result = lower(
+    'regexp-replacement.ts',
+    `export function replace(value: string): string {
+       return value.replace(/(a)?(?:b)(?<named>c)?/, (match, first, named, offset, input) => input);
+     }`,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations[0];
+  const statement = fn?.kind === 'function' ? fn.body[0] : undefined;
+  const call = statement?.kind === 'return' && statement.expression?.kind === 'call' ? statement.expression : undefined;
+  const callback = call?.arguments[1];
+  if (callback?.kind !== 'function') throw new Error('Expected replacement callback');
+  expect(callback.parameters.map((parameter) => parameter.type)).toEqual([
+    { kind: 'primitive', name: 'string' },
+    { kind: 'union', types: [{ kind: 'primitive', name: 'string' }, { kind: 'undefined' }] },
+    { kind: 'union', types: [{ kind: 'primitive', name: 'string' }, { kind: 'undefined' }] },
+    { kind: 'primitive', name: 'number' },
+    { kind: 'primitive', name: 'string' },
+  ]);
+  const declaration = callback.body[0];
+  const initializer = declaration?.kind === 'variable' ? declaration.declarations[0]?.initializer : undefined;
+  if (initializer?.kind === 'binary') {
+    expect(initializer.left).not.toHaveProperty('presence');
+    expect(initializer.right).not.toHaveProperty('presence');
+  }
+});
+
 it('handles type-only import specifier within non-type import clause', () => {
   const result = lower(
     'mixed-type-import.ts',
