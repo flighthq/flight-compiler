@@ -8075,6 +8075,98 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).not.toContain('Item_2');
   });
 
+  it('uses imported generic field types for contextual empty arrays', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './data',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/data.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/data.ts',
+          'export interface Data<T> { values: (T | null)[] }',
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/core',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/core/src/use.ts',
+          "import type { Data } from './data'; export function init<T>(): Data<T> { const data: Data<T> = { values: [] }; return data; }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(output).toContain('values: (cast [] : Array<Null<T>>)');
+  });
+
+  it('casts between string aliases recovered through one facade import identity', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './shape',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/shape.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/shape.ts',
+          "export type SourceColor = 'srgb' | 'linear'; export type TargetColor = 'srgb' | 'linear'; export interface Source { color: SourceColor } export interface Target { color: TargetColor }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './shape';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/render',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/render/src/use.ts',
+          "import type { Source, Target } from '@flighthq/types/contract'; export function copy(source: Source, target: Target): void { target.color = source.color; }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(output).toContain('(target.color = (cast source.color : TargetColor))');
+  });
+
   it('erases async settlement values at the assimilating resolve ABI boundary', () => {
     const output = emitIrModuleHaxe(
       lower(
@@ -8093,12 +8185,14 @@ describe('emitIrModuleHaxe interface extends chain', () => {
         `type Member = 'ARRAY_BUFFER' | 'bufferData' | 'pixelStorei' | 'STATIC_DRAW' | 'UNPACK_PREMULTIPLY_ALPHA_WEBGL' | 'viewport';
          interface Context extends Pick<WebGL2RenderingContext, Member> {}
          interface State { gl: Context; width: number }
-         export function configure(state: State, enabled: boolean, data: Float32Array): void {
+         export function configure(state: State, enabled: boolean, flag: boolean, data: Float32Array): void {
            state.gl.viewport(0, 0, state.width, 1);
            state.gl.pixelStorei(state.gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, enabled);
            state.gl.bufferData(state.gl.ARRAY_BUFFER, data, state.gl.STATIC_DRAW);
+           state.gl.bufferData(state.gl.ARRAY_BUFFER, flag ? choose(data) : data, state.gl.STATIC_DRAW);
            state.gl.bufferData(state.gl.ARRAY_BUFFER, new Uint16Array([0, 1]), state.gl.STATIC_DRAW);
-         }`,
+         }
+         function choose(data: Float32Array): Float32Array { return data; }`,
       ).module,
     ).contents;
 
@@ -8108,6 +8202,9 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     );
     expect(output).toContain(
       'state.gl.bufferData(js.html.webgl.WebGL2RenderingContext.ARRAY_BUFFER, data, js.html.webgl.WebGL2RenderingContext.STATIC_DRAW);',
+    );
+    expect(output).toContain(
+      'state.gl.bufferData(js.html.webgl.WebGL2RenderingContext.ARRAY_BUFFER, flag ? choose(data) : data, js.html.webgl.WebGL2RenderingContext.STATIC_DRAW);',
     );
     expect(output).toContain('new flighthq._internal._UInt16Array([(cast 0 : Float), 1])');
     expect(output).not.toContain('Std.int(data)');

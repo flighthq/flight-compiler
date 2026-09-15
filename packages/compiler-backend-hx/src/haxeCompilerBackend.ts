@@ -1017,6 +1017,13 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           if (intArrayArguments.includes(position)) return `cast(${emitted})`;
           if (!intArguments.includes(position)) return emitted;
           const type = getIrExpressionTypeHaxe(argument, context);
+          const conditionalTypes =
+            argument.kind === 'conditional'
+              ? [
+                  getIrExpressionTypeHaxe(argument.whenTrue, context),
+                  getIrExpressionTypeHaxe(argument.whenFalse, context),
+                ]
+              : [];
           if (
             (type?.kind === 'primitive' && type.name === 'boolean') ||
             (type?.kind === 'literal' && typeof type.value === 'boolean')
@@ -1024,6 +1031,19 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             return `(${emitConditionHaxe(argument, context)} ? 1 : 0)`;
           }
           if (argument.kind === 'literal' && typeof argument.value === 'number' && Number.isInteger(argument.value)) {
+            return emitted;
+          }
+          if (
+            conditionalTypes.length > 0 &&
+            conditionalTypes.every(
+              (candidate) =>
+                candidate !== undefined &&
+                !(
+                  candidate.kind === 'primitive' &&
+                  (candidate.name === 'number' || candidate.name === 'boolean')
+                ),
+            )
+          ) {
             return emitted;
           }
           // The native signature itself is authoritative when source evidence is unavailable. A
@@ -2054,6 +2074,9 @@ function emitExpressionAsExpectedTypeHaxe(
 ): string {
   if (!expectedType) return emitted;
   const concreteExpected = getIrSingleConcreteTypeHaxe(expectedType);
+  if (concreteExpected.kind === 'array' && expression.kind === 'array' && expression.elements.length === 0) {
+    return `(cast [] : ${emitType(concreteExpected, context)})`;
+  }
   if (
     (isIrTypeFunctionShapedHaxe(concreteExpected, context) &&
       isIrExpressionFunctionValuedHaxe(expression, context)) ||
@@ -2637,9 +2660,14 @@ function getIrNamedDeclarationTargetHaxe(
     context.namedDeclarationTargets.set(reference.binding.id, exact);
     return exact;
   }
-  const imported = context.module.imports
-    .flatMap((entry) => entry.bindings.map((binding) => ({ binding, entry })))
-    .find(({ binding }) => binding.binding.id === reference.binding.id);
+  const importedBindings = context.module.imports.flatMap((entry) =>
+    entry.bindings.map((binding) => ({ binding, entry })),
+  );
+  const exactImported = importedBindings.find(({ binding }) => binding.binding.id === reference.binding.id);
+  const sameNamedImports = importedBindings.filter(
+    ({ binding }) => binding.binding.name === reference.binding.name && binding.binding.space === 'type',
+  );
+  const imported = exactImported ?? (sameNamedImports.length === 1 ? sameNamedImports[0] : undefined);
   if (!imported || imported.binding.imported === '*' || imported.binding.imported === 'default') {
     context.namedDeclarationTargets.set(reference.binding.id, null);
     return undefined;
