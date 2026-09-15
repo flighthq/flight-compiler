@@ -8201,7 +8201,23 @@ describe('emitIrModuleHaxe interface extends chain', () => {
 
     expect(output).toContain('return canvas.getContext("webgl2");');
     expect(output).toContain('function element():js.html.CanvasElement');
+    expect(output).toContain(
+      '(cast js.Browser.document.createElement("canvas") : js.html.CanvasElement)',
+    );
     expect(output).not.toContain('js.html.Element');
+  });
+
+  it('casts WebGL power preference defaults inside spread-bearing native attributes', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'webgl-options.ts',
+        "interface Options { powerPreference?: WebGLPowerPreference; contextAttributes?: WebGLContextAttributes } export function attributes(options: Options): WebGLContextAttributes { return { powerPreference: options.powerPreference ?? 'default', ...options.contextAttributes }; }",
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      '(cast options.powerPreference : Null<js.html.webgl.PowerPreference>) ?? (cast "default" : js.html.webgl.PowerPreference)',
+    );
   });
 
   it('uses JavaScript syntax for AbortSignal methods absent from the pinned Haxe extern', () => {

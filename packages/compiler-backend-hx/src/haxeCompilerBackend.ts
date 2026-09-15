@@ -2153,6 +2153,17 @@ function emitExpressionAsExpectedTypeHaxe(
     (concreteExpected.kind === 'named' &&
       concreteExpected.reference.kind === 'ambient' &&
       concreteExpected.reference.name === 'WebGLPowerPreference');
+  const expectedNativeCall =
+    expression.kind === 'call' &&
+    concreteExpected.kind === 'named' &&
+    concreteExpected.reference.kind === 'ambient' &&
+    !['Dynamic', 'String'].includes(
+      getCompilerRuntimeExternalSymbolTargetHaxe(
+        concreteExpected.reference.name,
+        'type',
+        context.options.runtimeModule,
+      ) ?? 'Dynamic',
+    );
   if (
     expression.kind === 'binary' &&
     expression.operator === '??' &&
@@ -2166,6 +2177,7 @@ function emitExpressionAsExpectedTypeHaxe(
   if (
     (isIrTypeFunctionShapedHaxe(concreteExpected, context) &&
       isIrExpressionFunctionValuedHaxe(expression, context)) ||
+    expectedNativeCall ||
     isIrStructuralRecordTypeHaxe(concreteExpected, context) ||
     (expectedStringNominal &&
       (isIrExpressionStringBackedHaxe(expression, context) || expression.kind === 'object' || expression.kind === 'call')) ||
@@ -2877,6 +2889,9 @@ function isIrTypeStringBackedHaxe(
   if (concrete.kind === 'primitive') return concrete.name === 'string';
   if (concrete.kind === 'literal') return typeof concrete.value === 'string';
   if (concrete.kind === 'union') return concrete.types.every((member) => isIrTypeStringBackedHaxe(member, context, seen));
+  if (concrete.kind === 'named' && concrete.reference.kind === 'ambient') {
+    return ['GPUPowerPreference', 'WebGLPowerPreference'].includes(concrete.reference.name);
+  }
   if (concrete.kind !== 'named' || concrete.reference.kind !== 'binding') return false;
   const target = getIrNamedDeclarationTargetHaxe(concrete, context);
   if (!target || target.declaration.kind !== 'typeAlias' || seen.has(target.binding.id)) return false;
@@ -4616,8 +4631,13 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     variable.initializer.kind !== 'function' &&
     isIrTypeFunctionShapedHaxe(variable.type, context) &&
     isIrExpressionFunctionValuedHaxe(variable.initializer, context);
+  const directInitializer = variable.initializer ? emitExpression(variable.initializer, context) : undefined;
+  const expectedInitializer =
+    variable.initializer && variable.type
+      ? emitExpressionAsExpectedTypeHaxe(variable.initializer, variable.type, context, directInitializer)
+      : directInitializer;
   const initializer = variable.initializer
-    ? ` = ${restCast ? `(cast ${emitExpression(variable.initializer, context)} : ${emitType(variable.type!, context)})` : functionCast ? `cast(${emitExpression(variable.initializer, context)})` : normalizeHaxeExpressionGrouping(emitExpression(variable.initializer, context))}`
+    ? ` = ${restCast ? `(cast ${directInitializer} : ${emitType(variable.type!, context)})` : functionCast ? `cast(${directInitializer})` : normalizeHaxeExpressionGrouping(expectedInitializer!)}`
     : '';
   return `${variable.mutable ? 'var' : 'final'} ${getBindingTargetNameHaxe(variable.binding, context)}${type}${initializer};`;
 }
