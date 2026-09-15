@@ -5217,10 +5217,13 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     });
     const emitted = session.emitModule(consumer)[0]!.contents;
 
-    expect(emitted).toContain('std::optional<double> alpha;');
-    expect(emitted).toContain('std::optional<bool> visible;');
-    expect(emitted).toMatch(/std::optional<flight::Ref<alpha_visible_[0-9a-f]{16}>> obj = std::nullopt/u);
+    expect(emitted).toContain(
+      'std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<flighthq_types::HasAppearance>>>>>> obj = std::nullopt',
+    );
     expect(emitted).toContain('auto optional_chain_receiver = obj;');
+    expect(emitted).toContain(
+      'flight::row_get<flight::RowKey<"alpha">>(optional_chain_receiver.value())',
+    );
     expect(emitted).toContain('std::optional<double>');
     expect(emitted).not.toContain('std::optional<auto>');
   });
@@ -6519,7 +6522,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     }).contents;
 
     expect(output).toContain('std::optional<flight::Array<double>> value');
-    expect(output).toMatch(/value = static_cast<flight::Ref<color_matrix_[0-9a-f]+>>\(operation\)->color_matrix;/u);
+    expect(output).toContain(
+      'value = flight::row_get<flight::RowKey<"colorMatrix">>(flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<Adjustment>>>>>>(operation));',
+    );
     expect(output).toContain('value.value().size()');
     expect(output).not.toContain('value = std::optional<flight::Array<double>>{static_cast');
   });

@@ -8721,7 +8721,10 @@ function emitOptionalPropertyExpressionCpp(
   const object = emitOptionalChainReceiverCpp(expression.object, context);
   const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';
   let projected: string;
-  if (expression.member) {
+  if (context.referenceRepresentationPlanner.resolveStructuralRow(receiverType, context.module)) {
+    context.includes.add('flight/structural_ref.hpp');
+    projected = `flight::row_get<flight::RowKey<${JSON.stringify(expression.name)}>>(optional_chain_receiver.value())`;
+  } else if (expression.member) {
     const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
     if (binding?.kind === 'sizeMethod') {
       projected = `static_cast<double>(optional_chain_receiver.value()${memberOperator}size())`;
