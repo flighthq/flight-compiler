@@ -6012,6 +6012,22 @@ describe('emitIrModuleHaxe re-export facade', () => {
     expect(output).toContain('typedef FacadeKind = flighthq.math.Helper.Kind;');
   });
 
+  it('emits both lanes of a value and type re-export', () => {
+    const source = lower(
+      'channel.ts',
+      `export const ImageChannel = { Red: 0 } as const;
+       export type ImageChannel = (typeof ImageChannel)[keyof typeof ImageChannel];`,
+    ).module;
+    const facade = lower('facade.ts', `export { ImageChannel } from './channel.js';`).module;
+    const output = createHaxeCompilerBackend().emitModule(facade, {
+      modules: [facade, source],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain('typedef FacadeImageChannel = flighthq.math.Channel.ImageChannel;');
+    expect(output).toContain('final ImageChannel:');
+  });
+
   it('refuses value re-export when sibling module is not available', () => {
     const facade = lower('facade.ts', `export { helper } from './helper.js';`);
 

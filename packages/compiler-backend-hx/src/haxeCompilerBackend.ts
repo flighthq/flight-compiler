@@ -2667,6 +2667,37 @@ function emitReexportsHaxe(exports: readonly IrExport[], context: EmitContext): 
     const modulePath = haxeImportModule(exported.specifier, context);
     if (!exported.typeOnly) {
       valueLines.push(...emitValueReexportForwardingHaxe(exported, modulePath, context));
+      const typeSlot = context.moduleFacadeSlots.find(
+        (candidate) =>
+          candidate.exportName === exported.exported &&
+          candidate.lane === 'type' &&
+          candidate.source.kind === 'module-binding' &&
+          candidate.route.kind === 'binding',
+      );
+      const valueSlot = context.moduleFacadeSlots.find(
+        (candidate) =>
+          candidate.exportName === exported.exported &&
+          candidate.lane === 'value' &&
+          candidate.source.kind === 'module-binding' &&
+          candidate.route.kind === 'binding',
+      );
+      const typeTarget = typeSlot ? getModuleFacadeBindingTargetHaxe(typeSlot, context) : undefined;
+      const valueTarget = valueSlot ? getModuleFacadeBindingTargetHaxe(valueSlot, context) : undefined;
+      const sharedNominal =
+        typeTarget !== undefined &&
+        valueTarget !== undefined &&
+        typeTarget.binding.id === valueTarget.binding.id &&
+        (valueTarget.binding.kind === 'class' || valueTarget.binding.kind === 'enum');
+      if (typeTarget && !sharedNominal) {
+        const typeName =
+          context.facadeTypeTargetNames.get(exported.exported) ??
+          getGeneratedTargetNameHaxe(
+            safeHaxeTypeName(`${haxeImplementationModule(context.module.source)}_${exported.exported}`),
+            context,
+          );
+        context.facadeBindingTargetNames.set(typeTarget.binding.id, typeName);
+        typeLines.add(emitFacadeTypeAliasHaxe(typeName, typeTarget, context));
+      }
       continue;
     }
     const targetName =
