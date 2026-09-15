@@ -1105,7 +1105,7 @@ describe('emitIrModuleHaxe', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Reflect.setField(dynamicAccessReceiver, "extra", dynamicAccessValue)');
+    expect(output).toContain('HaxeReflect.setField(dynamicAccessReceiver, "extra", dynamicAccessValue)');
   });
 
   it('emits source generic defaults and Promise void carriers accepted by Haxe', () => {
@@ -1474,11 +1474,11 @@ describe('emitIrModuleHaxe', () => {
 
     expect(output).toContain('final objectPatternValue:Shape = source;');
     expect(output).toContain('final value:Float = objectPatternValue.value ?? 1;');
-    expect(output).toContain('Reflect.copy(objectPatternValue)');
-    expect(output).toContain('Reflect.deleteField(objectRestValue, "value")');
+    expect(output).toContain('HaxeReflect.copy(objectPatternValue)');
+    expect(output).toContain('HaxeReflect.deleteField(objectRestValue, "value")');
     const computedOutput = emitIrModuleHaxe(computed.module).contents;
-    expect(computedOutput).toContain('Reflect.field(objectPatternValue, objectPatternKey)');
-    expect(computedOutput).toContain('Reflect.deleteField(objectRestValue, objectPatternKey)');
+    expect(computedOutput).toContain('HaxeReflect.field(objectPatternValue, objectPatternKey)');
+    expect(computedOutput).toContain('HaxeReflect.deleteField(objectRestValue, objectPatternKey)');
   });
 
   it('elects function-scoped variable hoisting after destructuring normalization', () => {
@@ -1572,7 +1572,7 @@ describe('emitIrModuleHaxe', () => {
       'final optionalIndexedValue:Dynamic = values; return optionalIndexedValue == null ? null : optionalIndexedValue[0];',
     );
     expect(output).toContain(
-      'final optionalCall:Dynamic = callback; return optionalCall == null ? null : Reflect.callMethod(null, optionalCall, []);',
+      'final optionalCall:Dynamic = callback; return optionalCall == null ? null : HaxeReflect.callMethod(null, optionalCall, []);',
     );
   });
 
@@ -2267,14 +2267,14 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('unknownValue:Dynamic');
   });
 
-  it('emits dynamic for-in using Reflect.fields when no closed key plan exists', () => {
+  it('emits dynamic for-in using HaxeReflect.fields when no closed key plan exists', () => {
     const result = lower(
       'dynamic-for-in.ts',
       'export function keys(record: object): void { for (const key in record) key; }',
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Reflect.fields(record)');
+    expect(output).toContain('HaxeReflect.fields(record)');
   });
 
   it('emits unsigned right shift through explicit Std.int wrapping', () => {
@@ -2398,7 +2398,7 @@ describe('emitIrModuleHaxe', () => {
 
   it('calls reflectively when a spread makes the arity unknown until run time', () => {
     // A spread of an unbounded collection has no arity a fixed call can take. Haxe's
-    // `Reflect.callMethod` takes its arguments as an array, which is the shape a spread already has.
+    // `HaxeReflect.callMethod` takes its arguments as an array, which is the shape a spread already has.
     const simple = lower(
       'spread.ts',
       'export function widest(values: number[]): number { return Math.max(...values); }',
@@ -2408,10 +2408,10 @@ describe('emitIrModuleHaxe', () => {
       'export function widest(values: number[], first: number): number { return Math.max(first, ...values); }',
     );
 
-    expect(emitIrModuleHaxe(simple.module).contents).toContain('Reflect.callMethod(Math, cast(Math.max), values)');
+    expect(emitIrModuleHaxe(simple.module).contents).toContain('HaxeReflect.callMethod(Math, cast(Math.max), values)');
     // Fixed arguments around the spread keep their source order.
     expect(emitIrModuleHaxe(mixed.module).contents).toContain(
-      'Reflect.callMethod(Math, cast(Math.max), [first].concat(values))',
+      'HaxeReflect.callMethod(Math, cast(Math.max), [first].concat(values))',
     );
   });
 });
@@ -2638,8 +2638,8 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Reflect.copy(');
-    expect(output).toContain('Reflect.deleteField(');
+    expect(output).toContain('HaxeReflect.copy(');
+    expect(output).toContain('HaxeReflect.deleteField(');
   });
 
   it('emits cast-to-any element access for object parameter', () => {
@@ -2686,7 +2686,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
 
     expect(emitIrModuleHaxe(result.module).contents).toContain(
-      'Reflect.setField(dynamicAccessReceiver, "value", dynamicAccessValue)',
+      'HaxeReflect.setField(dynamicAccessReceiver, "value", dynamicAccessValue)',
     );
   });
 
@@ -2703,7 +2703,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('return Reflect.field(record, "value");');
+    expect(output).toContain('return HaxeReflect.field(record, "value");');
     expect(output).toContain('function readGeneric<Value:');
     expect(output.match(/return Reflect\.field\(record, "value"\);/gu)).toHaveLength(3);
   });
@@ -2720,8 +2720,8 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('return Reflect.field((cast value : haxe.DynamicAccess<Dynamic>), "__kind");');
-    expect(output).toContain('Reflect.setField(updateReceiver, "depth", updateResult)');
+    expect(output).toContain('return HaxeReflect.field((cast value : haxe.DynamicAccess<Dynamic>), "__kind");');
+    expect(output).toContain('HaxeReflect.setField(updateReceiver, "depth", updateResult)');
   });
 
   it('deletes symbol-backed and dynamic properties through their represented keys', () => {
@@ -2745,7 +2745,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
       'export function read(record: Record<string, number>, key: string): number { return record[key]; }',
     );
 
-    expect(emitIrModuleHaxe(result.module).contents).toContain('Reflect.field(record, key)');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('HaxeReflect.field(record, key)');
   });
 
   it('routes coercive and optional computed property access through the selected runtime', () => {
@@ -4013,14 +4013,14 @@ describe('emitIrModuleHaxe control flow coverage', () => {
 });
 
 describe('emitIrModuleHaxe spread and call coverage', () => {
-  it('emits spread call as Reflect.callMethod', () => {
+  it('emits spread call as HaxeReflect.callMethod', () => {
     const result = lower(
       'spread-call.ts',
       'export function apply(fn: (...args: number[]) => number, args: number[]): number { return fn(...args); }',
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Reflect.callMethod(');
+    expect(output).toContain('HaxeReflect.callMethod(');
   });
 
   it('emits spread call with fixed and spread arguments', () => {
@@ -4030,7 +4030,7 @@ describe('emitIrModuleHaxe spread and call coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Reflect.callMethod(');
+    expect(output).toContain('HaxeReflect.callMethod(');
     expect(output).toContain('.concat(');
   });
 });
@@ -4453,7 +4453,7 @@ describe('emitIrModuleHaxe optional spread call', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Reflect.callMethod(');
+    expect(output).toContain('HaxeReflect.callMethod(');
     expect(output).toContain('.concat(');
   });
 });
@@ -5071,8 +5071,23 @@ describe('emitIrModuleHaxe object literal', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('for (objectSpreadKey in Reflect.fields(objectSpreadSource))');
-    expect(output).toContain('Reflect.setField(objectSpreadValue, objectSpreadKey');
+    expect(output).toContain('for (objectSpreadKey in HaxeReflect.fields(objectSpreadSource))');
+    expect(output).toContain('HaxeReflect.setField(objectSpreadValue, objectSpreadKey');
+  });
+
+  it('aliases Haxe reflection away from string-union enum members', () => {
+    const result = lower(
+      'reflect-shadow.ts',
+      `export type SpreadMethod = 'pad' | 'reflect' | 'repeat';
+       export function clone(source: Record<string, unknown>): Record<string, unknown> {
+         return { ...source };
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('var Reflect = "reflect";');
+    expect(output).toContain('import Reflect as HaxeReflect;');
+    expect(output).toContain('HaxeReflect.fields(objectSpreadSource)');
   });
 
   it('copies array spreads before concatenating following elements', () => {
@@ -5848,7 +5863,7 @@ describe('emitIrModuleHaxe discriminated union narrowing with cast', () => {
 });
 
 describe('emitIrModuleHaxe spread call expression', () => {
-  it('emits reflective spread call with Reflect.callMethod', () => {
+  it('emits reflective spread call with HaxeReflect.callMethod', () => {
     const result = lower(
       'spread-call.ts',
       `export function apply(fn: (...args: number[]) => number, args: number[]): number {
@@ -5857,7 +5872,7 @@ describe('emitIrModuleHaxe spread call expression', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Reflect.callMethod');
+    expect(output).toContain('HaxeReflect.callMethod');
   });
 
   it('concatenates fixed and spread argument groups', () => {
@@ -6191,7 +6206,7 @@ describe('emitIrModuleHaxe property access with optional chaining', () => {
 });
 
 describe('emitIrModuleHaxe object rest destructuring', () => {
-  it('emits object rest pattern using Reflect.copy and deleteField', () => {
+  it('emits object rest pattern using HaxeReflect.copy and deleteField', () => {
     const result = lower(
       'object-rest.ts',
       `export function strip(obj: { a: number; b: string; c: boolean }): { b: string; c: boolean } {
@@ -6201,8 +6216,8 @@ describe('emitIrModuleHaxe object rest destructuring', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('Reflect.copy(');
-    expect(output).toContain('Reflect.deleteField(');
+    expect(output).toContain('HaxeReflect.copy(');
+    expect(output).toContain('HaxeReflect.deleteField(');
   });
 });
 
@@ -7451,8 +7466,8 @@ describe('emitIrModuleHaxe labeled continue from nested loop', () => {
   });
 });
 
-describe('emitIrModuleHaxe for-in with Reflect.fields', () => {
-  it('emits Reflect.fields for for-in without closed key plan', () => {
+describe('emitIrModuleHaxe for-in with HaxeReflect.fields', () => {
+  it('emits HaxeReflect.fields for for-in without closed key plan', () => {
     const result = lower(
       'for-in-reflect.ts',
       `export function keys(obj: { [key: string]: number }): void {
@@ -8733,7 +8748,7 @@ describe('emitIrModuleHaxe tuple type emission', () => {
 });
 
 describe('emitIrModuleHaxe object rest expression', () => {
-  it('emits object rest with Reflect.copy and deleteField', () => {
+  it('emits object rest with HaxeReflect.copy and deleteField', () => {
     const output = emitIrModuleHaxe(
       lower(
         'obj-rest.ts',
@@ -8744,7 +8759,7 @@ describe('emitIrModuleHaxe object rest expression', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('Reflect.copy');
+    expect(output).toContain('HaxeReflect.copy');
     expect(output).toContain('deleteField');
   });
 });
@@ -8759,7 +8774,7 @@ describe('emitIrModuleHaxe postfix increment emission', () => {
 });
 
 describe('emitIrModuleHaxe spread call emission', () => {
-  it('emits spread call with Reflect.callMethod', () => {
+  it('emits spread call with HaxeReflect.callMethod', () => {
     const output = emitIrModuleHaxe(
       lower(
         'spread-call.ts',
@@ -8768,7 +8783,7 @@ describe('emitIrModuleHaxe spread call emission', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('Reflect.callMethod');
+    expect(output).toContain('HaxeReflect.callMethod');
   });
 
   it('routes a spread passed to a mapped array member before fixed-arity member emission', () => {
@@ -8776,7 +8791,7 @@ describe('emitIrModuleHaxe spread call emission', () => {
       lower('spread-push.ts', 'export function append(out: number[], values: number[]): void { out.push(...values); }')
         .module,
     ).contents;
-    expect(output).toContain('Reflect.callMethod(out, cast(out.push), values)');
+    expect(output).toContain('HaxeReflect.callMethod(out, cast(out.push), values)');
   });
 
   it('routes mixed fixed and spread array pushes through reflective arity', () => {
@@ -8786,7 +8801,7 @@ describe('emitIrModuleHaxe spread call emission', () => {
         'export function append(out: number[], first: number, middle: number[], last: number): void { out.push(first, ...middle, last); }',
       ).module,
     ).contents;
-    expect(output).toContain('Reflect.callMethod(out, cast(out.push), [first].concat(middle).concat([last]))');
+    expect(output).toContain('HaxeReflect.callMethod(out, cast(out.push), [first].concat(middle).concat([last]))');
   });
 });
 
@@ -9980,14 +9995,14 @@ describe('emitIrModuleHaxe type emission', () => {
 });
 
 describe('emitIrModuleHaxe spread call', () => {
-  it('emits spread argument through Reflect.callMethod', () => {
+  it('emits spread argument through HaxeReflect.callMethod', () => {
     const output = emitIrModuleHaxe(
       lower(
         'spread-call.ts',
         `export function apply(fn: (...args: number[]) => number, args: number[]): number { return fn(...args); }`,
       ).module,
     ).contents;
-    expect(output).toContain('Reflect.callMethod');
+    expect(output).toContain('HaxeReflect.callMethod');
   });
 });
 
@@ -10783,8 +10798,8 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('Reflect.setField(dynamicAccessReceiver, "value", dynamicAccessValue)');
-    expect(output).toContain('return Reflect.field(value, "value");');
+    expect(output).toContain('HaxeReflect.setField(dynamicAccessReceiver, "value", dynamicAccessValue)');
+    expect(output).toContain('return HaxeReflect.field(value, "value");');
   });
 
   it('updates flow-introduced numeric properties through the reflective lane', () => {
@@ -10802,9 +10817,9 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('Reflect.field(updateReceiver, "depth")');
-    expect(output).toContain('Reflect.setField(updateReceiver, "depth", updateResult)');
-    expect(output).not.toContain('Reflect.field(value, "depth")++');
+    expect(output).toContain('HaxeReflect.field(updateReceiver, "depth")');
+    expect(output).toContain('HaxeReflect.setField(updateReceiver, "depth", updateResult)');
+    expect(output).not.toContain('HaxeReflect.field(value, "depth")++');
   });
 
   it('retains numeric Math result types on inferred locals', () => {

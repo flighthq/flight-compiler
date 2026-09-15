@@ -123,6 +123,7 @@ interface EmitContext {
   functionValueNames: ReadonlySet<string>;
   foreignNamedTypeLocalTargetNames: Map<string, string | null>;
   generatedNames: Set<string>;
+  haxeReflectName: string;
   getModuleFacade: ((module: Readonly<IrModule>) => CompilerModuleFacadePlan | undefined) | undefined;
   machineNames: Map<string, string>;
   module: Readonly<IrModule>;
@@ -375,6 +376,12 @@ function emitIrModuleHaxeWithContext(
   sourceModuleTargetNames.set(getHaxeCompilerModuleKey(module), targetNames);
   const facadeTypeTargetNames = createHaxeFacadeTypeTargetNames(module, moduleFacade, targetNames);
   const bindingTypes = collectIrModuleBindingTypesHaxe(module);
+  const generatedNames = new Set([...targetNames.values(), ...facadeTypeTargetNames.values()]);
+  let haxeReflectName = 'HaxeReflect';
+  for (let suffix = 2; generatedNames.has(haxeReflectName); suffix += 1) {
+    haxeReflectName = `HaxeReflect_${String(suffix)}`;
+  }
+  generatedNames.add(haxeReflectName);
   const context: EmitContext = {
     ambientUtilityHeritageTargets,
     bindingTypes,
@@ -386,7 +393,8 @@ function emitIrModuleHaxeWithContext(
     forwardDeclaredBindingIds: new Set(),
     functionValueNames: getHaxeFunctionValueNames(sourceModules),
     foreignNamedTypeLocalTargetNames: new Map(),
-    generatedNames: new Set([...targetNames.values(), ...facadeTypeTargetNames.values()]),
+    generatedNames,
+    haxeReflectName,
     getModuleFacade,
     machineNames: new Map(),
     module,
@@ -919,7 +927,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         expression.arguments.length === 3
       ) {
         const [receiver, callable, arguments_] = expression.arguments;
-        return `Reflect.callMethod(${emitExpression(receiver!, context)}, cast(${emitExpression(callable!, context)}), ${emitExpression(arguments_!, context)})`;
+        return `${context.haxeReflectName}.callMethod(${emitExpression(receiver!, context)}, cast(${emitExpression(callable!, context)}), ${emitExpression(arguments_!, context)})`;
       }
       if (
         expression.callee.kind === 'property' &&
@@ -1170,7 +1178,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           return `(function() { final ${receiver}:Dynamic = ${object}; return ${receiver} == null ? null : ${runtime}.getProperty(${receiver}, ${index}); })()`;
         }
         return expression.semantics.receivers.length === 1 && expression.semantics.key === 'string'
-          ? `Reflect.field(${object}, ${index})`
+          ? `${context.haxeReflectName}.field(${object}, ${index})`
           : `${runtime}.getProperty(${object}, ${index})`;
       }
       if (expression.semantics.receivers.includes('tuple')) {
@@ -1294,10 +1302,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       const exclusions = expression.excluded
         .map(
           (key) =>
-            `Reflect.deleteField(${name}, ${key.kind === 'named' ? emitHaxeStringLiteral(key.name) : emitExpression(key.expression, context)});`,
+            `${context.haxeReflectName}.deleteField(${name}, ${key.kind === 'named' ? emitHaxeStringLiteral(key.name) : emitExpression(key.expression, context)});`,
         )
         .join(' ');
-      return `(function() { final ${name} = Reflect.copy(${emitExpression(expression.object, context)}); ${exclusions} return ${name}; })()`;
+      return `(function() { final ${name} = ${context.haxeReflectName}.copy(${emitExpression(expression.object, context)}); ${exclusions} return ${name}; })()`;
     }
     case 'property': {
       const webGlConstantOwner = getWebGlStaticConstantOwnerHaxe(expression, context);
@@ -1335,18 +1343,18 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         const name = emitHaxeStringLiteral(expression.name);
         if (expression.optional) {
           const receiver = getGeneratedTargetNameHaxe('optionalObject', context);
-          return `(function() { final ${receiver}:Dynamic = ${object}; return ${receiver} == null ? null : Reflect.field(${receiver}, ${name}); })()`;
+          return `(function() { final ${receiver}:Dynamic = ${object}; return ${receiver} == null ? null : ${context.haxeReflectName}.field(${receiver}, ${name}); })()`;
         }
-        return `Reflect.field(${object}, ${name})`;
+        return `${context.haxeReflectName}.field(${object}, ${name})`;
       }
       if (expression.structuralAccess === 'narrowed') {
         const object = emitExpression(expression.object, context);
         const name = emitHaxeStringLiteral(expression.name);
         if (expression.optional) {
           const receiver = getGeneratedTargetNameHaxe('optionalObject', context);
-          return `(function() { final ${receiver}:Dynamic = ${object}; return ${receiver} == null ? null : Reflect.field(${receiver}, ${name}); })()`;
+          return `(function() { final ${receiver}:Dynamic = ${object}; return ${receiver} == null ? null : ${context.haxeReflectName}.field(${receiver}, ${name}); })()`;
         }
-        return `Reflect.field(${object}, ${name})`;
+        return `${context.haxeReflectName}.field(${object}, ${name})`;
       }
       const narrowed =
         expression.object.kind === 'identifier' && expression.object.narrowedMember
@@ -1552,8 +1560,8 @@ function emitJavaScriptUpdateOperatorHaxe(
       const name = emitHaxeStringLiteral(expression.operand.name);
       return body(
         `final ${receiver}:Dynamic = ${emitExpression(expression.operand.object, context)};`,
-        `Reflect.field(${receiver}, ${name})`,
-        (value) => `Reflect.setField(${receiver}, ${name}, ${value})`,
+        `${context.haxeReflectName}.field(${receiver}, ${name})`,
+        (value) => `${context.haxeReflectName}.setField(${receiver}, ${name}, ${value})`,
       );
     }
     const target = `${receiver}.${safeHaxeName(expression.operand.name)}`;
@@ -1727,7 +1735,7 @@ function emitDynamicAccessPropertyAssignmentHaxe(
   }
   const receiver = getGeneratedTargetNameHaxe('dynamicAccessReceiver', context);
   const value = getGeneratedTargetNameHaxe('dynamicAccessValue', context);
-  return `(function() { final ${receiver} = ${emitExpression(left.object, context)}; final ${value}:Dynamic = ${emitExpression(expression.right, context)}; Reflect.setField(${receiver}, ${emitHaxeStringLiteral(left.name)}, ${value}); return ${value}; })()`;
+  return `(function() { final ${receiver} = ${emitExpression(left.object, context)}; final ${value}:Dynamic = ${emitExpression(expression.right, context)}; ${context.haxeReflectName}.setField(${receiver}, ${emitHaxeStringLiteral(left.name)}, ${value}); return ${value}; })()`;
 }
 
 function isReflectiveHaxePropertyReceiver(expression: Readonly<IrExpression>, context: EmitContext): boolean {
@@ -1959,7 +1967,7 @@ function emitJavaScriptPrefixUnaryOperatorHaxe(
   if (expression.operator === 'void') return `(function() { ${operand}; return null; })()`;
   if (expression.operator === 'delete') {
     if (expression.operand.kind === 'property') {
-      return `Reflect.deleteField(${emitExpression(expression.operand.object, context)}, ${emitHaxeStringLiteral(safeHaxeName(expression.operand.name))})`;
+      return `${context.haxeReflectName}.deleteField(${emitExpression(expression.operand.object, context)}, ${emitHaxeStringLiteral(safeHaxeName(expression.operand.name))})`;
     }
     if (expression.operand.kind === 'element') {
       return `${runtime}.deleteProperty(${emitExpression(expression.operand.object, context)}, ${emitExpression(expression.operand.index, context)})`;
@@ -2311,7 +2319,7 @@ function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, cont
     if (member.kind === 'property') {
       const expected = getIrObjectPropertyTypeHaxe(expression.type, member.name, context);
       lines.push(
-        `Reflect.setField(${target}, ${emitHaxeStringLiteral(safeHaxeName(member.name))}, ${emitExpressionAsExpectedTypeHaxe(member.value, expected, context)});`,
+        `${context.haxeReflectName}.setField(${target}, ${emitHaxeStringLiteral(safeHaxeName(member.name))}, ${emitExpressionAsExpectedTypeHaxe(member.value, expected, context)});`,
       );
       continue;
     }
@@ -2326,7 +2334,7 @@ function emitObjectExpressionHaxe(expression: Readonly<IrObjectExpression>, cont
       const key = getGeneratedTargetNameHaxe('objectSpreadKey', context);
       lines.push(
         `final ${source}:Dynamic = ${emitExpression(member.expression, context)};`,
-        `if (${source} != null) for (${key} in Reflect.fields(${source})) Reflect.setField(${target}, ${key}, Reflect.field(${source}, ${key}));`,
+        `if (${source} != null) for (${key} in ${context.haxeReflectName}.fields(${source})) ${context.haxeReflectName}.setField(${target}, ${key}, ${context.haxeReflectName}.field(${source}, ${key}));`,
       );
       continue;
     }
@@ -2543,7 +2551,7 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       );
     }
   }
-  return [...new Set(emitted)].sort();
+  return [`import Reflect as ${context.haxeReflectName};`, ...new Set(emitted)].sort();
 }
 
 function getImportedTypeLaneTargetHaxe(
@@ -3598,7 +3606,7 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         ]);
       }
       return emitControlFlowBoundaryHaxe(statement.label, true, context, () => [
-        `for (${getBindingTargetNameHaxe(forInBinding, context)} in ${forInKeyPlan ? `[${forInKeyPlan.keys.map(emitHaxeStringLiteral).join(', ')}]` : `Reflect.fields(${emitExpression(statement.object, context)})`}) {`,
+        `for (${getBindingTargetNameHaxe(forInBinding, context)} in ${forInKeyPlan ? `[${forInKeyPlan.keys.map(emitHaxeStringLiteral).join(', ')}]` : `${context.haxeReflectName}.fields(${emitExpression(statement.object, context)})`}) {`,
         ...indentSourceLines(emitStatementBody(statement.body, context)),
         '}',
       ]);
@@ -4295,7 +4303,7 @@ const haxeIntegerTypedArrayConstructorNames = new Set([
 ]);
 
 // A spread of an unbounded collection has no arity until run time, so the call itself becomes a
-// reflective one: Haxe's `Reflect.callMethod` takes the arguments as an array, which is exactly the
+// reflective one: Haxe's reflection helper takes the arguments as an array, which is exactly the
 // shape a spread already has. Fixed arguments around the spread are concatenated in source order.
 function emitSpreadCallHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
@@ -4324,7 +4332,7 @@ function emitSpreadCallHaxe(
           .map((group) => `.concat(${group})`)
           .join('')}`;
   const receiver = expression.callee.kind === 'property' ? emitExpression(expression.callee.object, context) : 'null';
-  return `Reflect.callMethod(${receiver}, cast(${emitExpression(expression.callee, context)}), ${args})`;
+  return `${context.haxeReflectName}.callMethod(${receiver}, cast(${emitExpression(expression.callee, context)}), ${args})`;
 }
 
 function emitAnonymousType(properties: readonly IrObjectTypeProperty[], context: EmitContext): string {
@@ -4663,9 +4671,9 @@ function emitOptionalCallHaxe(
   const args = expression.arguments.map((argument) => emitExpression(argument, context));
   if (expression.callee.kind === 'property') {
     const receiver = getGeneratedTargetNameHaxe('optionalCallReceiver', context);
-    return `(function() { final ${receiver}:Dynamic = ${emitExpression(expression.callee.object, context)}; final ${callable}:Dynamic = ${receiver}.${safeHaxeName(expression.callee.name)}; return ${callable} == null ? null : Reflect.callMethod(${receiver}, ${callable}, [${args.join(', ')}]); })()`;
+    return `(function() { final ${receiver}:Dynamic = ${emitExpression(expression.callee.object, context)}; final ${callable}:Dynamic = ${receiver}.${safeHaxeName(expression.callee.name)}; return ${callable} == null ? null : ${context.haxeReflectName}.callMethod(${receiver}, ${callable}, [${args.join(', ')}]); })()`;
   }
-  return `(function() { final ${callable}:Dynamic = ${emitExpression(expression.callee, context)}; return ${callable} == null ? null : Reflect.callMethod(null, ${callable}, [${args.join(', ')}]); })()`;
+  return `(function() { final ${callable}:Dynamic = ${emitExpression(expression.callee, context)}; return ${callable} == null ? null : ${context.haxeReflectName}.callMethod(null, ${callable}, [${args.join(', ')}]); })()`;
 }
 
 function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): string {
