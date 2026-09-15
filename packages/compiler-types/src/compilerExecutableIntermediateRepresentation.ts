@@ -39,6 +39,7 @@ export type IrParameter = Omit<IrFunctionTypeParameter, 'name'> &
 // This is what lets a backend decide a spelling from a table rather than from a name it hopes is
 // unique, and what lets it refuse a member it has not decided how to lower.
 export type IrResolvedMemberReceiver =
+  | 'abortSignal'
   | 'array'
   | 'arrayBuffer'
   | 'dataView'

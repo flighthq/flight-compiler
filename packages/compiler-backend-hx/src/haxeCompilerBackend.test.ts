@@ -8182,13 +8182,64 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     const output = emitIrModuleHaxe(
       lower(
         'dom-overloads.ts',
-        "export function context(canvas: HTMLCanvasElement): WebGL2RenderingContext | null { return canvas.getContext('webgl2'); } export function element(): HTMLCanvasElement { return document.querySelector('canvas')!; }",
+        "export function context(canvas: HTMLCanvasElement): WebGL2RenderingContext | null { return canvas.getContext('webgl2'); } export function element(): HTMLCanvasElement { return document.querySelector('canvas')!; } export function created(): HTMLCanvasElement { return document.createElement('canvas'); }",
       ).module,
     ).contents;
 
     expect(output).toContain('return canvas.getContext("webgl2");');
     expect(output).toContain('function element():js.html.CanvasElement');
     expect(output).not.toContain('js.html.Element');
+  });
+
+  it('uses JavaScript syntax for AbortSignal methods absent from the pinned Haxe extern', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'abort-signal.ts',
+        'export function guard(signal: AbortSignal): void { signal.throwIfAborted(); }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('js.Syntax.code("{0}.throwIfAborted()", signal);');
+    expect(output).not.toContain('signal.throwIfAborted()');
+  });
+
+  it('qualifies contextual field types not directly imported by the source module', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/types.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/types.ts',
+          "export type Color = 'srgb' | 'linear'; export interface Target { color: Color }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/core',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/core/src/use.ts',
+          "import type { Target } from './types'; export function set(target: Target, color: string): void { target.color = color as 'srgb'; }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(output).toContain('flighthq.types.Types.Color');
   });
 
   it('materializes non-array iterables before array spread concatenation', () => {

@@ -1008,6 +1008,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       if (
         expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'abortSignal' &&
+        expression.callee.member.name === 'throwIfAborted'
+      ) {
+        if (expression.arguments.length !== 0) {
+          emissionError(context, 'AbortSignal.throwIfAborted takes no arguments');
+        }
+        return `js.Syntax.code("{0}.throwIfAborted()", ${emitExpression(expression.callee.object, context)})`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
         getWebGlNativeOwnerForExpressionHaxe(expression.callee.object, context)
       ) {
         const intArguments = haxeWebGlIntArgumentPositions.get(expression.callee.name) ?? [];
@@ -3906,8 +3916,9 @@ function getForeignNamedTypeLocalTargetHaxe(
       return targetName;
     }
   }
-  context.foreignNamedTypeLocalTargetNames.set(cacheKey, null);
-  return undefined;
+  const qualified = `${getHaxeModulePath(target.module, context.options)}.${getSourceBindingTargetNameHaxe(target.module, target.binding, context)}`;
+  context.foreignNamedTypeLocalTargetNames.set(cacheKey, qualified);
+  return qualified;
 }
 
 function getIrExpressionTypeHaxe(

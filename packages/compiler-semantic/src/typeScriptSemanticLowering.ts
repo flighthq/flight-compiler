@@ -1864,7 +1864,7 @@ function getTypeScriptKnownAmbientCallResultTypeEvidence(
     receiver?.kind === 'named' &&
     receiver.reference.kind === 'ambient' &&
     receiver.reference.name === 'Document' &&
-    node.expression.name.text === 'querySelector' &&
+    (node.expression.name.text === 'querySelector' || node.expression.name.text === 'createElement') &&
     first &&
     ts.isStringLiteralLike(first) &&
     first.text === 'canvas'
@@ -6390,6 +6390,7 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
       return getIrResolvedMemberReceiver(type.typeArguments[0]);
     }
     const ambientReceivers: Record<string, IrResolvedMemberReceiver> = {
+      AbortSignal: 'abortSignal',
       ArrayBuffer: 'arrayBuffer',
       ArrayBufferLike: 'arrayBuffer',
       DataView: 'dataView',
