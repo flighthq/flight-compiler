@@ -8081,7 +8081,7 @@ describe('emitIrModuleHaxe interface extends chain', () => {
         'async-return.ts',
         'function load(): Promise<number> { return Promise.resolve(1); } export async function read(): Promise<number> { return load(); }',
       ).module,
-    )[0]!.contents;
+    ).contents;
 
     expect(output).toContain('resolveTask(cast(load()));');
   });
