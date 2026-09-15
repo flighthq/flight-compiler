@@ -2362,6 +2362,15 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('in (cast set : Iterable<String>))');
   });
 
+  it('restores an iterable boundary when source flow erased the container type', () => {
+    const result = lower(
+      'for-of-dynamic.ts',
+      'export function visit(source: any): void { for (const value of source) value; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain('in (cast source : Iterable<Dynamic>))');
+  });
+
   it('iterates source strings as Unicode characters', () => {
     const result = lower(
       'for-of-string.ts',

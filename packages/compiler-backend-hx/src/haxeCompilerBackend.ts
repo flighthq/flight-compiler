@@ -3752,12 +3752,12 @@ function emitForOfIterableHaxe(
   context: EmitContext,
 ): string {
   const emitted = emitExpression(statement.iterable, context);
-  const iterableType = statement.iterableType;
-  if (!iterableType) return emitted;
   const elementType =
     'pattern' in statement.variable || !statement.variable.type
       ? 'Dynamic'
       : emitType(statement.variable.type, context);
+  const iterableType = statement.iterableType;
+  if (!iterableType) return `(cast ${emitted} : Iterable<${elementType}>)`;
   const targetType = emitType(iterableType, context);
   if (targetType === 'Dynamic') return `(cast ${emitted} : Iterable<${elementType}>)`;
   if (targetType === 'Iterator' || targetType.startsWith('Iterator<')) {
