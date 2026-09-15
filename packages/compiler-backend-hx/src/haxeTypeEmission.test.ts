@@ -1,9 +1,9 @@
-import type { IrBindingIdentity, IrType } from '../../compiler-types/src/index.js';
+import type { IrBindingIdentity, IrType, IrTypeBindingIdentity } from '../../compiler-types/src/index.js';
 import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
 describe('emitIrTypeHaxe', () => {
   it('uses explicit binding, external, member, and failure capabilities', () => {
-    const binding: IrBindingIdentity = {
+    const binding: IrTypeBindingIdentity = {
       column: 1,
       fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       id: 'binding',
@@ -204,6 +204,40 @@ describe('emitIrTypeHaxe', () => {
         },
       ),
     ).toBe('Dynamic');
+  });
+
+  it('does not reapply generic arguments consumed by a named type resolver', () => {
+    const binding: IrBindingIdentity = {
+      column: 1,
+      fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      id: 'private-alias',
+      kind: 'typeAlias',
+      line: 1,
+      name: 'PrivateAlias',
+      packageName: '@flighthq/types',
+      scope: 'module',
+      source: 'host.ts',
+      space: 'type',
+    };
+    expect(
+      emitIrTypeHaxe(
+        {
+          kind: 'named',
+          reference: { binding, kind: 'binding', path: [] },
+          typeArguments: [{ kind: 'primitive', name: 'string' }],
+        },
+        {
+          fail(message: string): never {
+            throw new Error(message);
+          },
+          getBindingName: () => 'PrivateAlias',
+          getExternalTypeName: () => undefined,
+          getMemberName: (member) => member,
+          getTypeName: (type) => type,
+          resolveNamedType: () => ({ name: '{ window:Dynamic }', typeArgumentsApplied: true }),
+        },
+      ),
+    ).toBe('{ window:Dynamic }');
   });
 
   it('preserves optional parameters in function types', () => {

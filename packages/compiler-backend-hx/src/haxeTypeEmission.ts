@@ -11,7 +11,14 @@ interface IrTypeHaxeEmissionContext {
   readonly getExternalTypeName: (name: string) => string | undefined;
   readonly getMemberName: (name: string) => string;
   readonly getTypeName: (name: string) => string;
-  readonly resolveNamedType?: ((type: Readonly<IrTypeReference>) => string | undefined) | undefined;
+  readonly resolveNamedType?:
+    | ((type: Readonly<IrTypeReference>) => string | Readonly<IrTypeHaxeResolvedName> | undefined)
+    | undefined;
+}
+
+interface IrTypeHaxeResolvedName {
+  readonly name: string;
+  readonly typeArgumentsApplied: boolean;
 }
 
 export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeHaxeEmissionContext>): string {
@@ -53,7 +60,8 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
       const resolved = context.resolveNamedType?.(type);
       let targetName: string;
       if (resolved !== undefined) {
-        targetName = resolved;
+        if (typeof resolved !== 'string' && resolved.typeArgumentsApplied) return resolved.name;
+        targetName = typeof resolved === 'string' ? resolved : resolved.name;
       } else if (type.reference.kind === 'ambient') {
         const externalTypeName = context.getExternalTypeName(type.reference.name);
         if (!externalTypeName) context.fail(`external type ${type.reference.name} has no Haxe binding`);

@@ -491,6 +491,21 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(holder.contents).toContain('static function read(value:{ value:Float, label:String }):Float;');
   });
 
+  it('does not reapply arguments after inlining private generic aliases', () => {
+    const module = lower(
+      '@flighthq/types',
+      'private-generic-alias.ts',
+      'type Windowed<Value> = { window: unknown }; type Finished<Name> = void; export function open(): Windowed<string> { throw new Error(); } export function finish(): Finished<"flight"> {}',
+    );
+
+    const holder = findFile(emitIrModuleHaxeExtern(module), 'flighthq/_js/_fn/Types.hx');
+
+    expect(holder.contents).toContain('static function open():{ window:Dynamic };');
+    expect(holder.contents).toContain('static function finish():Void;');
+    expect(holder.contents).not.toContain('{ window:Dynamic }<String>');
+    expect(holder.contents).not.toContain('Void<String>');
+  });
+
   it('lowers a private interface from a contract implementation before structurally inlining it', () => {
     const implementation = lower(
       '@flighthq/types',

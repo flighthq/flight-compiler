@@ -692,9 +692,11 @@ function emitTypeHaxeExtern(
       getCompilerRuntimeExternalSymbolTargetHaxe(name, 'type', context.options.runtimeModule),
     getMemberName: safeHaxeExternName,
     getTypeName: safeHaxeExternTypeName,
-    resolveNamedType: (reference) =>
-      emitTypeAliasReferenceHaxeExtern(reference, context, activeAliases) ??
-      emitPrivateClassReferenceHaxeExtern(reference, context),
+    resolveNamedType: (reference) => {
+      const inlined = emitTypeAliasReferenceHaxeExtern(reference, context, activeAliases);
+      if (inlined !== undefined) return { name: inlined, typeArgumentsApplied: true };
+      return emitPrivateClassReferenceHaxeExtern(reference, context);
+    },
   });
 }
 
