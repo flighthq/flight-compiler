@@ -2615,18 +2615,19 @@ function getIrNamedDeclarationTargetHaxe(
       binding: IrBindingIdentity | IrTypeBindingIdentity;
       declaration: Readonly<IrDeclaration>;
       module: Readonly<IrModule>;
-    }>
+  }>
   | undefined {
-  if (type.reference.kind !== 'binding' || type.reference.path.length > 0) return undefined;
+  const reference = type.reference;
+  if (reference.kind !== 'binding' || reference.path.length > 0) return undefined;
   for (const module of context.sourceModules) {
     const declaration = module.declarations.find(
-      (candidate) => 'binding' in candidate && candidate.binding.id === type.reference.binding.id,
+      (candidate) => 'binding' in candidate && candidate.binding.id === reference.binding.id,
     );
     if (declaration && 'binding' in declaration) return { binding: declaration.binding, declaration, module };
   }
   const imported = context.module.imports
     .flatMap((entry) => entry.bindings.map((binding) => ({ binding, entry })))
-    .find(({ binding }) => binding.binding.id === type.reference.binding.id);
+    .find(({ binding }) => binding.binding.id === reference.binding.id);
   if (!imported || imported.binding.imported === '*' || imported.binding.imported === 'default') return undefined;
   const sourceModule = getHaxeResolvedImportModule(imported.entry.specifier, context, imported.binding.imported);
   if (!sourceModule) return undefined;
