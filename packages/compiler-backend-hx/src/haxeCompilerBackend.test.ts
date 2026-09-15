@@ -10266,8 +10266,8 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('create: cast(function');
-    expect(output).toContain('supports: cast(function');
+    expect(output).toContain('create: (cast function');
+    expect(output).toContain('supports: (cast function');
   });
 
   it('writes non-numeric typed-array indexes through the reflective property ABI', () => {
