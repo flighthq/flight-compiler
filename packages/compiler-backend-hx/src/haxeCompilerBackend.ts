@@ -140,6 +140,7 @@ interface EmitContext {
   dynamicBindingIds: Set<string>;
   packageName: string;
   sourceModules: readonly Readonly<IrModule>[];
+  sourceModuleFacadeTypeTargetNames: Map<string, ReadonlyMap<string, string>>;
   sourceModuleTargetNames: Map<string, ReadonlyMap<string, string>>;
   targetNames: ReadonlyMap<string, string>;
   taskFunctions: WeakMap<object, CompilerHaxeTaskLoweringFunction>;
@@ -413,6 +414,7 @@ function emitIrModuleHaxeWithContext(
     returnType: undefined,
     returnsAbsent: false,
     sourceModules,
+    sourceModuleFacadeTypeTargetNames: new Map([[getHaxeCompilerModuleKey(module), facadeTypeTargetNames]]),
     sourceModuleTargetNames,
     targetNames,
     taskFunctions: new WeakMap(),
@@ -2705,10 +2707,7 @@ function getImportedTypeLaneTargetHaxe(
   ) {
     return undefined;
   }
-  const targetNames =
-    context.sourceModuleTargetNames.get(getHaxeCompilerModuleKey(sourceModule)) ??
-    createIrModuleTargetNamesHaxe(sourceModule);
-  const importedName = createHaxeFacadeTypeTargetNames(sourceModule, facade, targetNames).get(binding.imported);
+  const importedName = getHaxeFacadeTypeTargetNames(sourceModule, context).get(binding.imported);
   return importedName ? { importedName, modulePath: getHaxeModulePath(sourceModule, context.options) } : undefined;
 }
 
@@ -2748,11 +2747,7 @@ function getImportedTargetNameHaxe(
   ) {
     return fallback;
   }
-  return (
-    createHaxeFacadeTypeTargetNames(sourceModule, facade, createIrModuleTargetNamesHaxe(sourceModule)).get(
-      binding.imported,
-    ) ?? fallback
-  );
+  return getHaxeFacadeTypeTargetNames(sourceModule, context).get(binding.imported) ?? fallback;
 }
 
 // Haxe re-exports types with aliases and values with forwarding module fields. Mutable bindings are
@@ -3176,7 +3171,7 @@ function createFacadeSourceContextHaxe(module: Readonly<IrModule>, context: Emit
   const targetNames =
     context.sourceModuleTargetNames.get(getHaxeCompilerModuleKey(module)) ?? createIrModuleTargetNamesHaxe(module);
   const moduleFacade = context.getModuleFacade?.(module);
-  const facadeTypeTargetNames = createHaxeFacadeTypeTargetNames(module, moduleFacade, targetNames);
+  const facadeTypeTargetNames = getHaxeFacadeTypeTargetNames(module, context);
   const qualifiedBindings = new Map<string, string>();
   for (const imported of module.imports) {
     for (const binding of imported.bindings) {
@@ -5037,6 +5032,16 @@ function createHaxeFacadeTypeTargetNames(
     occupied.add(targetName);
     names.set(exportName, targetName);
   }
+  return names;
+}
+
+function getHaxeFacadeTypeTargetNames(module: Readonly<IrModule>, context: EmitContext): ReadonlyMap<string, string> {
+  const moduleKey = getHaxeCompilerModuleKey(module);
+  const cached = context.sourceModuleFacadeTypeTargetNames.get(moduleKey);
+  if (cached) return cached;
+  const targetNames = context.sourceModuleTargetNames.get(moduleKey) ?? createIrModuleTargetNamesHaxe(module);
+  const names = createHaxeFacadeTypeTargetNames(module, context.getModuleFacade?.(module), targetNames);
+  context.sourceModuleFacadeTypeTargetNames.set(moduleKey, names);
   return names;
 }
 
