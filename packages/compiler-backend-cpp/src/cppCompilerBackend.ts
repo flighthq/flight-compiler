@@ -9083,7 +9083,11 @@ function emitOptionalExpressionCpp(
     context.includes.add('optional');
     return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().${safeCppName(expression.name)}; }())`;
   }
-  return emitExpression(expression, context, expectedType);
+  return emitExpression(
+    expression,
+    context,
+    expression.kind === 'binary' && expression.operator === '??' ? expectedType : undefined,
+  );
 }
 
 function assertIrOptionalChainReceiverIsSingleSentinelCpp(type: Readonly<IrType>, context: EmitContext): void {
