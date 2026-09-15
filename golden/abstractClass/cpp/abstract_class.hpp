@@ -7,6 +7,9 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Shape;
+struct Square;
+
 struct Shape : public flight::ReferenceEnabled {
   virtual ~Shape() = default;
   virtual double area() = 0;
@@ -18,7 +21,7 @@ struct Shape : public flight::ReferenceEnabled {
 struct Square : public Shape {
   double side;
   Square(double side) : Shape() {
-    this->side = side;
+    (this->side = side);
   }
   double area() override {
     return (this->side * this->side);

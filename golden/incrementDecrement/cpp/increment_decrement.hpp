@@ -2,6 +2,7 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
@@ -15,9 +16,9 @@ inline double count_up(double start, double steps) {
     double i = 0.0;
     while ((i < steps)) {
       {
-        value += 1.0;
+        (value += 1.0);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return value;
@@ -29,9 +30,9 @@ inline double count_down(double start, double steps) {
     double i = 0.0;
     while ((i < steps)) {
       {
-        value -= 1.0;
+        (value -= 1.0);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return value;
@@ -44,10 +45,10 @@ inline double step_accumulate(double n) {
     double i = 0.0;
     while ((i < n)) {
       {
-        total += step;
-        step += 2.0;
+        (total += step);
+        (step += 2.0);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return total;
@@ -57,8 +58,8 @@ inline double halving_steps(double value) {
   double count = 0.0;
   double current = value;
   while ((current > 1.0)) {
-    current = std::floor((current / 2.0));
-    count += 1.0;
+    (current = std::floor((current / 2.0)));
+    (count += 1.0);
   }
   return count;
 }

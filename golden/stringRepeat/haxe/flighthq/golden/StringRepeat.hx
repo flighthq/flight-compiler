@@ -7,9 +7,9 @@ function repeatString(text:String, count:Float):String {
     var i:Float = 0;
     while (i < count) {
       {
-        result = (result + text);
+        (result = (result + text));
       }
-      i += 1;
+      (i += 1);
     }
   }
   return result;
@@ -24,9 +24,9 @@ function joinWithSeparator(items:Array<String>, separator:String):String {
     var i:Float = 1;
     while (i < items.length) {
       {
-        result = ((result + separator) + items[Std.int(i)]);
+        (result = ((result + separator) + items[Std.int(i)]));
       }
-      i += 1;
+      (i += 1);
     }
   }
   return result;
@@ -35,7 +35,7 @@ function joinWithSeparator(items:Array<String>, separator:String):String {
 function padLeft(text:String, width:Float, fill:String):String {
   var result:String = text;
   while (result.length < width) {
-    result = (fill + result);
+    (result = (fill + result));
   }
   return result;
 }

@@ -4,15 +4,15 @@ package flighthq.golden;
 function counter():()->Float {
   var count:Float = 0;
   return function() {
-  count += 1;
+  (count += 1);
   return count;
 };
 }
 
 function accumulate(values:Array<Float>):Float {
   var total:Float = 0;
-  final add:(Float)->Void = function(n:Float) {
-  total += n;
+  final add = function(n:Float) {
+  (total += n);
 };
   for (v in values) {
     add(v);

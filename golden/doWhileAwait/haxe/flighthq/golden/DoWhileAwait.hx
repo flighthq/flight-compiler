@@ -11,7 +11,7 @@ function drain(task:flighthq._internal._Promise<Float>, again:Bool):flighthq._in
             function(awaitValue) {
               last = awaitValue;
               try {
-                again = false;
+                (again = false);
                 var taskJoin = function() {
                   try {
                     resolveTask(last);

@@ -17,13 +17,13 @@ inline double multiplication_table(double size) {
           double j = 1.0;
           while ((j <= size)) {
             {
-              sum = (sum + (i * j));
+              (sum = (sum + (i * j)));
             }
-            j = (j + 1.0);
+            (j = (j + 1.0));
           }
         }
       }
-      i = (i + 1.0);
+      (i = (i + 1.0));
     }
   }
   return sum;
@@ -33,7 +33,7 @@ inline double flatten_sum(flight::Array<flight::Array<double>> matrix) {
   double total = 0.0;
   for (auto row : matrix) {
     for (auto cell : row) {
-      total = (total + cell);
+      (total = (total + cell));
     }
   }
   return total;
@@ -45,10 +45,10 @@ inline double triangle_number(double n) {
   while ((i <= n)) {
     double j = 1.0;
     while ((j <= i)) {
-      total = (total + 1.0);
-      j = (j + 1.0);
+      (total = (total + 1.0));
+      (j = (j + 1.0));
     }
-    i = (i + 1.0);
+    (i = (i + 1.0));
   }
   return total;
 }

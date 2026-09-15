@@ -13,9 +13,9 @@ inline flight::Task<double> total(flight::Task<double> task, bool again) {
   bool pending = true;
   while (pending) {
     const double value = co_await task;
-    sum = (sum + value);
-    pending = again;
-    again = false;
+    (sum = (sum + value));
+    (pending = again);
+    (again = false);
   }
   co_return sum;
 }

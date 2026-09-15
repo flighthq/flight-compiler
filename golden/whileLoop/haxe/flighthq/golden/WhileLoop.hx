@@ -5,8 +5,8 @@ function countDown(start:Float):Float {
   var count:Float = start;
   var steps:Float = 0;
   while (count > 0) {
-    count = (count - 1);
-    steps = (steps + 1);
+    (count = (count - 1));
+    (steps = (steps + 1));
   }
   return steps;
 }
@@ -18,8 +18,8 @@ function sumUntil(values:Array<Float>, limit:Float):Float {
     if ((total + values[Std.int(index)]) > limit) {
       break;
     }
-    total = (total + values[Std.int(index)]);
-    index = (index + 1);
+    (total = (total + values[Std.int(index)]));
+    (index = (index + 1));
   }
   return total;
 }

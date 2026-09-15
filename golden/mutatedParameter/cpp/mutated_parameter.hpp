@@ -7,12 +7,14 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Cell;
+
 struct Cell : public flight::ReferenceEnabled {
   double value;
 };
 
 inline void bump(flight::Ref<Cell> cell, double next) {
-  cell->value = next;
+  (cell->value = next);
 }
 
 inline void bump_twice(flight::Ref<Cell> cell) {

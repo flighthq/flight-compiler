@@ -11,18 +11,18 @@ namespace flighthq_golden {
 
 inline std::variant<double, flight::String> assign_string(flight::String text) {
   std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<flight::String>, text};
-  return std::variant<double, flight::String>{std::in_place_type<flight::String>, std::get<flight::String>(value)};
+  return std::variant<double, flight::String>{std::in_place_type<flight::String>, std::get<1>(value)};
 }
 
 inline std::variant<double, flight::String> assign_number(double n) {
   std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<double>, n};
-  return std::variant<double, flight::String>{std::in_place_type<double>, std::get<double>(value)};
+  return std::variant<double, flight::String>{std::in_place_type<double>, std::get<0>(value)};
 }
 
 inline std::variant<double, flight::String> reassign(bool flag) {
   std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<flight::String>, flight::String("start")};
   if (flag) {
-    value = std::variant<double, flight::String>{std::in_place_type<double>, 42.0};
+    (value = std::variant<double, flight::String>{std::in_place_type<double>, 42.0});
   }
   return value;
 }

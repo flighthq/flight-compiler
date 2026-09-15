@@ -18,13 +18,13 @@ inline double sum_matrix(double rows, double cols) {
           double c = 0.0;
           while ((c < cols)) {
             {
-              total += ((r * cols) + c);
+              (total += ((r * cols) + c));
             }
-            c += 1.0;
+            (c += 1.0);
           }
         }
       }
-      r += 1.0;
+      (r += 1.0);
     }
   }
   return total;
@@ -59,9 +59,9 @@ inline double count_divisible(double limit, double divisor) {
   double i = 1.0;
   while ((i <= limit)) {
     if ((std::fmod(i, divisor) == 0.0)) {
-      count += 1.0;
+      (count += 1.0);
     }
-    i += 1.0;
+    (i += 1.0);
   }
   return count;
 }

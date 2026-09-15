@@ -22,9 +22,9 @@ function total(task:flighthq._internal._Promise<Float>, again:Bool):flighthq._in
                 function(awaitValue) {
                   var value = awaitValue;
                   try {
-                    sum = (sum + value);
-                    pending = again;
-                    again = false;
+                    (sum = (sum + value));
+                    (pending = again);
+                    (again = false);
                     taskLoop();
                     return;
                   } catch (taskError_5:Dynamic) {

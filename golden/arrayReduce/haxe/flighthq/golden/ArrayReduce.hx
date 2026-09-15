@@ -13,7 +13,7 @@ function maxValue(values:Array<Float>):Float {
   var best:Float = 0;
   for (v in values) {
     if (v > best) {
-      best = v;
+      (best = v);
     }
   }
   return best;

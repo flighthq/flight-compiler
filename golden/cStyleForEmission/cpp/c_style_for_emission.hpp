@@ -13,9 +13,9 @@ inline double total(double limit) {
     double index = 0.0;
     while ((index < limit)) {
       {
-        sum += index;
+        (sum += index);
       }
-      index += 1.0;
+      (index += 1.0);
     }
   }
   return sum;

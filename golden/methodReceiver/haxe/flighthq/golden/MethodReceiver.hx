@@ -17,6 +17,6 @@ class Counter {
   }
 
   public function advance():Void {
-    this.total = (this.total + this.step);
+    (this.total = (this.total + this.step));
   }
 }

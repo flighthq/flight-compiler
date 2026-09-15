@@ -17,7 +17,7 @@ function attempt(task:flighthq._internal._Promise<Float>):flighthq._internal._Pr
       var cleanupValue:Dynamic = null;
       var taskCleanup = function() {
         try {
-          done = true;
+          (done = true);
           taskJoin();
           return;
         } catch (taskError_2:Dynamic) {
@@ -26,7 +26,7 @@ function attempt(task:flighthq._internal._Promise<Float>):flighthq._internal._Pr
       };
       var taskRejected = function(taskRejection:Dynamic) {
         try {
-          done = true;
+          (done = true);
         } catch (taskError_4:Dynamic) {
           rejectTask(taskError_4);
         }

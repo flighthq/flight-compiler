@@ -7,9 +7,9 @@ function total(limit:Float):Float {
     var index:Float = 0;
     while (index < limit) {
       {
-        sum += index;
+        (sum += index);
       }
-      index += 1;
+      (index += 1);
     }
   }
   return sum;

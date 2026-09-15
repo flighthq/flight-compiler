@@ -7,6 +7,8 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Range;
+
 struct Range : public flight::ReferenceEnabled {
   double max;
   double min;

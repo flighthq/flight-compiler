@@ -7,10 +7,13 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Base;
+struct Child;
+
 struct Base : public flight::ReferenceEnabled {
   double value;
   Base(double value) {
-    this->value = value;
+    (this->value = value);
   }
   virtual ~Base() = default;
   virtual double doubled() {
@@ -21,7 +24,7 @@ struct Base : public flight::ReferenceEnabled {
 struct Child : public Base {
   flight::String label;
   Child(double value, flight::String label) : Base(value) {
-    this->label = label;
+    (this->label = label);
   }
   flight::String describe() {
     return flight::String("") + flight::to_string(this->label) + flight::String(": ") + flight::to_string(this->doubled()) + flight::String("");

@@ -27,7 +27,7 @@ inline double loop_shadow(double limit) {
           break;
         }
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return sum;
@@ -39,9 +39,9 @@ inline double parameter_shadow(double n) {
     double n_2 = 0.0;
     while ((n_2 < 3.0)) {
       {
-        result += n_2;
+        (result += n_2);
       }
-      n_2 += 1.0;
+      (n_2 += 1.0);
     }
   }
   return result;

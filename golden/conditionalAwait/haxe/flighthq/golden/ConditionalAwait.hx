@@ -35,7 +35,7 @@ function choose(task:flighthq._internal._Promise<Float>, flag:Bool):flighthq._in
         }
       } else {
         try {
-          total = 1;
+          (total = 1);
           taskJoin();
           return;
         } catch (taskError_5:Dynamic) {

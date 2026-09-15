@@ -15,6 +15,6 @@ class Counter implements Advancer {
   }
 
   public function reset():Void {
-    this.step = 1;
+    (this.step = 1);
   }
 }

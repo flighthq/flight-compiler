@@ -6,7 +6,7 @@ typedef Values = { value:Float };
 function selectFirstKey(values:Values):String {
   var key:String;
   for (variableHoistingIterationValue in ["value"]) {
-    key = variableHoistingIterationValue;
+    (key = variableHoistingIterationValue);
     return key;
   }
   return "";

@@ -21,7 +21,7 @@ function loopShadow(limit:Float):Float {
           break;
         }
       }
-      i += 1;
+      (i += 1);
     }
   }
   return sum;
@@ -33,9 +33,9 @@ function parameterShadow(n:Float):Float {
     var n_2:Float = 0;
     while (n_2 < 3) {
       {
-        result += n_2;
+        (result += n_2);
       }
-      n_2 += 1;
+      (n_2 += 1);
     }
   }
   return result;

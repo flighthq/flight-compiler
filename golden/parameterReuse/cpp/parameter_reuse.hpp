@@ -17,9 +17,9 @@ inline flight::String mirror(flight::String text) {
     double i = (static_cast<double>(text.length()) - 1.0);
     while ((i >= 0.0)) {
       {
-        result = result + text.char_at(i);
+        (result = result + text.char_at(i));
       }
-      i -= 1.0;
+      (i -= 1.0);
     }
   }
   return text + result;
@@ -36,9 +36,9 @@ inline flight::String repeat_join(flight::String text, double count, flight::Str
     double i = 1.0;
     while ((i < count)) {
       {
-        result = result + separator + text;
+        (result = result + separator + text);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return result;

@@ -7,7 +7,7 @@ function unsignedShiftRight(value:Float, count:Float):Float {
 
 function unsignedShiftAssign(value:Float, count:Float):Float {
   var result:Float = value;
-  result = Std.int(result) >>> Std.int(count);
+  (result = Std.int(result) >>> Std.int(count));
   return result;
 }
 

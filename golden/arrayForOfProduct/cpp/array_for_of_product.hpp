@@ -2,6 +2,7 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
@@ -12,7 +13,7 @@ namespace flighthq_golden {
 inline double product(flight::Array<double> values) {
   double result = 1.0;
   for (auto value : values) {
-    result *= value;
+    (result *= value);
   }
   return result;
 }
@@ -21,7 +22,7 @@ inline double max(flight::Array<double> values) {
   double best = values.element(0.0);
   for (auto value : values) {
     if ((value > best)) {
-      best = value;
+      (best = value);
     }
   }
   return best;
@@ -31,7 +32,7 @@ inline double count_positive(flight::Array<double> values) {
   double count = 0.0;
   for (auto value : values) {
     if ((value > 0.0)) {
-      count += 1.0;
+      (count += 1.0);
     }
   }
   return count;
@@ -40,7 +41,7 @@ inline double count_positive(flight::Array<double> values) {
 inline double sum_absolute(flight::Array<double> values) {
   double total = 0.0;
   for (auto value : values) {
-    total += std::abs(value);
+    (total += std::abs(value));
   }
   return total;
 }

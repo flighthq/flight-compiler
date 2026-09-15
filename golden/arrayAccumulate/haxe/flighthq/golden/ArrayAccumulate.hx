@@ -5,7 +5,7 @@ function runningSum(values:Array<Float>):Array<Float> {
   final result:Array<Float> = [];
   var sum:Float = 0;
   for (value in values) {
-    sum = (sum + value);
+    (sum = (sum + value));
     result.push(sum);
   }
   return result;
@@ -24,7 +24,7 @@ function filterPositive(values:Array<Float>):Array<Float> {
 function sumSquares(values:Array<Float>):Float {
   var total:Float = 0;
   for (value in values) {
-    total = (total + (value * value));
+    (total = (total + (value * value)));
   }
   return total;
 }

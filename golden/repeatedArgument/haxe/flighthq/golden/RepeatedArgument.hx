@@ -15,9 +15,9 @@ function eachTotal(rows:Array<Float>):Float {
     var index:Float = 0;
     while (index < 2) {
       {
-        sum += total(rows);
+        (sum += total(rows));
       }
-      index += 1;
+      (index += 1);
     }
   }
   return sum;

@@ -10,14 +10,14 @@ namespace flighthq_golden {
 inline flight::String sign(double value) {
   flight::String label;
   if ((value > 0.0)) {
-    label = flight::String("positive");
+    (label = flight::String("positive"));
   }
   else {
     if ((value < 0.0)) {
-      label = flight::String("negative");
+      (label = flight::String("negative"));
     }
     else {
-      label = flight::String("zero");
+      (label = flight::String("zero"));
     }
   }
   return label;
@@ -28,10 +28,10 @@ inline double bounds(flight::Array<double> values) {
   double max = values.element(0.0);
   for (auto v : values) {
     if ((v < min)) {
-      min = v;
+      (min = v);
     }
     if ((v > max)) {
-      max = v;
+      (max = v);
     }
   }
   return (max - min);
@@ -40,22 +40,22 @@ inline double bounds(flight::Array<double> values) {
 inline flight::String grade(double score) {
   flight::String letter;
   if ((score >= 90.0)) {
-    letter = flight::String("A");
+    (letter = flight::String("A"));
   }
   else {
     if ((score >= 80.0)) {
-      letter = flight::String("B");
+      (letter = flight::String("B"));
     }
     else {
       if ((score >= 70.0)) {
-        letter = flight::String("C");
+        (letter = flight::String("C"));
       }
       else {
         if ((score >= 60.0)) {
-          letter = flight::String("D");
+          (letter = flight::String("D"));
         }
         else {
-          letter = flight::String("F");
+          (letter = flight::String("F"));
         }
       }
     }

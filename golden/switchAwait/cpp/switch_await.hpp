@@ -13,14 +13,14 @@ inline flight::Task<double> pick(flight::Task<double> task, double mode) {
   {
     auto switch_subject = mode;
     if ((switch_subject == 1.0)) {
-      total = co_await task;
+      (total = co_await task);
     }
     else {
       if ((switch_subject == 2.0)) {
-        total = 20.0;
+        (total = 20.0);
       }
       else {
-        total = 30.0;
+        (total = 30.0);
       }
     }
   }

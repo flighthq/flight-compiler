@@ -8,6 +8,8 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Item;
+
 struct Item : public flight::ReferenceEnabled {
   flight::String name;
   double count;
@@ -17,7 +19,7 @@ inline double busiest_count(flight::Array<flight::Ref<Item>> items) {
   std::optional<flight::Ref<Item>> best = std::nullopt;
   for (auto item : items) {
     if ((!best.has_value() || (item->count > best.value()->count))) {
-      best = std::optional<flight::Ref<Item>>{item};
+      (best = std::optional<flight::Ref<Item>>{item});
     }
   }
   return (!best.has_value() ? 0.0 : best.value()->count);

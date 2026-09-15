@@ -20,7 +20,7 @@ inline double max_value(flight::Array<double> values) {
   double best = 0.0;
   for (auto v : values) {
     if ((v > best)) {
-      best = v;
+      (best = v);
     }
   }
   return best;

@@ -2,14 +2,14 @@
 package flighthq.golden;
 
 function greetOptional(?name:String):String {
-  if (name != null) {
+  if (js.Syntax.strictNeq(name, js.Syntax.code("undefined"))) {
     return "Hello, " + Std.string(name) + "!";
   }
   return "Hello, stranger!";
 }
 
 function addOptional(a:Float, ?b:Float):Float {
-  if (b != null) {
+  if (js.Syntax.strictNeq(b, js.Syntax.code("undefined"))) {
     return a + b;
   }
   return a;
@@ -17,11 +17,11 @@ function addOptional(a:Float, ?b:Float):Float {
 
 function formatOptional(value:Float, ?prefix:String, ?suffix:String):String {
   var result:String = Std.string(value);
-  if (prefix != null) {
-    result = (prefix + result);
+  if (js.Syntax.strictNeq(prefix, js.Syntax.code("undefined"))) {
+    (result = (prefix + result));
   }
-  if (suffix != null) {
-    result = (result + suffix);
+  if (js.Syntax.strictNeq(suffix, js.Syntax.code("undefined"))) {
+    (result = (result + suffix));
   }
   return result;
 }

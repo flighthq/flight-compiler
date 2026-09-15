@@ -16,9 +16,9 @@ function sumCharCodes(text:String):Float {
     var i:Float = 0;
     while (i < text.length) {
       {
-        total = (total + text.charCodeAt(Std.int(i)));
+        (total = (total + text.charCodeAt(Std.int(i))));
       }
-      i = (i + 1);
+      (i = (i + 1));
     }
   }
   return total;

@@ -7,12 +7,14 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Point;
+
 struct Point : public flight::ReferenceEnabled {
   double x;
   double y;
   Point(double x, double y) {
-    this->x = x;
-    this->y = y;
+    (this->x = x);
+    (this->y = y);
   }
   double length() {
     return (this->x + this->y);

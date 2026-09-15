@@ -11,7 +11,7 @@ inline flight::Array<double> running_sum(flight::Array<double> values) {
   flight::Array<double> result = flight::Array<double>{};
   double sum = 0.0;
   for (auto value : values) {
-    sum = (sum + value);
+    (sum = (sum + value));
     result.push(sum);
   }
   return result;
@@ -30,7 +30,7 @@ inline flight::Array<double> filter_positive(flight::Array<double> values) {
 inline double sum_squares(flight::Array<double> values) {
   double total = 0.0;
   for (auto value : values) {
-    total = (total + (value * value));
+    (total = (total + (value * value)));
   }
   return total;
 }

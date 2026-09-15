@@ -21,9 +21,9 @@ inline double each_total(flight::Array<double> rows) {
     double index = 0.0;
     while ((index < 2.0)) {
       {
-        sum += total(rows);
+        (sum += total(rows));
       }
-      index += 1.0;
+      (index += 1.0);
     }
   }
   return sum;

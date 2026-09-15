@@ -7,9 +7,9 @@ function reverse(text:String):String {
     var i:Float = text.length - 1;
     while (i >= 0) {
       {
-        result = (result + text.charAt(Std.int(i)));
+        (result = (result + text.charAt(Std.int(i))));
       }
-      i -= 1;
+      (i -= 1);
     }
   }
   return result;
@@ -22,10 +22,10 @@ function countChar(text:String, ch:String):Float {
     while (i < text.length) {
       {
         if (text.charAt(Std.int(i)) == ch) {
-          count = (count + 1);
+          (count = (count + 1));
         }
       }
-      i += 1;
+      (i += 1);
     }
   }
   return count;

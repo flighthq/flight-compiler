@@ -3,8 +3,8 @@ package flighthq.golden;
 
 function adjust(value:Float, mask:Float):Float {
   var adjusted:Float = value;
-  adjusted += mask;
-  adjusted *= 2;
+  (adjusted += mask);
+  (adjusted *= 2);
   return - adjusted;
 }
 

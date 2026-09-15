@@ -22,9 +22,9 @@ function countFlags(flags:Float):Float {
   var remaining:Float = flags;
   while (remaining > 0) {
     if ((Std.int(remaining) & Std.int(1)) != 0) {
-      count += 1;
+      (count += 1);
     }
-    remaining = (Std.int(remaining) >> Std.int(1));
+    (remaining = (Std.int(remaining) >> Std.int(1)));
   }
   return count;
 }

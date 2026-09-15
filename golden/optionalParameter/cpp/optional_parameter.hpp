@@ -25,10 +25,10 @@ inline double add_optional(double a, std::optional<double> b = std::nullopt) {
 inline flight::String format_optional(double value, std::optional<flight::String> prefix = std::nullopt, std::optional<flight::String> suffix = std::nullopt) {
   flight::String result = flight::String("") + flight::to_string(value) + flight::String("");
   if (prefix.has_value()) {
-    result = prefix.value() + result;
+    (result = prefix.value() + result);
   }
   if (suffix.has_value()) {
-    result = result + suffix.value();
+    (result = result + suffix.value());
   }
   return result;
 }

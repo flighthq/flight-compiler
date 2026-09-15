@@ -15,7 +15,7 @@ function attempt(task:flighthq._internal._Promise<Float>, fallback:Float):flight
       };
       var taskRejected = function(taskRejection:Dynamic) {
         try {
-          result = fallback;
+          (result = fallback);
           taskJoin();
           return;
         } catch (taskError_3:Dynamic) {

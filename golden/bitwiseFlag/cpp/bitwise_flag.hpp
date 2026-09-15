@@ -28,9 +28,9 @@ inline double count_flags(double flags) {
   double remaining = flags;
   while ((remaining > 0.0)) {
     if ((flight::bitwise_and(remaining, 1.0) != 0.0)) {
-      count += 1.0;
+      (count += 1.0);
     }
-    remaining = flight::signed_right_shift(remaining, 1.0);
+    (remaining = flight::signed_right_shift(remaining, 1.0));
   }
   return count;
 }

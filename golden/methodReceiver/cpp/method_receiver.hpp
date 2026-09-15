@@ -7,6 +7,8 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Counter;
+
 struct Counter : public flight::ReferenceEnabled {
   double total;
   double step;
@@ -17,7 +19,7 @@ struct Counter : public flight::ReferenceEnabled {
     return (this->total * factor);
   }
   void advance() {
-    this->total = (this->total + this->step);
+    (this->total = (this->total + this->step));
   }
 };
 

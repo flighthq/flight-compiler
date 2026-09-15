@@ -5,8 +5,8 @@ function sumOneToN(n:Float):Float {
   var sum:Float = 0;
   var i:Float = 1;
   do {
-    sum += i;
-    i += 1;
+    (sum += i);
+    (i += 1);
   } while ((i <= n));
   return sum;
 }
@@ -15,8 +15,8 @@ function repeatHalve(value:Float):Float {
   var result:Float = value;
   var count:Float = 0;
   do {
-    result = Math.floor((result / 2));
-    count += 1;
+    (result = Math.floor((result / 2)));
+    (count += 1);
   } while ((result > 0));
   return count;
 }
@@ -25,8 +25,8 @@ function reverseDigits(value:Float):Float {
   var n:Float = Math.abs(value);
   var reversed:Float = 0;
   do {
-    reversed = ((reversed * 10) + (n % 10));
-    n = Math.floor((n / 10));
+    (reversed = ((reversed * 10) + (n % 10)));
+    (n = Math.floor((n / 10)));
   } while ((n > 0));
   return (value < 0) ? - reversed : reversed;
 }

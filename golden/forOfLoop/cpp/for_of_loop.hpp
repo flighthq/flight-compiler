@@ -10,7 +10,7 @@ namespace flighthq_golden {
 inline double sum(flight::Array<double> values) {
   double total = 0.0;
   for (auto value : values) {
-    total = (total + value);
+    (total = (total + value));
   }
   return total;
 }
@@ -18,7 +18,7 @@ inline double sum(flight::Array<double> values) {
 inline flight::String collect(flight::Array<flight::String> items) {
   flight::String result = flight::String("");
   for (auto item : items) {
-    result = result + item;
+    (result = result + item);
   }
   return result;
 }

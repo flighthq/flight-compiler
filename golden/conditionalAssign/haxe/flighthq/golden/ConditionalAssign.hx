@@ -4,14 +4,14 @@ package flighthq.golden;
 function sign(value:Float):String {
   var label:String;
   if (value > 0) {
-    label = "positive";
+    (label = "positive");
   }
   else {
     if (value < 0) {
-      label = "negative";
+      (label = "negative");
     }
     else {
-      label = "zero";
+      (label = "zero");
     }
   }
   return label;
@@ -22,10 +22,10 @@ function bounds(values:Array<Float>):Float {
   var max:Float = values[0];
   for (v in values) {
     if (v < min) {
-      min = v;
+      (min = v);
     }
     if (v > max) {
-      max = v;
+      (max = v);
     }
   }
   return max - min;
@@ -34,22 +34,22 @@ function bounds(values:Array<Float>):Float {
 function grade(score:Float):String {
   var letter:String;
   if (score >= 90) {
-    letter = "A";
+    (letter = "A");
   }
   else {
     if (score >= 80) {
-      letter = "B";
+      (letter = "B");
     }
     else {
       if (score >= 70) {
-        letter = "C";
+        (letter = "C");
       }
       else {
         if (score >= 60) {
-          letter = "D";
+          (letter = "D");
         }
         else {
-          letter = "F";
+          (letter = "F");
         }
       }
     }

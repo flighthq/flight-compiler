@@ -10,9 +10,9 @@ function join(parts:Array<String>, separator:String):String {
     var i:Float = 1;
     while (i < parts.length) {
       {
-        result = ((result + separator) + parts[Std.int(i)]);
+        (result = ((result + separator) + parts[Std.int(i)]));
       }
-      i += 1;
+      (i += 1);
     }
   }
   return result;
@@ -24,9 +24,9 @@ function repeat(text:String, count:Float):String {
     var i:Float = 0;
     while (i < count) {
       {
-        result = (result + text);
+        (result = (result + text));
       }
-      i += 1;
+      (i += 1);
     }
   }
   return result;
@@ -39,7 +39,7 @@ function wrap(text:String, before:String, after:String):String {
 function padLeft(text:String, width:Float, fill:String):String {
   var result:String = text;
   while (result.length < width) {
-    result = (fill + result);
+    (result = (fill + result));
   }
   return result;
 }

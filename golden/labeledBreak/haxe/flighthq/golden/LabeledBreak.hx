@@ -12,18 +12,18 @@ function findPair(values:Array<Float>, target:Float):Float {
           while (j < values.length) {
             {
               if ((values[Std.int(i)] + values[Std.int(j)]) == target) {
-                found = ((i * 100) + j);
+                (found = ((i * 100) + j));
                 break;
               }
             }
-            j += 1;
+            (j += 1);
           }
         }
         if (found >= 0) {
           break;
         }
       }
-      i += 1;
+      (i += 1);
     }
   }
   return found;
@@ -34,7 +34,7 @@ function firstAbove(matrix:Array<Array<Float>>, threshold:Float):Float {
   for (row in matrix) {
     for (cell in row) {
       if (cell > threshold) {
-        result = cell;
+        (result = cell);
         break;
       }
     }

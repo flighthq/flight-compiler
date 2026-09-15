@@ -2,6 +2,7 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
@@ -13,8 +14,8 @@ inline double sum_up_to(double limit) {
   double sum = 0.0;
   double i = 1.0;
   while ((i <= limit)) {
-    sum += i;
-    i += 1.0;
+    (sum += i);
+    (i += 1.0);
   }
   return sum;
 }
@@ -23,8 +24,8 @@ inline double digit_sum(double value) {
   double n = std::abs(value);
   double sum = 0.0;
   while ((n > 0.0)) {
-    sum += std::fmod(n, 10.0);
-    n = std::floor((n / 10.0));
+    (sum += std::fmod(n, 10.0));
+    (n = std::floor((n / 10.0)));
   }
   return sum;
 }
@@ -36,8 +37,8 @@ inline double count_digits(double value) {
   double n = std::abs(value);
   double count = 0.0;
   while ((n > 0.0)) {
-    n = std::floor((n / 10.0));
-    count += 1.0;
+    (n = std::floor((n / 10.0)));
+    (count += 1.0);
   }
   return count;
 }
@@ -47,12 +48,12 @@ inline double collatz_steps(double start) {
   double steps = 0.0;
   while ((n != 1.0)) {
     if ((std::fmod(n, 2.0) == 0.0)) {
-      n = (n / 2.0);
+      (n = (n / 2.0));
     }
     else {
-      n = ((3.0 * n) + 1.0);
+      (n = ((3.0 * n) + 1.0));
     }
-    steps += 1.0;
+    (steps += 1.0);
   }
   return steps;
 }

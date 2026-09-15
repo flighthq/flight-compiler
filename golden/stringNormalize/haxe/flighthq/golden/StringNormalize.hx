@@ -13,7 +13,7 @@ function isPalindrome(text:String):Bool {
     if (lower.charAt(Std.int(i)) != lower.charAt(Std.int(((len - 1) - i)))) {
       return false;
     }
-    i = (i + 1);
+    (i = (i + 1));
   }
   return true;
 }

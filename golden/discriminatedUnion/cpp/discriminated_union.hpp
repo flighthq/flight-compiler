@@ -8,6 +8,9 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Circle;
+struct Square;
+
 struct Circle : public flight::ReferenceEnabled {
   flight::String kind;
   double radius;
@@ -21,10 +24,10 @@ struct Square : public flight::ReferenceEnabled {
 using Shape = std::variant<flight::Ref<Circle>, flight::Ref<Square>>;
 
 inline double area(Shape shape) {
-  if (std::holds_alternative<flight::Ref<Circle>>(shape)) {
-    return ((std::get<flight::Ref<Circle>>(shape)->radius * std::get<flight::Ref<Circle>>(shape)->radius) * 3.0);
+  if (shape.index() == 0) {
+    return ((std::get<0>(shape)->radius * std::get<0>(shape)->radius) * 3.0);
   }
-  return (std::get<flight::Ref<Square>>(shape)->side * std::get<flight::Ref<Square>>(shape)->side);
+  return (std::get<1>(shape)->side * std::get<1>(shape)->side);
 }
 
 } // namespace flighthq_golden

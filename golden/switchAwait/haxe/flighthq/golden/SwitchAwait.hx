@@ -36,13 +36,31 @@ function pick(task:flighthq._internal._Promise<Float>, mode:Float):flighthq._int
         }
       } else {
         try {
+          var taskJoin_2 = function() {
+            try {
+              taskJoin();
+              return;
+            } catch (taskError_6:Dynamic) {
+              rejectTask(taskError_6);
+            }
+          };
           if (switchSubject == 2) {
-            total = 20;
+            try {
+              (total = 20);
+              taskJoin_2();
+              return;
+            } catch (taskError_7:Dynamic) {
+              rejectTask(taskError_7);
+            }
+          } else {
+            try {
+              (total = 30);
+              taskJoin_2();
+              return;
+            } catch (taskError_8:Dynamic) {
+              rejectTask(taskError_8);
+            }
           }
-          else {
-            total = 30;
-          }
-          taskJoin();
           return;
         } catch (taskError_5:Dynamic) {
           rejectTask(taskError_5);

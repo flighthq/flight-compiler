@@ -18,7 +18,7 @@ inline bool is_empty(flight::String s) {
 inline flight::String pad_to_length(flight::String s, double target) {
   flight::String result = s;
   while ((static_cast<double>(result.length()) < target)) {
-    result = result + flight::String(" ");
+    (result = result + flight::String(" "));
   }
   return result;
 }

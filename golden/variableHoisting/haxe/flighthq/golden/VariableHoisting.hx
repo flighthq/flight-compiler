@@ -4,7 +4,7 @@ package flighthq.golden;
 function selectNested():Float {
   var value:Float;
   {
-    value = 1;
+    (value = 1);
   }
   return value;
 }
@@ -12,11 +12,11 @@ function selectNested():Float {
 function selectLoop(limit:Float):Float {
   var index:Float;
   var total:Float = 0;
-  index = 0;
+  (index = 0);
   {
     while (index < limit) {
-      total += index;
-      index += 1;
+      (total += index);
+      (index += 1);
     }
   }
   return total + index;
@@ -26,8 +26,8 @@ function selectPattern(values:Array<Dynamic>):String {
   var first:Float;
   var second:String;
   final arrayPatternValue:Array<Dynamic> = values;
-  first = arrayPatternValue[0];
-  second = arrayPatternValue[1];
+  (first = arrayPatternValue[0]);
+  (second = arrayPatternValue[1]);
   if (first < 0) {
     return "";
   }
@@ -37,7 +37,7 @@ function selectPattern(values:Array<Dynamic>):String {
 function incrementValues(values:Array<Float>):Void {
   var value:Float;
   for (variableHoistingIterationValue in values) {
-    value = variableHoistingIterationValue;
-    value += 1;
+    (value = variableHoistingIterationValue);
+    (value += 1);
   }
 }

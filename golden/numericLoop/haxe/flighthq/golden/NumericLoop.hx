@@ -7,9 +7,9 @@ function factorial(n:Float):Float {
     var i:Float = 2;
     while (i <= n) {
       {
-        result *= i;
+        (result *= i);
       }
-      i += 1;
+      (i += 1);
     }
   }
   return result;
@@ -23,10 +23,10 @@ function fibonacci(n:Float):Float {
     while (i < n) {
       {
         final next:Float = a + b;
-        a = b;
-        b = next;
+        (a = b);
+        (b = next);
       }
-      i += 1;
+      (i += 1);
     }
   }
   return a;
@@ -37,8 +37,8 @@ function gcd(a:Float, b:Float):Float {
   var y:Float = b;
   while (y != 0) {
     final temp:Float = y;
-    y = (x % temp);
-    x = temp;
+    (y = (x % temp));
+    (x = temp);
   }
   return x;
 }
@@ -49,9 +49,9 @@ function power(base:Float, exp:Float):Float {
     var i:Float = 0;
     while (i < exp) {
       {
-        result *= base;
+        (result *= base);
       }
-      i += 1;
+      (i += 1);
     }
   }
   return result;

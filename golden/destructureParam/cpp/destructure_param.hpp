@@ -2,12 +2,15 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
 static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");
 
 namespace flighthq_golden {
+
+struct Rectangle;
 
 struct Rectangle : public flight::ReferenceEnabled {
   double height;
@@ -18,8 +21,8 @@ inline double area(flight::Ref<Rectangle> parameter_pattern_value) {
   double width;
   double height;
   flight::Ref<Rectangle> object_pattern_value = parameter_pattern_value;
-  width = object_pattern_value->width;
-  height = object_pattern_value->height;
+  (width = object_pattern_value->width);
+  (height = object_pattern_value->height);
   return (width * height);
 }
 
@@ -27,8 +30,8 @@ inline double perimeter(flight::Ref<Rectangle> parameter_pattern_value) {
   double width;
   double height;
   flight::Ref<Rectangle> object_pattern_value = parameter_pattern_value;
-  width = object_pattern_value->width;
-  height = object_pattern_value->height;
+  (width = object_pattern_value->width);
+  (height = object_pattern_value->height);
   return (2.0 * (width + height));
 }
 
@@ -36,8 +39,8 @@ inline double diagonal(flight::Ref<Rectangle> parameter_pattern_value) {
   double width;
   double height;
   flight::Ref<Rectangle> object_pattern_value = parameter_pattern_value;
-  width = object_pattern_value->width;
-  height = object_pattern_value->height;
+  (width = object_pattern_value->width);
+  (height = object_pattern_value->height);
   return std::sqrt(((width * width) + (height * height)));
 }
 
@@ -45,8 +48,8 @@ inline bool is_square(flight::Ref<Rectangle> parameter_pattern_value) {
   double width;
   double height;
   flight::Ref<Rectangle> object_pattern_value = parameter_pattern_value;
-  width = object_pattern_value->width;
-  height = object_pattern_value->height;
+  (width = object_pattern_value->width);
+  (height = object_pattern_value->height);
   return (width == height);
 }
 

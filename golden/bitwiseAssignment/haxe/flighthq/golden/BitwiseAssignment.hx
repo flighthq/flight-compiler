@@ -3,30 +3,30 @@ package flighthq.golden;
 
 function maskBits(value:Float, mask:Float):Float {
   var result:Float = value;
-  result = Std.int(result) & Std.int(mask);
+  (result = Std.int(result) & Std.int(mask));
   return result;
 }
 
 function setBits(value:Float, bits:Float):Float {
   var result:Float = value;
-  result = Std.int(result) | Std.int(bits);
+  (result = Std.int(result) | Std.int(bits));
   return result;
 }
 
 function toggleBits(value:Float, bits:Float):Float {
   var result:Float = value;
-  result = Std.int(result) ^ Std.int(bits);
+  (result = Std.int(result) ^ Std.int(bits));
   return result;
 }
 
 function shiftLeft(value:Float, count:Float):Float {
   var result:Float = value;
-  result = Std.int(result) << Std.int(count);
+  (result = Std.int(result) << Std.int(count));
   return result;
 }
 
 function shiftRight(value:Float, count:Float):Float {
   var result:Float = value;
-  result = Std.int(result) >> Std.int(count);
+  (result = Std.int(result) >> Std.int(count));
   return result;
 }

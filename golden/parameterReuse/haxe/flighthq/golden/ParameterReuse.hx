@@ -11,9 +11,9 @@ function mirror(text:String):String {
     var i:Float = text.length - 1;
     while (i >= 0) {
       {
-        result = (result + text.charAt(Std.int(i)));
+        (result = (result + text.charAt(Std.int(i))));
       }
-      i -= 1;
+      (i -= 1);
     }
   }
   return text + result;
@@ -30,9 +30,9 @@ function repeatJoin(text:String, count:Float, separator:String):String {
     var i:Float = 1;
     while (i < count) {
       {
-        result = ((result + separator) + text);
+        (result = ((result + separator) + text));
       }
-      i += 1;
+      (i += 1);
     }
   }
   return result;

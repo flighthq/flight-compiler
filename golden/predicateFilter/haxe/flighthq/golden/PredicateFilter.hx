@@ -7,7 +7,7 @@ function filterAbove(values:Array<Float>, threshold:Float):Array<Float> {
 
 function findFirst(values:Array<Float>, threshold:Float):Float {
   final found:Null<Float> = Lambda.find(values, function(v:Float) return (v > threshold));
-  if (found == null) {
+  if (js.Syntax.strictEq(found, js.Syntax.code("undefined"))) {
     return - 1;
   }
   return found;

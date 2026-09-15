@@ -15,7 +15,7 @@ function and_assign(a:Float, b:Float):Float {
 
 function nullish_assign(a:Null<String>, fallback:String):String {
   var value:Null<String> = a;
-  { if (value == null) value = fallback; value; };
+  (function() { if (value == null) value = fallback; return value; })();
   return value;
 }
 
@@ -33,6 +33,6 @@ function and_assign_expr(a:Float, b:Float):Float {
 
 function nullish_assign_expr(a:Null<String>, fallback:String):String {
   var value:Null<String> = a;
-  final result:String = { if (value == null) value = fallback; value; };
+  final result:String = (function() { if (value == null) value = fallback; return value; })();
   return result;
 }

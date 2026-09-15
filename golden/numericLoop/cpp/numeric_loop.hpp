@@ -14,9 +14,9 @@ inline double factorial(double n) {
     double i = 2.0;
     while ((i <= n)) {
       {
-        result *= i;
+        (result *= i);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return result;
@@ -30,10 +30,10 @@ inline double fibonacci(double n) {
     while ((i < n)) {
       {
         const double next = (a + b);
-        a = b;
-        b = next;
+        (a = b);
+        (b = next);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return a;
@@ -44,8 +44,8 @@ inline double gcd(double a, double b) {
   double y = b;
   while ((y != 0.0)) {
     const double temp = y;
-    y = std::fmod(x, temp);
-    x = temp;
+    (y = std::fmod(x, temp));
+    (x = temp);
   }
   return x;
 }
@@ -56,9 +56,9 @@ inline double power(double base, double exp) {
     double i = 0.0;
     while ((i < exp)) {
       {
-        result *= base;
+        (result *= base);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return result;

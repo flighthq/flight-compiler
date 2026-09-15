@@ -8,6 +8,9 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Advancer;
+struct Counter;
+
 struct Advancer : public flight::ReferenceEnabled {
   std::function<double(double)> advance;
 };
@@ -18,7 +21,7 @@ struct Counter : public flight::ReferenceEnabled {
     return (by + this->step);
   }
   void reset() {
-    this->step = 1.0;
+    (this->step = 1.0);
   }
 };
 

@@ -12,7 +12,7 @@ function isEmpty(s:String):Bool {
 function padToLength(s:String, target:Float):String {
   var result:String = s;
   while (result.length < target) {
-    result = (result + " ");
+    (result = (result + " "));
   }
   return result;
 }

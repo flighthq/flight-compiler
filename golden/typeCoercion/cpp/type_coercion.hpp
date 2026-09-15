@@ -21,9 +21,9 @@ inline flight::String repeat_string(flight::String text, double count) {
     double i = 0.0;
     while ((i < count)) {
       {
-        result = result + text;
+        (result = result + text);
       }
-      i = (i + 1.0);
+      (i = (i + 1.0));
     }
   }
   return result;
@@ -32,7 +32,7 @@ inline flight::String repeat_string(flight::String text, double count) {
 inline flight::String pad_left(flight::String text, double width, flight::String fill) {
   flight::String result = text;
   while ((static_cast<double>(result.length()) < width)) {
-    result = fill + result;
+    (result = fill + result);
   }
   return result;
 }

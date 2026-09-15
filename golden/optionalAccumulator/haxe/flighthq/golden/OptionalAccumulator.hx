@@ -4,11 +4,11 @@ package flighthq.golden;
 typedef Item = { name:String, count:Float };
 
 function busiestCount(items:Array<Item>):Float {
-  var best:Null<Item> = null;
+  var best:Null<Item> = js.Syntax.code("undefined");
   for (item in items) {
-    if ((best == null) || (item.count > cast(best).count)) {
-      best = item;
+    if (js.Syntax.strictEq(best, js.Syntax.code("undefined")) || (item.count > cast(best).count)) {
+      (best = item);
     }
   }
-  return (best == null) ? 0 : cast(best).count;
+  return js.Syntax.strictEq(best, js.Syntax.code("undefined")) ? 0 : cast(best).count;
 }

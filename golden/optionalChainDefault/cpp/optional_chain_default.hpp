@@ -8,6 +8,8 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Entry;
+
 struct Entry : public flight::ReferenceEnabled {
   flight::String key;
 };

@@ -15,11 +15,11 @@ struct Shape : public flight::ReferenceEnabled {
 inline double project(flight::Ref<Shape> parameter_pattern_value, flight::Ref<Shape> source) {
   double value;
   flight::Ref<Shape> object_pattern_value = parameter_pattern_value;
-  value = object_pattern_value->value;
+  (value = object_pattern_value->value);
   double assigned = 0.0;
   {
     flight::Ref<Shape> destructuring_assignment_value = source;
-    assigned = destructuring_assignment_value->value;
+    (assigned = destructuring_assignment_value->value);
   }
   return (value + assigned);
 }

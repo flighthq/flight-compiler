@@ -6,14 +6,14 @@ function decide(task:flighthq._internal._Promise<Bool>):flighthq._internal._Prom
     try {
       var total:Float = 0;
       flighthq._internal._Promise.resolve(task).then(
-        function(awaitValue) {
-          var awaitCondition = awaitValue;
+        function(awaitValue_2) {
+          var awaitValue = awaitValue_2;
           try {
-            if (awaitCondition) {
-              total = 1;
+            if (awaitValue) {
+              (total = 1);
             }
             else {
-              total = 2;
+              (total = 2);
             }
             resolveTask(total);
             return;

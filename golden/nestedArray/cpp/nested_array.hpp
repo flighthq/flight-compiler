@@ -10,7 +10,7 @@ namespace flighthq_golden {
 inline double sum_row(flight::Array<flight::Array<double>> grid, double row) {
   double total = 0.0;
   for (auto value : grid.element(row)) {
-    total += value;
+    (total += value);
   }
   return total;
 }
@@ -26,8 +26,8 @@ inline flight::Array<double> flatten(flight::Array<flight::Array<double>> grid) 
 }
 
 inline flight::Array<flight::Array<double>> transpose(flight::Array<flight::Array<double>> grid) {
-  const double rows = static_cast<double>(grid.size());
-  const double cols = static_cast<double>(grid.element(0.0).size());
+  auto rows = static_cast<double>(grid.size());
+  auto cols = static_cast<double>(grid.element(0.0).size());
   flight::Array<flight::Array<double>> result = flight::Array<flight::Array<double>>{};
   {
     double c = 0.0;
@@ -40,12 +40,12 @@ inline flight::Array<flight::Array<double>> transpose(flight::Array<flight::Arra
             {
               row.push(grid.element(r).element(c));
             }
-            r += 1.0;
+            (r += 1.0);
           }
         }
         result.push(row);
       }
-      c += 1.0;
+      (c += 1.0);
     }
   }
   return result;

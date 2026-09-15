@@ -5,8 +5,8 @@ function sumUpTo(limit:Float):Float {
   var sum:Float = 0;
   var i:Float = 1;
   while (i <= limit) {
-    sum += i;
-    i += 1;
+    (sum += i);
+    (i += 1);
   }
   return sum;
 }
@@ -15,8 +15,8 @@ function digitSum(value:Float):Float {
   var n:Float = Math.abs(value);
   var sum:Float = 0;
   while (n > 0) {
-    sum += (n % 10);
-    n = Math.floor((n / 10));
+    (sum += (n % 10));
+    (n = Math.floor((n / 10)));
   }
   return sum;
 }
@@ -28,8 +28,8 @@ function countDigits(value:Float):Float {
   var n:Float = Math.abs(value);
   var count:Float = 0;
   while (n > 0) {
-    n = Math.floor((n / 10));
-    count += 1;
+    (n = Math.floor((n / 10)));
+    (count += 1);
   }
   return count;
 }
@@ -39,12 +39,12 @@ function collatzSteps(start:Float):Float {
   var steps:Float = 0;
   while (n != 1) {
     if ((n % 2) == 0) {
-      n = (n / 2);
+      (n = (n / 2));
     }
     else {
-      n = ((3 * n) + 1);
+      (n = ((3 * n) + 1));
     }
-    steps += 1;
+    (steps += 1);
   }
   return steps;
 }

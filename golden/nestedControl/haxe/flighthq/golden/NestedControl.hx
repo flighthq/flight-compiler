@@ -11,13 +11,13 @@ function sumMatrix(rows:Float, cols:Float):Float {
           var c:Float = 0;
           while (c < cols) {
             {
-              total += ((r * cols) + c);
+              (total += ((r * cols) + c));
             }
-            c += 1;
+            (c += 1);
           }
         }
       }
-      r += 1;
+      (r += 1);
     }
   }
   return total;
@@ -52,9 +52,9 @@ function countDivisible(limit:Float, divisor:Float):Float {
   var i:Float = 1;
   while (i <= limit) {
     if ((i % divisor) == 0) {
-      count += 1;
+      (count += 1);
     }
-    i += 1;
+    (i += 1);
   }
   return count;
 }

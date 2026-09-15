@@ -11,8 +11,8 @@ namespace flighthq_golden {
 inline flight::Task<double> drain(flight::Task<double> task, bool again) {
   double last = 0.0;
   do {
-    last = co_await task;
-    again = false;
+    (last = co_await task);
+    (again = false);
   } while (again);
   co_return last;
 }

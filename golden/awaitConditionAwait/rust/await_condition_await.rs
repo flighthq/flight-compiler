@@ -6,8 +6,8 @@ use flight_runtime::FlightTask;
 pub async fn decide(task: FlightTask<bool>) -> f64 {
   let mut total: f64 = 0.0;
   {
-    let await_condition = task.await;
-    if await_condition {
+    let await_value = task.await;
+    if await_value {
       total = 1.0;
     }
     else {

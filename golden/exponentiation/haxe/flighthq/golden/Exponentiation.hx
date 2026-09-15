@@ -19,6 +19,6 @@ function squareRoot(x:Float):Float {
 
 function accumPower(base:Float, exp:Float):Float {
   var result:Float = base;
-  result = Math.pow(result, exp);
+  (result = Math.pow(result, exp));
   return result;
 }

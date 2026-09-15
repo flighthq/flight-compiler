@@ -4,7 +4,7 @@ package flighthq.golden;
 function createCounter(initial:Float):()->Float {
   var count:Float = initial;
   return function() {
-  count = (count + 1);
+  (count = (count + 1));
   return count;
 };
 }

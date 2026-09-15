@@ -7,16 +7,19 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-struct width_height : public flight::ReferenceEnabled {
-  double width;
-  double height;
-};
-
 inline bool is_empty(flight::Array<double> values) {
   return (static_cast<double>(values.size()) < 1.0);
 }
 
-inline double width_of(flight::Ref<width_height> shape) {
+#ifndef FLIGHT_COMPILER_ANONYMOUS__FLIGHTHQ_GOLDEN_6A2B928B7D011B27
+#define FLIGHT_COMPILER_ANONYMOUS__FLIGHTHQ_GOLDEN_6A2B928B7D011B27
+struct width_height_6a2b928b7d011b27 : public flight::ReferenceEnabled {
+  double width;
+  double height;
+};
+#endif // FLIGHT_COMPILER_ANONYMOUS__FLIGHTHQ_GOLDEN_6A2B928B7D011B27
+
+inline double width_of(flight::Ref<width_height_6a2b928b7d011b27> shape) {
   return (shape->width * shape->height);
 }
 

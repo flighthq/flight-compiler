@@ -43,7 +43,7 @@ function attempt(task:flighthq._internal._Promise<Float>, log:Array<Float>):flig
         };
         var taskRejected_2 = function(taskRejection_2:Dynamic) {
           try {
-            result = 1;
+            (result = 1);
             taskJoin_2();
             return;
           } catch (taskError_7:Dynamic) {

@@ -14,9 +14,9 @@ inline double total(flight::Array<double> values) {
     double index = 0.0;
     while ((index < static_cast<double>(values.size()))) {
       {
-        sum += values.get(index).value_or(0.0);
+        (sum += values.get(index).value_or(0.0));
       }
-      index += 1.0;
+      (index += 1.0);
     }
   }
   return sum;

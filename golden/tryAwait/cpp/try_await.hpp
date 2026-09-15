@@ -11,10 +11,10 @@ namespace flighthq_golden {
 inline flight::Task<double> attempt(flight::Task<double> task, double fallback) {
   double result = 0.0;
   try {
-    result = co_await task;
+    (result = co_await task);
   }
   catch (...) {
-    result = fallback;
+    (result = fallback);
   }
   co_return result;
 }

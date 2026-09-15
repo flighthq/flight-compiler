@@ -19,9 +19,9 @@ function repeatLine(text:String, count:Float):String {
     var i:Float = 0;
     while (i < count) {
       {
-        result = Std.string(result) + Std.string(text) + "\n";
+        (result = Std.string(result) + Std.string(text) + "\n");
       }
-      i += 1;
+      (i += 1);
     }
   }
   return result;

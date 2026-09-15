@@ -16,9 +16,9 @@ inline flight::String join(flight::Array<flight::String> parts, flight::String s
     double i = 1.0;
     while ((i < static_cast<double>(parts.size()))) {
       {
-        result = result + separator + parts.element(i);
+        (result = result + separator + parts.element(i));
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return result;
@@ -30,9 +30,9 @@ inline flight::String repeat(flight::String text, double count) {
     double i = 0.0;
     while ((i < count)) {
       {
-        result = result + text;
+        (result = result + text);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return result;
@@ -45,7 +45,7 @@ inline flight::String wrap(flight::String text, flight::String before, flight::S
 inline flight::String pad_left(flight::String text, double width, flight::String fill) {
   flight::String result = text;
   while ((static_cast<double>(result.length()) < width)) {
-    result = fill + result;
+    (result = fill + result);
   }
   return result;
 }

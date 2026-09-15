@@ -18,18 +18,18 @@ inline double find_pair(flight::Array<double> values, double target) {
           while ((j < static_cast<double>(values.size()))) {
             {
               if (((values.element(i) + values.element(j)) == target)) {
-                found = ((i * 100.0) + j);
+                (found = ((i * 100.0) + j));
                 break;
               }
             }
-            j += 1.0;
+            (j += 1.0);
           }
         }
         if ((found >= 0.0)) {
           break;
         }
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return found;
@@ -40,7 +40,7 @@ inline double first_above(flight::Array<flight::Array<double>> matrix, double th
   for (auto row : matrix) {
     for (auto cell : row) {
       if ((cell > threshold)) {
-        result = cell;
+        (result = cell);
         break;
       }
     }

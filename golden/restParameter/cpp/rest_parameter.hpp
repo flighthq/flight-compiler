@@ -10,7 +10,7 @@ namespace flighthq_golden {
 inline double sum(flight::Array<double> values) {
   double total = 0.0;
   for (auto value : values) {
-    total += value;
+    (total += value);
   }
   return total;
 }

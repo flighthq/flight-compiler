@@ -9,24 +9,24 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 inline flight::String describe(std::variant<double, flight::String> value) {
-  if (std::holds_alternative<flight::String>(value)) {
-    return std::get<flight::String>(value).to_upper();
+  if (value.index() == 1) {
+    return std::get<1>(value).to_upper();
   }
-  return flight::String("number ") + flight::to_string(std::get<double>(value)) + flight::String("");
+  return flight::String("number ") + flight::to_string(std::get<0>(value)) + flight::String("");
 }
 
 inline double length(std::variant<double, flight::String> value) {
-  if (std::holds_alternative<double>(value)) {
+  if (value.index() == 0) {
     return 1.0;
   }
-  return static_cast<double>(std::get<flight::String>(value).length());
+  return static_cast<double>(std::get<1>(value).length());
 }
 
 inline flight::String classify(std::variant<bool, double, flight::String> value) {
-  if (std::holds_alternative<flight::String>(value)) {
+  if (value.index() == 2) {
     return flight::String("text");
   }
-  if (std::holds_alternative<double>(value)) {
+  if (value.index() == 1) {
     return flight::String("count");
   }
   return flight::String("flag");

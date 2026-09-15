@@ -11,7 +11,7 @@ inline double scoped_accumulate(flight::Array<double> values) {
   double result = 0.0;
   for (auto value : values) {
     const double doubled = (value * 2.0);
-    result = (result + doubled);
+    (result = (result + doubled));
   }
   return result;
 }
@@ -20,11 +20,11 @@ inline double nested_scope(double x) {
   double result = x;
   if ((x > 0.0)) {
     const double temp = (result * 2.0);
-    result = (temp + 1.0);
+    (result = (temp + 1.0));
   }
   else {
     const double temp_2 = (result * 3.0);
-    result = (temp_2 - 1.0);
+    (result = (temp_2 - 1.0));
   }
   return result;
 }

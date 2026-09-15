@@ -13,13 +13,13 @@ inline flight::Task<double> attempt(flight::Task<double> task, flight::Task<doub
   {
     auto caught = false;
     try {
-      result = co_await task;
+      (result = co_await task);
     }
     catch (...) {
-      caught = true;
+      (caught = true);
     }
     if (caught) {
-      result = co_await backup;
+      (result = co_await backup);
     }
   }
   co_return result;

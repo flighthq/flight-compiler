@@ -11,8 +11,8 @@ inline double count_down(double start) {
   double count = start;
   double steps = 0.0;
   while ((count > 0.0)) {
-    count = (count - 1.0);
-    steps = (steps + 1.0);
+    (count = (count - 1.0));
+    (steps = (steps + 1.0));
   }
   return steps;
 }
@@ -24,8 +24,8 @@ inline double sum_until(flight::Array<double> values, double limit) {
     if (((total + values.element(index)) > limit)) {
       break;
     }
-    total = (total + values.element(index));
-    index = (index + 1.0);
+    (total = (total + values.element(index)));
+    (index = (index + 1.0));
   }
   return total;
 }

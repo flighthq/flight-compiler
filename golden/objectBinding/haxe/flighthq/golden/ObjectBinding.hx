@@ -6,11 +6,11 @@ typedef Shape = { other:Bool, value:Float };
 function project(parameterPatternValue:Shape, source:Shape):Float {
   var value:Float;
   final objectPatternValue:Shape = parameterPatternValue;
-  value = objectPatternValue.value;
+  (value = objectPatternValue.value);
   var assigned:Float = 0;
   {
     final destructuringAssignmentValue:Shape = source;
-    assigned = destructuringAssignmentValue.value;
+    (assigned = destructuringAssignmentValue.value);
   }
   return value + assigned;
 }

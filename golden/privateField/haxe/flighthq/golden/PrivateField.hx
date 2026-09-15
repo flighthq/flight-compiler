@@ -7,7 +7,7 @@ class Counter {
   public function new() {}
 
   public function increment():Void {
-    this.count += 1;
+    (this.count += 1);
   }
 
   public function getCount():Float {
@@ -15,7 +15,7 @@ class Counter {
   }
 
   public function reset():Void {
-    this.count = 0;
+    (this.count = 0);
   }
 
   public function clear():Void {

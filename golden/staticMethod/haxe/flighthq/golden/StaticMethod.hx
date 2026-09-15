@@ -5,11 +5,11 @@ class Counter {
   public var count:Float;
 
   public function new(initial:Float) {
-    this.count = initial;
+    (this.count = initial);
   }
 
   public function increment():Void {
-    this.count = (this.count + 1);
+    (this.count = (this.count + 1));
   }
 
   public function value():Float {

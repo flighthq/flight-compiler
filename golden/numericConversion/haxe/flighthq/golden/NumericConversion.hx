@@ -27,7 +27,7 @@ function average(values:Array<Float>):Float {
   }
   var sum:Float = 0;
   for (value in values) {
-    sum = (sum + value);
+    (sum = (sum + value));
   }
   return sum / count;
 }

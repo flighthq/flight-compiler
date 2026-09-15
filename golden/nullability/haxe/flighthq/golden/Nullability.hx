@@ -2,12 +2,12 @@
 package flighthq.golden;
 
 function widen(value:Null<Float>, fallback:Float):Float {
-  if (value == null) {
+  if (js.Syntax.strictEq(value, js.Syntax.code("undefined"))) {
     return fallback;
   }
   return value;
 }
 
 function label(name:Null<String>):String {
-  return (name == null) ? "none" : name;
+  return js.Syntax.strictEq(name, null) ? "none" : name;
 }

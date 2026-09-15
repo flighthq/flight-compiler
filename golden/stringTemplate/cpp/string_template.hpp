@@ -25,9 +25,9 @@ inline flight::String repeat_line(flight::String text, double count) {
     double i = 0.0;
     while ((i < count)) {
       {
-        result = flight::String("") + flight::to_string(result) + flight::String("") + flight::to_string(text) + flight::String("\n");
+        (result = flight::String("") + flight::to_string(result) + flight::String("") + flight::to_string(text) + flight::String("\n"));
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return result;

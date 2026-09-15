@@ -16,7 +16,7 @@ class Square extends Shape {
 
   public function new(side:Float) {
     super();
-    this.side = side;
+    (this.side = side);
   }
 
   public function area():Float {

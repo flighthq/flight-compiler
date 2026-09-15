@@ -22,9 +22,9 @@ inline double accumulate(double steps) {
     double index = 0.0;
     while ((index < steps)) {
       {
-        total += 0.1;
+        (total += 0.1);
       }
-      index += 1.0;
+      (index += 1.0);
     }
   }
   return total;

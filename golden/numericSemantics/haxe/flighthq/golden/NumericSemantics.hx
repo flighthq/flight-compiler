@@ -15,9 +15,9 @@ function accumulate(steps:Float):Float {
     var index:Float = 0;
     while (index < steps) {
       {
-        total += 0.1;
+        (total += 0.1);
       }
-      index += 1;
+      (index += 1);
     }
   }
   return total;

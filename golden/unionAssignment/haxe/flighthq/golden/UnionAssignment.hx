@@ -14,20 +14,20 @@ function assign_number(n:Float):Dynamic {
 function reassign(flag:Bool):Dynamic {
   var value:Dynamic = "start";
   if (flag) {
-    value = 42;
+    (value = 42);
   }
   return value;
 }
 
 function assign_null(text:Null<String>):String {
-  if (text == null) {
+  if (js.Syntax.strictEq(text, null)) {
     return "none";
   }
   return text;
 }
 
 function assign_undefined(text:Null<String>):String {
-  if (text == null) {
+  if (js.Syntax.strictEq(text, js.Syntax.code("undefined"))) {
     return "none";
   }
   return text;

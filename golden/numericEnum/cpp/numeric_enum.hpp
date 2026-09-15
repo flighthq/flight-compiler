@@ -7,6 +7,9 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Named;
+struct Tagged;
+
 enum class Level {
   Low = 1,
   High = 2,

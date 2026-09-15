@@ -7,7 +7,7 @@ function sumUntilNegative(values:Array<Float>):Float {
     if (value < 0) {
       break;
     }
-    total += value;
+    (total += value);
   }
   return total;
 }
@@ -18,7 +18,7 @@ function sumSkipOdd(values:Array<Float>):Float {
     if ((value - (2 * Math.floor((value / 2)))) != 0) {
       continue;
     }
-    total += value;
+    (total += value);
   }
   return total;
 }
@@ -29,7 +29,7 @@ function firstMultiple(limit:Float, divisor:Float):Float {
     if ((i - (divisor * Math.floor((i / divisor)))) == 0) {
       return i;
     }
-    i += 1;
+    (i += 1);
   }
   return - 1;
 }
@@ -38,8 +38,8 @@ function countUntilSum(values:Array<Float>, target:Float):Float {
   var total:Float = 0;
   var count:Float = 0;
   for (value in values) {
-    total += value;
-    count += 1;
+    (total += value);
+    (count += 1);
     if (total >= target) {
       break;
     }

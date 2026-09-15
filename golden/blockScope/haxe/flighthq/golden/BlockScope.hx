@@ -5,7 +5,7 @@ function scopedAccumulate(values:Array<Float>):Float {
   var result:Float = 0;
   for (value in values) {
     final doubled:Float = value * 2;
-    result = (result + doubled);
+    (result = (result + doubled));
   }
   return result;
 }
@@ -14,11 +14,11 @@ function nestedScope(x:Float):Float {
   var result:Float = x;
   if (x > 0) {
     final temp:Float = result * 2;
-    result = (temp + 1);
+    (result = (temp + 1));
   }
   else {
     final temp_2:Float = result * 3;
-    result = (temp_2 - 1);
+    (result = (temp_2 - 1));
   }
   return result;
 }

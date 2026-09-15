@@ -4,7 +4,7 @@ package flighthq.golden;
 function sumRow(grid:Array<Array<Float>>, row:Float):Float {
   var total:Float = 0;
   for (value in grid[Std.int(row)]) {
-    total += value;
+    (total += value);
   }
   return total;
 }
@@ -20,8 +20,8 @@ function flatten(grid:Array<Array<Float>>):Array<Float> {
 }
 
 function transpose(grid:Array<Array<Float>>):Array<Array<Float>> {
-  final rows:Float = grid.length;
-  final cols:Float = grid[0].length;
+  final rows:Dynamic = grid.length;
+  final cols:Dynamic = grid[0].length;
   final result:Array<Array<Float>> = [];
   {
     var c:Float = 0;
@@ -34,12 +34,12 @@ function transpose(grid:Array<Array<Float>>):Array<Array<Float>> {
             {
               row.push(grid[Std.int(r)][Std.int(c)]);
             }
-            r += 1;
+            (r += 1);
           }
         }
         result.push(row);
       }
-      c += 1;
+      (c += 1);
     }
   }
   return result;

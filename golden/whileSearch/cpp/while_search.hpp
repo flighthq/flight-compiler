@@ -13,7 +13,7 @@ inline double first_above(flight::Array<double> values, double threshold) {
     if ((values.element(i) > threshold)) {
       return values.element(i);
     }
-    i += 1.0;
+    (i += 1.0);
   }
   return -1.0;
 }
@@ -23,9 +23,9 @@ inline double count_occurrences(flight::String text, flight::String target) {
   double pos = 0.0;
   while ((pos < static_cast<double>(text.length()))) {
     if ((text.char_at(pos) == target)) {
-      count += 1.0;
+      (count += 1.0);
     }
-    pos += 1.0;
+    (pos += 1.0);
   }
   return count;
 }
@@ -36,7 +36,7 @@ inline double index_of_first(flight::Array<double> values, double target) {
     if ((values.element(i) == target)) {
       return i;
     }
-    i += 1.0;
+    (i += 1.0);
   }
   return -1.0;
 }

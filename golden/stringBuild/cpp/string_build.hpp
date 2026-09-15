@@ -13,9 +13,9 @@ inline flight::String reverse(flight::String text) {
     double i = (static_cast<double>(text.length()) - 1.0);
     while ((i >= 0.0)) {
       {
-        result = result + text.char_at(i);
+        (result = result + text.char_at(i));
       }
-      i -= 1.0;
+      (i -= 1.0);
     }
   }
   return result;
@@ -28,10 +28,10 @@ inline double count_char(flight::String text, flight::String ch) {
     while ((i < static_cast<double>(text.length()))) {
       {
         if ((text.char_at(i) == ch)) {
-          count = (count + 1.0);
+          (count = (count + 1.0));
         }
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return count;

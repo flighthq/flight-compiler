@@ -7,8 +7,8 @@ class Point {
   public var y:Float;
 
   public function new(x:Float, y:Float) {
-    this.x = x;
-    this.y = y;
+    (this.x = x);
+    (this.y = y);
   }
 
   public function length():Float {

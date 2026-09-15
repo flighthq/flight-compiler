@@ -7,9 +7,9 @@ function accumulate(initial:Float, steps:Float):Float {
     var i:Float = 0;
     while (i < steps) {
       {
-        value += i;
+        (value += i);
       }
-      i += 1;
+      (i += 1);
     }
   }
   return value;
@@ -17,18 +17,18 @@ function accumulate(initial:Float, steps:Float):Float {
 
 function scale(base:Float, factor:Float):Float {
   var result:Float = base;
-  result *= factor;
+  (result *= factor);
   return result;
 }
 
 function halve(value:Float):Float {
   var result:Float = value;
-  result /= 2;
+  (result /= 2);
   return result;
 }
 
 function remainder(value:Float, divisor:Float):Float {
   var result:Float = value;
-  result %= divisor;
+  (result %= divisor);
   return result;
 }

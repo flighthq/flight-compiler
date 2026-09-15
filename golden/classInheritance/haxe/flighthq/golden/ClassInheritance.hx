@@ -5,7 +5,7 @@ private class Base {
   public var value:Float;
 
   public function new(value:Float) {
-    this.value = value;
+    (this.value = value);
   }
 
   public function doubled():Float {
@@ -18,7 +18,7 @@ private class Child extends Base {
 
   public function new(value:Float, label:String) {
     super(value);
-    this.label = label;
+    (this.label = label);
   }
 
   public function describe():String {

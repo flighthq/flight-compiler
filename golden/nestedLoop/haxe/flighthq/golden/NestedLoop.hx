@@ -11,13 +11,13 @@ function multiplicationTable(size:Float):Float {
           var j:Float = 1;
           while (j <= size) {
             {
-              sum = (sum + (i * j));
+              (sum = (sum + (i * j)));
             }
-            j = (j + 1);
+            (j = (j + 1));
           }
         }
       }
-      i = (i + 1);
+      (i = (i + 1));
     }
   }
   return sum;
@@ -27,7 +27,7 @@ function flattenSum(matrix:Array<Array<Float>>):Float {
   var total:Float = 0;
   for (row in matrix) {
     for (cell in row) {
-      total = (total + cell);
+      (total = (total + cell));
     }
   }
   return total;
@@ -39,10 +39,10 @@ function triangleNumber(n:Float):Float {
   while (i <= n) {
     var j:Float = 1;
     while (j <= i) {
-      total = (total + 1);
-      j = (j + 1);
+      (total = (total + 1));
+      (j = (j + 1));
     }
-    i = (i + 1);
+    (i = (i + 1));
   }
   return total;
 }

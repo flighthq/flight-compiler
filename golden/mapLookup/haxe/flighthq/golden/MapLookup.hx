@@ -3,7 +3,7 @@ package flighthq.golden;
 
 function lookup(entries:flighthq._internal._Map<String, Float>, key:String):Float {
   final value:Null<Float> = entries.get(key);
-  if (value != null) {
+  if (js.Syntax.strictNeq(value, js.Syntax.code("undefined"))) {
     return value;
   }
   return - 1;
@@ -11,7 +11,7 @@ function lookup(entries:flighthq._internal._Map<String, Float>, key:String):Floa
 
 function getOrDefault(entries:flighthq._internal._Map<String, String>, key:String, fallback:String):String {
   final value:Null<String> = entries.get(key);
-  if (value != null) {
+  if (js.Syntax.strictNeq(value, js.Syntax.code("undefined"))) {
     return value;
   }
   return fallback;

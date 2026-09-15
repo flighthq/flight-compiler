@@ -9,22 +9,22 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 inline flight::String narrow_typeof(std::variant<double, flight::String> value) {
-  if (std::holds_alternative<flight::String>(value)) {
-    return std::get<flight::String>(value);
+  if (value.index() == 1) {
+    return std::get<1>(value);
   }
-  return flight::to_string(std::get<double>(value));
+  return flight::to_string(std::get<0>(value));
 }
 
 inline double narrow_typeof_number(std::variant<double, flight::String> value) {
-  if (std::holds_alternative<double>(value)) {
-    return std::get<double>(value);
+  if (value.index() == 0) {
+    return std::get<0>(value);
   }
   return 0.0;
 }
 
 inline flight::String narrow_branch(std::variant<double, flight::String> value, bool flag) {
-  if ((flag && std::holds_alternative<flight::String>(value))) {
-    return std::get<flight::String>(value);
+  if ((flag && value.index() == 1)) {
+    return std::get<1>(value);
   }
   return flight::String("default");
 }

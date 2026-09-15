@@ -9,20 +9,20 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 inline flight::String describe_type(std::variant<double, flight::String> value) {
-  if (std::holds_alternative<flight::String>(value)) {
-    return flight::String("string of length ") + flight::to_string(static_cast<double>(std::get<flight::String>(value).length())) + flight::String("");
+  if (value.index() == 1) {
+    return flight::String("string of length ") + flight::to_string(static_cast<double>(std::get<1>(value).length())) + flight::String("");
   }
-  return flight::String("number: ") + flight::to_string(std::get<double>(value)) + flight::String("");
+  return flight::String("number: ") + flight::to_string(std::get<0>(value)) + flight::String("");
 }
 
 inline flight::String format_value(std::variant<bool, double, flight::String> value) {
-  if (std::holds_alternative<flight::String>(value)) {
-    return std::get<flight::String>(value).to_upper();
+  if (value.index() == 2) {
+    return std::get<2>(value).to_upper();
   }
-  if (std::holds_alternative<double>(value)) {
-    return flight::String("") + flight::to_string(std::get<double>(value)) + flight::String("");
+  if (value.index() == 1) {
+    return flight::String("") + flight::to_string(std::get<1>(value)) + flight::String("");
   }
-  return (std::get<bool>(value) ? flight::String("yes") : flight::String("no"));
+  return (std::get<0>(value) ? flight::String("yes") : flight::String("no"));
 }
 
 } // namespace flighthq_golden

@@ -39,7 +39,7 @@ function boundedSum(values:Array<Float>, limit:Float):Float {
     if ((total + value) > limit) {
       return total;
     }
-    total = (total + value);
+    (total = (total + value));
   }
   return total;
 }

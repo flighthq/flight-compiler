@@ -4,7 +4,7 @@ package flighthq.golden;
 typedef Cell = { value:Float };
 
 function bump(cell:Cell, next:Float):Void {
-  cell.value = next;
+  (cell.value = next);
 }
 
 function bumpTwice(cell:Cell):Void {

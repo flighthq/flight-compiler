@@ -14,9 +14,9 @@ inline double accumulate(double initial, double steps) {
     double i = 0.0;
     while ((i < steps)) {
       {
-        value += i;
+        (value += i);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return value;
@@ -24,13 +24,13 @@ inline double accumulate(double initial, double steps) {
 
 inline double scale(double base, double factor) {
   double result = base;
-  result *= factor;
+  (result *= factor);
   return result;
 }
 
 inline double halve(double value) {
   double result = value;
-  result /= 2.0;
+  (result /= 2.0);
   return result;
 }
 

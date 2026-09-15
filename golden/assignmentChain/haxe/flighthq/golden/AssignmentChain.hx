@@ -7,10 +7,10 @@ function accumulate(start:Float, steps:Float):Float {
     var i:Float = 0;
     while (i < steps) {
       {
-        value += i;
-        value *= 2;
+        (value += i);
+        (value *= 2);
       }
-      i += 1;
+      (i += 1);
     }
   }
   return value;
@@ -22,9 +22,9 @@ function buildString(base:String, count:Float):String {
     var i:Float = 0;
     while (i < count) {
       {
-        result = (result + "-" + Std.string(i));
+        (result = (result + "-" + Std.string(i)));
       }
-      i += 1;
+      (i += 1);
     }
   }
   return result;
@@ -32,19 +32,19 @@ function buildString(base:String, count:Float):String {
 
 function bitManipulate(value:Float, mask:Float):Float {
   var result:Float = value;
-  result = Std.int(result) | Std.int(mask);
-  result = Std.int(result) & Std.int(255);
-  result = Std.int(result) ^ Std.int(15);
-  result = Std.int(result) << Std.int(1);
+  (result = Std.int(result) | Std.int(mask));
+  (result = Std.int(result) & Std.int(255));
+  (result = Std.int(result) ^ Std.int(15));
+  (result = Std.int(result) << Std.int(1));
   return result;
 }
 
 function multiAssign(a:Float, b:Float):Float {
   var x:Float = a;
   var y:Float = b;
-  x += y;
-  y -= x;
-  x *= 2;
-  y *= - 1;
+  (x += y);
+  (y -= x);
+  (x *= 2);
+  (y *= - 1);
   return x + y;
 }

@@ -7,8 +7,8 @@ function area(parameterPatternValue:Rectangle):Float {
   var width:Float;
   var height:Float;
   final objectPatternValue:Rectangle = parameterPatternValue;
-  width = objectPatternValue.width;
-  height = objectPatternValue.height;
+  (width = objectPatternValue.width);
+  (height = objectPatternValue.height);
   return width * height;
 }
 
@@ -16,8 +16,8 @@ function perimeter(parameterPatternValue:Rectangle):Float {
   var width:Float;
   var height:Float;
   final objectPatternValue:Rectangle = parameterPatternValue;
-  width = objectPatternValue.width;
-  height = objectPatternValue.height;
+  (width = objectPatternValue.width);
+  (height = objectPatternValue.height);
   return 2 * (width + height);
 }
 
@@ -25,8 +25,8 @@ function diagonal(parameterPatternValue:Rectangle):Float {
   var width:Float;
   var height:Float;
   final objectPatternValue:Rectangle = parameterPatternValue;
-  width = objectPatternValue.width;
-  height = objectPatternValue.height;
+  (width = objectPatternValue.width);
+  (height = objectPatternValue.height);
   return Math.sqrt(((width * width) + (height * height)));
 }
 
@@ -34,7 +34,7 @@ function isSquare(parameterPatternValue:Rectangle):Bool {
   var width:Float;
   var height:Float;
   final objectPatternValue:Rectangle = parameterPatternValue;
-  width = objectPatternValue.width;
-  height = objectPatternValue.height;
+  (width = objectPatternValue.width);
+  (height = objectPatternValue.height);
   return width == height;
 }

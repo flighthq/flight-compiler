@@ -11,7 +11,7 @@ namespace flighthq_golden {
 inline double select_nested() {
   double value;
   {
-    value = 1.0;
+    (value = 1.0);
   }
   return value;
 }
@@ -19,11 +19,11 @@ inline double select_nested() {
 inline double select_loop(double limit) {
   double index;
   double total = 0.0;
-  index = 0.0;
+  (index = 0.0);
   {
     while ((index < limit)) {
-      total += index;
-      index += 1.0;
+      (total += index);
+      (index += 1.0);
     }
   }
   return (total + index);
@@ -33,8 +33,8 @@ inline flight::String select_pattern(std::tuple<double, flight::String> values) 
   double first;
   flight::String second;
   std::tuple<double, flight::String> array_pattern_value = values;
-  first = std::get<0>(array_pattern_value);
-  second = std::get<1>(array_pattern_value);
+  (first = std::get<0>(array_pattern_value));
+  (second = std::get<1>(array_pattern_value));
   if ((first < 0.0)) {
     return flight::String("");
   }
@@ -44,8 +44,8 @@ inline flight::String select_pattern(std::tuple<double, flight::String> values) 
 inline void increment_values(flight::Array<double> values) {
   double value;
   for (auto variable_hoisting_iteration_value : values) {
-    value = variable_hoisting_iteration_value;
-    value += 1.0;
+    (value = variable_hoisting_iteration_value);
+    (value += 1.0);
   }
 }
 

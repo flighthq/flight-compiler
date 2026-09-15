@@ -9,6 +9,8 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Options;
+
 struct Options : public flight::ReferenceEnabled {
   std::optional<double> retries;
   flight::String label;

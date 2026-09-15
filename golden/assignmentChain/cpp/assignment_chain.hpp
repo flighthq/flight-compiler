@@ -13,10 +13,10 @@ inline double accumulate(double start, double steps) {
     double i = 0.0;
     while ((i < steps)) {
       {
-        value += i;
-        value *= 2.0;
+        (value += i);
+        (value *= 2.0);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return value;
@@ -28,9 +28,9 @@ inline flight::String build_string(flight::String base, double count) {
     double i = 0.0;
     while ((i < count)) {
       {
-        result = result + flight::String("-") + flight::to_string(i) + flight::String("");
+        (result = result + flight::String("-") + flight::to_string(i) + flight::String(""));
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return result;
@@ -48,10 +48,10 @@ inline double bit_manipulate(double value, double mask) {
 inline double multi_assign(double a, double b) {
   double x = a;
   double y = b;
-  x += y;
-  y -= x;
-  x *= 2.0;
-  y *= -1.0;
+  (x += y);
+  (y -= x);
+  (x *= 2.0);
+  (y *= -1.0);
   return (x + y);
 }
 

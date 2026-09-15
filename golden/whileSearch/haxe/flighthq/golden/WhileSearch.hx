@@ -7,7 +7,7 @@ function firstAbove(values:Array<Float>, threshold:Float):Float {
     if (values[Std.int(i)] > threshold) {
       return values[Std.int(i)];
     }
-    i += 1;
+    (i += 1);
   }
   return - 1;
 }
@@ -17,9 +17,9 @@ function countOccurrences(text:String, target:String):Float {
   var pos:Float = 0;
   while (pos < text.length) {
     if (text.charAt(Std.int(pos)) == target) {
-      count += 1;
+      (count += 1);
     }
-    pos += 1;
+    (pos += 1);
   }
   return count;
 }
@@ -30,7 +30,7 @@ function indexOfFirst(values:Array<Float>, target:Float):Float {
     if (values[Std.int(i)] == target) {
       return i;
     }
-    i += 1;
+    (i += 1);
   }
   return - 1;
 }

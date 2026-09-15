@@ -19,7 +19,7 @@ inline bool is_palindrome(flight::String text) {
     if ((lower.char_at(i) != lower.char_at(((len - 1.0) - i)))) {
       return false;
     }
-    i = (i + 1.0);
+    (i = (i + 1.0));
   }
   return true;
 }

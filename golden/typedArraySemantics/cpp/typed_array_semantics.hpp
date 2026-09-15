@@ -16,48 +16,48 @@ inline flight::Int8Array signed_range_construction() {
 
 inline flight::Uint8Array unsigned_modulo_writes() {
   flight::Uint8Array values = flight::Uint8Array(5.0);
-  values.element(0.0) = 300.0;
-  values.element(1.0) = -1.0;
-  values.element(2.0) = 1.0;
-  values.element(2.0) += 257.0;
-  values.element(3.0) = 255.0;
-  values.element(3.0) += 2.0;
-  values.element(4.0) = 250.0;
+  (values.element(0.0) = 300.0);
+  (values.element(1.0) = -1.0);
+  (values.element(2.0) = 1.0);
+  (values.element(2.0) += 257.0);
+  (values.element(3.0) = 255.0);
+  (values.element(3.0) += 2.0);
+  (values.element(4.0) = 250.0);
   ([&]() { auto&& assignment_target = values.element(4.0); assignment_target = std::fmod(assignment_target, 64.0); return assignment_target; }());
   return values;
 }
 
 inline flight::Uint8ClampedArray clamped_ties() {
   flight::Uint8ClampedArray values = flight::Uint8ClampedArray(6.0);
-  values.element(0.0) = 0.5;
-  values.element(1.0) = 1.5;
-  values.element(2.0) = 2.5;
-  values.element(3.0) = 3.5;
-  values.element(4.0) = 254.5;
-  values.element(5.0) = 255.5;
+  (values.element(0.0) = 0.5);
+  (values.element(1.0) = 1.5);
+  (values.element(2.0) = 2.5);
+  (values.element(3.0) = 3.5);
+  (values.element(4.0) = 254.5);
+  (values.element(5.0) = 255.5);
   return values;
 }
 
 inline flight::Float32Array float32_overflow() {
   flight::Float32Array values = flight::Float32Array(2.0);
-  values.element(0.0) = 3.5e+38;
-  values.element(1.0) = -3.5e+38;
+  (values.element(0.0) = 3.5e+38);
+  (values.element(1.0) = -3.5e+38);
   return values;
 }
 
 inline flight::Uint8Array subarray_aliases_storage() {
   flight::Uint8Array source = flight::Uint8Array(flight::Array{1.0, 2.0, 3.0, 4.0});
   flight::Uint8Array view = source.subarray(1.0, 3.0);
-  view.element(0.0) = 9.0;
-  source.element(2.0) = 8.0;
+  (view.element(0.0) = 9.0);
+  (source.element(2.0) = 8.0);
   return source;
 }
 
 inline flight::Uint8Array slice_copies_storage() {
   flight::Uint8Array source = flight::Uint8Array(flight::Array{1.0, 2.0, 3.0, 4.0});
   flight::Uint8Array copy = source.slice(1.0, 3.0);
-  copy.element(0.0) = 9.0;
-  source.element(2.0) = 8.0;
+  (copy.element(0.0) = 9.0);
+  (source.element(2.0) = 8.0);
   return copy;
 }
 

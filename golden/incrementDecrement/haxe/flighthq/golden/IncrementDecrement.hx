@@ -7,9 +7,9 @@ function countUp(start:Float, steps:Float):Float {
     var i:Float = 0;
     while (i < steps) {
       {
-        value += 1;
+        (value += 1);
       }
-      i += 1;
+      (i += 1);
     }
   }
   return value;
@@ -21,9 +21,9 @@ function countDown(start:Float, steps:Float):Float {
     var i:Float = 0;
     while (i < steps) {
       {
-        value -= 1;
+        (value -= 1);
       }
-      i += 1;
+      (i += 1);
     }
   }
   return value;
@@ -36,10 +36,10 @@ function stepAccumulate(n:Float):Float {
     var i:Float = 0;
     while (i < n) {
       {
-        total += step;
-        step += 2;
+        (total += step);
+        (step += 2);
       }
-      i += 1;
+      (i += 1);
     }
   }
   return total;
@@ -49,8 +49,8 @@ function halvingSteps(value:Float):Float {
   var count:Float = 0;
   var current:Float = value;
   while (current > 1) {
-    current = Math.floor((current / 2));
-    count += 1;
+    (current = Math.floor((current / 2)));
+    (count += 1);
   }
   return count;
 }

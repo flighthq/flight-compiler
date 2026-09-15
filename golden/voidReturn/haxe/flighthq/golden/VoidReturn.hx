@@ -6,9 +6,9 @@ function applyDiscount(prices:Array<Float>, factor:Float):Void {
     var i:Float = 0;
     while (i < prices.length) {
       {
-        prices[Std.int(i)] = (prices[Std.int(i)] * factor);
+        (prices[Std.int(i)] = (prices[Std.int(i)] * factor));
       }
-      i = (i + 1);
+      (i = (i + 1));
     }
   }
 }

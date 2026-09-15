@@ -7,7 +7,7 @@ function sumUntil(values:Array<Float>, limit:Float):Float {
     if ((total + value) > limit) {
       break;
     }
-    total = (total + value);
+    (total = (total + value));
   }
   return total;
 }
@@ -16,7 +16,7 @@ function countPositive(values:Array<Float>):Float {
   var count:Float = 0;
   for (value in values) {
     if (value > 0) {
-      count = (count + 1);
+      (count = (count + 1));
     }
   }
   return count;

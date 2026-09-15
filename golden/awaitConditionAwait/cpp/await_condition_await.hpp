@@ -11,12 +11,12 @@ namespace flighthq_golden {
 inline flight::Task<double> decide(flight::Task<bool> task) {
   double total = 0.0;
   {
-    auto await_condition = co_await task;
-    if (await_condition) {
-      total = 1.0;
+    auto await_value = co_await task;
+    if (await_value) {
+      (total = 1.0);
     }
     else {
-      total = 2.0;
+      (total = 2.0);
     }
   }
   co_return total;

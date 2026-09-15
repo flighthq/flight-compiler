@@ -9,12 +9,9 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-template <typename T>
-using Rows = flight::Array<T>;
-
-inline double select(std::tuple<double, double, double> values) {
-  std::tuple<double, double, double> array_pattern_value = values;
-  const double third = std::get<2>(array_pattern_value);
+inline double select(flight::Array<double> values) {
+  flight::Array<double> array_pattern_value = values;
+  const double third = array_pattern_value.element(2.0);
   return third;
 }
 
@@ -35,10 +32,10 @@ inline std::tuple<double, std::optional<double>> create_values() {
   return values;
 }
 
-inline double select_nested_default(std::tuple<std::optional<std::tuple<double>>> values) {
-  std::tuple<std::optional<std::tuple<double>>> array_pattern_value = values;
-  std::tuple<double> array_pattern_value_2 = std::get<0>(array_pattern_value).value_or(std::make_tuple(1.0));
-  const double first = std::get<0>(array_pattern_value_2);
+inline double select_nested_default(std::tuple<std::optional<flight::Array<double>>> values) {
+  std::tuple<std::optional<flight::Array<double>>> array_pattern_value = values;
+  flight::Array<double> array_pattern_value_2 = std::get<0>(array_pattern_value).value_or(std::make_tuple(1.0));
+  const double first = array_pattern_value_2.element(0.0);
   return first;
 }
 
@@ -74,10 +71,13 @@ inline flight::Array<bool> select_nested_mixed_rest(std::tuple<double, flight::S
   return tail;
 }
 
-inline double select_rows(Rows<std::tuple<double, double>> rows) {
+template <typename T>
+using Rows = flight::Array<T>;
+
+inline double select_rows(Rows<flight::Array<double>> rows) {
   for (auto array_pattern_value : rows) {
-    const double first = std::get<0>(array_pattern_value);
-    const double second = std::get<1>(array_pattern_value);
+    const double first = array_pattern_value.element(0.0);
+    const double second = array_pattern_value.element(1.0);
     return first;
   }
   return 0.0;

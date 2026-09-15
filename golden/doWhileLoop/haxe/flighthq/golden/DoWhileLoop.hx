@@ -6,12 +6,12 @@ function collatz(n:Float):Float {
   var current:Float = n;
   while (current != 1) {
     if ((current - (2 * Math.floor((current / 2)))) == 0) {
-      current = (current / 2);
+      (current = (current / 2));
     }
     else {
-      current = ((3 * current) + 1);
+      (current = ((3 * current) + 1));
     }
-    steps = (steps + 1);
+    (steps = (steps + 1));
   }
   return steps;
 }
@@ -20,8 +20,8 @@ function digitSum(n:Float):Float {
   var sum:Float = 0;
   var remaining:Float = Math.abs(n);
   while (remaining > 0) {
-    sum = (sum + (remaining - (10 * Math.floor((remaining / 10)))));
-    remaining = Math.floor((remaining / 10));
+    (sum = (sum + (remaining - (10 * Math.floor((remaining / 10))))));
+    (remaining = Math.floor((remaining / 10)));
   }
   return sum;
 }
@@ -31,8 +31,8 @@ function gcd(a:Float, b:Float):Float {
   var y:Float = Math.abs(b);
   while (y != 0) {
     final temp:Float = y;
-    y = (x - (y * Math.floor((x / y))));
-    x = temp;
+    (y = (x - (y * Math.floor((x / y)))));
+    (x = temp);
   }
   return x;
 }

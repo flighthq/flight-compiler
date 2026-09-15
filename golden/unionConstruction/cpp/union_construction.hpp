@@ -8,15 +8,6 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-inline flight::String produce(bool flag) {
-  return (flag ? flight::String("on") : flight::String("off"));
-}
-
-inline std::variant<double, flight::String> from_call(bool flag) {
-  const std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<flight::String>, produce(flag)};
-  return std::variant<double, flight::String>{std::in_place_type<flight::String>, std::get<flight::String>(value)};
-}
-
 inline std::variant<double, flight::String> from_conditional(bool flag) {
   const std::variant<double, flight::String> value = (flag ? std::variant<double, flight::String>{std::in_place_type<flight::String>, flight::String("yes")} : std::variant<double, flight::String>{std::in_place_type<double>, 0.0});
   return value;
@@ -24,17 +15,26 @@ inline std::variant<double, flight::String> from_conditional(bool flag) {
 
 inline std::variant<double, flight::String> from_binary(double a, double b) {
   const std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<double>, (a + b)};
-  return std::variant<double, flight::String>{std::in_place_type<double>, std::get<double>(value)};
+  return std::variant<double, flight::String>{std::in_place_type<double>, std::get<0>(value)};
 }
 
 inline std::variant<double, flight::String> from_unary(double n) {
   const std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<double>, -n};
-  return std::variant<double, flight::String>{std::in_place_type<double>, std::get<double>(value)};
+  return std::variant<double, flight::String>{std::in_place_type<double>, std::get<0>(value)};
 }
 
 inline std::variant<double, flight::String> from_cast(auto input) {
   const std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<flight::String>, static_cast<flight::String>(input)};
-  return std::variant<double, flight::String>{std::in_place_type<flight::String>, std::get<flight::String>(value)};
+  return std::variant<double, flight::String>{std::in_place_type<flight::String>, std::get<1>(value)};
+}
+
+inline flight::String produce(bool flag) {
+  return (flag ? flight::String("on") : flight::String("off"));
+}
+
+inline std::variant<double, flight::String> from_call(bool flag) {
+  const std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<flight::String>, produce(flag)};
+  return std::variant<double, flight::String>{std::in_place_type<flight::String>, std::get<1>(value)};
 }
 
 } // namespace flighthq_golden

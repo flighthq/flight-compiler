@@ -4,7 +4,7 @@ package flighthq.golden;
 function product(values:Array<Float>):Float {
   var result:Float = 1;
   for (value in values) {
-    result *= value;
+    (result *= value);
   }
   return result;
 }
@@ -13,7 +13,7 @@ function max(values:Array<Float>):Float {
   var best:Float = values[0];
   for (value in values) {
     if (value > best) {
-      best = value;
+      (best = value);
     }
   }
   return best;
@@ -23,7 +23,7 @@ function countPositive(values:Array<Float>):Float {
   var count:Float = 0;
   for (value in values) {
     if (value > 0) {
-      count += 1;
+      (count += 1);
     }
   }
   return count;
@@ -32,7 +32,7 @@ function countPositive(values:Array<Float>):Float {
 function sumAbsolute(values:Array<Float>):Float {
   var total:Float = 0;
   for (value in values) {
-    total += Math.abs(value);
+    (total += Math.abs(value));
   }
   return total;
 }

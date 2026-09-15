@@ -2,6 +2,7 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
@@ -12,11 +13,11 @@ namespace flighthq_golden {
 inline flight::String conditional_reassign(double value) {
   flight::String label = flight::String("zero");
   if ((value > 0.0)) {
-    label = flight::String("positive");
+    (label = flight::String("positive"));
   }
   else {
     if ((value < 0.0)) {
-      label = flight::String("negative");
+      (label = flight::String("negative"));
     }
   }
   return label;
@@ -26,8 +27,8 @@ inline double swap_values(double a, double b) {
   double x = a;
   double y = b;
   const double temp = x;
-  x = y;
-  y = temp;
+  (x = y);
+  (y = temp);
   return (x - y);
 }
 
@@ -35,8 +36,8 @@ inline double accumulate(flight::Array<double> values) {
   double sum = 0.0;
   double count = 0.0;
   for (auto v : values) {
-    sum += v;
-    count += 1.0;
+    (sum += v);
+    (count += 1.0);
   }
   return (sum + count);
 }
@@ -44,7 +45,7 @@ inline double accumulate(flight::Array<double> values) {
 inline double narrow_down(double max) {
   double result = max;
   while ((result > 1.0)) {
-    result = std::floor((result / 2.0));
+    (result = std::floor((result / 2.0)));
   }
   return result;
 }

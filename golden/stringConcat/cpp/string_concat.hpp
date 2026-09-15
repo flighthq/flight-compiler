@@ -21,9 +21,9 @@ inline flight::String repeat(flight::String text, double count) {
     double i = 0.0;
     while ((i < count)) {
       {
-        result += text;
+        (result += text);
       }
-      i += 1.0;
+      (i += 1.0);
     }
   }
   return result;

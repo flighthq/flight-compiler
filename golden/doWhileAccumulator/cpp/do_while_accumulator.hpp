@@ -2,6 +2,7 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
@@ -13,8 +14,8 @@ inline double sum_one_to_n(double n) {
   double sum = 0.0;
   double i = 1.0;
   do {
-    sum += i;
-    i += 1.0;
+    (sum += i);
+    (i += 1.0);
   } while ((i <= n));
   return sum;
 }
@@ -23,8 +24,8 @@ inline double repeat_halve(double value) {
   double result = value;
   double count = 0.0;
   do {
-    result = std::floor((result / 2.0));
-    count += 1.0;
+    (result = std::floor((result / 2.0)));
+    (count += 1.0);
   } while ((result > 0.0));
   return count;
 }
@@ -33,8 +34,8 @@ inline double reverse_digits(double value) {
   double n = std::abs(value);
   double reversed = 0.0;
   do {
-    reversed = ((reversed * 10.0) + std::fmod(n, 10.0));
-    n = std::floor((n / 10.0));
+    (reversed = ((reversed * 10.0) + std::fmod(n, 10.0)));
+    (n = std::floor((n / 10.0)));
   } while ((n > 0.0));
   return ((value < 0.0) ? -reversed : reversed);
 }

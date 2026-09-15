@@ -20,8 +20,8 @@ inline std::tuple<flight::String, double> swap(std::tuple<double, flight::String
   return std::make_tuple(std::get<1>(pair), std::get<0>(pair));
 }
 
-inline double sum_pair(std::tuple<double, double> pair) {
-  return (std::get<0>(pair) + std::get<1>(pair));
+inline double sum_pair(flight::Array<double> pair) {
+  return (pair.element(0.0) + pair.element(1.0));
 }
 
 } // namespace flighthq_golden

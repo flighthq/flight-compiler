@@ -11,10 +11,10 @@ namespace flighthq_golden {
 inline flight::Task<double> choose(flight::Task<double> task, bool flag) {
   double total = 0.0;
   if (flag) {
-    total = co_await task;
+    (total = co_await task);
   }
   else {
-    total = 1.0;
+    (total = 1.0);
   }
   co_return total;
 }

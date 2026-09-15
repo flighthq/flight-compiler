@@ -14,12 +14,12 @@ inline flight::Task<double> attempt(flight::Task<double> task) {
   bool done = false;
   std::exception_ptr finally_exception;
   try {
-    result = co_await task;
+    (result = co_await task);
   }
   catch (...) {
     finally_exception = std::current_exception();
   }
-  done = true;
+  (done = true);
   if (finally_exception) std::rethrow_exception(finally_exception);
   co_return (done ? result : result);
 }

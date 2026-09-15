@@ -4,11 +4,11 @@ package flighthq.golden;
 function conditionalReassign(value:Float):String {
   var label:String = "zero";
   if (value > 0) {
-    label = "positive";
+    (label = "positive");
   }
   else {
     if (value < 0) {
-      label = "negative";
+      (label = "negative");
     }
   }
   return label;
@@ -18,8 +18,8 @@ function swapValues(a:Float, b:Float):Float {
   var x:Float = a;
   var y:Float = b;
   final temp:Float = x;
-  x = y;
-  y = temp;
+  (x = y);
+  (y = temp);
   return x - y;
 }
 
@@ -27,8 +27,8 @@ function accumulate(values:Array<Float>):Float {
   var sum:Float = 0;
   var count:Float = 0;
   for (v in values) {
-    sum += v;
-    count += 1;
+    (sum += v);
+    (count += 1);
   }
   return sum + count;
 }
@@ -36,7 +36,7 @@ function accumulate(values:Array<Float>):Float {
 function narrowDown(max:Float):Float {
   var result:Float = max;
   while (result > 1) {
-    result = Math.floor((result / 2));
+    (result = Math.floor((result / 2)));
   }
   return result;
 }

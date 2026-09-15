@@ -22,9 +22,9 @@ inline double sum_char_codes(flight::String text) {
     double i = 0.0;
     while ((i < static_cast<double>(text.length()))) {
       {
-        total = (total + text.char_code_at(i));
+        (total = (total + text.char_code_at(i)));
       }
-      i = (i + 1.0);
+      (i = (i + 1.0));
     }
   }
   return total;

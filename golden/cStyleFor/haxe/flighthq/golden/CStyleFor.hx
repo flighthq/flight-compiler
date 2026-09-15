@@ -7,9 +7,9 @@ function total(values:Array<Float>):Float {
     var index:Float = 0;
     while (index < values.length) {
       {
-        sum += (values[Std.int(index)] ?? 0);
+        (sum += (values[Std.int(index)] ?? 0));
       }
-      index += 1;
+      (index += 1);
     }
   }
   return sum;

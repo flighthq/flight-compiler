@@ -7,12 +7,14 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
+struct Rectangle;
+
 struct Rectangle : public flight::ReferenceEnabled {
   double width;
   double height;
   Rectangle(double width, double height) {
-    this->width = width;
-    this->height = height;
+    (this->width = width);
+    (this->height = height);
   }
   double area() {
     return (this->width * this->height);
@@ -31,7 +33,7 @@ struct Rectangle : public flight::ReferenceEnabled {
 inline double total_area(flight::Array<flight::Ref<Rectangle>> rects) {
   double sum = 0.0;
   for (auto rect : rects) {
-    sum = (sum + rect->area());
+    (sum = (sum + rect->area()));
   }
   return sum;
 }

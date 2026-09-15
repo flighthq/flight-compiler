@@ -2,6 +2,7 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <random>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
@@ -15,7 +16,7 @@ inline double sum_until_negative(flight::Array<double> values) {
     if ((value < 0.0)) {
       break;
     }
-    total += value;
+    (total += value);
   }
   return total;
 }
@@ -26,7 +27,7 @@ inline double sum_skip_odd(flight::Array<double> values) {
     if (((value - (2.0 * std::floor((value / 2.0)))) != 0.0)) {
       continue;
     }
-    total += value;
+    (total += value);
   }
   return total;
 }
@@ -37,7 +38,7 @@ inline double first_multiple(double limit, double divisor) {
     if (((i - (divisor * std::floor((i / divisor)))) == 0.0)) {
       return i;
     }
-    i += 1.0;
+    (i += 1.0);
   }
   return -1.0;
 }
@@ -46,8 +47,8 @@ inline double count_until_sum(flight::Array<double> values, double target) {
   double total = 0.0;
   double count = 0.0;
   for (auto value : values) {
-    total += value;
-    count += 1.0;
+    (total += value);
+    (count += 1.0);
     if ((total >= target)) {
       break;
     }

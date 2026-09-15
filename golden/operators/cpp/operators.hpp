@@ -9,8 +9,8 @@ namespace flighthq_golden {
 
 inline double adjust(double value, double mask) {
   double adjusted = value;
-  adjusted += mask;
-  adjusted *= 2.0;
+  (adjusted += mask);
+  (adjusted *= 2.0);
   return -adjusted;
 }
 

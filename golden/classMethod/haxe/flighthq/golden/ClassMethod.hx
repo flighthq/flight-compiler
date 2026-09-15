@@ -7,8 +7,8 @@ class Rectangle {
   public var height:Float;
 
   public function new(width:Float, height:Float) {
-    this.width = width;
-    this.height = height;
+    (this.width = width);
+    (this.height = height);
   }
 
   public function area():Float {
@@ -31,7 +31,7 @@ class Rectangle {
 function totalArea(rects:Array<Rectangle>):Float {
   var sum:Float = 0;
   for (rect in rects) {
-    sum = (sum + rect.area());
+    (sum = (sum + rect.area()));
   }
   return sum;
 }

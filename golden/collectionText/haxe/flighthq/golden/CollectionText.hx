@@ -4,7 +4,7 @@ package flighthq.golden;
 function sum(values:Array<Float>):Float {
   var total:Float = 0;
   for (value in values) {
-    total += value;
+    (total += value);
   }
   return total;
 }

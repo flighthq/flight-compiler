@@ -14,10 +14,10 @@ inline flight::Task<double> attempt(flight::Task<double> task, flight::Array<dou
   std::exception_ptr finally_exception;
   try {
     try {
-      result = co_await task;
+      (result = co_await task);
     }
     catch (...) {
-      result = 1.0;
+      (result = 1.0);
     }
   }
   catch (...) {

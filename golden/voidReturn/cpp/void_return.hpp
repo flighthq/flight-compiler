@@ -12,9 +12,9 @@ inline void apply_discount(flight::Array<double> prices, double factor) {
     double i = 0.0;
     while ((i < static_cast<double>(prices.size()))) {
       {
-        prices.element(i) = (prices.element(i) * factor);
+        (prices.element(i) = (prices.element(i) * factor));
       }
-      i = (i + 1.0);
+      (i = (i + 1.0));
     }
   }
 }

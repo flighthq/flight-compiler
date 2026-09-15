@@ -13,7 +13,7 @@ inline double sum_until(flight::Array<double> values, double limit) {
     if (((total + value) > limit)) {
       break;
     }
-    total = (total + value);
+    (total = (total + value));
   }
   return total;
 }
@@ -22,7 +22,7 @@ inline double count_positive(flight::Array<double> values) {
   double count = 0.0;
   for (auto value : values) {
     if ((value > 0.0)) {
-      count = (count + 1.0);
+      (count = (count + 1.0));
     }
   }
   return count;

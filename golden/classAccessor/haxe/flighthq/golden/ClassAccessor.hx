@@ -7,7 +7,7 @@ class Counter {
   public static final zero:Float = 0;
 
   public function new(count:Float) {
-    this.count = count;
+    (this.count = count);
   }
 
   public var value(get, set):Float;
@@ -17,7 +17,7 @@ class Counter {
   }
 
   function set_value(next:Float):Float {
-    this.count = next;
+    (this.count = next);
     return next;
   }
 
@@ -28,6 +28,6 @@ class Counter {
 
 function readBack():Float {
   final counter:Counter = Counter.make();
-  counter.value = 7;
+  (counter.value = 7);
   return counter.value + Counter.zero;
 }

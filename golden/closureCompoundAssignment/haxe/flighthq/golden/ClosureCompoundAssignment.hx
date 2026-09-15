@@ -4,7 +4,7 @@ package flighthq.golden;
 function captured_power(base:Float):()->Float {
   var value:Float = base;
   return function() {
-  value = Math.pow(value, 2);
+  (value = Math.pow(value, 2));
   return value;
 };
 }
@@ -28,7 +28,7 @@ function captured_and(initial:Float):(Float)->Float {
 function captured_nullish(initial:Null<String>):(String)->String {
   var value:Null<String> = initial;
   return function(fallback:String) {
-  { if (value == null) value = fallback; value; };
+  (function() { if (value == null) value = fallback; return value; })();
   return value;
 };
 }
@@ -36,7 +36,7 @@ function captured_nullish(initial:Null<String>):(String)->String {
 function captured_unsigned_shift(initial:Float):(Float)->Float {
   var value:Float = initial;
   return function(bits:Float) {
-  value = Std.int(value) >>> Std.int(bits);
+  (value = Std.int(value) >>> Std.int(bits));
   return value;
 };
 }
@@ -44,7 +44,7 @@ function captured_unsigned_shift(initial:Float):(Float)->Float {
 function captured_bitwise_or(initial:Float):(Float)->Float {
   var value:Float = initial;
   return function(mask:Float) {
-  value = Std.int(value) | Std.int(mask);
+  (value = Std.int(value) | Std.int(mask));
   return value;
 };
 }
@@ -52,7 +52,7 @@ function captured_bitwise_or(initial:Float):(Float)->Float {
 function captured_bitwise_and(initial:Float):(Float)->Float {
   var value:Float = initial;
   return function(mask:Float) {
-  value = Std.int(value) & Std.int(mask);
+  (value = Std.int(value) & Std.int(mask));
   return value;
 };
 }
