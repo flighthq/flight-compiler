@@ -15275,3 +15275,32 @@ describe('conditional capability facet lowering', () => {
     expect(result.diagnostics).not.toEqual([]);
   });
 });
+
+it('marks properties introduced only by control-flow narrowing as structural accesses', () => {
+  const result = lower(
+    'narrowed-structural-property.ts',
+    `interface Base { kind: string }
+     interface Detailed extends Base { value: number }
+     function isDetailed(value: Base | null): value is Detailed { return value !== null && 'value' in value; }
+     export function update(value: Base | null): number {
+       if (!isDetailed(value)) return 0;
+       value.value = 2;
+       return value.value;
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'update',
+  );
+  const assignment = declaration?.kind === 'function' ? declaration.body[1] : undefined;
+  const returned = declaration?.kind === 'function' ? declaration.body[2] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(assignment).toMatchObject({
+    expression: { left: { kind: 'property', structuralAccess: 'narrowed' }, kind: 'assignment' },
+    kind: 'expression',
+  });
+  expect(returned).toMatchObject({
+    expression: { kind: 'property', structuralAccess: 'narrowed' },
+    kind: 'return',
+  });
+});

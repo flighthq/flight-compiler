@@ -973,6 +973,7 @@ function lowerExpression(
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
     const resolved =
       getIrResolvedMemberReceiver(receiver) ??
+      getIrResolvedMemberReceiver(getIrTypeConstructionTargetShape(receiver, context)) ??
       getIrResolvedMemberReceiverFromNarrowedFlow(node.expression, context) ??
       getIrResolvedMemberReceiver(
         getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node.expression), context, 0, false, node),
@@ -984,6 +985,7 @@ function lowerExpression(
       ...absent,
       ...member,
       ...getTypeScriptAccessPresence(node, context),
+      ...getTypeScriptNarrowedStructuralPropertyAccess(node, context),
       ...getTypeScriptValueNamespaceMemberReference(node, context),
       name: node.name.text,
       object: lowerExpression(node.expression, context),
@@ -1158,14 +1160,7 @@ function lowerExpression(
     }
     return { kind: 'template', parts };
   }
-  if (ts.isSpreadElement(node)) {
-    const iterableType = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
-    return {
-      expression: lowerExpression(node.expression, context),
-      ...(iterableType ? { iterableType } : {}),
-      kind: 'spread',
-    };
-  }
+  if (ts.isSpreadElement(node)) return { expression: lowerExpression(node.expression, context), kind: 'spread' };
   if (ts.isRegularExpressionLiteral(node)) {
     const lastSlash = node.text.lastIndexOf('/');
     return { flags: node.text.slice(lastSlash + 1), kind: 'regexp', pattern: node.text.slice(1, lastSlash) };
@@ -1676,6 +1671,7 @@ function lowerCallSemantics(
   const semantics: IrCallSemantics = {
     ...lowerInvocationSemantics(node, signature, context),
     resultType:
+      getTypeScriptKnownAmbientCallResultTypeEvidence(node, context) ??
       getTypeScriptCollectionCallResultTypeEvidence(node, context) ??
       getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
       getTypeScriptWrittenCallResultTypeEvidence(signature, context) ??
@@ -1771,6 +1767,21 @@ function getTypeScriptCollectionCallResultTypeEvidence(
   if (!value || value.kind === 'unknown') return undefined;
   const values = value.kind === 'union' ? value.types : [value];
   return commonType([{ kind: 'undefined' }, values[0]!, ...values.slice(1)]);
+}
+
+function getTypeScriptKnownAmbientCallResultTypeEvidence(
+  node: ts.CallExpression,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  if (
+    !ts.isPropertyAccessExpression(node.expression) ||
+    !ts.isIdentifier(node.expression.expression) ||
+    node.expression.expression.text !== 'Math'
+  ) {
+    return undefined;
+  }
+  const reference = lowerIdentifierReference(node.expression.expression, context);
+  return reference.kind === 'ambient' && reference.name === 'Math' ? { kind: 'primitive', name: 'number' } : undefined;
 }
 
 // Prefer an explicit result annotation when it is already concrete. Besides being the source
@@ -5436,6 +5447,7 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   if (ts.isCallExpression(node)) {
     const signature = getTypeScriptInvocationSignatureResolution(node, context.checker);
     const callResult =
+      getTypeScriptKnownAmbientCallResultTypeEvidence(node, context) ??
       getTypeScriptCollectionCallResultTypeEvidence(node, context) ??
       getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
       getTypeScriptWrittenCallResultTypeEvidence(signature, context) ??
@@ -6238,6 +6250,20 @@ function getTypeScriptReferenceNarrowedMember(
   return members.filter((member) => member === narrowed).length === 1 ? { narrowedMember: narrowed } : {};
 }
 
+function getTypeScriptNarrowedStructuralPropertyAccess(
+  node: ts.PropertyAccessExpression,
+  context: LoweringContext,
+): { structuralAccess?: 'narrowed' } {
+  if (!ts.isIdentifier(node.expression)) return {};
+  const symbol = context.checker.getSymbolAtLocation(node.expression);
+  const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
+  if (!symbol || !declaration) return {};
+  const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
+  if (context.checker.getPropertyOfType(declared, node.name.text)) return {};
+  const flow = context.checker.getTypeAtLocation(node.expression);
+  return context.checker.getPropertyOfType(flow, node.name.text) ? { structuralAccess: 'narrowed' } : {};
+}
+
 // Whether the written type declares this member optional. The declaration is the authority rather
 // than the checker's type, because a checker with no library types reports too little and because
 // what a target needs to know is what the source wrote.
@@ -6269,6 +6295,7 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
     }
     const ambientReceivers: Record<string, IrResolvedMemberReceiver> = {
       ArrayBuffer: 'arrayBuffer',
+      ArrayBufferLike: 'arrayBuffer',
       DataView: 'dataView',
       Date: 'date',
       Error: 'error',

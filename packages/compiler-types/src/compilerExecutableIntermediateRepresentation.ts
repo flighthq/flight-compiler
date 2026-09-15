@@ -192,9 +192,12 @@ export type IrExpression =
       optionalChain?: IrOptionalChainSemantics | undefined;
       // Like identifier presence, but scoped to this field access rather than its receiver.
       presence?: 'narrowedPresent' | undefined;
+      // The checker proved a property introduced only by control-flow narrowing (for example an
+      // `in` test or a user-defined type predicate), so nominal target storage cannot name it.
+      structuralAccess?: 'narrowed' | undefined;
     }>
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
-  | Readonly<{ expression: IrExpression; iterableType?: IrType | undefined; kind: 'spread' }>
+  | Readonly<{ expression: IrExpression; kind: 'spread' }>
   | Readonly<{ kind: 'template'; parts: ReadonlyArray<IrExpression | string> }>
   | Readonly<{ elements: readonly IrTupleExpressionElement[]; kind: 'tuple' }>
   | Readonly<{ kind: 'tupleRest'; object: IrExpression; start: number }>

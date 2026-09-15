@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+import { getIrStatementListCompletionSet } from '../../compiler-completion/src/index.js';
 import {
   collectIrModuleNullableBindingIds,
   createBackendEmissionFailure,
@@ -632,7 +633,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
     const methodContext: EmitContext = {
       ...context,
       finallyCompletion: undefined,
-      returnType: method.accessor === 'set' ? method.parameters[0]?.type : method.returns,
+      returnType: method.accessor === 'set' ? undefined : method.returns,
       returnsAbsent: canIrTypeReturnAbsentHaxe(method.returns, context.module),
     };
     const visibility = method.visibility === 'public' ? 'public ' : method.visibility === 'private' ? 'private ' : '';
@@ -1007,8 +1008,16 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (ambient && expression.callee.kind === 'property') {
         const binding = getCompilerHaxeAmbientMemberBinding(ambient);
         if (binding && binding.kind !== 'property') {
-          const receiver = emitExpression(expression.callee.object, context);
+          const directReceiver = emitExpression(expression.callee.object, context);
           const receiverType = getIrExpressionTypeHaxe(expression.callee.object, context);
+          const receiver =
+            ambient.receiver === 'string' &&
+            !(
+              (receiverType?.kind === 'primitive' && receiverType.name === 'string') ||
+              (receiverType?.kind === 'literal' && typeof receiverType.value === 'string')
+            )
+              ? `(cast ${directReceiver} : String)`
+              : directReceiver;
           if (binding.kind === 'staticFold') {
             const [fold, initial] = expression.arguments;
             if (expression.arguments.length !== 2 || !fold || !initial) {
@@ -1250,6 +1259,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         }
       }
       if (isReflectiveHaxePropertyReceiver(expression.object, context)) {
+        const object = emitExpression(expression.object, context);
+        const name = emitHaxeStringLiteral(expression.name);
+        if (expression.optional) {
+          const receiver = getGeneratedTargetNameHaxe('optionalObject', context);
+          return `(function() { final ${receiver}:Dynamic = ${object}; return ${receiver} == null ? null : Reflect.field(${receiver}, ${name}); })()`;
+        }
+        return `Reflect.field(${object}, ${name})`;
+      }
+      if (expression.structuralAccess === 'narrowed') {
         const object = emitExpression(expression.object, context);
         const name = emitHaxeStringLiteral(expression.name);
         if (expression.optional) {
@@ -1519,7 +1537,7 @@ function emitDynamicAccessPropertyAssignmentHaxe(
     expression.operator !== '=' ||
     left.kind !== 'property' ||
     left.member !== undefined ||
-    !isReflectiveHaxePropertyReceiver(left.object, context)
+    (left.structuralAccess !== 'narrowed' && !isReflectiveHaxePropertyReceiver(left.object, context))
   ) {
     return undefined;
   }
@@ -1613,7 +1631,10 @@ function emitReflectiveElementAssignmentHaxe(
 ): string | undefined {
   const left = expression.left;
   if (left.kind !== 'element') return undefined;
-  const reflective = left.semantics.receivers.includes('object') || left.semantics.receivers.includes('unknown');
+  const reflective =
+    left.semantics.key !== 'number' ||
+    left.semantics.receivers.includes('object') ||
+    left.semantics.receivers.includes('unknown');
   if (!reflective && isAssignmentOperatorDirectHaxe(expression.operator, expression.semantics)) return undefined;
   const runtime = `${context.options.runtimeModule ?? 'flighthq._internal'}._Js`;
   const receiver = getGeneratedTargetNameHaxe('assignmentReceiver', context);
@@ -3118,7 +3139,9 @@ function emitForOfIterableHaxe(
       : emitType(statement.variable.type, context);
   const targetType = emitType(iterableType, context);
   if (targetType === 'Dynamic') return `(cast ${emitted} : Iterable<${elementType}>)`;
-  if (targetType === 'Iterator') return `(cast ${emitted} : Iterator<${elementType}>)`;
+  if (targetType === 'Iterator' || targetType.startsWith('Iterator<')) {
+    return `(cast ${emitted} : Iterator<${elementType}>)`;
+  }
   if (
     iterableType.kind === 'named' &&
     iterableType.reference.kind === 'ambient' &&
@@ -3350,14 +3373,12 @@ function emitFunctionStatementsHaxe(statements: readonly IrStatement[], context:
     return `var ${getBindingTargetNameHaxe(variable.binding, bodyContext)}:${type};`;
   });
   const emitted = [...prefix, ...emitStatements(statements, bodyContext).filter(Boolean)];
-  const last = statements.at(-1);
-  return context.returnsAbsent &&
-    context.returnType &&
-    emitType(context.returnType, context) !== 'Void' &&
-    last?.kind !== 'return' &&
-    last?.kind !== 'throw'
-    ? [...emitted, 'return null;']
-    : emitted;
+  const returnType = context.returnType ? emitType(context.returnType, context) : undefined;
+  const canCompleteNormally = getIrStatementListCompletionSet(statements).completions.some(
+    (completion) => completion.kind === 'normal',
+  );
+  if (!canCompleteNormally || !returnType || returnType === 'Void' || returnType === 'Dynamic') return emitted;
+  return [...emitted, context.returnsAbsent ? 'return null;' : 'return cast(js.Syntax.code("undefined"));'];
 }
 
 function emitType(type: Readonly<IrType>, context: EmitContext): string {
@@ -3532,6 +3553,7 @@ function emitNewArgumentsHaxe(
 
 const haxeIntegerLengthConstructorNames = new Set([
   'Array',
+  'ArrayBuffer',
   'Float32Array',
   'Float64Array',
   'Int8Array',

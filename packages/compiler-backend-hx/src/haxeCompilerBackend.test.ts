@@ -9967,3 +9967,91 @@ describe('emitIrModuleHaxe binary operator on non-matching types', () => {
     expect(emitIrModuleHaxe(module).contents).toContain('flighthq._internal._Js.add(a, b)');
   });
 });
+
+describe('emitIrModuleHaxe complete Flight semantic tail', () => {
+  it('casts string aliases before invoking native string members', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'string-alias-member.ts',
+        "type Format = 'float32x2' | 'float32x3'; interface Attribute { format: Format } export function isFloat(attribute: Attribute): boolean { return attribute.format.startsWith('float32'); }",
+      ).module,
+    ).contents;
+
+    expect(output).toContain('(cast attribute.format : String).startsWith("float32")');
+  });
+
+  it('emits flow-introduced structural property reads and writes reflectively', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'narrowed-structural-property.ts',
+        `interface Base { kind: string }
+         interface Detailed extends Base { value: number }
+         function isDetailed(value: Base | null): value is Detailed { return value !== null && 'value' in value; }
+         export function update(value: Base | null): number {
+           if (!isDetailed(value)) return 0;
+           value.value = 2;
+           return value.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('Reflect.setField(dynamicAccessReceiver, "value", dynamicAccessValue)');
+    expect(output).toContain('return Reflect.field(value, "value");');
+  });
+
+  it('retains numeric Math result types on inferred locals', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'math-result-local.ts',
+        'export function whole(value: number): number { const result = Math.floor(value); return result; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('final result:Float = Math.floor(value);');
+  });
+
+  it('coerces ArrayBuffer lengths and ArrayBufferLike slice bounds to integers', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'array-buffer-integers.ts',
+        'export function copy(source: Uint8Array, length: number): ArrayBuffer { const out = new ArrayBuffer(length * 2); return source.buffer.slice(0, length); }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('new flighthq._internal._ArrayBuffer(Std.int((length * 2)))');
+    expect(output).toContain('flighthq._internal._ArrayBuffer.slice(source.buffer, 0, Std.int(length))');
+  });
+
+  it('writes non-numeric typed-array indexes through the reflective property ABI', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'dynamic-typed-array-index.ts',
+        'export function write(values: Float32Array, key: any): void { values[key] = 1; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('flighthq._internal._Js.setProperty(assignmentReceiver, assignmentKey, assignmentValue)');
+  });
+
+  it('casts iterator-returning collection views for Haxe for loops', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'map-values-loop.ts',
+        'export function sum(values: Map<string, number>): number { let total = 0; for (const value of values.values()) total += value; return total; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('in (cast values.values() : Iterator<Float>)');
+  });
+
+  it('preserves undefined fallthrough for a typed non-void function', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'typed-switch-fallthrough.ts',
+        "type State = 'ready'; export function label(state: State): string { switch (state) { case 'ready': return 'Ready'; } }",
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return cast(js.Syntax.code("undefined"));');
+  });
+});
