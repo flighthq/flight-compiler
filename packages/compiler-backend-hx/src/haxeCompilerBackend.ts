@@ -2164,6 +2164,14 @@ function emitExpressionAsExpectedTypeHaxe(
         context.options.runtimeModule,
       ) ?? 'Dynamic',
     );
+  const functionBoundary =
+    isIrTypeFunctionShapedHaxe(concreteExpected, context) &&
+    isIrExpressionFunctionValuedHaxe(expression, context);
+  if (functionBoundary) return emitted.startsWith('cast(') ? emitted : `cast(${emitted})`;
+  const expressionType = getIrExpressionTypeHaxe(expression, context);
+  const alreadyExpectedStructuralType =
+    expressionType !== undefined &&
+    emitType(getIrSingleConcreteTypeHaxe(expressionType), context) === emitType(concreteExpected, context);
   if (
     expression.kind === 'binary' &&
     expression.operator === '??' &&
@@ -2175,10 +2183,9 @@ function emitExpressionAsExpectedTypeHaxe(
     return `((cast ${normalizeHaxeExpressionGrouping(emitExpression(expression.left, context))} : Null<${target}>) ?? (cast ${normalizeHaxeExpressionGrouping(emitExpression(expression.right, context))} : ${target}))`;
   }
   if (
-    (isIrTypeFunctionShapedHaxe(concreteExpected, context) &&
-      isIrExpressionFunctionValuedHaxe(expression, context)) ||
     expectedNativeCall ||
-    isIrStructuralRecordTypeHaxe(concreteExpected, context) ||
+    (isIrStructuralRecordTypeHaxe(concreteExpected, context) &&
+      (expression.kind === 'object' || !alreadyExpectedStructuralType)) ||
     (expectedStringNominal &&
       (isIrExpressionStringBackedHaxe(expression, context) || expression.kind === 'object' || expression.kind === 'call')) ||
     (concreteExpected.kind === 'array' &&
@@ -4633,7 +4640,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     isIrExpressionFunctionValuedHaxe(variable.initializer, context);
   const directInitializer = variable.initializer ? emitExpression(variable.initializer, context) : undefined;
   const expectedInitializer =
-    variable.initializer && variable.type
+    variable.initializer && variable.type && variable.initializer.kind !== 'function'
       ? emitExpressionAsExpectedTypeHaxe(variable.initializer, variable.type, context, directInitializer)
       : directInitializer;
   const initializer = variable.initializer

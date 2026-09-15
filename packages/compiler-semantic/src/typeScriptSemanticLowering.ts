@@ -986,11 +986,25 @@ function lowerExpression(
   if (ts.isPropertyAccessExpression(node)) {
     const optional = node.questionDotToken !== undefined;
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
-    const candidateType = getTypeScriptExpressionBindingTypeEvidence(node, context);
+    const receiverShape = getIrTypeConstructionTargetShape(receiver, context);
+    const memberSymbol = context.checker.getSymbolAtLocation(node.name);
+    const memberDeclaration = memberSymbol
+      ? getTypeScriptPreferredSymbolDeclaration(memberSymbol, context)
+      : undefined;
+    // Result evidence belongs on data fields. Asking the checker to structurally materialize a
+    // generic method value can revisit library mapped types (for example Promise.allSettled) even
+    // though the call result already has its own instantiated evidence. Besides being redundant,
+    // that speculative materialization reports diagnostics at an otherwise supported call site.
+    const candidateType =
+      receiverShape?.kind === 'object' ||
+      (memberDeclaration !== undefined &&
+        (ts.isPropertySignature(memberDeclaration) || ts.isPropertyDeclaration(memberDeclaration)))
+        ? getTypeScriptExpressionBindingTypeEvidence(node, context)
+        : undefined;
     const type = candidateType && isIrExpressionValueTypeEvidence(candidateType) ? candidateType : undefined;
     const resolved =
       getIrResolvedMemberReceiver(receiver) ??
-      getIrResolvedMemberReceiver(getIrTypeConstructionTargetShape(receiver, context)) ??
+      getIrResolvedMemberReceiver(receiverShape) ??
       getIrResolvedMemberReceiverFromNarrowedFlow(node.expression, context) ??
       getIrResolvedMemberReceiver(
         getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node.expression), context, 0, false, node),
@@ -6362,6 +6376,11 @@ function getTypeScriptNarrowedStructuralPropertyAccess(
   context: LoweringContext,
 ): { structuralAccess?: 'narrowed' } {
   if (!ts.isIdentifier(node.expression)) return {};
+  const reference = lowerIdentifierReference(node.expression, context);
+  // A named union alternative has an ordinary target type and is emitted through the established
+  // narrowing cast. Reflective access is only for a flow-introduced shape that has no declared
+  // alternative name to cast to.
+  if (getTypeScriptReferenceNarrowedMember(node.expression, reference, context).narrowedMember) return {};
   const symbol = context.checker.getSymbolAtLocation(node.expression);
   const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
   if (!symbol || !declaration) return {};

@@ -821,7 +821,7 @@ describe('emitIrModuleHaxe', () => {
 
     expect(output).toContain('typedef Box<Value> = { value:Value, ?optional:Value };');
     expect(output).toContain('function create():Box<Item>');
-    expect(output).toContain('return { value: { label: "flight" } };');
+    expect(output).toContain('return (cast { value: (cast { label: "flight" } : Item) } : Box<Item>);');
   });
 
   it('preserves optional nullable parameters for JavaScript strict absence checks', () => {
@@ -1749,7 +1749,7 @@ describe('emitIrModuleHaxe', () => {
 
     const stringOutput = emitIrModuleHaxe(stringTest.module).contents;
     expect(stringOutput).toContain('Std.isOfType(value, String)');
-    expect(stringOutput).toContain('value.toUpperCase()');
+    expect(stringOutput).toContain('(cast value : String).toUpperCase()');
     const numberOutput = emitIrModuleHaxe(numberTest.module).contents;
     expect(numberOutput).toContain('Std.isOfType(value, Float)');
     expect(emitIrModuleHaxe(negated.module).contents).toContain('!Std.isOfType(value, String)');
@@ -1995,8 +1995,8 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('if (value)');
-    expect(output).toContain('resolveTask(1)');
-    expect(output).toContain('resolveTask(0)');
+    expect(output).toContain('resolveTask(cast(1))');
+    expect(output).toContain('resolveTask(cast(0))');
   });
 
   it('emits a conditional await initializer through two branch continuations', () => {
@@ -2052,7 +2052,7 @@ describe('emitIrModuleHaxe', () => {
     ).contents;
 
     expect(compared).toContain('_Promise.resolve(task).then(');
-    expect(compared).toContain('resolveTask(!flighthq._internal._Js.strictEqual(awaitValue, null));');
+    expect(compared).toContain('resolveTask(cast(!flighthq._internal._Js.strictEqual(awaitValue, null)));');
     expect(negated).toContain('_Promise.resolve(task).then(');
     expect(negated).toContain('if (! awaitValue)');
     expect(compared).not.toContain('await ');
@@ -2434,7 +2434,7 @@ describe('emitIrModuleHaxe structural record election', () => {
     // An optional member is defaulted, because a missing default makes the field required.
     expect(nominal).toContain('  public var min:Null<Float> = null;');
     // The construction site is unchanged either way, which is what makes the election an option.
-    expect(nominal).toContain('return { max: (range.max + by), min: 0 };');
+    expect(nominal).toContain('return (cast { max: (range.max + by), min: 0 } : Range);');
   });
 
   it('emits structInit for type alias over an object type', () => {
@@ -2519,7 +2519,7 @@ describe('emitIrModuleHaxe expression coverage', () => {
     const result = lower('array-holes.ts', 'export function holes(): number[] { return [1, , 3]; }');
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('[1, null, 3]');
+    expect(output).toContain('[(cast 1 : Float), null, 3]');
   });
 
   it('emits String(value) as Std.string(value)', () => {
@@ -3233,7 +3233,7 @@ describe('emitIrModuleHaxe statement coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('return _backend;');
+    expect(output).toContain('return (cast _backend : Backend);');
   });
 
   it('emits type parameters with constraints on functions and classes', () => {
@@ -4881,7 +4881,7 @@ describe('emitIrModuleHaxe array literal', () => {
     const result = lower('array-literal.ts', 'export function list(): number[] { return [1, 2, 3]; }');
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('[1, 2, 3]');
+    expect(output).toContain('[(cast 1 : Float), 2, 3]');
   });
 });
 
@@ -5043,7 +5043,7 @@ describe('emitIrModuleHaxe object literal', () => {
       'export function append(values: number[], value: number): number[] { return [...values, value]; }',
     );
 
-    expect(emitIrModuleHaxe(result.module).contents).toContain('values.copy().concat([value])');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('values.copy().concat([(cast value : Float)])');
   });
 
   it('types heterogeneous array literals as dynamic collections', () => {
@@ -9313,7 +9313,7 @@ describe('emitIrModuleHaxe array literal creation', () => {
     const output = emitIrModuleHaxe(
       lower('arr-lit.ts', 'export function nums(): number[] { return [1, 2, 3]; }').module,
     ).contents;
-    expect(output).toContain('[1');
+    expect(output).toContain('[(cast 1 : Float)');
   });
 });
 
