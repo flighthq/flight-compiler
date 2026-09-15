@@ -1577,9 +1577,24 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return parts.length > 0 ? parts.join(' + ') : emitLiteral('');
     }
     case 'tuple': {
-      const elements = expression.elements.map((element) =>
-        element.expression ? emitExpression(element.expression, context) : 'null',
-      );
+      // TypeScript's sole numeric domain maps to Float. As with ordinary array literals, Haxe
+      // otherwise infers an all-integral tuple branch such as `[1, 0]` as Array<Int> before a
+      // surrounding conditional can constrain it to the source `[number, number]` type.
+      const numericElements = expression.elements.flatMap((element) => {
+        if (!element.expression) return [];
+        const type = getIrExpressionTypeHaxe(element.expression, context);
+        return type?.kind === 'primitive' && type.name === 'number' ? [element.expression] : [];
+      });
+      const floatWitness =
+        numericElements.length > 0 &&
+        numericElements.length === expression.elements.filter((element) => element.expression !== undefined).length
+          ? numericElements[0]
+          : undefined;
+      const elements = expression.elements.map((element) => {
+        if (!element.expression) return 'null';
+        const emitted = emitExpression(element.expression, context);
+        return element.expression === floatWitness ? `(cast ${emitted} : Float)` : emitted;
+      });
       const elementTypes = new Set(
         expression.elements.flatMap((element) => {
           if (!element.expression) return [];

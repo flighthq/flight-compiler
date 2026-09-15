@@ -6474,6 +6474,23 @@ describe('emitIrModuleHaxe narrowedMember with primitive typeof cast', () => {
     expect(output).toContain('Std.isOfType(');
     expect(output).toContain('.length');
   });
+
+  it('casts a Readonly-wrapped named alternative after eliminating a primitive member', () => {
+    const result = lower(
+      'readonly-union-narrow-prop.ts',
+      `interface XmlElement { readonly name: string; readonly content: ReadonlyArray<string | Readonly<XmlElement>>; }
+       export function firstName(element: Readonly<XmlElement>): string {
+         for (const content of element.content) {
+           if (typeof content === 'string') continue;
+           return content.name;
+         }
+         return '';
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('(cast content : XmlElement).name');
+  });
 });
 
 describe('emitIrModuleHaxe union type alias where member is typeAlias not interface', () => {
@@ -11321,6 +11338,18 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     expect(output).toContain('[(cast 0 : Float), 1, 2].filter');
     expect(output).toContain('out.set(cast(values))');
     expect(output).toContain('new flighthq._internal._UInt32Array(cast(values))');
+  });
+
+  it('gives all-numeric tuple branches a Float witness', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'numeric-tuple-conditional.ts',
+        'export function tangent(len: number): [number, number] { return len > 0 ? [len / 2, len / 3] : [1, 0]; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('[(cast (len / 2) : Float), (len / 3)]');
+    expect(output).toContain('[(cast 1 : Float), 0]');
   });
 
   it('retains contextual element types for empty array assignments', () => {

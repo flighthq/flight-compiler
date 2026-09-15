@@ -988,9 +988,7 @@ function lowerExpression(
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
     const receiverShape = getIrTypeConstructionTargetShape(receiver, context);
     const memberSymbol = context.checker.getSymbolAtLocation(node.name);
-    const memberDeclaration = memberSymbol
-      ? getTypeScriptPreferredSymbolDeclaration(memberSymbol, context)
-      : undefined;
+    const memberDeclaration = memberSymbol ? getTypeScriptPreferredSymbolDeclaration(memberSymbol, context) : undefined;
     // Result evidence belongs on data fields. Asking the checker to structurally materialize a
     // generic method value can revisit library mapped types (for example Promise.allSettled) even
     // though the call result already has its own instantiated evidence. Besides being redundant,
@@ -1228,8 +1226,7 @@ function isIrExpressionValueTypeEvidence(type: Readonly<IrType>): boolean {
       );
     case 'object':
       return type.properties.every(
-        (property) =>
-          property.computedKey?.kind !== 'ambient' && isIrExpressionValueTypeEvidence(property.type),
+        (property) => property.computedKey?.kind !== 'ambient' && isIrExpressionValueTypeEvidence(property.type),
       );
     case 'literal':
     case 'never':
@@ -6363,7 +6360,7 @@ function getTypeScriptReferenceNarrowedMember(
   const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
   if (!symbol || !declaration) return {};
   const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
-  if (!declared.isUnion()) return {};
+  if (!declared.isUnion()) return getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
   const flow = context.checker.getTypeAtLocation(node);
   if (flow.isUnion()) {
     if (
@@ -6373,14 +6370,95 @@ function getTypeScriptReferenceNarrowedMember(
       declared.types.some((t) => !(t.flags & ts.TypeFlags.BooleanLiteral))
     )
       return { narrowedMember: 'boolean' };
-    return {};
+    return getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
   }
   const narrowed = getTypeScriptNamedTypeMemberName(flow) ?? getTypeScriptPrimitiveTypeName(flow);
-  if (!narrowed) return {};
+  if (!narrowed) return getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
   const members = declared.types.map(
     (member) => getTypeScriptNamedTypeMemberName(member) ?? getTypeScriptPrimitiveTypeName(member),
   );
-  return members.filter((member) => member === narrowed).length === 1 ? { narrowedMember: narrowed } : {};
+  return members.filter((member) => member === narrowed).length === 1
+    ? { narrowedMember: narrowed }
+    : getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
+}
+
+// The deliberately small compiler ambient surface can leave the project checker with `any` for a
+// library-wrapped loop element. Preserve an equivalent source proof for the common guard-clause
+// shape: when one union alternative takes a path-completing branch, the following statements hold
+// the sole remaining named alternative. The union and the tested member both come from recorded IR
+// evidence; no target-side guess is introduced.
+function getTypeScriptSyntacticReferenceNarrowedMember(
+  node: ts.Identifier,
+  reference: Readonly<Extract<IrIdentifierReference, { kind: 'binding' }>>,
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): { narrowedMember?: string } {
+  const recorded = context.bindingTypes.get(symbol);
+  const alternatives = recorded ? getTypeScriptNarrowingAlternatives(recorded, context, new Set()) : [];
+  if (alternatives.length < 2) return {};
+  for (let child: ts.Node = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isBlock(parent)) {
+      const statementIndex = parent.statements.findIndex((statement) => isTypeScriptNodeWithin(child, statement));
+      for (let index = statementIndex - 1; index >= 0; index -= 1) {
+        const statement = parent.statements[index]!;
+        if (doesTypeScriptStatementAssignBinding(statement, symbol, context.checker)) return {};
+        if (
+          !ts.isIfStatement(statement) ||
+          statement.elseStatement ||
+          !isTypeScriptStatementPathCompleting(statement.thenStatement) ||
+          !ts.isBinaryExpression(statement.expression)
+        ) {
+          continue;
+        }
+        const evidence = getTypeScriptUnionMemberTestEvidence(statement.expression, context);
+        if (!evidence || evidence.binding.id !== reference.binding.id) continue;
+        const tested = getIrNarrowedMemberNameSemantic(evidence.member);
+        if (!tested) continue;
+        const remaining = alternatives.filter((member) => {
+          const name = getIrNarrowedMemberNameSemantic(member);
+          return evidence.whenResult ? name !== tested : name === tested;
+        });
+        const narrowed = remaining.length === 1 ? getIrNarrowedMemberNameSemantic(remaining[0]!) : undefined;
+        return narrowed ? { narrowedMember: narrowed } : {};
+      }
+    }
+    if (ts.isFunctionLike(parent)) break;
+  }
+  return {};
+}
+
+function isTypeScriptStatementPathCompleting(statement: ts.Statement): boolean {
+  if (
+    ts.isBreakStatement(statement) ||
+    ts.isContinueStatement(statement) ||
+    ts.isReturnStatement(statement) ||
+    ts.isThrowStatement(statement)
+  ) {
+    return true;
+  }
+  if (ts.isBlock(statement)) {
+    const last = statement.statements.at(-1);
+    return last !== undefined && isTypeScriptStatementPathCompleting(last);
+  }
+  return (
+    ts.isIfStatement(statement) &&
+    statement.elseStatement !== undefined &&
+    isTypeScriptStatementPathCompleting(statement.thenStatement) &&
+    isTypeScriptStatementPathCompleting(statement.elseStatement)
+  );
+}
+
+function getIrNarrowedMemberNameSemantic(type: Readonly<IrType>): string | undefined {
+  if (type.kind === 'primitive') return type.name;
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Readonly' &&
+    type.typeArguments.length === 1
+  ) {
+    return getIrNarrowedMemberNameSemantic(type.typeArguments[0]!);
+  }
+  return type.kind === 'named' && type.reference.kind === 'binding' ? type.reference.binding.name : undefined;
 }
 
 function getTypeScriptNarrowedStructuralPropertyAccess(
@@ -6505,6 +6583,12 @@ function isTypeScriptOptionalMemberAccess(node: ts.PropertyAccessExpression, con
 }
 
 function getTypeScriptNamedTypeMemberName(type: ts.Type): string | undefined {
+  // Readonly<T> preserves T's runtime shape, but the checker exposes the utility alias as the
+  // flow alternative's name. Carry the underlying named type so a static backend can cast an
+  // identifier after a typeof guard eliminates the other union alternative.
+  if (type.aliasSymbol?.name === 'Readonly' && type.aliasTypeArguments?.length === 1) {
+    return getTypeScriptNamedTypeMemberName(type.aliasTypeArguments[0]!);
+  }
   const name = type.aliasSymbol?.name ?? type.getSymbol()?.name;
   return name && name !== '__type' && name !== '__object' ? name : undefined;
 }
