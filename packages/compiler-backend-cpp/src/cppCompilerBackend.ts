@@ -303,6 +303,7 @@ function emitIrModuleCppWithContext(
   const contextualBindingStorageTargetTypes = new Map<string, Readonly<IrType>>();
   const nullableBindingIds = new Set(collectIrModuleNullableBindingIds(module));
   const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
+  const preservedInitializerTypes = collectCppExplicitCollectionConstructionBindingTypesCpp(module);
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
     anonymousStructs: new Map(),
@@ -326,7 +327,7 @@ function emitIrModuleCppWithContext(
     nullableBindingIds,
     narrowedBindingTypes: new Map(),
     options,
-    preservedInitializerTypes: new Map(),
+    preservedInitializerTypes,
     referenceRepresentationPlanner:
       referenceRepresentationPlanner ??
       createIrTypeReferenceRepresentationPlannerCpp(sourceModules, moduleResolution, options.externalBindings),
@@ -1253,7 +1254,8 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       : undefined;
   const preservedInitializerType = arrayElement
     ? undefined
-    : (getCppStructurallyEquivalentInitializerTypeCpp(variable, context) ??
+    : (context.preservedInitializerTypes.get(variable.binding.id) ??
+      getCppStructurallyEquivalentInitializerTypeCpp(variable, context) ??
       (inferredInitializerType?.kind === 'unknown' ? undefined : inferredInitializerType));
   if (preservedInitializerType) {
     context.preservedInitializerTypes.set(variable.binding.id, preservedInitializerType);
@@ -1308,6 +1310,34 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(sharedType, sharedInitializer, context, runtimeArrayInitializer)};`;
   }
   return `${constness}${emittedType} ${name}${initializer};`;
+}
+
+function collectCppExplicitCollectionConstructionBindingTypesCpp(
+  module: Readonly<IrModule>,
+): Map<string, Readonly<IrType>> {
+  const types = new Map<string, Readonly<IrType>>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if (
+        !('binding' in variable) ||
+        variable.mutable ||
+        variable.initializer?.kind !== 'new' ||
+        variable.initializer.typeArguments.length === 0
+      ) {
+        return;
+      }
+      const constructorName = getIrAmbientConstructorNameCpp(variable.initializer.callee);
+      const expectedArity =
+        constructorName === 'Map' || constructorName === 'WeakMap' ? 2 : constructorName === 'Set' ? 1 : 0;
+      if (expectedArity === 0 || variable.initializer.typeArguments.length !== expectedArity) return;
+      types.set(variable.binding.id, {
+        kind: 'named',
+        reference: { kind: 'ambient', name: constructorName },
+        typeArguments: variable.initializer.typeArguments,
+      });
+    },
+  });
+  return types;
 }
 
 function getCppStructurallyEquivalentInitializerTypeCpp(

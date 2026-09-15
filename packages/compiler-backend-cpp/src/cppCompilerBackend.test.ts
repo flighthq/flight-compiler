@@ -8913,6 +8913,35 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('.seen = flight::Set<flight::String>()');
   });
 
+  it('preserves explicit collection constructor identity through structurally normalized bindings', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'explicit-collection-identity.ts',
+        `interface Row { key: number; name: string }
+         interface World { id: number }
+         interface Publication { active: boolean }
+         export function table(rows: readonly Row[]): Map<number, Row> {
+           const result = new Map<number, Row>();
+           for (const row of rows) result.set(row.key, row);
+           return result;
+         }
+         export function publications(world: World): WeakMap<World, Publication> {
+           const result = new WeakMap<World, Publication>();
+           const created = { active: true };
+           result.set(world, created);
+           return result;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('auto result = flight::Map<double, flight::Ref<Row>>()');
+    expect(output).toContain('result.set(row->key, row)');
+    expect(output).toContain('auto result = flight::WeakMap<flight::Ref<World>, flight::Ref<Publication>>()');
+    expect(output).toContain('flight::Ref<Publication> created = flight::make_ref<Publication>');
+    expect(output).toContain('result.set(world, created)');
+  });
+
   it('stores a locally built Map in its readonly structural result view', () => {
     const output = emitIrModuleCpp(
       lower(
