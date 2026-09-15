@@ -8507,13 +8507,9 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain(
-      'return (cast canvas.getContext("webgl2") : js.html.webgl.WebGL2RenderingContext);',
-    );
+    expect(output).toContain('return (cast canvas.getContext("webgl2") : js.html.webgl.WebGL2RenderingContext);');
     expect(output).toContain('function element():js.html.CanvasElement');
-    expect(output).toContain(
-      '(cast js.Browser.document.createElement("canvas") : js.html.CanvasElement)',
-    );
+    expect(output).toContain('(cast js.Browser.document.createElement("canvas") : js.html.CanvasElement)');
     expect(output).not.toContain('js.html.Element');
   });
 
@@ -8636,10 +8632,8 @@ describe('emitIrModuleHaxe interface extends chain', () => {
 
   it('materializes non-array iterables before array spread concatenation', () => {
     const output = emitIrModuleHaxe(
-      lower(
-        'iterable-spread.ts',
-        'export function values(input: Set<number>): number[] { return [...input, 1]; }',
-      ).module,
+      lower('iterable-spread.ts', 'export function values(input: Set<number>): number[] { return [...input, 1]; }')
+        .module,
     ).contents;
 
     expect(output).toContain('flighthq._internal._Array.from(input).concat([(cast 1 : Float)])');
@@ -11053,5 +11047,140 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     ).contents;
 
     expect(output).toContain('return cast(js.Syntax.code("undefined"));');
+  });
+
+  it('types rest call arguments by the repeated element rather than the rest array', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'rest-call-elements.ts',
+        'function write(out: number[], ...values: number[]): void { out[0] = values[0]; } export function invert(out: number[]): void { write(out, -1, 0, 1); }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('write(out, - 1, 0, 1)');
+    expect(output).not.toContain('(cast - 1 : Array<Float>)');
+  });
+
+  it('adapts Haxe array methods to their source return and element types', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'array-method-boundaries.ts',
+        `interface Base { kind: string; basePath?: string }
+         interface Embedded { kind: string; resource: string }
+         export function append(out: Base[], value: Embedded): void { out.push(value); }
+         export function flatten(values: Embedded[]): Base[] { return values.flatMap((value) => [value]); }
+         export function reverse(values: number[]): number[] { return values.copy().reverse(); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('out.push((cast value : Base))');
+    expect(output).toContain('(cast flighthq._internal._Array.flatMap(values, cast(');
+    expect(output).toContain('reversedArray.reverse(); return reversedArray;');
+  });
+
+  it('forces heterogeneous tuple literals to their dynamic Haxe carrier', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'map-tuples.ts',
+        'interface Item { id: string } export function index(items: Item[]): Map<string, Item> { return new Map(items.map((item) => [item.id, item])); }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('([item.id, item] : Array<Dynamic>)');
+  });
+
+  it('erases heterogeneous conditionals and contextually widens callable defaults', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'conditional-function-boundaries.ts',
+        `interface Target { callback: (value: number, index: number) => number }
+         interface Source { callback?: (value: number, index: number) => number }
+         const identity = (value: number): number => value;
+         export function choose(flag: boolean): boolean | number | null { return flag ? true : flag ? 1 : null; }
+         export function defaulted(callback: (value: number, index: number) => number = (value) => value): number { return callback(1, 0); }
+         export function install(target: Target, source: Source): void { target.callback = source.callback ?? identity; }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('? cast(true) : cast(');
+    expect(output).toContain('cast(function(value:Float) return value)');
+    expect(output).toContain('(cast source.callback : Null<(Float, Float)->Float>)');
+    expect(output).toContain('(cast identity : (Float, Float)->Float)');
+  });
+
+  it('casts concrete options into readonly partial structural call parameters', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'partial-call-boundary.ts',
+        `interface Options { alpha?: number; sourceMode?: string }
+         function create(options?: Readonly<Partial<Options>>): void { options; }
+         export function run(options: { alpha: number }): void { create(options); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('create((cast options : Dynamic))');
+  });
+
+  it('retains structural argument types through contract re-export facades', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Contract',
+            packageName: '@flighthq/layout',
+            source: 'packages/layout/src/contract.ts',
+          },
+          specifier: './bounds',
+          target: { packageName: '@flighthq/layout', source: 'packages/layout/src/bounds.ts' },
+        },
+        {
+          importer: {
+            name: 'Label',
+            packageName: '@flighthq/text',
+            source: 'packages/text/src/label.ts',
+          },
+          specifier: '@flighthq/layout/contract',
+          target: { packageName: '@flighthq/layout', source: 'packages/layout/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/layout',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/layout/src/bounds.ts',
+          'export interface Spec { width: number; wordWrap?: boolean } export function measure(spec: Spec): void { spec; }',
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/layout',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/layout/src/contract.ts',
+          "export * from './bounds';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/text',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/text/src/label.ts',
+          "import { measure } from '@flighthq/layout/contract'; interface Data { width: number } export function layout(data: Data): void { measure(data); }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(output).toContain('measure((cast data : Spec))');
   });
 });
