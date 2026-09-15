@@ -8199,7 +8199,9 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('return canvas.getContext("webgl2");');
+    expect(output).toContain(
+      'return (cast canvas.getContext("webgl2") : js.html.webgl.WebGL2RenderingContext);',
+    );
     expect(output).toContain('function element():js.html.CanvasElement');
     expect(output).toContain(
       '(cast js.Browser.document.createElement("canvas") : js.html.CanvasElement)',
