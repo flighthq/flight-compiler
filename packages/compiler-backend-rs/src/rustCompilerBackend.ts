@@ -2260,23 +2260,11 @@ function emitObjectExpressionRust(
   if (expression.members.some((member) => member.kind === 'getAccessor')) {
     emissionError(context, 'object getters require target-specific accessor lowering');
   }
+  const target = emitType(expression.type, context);
+  const properties = getIrObjectConstructionPropertiesRust(expression.type, context);
   const members = expression.members.filter(
     (member): member is Extract<IrObjectMember, { kind: 'property' }> => member.kind === 'property',
   );
-  const openProperties =
-    expression.type.kind === 'unknown' && expression.type.source === 'object'
-      ? members.map((member): IrObjectTypeProperty => {
-          const type = inferIrExpressionTypeRust(member.value, context);
-          if (!type) {
-            emissionError(context, `open object member ${member.name} requires Rust value-type evidence`);
-          }
-          return { name: member.name, optional: false, readonly: false, type };
-        })
-      : undefined;
-  const properties = openProperties ?? getIrObjectConstructionPropertiesRust(expression.type, context);
-  const target = openProperties
-    ? getIrObjectTypeTargetNameRust(openProperties, context)
-    : emitType(expression.type, context);
   const names = new Set<string>();
   const fields = members.map((member) => {
     names.add(member.name);
@@ -4232,10 +4220,7 @@ function assertStructuralObjectCompatibilityRust(
   ).diagnostics;
   const diagnostic =
     diagnostics.find((candidate) => candidate.disposition !== 'indeterminate') ??
-    diagnostics.find(
-      (candidate) =>
-        candidate.code !== 'open-construction-target' && candidate.code !== 'unresolved-named-construction-target',
-    );
+    diagnostics.find((candidate) => candidate.code !== 'unresolved-named-construction-target');
   if (diagnostic) {
     throw createBackendEmissionFailure(
       'rust',
