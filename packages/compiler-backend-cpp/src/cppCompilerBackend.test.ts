@@ -965,6 +965,68 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('return runtime->uid.value();');
   });
 
+  it('keeps structural interface casts as writable rows and constructs foreign anonymous fields', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/runtime.ts',
+      `export interface BaseRuntime { version: number }
+       export interface DerivedRuntime extends BaseRuntime { cache: { value: number } | null }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const host = ts.createSourceFile(
+      '/flight/packages/host/src/runtime.ts',
+      `import type { BaseRuntime } from '@flighthq/types/contract';
+       export function runtime(value: Readonly<BaseRuntime>): Readonly<BaseRuntime> { return value; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/consumer/src/cache.ts',
+      `import { runtime } from '@flighthq/host/contract';
+       import type { BaseRuntime, DerivedRuntime } from '@flighthq/types/contract';
+       export function cache(value: Readonly<BaseRuntime>): void {
+         const derived = runtime(value) as DerivedRuntime;
+         derived.cache = { value: 1 };
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/runtime.ts' },
+        },
+        {
+          specifier: '@flighthq/host/contract',
+          target: { packageName: '@flighthq/host', source: 'packages/host/src/runtime.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/host', sourceFile: host, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/consumer', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain(
+      'flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<flighthq_types::DerivedRuntime>>>> derived = flight::structural_ref_cast',
+    );
+    expect(emitted).toMatch(
+      /flight::row_set<flight::RowKey<"cache">>\(derived, flight::make_ref<flighthq_types::value_[0-9a-f]{16}>/u,
+    );
+    expect(emitted).not.toMatch(/struct value_[0-9a-f]{16}/u);
+  });
+
   it('recovers optional construction values through a symbol-key Omit projection', () => {
     const model = ts.createSourceFile(
       '/flight/packages/types/src/model.ts',

@@ -66,6 +66,7 @@ import type {
   IrBindingIdentity,
   IrInterfaceDeclaration,
   IrModule,
+  IrObjectMember,
   IrObjectTypeProperty,
   IrParameter,
   IrStatement,
@@ -185,6 +186,7 @@ interface EmitContext {
   returnsAbsent: boolean;
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
   sourceModules: readonly Readonly<IrModule>[];
+  structuralCastBindingRows: ReadonlyMap<string, Readonly<CompilerCppStructuralRowPlan>>;
   targetNameMaps: ReadonlyMap<string, ReadonlyMap<string, string>>;
   targetNames: ReadonlyMap<string, string>;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
@@ -304,6 +306,7 @@ function emitIrModuleCppWithContext(
   const nullableBindingIds = new Set(collectIrModuleNullableBindingIds(module));
   const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
   const preservedInitializerTypes = collectCppExplicitCollectionConstructionBindingTypesCpp(module);
+  const structuralCastBindingRows = new Map<string, Readonly<CompilerCppStructuralRowPlan>>();
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
     anonymousStructs: new Map(),
@@ -336,6 +339,7 @@ function emitIrModuleCppWithContext(
     returnsAbsent: false,
     sharedCaptureTargetNames,
     sourceModules,
+    structuralCastBindingRows,
     targetNameMaps: targetNameMaps ?? createCppTargetNameMaps(sourceModules),
     targetNames,
     uninitializedCaptureStorageBindingIds,
@@ -343,6 +347,9 @@ function emitIrModuleCppWithContext(
   };
   for (const [bindingId, targetType] of collectCppContextualBindingStorageTargetTypesCpp(module, context)) {
     contextualBindingStorageTargetTypes.set(bindingId, targetType);
+  }
+  for (const [bindingId, row] of collectCppStructuralCastBindingRowsCpp(module, context)) {
+    structuralCastBindingRows.set(bindingId, row);
   }
   analyzeIrModuleTraversal(module, {
     variable(variable) {
@@ -1213,15 +1220,18 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(declaration.binding.id);
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(declaration.binding.id);
   const preservedInitializerType = context.preservedInitializerTypes.get(declaration.binding.id);
+  const structuralCastRow = context.structuralCastBindingRows.get(declaration.binding.id);
   const type = externalStorageTarget
     ? emitCppExternalBindingStorageTypeCpp(declaration.type, externalStorageTarget, context)
     : contextualStorageTarget
       ? emitType(contextualStorageTarget, context)
       : preservedInitializerType
         ? emitType(preservedInitializerType, context)
-      : declaration.type
-        ? emitType(declaration.type, context)
-        : 'auto';
+        : structuralCastRow
+          ? emitCppStructuralRowReferenceTypeCpp(structuralCastRow, context)
+          : declaration.type
+            ? emitType(declaration.type, context)
+            : 'auto';
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(declaration.mutable, declaration.type);
   const initializer = declaration.initializer
@@ -1265,10 +1275,13 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   }
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(variable.binding.id);
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(variable.binding.id);
+  const structuralCastRow = context.structuralCastBindingRows.get(variable.binding.id);
   const type = externalStorageTarget
     ? emitCppExternalBindingStorageTypeCpp(variable.type, externalStorageTarget, context)
     : contextualStorageTarget
       ? emitType(contextualStorageTarget, context)
+      : structuralCastRow
+        ? emitCppStructuralRowReferenceTypeCpp(structuralCastRow, context)
       : weakMapViewPlan || !variable.type || preservedInitializerType
         ? 'auto'
         : emitType(variable.type, context);
@@ -1343,6 +1356,25 @@ function collectCppExplicitCollectionConstructionBindingTypesCpp(
     },
   });
   return types;
+}
+
+function collectCppStructuralCastBindingRowsCpp(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): ReadonlyMap<string, Readonly<CompilerCppStructuralRowPlan>> {
+  const rows = new Map<string, Readonly<CompilerCppStructuralRowPlan>>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if (!('binding' in variable) || variable.initializer?.kind !== 'cast') return;
+      const sourceType = getIrExpressionTypeEvidenceCpp(variable.initializer.expression, context);
+      if (!sourceType || !context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module)) {
+        return;
+      }
+      const target = getCppStructuralProjectionRowCpp(variable.initializer.type, context);
+      if (target) rows.set(variable.binding.id, target);
+    },
+  });
+  return rows;
 }
 
 function getCppStructurallyEquivalentInitializerTypeCpp(
@@ -1453,11 +1485,13 @@ function emitExpression(
         assignmentType &&
         rightType &&
         isCppExactCallableObjectFieldAssignmentCpp(expression.left, rightType, assignmentType, context);
-      const right = emitExpression(
-        expression.right,
-        context,
-        exactCallableFieldAssignment ? rightType : assignmentType,
-      );
+      const foreignAnonymousObject =
+        expression.operator === '='
+          ? emitCppForeignAnonymousPropertyObjectCpp(expression.left, expression.right, context)
+          : undefined;
+      const right =
+        foreignAnonymousObject ??
+        emitExpression(expression.right, context, exactCallableFieldAssignment ? rightType : assignmentType);
       const structuralRowAssignment =
         expression.operator === '=' && getCppRuntimeProfile(context.options) === 'flight-cpp'
           ? emitCppStructuralRowAssignment(expression.left, right, context)
@@ -8686,6 +8720,61 @@ function emitCppValueLogicalOrExpression(
   return `([&]() -> ${emitType(resultType, context)} { ${lines.join(' ')} return ${last}; }())`;
 }
 
+function emitCppForeignAnonymousPropertyObjectCpp(
+  target: Readonly<IrExpression>,
+  value: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (target.kind !== 'property' || value.kind !== 'object') return undefined;
+  const receiverType = getIrExpressionTypeEvidenceCpp(target.object, context);
+  if (!receiverType) return undefined;
+  const owner = getCppTypeReferenceOwnerModuleCpp(receiverType, context);
+  if (owner.packageName === context.module.packageName) return undefined;
+  const property = context.referenceRepresentationPlanner
+    .resolveObjectShape(receiverType, context.module)
+    ?.find((candidate) => candidate.name === target.name);
+  const objectType = property ? getCppNonNullableType(property.type, context, new Set()) : undefined;
+  if (objectType?.kind !== 'object' || value.members.some((member) => member.kind !== 'property')) {
+    return undefined;
+  }
+  const members = value.members as readonly Readonly<Extract<IrObjectMember, { kind: 'property' }>>[];
+  const byName = new Map(members.map((member) => [member.name, member] as const));
+  const ordered = objectType.properties.flatMap((expected) => {
+    const member = byName.get(expected.name);
+    return member ? [{ expected, member }] : [];
+  });
+  if (ordered.length !== members.length) return undefined;
+  // The embedded object type is copied from the defining module into cross-module property
+  // evidence. Its canonical shape therefore produces the same stable helper name as the defining
+  // header, while the receiver's resolved owner supplies the namespace that must qualify it.
+  const key = `\0${normalizeCompilerStructuralValueCanonical(objectType)}`;
+  const name = getCppAnonymousStructBaseName(objectType.properties, getCppStableIdentifierHash(key));
+  const qualified = `${getCppCompilerPackageNamespace(owner.packageName, context.options.packageTargets)}::${name}`;
+  const sourceOrder = members.map((member) => member.name);
+  const targetOrder = ordered.map(({ member }) => member.name);
+  const reordered = sourceOrder.some((name, index) => name !== targetOrder[index]);
+  if (reordered) {
+    const temporaries = new Map(
+      members.map((member) => [member, getGeneratedTargetName(`object_member_${member.name}`, context)] as const),
+    );
+    const evaluations = members.map(
+      (member) =>
+        `auto ${temporaries.get(member)!} = ${emitExpression(member.value, context, objectType.properties.find((property) => property.name === member.name)?.type)};`,
+    );
+    const initializer = ordered
+      .map(({ member }) => `.${safeCppName(member.name)} = ${temporaries.get(member)!}`)
+      .join(', ');
+    return `([&]() { ${evaluations.join(' ')} return flight::make_ref<${qualified}>(${qualified}{${initializer}}); }())`;
+  }
+  const initializer = ordered
+    .map(
+      ({ expected, member }) =>
+        `.${safeCppName(member.name)} = ${emitExpression(member.value, context, expected.type)}`,
+    )
+    .join(', ');
+  return `flight::make_ref<${qualified}>(${qualified}{${initializer}})`;
+}
+
 function emitCppRecordIndexedAssignmentCpp(
   target: Readonly<IrExpression>,
   value: string,
@@ -9139,6 +9228,10 @@ function getCppStructuralRowExpressionPlanCpp(
   context: EmitContext,
 ): Readonly<CompilerCppStructuralRowPlan> | undefined {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    const bindingRow = context.structuralCastBindingRows.get(expression.reference.binding.id);
+    if (bindingRow) return bindingRow;
+  }
   const type = getIrExpressionTypeEvidenceCpp(expression, context);
   const row = type ? context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module) : undefined;
   if (row || expression.kind !== 'cast') return row;
@@ -9154,30 +9247,46 @@ function getCppStructuralProjectionRowCpp(
   context: EmitContext,
 ): Readonly<CompilerCppStructuralRowPlan> | undefined {
   if (
-    type.kind !== 'named' ||
-    type.reference.kind !== 'ambient' ||
-    type.typeArguments.length !== 1 ||
-    !type.typeArguments[0]
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0] &&
+    (type.reference.name === 'NoInfer' || type.reference.name === 'Readonly')
   ) {
-    return undefined;
-  }
-  if (type.reference.name === 'NoInfer' || type.reference.name === 'Readonly') {
     const row = getCppStructuralProjectionRowCpp(type.typeArguments[0], context);
     if (!row) return undefined;
     return type.reference.name === 'Readonly' ? { kind: 'readonly', row } : row;
   }
-  if (type.reference.name !== 'Partial') return undefined;
-  const object = type.typeArguments[0];
-  const plan = context.referenceRepresentationPlanner.plan(object, context.module);
   if (
-    !context.referenceRepresentationPlanner.resolveObjectShape(object, context.module) ||
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Partial' &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    const object = type.typeArguments[0];
+    const plan = context.referenceRepresentationPlanner.plan(object, context.module);
+    if (
+      !context.referenceRepresentationPlanner.resolveObjectShape(object, context.module) ||
+      plan.kind !== 'represented' ||
+      plan.identityDomain !== 'object' ||
+      plan.valueRepresentation !== 'flightReference'
+    ) {
+      return undefined;
+    }
+    return { kind: 'partial', row: { kind: 'rowOf', type: object } };
+  }
+  const owner = getCppDirectBindingOwner(type, context);
+  const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
+  if (
+    !context.referenceRepresentationPlanner.resolveObjectShape(type, context.module) ||
     plan.kind !== 'represented' ||
     plan.identityDomain !== 'object' ||
     plan.valueRepresentation !== 'flightReference'
   ) {
     return undefined;
   }
-  return { kind: 'partial', row: { kind: 'rowOf', type: object } };
+  return { kind: 'writable', row: { kind: 'rowOf', type } };
 }
 
 function hasFlightFacetReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
@@ -10132,7 +10241,15 @@ function getCppTypeReferenceOwnerModuleCpp(type: Readonly<IrType>, context: Emit
   const direct = getCppDirectBindingOwner(type, context);
   if (direct) return direct.module;
   if (type.kind === 'named' && type.reference.kind === 'binding' && type.reference.binding.kind === 'import') {
-    return context.importBindingOwners.get(type.reference.binding.id)?.module ?? context.module;
+    const owner = context.importBindingOwners.get(type.reference.binding.id);
+    if (!owner) return context.module;
+    const resolutionContext = owner.module === context.module ? context : { ...context, module: owner.module };
+    const directTargets = getCppResolvedImportModules(owner.specifier, resolutionContext).filter((candidate) =>
+      hasCppDirectExportName(candidate, owner.imported),
+    );
+    return directTargets.length === 1
+      ? directTargets[0]!
+      : (getCppResolvedImportModule(owner.specifier, resolutionContext) ?? context.module);
   }
   return context.module;
 }
@@ -10446,8 +10563,7 @@ function generateAnonymousStructName(
   structuralHash: string,
   context: EmitContext,
 ): string {
-  const propertyStem = properties.map((property) => snakeCase(property.name)).join('_') || 'anonymous';
-  const base = `${propertyStem}_${structuralHash}`;
+  const base = getCppAnonymousStructBaseName(properties, structuralHash);
   let candidate = base;
   let suffix = 0;
   while (context.generatedNames.has(candidate)) {
@@ -10456,6 +10572,14 @@ function generateAnonymousStructName(
   }
   context.generatedNames.add(candidate);
   return candidate;
+}
+
+function getCppAnonymousStructBaseName(
+  properties: readonly { readonly name: string }[],
+  structuralHash: string,
+): string {
+  const propertyStem = properties.map((property) => snakeCase(property.name)).join('_') || 'anonymous';
+  return `${propertyStem}_${structuralHash}`;
 }
 
 function getCppAnonymousStructGuard(structuralHash: string, context: EmitContext): string {
