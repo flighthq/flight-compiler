@@ -3394,6 +3394,25 @@ describe('lowerTypeScriptSource', () => {
     expect(expr).toMatchObject({ kind: 'property', member: { name: 'length', receiver: 'array' } });
   });
 
+  it('does not assign an ambient receiver to a field on a partially ambient union', () => {
+    const result = lower(
+      'partially-ambient-union-member.ts',
+      "interface Padding { left: number; right: number } export function width(padding: number | Padding): number { return typeof padding === 'number' ? padding * 2 : padding.left + padding.right; }",
+    );
+    const [, width] = result.module.declarations;
+    if (width?.kind !== 'function' || width.body[0]?.kind !== 'return') throw new Error('Expected function return');
+    const conditional = width.body[0].expression;
+    if (conditional?.kind !== 'conditional' || conditional.otherwise.kind !== 'binary') {
+      throw new Error('Expected conditional field reads');
+    }
+
+    expect(result.diagnostics).toEqual([]);
+    expect(conditional.otherwise.left).toMatchObject({ kind: 'property', name: 'left' });
+    expect(conditional.otherwise.right).toMatchObject({ kind: 'property', name: 'right' });
+    expect(conditional.otherwise.left).not.toHaveProperty('member');
+    expect(conditional.otherwise.right).not.toHaveProperty('member');
+  });
+
   it('classifies every supported typed-array member receiver', () => {
     const result = lower(
       'typed-array-members.ts',
@@ -10358,6 +10377,51 @@ it('records checker-instantiated and ambient optional call result types', () => 
   expect(mapReturn.expression.semantics.resultType).toEqual({
     kind: 'union',
     types: [{ kind: 'undefined' }, { kind: 'primitive', name: 'number' }],
+  });
+});
+
+it('infers primitive results from ambient calls for unannotated locals', () => {
+  const result = lower(
+    'ambient-call-result-local.ts',
+    'export function count(value: number): boolean { const whole = Math.floor(value); return whole > 0; }',
+  );
+  const declaration = result.module.declarations[0];
+  const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(statement).toMatchObject({
+    declarations: [{ type: { kind: 'primitive', name: 'number' } }],
+    kind: 'variable',
+  });
+});
+
+it('does not leak wrapped target arguments onto a non-generic alias', () => {
+  const result = lower(
+    'non-generic-alias-call-result.ts',
+    `interface Node<Value> { value: Value }
+     type NodeAny = Node<any>;
+     export function last(stack: Readonly<NodeAny>[]): NodeAny {
+       const current = stack.pop()!;
+       return current;
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'last',
+  );
+  const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(statement).toMatchObject({
+    declarations: [
+      {
+        type: {
+          kind: 'named',
+          reference: { binding: { name: 'NodeAny' } },
+          typeArguments: [],
+        },
+      },
+    ],
+    kind: 'variable',
   });
 });
 

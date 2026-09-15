@@ -831,6 +831,12 @@ const haxeRuntimeExternalSymbolBindings = [
   },
   {
     kind: 'native',
+    sourceName: 'WebGLRenderingContext',
+    space: 'type',
+    targetName: 'js.html.webgl.RenderingContext',
+  },
+  {
+    kind: 'native',
     sourceName: 'WebGLVertexArrayObject',
     space: 'type',
     targetName: 'js.html.webgl.VertexArrayObject',

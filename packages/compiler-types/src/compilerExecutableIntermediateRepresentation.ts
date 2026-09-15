@@ -194,7 +194,7 @@ export type IrExpression =
       presence?: 'narrowedPresent' | undefined;
     }>
   | Readonly<{ flags: string; kind: 'regexp'; pattern: string }>
-  | Readonly<{ expression: IrExpression; kind: 'spread' }>
+  | Readonly<{ expression: IrExpression; iterableType?: IrType | undefined; kind: 'spread' }>
   | Readonly<{ kind: 'template'; parts: ReadonlyArray<IrExpression | string> }>
   | Readonly<{ elements: readonly IrTupleExpressionElement[]; kind: 'tuple' }>
   | Readonly<{ kind: 'tupleRest'; object: IrExpression; start: number }>
@@ -297,6 +297,7 @@ export type IrStatement =
       await: boolean;
       body: IrStatement;
       iterable: IrExpression;
+      iterableType?: IrType | undefined;
       kind: 'forOf';
       label?: IrControlFlowLabelIdentity | undefined;
       variable: IrVariable;

@@ -426,6 +426,65 @@ describe('createHaxeCompilerBackend', () => {
     expect(consumerOutput).toContain('return State.Ready;');
   });
 
+  it('imports the type lane inferred through an indexed contract type', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './state',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/state.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/state.ts',
+          "export const State = { Ready: 'Ready' } as const; export type State = (typeof State)[keyof typeof State]; export interface Entry { state: State }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './state';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/core',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/core/src/consumer.ts',
+          "import type { Entry } from '@flighthq/types/contract'; import { State } from '@flighthq/types/contract'; export function read(value: Entry['state']): Entry['state'] { return State.Ready; }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const [stateResult, contractResult, consumerResult] = lowerTypeScriptSources(inputs, moduleResolution);
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumerResult!.module, contractResult!.module, stateResult!.module],
+      options: {},
+    });
+    const output = session.emitModule(consumerResult!.module)[0]!.contents;
+
+    expect(output).toContain('import flighthq.types.Contract.ContractState;');
+    expect(output).toContain('import flighthq.types.Contract.State;');
+    expect(output).toContain('function read(value:ContractState):ContractState');
+  });
+
   it('shares a star facade plan across a transpile emission session', () => {
     const target = lower('target.ts', 'export function value(): number { return 1; }').module;
     const barrel = lower('barrel.ts', "export * from './target';").module;
@@ -1656,6 +1715,18 @@ describe('emitIrModuleHaxe', () => {
     expect(output.match(/final local/g)).toHaveLength(1);
   });
 
+  it('lowers value-object switch cases to conditional comparisons', () => {
+    const result = lower(
+      'switch-value-object.ts',
+      "const State = { Ready: 'ready', Done: 'done' } as const; type State = (typeof State)[keyof typeof State]; export function read(state: State): number { switch (state) { case State.Ready: return 1; case State.Done: return 2; default: return 0; } }",
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('if (js.Syntax.strictEq(switchSubject, State.Ready))');
+    expect(output).toContain('else if (js.Syntax.strictEq(switchSubject, State.Done))');
+    expect(output).not.toContain('case State.Ready:');
+  });
+
   it('routes standalone typeof through the JavaScript-semantics runtime', () => {
     const result = lower('keyword-unary-operator.ts', 'export function type(a: number): string { return typeof a; }');
 
@@ -2263,6 +2334,28 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('for (value in values)');
+  });
+
+  it('retains an iterable type around Map and Set loops that otherwise become Dynamic', () => {
+    const result = lower(
+      'for-of-collections.ts',
+      'export function visit(map: ReadonlyMap<string, number>, set: ReadonlySet<string>): void { for (const [key, value] of map) { key; value; } for (const value of set) value; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('in (cast map : Iterable<Array<Dynamic>>))');
+    expect(output).toContain('in (cast set : Iterable<String>))');
+  });
+
+  it('preserves non-generic alias identity on inferred array call results', () => {
+    const result = lower(
+      'non-generic-alias-call-result.ts',
+      'interface Node<Value> { value: Value } type NodeAny = Node<any>; export function last(stack: Readonly<NodeAny>[]): NodeAny { const current = stack.pop()!; return current; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final current:NodeAny = stack.pop();');
+    expect(output).not.toContain('NodeAny<Dynamic>');
   });
 
   it('iterates source strings as Unicode characters', () => {
@@ -7736,6 +7829,17 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     ).contents;
 
     expect(output).toContain('typedef Context = js.html.webgl.WebGL2RenderingContext;');
+  });
+
+  it('reads constants on a widened WebGL interface through the native static owner', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'ambient-interface-webgl-constant.ts',
+        "type Member = 'clear' | 'COLOR_BUFFER_BIT'; export interface Context extends Pick<WebGL2RenderingContext, Member> {} export function clear(gl: Context): void { gl.clear(gl.COLOR_BUFFER_BIT); }",
+      ).module,
+    ).contents;
+
+    expect(output).toContain('gl.clear(js.html.webgl.WebGL2RenderingContext.COLOR_BUFFER_BIT);');
   });
 });
 

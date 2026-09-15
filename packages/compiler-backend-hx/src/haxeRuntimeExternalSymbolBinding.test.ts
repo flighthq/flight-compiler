@@ -321,6 +321,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['WeakSet', 'value', 'flighthq._internal._WeakSet'],
     ['WebGLProgram', 'type', 'js.html.webgl.Program'],
     ['WebGLPowerPreference', 'type', 'js.html.webgl.PowerPreference'],
+    ['WebGLRenderingContext', 'type', 'js.html.webgl.RenderingContext'],
     ['WritableStream', 'type', 'Dynamic'],
     ['JSON', 'value', 'flighthq._internal._Json'],
     ['parseInt', 'value', 'flighthq._internal._Number.parseInt'],

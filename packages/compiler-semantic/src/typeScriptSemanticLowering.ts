@@ -1158,7 +1158,14 @@ function lowerExpression(
     }
     return { kind: 'template', parts };
   }
-  if (ts.isSpreadElement(node)) return { expression: lowerExpression(node.expression, context), kind: 'spread' };
+  if (ts.isSpreadElement(node)) {
+    const iterableType = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
+    return {
+      expression: lowerExpression(node.expression, context),
+      ...(iterableType ? { iterableType } : {}),
+      kind: 'spread',
+    };
+  }
   if (ts.isRegularExpressionLiteral(node)) {
     const lastSlash = node.text.lastIndexOf('/');
     return { flags: node.text.slice(lastSlash + 1), kind: 'regexp', pattern: node.text.slice(1, lastSlash) };
@@ -2590,6 +2597,9 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
     const elementType: IrType | undefined = ts.isForOfStatement(node)
       ? lowerTypeScriptForOfElementType(node.expression, context)
       : { kind: 'primitive', name: 'string' };
+    const iterableType = ts.isForOfStatement(node)
+      ? getTypeScriptExpressionBindingTypeEvidence(node.expression, context)
+      : undefined;
     const variable = lowerVariables(node.initializer, context, elementType)[0]!;
     return ts.isForOfStatement(node)
       ? {
@@ -2600,6 +2610,7 @@ function lowerStatement(node: ts.Statement, context: LoweringContext): IrStateme
             context,
             elementType ? { element: elementType, kind: 'array', readonly: false } : undefined,
           ),
+          ...(iterableType ? { iterableType } : {}),
           kind: 'forOf',
           variable,
         }
@@ -5427,7 +5438,8 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
     const callResult =
       getTypeScriptCollectionCallResultTypeEvidence(node, context) ??
       getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
-      getTypeScriptWrittenCallResultTypeEvidence(signature, context);
+      getTypeScriptWrittenCallResultTypeEvidence(signature, context) ??
+      getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0, true, node);
     if (callResult) return callResult;
   }
   const writtenConstruction = getTypeScriptWrittenNewExpressionTypeEvidence(node, context);
@@ -6235,19 +6247,26 @@ function getTypeScriptReferenceNarrowedMember(
 function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrResolvedMemberReceiver | undefined {
   if (!type) return undefined;
   if (type.kind === 'union') {
-    const receivers = new Set(
-      type.types
-        .filter((member) => member.kind !== 'null' && member.kind !== 'undefined')
-        .flatMap((member) => {
-          const receiver = getIrResolvedMemberReceiver(member);
-          return receiver ? [receiver] : [];
-        }),
-    );
+    const inhabited = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    const resolved = inhabited.map(getIrResolvedMemberReceiver);
+    // A partially ambient union is not an ambient receiver. For example, after narrowing
+    // `number | Padding` to `Padding`, a read of `padding.left` must remain a source field read,
+    // not become the nonexistent built-in `number.left`. Only attach ambient-member policy when
+    // every possible inhabited member supplies the same receiver identity.
+    if (resolved.some((receiver) => receiver === undefined)) return undefined;
+    const receivers = new Set(resolved);
     return receivers.size === 1 ? [...receivers][0] : undefined;
   }
   if (type.kind === 'array') return 'array';
   if (type.kind === 'tuple') return 'tuple';
   if (type.kind === 'named' && type.reference.kind === 'ambient') {
+    if (
+      ['Partial', 'Readonly', 'Required'].includes(type.reference.name) &&
+      type.typeArguments.length === 1 &&
+      type.typeArguments[0]
+    ) {
+      return getIrResolvedMemberReceiver(type.typeArguments[0]);
+    }
     const ambientReceivers: Record<string, IrResolvedMemberReceiver> = {
       ArrayBuffer: 'arrayBuffer',
       DataView: 'dataView',
@@ -6275,6 +6294,9 @@ function getIrResolvedMemberReceiver(type: Readonly<IrType> | undefined): IrReso
     };
     return ambientReceivers[type.reference.name];
   }
+  if (type.kind === 'literal') {
+    return typeof type.value === 'string' ? 'string' : typeof type.value === 'number' ? 'number' : undefined;
+  }
   if (type.kind !== 'primitive') return undefined;
   return type.name === 'string' ? 'string' : type.name === 'number' ? 'number' : undefined;
 }
@@ -6295,7 +6317,11 @@ function getIrResolvedMemberReceiverFromNarrowedFlow(
   const flowEvidence = getTypeScriptCheckerTypeEvidence(flow, context, 0, false, expression);
   const flowReceiver = getIrResolvedMemberReceiver(flowEvidence);
   if (flowReceiver) return flowReceiver;
-  if (flow.isUnion()) return undefined;
+  if (flow.isUnion()) {
+    if (flow.types.every((member) => member.flags & ts.TypeFlags.StringLiteral)) return 'string';
+    if (flow.types.every((member) => member.flags & ts.TypeFlags.NumberLiteral)) return 'number';
+    return undefined;
+  }
   const name = getTypeScriptPrimitiveTypeName(flow);
   if (name === 'string') return 'string';
   if (name === 'number') return 'number';
