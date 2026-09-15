@@ -8208,11 +8208,12 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     const output = emitIrModuleHaxe(
       lower(
         'abort-signal.ts',
-        'export function guard(signal: AbortSignal): void { signal.throwIfAborted(); }',
+        'export function guard(signal: AbortSignal): boolean { signal.throwIfAborted(); return signal.aborted; }',
       ).module,
     ).contents;
 
     expect(output).toContain('js.Syntax.code("{0}.throwIfAborted()", signal);');
+    expect(output).toContain('return signal.aborted;');
     expect(output).not.toContain('signal.throwIfAborted()');
   });
 

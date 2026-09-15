@@ -36,6 +36,7 @@ export function getCompilerHaxeAmbientMemberBinding(
 }
 
 const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemberBinding>> = {
+  'abortSignal.aborted': { kind: 'property', targetName: 'aborted' },
   'abortSignal.throwIfAborted': { kind: 'method', targetName: 'throwIfAborted' },
   'arrayBuffer.slice': { intArguments: [0, 1], kind: 'runtimeCall', targetName: '_ArrayBuffer.slice' },
   'array.at': { intArguments: [0], kind: 'runtimeCall', targetName: '_Array.at' },
