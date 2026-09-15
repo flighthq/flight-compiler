@@ -1638,21 +1638,28 @@ function emitArrayExpressionHaxe(
     );
     return primitiveFlows.size > 1 ? `(${literal} : Array<Dynamic>)` : literal;
   }
-  const groups: Array<{ kind: 'fixed' | 'spread'; value: string }> = [];
+  const groups: Array<{ copy: boolean; kind: 'fixed' | 'spread'; value: string }> = [];
   let fixed: string[] = [];
   for (const element of expression.elements) {
     if (element?.kind === 'spread') {
-      if (fixed.length > 0) groups.push({ kind: 'fixed', value: `[${fixed.join(', ')}]` });
+      if (fixed.length > 0) groups.push({ copy: false, kind: 'fixed', value: `[${fixed.join(', ')}]` });
       fixed = [];
-      groups.push({ kind: 'spread', value: emitExpression(element.expression, context) });
+      const spreadType = getIrExpressionTypeHaxe(element.expression, context);
+      const arraySpread = spreadType?.kind === 'array' || spreadType?.kind === 'tuple';
+      const value = emitExpression(element.expression, context);
+      groups.push({
+        copy: arraySpread,
+        kind: 'spread',
+        value: arraySpread ? value : `${context.options.runtimeModule ?? 'flighthq._internal'}._Array.from(${value})`,
+      });
       continue;
     }
     fixed.push(element ? emitExpression(element, context) : 'null');
   }
-  if (fixed.length > 0) groups.push({ kind: 'fixed', value: `[${fixed.join(', ')}]` });
+  if (fixed.length > 0) groups.push({ copy: false, kind: 'fixed', value: `[${fixed.join(', ')}]` });
   const [first, ...rest] = groups;
   if (!first) return '[]';
-  const initial = first.kind === 'spread' ? `${first.value}.copy()` : first.value;
+  const initial = first.kind === 'spread' && first.copy ? `${first.value}.copy()` : first.value;
   return `${initial}${rest.map((group) => `.concat(${group.value})`).join('')}`;
 }
 
@@ -2077,10 +2084,24 @@ function emitExpressionAsExpectedTypeHaxe(
   if (concreteExpected.kind === 'array' && expression.kind === 'array' && expression.elements.length === 0) {
     return `(cast [] : ${emitType(concreteExpected, context)})`;
   }
+  const expectedStringNominal =
+    isIrNamedUnionAliasHaxe(concreteExpected, context) ||
+    (concreteExpected.kind === 'named' &&
+      concreteExpected.reference.kind === 'ambient' &&
+      concreteExpected.reference.name === 'WebGLPowerPreference');
+  if (
+    expectedStringNominal &&
+    expression.kind === 'binary' &&
+    expression.operator === '??' &&
+    isIrExpressionStringBackedHaxe(expression, context)
+  ) {
+    const target = emitType(concreteExpected, context);
+    return `((cast ${normalizeHaxeExpressionGrouping(emitExpression(expression.left, context))} : Null<${target}>) ?? (cast ${normalizeHaxeExpressionGrouping(emitExpression(expression.right, context))} : ${target}))`;
+  }
   if (
     (isIrTypeFunctionShapedHaxe(concreteExpected, context) &&
       isIrExpressionFunctionValuedHaxe(expression, context)) ||
-    (isIrNamedUnionAliasHaxe(concreteExpected, context) &&
+    (expectedStringNominal &&
       (isIrExpressionStringBackedHaxe(expression, context) || expression.kind === 'object' || expression.kind === 'call')) ||
     (concreteExpected.kind === 'array' &&
       (expression.kind === 'undefinedDefault' ||
@@ -3920,8 +3941,12 @@ function getIrExpressionTypeHaxe(
         ? { kind: 'named', reference: expression.callee.reference, typeArguments: [] }
         : undefined;
     case 'property':
-      return expression.type ??
-        (expression.member?.name === 'length' ? { kind: 'primitive', name: 'number' } : undefined);
+      if (expression.type) return expression.type;
+      if (expression.member?.name === 'length') return { kind: 'primitive', name: 'number' };
+      {
+        const objectType = getIrExpressionTypeHaxe(expression.object, context);
+        return objectType ? getIrObjectPropertyTypeHaxe(objectType, expression.name, context) : undefined;
+      }
     default:
       return undefined;
   }

@@ -8167,6 +8167,42 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('(target.color = (cast source.color : TargetColor))');
   });
 
+  it('casts nullish string-alias branches before Haxe unifies them', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'color-space.ts',
+        "type Source = 'srgb' | 'linear'; type Target = 'srgb' | 'linear'; interface Input { value?: Source } export function read(input: Input, fallback: Target): Target { return input.value ?? fallback; }",
+      ).module,
+    ).contents;
+
+    expect(output).toContain('(cast input.value : Null<Target>) ?? (cast fallback : Target)');
+  });
+
+  it('selects literal DOM overload result types before Haxe native emission', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'dom-overloads.ts',
+        "export function context(canvas: HTMLCanvasElement): WebGL2RenderingContext | null { return canvas.getContext('webgl2'); } export function element(): HTMLCanvasElement { return document.querySelector('canvas')!; }",
+      ).module,
+    ).contents;
+
+    expect(output).toContain('return canvas.getContext("webgl2");');
+    expect(output).toContain('function element():js.html.CanvasElement');
+    expect(output).not.toContain('js.html.Element');
+  });
+
+  it('materializes non-array iterables before array spread concatenation', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'iterable-spread.ts',
+        'export function values(input: Set<number>): number[] { return [...input, 1]; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('flighthq._internal._Array.from(input).concat([(cast 1 : Float)])');
+    expect(output).not.toContain('input.copy()');
+  });
+
   it('erases async settlement values at the assimilating resolve ABI boundary', () => {
     const output = emitIrModuleHaxe(
       lower(

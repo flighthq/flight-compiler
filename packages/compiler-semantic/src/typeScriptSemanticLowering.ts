@@ -1836,15 +1836,48 @@ function getTypeScriptKnownAmbientCallResultTypeEvidence(
   node: ts.CallExpression,
   context: LoweringContext,
 ): Readonly<IrType> | undefined {
-  if (
-    !ts.isPropertyAccessExpression(node.expression) ||
-    !ts.isIdentifier(node.expression.expression) ||
-    node.expression.expression.text !== 'Math'
-  ) {
-    return undefined;
+  if (!ts.isPropertyAccessExpression(node.expression)) return undefined;
+  if (ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'Math') {
+    const reference = lowerIdentifierReference(node.expression.expression, context);
+    if (reference.kind === 'ambient' && reference.name === 'Math') return { kind: 'primitive', name: 'number' };
   }
-  const reference = lowerIdentifierReference(node.expression.expression, context);
-  return reference.kind === 'ambient' && reference.name === 'Math' ? { kind: 'primitive', name: 'number' } : undefined;
+  const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression.expression, context);
+  const first = node.arguments[0];
+  if (
+    receiver?.kind === 'named' &&
+    receiver.reference.kind === 'ambient' &&
+    receiver.reference.name === 'HTMLCanvasElement' &&
+    node.expression.name.text === 'getContext' &&
+    first &&
+    ts.isStringLiteralLike(first) &&
+    first.text === 'webgl2'
+  ) {
+    return {
+      kind: 'union',
+      types: [
+        { kind: 'named', reference: { kind: 'ambient', name: 'WebGL2RenderingContext' }, typeArguments: [] },
+        { kind: 'null' },
+      ],
+    };
+  }
+  if (
+    receiver?.kind === 'named' &&
+    receiver.reference.kind === 'ambient' &&
+    receiver.reference.name === 'Document' &&
+    node.expression.name.text === 'querySelector' &&
+    first &&
+    ts.isStringLiteralLike(first) &&
+    first.text === 'canvas'
+  ) {
+    return {
+      kind: 'union',
+      types: [
+        { kind: 'named', reference: { kind: 'ambient', name: 'HTMLCanvasElement' }, typeArguments: [] },
+        { kind: 'null' },
+      ],
+    };
+  }
+  return undefined;
 }
 
 // Prefer an explicit result annotation when it is already concrete. Besides being the source
