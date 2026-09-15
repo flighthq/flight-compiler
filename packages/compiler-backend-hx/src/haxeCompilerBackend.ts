@@ -3742,10 +3742,39 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
     getTypeName: safeHaxeTypeName,
     resolveNamedType: (named) => {
       if (named.reference.kind !== 'binding') return undefined;
-      const imported = context.importedTypeTargetNames.get(named.reference.binding.id);
+      const imported =
+        context.importedTypeTargetNames.get(named.reference.binding.id) ??
+        getForeignNamedTypeLocalTargetHaxe(named, context);
       return imported ? [imported, ...named.reference.path.map(safeHaxeTypeName)].join('.') : undefined;
     },
   });
+}
+
+function getForeignNamedTypeLocalTargetHaxe(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (type.reference.kind !== 'binding') return undefined;
+  const target = getIrNamedDeclarationTargetHaxe(type, context);
+  if (!target) return undefined;
+  for (const imported of context.module.imports) {
+    for (const binding of imported.bindings) {
+      if (binding.binding.space !== 'type' || binding.imported === '*' || binding.imported === 'default') continue;
+      const localType = {
+        kind: 'named',
+        reference: { binding: binding.binding, kind: 'binding', path: [] },
+        typeArguments: [],
+      } as const;
+      const importedTarget = getIrNamedDeclarationTargetHaxe(localType, context);
+      if (importedTarget?.binding.id !== target.binding.id) continue;
+      return (
+        context.importedTypeTargetNames.get(binding.binding.id) ??
+        context.facadeBindingTargetNames.get(binding.binding.id) ??
+        getBindingTargetNameHaxe(binding.binding, context)
+      );
+    }
+  }
+  return undefined;
 }
 
 function getIrExpressionTypeHaxe(

@@ -7928,6 +7928,60 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('js.html.webgl.WebGL2RenderingContext.COLOR_BUFFER_BIT');
   });
 
+  it('reuses local imports for nested types recovered from cross-module construction targets', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './shape',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/shape.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/shape.ts',
+          "export type Flavor = 'first' | 'second'; export interface Shape { flavor: Flavor }",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './shape';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/render',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/render/src/use.ts',
+          "import type { Shape } from '@flighthq/types/contract'; export const shape: Shape = { flavor: 'first' };",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(output).toContain('(cast "first" : Flavor)');
+    expect(output).not.toContain('Flavor_2');
+  });
+
   it('retains nested WebGL receiver and field types at native integer boundaries', () => {
     const output = emitIrModuleHaxe(
       lower(
