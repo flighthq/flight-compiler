@@ -4655,6 +4655,62 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('does not nest references around structural aliases instantiated with intersections', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/Entity.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime { uid?: string }
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export interface Backend { reset(): void }
+       export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './Entity.js';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/consumer/src/index.ts',
+      `import type { Backend, Entity, EntityConstruction } from '@flighthq/types/contract';
+       export function initialize(out: EntityConstruction<Backend & Entity>): void { out.reset = () => {}; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Entity.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/consumer', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('flighthq_types::EntityConstruction<flight::Ref<');
+    expect(emitted).not.toContain('flight::Ref<EntityConstruction<');
+    expect(emitted).not.toContain('flight::Ref<flighthq_types::EntityConstruction<');
+  });
+
   it('emits the exact structural Entity write proxy and refuses a handler with another trap', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',

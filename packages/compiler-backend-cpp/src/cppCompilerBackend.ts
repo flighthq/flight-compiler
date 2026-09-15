@@ -9080,6 +9080,7 @@ function getCppIdentityPreservingUtilityArgument(type: Readonly<IrType>): Readon
 
 function isCppReferenceValueAliasCpp(type: Readonly<IrType>, context: EmitContext): boolean {
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  if (context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module)) return true;
   const target = resolveCppTypeAliasTarget(type, context);
   if (!target || target.kind === 'object' || target.kind === 'intersection') return false;
   return hasFlightReferenceRepresentationCpp(target, context);

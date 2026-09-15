@@ -235,6 +235,12 @@ function resolveIrTypeStructuralRowCpp(
       declaration.objectView === 'writable',
     );
     if (row) return declaration.objectView === 'writable' ? { kind: 'writable', row } : row;
+    if (
+      declaration.objectView === 'writable' &&
+      resolveIrTypeObjectShapeCpp(resolved, location.module, moduleSet, cache, new Set())
+    ) {
+      return { kind: 'writable', row: { kind: 'rowOf', type: resolved } };
+    }
     return allowRowOf && resolveIrTypeObjectShapeCpp(type, module, moduleSet, cache, new Set())
       ? { kind: 'rowOf', type }
       : undefined;
