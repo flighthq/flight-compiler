@@ -2,11 +2,11 @@
 package flighthq.golden;
 
 function doubled(values:Array<Float>):Array<Float> {
-  return values.map(function(value:Float) return (value * 2));
+  return values.map(cast(function(value:Float) return (value * 2)));
 }
 
 function positives(values:Array<Float>):Array<Float> {
-  return values.filter(function(value:Float) return (value > 0));
+  return values.filter(cast(function(value:Float) return (value > 0)));
 }
 
 function shout(text:String):String {

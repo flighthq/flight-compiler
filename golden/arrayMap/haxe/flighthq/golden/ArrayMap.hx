@@ -2,13 +2,13 @@
 package flighthq.golden;
 
 function doubles(values:Array<Float>):Array<Float> {
-  return values.map(function(v:Float) return (v * 2));
+  return values.map(cast(function(v:Float) return (v * 2)));
 }
 
 function squares(values:Array<Float>):Array<Float> {
-  return values.map(function(v:Float) return (v * v));
+  return values.map(cast(function(v:Float) return (v * v)));
 }
 
 function negated(values:Array<Float>):Array<Float> {
-  return values.map(function(v:Float) return - v);
+  return values.map(cast(function(v:Float) return - v));
 }

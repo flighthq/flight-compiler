@@ -11,5 +11,5 @@ function lastChar(text:String):String {
 
 function isUpperFirst(text:String):Bool {
   final first:String = text.charAt(0);
-  return first == first.toUpperCase();
+  return flighthq._internal._Js.strictEqual(first, first.toUpperCase());
 }

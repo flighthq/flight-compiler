@@ -21,7 +21,7 @@ function countChar(text:String, ch:String):Float {
     var i:Float = 0;
     while (i < text.length) {
       {
-        if (text.charAt(Std.int(i)) == ch) {
+        if (flighthq._internal._Js.strictEqual(text.charAt(Std.int(i)), ch)) {
           (count = (count + 1));
         }
       }

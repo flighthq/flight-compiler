@@ -6,9 +6,9 @@ function hasValue(values:Array<Float>, value:Float):Bool {
 }
 
 function anyPositive(values:Array<Float>):Bool {
-  return Lambda.exists(values, function(value:Float) return (value > 0));
+  return Lambda.exists(values, cast(function(value:Float) return (value > 0)));
 }
 
 function allPositive(values:Array<Float>):Bool {
-  return Lambda.foreach(values, function(value:Float) return (value > 0));
+  return Lambda.foreach(values, cast(function(value:Float) return (value > 0)));
 }

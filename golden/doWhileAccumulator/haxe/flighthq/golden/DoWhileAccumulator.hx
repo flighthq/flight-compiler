@@ -7,7 +7,7 @@ function sumOneToN(n:Float):Float {
   do {
     (sum += i);
     (i += 1);
-  } while ((i <= n));
+  } while (i <= n);
   return sum;
 }
 
@@ -17,7 +17,7 @@ function repeatHalve(value:Float):Float {
   do {
     (result = Math.floor((result / 2)));
     (count += 1);
-  } while ((result > 0));
+  } while (result > 0);
   return count;
 }
 
@@ -27,6 +27,6 @@ function reverseDigits(value:Float):Float {
   do {
     (reversed = ((reversed * 10) + (n % 10)));
     (n = Math.floor((n / 10)));
-  } while ((n > 0));
-  return (value < 0) ? - reversed : reversed;
+  } while (n > 0);
+  return value < 0 ? - reversed : reversed;
 }

@@ -16,7 +16,7 @@ function countOccurrences(text:String, target:String):Float {
   var count:Float = 0;
   var pos:Float = 0;
   while (pos < text.length) {
-    if (text.charAt(Std.int(pos)) == target) {
+    if (flighthq._internal._Js.strictEqual(text.charAt(Std.int(pos)), target)) {
       (count += 1);
     }
     (pos += 1);

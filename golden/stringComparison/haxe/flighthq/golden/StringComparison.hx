@@ -2,11 +2,11 @@
 package flighthq.golden;
 
 function isEqual(a:String, b:String):Bool {
-  return a == b;
+  return flighthq._internal._Js.strictEqual(a, b);
 }
 
 function isNotEqual(a:String, b:String):Bool {
-  return a != b;
+  return !flighthq._internal._Js.strictEqual(a, b);
 }
 
 function isEmpty(text:String):Bool {
@@ -18,7 +18,7 @@ function longerThan(text:String, threshold:Float):Bool {
 }
 
 function matchOrDefault(text:String, expected:String, fallback:String):String {
-  if (text == expected) {
+  if (flighthq._internal._Js.strictEqual(text, expected)) {
     return text;
   }
   return fallback;

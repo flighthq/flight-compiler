@@ -2,11 +2,11 @@
 package flighthq.golden;
 
 function doubleAll(values:Array<Float>):Array<Float> {
-  return values.map(function(v:Float) return (v * 2));
+  return values.map(cast(function(v:Float) return (v * 2)));
 }
 
 function filterPositive(values:Array<Float>):Array<Float> {
-  return values.filter(function(v:Float) return (v > 0));
+  return values.filter(cast(function(v:Float) return (v > 0)));
 }
 
 function sumAll(values:Array<Float>):Float {
@@ -14,9 +14,9 @@ function sumAll(values:Array<Float>):Float {
 }
 
 function allPositive(values:Array<Float>):Bool {
-  return Lambda.foreach(values, function(v:Float) return (v > 0));
+  return Lambda.foreach(values, cast(function(v:Float) return (v > 0)));
 }
 
 function hasNegative(values:Array<Float>):Bool {
-  return Lambda.exists(values, function(v:Float) return (v < 0));
+  return Lambda.exists(values, cast(function(v:Float) return (v < 0)));
 }

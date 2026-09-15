@@ -3,10 +3,10 @@ package flighthq.golden;
 
 function counter():()->Float {
   var count:Float = 0;
-  return function() {
+  return cast(function():Float {
   (count += 1);
   return count;
-};
+});
 }
 
 function accumulate(values:Array<Float>):Float {
@@ -21,5 +21,5 @@ function accumulate(values:Array<Float>):Float {
 }
 
 function makeMultiplier(factor:Float):(Float)->Float {
-  return function(x:Float) return (x * factor);
+  return cast(function(x:Float) return (x * factor));
 }

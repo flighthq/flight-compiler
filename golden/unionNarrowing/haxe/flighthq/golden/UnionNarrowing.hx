@@ -23,9 +23,9 @@ function narrow_branch(value:Dynamic, flag:Bool):String {
 }
 
 function assert_string(value:Dynamic):String {
-  return cast(value, String);
+  return (cast value : String);
 }
 
 function assert_number(value:Dynamic):Float {
-  return cast(value, Float);
+  return (cast value : Float);
 }

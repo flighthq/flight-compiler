@@ -20,7 +20,7 @@ function mirror(text:String):String {
 }
 
 function clampAndScale(value:Float, lo:Float, hi:Float):Float {
-  final clamped:Float = (value < lo) ? lo : ((value > hi) ? hi : value);
+  final clamped:Float = value < lo ? lo : (value > hi ? hi : value);
   return (clamped - lo) / (hi - lo);
 }
 

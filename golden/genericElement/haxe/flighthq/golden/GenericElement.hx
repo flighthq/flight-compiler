@@ -4,7 +4,7 @@ package flighthq.golden;
 typedef Box<Value> = { contents:Value };
 
 function unwrap<Value>(box:Box<Value>):Value {
-  return box.contents;
+  return Reflect.field(box, "contents");
 }
 
 function firstOf<Value>(values:Array<Value>, fallback:Value):Value {

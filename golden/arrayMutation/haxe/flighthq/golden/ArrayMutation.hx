@@ -16,7 +16,7 @@ function hasValue(values:Array<String>, target:String):Bool {
 }
 
 function reversed(values:Array<Float>):Array<Float> {
-  final copy:Array<Float> = values.map(function(v:Float) return v);
+  final copy:Array<Float> = values.map(cast(function(v:Float) return v));
   copy.reverse();
   return copy;
 }

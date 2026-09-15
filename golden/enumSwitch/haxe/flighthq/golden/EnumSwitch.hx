@@ -9,7 +9,7 @@ enum abstract Direction(String) from String to String {
 }
 
 function isVertical(dir:Direction):Bool {
-  return (dir == Direction.Up) || (dir == Direction.Down);
+  return flighthq._internal._Js.strictEqual(dir, Direction.Up) || flighthq._internal._Js.strictEqual(dir, Direction.Down);
 }
 
 function opposite(dir:Direction):Direction {

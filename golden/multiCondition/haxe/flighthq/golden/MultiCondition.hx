@@ -11,7 +11,7 @@ function fizzbuzz(n:Float):String {
   if ((n - (5 * Math.floor((n / 5)))) == 0) {
     return "Buzz";
   }
-  return Std.string(n);
+  return flighthq._internal._Number.toString(n);
 }
 
 function letterGrade(score:Float):String {

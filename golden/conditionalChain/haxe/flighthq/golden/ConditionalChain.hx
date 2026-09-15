@@ -26,10 +26,10 @@ function classify(value:Float):String {
 }
 
 function clampedLabel(value:Float):String {
-  final clamped:Float = (value < 0) ? 0 : ((value > 100) ? 100 : value);
-  return (clamped == 0) ? "min" : ((clamped == 100) ? "max" : "mid");
+  final clamped:Float = value < 0 ? 0 : (value > 100 ? 100 : value);
+  return clamped == 0 ? "min" : (clamped == 100 ? "max" : "mid");
 }
 
 function absoluteDifference(a:Float, b:Float):Float {
-  return (a > b) ? (a - b) : (b - a);
+  return a > b ? (a - b) : (b - a);
 }

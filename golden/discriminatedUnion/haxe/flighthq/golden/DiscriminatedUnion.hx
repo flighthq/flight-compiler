@@ -8,7 +8,7 @@ typedef Square = { kind:String, side:Float };
 typedef Shape = { kind:String, ?radius:Float, ?side:Float };
 
 function area(shape:Shape):Float {
-  if (shape.kind == "circle") {
+  if (flighthq._internal._Js.strictEqual(shape.kind, "circle")) {
     return (cast(shape).radius * cast(shape).radius) * 3;
   }
   return cast(shape).side * cast(shape).side;

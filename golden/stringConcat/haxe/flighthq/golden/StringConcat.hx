@@ -6,7 +6,7 @@ function greetUser(name:String):String {
 }
 
 function formatPair(key:String, value:Float):String {
-  return (key + "=") + Std.string(value);
+  return (key + "=") + flighthq._internal._Number.toString(value);
 }
 
 function repeat(text:String, count:Float):String {

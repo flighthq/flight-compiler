@@ -6,7 +6,7 @@ function countWords(text:String):Float {
   if (trimmed.length == 0) {
     return 0;
   }
-  final words:Array<String> = trimmed.split(" ");
+  final words:Array<String> = flighthq._internal._StringTools.split(trimmed, " ");
   return words.length;
 }
 
@@ -19,11 +19,11 @@ function containsAt(email:String):Bool {
 }
 
 function tokenCount(csv:String):Float {
-  final tokens:Array<String> = csv.split(",");
+  final tokens:Array<String> = flighthq._internal._StringTools.split(csv, ",");
   return tokens.length;
 }
 
 function rejoinTokens(csv:String, separator:String):String {
-  final tokens:Array<String> = csv.split(",");
+  final tokens:Array<String> = flighthq._internal._StringTools.split(csv, ",");
   return tokens.join(separator);
 }

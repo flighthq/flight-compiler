@@ -2,13 +2,15 @@
 package flighthq.golden;
 
 function sum(...values:Float):Float {
+  final valuesArray:Array<Float> = values.toArray();
   var total:Float = 0;
-  for (value in values) {
+  for (value in valuesArray) {
     (total += value);
   }
   return total;
 }
 
 function counted(...items:Float):Float {
-  return items.length;
+  final itemsArray:Array<Float> = items.toArray();
+  return itemsArray.length;
 }

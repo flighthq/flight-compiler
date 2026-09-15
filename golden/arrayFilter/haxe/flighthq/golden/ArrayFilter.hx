@@ -2,17 +2,17 @@
 package flighthq.golden;
 
 function positives(values:Array<Float>):Array<Float> {
-  return values.filter(function(v:Float) return (v > 0));
+  return values.filter(cast(function(v:Float) return (v > 0)));
 }
 
 function evens(values:Array<Float>):Array<Float> {
-  return values.filter(function(v:Float) return ((v % 2) == 0));
+  return values.filter(cast(function(v:Float) return ((v % 2) == 0)));
 }
 
 function above(values:Array<Float>, threshold:Float):Array<Float> {
-  return values.filter(function(v:Float) return (v >= threshold));
+  return values.filter(cast(function(v:Float) return (v >= threshold)));
 }
 
 function countMatching(values:Array<Float>, threshold:Float):Float {
-  return values.filter(function(v:Float) return (v >= threshold)).length;
+  return values.filter(cast(function(v:Float) return (v >= threshold))).length;
 }

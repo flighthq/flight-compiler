@@ -3,10 +3,10 @@ package flighthq.golden;
 
 function createCounter(initial:Float):()->Float {
   var count:Float = initial;
-  return function() {
+  return cast(function():Float {
   (count = (count + 1));
   return count;
-};
+});
 }
 
 function applyTwice(value:Float, transform:(Float)->Float):Float {
@@ -14,5 +14,5 @@ function applyTwice(value:Float, transform:(Float)->Float):Float {
 }
 
 function filterAndMap(items:Array<Float>, threshold:Float):Array<String> {
-  return items.filter(function(item:Float) return (item > threshold)).map(function(item:Float) return Std.string(item));
+  return items.filter(cast(function(item:Float) return (item > threshold))).map(cast(function(item:Float) return flighthq._internal._Number.toString(item)));
 }

@@ -2,17 +2,17 @@
 package flighthq.golden;
 
 function sumPositive(values:Array<Float>):Float {
-  return Lambda.fold(values.filter(function(v:Float) return (v > 0)), function(v:Float, acc:Float) return (acc + v), 0);
+  return Lambda.fold(values.filter(cast(function(v:Float) return (v > 0))), function(v:Float, acc:Float) return (acc + v), 0);
 }
 
 function doubleEvens(values:Array<Float>):Array<Float> {
-  return values.filter(function(v:Float) return ((v % 2) == 0)).map(function(v:Float) return (v * 2));
+  return values.filter(cast(function(v:Float) return ((v % 2) == 0))).map(cast(function(v:Float) return (v * 2)));
 }
 
 function hasLargePositive(values:Array<Float>):Bool {
-  return Lambda.exists(values.filter(function(v:Float) return (v > 0)), function(v:Float) return (v > 100));
+  return Lambda.exists(values.filter(cast(function(v:Float) return (v > 0))), cast(function(v:Float) return (v > 100)));
 }
 
 function countMatching(values:Array<Float>, threshold:Float):Float {
-  return values.filter(function(v:Float) return (v > threshold)).length;
+  return values.filter(cast(function(v:Float) return (v > threshold))).length;
 }

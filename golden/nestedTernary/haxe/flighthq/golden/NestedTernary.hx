@@ -2,17 +2,17 @@
 package flighthq.golden;
 
 function classify(value:Float):String {
-  return (value > 0) ? "positive" : ((value < 0) ? "negative" : "zero");
+  return value > 0 ? "positive" : (value < 0 ? "negative" : "zero");
 }
 
 function letterGrade(score:Float):String {
-  return (score >= 90) ? "A" : ((score >= 80) ? "B" : ((score >= 70) ? "C" : "F"));
+  return score >= 90 ? "A" : (score >= 80 ? "B" : (score >= 70 ? "C" : "F"));
 }
 
 function clampRange(value:Float, low:Float, high:Float):Float {
-  return (value < low) ? low : ((value > high) ? high : value);
+  return value < low ? low : (value > high ? high : value);
 }
 
 function minOfThree(a:Float, b:Float, c:Float):Float {
-  return (a < b) ? ((a < c) ? a : c) : ((b < c) ? b : c);
+  return a < b ? (a < c ? a : c) : (b < c ? b : c);
 }

@@ -18,5 +18,5 @@ function absolute(value:Float):Float {
 }
 
 function integerPart(value:Float):Float {
-  return (value >= 0) ? Math.floor(value) : Math.ceil(value);
+  return value >= 0 ? Math.floor(value) : Math.ceil(value);
 }

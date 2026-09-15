@@ -2,5 +2,5 @@
 package flighthq.golden;
 
 function widest(values:Array<Float>):Float {
-  return Reflect.callMethod(Math, Math.max, values);
+  return Reflect.callMethod(Math, cast(Math.max), values);
 }

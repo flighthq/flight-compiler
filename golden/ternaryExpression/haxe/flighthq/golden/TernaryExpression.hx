@@ -2,13 +2,13 @@
 package flighthq.golden;
 
 function clampValue(value:Float, low:Float, high:Float):Float {
-  return (value < low) ? low : ((value > high) ? high : value);
+  return value < low ? low : (value > high ? high : value);
 }
 
 function sign(value:Float):Float {
-  return (value > 0) ? 1 : ((value < 0) ? - 1 : 0);
+  return value > 0 ? 1 : (value < 0 ? - 1 : 0);
 }
 
 function label(count:Float):String {
-  return (count == 0) ? "none" : ((count == 1) ? "one" : "many");
+  return count == 0 ? "none" : (count == 1 ? "one" : "many");
 }

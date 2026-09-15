@@ -2,7 +2,7 @@
 package flighthq.golden;
 
 function numberToString(value:Float):String {
-  return Std.string(value);
+  return flighthq._internal._Number.toString(value);
 }
 
 function stringLength(text:String):Float {

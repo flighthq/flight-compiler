@@ -19,5 +19,5 @@ function negativeProduct(a:Float, b:Float):Float {
 
 function absoluteDifference(a:Float, b:Float):Float {
   final diff:Float = a - b;
-  return (diff < 0) ? - diff : diff;
+  return diff < 0 ? - diff : diff;
 }

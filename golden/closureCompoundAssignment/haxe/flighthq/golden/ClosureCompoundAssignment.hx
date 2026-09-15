@@ -3,56 +3,56 @@ package flighthq.golden;
 
 function captured_power(base:Float):()->Float {
   var value:Float = base;
-  return function() {
+  return cast(function():Float {
   (value = Math.pow(value, 2));
   return value;
-};
+});
 }
 
 function captured_or(initial:Float):(Float)->Float {
   var value:Float = initial;
-  return function(fallback:Float) {
+  return cast(function(fallback:Float):Float {
   { if (value == 0.0 || Math.isNaN(value)) value = fallback; value; };
   return value;
-};
+});
 }
 
 function captured_and(initial:Float):(Float)->Float {
   var value:Float = initial;
-  return function(replacement:Float) {
+  return cast(function(replacement:Float):Float {
   { if (value != 0.0 && !Math.isNaN(value)) value = replacement; value; };
   return value;
-};
+});
 }
 
 function captured_nullish(initial:Null<String>):(String)->String {
   var value:Null<String> = initial;
-  return function(fallback:String) {
+  return cast(function(fallback:String):String {
   (function() { if (value == null) value = fallback; return value; })();
   return value;
-};
+});
 }
 
 function captured_unsigned_shift(initial:Float):(Float)->Float {
   var value:Float = initial;
-  return function(bits:Float) {
+  return cast(function(bits:Float):Float {
   (value = Std.int(value) >>> Std.int(bits));
   return value;
-};
+});
 }
 
 function captured_bitwise_or(initial:Float):(Float)->Float {
   var value:Float = initial;
-  return function(mask:Float) {
+  return cast(function(mask:Float):Float {
   (value = Std.int(value) | Std.int(mask));
   return value;
-};
+});
 }
 
 function captured_bitwise_and(initial:Float):(Float)->Float {
   var value:Float = initial;
-  return function(mask:Float) {
+  return cast(function(mask:Float):Float {
   (value = Std.int(value) & Std.int(mask));
   return value;
-};
+});
 }

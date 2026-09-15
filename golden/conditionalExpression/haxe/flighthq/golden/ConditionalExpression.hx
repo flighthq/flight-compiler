@@ -2,21 +2,21 @@
 package flighthq.golden;
 
 function signLabel(value:Float):String {
-  return (value >= 0) ? "non-negative" : "negative";
+  return value >= 0 ? "non-negative" : "negative";
 }
 
 function maxOfTwo(a:Float, b:Float):Float {
-  return (a > b) ? a : b;
+  return a > b ? a : b;
 }
 
 function absValue(value:Float):Float {
-  return (value < 0) ? - value : value;
+  return value < 0 ? - value : value;
 }
 
 function evenOddLabel(value:Float):String {
-  return ((value % 2) == 0) ? "even" : "odd";
+  return (value % 2) == 0 ? "even" : "odd";
 }
 
 function clampPositive(value:Float):Float {
-  return (value > 0) ? value : 0;
+  return value > 0 ? value : 0;
 }

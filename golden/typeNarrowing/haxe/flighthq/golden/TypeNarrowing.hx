@@ -15,5 +15,5 @@ function formatValue(value:Dynamic):String {
   if (Std.isOfType(value, Float)) {
     return Std.string(value);
   }
-  return value ? "yes" : "no";
+  return flighthq._internal._Js.truthy(value) ? "yes" : "no";
 }

@@ -20,5 +20,5 @@ function maxValue(values:Array<Float>):Float {
 }
 
 function countAbove(values:Array<Float>, threshold:Float):Float {
-  return Lambda.fold(values, function(v:Float, count:Float) return ((v > threshold) ? (count + 1) : count), 0);
+  return Lambda.fold(values, function(v:Float, count:Float) return (v > threshold ? (count + 1) : count), 0);
 }

@@ -2,13 +2,13 @@
 package flighthq.golden;
 
 function makeAdder(base:Float):(Float)->Float {
-  return function(x:Float) return (base + x);
+  return cast(function(x:Float) return (base + x));
 }
 
 function applyToEach(values:Array<Float>, transform:(Float)->Float):Array<Float> {
-  return values.map(transform);
+  return values.map(cast(transform));
 }
 
 function compose(f:(Float)->Float, g:(Float)->Float):(Float)->Float {
-  return function(x:Float) return f(g(x));
+  return cast(function(x:Float) return f(g(x)));
 }

@@ -10,7 +10,7 @@ function isPalindrome(text:String):Bool {
   final len:Float = lower.length;
   var i:Float = 0;
   while (i < (len / 2)) {
-    if (lower.charAt(Std.int(i)) != lower.charAt(Std.int(((len - 1) - i)))) {
+    if (!flighthq._internal._Js.strictEqual(lower.charAt(Std.int(i)), lower.charAt(Std.int(((len - 1) - i))))) {
       return false;
     }
     (i = (i + 1));

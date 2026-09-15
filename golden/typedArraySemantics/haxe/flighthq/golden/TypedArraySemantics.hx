@@ -8,31 +8,31 @@ function signedRangeConstruction():flighthq._internal._Int8Array {
 }
 
 function unsignedModuloWrites():flighthq._internal._UInt8Array {
-  final values:flighthq._internal._UInt8Array = new flighthq._internal._UInt8Array(5);
-  (values[0] = 300);
-  (values[1] = - 1);
-  (values[2] = 1);
+  final values:flighthq._internal._UInt8Array = new flighthq._internal._UInt8Array(Std.int(5));
+  (values[0] = Std.int(300));
+  (values[1] = Std.int(- 1));
+  (values[2] = Std.int(1));
   (values[2] += 257);
-  (values[3] = 255);
+  (values[3] = Std.int(255));
   (values[3] += 2);
-  (values[4] = 250);
+  (values[4] = Std.int(250));
   (values[4] %= 64);
   return values;
 }
 
 function clampedTies():flighthq._internal._UInt8ClampedArray {
-  final values:flighthq._internal._UInt8ClampedArray = new flighthq._internal._UInt8ClampedArray(6);
-  (values[0] = 0.5);
-  (values[1] = 1.5);
-  (values[2] = 2.5);
-  (values[3] = 3.5);
-  (values[4] = 254.5);
-  (values[5] = 255.5);
+  final values:flighthq._internal._UInt8ClampedArray = new flighthq._internal._UInt8ClampedArray(Std.int(6));
+  (values[0] = Std.int(0.5));
+  (values[1] = Std.int(1.5));
+  (values[2] = Std.int(2.5));
+  (values[3] = Std.int(3.5));
+  (values[4] = Std.int(254.5));
+  (values[5] = Std.int(255.5));
   return values;
 }
 
 function float32Overflow():flighthq._internal._Float32Array {
-  final values:flighthq._internal._Float32Array = new flighthq._internal._Float32Array(2);
+  final values:flighthq._internal._Float32Array = new flighthq._internal._Float32Array(Std.int(2));
   (values[0] = 3.5e+38);
   (values[1] = - 3.5e+38);
   return values;
@@ -41,16 +41,16 @@ function float32Overflow():flighthq._internal._Float32Array {
 function subarrayAliasesStorage():flighthq._internal._UInt8Array {
   final source:flighthq._internal._UInt8Array = new flighthq._internal._UInt8Array([1, 2, 3, 4]);
   final view:flighthq._internal._UInt8Array = source.subarray(1, 3);
-  (view[0] = 9);
-  (source[2] = 8);
+  (view[0] = Std.int(9));
+  (source[2] = Std.int(8));
   return source;
 }
 
 function sliceCopiesStorage():flighthq._internal._UInt8Array {
   final source:flighthq._internal._UInt8Array = new flighthq._internal._UInt8Array([1, 2, 3, 4]);
   final copy:flighthq._internal._UInt8Array = source.slice(1, 3);
-  (copy[0] = 9);
-  (source[2] = 8);
+  (copy[0] = Std.int(9));
+  (source[2] = Std.int(8));
   return copy;
 }
 

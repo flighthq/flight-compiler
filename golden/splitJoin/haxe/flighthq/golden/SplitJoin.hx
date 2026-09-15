@@ -2,7 +2,7 @@
 package flighthq.golden;
 
 function csvToList(csv:String):Array<String> {
-  return csv.split(",");
+  return flighthq._internal._StringTools.split(csv, ",");
 }
 
 function listToCsv(items:Array<String>):String {
@@ -10,12 +10,12 @@ function listToCsv(items:Array<String>):String {
 }
 
 function wordCount(text:String):Float {
-  final words:Array<String> = text.split(" ");
+  final words:Array<String> = flighthq._internal._StringTools.split(text, " ");
   return words.length;
 }
 
 function reverseWords(text:String):String {
-  final words:Array<String> = text.split(" ");
+  final words:Array<String> = flighthq._internal._StringTools.split(text, " ");
   words.reverse();
   return words.join(" ");
 }

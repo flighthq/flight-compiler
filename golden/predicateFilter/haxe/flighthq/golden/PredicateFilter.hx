@@ -2,11 +2,11 @@
 package flighthq.golden;
 
 function filterAbove(values:Array<Float>, threshold:Float):Array<Float> {
-  return values.filter(function(v:Float) return (v > threshold));
+  return values.filter(cast(function(v:Float) return (v > threshold)));
 }
 
 function findFirst(values:Array<Float>, threshold:Float):Float {
-  final found:Null<Float> = Lambda.find(values, function(v:Float) return (v > threshold));
+  final found:Null<Float> = Lambda.find(values, cast(function(v:Float) return (v > threshold)));
   if (js.Syntax.strictEq(found, js.Syntax.code("undefined"))) {
     return - 1;
   }
@@ -14,9 +14,9 @@ function findFirst(values:Array<Float>, threshold:Float):Float {
 }
 
 function allBelow(values:Array<Float>, limit:Float):Bool {
-  return Lambda.foreach(values, function(v:Float) return (v < limit));
+  return Lambda.foreach(values, cast(function(v:Float) return (v < limit)));
 }
 
 function anyNegative(values:Array<Float>):Bool {
-  return Lambda.exists(values, function(v:Float) return (v < 0));
+  return Lambda.exists(values, cast(function(v:Float) return (v < 0)));
 }

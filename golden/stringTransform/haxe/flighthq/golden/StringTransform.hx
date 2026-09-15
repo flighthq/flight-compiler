@@ -10,11 +10,11 @@ function findLast(text:String, search:String):Float {
 }
 
 function countTokens(text:String, delimiter:String):Float {
-  final parts:Array<String> = text.split(delimiter);
+  final parts:Array<String> = flighthq._internal._StringTools.split(text, delimiter);
   return parts.length;
 }
 
 function splitAndJoin(text:String, delimiter:String, joiner:String):String {
-  final parts:Array<String> = text.split(delimiter);
+  final parts:Array<String> = flighthq._internal._StringTools.split(text, delimiter);
   return parts.join(joiner);
 }

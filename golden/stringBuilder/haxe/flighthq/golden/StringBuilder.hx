@@ -14,5 +14,5 @@ function buildPath(segments:Array<String>):String {
 }
 
 function prefixAll(items:Array<String>, prefix:String):Array<String> {
-  return items.map(function(item:String) return (prefix + item));
+  return items.map(cast(function(item:String) return (prefix + item)));
 }

@@ -9,7 +9,7 @@ function decide(task:flighthq._internal._Promise<Bool>):flighthq._internal._Prom
         function(awaitValue_2) {
           var awaitValue = awaitValue_2;
           try {
-            if (awaitValue) {
+            if (flighthq._internal._Js.truthy(awaitValue)) {
               (total = 1);
             }
             else {

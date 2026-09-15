@@ -9,7 +9,7 @@ enum abstract Lane(String) from String to String {
 typedef Route = { lane:Lane, cost:Float };
 
 function isFast(route:Route):Bool {
-  return route.lane == "fast";
+  return flighthq._internal._Js.strictEqual(route.lane, "fast");
 }
 
 function laneName(route:Route):String {
@@ -17,5 +17,5 @@ function laneName(route:Route):String {
 }
 
 function describe(lane:Lane):String {
-  return (lane == "fast") ? "quick" : "careful";
+  return flighthq._internal._Js.strictEqual(lane, "fast") ? "quick" : "careful";
 }

@@ -2,19 +2,19 @@
 package flighthq.golden;
 
 function abs(value:Float):Float {
-  return (value < 0) ? - value : value;
+  return value < 0 ? - value : value;
 }
 
 function maxOfThree(a:Float, b:Float, c:Float):Float {
-  return ((a >= b) && (a >= c)) ? a : ((b >= c) ? b : c);
+  return (a >= b) && (a >= c) ? a : (b >= c ? b : c);
 }
 
 function describe(value:Float):String {
-  return (value == 0) ? "zero" : ((value > 0) ? "positive" : "negative");
+  return value == 0 ? "zero" : (value > 0 ? "positive" : "negative");
 }
 
 function safeDiv(a:Float, b:Float):Float {
-  return (b != 0) ? (a / b) : 0;
+  return b != 0 ? (a / b) : 0;
 }
 
 function between(value:Float, lo:Float, hi:Float):Bool {
