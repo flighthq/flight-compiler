@@ -6495,19 +6495,36 @@ describe('emitIrModuleHaxe narrowedMember with primitive typeof cast', () => {
   it('casts an imported named alternative after eliminating a primitive member', () => {
     const typeSource = ts.createSourceFile(
       '/flight/packages/types/src/XmlElement.ts',
-      'export interface XmlElement { readonly name: string; readonly content: Array<string | XmlElement>; }',
+      `export interface XmlElement { readonly name: string; readonly content: Array<string | XmlElement>; }
+       export interface KeyedTable<T> { readonly shape: 'keyed'; readonly value: T; }
+       export interface SlotTable<T> { readonly shape: 'slot'; readonly value: T; }
+       export type RegistryTable<T> = KeyedTable<T> | SlotTable<T>;
+       export interface Animated<T> { readonly a: 1; readonly k: T; }
+       export interface Static<T> { readonly a?: 0; readonly k: T; }
+       export type Animatable<T> = Animated<T> | Static<T>;`,
       ts.ScriptTarget.Latest,
       true,
     );
     const subjectSource = ts.createSourceFile(
       '/flight/packages/scene2d-formats/src/svg.ts',
-      `import type { XmlElement } from '@flighthq/types/XmlElement';
+      `import type { Animatable, Animated, RegistryTable, XmlElement } from '@flighthq/types/XmlElement';
+       function isAnimated<T>(value: Readonly<Animatable<T>>): value is Readonly<Animated<T>> {
+         return value.a === 1;
+       }
        export function firstName(element: Readonly<XmlElement>): string {
          for (const content of element.content) {
            if (typeof content === 'string') continue;
            return content.name;
          }
          return '';
+       }
+       export function keyedLength(table: Readonly<RegistryTable<string>>): number {
+         if (table.shape === 'keyed') return table.value.length;
+         return 0;
+       }
+       export function animatedLength(value: Readonly<Animatable<number[]>>): number {
+         if (!isAnimated(value)) return 0;
+         return value.k.length;
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -6538,6 +6555,8 @@ describe('emitIrModuleHaxe narrowedMember with primitive typeof cast', () => {
 
     expect(output).toContain('import flighthq.types.XmlElement.XmlElement;');
     expect(output).toContain('(cast content : XmlElement).name');
+    expect(output).toContain('(cast table : KeyedTable<String>).value.length');
+    expect(output).toContain('(cast value : Animated<Array<Float>>).k.length');
   });
 });
 

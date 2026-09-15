@@ -1545,6 +1545,7 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           ? getIrNarrowedMemberTypeHaxe(
               getIrExpressionTypeHaxe(expression.object, context),
               expression.object.narrowedMember,
+              context,
             )
           : undefined;
       const narrowed =
@@ -5362,11 +5363,16 @@ function getHaxePrimitiveNarrowedTypeName(name: string): string | undefined {
   return map[name];
 }
 
-function getIrNarrowedMemberTypeHaxe(type: Readonly<IrType> | undefined, name: string): Readonly<IrType> | undefined {
+function getIrNarrowedMemberTypeHaxe(
+  type: Readonly<IrType> | undefined,
+  name: string,
+  context: EmitContext,
+  seen: ReadonlySet<string> = new Set(),
+): Readonly<IrType> | undefined {
   if (!type) return undefined;
   if (type.kind === 'union') {
     const matches = type.types.flatMap((member) => {
-      const match = getIrNarrowedMemberTypeHaxe(member, name);
+      const match = getIrNarrowedMemberTypeHaxe(member, name, context, seen);
       return match ? [match] : [];
     });
     return matches.length === 1 ? matches[0] : undefined;
@@ -5374,15 +5380,21 @@ function getIrNarrowedMemberTypeHaxe(type: Readonly<IrType> | undefined, name: s
   if (
     type.kind === 'named' &&
     type.reference.kind === 'ambient' &&
-    type.reference.name === 'Readonly' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
     type.typeArguments.length === 1
   ) {
-    return getIrNarrowedMemberTypeHaxe(type.typeArguments[0], name) ? type : undefined;
+    return getIrNarrowedMemberTypeHaxe(type.typeArguments[0], name, context, seen);
   }
   if (type.kind === 'primitive') return type.name === name ? type : undefined;
-  return type.kind === 'named' && type.reference.kind === 'binding' && type.reference.binding.name === name
-    ? type
-    : undefined;
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  if (type.reference.binding.name === name) return type;
+  const target = getIrNamedDeclarationTargetHaxe(type, context);
+  if (!target || target.declaration.kind !== 'typeAlias' || seen.has(target.binding.id)) return undefined;
+  const substituted = resolveIrTypeStructuralSubstitution(
+    target.declaration.type,
+    createIrTypeParameterSubstitutionPlan(target.declaration.typeParameters, type.typeArguments),
+  );
+  return getIrNarrowedMemberTypeHaxe(substituted, name, context, new Set(seen).add(target.binding.id));
 }
 
 function getTypeofTypeTestHaxe(

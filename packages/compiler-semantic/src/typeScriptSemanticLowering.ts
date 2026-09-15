@@ -5873,6 +5873,14 @@ function getTypeScriptNarrowingAlternatives(
     return type.types.flatMap((member) => getTypeScriptNarrowingAlternatives(member, context, resolvingAliases));
   }
   if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1
+  ) {
+    return getTypeScriptNarrowingAlternatives(type.typeArguments[0]!, context, resolvingAliases);
+  }
+  if (
     type.kind !== 'named' ||
     type.reference.kind !== 'binding' ||
     type.reference.path.length > 0 ||
@@ -6377,9 +6385,9 @@ function getTypeScriptReferenceNarrowedMember(
   const members = declared.types.map(
     (member) => getTypeScriptNamedTypeMemberName(member) ?? getTypeScriptPrimitiveTypeName(member),
   );
-  return members.filter((member) => member === narrowed).length === 1
-    ? { narrowedMember: narrowed }
-    : getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
+  const syntactic = getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
+  if (syntactic.narrowedMember) return syntactic;
+  return members.filter((member) => member === narrowed).length === 1 ? { narrowedMember: narrowed } : {};
 }
 
 // The deliberately small compiler ambient surface can leave the project checker with `any` for a
