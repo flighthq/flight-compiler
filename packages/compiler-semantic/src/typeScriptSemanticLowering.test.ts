@@ -3404,15 +3404,15 @@ describe('lowerTypeScriptSource', () => {
     );
     if (width?.kind !== 'function' || width.body[0]?.kind !== 'return') throw new Error('Expected function return');
     const conditional = width.body[0].expression;
-    if (conditional?.kind !== 'conditional' || conditional.otherwise.kind !== 'binary') {
+    if (conditional?.kind !== 'conditional' || conditional.whenFalse.kind !== 'binary') {
       throw new Error('Expected conditional field reads');
     }
 
     expect(result.diagnostics).toEqual([]);
-    expect(conditional.otherwise.left).toMatchObject({ kind: 'property', name: 'left' });
-    expect(conditional.otherwise.right).toMatchObject({ kind: 'property', name: 'right' });
-    expect(conditional.otherwise.left).not.toHaveProperty('member');
-    expect(conditional.otherwise.right).not.toHaveProperty('member');
+    expect(conditional.whenFalse.left).toMatchObject({ kind: 'property', name: 'left' });
+    expect(conditional.whenFalse.right).toMatchObject({ kind: 'property', name: 'right' });
+    expect(conditional.whenFalse.left).not.toHaveProperty('member');
+    expect(conditional.whenFalse.right).not.toHaveProperty('member');
   });
 
   it('classifies every supported typed-array member receiver', () => {
