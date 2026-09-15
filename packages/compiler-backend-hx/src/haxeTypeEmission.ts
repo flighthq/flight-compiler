@@ -51,9 +51,10 @@ export function emitIrTypeHaxe(type: Readonly<IrType>, context: Readonly<IrTypeH
         return `${externalTypeName}<${emitIrTypeHaxe(type.typeArguments[1], context)}>`;
       }
       const resolved = context.resolveNamedType?.(type);
-      if (resolved !== undefined) return resolved;
       let targetName: string;
-      if (type.reference.kind === 'ambient') {
+      if (resolved !== undefined) {
+        targetName = resolved;
+      } else if (type.reference.kind === 'ambient') {
         const externalTypeName = context.getExternalTypeName(type.reference.name);
         if (!externalTypeName) context.fail(`external type ${type.reference.name} has no Haxe binding`);
         targetName = externalTypeName;

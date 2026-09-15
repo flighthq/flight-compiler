@@ -7982,6 +7982,45 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).not.toContain('Flavor_2');
   });
 
+  it('preserves type arguments on resolved imported generic aliases', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './base',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/base.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/base.ts',
+          'export interface Entity {} export type WithoutRuntime<T extends Entity> = Partial<T>;',
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/use.ts',
+          "import type { Entity, WithoutRuntime } from './base'; interface Value extends Entity {} export type ValueLike = WithoutRuntime<Value>;",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(output).toContain('typedef ValueLike = WithoutRuntime<Value>;');
+  });
+
   it('retains nested WebGL receiver and field types at native integer boundaries', () => {
     const output = emitIrModuleHaxe(
       lower(
