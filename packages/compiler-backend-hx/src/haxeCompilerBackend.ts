@@ -768,6 +768,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'assignment': {
       const arrayLengthAssignment = emitArrayLengthAssignmentHaxe(expression, context);
       if (arrayLengthAssignment) return arrayLengthAssignment;
+      const nativePropertyAssignment = emitHaxeNativeSyntaxPropertyAssignment(expression, context);
+      if (nativePropertyAssignment) return nativePropertyAssignment;
       const dynamicPropertyAssignment = emitDynamicAccessPropertyAssignmentHaxe(expression, context);
       if (dynamicPropertyAssignment) return dynamicPropertyAssignment;
       const reflectiveAssignment = emitReflectiveElementAssignmentHaxe(expression, context);
@@ -891,6 +893,15 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       const runtimeOperator = emitJavaScriptBinaryOperatorHaxe(expression, context);
       if (runtimeOperator) return runtimeOperator;
+      if (expression.operator === '??') {
+        const branchTypes = new Set([
+          ...getIrConditionalBranchTypesHaxe(expression.left, context),
+          ...getIrConditionalBranchTypesHaxe(expression.right, context),
+        ]);
+        if (branchTypes.size > 1) {
+          return `((cast ${emitExpression(expression.left, context)} : Dynamic) ?? (cast ${emitExpression(expression.right, context)} : Dynamic))`;
+        }
+      }
       const op = emitBinaryOperatorHaxe(expression.operator, expression.semantics, context);
       const bitwise =
         expression.operator === '&' ||
@@ -1037,7 +1048,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
             context,
           ),
         );
-        return `${context.options.runtimeModule ?? 'flighthq._internal'}._ArrayTools.pushMany(${receiver}, [${values.join(', ')}])`;
+        const valueArray =
+          receiverType?.kind === 'array' && emitType(receiverType.element, context) === 'Float'
+            ? `(cast [${values.join(', ')}] : Array<Float>)`
+            : `[${values.join(', ')}]`;
+        return `${context.options.runtimeModule ?? 'flighthq._internal'}._ArrayTools.pushMany(${receiver}, ${valueArray})`;
       }
       // Member mapping normally emits arguments while selecting the target spelling. A spread has
       // runtime arity, so it must take the reflective-call route before that fixed-arity mapper sees
@@ -1064,7 +1079,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         return `js.Syntax.code("{0}.arrayBuffer()", ${emitExpression(expression.callee.object, context)})`;
       }
       if (expression.callee.kind === 'property') {
-        const owner = getIrExpressionAmbientTypeNameHaxe(expression.callee.object, context);
+        const nativeSyntaxCall = emitHaxeNativeSyntaxMethodCall(expression, context);
+        if (nativeSyntaxCall) return nativeSyntaxCall;
+      }
+      if (expression.callee.kind === 'property') {
+        const owner = getHaxeNativeOwnerName(expression.callee.object, context);
         const intArguments = owner
           ? haxeNativeMethodIntArgumentPositions.get(`${owner}.${expression.callee.name}`)
           : undefined;
@@ -1372,6 +1391,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     case 'property': {
       const webGlConstantOwner = getWebGlStaticConstantOwnerHaxe(expression, context);
       if (webGlConstantOwner) return `${webGlConstantOwner}.${safeHaxeName(expression.name)}`;
+      const nativeSyntaxProperty = emitHaxeNativeSyntaxProperty(expression, context);
+      if (nativeSyntaxProperty) return nativeSyntaxProperty;
       if (
         expression.name === 'colorSpace' &&
         getIrExpressionAmbientTypeNameHaxe(expression.object, context) === 'ImageData'
@@ -1429,15 +1450,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           ? (getIrModuleDeclaredTypeNameHaxe(expression.object.narrowedMember, context) ??
             getHaxePrimitiveNarrowedTypeName(expression.object.narrowedMember))
           : undefined;
-      const narrowedIsTypedef =
-        narrowed !== undefined &&
-        expression.object.kind === 'identifier' &&
-        expression.object.narrowedMember !== undefined &&
-        isIrNarrowedMemberTypedefHaxe(expression.object.narrowedMember, context);
       const object = narrowed
-        ? narrowedIsTypedef
-          ? `cast(${emitExpression(expression.object, context)})`
-          : `(cast ${emitExpression(expression.object, context)} : ${narrowed})`
+        ? `(cast ${emitExpression(expression.object, context)} : ${narrowed})`
         : emitExpression(expression.object, context);
       return `${object}${expression.optional ? '?.' : '.'}${safeHaxeName(expression.name)}`;
     }
@@ -1521,6 +1535,59 @@ function getIrExpressionAmbientTypeNameHaxe(
     type = getIrSingleConcreteTypeHaxe(type.typeArguments[0]);
   }
   return type?.kind === 'named' && type.reference.kind === 'ambient' ? type.reference.name : undefined;
+}
+
+function getHaxeNativeSyntaxMemberKey(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const owner = getHaxeNativeOwnerName(expression.object, context);
+  return owner ? `${owner}.${expression.name}` : undefined;
+}
+
+function getHaxeNativeOwnerName(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
+  if (expression.kind === 'identifier' && expression.reference.kind === 'ambient') {
+    return haxeNativeValueOwnerNames.get(expression.reference.name) ?? expression.reference.name;
+  }
+  return getIrExpressionAmbientTypeNameHaxe(expression, context);
+}
+
+function emitHaxeNativeSyntaxMethodCall(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.callee.kind !== 'property') return undefined;
+  const key = getHaxeNativeSyntaxMemberKey(expression.callee, context);
+  if (!key || !haxeNativeSyntaxMethods.has(key)) return undefined;
+  const receiver = emitExpression(expression.callee.object, context);
+  const arguments_ = expression.arguments.map((argument) => emitHaxeCallArgument(argument, context));
+  const invocation = `{0}.${expression.callee.name}(${arguments_
+    .map((_, index) => `{${String(index + 1)}}`)
+    .join(', ')})`;
+  return `js.Syntax.code(${emitHaxeStringLiteral(invocation)}, ${[receiver, ...arguments_].join(', ')})`;
+}
+
+function emitHaxeNativeSyntaxProperty(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const key = getHaxeNativeSyntaxMemberKey(expression, context);
+  if (!key) return undefined;
+  const constant = haxeNativeSyntaxConstantExpressions.get(key);
+  if (constant) return constant;
+  if (!haxeNativeSyntaxProperties.has(key)) return undefined;
+  return `js.Syntax.code("{0}.${expression.name}", ${emitExpression(expression.object, context)})`;
+}
+
+function emitHaxeNativeSyntaxPropertyAssignment(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.operator !== '=' || expression.left.kind !== 'property') return undefined;
+  const key = getHaxeNativeSyntaxMemberKey(expression.left, context);
+  if (!key || !haxeNativeSyntaxWritableProperties.has(key)) return undefined;
+  const assignment = `{0}.${expression.left.name} = {1}`;
+  return `js.Syntax.code(${emitHaxeStringLiteral(assignment)}, ${emitExpression(expression.left.object, context)}, ${emitExpression(expression.right, context)})`;
 }
 
 function getWebGlNativeOwnerForExpressionHaxe(
@@ -1711,7 +1778,9 @@ function emitArrayExpressionHaxe(
       .map((element) => {
         if (!element) return 'null';
         const emitted = emitExpression(element, context);
-        return element === floatWitness ? `(cast ${emitted} : Float)` : emitted;
+        if (element === floatWitness) return `(cast ${emitted} : Float)`;
+        const expectedElement = expression.type?.kind === 'array' ? expression.type.element : undefined;
+        return emitExpressionAsExpectedTypeHaxe(element, expectedElement, context, emitted);
       })
       .join(', ')}]`;
     const elementTypes = new Set(
@@ -1837,25 +1906,71 @@ function emitDynamicAccessPropertyAssignmentHaxe(
 }
 
 function isReflectiveHaxePropertyReceiver(expression: Readonly<IrExpression>, context: EmitContext): boolean {
-  if (expression.kind === 'cast') return emitType(expression.type, context).startsWith('haxe.DynamicAccess<');
+  if (expression.kind === 'cast') return isIrTypeReflectiveHaxe(expression.type, context);
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
   const type = context.bindingTypes.get(expression.reference.binding.id);
   if (!type) return false;
-  return emitType(type, context).startsWith('haxe.DynamicAccess<') || hasIrTypeParameterReferenceHaxe(type);
+  return isIrTypeReflectiveHaxe(type, context) || hasIrTypeParameterReferenceHaxe(type);
+}
+
+function isIrTypeReflectiveHaxe(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  seen: ReadonlySet<string> = new Set(),
+): boolean {
+  const concrete = getIrSingleConcreteTypeHaxe(type);
+  if (emitType(concrete, context).startsWith('haxe.DynamicAccess<')) return true;
+  if (concrete.kind !== 'named' || concrete.reference.kind !== 'binding') return false;
+  const target = getIrNamedDeclarationTargetHaxe(concrete, context);
+  if (!target || target.declaration.kind !== 'typeAlias' || seen.has(target.binding.id)) return false;
+  const substituted = resolveIrTypeStructuralSubstitution(
+    target.declaration.type,
+    createIrTypeParameterSubstitutionPlan(target.declaration.typeParameters, concrete.typeArguments),
+  );
+  return isIrTypeReflectiveHaxe(substituted, context, new Set(seen).add(target.binding.id));
 }
 
 function hasIrTypeParameterReferenceHaxe(type: Readonly<IrType>): boolean {
-  if (type.kind === 'named') {
-    return (
-      (type.reference.kind === 'binding' && type.reference.binding.kind === 'typeParameter') ||
-      type.typeArguments.some(hasIrTypeParameterReferenceHaxe)
-    );
+  switch (type.kind) {
+    case 'array':
+      return hasIrTypeParameterReferenceHaxe(type.element);
+    case 'conditionalFacet':
+      return hasIrTypeParameterReferenceHaxe(type.check) || hasIrTypeParameterReferenceHaxe(type.facet);
+    case 'function':
+      return (
+        type.parameters.some((parameter) => hasIrTypeParameterReferenceHaxe(parameter.type)) ||
+        hasIrTypeParameterReferenceHaxe(type.returns) ||
+        type.typeParameters.some(
+          (parameter) =>
+            (parameter.constraint !== undefined && hasIrTypeParameterReferenceHaxe(parameter.constraint)) ||
+            (parameter.default !== undefined && hasIrTypeParameterReferenceHaxe(parameter.default)),
+        )
+      );
+    case 'indexedAccess':
+      return hasIrTypeParameterReferenceHaxe(type.object) || hasIrTypeParameterReferenceHaxe(type.index);
+    case 'intersection':
+    case 'union':
+      return type.types.some(hasIrTypeParameterReferenceHaxe);
+    case 'keyof':
+      return hasIrTypeParameterReferenceHaxe(type.type);
+    case 'named':
+      return (
+        (type.reference.kind === 'binding' && type.reference.binding.kind === 'typeParameter') ||
+        type.typeArguments.some(hasIrTypeParameterReferenceHaxe)
+      );
+    case 'object':
+      return type.properties.some((property) => hasIrTypeParameterReferenceHaxe(property.type));
+    case 'tuple':
+      return type.elements.some((element) => hasIrTypeParameterReferenceHaxe(element.type));
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'typeOf':
+    case 'undefined':
+    case 'unknown':
+      return false;
   }
-  if (type.kind === 'array') return hasIrTypeParameterReferenceHaxe(type.element);
-  if (type.kind === 'intersection' || type.kind === 'union') {
-    return type.types.some(hasIrTypeParameterReferenceHaxe);
-  }
-  return false;
 }
 
 function emitArraySpliceInsertionHaxe(
@@ -2081,6 +2196,15 @@ function emitAssignmentRightHaxe(
 ): string {
   if (
     expression.operator === '=' &&
+    expression.left.kind === 'property' &&
+    haxeNativeIntegerProperties.has(
+      `${getIrExpressionAmbientTypeNameHaxe(expression.left.object, context) ?? ''}.${expression.left.name}`,
+    )
+  ) {
+    return `Std.int(${emitExpression(expression.right, context)})`;
+  }
+  if (
+    expression.operator === '=' &&
     expression.left.kind === 'element' &&
     (expression.left.semantics.receivers.every((receiver) => haxeIntegerTypedArrayReceivers.has(receiver)) ||
       isIrIntegerTypedArrayHaxe(getIrExpressionTypeHaxe(expression.left.object, context)))
@@ -2275,8 +2399,7 @@ function emitExpressionAsExpectedTypeHaxe(
     (concreteExpected.kind === 'named' &&
       concreteExpected.reference.kind === 'ambient' &&
       concreteExpected.reference.name === 'WebGLPowerPreference');
-  const expectedNativeCall =
-    expression.kind === 'call' &&
+  const expectedNative =
     concreteExpected.kind === 'named' &&
     concreteExpected.reference.kind === 'ambient' &&
     !['Dynamic', 'String'].includes(
@@ -2288,7 +2411,9 @@ function emitExpressionAsExpectedTypeHaxe(
     );
   const expectedFunction = isIrTypeFunctionShapedHaxe(concreteExpected, context);
   const functionBoundary = expectedFunction && isIrExpressionFunctionValuedHaxe(expression, context);
-  if (functionBoundary) return emitted.startsWith('cast(') ? emitted : `cast(${emitted})`;
+  if (functionBoundary) {
+    return `(cast ${normalizeHaxeExpressionGrouping(emitted)} : ${emitType(concreteExpected, context)})`;
+  }
   const expressionType = getIrExpressionTypeHaxe(expression, context);
   const alreadyExpectedStructuralType =
     expressionType !== undefined &&
@@ -2305,7 +2430,7 @@ function emitExpressionAsExpectedTypeHaxe(
     return `((cast ${normalizeHaxeExpressionGrouping(emitExpression(expression.left, context))} : Null<${target}>) ?? (cast ${normalizeHaxeExpressionGrouping(emitExpression(expression.right, context))} : ${target}))`;
   }
   if (
-    expectedNativeCall ||
+    expectedNative ||
     (isIrStructuralRecordTypeHaxe(concreteExpected, context) &&
       (expression.kind === 'object' || !alreadyExpectedStructuralType)) ||
     (expectedStringNominal &&
@@ -2358,6 +2483,12 @@ function getIrSingleConcreteTypeHaxe(type: Readonly<IrType>): Readonly<IrType> {
 
 function isIrExpressionFunctionValuedHaxe(expression: Readonly<IrExpression>, context: EmitContext): boolean {
   if (expression.kind === 'function') return true;
+  if (expression.kind === 'conditional') {
+    return (
+      isIrExpressionFunctionValuedHaxe(expression.whenTrue, context) &&
+      isIrExpressionFunctionValuedHaxe(expression.whenFalse, context)
+    );
+  }
   if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
   if (expression.reference.binding.kind === 'function') return true;
   const type = context.bindingTypes.get(expression.reference.binding.id);
@@ -2613,9 +2744,15 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
       if (binding.imported === '*' || binding.imported === 'default') {
         emissionError(context, `${binding.imported} imports require explicit Haxe mapping for ${imported.specifier}`);
       }
-      const importedName = getImportedTargetNameHaxe(imported, binding, context);
+      const forwardedTarget = getLocalImportedExportTargetHaxe(
+        imported.specifier,
+        binding.imported,
+        binding.binding.space,
+        context,
+      );
+      const importedName = forwardedTarget?.importedName ?? getImportedTargetNameHaxe(imported, binding, context);
       const localName = getBindingTargetNameHaxe(binding.binding, context);
-      const modulePath = haxeImportModule(imported.specifier, context, binding.imported);
+      const modulePath = forwardedTarget?.modulePath ?? haxeImportModule(imported.specifier, context, binding.imported);
       const target = `${modulePath}.${importedName}`;
       const targetBindings = bindingsByTarget.get(target) ?? [];
       targetBindings.push({ binding, importedName, localName, modulePath });
@@ -2678,6 +2815,8 @@ function getImportedTypeLaneTargetHaxe(
 ): { readonly importedName: string; readonly modulePath: string } | undefined {
   const sourceModule = getHaxeResolvedImportModule(imported.specifier, context, binding.imported);
   if (!sourceModule) return undefined;
+  const forwardedTarget = getLocalImportedExportTargetHaxe(imported.specifier, binding.imported, 'type', context);
+  if (forwardedTarget) return forwardedTarget;
   const direct = sourceModule.declarations.find(
     (declaration) =>
       'binding' in declaration &&
@@ -2748,6 +2887,38 @@ function getImportedTargetNameHaxe(
     return fallback;
   }
   return getHaxeFacadeTypeTargetNames(sourceModule, context).get(binding.imported) ?? fallback;
+}
+
+// `import { Type }; export type { Type };` is a source-language re-export, but a Haxe import is
+// module-private and does not create a secondary type on the importing module. Consumers of that
+// shape therefore have to target the facade route's declaration home directly. Explicit and star
+// facades still keep their generated aliases/forwarders, which are part of the public Haxe layout.
+function getLocalImportedExportTargetHaxe(
+  specifier: string,
+  importedName: string,
+  lane: 'type' | 'value',
+  context: EmitContext,
+): { readonly importedName: string; readonly modulePath: string } | undefined {
+  const sourceModule = getHaxeResolvedImportModule(specifier, context, importedName);
+  if (!sourceModule) return undefined;
+  const exportedImport = sourceModule.exports.find(
+    (exported) =>
+      exported.kind === 'local' &&
+      exported.exported === importedName &&
+      exported.binding.kind === 'import' &&
+      exported.binding.space === lane,
+  );
+  if (!exportedImport) return undefined;
+  const slot = context
+    .getModuleFacade?.(sourceModule)
+    ?.modules.find((module) => isHaxeCompilerModuleIdentityEqual(module.module, sourceModule))
+    ?.slots.find((candidate) => candidate.exportName === importedName && candidate.lane === lane);
+  if (!slot || slot.route.kind !== 'binding') return undefined;
+  const target = getModuleFacadeBindingTargetHaxe(slot, context);
+  return {
+    importedName: getSourceBindingTargetNameHaxe(target.module, target.binding, context),
+    modulePath: getHaxeModulePath(target.module, context.options),
+  };
 }
 
 // Haxe re-exports types with aliases and values with forwarding module fields. Mutable bindings are
@@ -3182,9 +3353,15 @@ function createFacadeSourceContextHaxe(module: Readonly<IrModule>, context: Emit
         packageName: convertPackageNameToHaxePackageName(module.packageName, context.options.rootPackage),
         targetNames,
       };
+      const forwardedTarget = getLocalImportedExportTargetHaxe(
+        imported.specifier,
+        binding.imported,
+        binding.binding.space,
+        moduleContext,
+      );
       qualifiedBindings.set(
         binding.binding.id,
-        `${haxeImportModule(imported.specifier, moduleContext, binding.imported)}.${getImportedTargetNameHaxe(imported, binding, moduleContext)}`,
+        `${forwardedTarget?.modulePath ?? haxeImportModule(imported.specifier, moduleContext, binding.imported)}.${forwardedTarget?.importedName ?? getImportedTargetNameHaxe(imported, binding, moduleContext)}`,
       );
     }
   }
@@ -3479,14 +3656,6 @@ function emitCastExpressionHaxe(
 ): string {
   const inner = emitExpression(expression.expression, context);
   return `(cast ${inner} : ${emitType(expression.type, context)})`;
-}
-
-function isIrNarrowedMemberTypedefHaxe(name: string, context: EmitContext): boolean {
-  const declaration = context.module.declarations.find(
-    (candidate) => candidate.kind === 'interface' && candidate.binding.name === name,
-  );
-  if (!declaration || declaration.kind !== 'interface') return false;
-  return !hasIrModuleClassImplementingHaxe(declaration, context);
 }
 
 function emitIdentifierReferenceHaxe(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
@@ -4366,11 +4535,13 @@ function emitConditionHaxe(expression: Readonly<IrExpression>, context: EmitCont
   return `${runtime}.truthy(${normalizeHaxeExpressionGrouping(emitExpression(expression, context))})`;
 }
 
-// A typed Haxe cast is an expression only while its annotation remains grouped. The shared source
+// A typed Haxe expression is valid only while its annotation remains grouped. The shared source
 // normalizer normally removes a redundant outer pair in assignment/return/condition positions, but
-// `(cast value : Type)` uses that pair as grammar rather than precedence.
+// both `(cast value : Type)` and `(value : Type)` use that pair as grammar rather than precedence.
 function normalizeHaxeExpressionGrouping(source: string): string {
-  return source.startsWith('(cast ') && source.endsWith(')') ? source : normalizeSourceTextGrouping(source);
+  return source.endsWith(')') && (source.startsWith('(cast ') || source.includes(' : '))
+    ? source
+    : normalizeSourceTextGrouping(source);
 }
 
 function isIrExpressionBooleanHaxe(expression: Readonly<IrExpression>, context: EmitContext): boolean {
@@ -4444,6 +4615,52 @@ const haxeNativeConstructorCastArgumentPositions = new Map<string, readonly numb
 const haxeNativeMethodIntArgumentPositions = new Map<string, readonly number[]>([
   ['AudioBuffer.copyToChannel', [1]],
   ['AudioBuffer.getChannelData', [0]],
+  ['Element.releasePointerCapture', [0]],
+  ['Element.setPointerCapture', [0]],
+  ['Window.cancelAnimationFrame', [0]],
+  ['Window.clearInterval', [0]],
+  ['Window.clearTimeout', [0]],
+  ['Window.setInterval', [1]],
+  ['Window.setTimeout', [1]],
+]);
+
+const haxeNativeSyntaxConstantExpressions = new Map<string, string>([
+  ['Math.SQRT1_2', 'Math.sqrt(0.5)'],
+  ['Math.SQRT2', 'Math.sqrt(2.0)'],
+]);
+
+const haxeNativeSyntaxMethods = new Set([
+  'CanvasRenderingContext2D.getContextAttributes',
+  'CanvasRenderingContext2D.getTransform',
+  'CanvasRenderingContext2D.roundRect',
+  'Element.getContext',
+  'Intl.PluralRules.select',
+]);
+
+const haxeNativeSyntaxProperties = new Set([
+  'CanvasRenderingContext2D.globalCompositeOperation',
+  'CanvasRenderingContext2D.imageSmoothingQuality',
+  'HTMLCanvasElement.prototype',
+  'Navigator.gpu',
+  'Navigator.wakeLock',
+]);
+
+const haxeNativeSyntaxWritableProperties = new Set([
+  'CanvasRenderingContext2D.globalCompositeOperation',
+  'CanvasRenderingContext2D.imageSmoothingQuality',
+]);
+
+const haxeNativeValueOwnerNames = new Map<string, string>([
+  ['document', 'Document'],
+  ['navigator', 'Navigator'],
+  ['window', 'Window'],
+]);
+
+const haxeNativeIntegerProperties = new Set([
+  'HTMLCanvasElement.height',
+  'HTMLCanvasElement.width',
+  'HTMLImageElement.height',
+  'HTMLImageElement.width',
 ]);
 
 const haxeIntegerLengthConstructorNames = new Set([
@@ -4865,7 +5082,9 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   // callback whose contextual return is void). The expression already carries parameter types, so
   // let Haxe infer the initialized local's callable type and retain annotations for declarations that
   // must be assigned later.
-  const type = variable.type && variable.initializer?.kind !== 'function' ? `:${emitType(variable.type, context)}` : '';
+  const functionValuedInitializer =
+    variable.initializer !== undefined && isIrExpressionFunctionValuedHaxe(variable.initializer, context);
+  const type = variable.type && !functionValuedInitializer ? `:${emitType(variable.type, context)}` : '';
   // A rest taken from a mixed tuple is an `Array<Dynamic>`, because that is the only Haxe type the
   // tuple has. The source knows the rest's own element type, and the cast is how that knowledge
   // crosses: Haxe will not narrow `Array<Dynamic>` on its own.
@@ -4889,7 +5108,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       ? emitExpressionAsExpectedTypeHaxe(variable.initializer, variable.type, context, directInitializer)
       : directInitializer;
   const initializer = variable.initializer
-    ? ` = ${restCast ? `(cast ${directInitializer} : ${emitType(variable.type!, context)})` : functionCast ? `cast(${directInitializer})` : normalizeHaxeExpressionGrouping(expectedInitializer!)}`
+    ? ` = ${restCast ? `(cast ${directInitializer} : ${emitType(variable.type!, context)})` : functionCast ? `(cast ${normalizeHaxeExpressionGrouping(directInitializer!)} : ${emitType(variable.type!, context)})` : normalizeHaxeExpressionGrouping(expectedInitializer!)}`
     : '';
   return `${variable.mutable ? 'var' : 'final'} ${getBindingTargetNameHaxe(variable.binding, context)}${type}${initializer};`;
 }
@@ -4905,7 +5124,7 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
     declaration.type &&
     isIrTypeFunctionShapedHaxe(declaration.type, context) &&
     isIrExpressionFunctionValuedHaxe(declaration.initializer, context)
-      ? `cast(${emitExpression(declaration.initializer, context)})`
+      ? `(cast ${normalizeHaxeExpressionGrouping(emitExpression(declaration.initializer, context))} : ${emitType(declaration.type, context)})`
       : emitExpression(declaration.initializer, context);
   return [`${storage} ${getBindingTargetNameHaxe(declaration.binding, context)}${type} = ${initializer};`];
 }
@@ -5295,7 +5514,10 @@ function getHaxeResolvedImportModuleFrom(
       edge.importedNames === undefined || (importedName !== undefined && edge.importedNames.includes(importedName)),
   );
   const uniqueTargets = new Map(
-    targets.map((edge) => [`${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`, edge.target]),
+    (targets.length > 0 ? targets : scoped).map((edge) => [
+      `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
+      edge.target,
+    ]),
   );
   if (uniqueTargets.size === 1) {
     const target = [...uniqueTargets.values()][0]!;

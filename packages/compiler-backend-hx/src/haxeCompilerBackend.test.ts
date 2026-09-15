@@ -485,6 +485,58 @@ describe('createHaxeCompilerBackend', () => {
     expect(output).toContain('function read(value:String):String');
   });
 
+  it('keeps a unique authored barrel route for inherited types added after resolution', () => {
+    const detail = lowerPackage('@flighthq/model', 'detail.ts', 'export interface Detail { value: number }').module;
+    const base = lowerPackage(
+      '@flighthq/model',
+      'base.ts',
+      "import type { Detail } from './detail'; export interface Base { detail: Detail }",
+    ).module;
+    const contract = lowerPackage(
+      '@flighthq/model',
+      'contract.ts',
+      "export * from './base'; export * from './detail';",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/app',
+      'consumer.ts',
+      "import type { Base } from '@flighthq/model/contract'; export interface Consumer extends Base {}",
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: base.name, packageName: base.packageName, source: base.source },
+          specifier: './detail',
+          target: { packageName: detail.packageName, source: detail.source },
+        },
+        {
+          importer: { name: contract.name, packageName: contract.packageName, source: contract.source },
+          specifier: './base',
+          target: { packageName: base.packageName, source: base.source },
+        },
+        {
+          importer: { name: contract.name, packageName: contract.packageName, source: contract.source },
+          specifier: './detail',
+          target: { packageName: detail.packageName, source: detail.source },
+        },
+        {
+          importedNames: ['Base'],
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: '@flighthq/model/contract',
+          target: { packageName: contract.packageName, source: contract.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const output = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, contract, base, detail],
+      options: {},
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('import flighthq.model.Contract.ContractDetail as Detail;');
+  });
+
   it('shares a star facade plan across a transpile emission session', () => {
     const target = lower('target.ts', 'export function value(): number { return 1; }').module;
     const barrel = lower('barrel.ts', "export * from './target';").module;
@@ -648,6 +700,47 @@ describe('createHaxeCompilerBackend', () => {
     });
 
     expect(() => session.emitModule(facade)).not.toThrow();
+  });
+
+  it('imports a locally re-exported imported type from its declaration home', () => {
+    const callbacks = lowerPackage(
+      '@flighthq/types',
+      'callbacks.ts',
+      'export interface Callbacks { update(): void }',
+    ).module;
+    const bridge = lowerPackage(
+      '@flighthq/particles',
+      'update.ts',
+      "import type { Callbacks } from '@flighthq/types/callbacks'; export type { Callbacks };",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/particles',
+      'prewarm.ts',
+      "import type { Callbacks } from './update'; export function prewarm(callbacks?: Callbacks): void {}",
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: bridge.name, packageName: bridge.packageName, source: bridge.source },
+          specifier: '@flighthq/types/callbacks',
+          target: { packageName: callbacks.packageName, source: callbacks.source },
+        },
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: './update',
+          target: { packageName: bridge.packageName, source: bridge.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const output = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, bridge, callbacks],
+      options: {},
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('import flighthq.types.Callbacks.Callbacks;');
+    expect(output).not.toContain('flighthq.particles.Update.Callbacks');
   });
 
   it('forwards an explicit value re-export through an intermediate star barrel', () => {
@@ -2514,6 +2607,35 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).not.toContain('return null;');
   });
 
+  it('lets Haxe infer a conditional choice between imported functions', () => {
+    const queries = lowerPackage(
+      '@flighthq/physics2d',
+      'queries.ts',
+      'export function all(value: number): void {} export function closest(value: number): void {}',
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/physics2d-abi',
+      'reference.ts',
+      "import { all, closest } from '@flighthq/physics2d/queries'; export function run(flag: boolean): void { const query = flag ? closest : all; query(1); }",
+    ).module;
+    const output = createHaxeCompilerBackend().emitModule(consumer, {
+      moduleResolution: {
+        edges: [
+          {
+            importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+            specifier: '@flighthq/physics2d/queries',
+            target: { packageName: queries.packageName, source: queries.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [consumer, queries],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain('final query = (flag ? closest : all);');
+  });
+
   it('constructs source-declared constructor values reflectively', () => {
     const result = lower(
       'factory.ts',
@@ -2680,9 +2802,9 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('final handler:Handler = cast(short);');
-    expect(output).toContain('accept(cast(short));');
-    expect(output).toContain('return cast(handler);');
+    expect(output).toContain('final handler:Handler = (cast short : Handler);');
+    expect(output).toContain('accept((cast short : Handler));');
+    expect(output).toContain('return (cast handler : Handler);');
   });
 
   it('emits object rest with named and computed exclusions', () => {
@@ -2767,6 +2889,20 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).toContain('return HaxeReflect.field(record, "value");');
     expect(output).toContain('function readGeneric<Value:');
     expect(output.match(/return HaxeReflect\.field\(record, "value"\);/gu)).toHaveLength(3);
+  });
+
+  it('reflects nullable reads through aliases of dynamic records', () => {
+    const result = lower(
+      'reflective-alias-read.ts',
+      `type Raw = Record<string, unknown>;
+       export function read(raw: Raw, optional: Raw | undefined): unknown {
+         return raw.value ?? optional?.value;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('HaxeReflect.field(raw, "value")');
+    expect(output).toContain('HaxeReflect.field(optionalObject, "value")');
   });
 
   it('reflects fields read through structural casts and numeric updates on generic records', () => {
@@ -2871,6 +3007,33 @@ describe('emitIrModuleHaxe expression coverage', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('(cast value : Item).count');
+  });
+
+  it('casts string-backed values at native extern assignment boundaries', () => {
+    const result = lower(
+      'native-string-assignment.ts',
+      'export function apply(context: CanvasRenderingContext2D, operation: string): void { context.globalCompositeOperation = operation; }',
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain(
+      'js.Syntax.code("{0}.globalCompositeOperation = {1}", context, operation)',
+    );
+  });
+
+  it('narrows native DOM integer properties and method arguments', () => {
+    const result = lower(
+      'native-integer-boundaries.ts',
+      `export function resize(canvas: HTMLCanvasElement, element: Element, width: number, pointer: number): void {
+         canvas.width = width;
+         element.setPointerCapture(pointer);
+         window.clearTimeout(pointer);
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('(canvas.width = Std.int(width))');
+    expect(output).toContain('element.setPointerCapture(Std.int(pointer))');
+    expect(output).toContain('js.Browser.window.clearTimeout(Std.int(pointer))');
   });
 
   it('emits undefined-default as null-coalescing', () => {
@@ -5170,6 +5333,16 @@ describe('emitIrModuleHaxe object literal', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('([name, count, (count == 0)] : Array<Dynamic>).join(":")');
+  });
+
+  it('keeps a dynamically typed array annotation grouped in a local initializer', () => {
+    const result = lower(
+      'dynamic-array-initializer.ts',
+      'export function values(): unknown[] { const doubles = [Number.NaN]; return doubles; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('final doubles:Array<Dynamic> = ([Math.NaN] : Array<Dynamic>);');
   });
 
   it('preserves a declared unique-symbol key for a computed object property', () => {
@@ -8542,6 +8715,42 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).not.toContain('signal.throwIfAborted()');
   });
 
+  it('uses JavaScript syntax for browser members absent from the pinned Haxe extern', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'new-browser-members.ts',
+        `export function render(context: CanvasRenderingContext2D, quality: ImageSmoothingQuality): DOMMatrix {
+           context.imageSmoothingQuality = quality;
+           context.getContextAttributes();
+           context.roundRect(0, 0, 10, 10, 2);
+           return context.getTransform();
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('js.Syntax.code("{0}.imageSmoothingQuality = {1}", context, quality)');
+    expect(output).toContain('js.Syntax.code("{0}.getContextAttributes()", context)');
+    expect(output).toContain('js.Syntax.code("{0}.roundRect({1}, {2}, {3}, {4}, {5})", context, 0, 0, 10, 10, 2)');
+    expect(output).toContain('js.Syntax.code("{0}.getTransform()", context)');
+  });
+
+  it('preserves JavaScript number semantics for plural selection and Math constants', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'native-number-members.ts',
+        `export function select(value: number): string {
+           const rules = new Intl.PluralRules('en');
+           return rules.select(value + Math.SQRT2 + Math.SQRT1_2);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('js.Syntax.code("{0}.select({1})", rules,');
+    expect(output).toContain('Math.sqrt(2.0)');
+    expect(output).toContain('Math.sqrt(0.5)');
+    expect(output).not.toContain('Std.int(value');
+  });
+
   it('qualifies contextual field types not directly imported by the source module', () => {
     const moduleResolution = {
       edges: [
@@ -8624,13 +8833,18 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     const output = emitIrModuleHaxe(
       lower(
         'generic-call-target.ts',
-        'interface Signal<T> { value: T } function emit<T>(signal: Signal<T>): void { signal; } export function run(signal: Signal<() => void>): void { emit(signal); }',
+        `interface Signal<T> { value: T }
+         function emit<T>(signal: Signal<T>): void { signal; }
+         function dispose<TArgs extends unknown[]>(signal: Signal<(...args: TArgs) => void>): void { signal; }
+         export function run(signal: Signal<() => void>): void { emit(signal); dispose(signal); }`,
       ).module,
     ).contents;
 
     expect(output).toContain('function emit<T>(signal:Signal<T>)');
     expect(output).toContain('emit(signal);');
     expect(output).not.toContain('emit((cast signal');
+    expect(output).toContain('dispose(signal);');
+    expect(output).not.toContain('Signal<(TArgs)->Void>');
   });
 
   it('materializes non-array iterables before array spread concatenation', () => {
@@ -9418,7 +9632,8 @@ describe('emitIrModuleHaxe narrowed declared type property access', () => {
          }`,
       ).module,
     ).contents;
-    expect(output).toContain('cast');
+    expect(output).toContain('(cast p : Dog).bark');
+    expect(output).toContain('(cast p : Cat).meow');
   });
 });
 
@@ -11000,8 +11215,8 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('create: cast(function');
-    expect(output).toContain('supports: cast(function');
+    expect(output).toContain('create: (cast function');
+    expect(output).toContain('supports: (cast function');
   });
 
   it('writes non-numeric typed-array indexes through the reflective property ABI', () => {
@@ -11092,6 +11307,20 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     expect(output).toContain('([item.id, item] : Array<Dynamic>)');
   });
 
+  it('contextually types object elements and numeric multi-push arrays', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'array-element-boundaries.ts',
+        `interface Entry { count: number }
+         export function entries(flag: boolean): Entry[] { return flag ? [{ count: 1 }] : []; }
+         export function append(out: number[]): void { out.push(1, 2, 3); }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('[(cast { count: 1 } : Entry)]');
+    expect(output).toContain('_ArrayTools.pushMany(out, (cast [1, 2, 3] : Array<Float>))');
+  });
+
   it('erases heterogeneous conditionals and contextually widens callable defaults', () => {
     const output = emitIrModuleHaxe(
       lower(
@@ -11109,6 +11338,21 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     expect(output).toContain('cast(function(value:Float) return value)');
     expect(output).toContain('(cast source.callback : Null<(Float, Float)->Float>)');
     expect(output).toContain('(cast identity : (Float, Float)->Float)');
+  });
+
+  it('erases heterogeneous nullish branches to their shared dynamic carrier', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'nullish-union-boundary.ts',
+        `interface Bias { scale: number }
+         interface Proxy { matrix?: readonly number[] | null; bias: Bias | null }
+         export function adjustment(proxy: Proxy): readonly number[] | Bias | null {
+           return proxy.matrix ?? proxy.bias;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('(cast proxy.matrix : Dynamic) ?? (cast proxy.bias : Dynamic)');
   });
 
   it('casts concrete options into readonly partial structural call parameters', () => {
