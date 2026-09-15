@@ -8049,6 +8049,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('.value_or(std::nullopt)');
   });
 
+  it('retains the intermediate optional carrier in chained nullish coalescing', () => {
+    const result = lower(
+      'chained-nullish-coalesce.ts',
+      `export function fallback(primary: string | null, secondary?: string): string {
+         return primary ?? secondary ?? 'fallback';
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('auto nullish_coalesce_left = primary;');
+    expect(emitted.contents).toContain('.value_or(flight::String("fallback"))');
+    expect(emitted.contents).not.toContain('.value_or(secondary).value_or');
+  });
+
   it('lazily coalesces compatible optional representations', () => {
     const result = lower(
       'optional-coalesce.ts',

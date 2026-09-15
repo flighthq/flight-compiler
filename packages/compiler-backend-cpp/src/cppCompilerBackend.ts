@@ -1692,7 +1692,7 @@ function emitExpression(
           return `([&]() -> ${unionType} { auto nullish_coalesce_left = ${left}; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left; return ${right}; }())`;
         }
         context.includes.add('optional');
-        return `${emitOptionalExpressionCpp(expression.left, context, expectedType)}.value_or(${emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized)})`;
+        return `${emitOptionalExpressionCpp(expression.left, context, leftType)}.value_or(${emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized)})`;
       }
       const logicalOr = emitCppValueLogicalOrExpression(expression, context, expectedType);
       if (logicalOr) return logicalOr;
@@ -7272,8 +7272,8 @@ function getIrExpressionTypeEvidenceCpp(
       return expression.type;
     case 'binary':
       return (
-        getIrOperatorValueDomainTypeCpp(expression.semantics.result) ??
-        getIrNullishCoalesceTypeEvidenceCpp(expression, context)
+        getIrNullishCoalesceTypeEvidenceCpp(expression, context) ??
+        getIrOperatorValueDomainTypeCpp(expression.semantics.result)
       );
     case 'conditional':
       return (
@@ -7409,6 +7409,13 @@ function getIrIdentifierTypeEvidenceCpp(
   if (expression.presence === 'narrowedPresent' && union) {
     const present = union.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
     if (present.length === 1) return present[0];
+  }
+  if (
+    expression.presence !== 'narrowedPresent' &&
+    !union &&
+    context.nullableBindingIds.has(bindingId)
+  ) {
+    return { kind: 'union', types: [declaredType, { kind: 'undefined' }] };
   }
   if (!expression.narrowedMember) return declaredType;
   return union?.types.find((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember) ?? declaredType;
@@ -9027,7 +9034,7 @@ function emitOptionalExpressionCpp(
     context.includes.add('optional');
     return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().${safeCppName(expression.name)}; }())`;
   }
-  return emitExpression(expression, context);
+  return emitExpression(expression, context, expectedType);
 }
 
 function assertIrOptionalChainReceiverIsSingleSentinelCpp(type: Readonly<IrType>, context: EmitContext): void {
