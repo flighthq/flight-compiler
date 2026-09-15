@@ -2550,12 +2550,15 @@ describe('emitIrModuleHaxe expression coverage', () => {
     expect(output).toContain('new flighthq._internal._Proxy(target, cast({ set:');
   });
 
-  it('uses native typed-array constructor identities for instanceof', () => {
+  it('uses native array-buffer constructor identities for instanceof', () => {
     const result = lower(
       'typed-array-instanceof.ts',
-      'export function isFloat32(value: unknown): boolean { return value instanceof Float32Array; }',
+      'export function isBuffer(value: unknown): boolean { return value instanceof ArrayBuffer; } export function isFloat32(value: unknown): boolean { return value instanceof Float32Array; }',
     );
 
+    expect(emitIrModuleHaxe(result.module).contents).toContain(
+      'flighthq._internal._Js.instanceOf(value, js.lib.ArrayBuffer)',
+    );
     expect(emitIrModuleHaxe(result.module).contents).toContain(
       'flighthq._internal._Js.instanceOf(value, js.lib.Float32Array)',
     );

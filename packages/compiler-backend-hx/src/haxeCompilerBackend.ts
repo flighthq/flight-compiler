@@ -1999,6 +1999,7 @@ function emitJavaScriptBinaryOperatorHaxe(
 }
 
 const haxeNativeInstanceofConstructorTargets = new Map<string, string>([
+  ['ArrayBuffer', 'js.lib.ArrayBuffer'],
   ['BigInt64Array', 'js.lib.BigInt64Array'],
   ['BigUint64Array', 'js.lib.BigUint64Array'],
   ['Float32Array', 'js.lib.Float32Array'],
