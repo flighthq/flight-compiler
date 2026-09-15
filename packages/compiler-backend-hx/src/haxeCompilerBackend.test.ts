@@ -8313,6 +8313,19 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('create((cast input : Options))');
   });
 
+  it('does not leak callee type parameters into generic call argument casts', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'generic-call-target.ts',
+        'interface Signal<T> { value: T } function emit<T>(signal: Signal<T>): void { signal; } export function run(signal: Signal<() => void>): void { emit(signal); }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('function emit<T>(signal:Signal<T>)');
+    expect(output).toContain('emit(signal);');
+    expect(output).not.toContain('emit((cast signal');
+  });
+
   it('materializes non-array iterables before array spread concatenation', () => {
     const output = emitIrModuleHaxe(
       lower(

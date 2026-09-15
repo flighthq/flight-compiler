@@ -2085,9 +2085,9 @@ function emitCallArgumentsHaxe(
 function getIrCallParameterTypesHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
-): readonly Readonly<IrType>[] | undefined {
+): readonly (Readonly<IrType> | undefined)[] | undefined {
   if (expression.callee.kind === 'function') {
-    return expression.callee.parameters.map((parameter) => parameter.type);
+    return expression.callee.parameters.map((parameter) => getIrCallParameterTypeHaxe(parameter.type));
   }
   if (expression.callee.kind === 'property') {
     const objectType = getIrExpressionTypeHaxe(expression.callee.object, context);
@@ -2095,14 +2095,18 @@ function getIrCallParameterTypesHaxe(
       ? getIrObjectPropertyTypeHaxe(objectType, expression.callee.name, context)
       : undefined;
     const concrete = memberType ? getIrSingleConcreteTypeHaxe(memberType) : undefined;
-    return concrete?.kind === 'function' ? concrete.parameters.map((parameter) => parameter.type) : undefined;
+    return concrete?.kind === 'function'
+      ? concrete.parameters.map((parameter) => getIrCallParameterTypeHaxe(parameter.type))
+      : undefined;
   }
   if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
   const binding = expression.callee.reference.binding;
   const local = context.module.declarations.find(
     (declaration) => declaration.kind === 'function' && declaration.binding.id === binding.id,
   );
-  if (local?.kind === 'function') return local.parameters.map((parameter) => parameter.type);
+  if (local?.kind === 'function') {
+    return local.parameters.map((parameter) => getIrCallParameterTypeHaxe(parameter.type));
+  }
   const imported = context.module.imports
     .flatMap((entry) => entry.bindings.map((candidate) => ({ candidate, entry })))
     .find(({ candidate }) => candidate.binding.id === binding.id);
@@ -2112,7 +2116,9 @@ function getIrCallParameterTypesHaxe(
   const direct = sourceModule.declarations.find(
     (declaration) => declaration.kind === 'function' && declaration.binding.name === imported.candidate.imported,
   );
-  if (direct?.kind === 'function') return direct.parameters.map((parameter) => parameter.type);
+  if (direct?.kind === 'function') {
+    return direct.parameters.map((parameter) => getIrCallParameterTypeHaxe(parameter.type));
+  }
   const facade = context.getModuleFacade?.(sourceModule);
   const slot = facade?.modules
     .find((module) => isHaxeCompilerModuleIdentityEqual(module.module, sourceModule))
@@ -2122,8 +2128,15 @@ function getIrCallParameterTypesHaxe(
   if (!slot) return undefined;
   const target = getModuleFacadeBindingTargetHaxe(slot, context);
   return target.declaration.kind === 'function'
-    ? target.declaration.parameters.map((parameter) => parameter.type)
+    ? target.declaration.parameters.map((parameter) => getIrCallParameterTypeHaxe(parameter.type))
     : undefined;
+}
+
+// A declaration's generic parameter belongs to the callee and cannot be named at its call site.
+// Haxe infers that position from the actual argument just as TypeScript did. Concrete positions on
+// the same generic function remain useful targets (for example an imported structural options bag).
+function getIrCallParameterTypeHaxe(type: Readonly<IrType>): Readonly<IrType> | undefined {
+  return hasIrTypeParameterReferenceHaxe(type) ? undefined : type;
 }
 
 function emitHaxeCallArgument(expression: Readonly<IrExpression>, context: EmitContext): string {
