@@ -363,6 +363,62 @@ describe('createHaxeCompilerBackend', () => {
     expect(consumerOutput).toContain('function read(value:StateType):StateType');
   });
 
+  it('resolves foreign property types to the type lane of a type and value collision', () => {
+    const state = lowerPackage(
+      '@flighthq/types',
+      'state.ts',
+      "export const State = { Ready: 'Ready' } as const; export type State = string;",
+    ).module;
+    const holder = lowerPackage(
+      '@flighthq/types',
+      'holder.ts',
+      "import type { State } from './state'; export interface Holder { apply: ((value: State) => void) | null }",
+    ).module;
+    const contract = lowerPackage(
+      '@flighthq/types',
+      'contract.ts',
+      "export * from './state'; export * from './holder';",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/core',
+      'consumer.ts',
+      "import type { Holder, State as StateType } from '@flighthq/types/contract'; function apply(value: StateType): void {} export function wire(holder: Holder): void { holder.apply = apply; }",
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          importer: { name: holder.name, packageName: holder.packageName, source: holder.source },
+          specifier: './state',
+          target: { packageName: state.packageName, source: state.source },
+        },
+        {
+          importer: { name: contract.name, packageName: contract.packageName, source: contract.source },
+          specifier: './state',
+          target: { packageName: state.packageName, source: state.source },
+        },
+        {
+          importer: { name: contract.name, packageName: contract.packageName, source: contract.source },
+          specifier: './holder',
+          target: { packageName: holder.packageName, source: holder.source },
+        },
+        {
+          importer: { name: consumer.name, packageName: consumer.packageName, source: consumer.source },
+          specifier: '@flighthq/types/contract',
+          target: { packageName: contract.packageName, source: contract.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const output = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, contract, holder, state],
+      options: {},
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('(cast apply : (StateType)->Void)');
+    expect(output).not.toContain('flighthq.types.State.State');
+  });
+
   it('separates the type lane of one merged contract import from its value lane', () => {
     const moduleResolution = {
       edges: [
@@ -1120,7 +1176,7 @@ describe('emitIrModuleHaxe', () => {
     );
 
     expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._internal' }).contents).toContain(
-      'flight._internal._ArrayTools.pushMany(values, [1, 2])',
+      'flight._internal._ArrayTools.pushMany(values, (cast [1, 2] : Array<Float>))',
     );
   });
 
@@ -1176,7 +1232,7 @@ describe('emitIrModuleHaxe', () => {
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('final valuesArray:Array<Float> = values.toArray();');
-    expect(output).toContain('return valuesArray.copy();');
+    expect(output).toContain('return (cast valuesArray.copy() : Array<Float>);');
   });
 
   it('hoists a local captured by a closure before its declaration', () => {
@@ -1207,6 +1263,25 @@ describe('emitIrModuleHaxe', () => {
 
     expect(output.indexOf('var cursor:Cursor;')).toBeLessThan(output.indexOf('cursor ='));
     expect(output).not.toContain('final cursor:Cursor =');
+  });
+
+  it('hoists a self-recursive local inside a nested statement list', () => {
+    const result = lower(
+      'nested-self-capture.ts',
+      `export function sum(groups: number[][]): number {
+         let total = 0;
+         for (const group of groups) {
+           const walk = (values: number[]): number =>
+             values.length === 0 ? 0 : values[0]! + walk(values.slice(1));
+           total += walk(group);
+         }
+         return total;
+       }`,
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output.indexOf('var walk:(Array<Float>)->Float;')).toBeLessThan(output.indexOf('walk = function'));
+    expect(output).not.toContain('final walk');
   });
 
   it('uses JavaScript truthiness for nullable structural and callable conditions', () => {
@@ -1658,7 +1733,9 @@ describe('emitIrModuleHaxe', () => {
     );
 
     expect(result.diagnostics).toEqual([]);
-    expect(emitIrModuleHaxe(result.module).contents).toContain('final present:Array<Dynamic> = [1, "flight"];');
+    expect(emitIrModuleHaxe(result.module).contents).toContain(
+      'final present:Array<Dynamic> = ([1, "flight"] : Array<Dynamic>);',
+    );
     expect(emitIrModuleHaxe(result.module).contents).toContain('final value:Array<Dynamic> = [2, null];');
   });
 
@@ -2341,7 +2418,7 @@ describe('emitIrModuleHaxe', () => {
       'export function pick(flag: boolean, a: number, b: number): number { return flag ? a : b; }',
     );
 
-    expect(emitIrModuleHaxe(result.module).contents).toContain('return flag ? a : b;');
+    expect(emitIrModuleHaxe(result.module).contents).toContain('return (flag ? a : b);');
   });
 
   it('emits template literals as Std.string concatenation', () => {
@@ -2833,9 +2910,39 @@ describe('emitIrModuleHaxe expression coverage', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('final handler:Handler = (cast short : Handler);');
+    expect(output).toContain('final handler = (cast short : Handler);');
     expect(output).toContain('accept((cast short : Handler));');
     expect(output).toContain('return (cast handler : Handler);');
+  });
+
+  it('adapts function values against inherited contextual method types', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'inherited-function-boundary.ts',
+        `interface State { ready: boolean }
+         interface SpecializedState extends State { handle: number }
+         interface Renderer { destroy?(state: State): void }
+         interface SpecializedRenderer extends Renderer {}
+         function destroy(state: SpecializedState): void { state.handle; }
+         export const renderer: SpecializedRenderer = { destroy };`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('destroy: (cast destroy : (State)->Void)');
+  });
+
+  it('adapts function values against contextual intersection properties', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'intersection-function-boundary.ts',
+        `interface Identity { id: number }
+         type Renderer = Identity & { destroy(state: string): void };
+         function destroy(state: 'ready'): void {}
+         export const renderer: Renderer = { id: 1, destroy };`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('destroy: (cast destroy : (String)->Void)');
   });
 
   it('emits object rest with named and computed exclusions', () => {
@@ -2926,14 +3033,16 @@ describe('emitIrModuleHaxe expression coverage', () => {
     const result = lower(
       'reflective-alias-read.ts',
       `type Raw = Record<string, unknown>;
-       export function read(raw: Raw, optional: Raw | undefined): unknown {
-         return raw.value ?? optional?.value;
+       interface Element { attributes: Raw }
+       export function read(raw: Raw, optional: Raw | undefined, element: Element): unknown {
+         return raw.value ?? optional?.value ?? element.attributes.semantic;
        }`,
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
     expect(output).toContain('HaxeReflect.field(raw, "value")');
     expect(output).toContain('HaxeReflect.field(optionalObject, "value")');
+    expect(output).toContain('HaxeReflect.field(element.attributes, "semantic")');
   });
 
   it('reflects fields read through structural casts and numeric updates on generic records', () => {
@@ -3048,6 +3157,30 @@ describe('emitIrModuleHaxe expression coverage', () => {
 
     expect(emitIrModuleHaxe(result.module).contents).toContain(
       'js.Syntax.code("{0}.globalCompositeOperation = {1}", context, operation)',
+    );
+  });
+
+  it('casts object literal fields at native Record value boundaries', () => {
+    const result = lower(
+      'native-record-value.ts',
+      "export const operations: Readonly<Record<string, GlobalCompositeOperation>> = { normal: 'source-over' };",
+    );
+
+    expect(emitIrModuleHaxe(result.module).contents).toContain(
+      'normal: (cast "source-over" : js.html.CompositeOperation)',
+    );
+  });
+
+  it('widens generic Object.assign inputs at the runtime boundary', () => {
+    const result = lower(
+      'object-assign-generic.ts',
+      `export function merge<Target extends object, Source extends object>(target: Target, source: Source): Target & Source {
+         return Object.assign(target, source);
+       }`,
+    );
+
+    expect(emitIrModuleHaxe(result.module, { runtimeModule: 'flight._hx._runtime' }).contents).toContain(
+      'flight._hx._runtime._Object.assign(cast(target), cast(source))',
     );
   });
 
@@ -3413,6 +3546,16 @@ describe('emitIrModuleHaxe type coverage', () => {
 });
 
 describe('emitIrModuleHaxe statement coverage', () => {
+  it('materializes a value when a Dynamic-returning function completes normally', () => {
+    const result = lower(
+      'dynamic-completion.ts',
+      'export function read(flag: boolean): unknown { if (flag) return 1; }',
+    );
+    const output = emitIrModuleHaxe(result.module).contents;
+
+    expect(output).toContain('return null;');
+  });
+
   it('refuses for-of with await marker through async lowering', () => {
     const result = lower(
       'async-for-of.ts',
@@ -8874,6 +9017,7 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('function emit<T>(signal:Signal<T>)');
     expect(output).toContain('emit(signal);');
     expect(output).not.toContain('emit((cast signal');
+    expect(output).toContain('function dispose<TArgs:Array<Dynamic>>(signal:Dynamic)');
     expect(output).toContain('dispose(signal);');
     expect(output).not.toContain('Signal<(TArgs)->Void>');
   });
@@ -8925,7 +9069,7 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       'state.gl.bufferData(js.html.webgl.WebGL2RenderingContext.ARRAY_BUFFER, data, js.html.webgl.WebGL2RenderingContext.STATIC_DRAW);',
     );
     expect(output).toContain(
-      'state.gl.bufferData(js.html.webgl.WebGL2RenderingContext.ARRAY_BUFFER, (flag ? choose(data) : data), js.html.webgl.WebGL2RenderingContext.STATIC_DRAW);',
+      'state.gl.bufferData(js.html.webgl.WebGL2RenderingContext.ARRAY_BUFFER, (flag ? choose((cast data : flighthq._internal._Float32Array)) : data), js.html.webgl.WebGL2RenderingContext.STATIC_DRAW);',
     );
     expect(output).toContain('new flighthq._internal._UInt16Array([(cast 0 : Float), 1])');
     expect(output).not.toContain('Std.int(data)');
@@ -9665,6 +9809,22 @@ describe('emitIrModuleHaxe narrowed declared type property access', () => {
     ).contents;
     expect(output).toContain('(cast p : Dog).bark');
     expect(output).toContain('(cast p : Cat).meow');
+  });
+
+  it('preserves generic arguments on a narrowed alias cast', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'narrow-generic.ts',
+        `interface Stats { draws: number }
+         type Mutable<T> = { value: T };
+         export function read(entry: Mutable<Stats> | undefined): Stats | undefined {
+           if (entry === undefined) return undefined;
+           return entry.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('(cast entry : Mutable<Stats>).value');
   });
 });
 
@@ -11366,7 +11526,7 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     ).contents;
 
     expect(output).toContain('? cast(true) : cast(');
-    expect(output).toContain('cast(function(value:Float) return value)');
+    expect(output).toContain('(cast function(value:Float) return value : (Float, Float)->Float)');
     expect(output).toContain('(cast source.callback : Null<(Float, Float)->Float>)');
     expect(output).toContain('(cast identity : (Float, Float)->Float)');
   });
