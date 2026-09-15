@@ -8204,7 +8204,7 @@ describe('emitIrModuleHaxe interface extends chain', () => {
       'state.gl.bufferData(js.html.webgl.WebGL2RenderingContext.ARRAY_BUFFER, data, js.html.webgl.WebGL2RenderingContext.STATIC_DRAW);',
     );
     expect(output).toContain(
-      'state.gl.bufferData(js.html.webgl.WebGL2RenderingContext.ARRAY_BUFFER, flag ? choose(data) : data, js.html.webgl.WebGL2RenderingContext.STATIC_DRAW);',
+      'state.gl.bufferData(js.html.webgl.WebGL2RenderingContext.ARRAY_BUFFER, (flag ? choose(data) : data), js.html.webgl.WebGL2RenderingContext.STATIC_DRAW);',
     );
     expect(output).toContain('new flighthq._internal._UInt16Array([(cast 0 : Float), 1])');
     expect(output).not.toContain('Std.int(data)');
