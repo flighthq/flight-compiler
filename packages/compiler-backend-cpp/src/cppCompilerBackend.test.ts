@@ -8118,6 +8118,23 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('std::optional<std::optional');
   });
 
+  it('updates nullable Record elements through the owning record storage', () => {
+    const result = lower(
+      'record-nullish-assignment.ts',
+      `interface Item { value: number }
+       const key = Symbol('key');
+       function create(): Item { return { value: 1 }; }
+       export function enable(values: Record<symbol, Item | undefined>): Item {
+         return (values[key] ??= create());
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toMatch(/auto assignment_existing(?:_\d+)? = assignment_receiver(?:_\d+)?\.get\(assignment_key(?:_\d+)?\)/u);
+    expect(emitted.contents).toMatch(/assignment_receiver(?:_\d+)?\.set\(assignment_key(?:_\d+)?, assignment_value(?:_\d+)?\)/u);
+    expect(emitted.contents).not.toContain('auto&& assignment_target = values.get');
+  });
+
   it('preserves effectful null call results while constructing optional absence', () => {
     const result = lower(
       'effectful-null.ts',

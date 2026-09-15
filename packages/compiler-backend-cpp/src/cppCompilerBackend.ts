@@ -1514,6 +1514,11 @@ function emitExpression(
           ? emitCppRecordIndexedAssignmentCpp(expression.left, right, context)
           : undefined;
       if (recordIndexedAssignment) return recordIndexedAssignment;
+      const recordNullishAssignment =
+        expression.operator === '??=' && getCppRuntimeProfile(context.options) === 'flight-cpp'
+          ? emitCppRecordNullishAssignmentCpp(expression.left, right, context)
+          : undefined;
+      if (recordNullishAssignment) return recordNullishAssignment;
       const sharedCaptureTargetName = getSharedCaptureTargetNameCpp(expression.left, context);
       if (sharedCaptureTargetName && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         return emitSharedCaptureAssignmentCpp(
@@ -8894,6 +8899,24 @@ function emitCppRecordIndexedAssignmentCpp(
   const receiver = emitExpression(target.object, context);
   const key = emitCppRequiredRecordKeyCpp(target.index, record.key, context);
   return `([&]() { auto assignment_value = ${value}; ${receiver}.set(${key}, assignment_value); return assignment_value; }())`;
+}
+
+function emitCppRecordNullishAssignmentCpp(
+  target: Readonly<IrExpression>,
+  value: string,
+  context: EmitContext,
+): string | undefined {
+  if (target.kind !== 'element') return undefined;
+  const receiverType = getIrExpressionTypeEvidenceCpp(target.object, context);
+  const record = getCppRecordTypeArgumentsCpp(receiverType, context, new Set());
+  const valueUnion = record ? getIrUnionTypeCpp(record.value, context, new Set()) : undefined;
+  const valuePlan = valueUnion ? getCppUnionRepresentationPlan(valueUnion, context) : undefined;
+  if (!record || valuePlan?.kind !== 'optionalSingle') return undefined;
+  const receiver = getGeneratedTargetName('assignmentReceiver', context);
+  const key = getGeneratedTargetName('assignmentKey', context);
+  const existing = getGeneratedTargetName('assignmentExisting', context);
+  const assigned = getGeneratedTargetName('assignmentValue', context);
+  return `([&]() { auto&& ${receiver} = ${emitExpression(target.object, context)}; const auto ${key} = ${emitCppRequiredRecordKeyCpp(target.index, record.key, context)}; auto ${existing} = ${receiver}.get(${key}); if (${existing}.has_value() && ${existing}.value().has_value()) return ${existing}.value().value(); auto ${assigned} = ${value}; ${receiver}.set(${key}, ${assigned}); return ${assigned}.value(); }())`;
 }
 
 function emitCppRequiredRecordKeyCpp(
