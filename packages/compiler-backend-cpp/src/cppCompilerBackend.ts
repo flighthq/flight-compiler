@@ -6421,28 +6421,30 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       }
     },
   });
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'function') continue;
+    const returnType = getCppNonNullableType(declaration.returns, context, new Set()) ?? declaration.returns;
+    for (const statement of declaration.body) {
+      if (statement.kind !== 'return' || statement.expression?.kind !== 'object') continue;
+      collectCppObjectContextualStorageTargetsCpp(
+        statement.expression,
+        returnType,
+        eligible,
+        candidates,
+        context,
+      );
+    }
+  }
   analyzeIrModuleTraversal(module, {
     expression(expression) {
       if (expression.kind === 'object') {
-        for (const member of expression.members) {
-          if (
-            member.kind !== 'property' ||
-            member.value.kind !== 'identifier' ||
-            member.value.reference.kind !== 'binding' ||
-            !eligible.has(member.value.reference.binding.id)
-          ) {
-            continue;
-          }
-          const bindingId = member.value.reference.binding.id;
-          const sourceType = context.bindingTypes.get(bindingId);
-          const targetType = getIrObjectPropertyTypeCpp(expression.type, member.name, context);
-          if (!sourceType || !targetType || !isCppReadonlyCollectionProjectionCpp(sourceType, targetType, context)) {
-            continue;
-          }
-          const targets = candidates.get(bindingId) ?? new Map<string, Readonly<IrType>>();
-          targets.set(normalizeCompilerStructuralValueCanonical(targetType), targetType);
-          candidates.set(bindingId, targets);
-        }
+        collectCppObjectContextualStorageTargetsCpp(
+          expression,
+          expression.type,
+          eligible,
+          candidates,
+          context,
+        );
       }
       if (expression.kind !== 'call') return;
       expression.arguments.forEach((argument, index) => {
@@ -6485,6 +6487,34 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       targets.size === 1 ? ([[bindingId, [...targets.values()][0]!] as const] as const) : [],
     ),
   );
+}
+
+function collectCppObjectContextualStorageTargetsCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  contextualType: Readonly<IrType>,
+  eligible: ReadonlySet<string>,
+  candidates: Map<string, Map<string, Readonly<IrType>>>,
+  context: EmitContext,
+): void {
+  for (const member of expression.members) {
+    if (
+      member.kind !== 'property' ||
+      member.value.kind !== 'identifier' ||
+      member.value.reference.kind !== 'binding' ||
+      !eligible.has(member.value.reference.binding.id)
+    ) {
+      continue;
+    }
+    const bindingId = member.value.reference.binding.id;
+    const sourceType = context.bindingTypes.get(bindingId);
+    const targetType = getIrObjectPropertyTypeCpp(contextualType, member.name, context);
+    if (!sourceType || !targetType || !isCppReadonlyCollectionProjectionCpp(sourceType, targetType, context)) {
+      continue;
+    }
+    const targets = candidates.get(bindingId) ?? new Map<string, Readonly<IrType>>();
+    targets.set(normalizeCompilerStructuralValueCanonical(targetType), targetType);
+    candidates.set(bindingId, targets);
+  }
 }
 
 function isCppReadonlyCollectionProjectionCpp(

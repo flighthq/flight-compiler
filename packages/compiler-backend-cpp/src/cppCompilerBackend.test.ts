@@ -9074,6 +9074,54 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('.tables = tables');
   });
 
+  it('stores a locally built Map in an imported readonly structural result view', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/directory.ts',
+      `export interface Range { length: number; offset: number }
+       export interface Directory { tables: ReadonlyMap<string, Readonly<Range>> }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const reader = ts.createSourceFile(
+      '/flight/packages/reader/src/read.ts',
+      `import type { Directory } from '@flighthq/types/contract';
+       export function read(): Directory {
+         const tables = new Map<string, { length: number; offset: number }>();
+         tables.set('head', { length: 4, offset: 8 });
+         return { tables };
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/directory.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/reader', sourceFile: reader, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    const mapType =
+      'flight::Map<flight::String, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::Range>>>>>';
+    expect(output).toContain(`${mapType} tables = ${mapType}()`);
+    expect(output).toContain('tables.set(flight::String("head"), flight::make_structural_ref');
+    expect(output).toContain('.tables = tables');
+  });
+
   it('materializes a narrowed optional object assignment with its declared referent', () => {
     const output = emitIrModuleCpp(
       lower(
