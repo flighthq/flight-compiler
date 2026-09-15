@@ -11621,4 +11621,64 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
 
     expect(output).toContain('measure((cast data : Spec))');
   });
+
+  it('narrows global timer handles and HTMLElement pointer captures at native boundaries', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'native-global-integer-boundaries.ts',
+        `export function release(element: HTMLElement, handle: number): void {
+           clearTimeout(handle);
+           clearInterval(handle);
+           cancelAnimationFrame(handle);
+           element.setPointerCapture(handle);
+           element.releasePointerCapture(handle);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('js.Browser.window.clearTimeout(Std.int(handle))');
+    expect(output).toContain('js.Browser.window.clearInterval(Std.int(handle))');
+    expect(output).toContain('js.Browser.window.cancelAnimationFrame(Std.int(handle))');
+    expect(output).toContain('element.setPointerCapture(Std.int(handle))');
+    expect(output).toContain('element.releasePointerCapture(Std.int(handle))');
+  });
+
+  it('carries a homogeneous tuple return type across dynamically typed elements', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'contextual-tuple-return.ts',
+        'export function dimensions(value: any): [number, number] { return [0, value.width]; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain(': Array<Float>)');
+    expect(output).not.toContain('return ([0, value.width] : Array<Dynamic>);');
+  });
+
+  it('uses dynamic argument carriers for fixed values around a reflective spread call', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'dynamic-spread-call-carrier.ts',
+        `export function append(out: number[], first: number, middle: number[], last: number): void {
+           out.push(first, ...middle, last);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('HaxeReflect.callMethod(out, cast(out.push)');
+    expect(output).toContain('Array<Dynamic>');
+    expect(output).not.toContain('[first].concat(middle).concat([last])');
+  });
+
+  it('adapts JavaScript Map iterator result value reads to the Haxe iterator ABI', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'map-iterator-next-value.ts',
+        'export function oldest(values: Map<string, number>): string | undefined { return values.keys().next().value; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('values.keys().next()');
+    expect(output).not.toContain('values.keys().next().value');
+  });
 });
