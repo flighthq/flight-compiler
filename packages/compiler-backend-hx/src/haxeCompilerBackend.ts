@@ -121,12 +121,14 @@ interface EmitContext {
   finallyCompletion: HaxeFinallyCompletion | undefined;
   forwardDeclaredBindingIds: ReadonlySet<string>;
   functionValueNames: ReadonlySet<string>;
+  foreignNamedTypeLocalTargetNames: Map<string, string | null>;
   generatedNames: Set<string>;
   getModuleFacade: ((module: Readonly<IrModule>) => CompilerModuleFacadePlan | undefined) | undefined;
   machineNames: Map<string, string>;
   module: Readonly<IrModule>;
   moduleFacadeSlots: readonly Readonly<CompilerModuleFacadeSlot>[];
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
+  namedDeclarationTargets: Map<string, HaxeNamedDeclarationTarget | null>;
   nullableBindingIds: ReadonlySet<string>;
   objectAccessorClasses: string[][];
   options: Readonly<HaxeCompilerBackendOptions>;
@@ -161,6 +163,12 @@ interface HaxeControlFlowLabel {
   readonly identity: Readonly<IrControlFlowLabelIdentity>;
   readonly stateName: string;
 }
+
+type HaxeNamedDeclarationTarget = Readonly<{
+  binding: IrBindingIdentity | IrTypeBindingIdentity;
+  declaration: Readonly<IrDeclaration>;
+  module: Readonly<IrModule>;
+}>;
 
 export function createHaxeCompilerBackend(): CompilerBackend<HaxeCompilerBackendOptions> {
   return {
@@ -377,6 +385,7 @@ function emitIrModuleHaxeWithContext(
     finallyCompletion: undefined,
     forwardDeclaredBindingIds: new Set(),
     functionValueNames: getHaxeFunctionValueNames(sourceModules),
+    foreignNamedTypeLocalTargetNames: new Map(),
     generatedNames: new Set([...targetNames.values(), ...facadeTypeTargetNames.values()]),
     getModuleFacade,
     machineNames: new Map(),
@@ -385,6 +394,7 @@ function emitIrModuleHaxeWithContext(
       moduleFacade?.modules.find((candidate) => isHaxeCompilerModuleIdentityEqual(candidate.module, module))?.slots ??
       [],
     moduleResolution,
+    namedDeclarationTargets: new Map(),
     nullableBindingIds: collectIrModuleNullableBindingIds(module),
     objectAccessorClasses: [],
     options,
@@ -2616,38 +2626,68 @@ function getModuleFacadeBindingTargetHaxe(
 function getIrNamedDeclarationTargetHaxe(
   type: Readonly<Extract<IrType, { kind: 'named' }>>,
   context: EmitContext,
-):
-  | Readonly<{
-      binding: IrBindingIdentity | IrTypeBindingIdentity;
-      declaration: Readonly<IrDeclaration>;
-      module: Readonly<IrModule>;
-  }>
-  | undefined {
+): HaxeNamedDeclarationTarget | undefined {
   const reference = type.reference;
   if (reference.kind !== 'binding' || reference.path.length > 0) return undefined;
-  for (const module of context.sourceModules) {
-    const declaration = module.declarations.find(
-      (candidate) => 'binding' in candidate && candidate.binding.id === reference.binding.id,
-    );
-    if (declaration && 'binding' in declaration) return { binding: declaration.binding, declaration, module };
+  if (context.namedDeclarationTargets.has(reference.binding.id)) {
+    return context.namedDeclarationTargets.get(reference.binding.id) ?? undefined;
+  }
+  const exact = getHaxeDeclarationTargetsByBindingId(context.sourceModules).get(reference.binding.id);
+  if (exact) {
+    context.namedDeclarationTargets.set(reference.binding.id, exact);
+    return exact;
   }
   const imported = context.module.imports
     .flatMap((entry) => entry.bindings.map((binding) => ({ binding, entry })))
     .find(({ binding }) => binding.binding.id === reference.binding.id);
-  if (!imported || imported.binding.imported === '*' || imported.binding.imported === 'default') return undefined;
+  if (!imported || imported.binding.imported === '*' || imported.binding.imported === 'default') {
+    context.namedDeclarationTargets.set(reference.binding.id, null);
+    return undefined;
+  }
   const sourceModule = getHaxeResolvedImportModule(imported.entry.specifier, context, imported.binding.imported);
-  if (!sourceModule) return undefined;
+  if (!sourceModule) {
+    context.namedDeclarationTargets.set(reference.binding.id, null);
+    return undefined;
+  }
   const direct = sourceModule.declarations.find(
     (candidate) => 'binding' in candidate && candidate.binding.name === imported.binding.imported,
   );
-  if (direct && 'binding' in direct) return { binding: direct.binding, declaration: direct, module: sourceModule };
+  if (direct && 'binding' in direct) {
+    const target = { binding: direct.binding, declaration: direct, module: sourceModule } as const;
+    context.namedDeclarationTargets.set(reference.binding.id, target);
+    return target;
+  }
   const facade = context.getModuleFacade?.(sourceModule);
   const slot = facade?.modules
     .find((module) => isHaxeCompilerModuleIdentityEqual(module.module, sourceModule))
     ?.slots.find(
       (candidate) => candidate.exportName === imported.binding.imported && candidate.lane === 'type',
     );
-  return slot ? getModuleFacadeBindingTargetHaxe(slot, context) : undefined;
+  const target = slot ? getModuleFacadeBindingTargetHaxe(slot, context) : undefined;
+  context.namedDeclarationTargets.set(reference.binding.id, target ?? null);
+  return target;
+}
+
+const haxeDeclarationTargetsBySourceModules = new WeakMap<
+  readonly Readonly<IrModule>[],
+  ReadonlyMap<string, HaxeNamedDeclarationTarget>
+>();
+
+function getHaxeDeclarationTargetsByBindingId(
+  modules: readonly Readonly<IrModule>[],
+): ReadonlyMap<string, HaxeNamedDeclarationTarget> {
+  const cached = haxeDeclarationTargetsBySourceModules.get(modules);
+  if (cached) return cached;
+  const targets = new Map<string, HaxeNamedDeclarationTarget>();
+  for (const module of modules) {
+    for (const declaration of module.declarations) {
+      if ('binding' in declaration) {
+        targets.set(declaration.binding.id, { binding: declaration.binding, declaration, module });
+      }
+    }
+  }
+  haxeDeclarationTargetsBySourceModules.set(modules, targets);
+  return targets;
 }
 
 function isIrNamedUnionAliasHaxe(type: Readonly<IrType>, context: EmitContext): boolean {
@@ -3761,8 +3801,15 @@ function getForeignNamedTypeLocalTargetHaxe(
   context: EmitContext,
 ): string | undefined {
   if (type.reference.kind !== 'binding') return undefined;
+  const cacheKey = JSON.stringify([getHaxeCompilerModuleKey(context.module), type.reference.binding.id]);
+  if (context.foreignNamedTypeLocalTargetNames.has(cacheKey)) {
+    return context.foreignNamedTypeLocalTargetNames.get(cacheKey) ?? undefined;
+  }
   const target = getIrNamedDeclarationTargetHaxe(type, context);
-  if (!target) return undefined;
+  if (!target) {
+    context.foreignNamedTypeLocalTargetNames.set(cacheKey, null);
+    return undefined;
+  }
   for (const imported of context.module.imports) {
     for (const binding of imported.bindings) {
       if (binding.binding.space !== 'type' || binding.imported === '*' || binding.imported === 'default') continue;
@@ -3773,13 +3820,15 @@ function getForeignNamedTypeLocalTargetHaxe(
       } as const;
       const importedTarget = getIrNamedDeclarationTargetHaxe(localType, context);
       if (importedTarget?.binding.id !== target.binding.id) continue;
-      return (
+      const targetName =
         context.importedTypeTargetNames.get(binding.binding.id) ??
         context.facadeBindingTargetNames.get(binding.binding.id) ??
-        getBindingTargetNameHaxe(binding.binding, context)
-      );
+        getBindingTargetNameHaxe(binding.binding, context);
+      context.foreignNamedTypeLocalTargetNames.set(cacheKey, targetName);
+      return targetName;
     }
   }
+  context.foreignNamedTypeLocalTargetNames.set(cacheKey, null);
   return undefined;
 }
 
