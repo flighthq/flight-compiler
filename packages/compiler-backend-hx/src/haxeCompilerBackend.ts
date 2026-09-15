@@ -3790,10 +3790,31 @@ function emitType(type: Readonly<IrType>, context: EmitContext): string {
       if (named.reference.kind !== 'binding') return undefined;
       const imported =
         context.importedTypeTargetNames.get(named.reference.binding.id) ??
-        getForeignNamedTypeLocalTargetHaxe(named, context);
+        getForeignNamedTypeLocalTargetHaxe(named, context) ??
+        getImportedNamedTypeLocalTargetByNameHaxe(named, context);
       return imported ? [imported, ...named.reference.path.map(safeHaxeTypeName)].join('.') : undefined;
     },
   });
+}
+
+function getImportedNamedTypeLocalTargetByNameHaxe(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (type.reference.kind !== 'binding') return undefined;
+  const candidates = new Set<string>();
+  for (const imported of context.module.imports) {
+    for (const binding of imported.bindings) {
+      if (binding.binding.name !== type.reference.binding.name) continue;
+      const target =
+        context.importedTypeTargetNames.get(binding.binding.id) ??
+        context.facadeBindingTargetNames.get(binding.binding.id);
+      if (target) candidates.add(target);
+    }
+  }
+  // A name-only recovery is safe only when this module has one imported target for that spelling.
+  // Distinct same-named imports remain an allocation error instead of being guessed here.
+  return candidates.size === 1 ? [...candidates][0] : undefined;
 }
 
 function getForeignNamedTypeLocalTargetHaxe(

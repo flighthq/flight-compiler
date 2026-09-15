@@ -323,7 +323,15 @@ function emitCompilerHaxeTaskLoweringStep(
     case 'rejectTask':
     case 'resolveTask': {
       const value = emitCompilerHaxeTaskCompletionValue(step.value, module, capabilities, undefined);
-      return [`${step.kind === 'resolveTask' ? names.resolve : names.reject}(${value});`, 'return;'];
+      // The runtime contract requires an assimilating resolve callback, so a source `return task`
+      // is intentionally allowed to settle with another task. Haxe infers the callback parameter as
+      // the fulfilled value type, however, and rejects that valid source before the runtime can
+      // assimilate it. Erase only at this ABI boundary; the runtime still owns the promised
+      // first-call-wins and assimilation semantics.
+      return [
+        `${step.kind === 'resolveTask' ? names.resolve : names.reject}(${step.kind === 'resolveTask' ? `cast(${value})` : value});`,
+        'return;',
+      ];
     }
     case 'awaitRuntime': {
       const awaitValueName = capabilities.getGeneratedName('awaitValue');

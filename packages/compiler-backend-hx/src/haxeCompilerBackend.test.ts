@@ -8021,6 +8021,71 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('typedef ValueLike = WithoutRuntime<Value>;');
   });
 
+  it('reuses facade imports in contextual function field casts', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './shape',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/shape.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const inputs = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/shape.ts',
+          'export interface Item { value: number } export interface Handler { run: (value: Item) => void }',
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './shape';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/render',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/render/src/use.ts',
+          "import type { Handler, Item } from '@flighthq/types/contract'; export const handler: Handler = { run(value: Item): void { value; } };",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(inputs, moduleResolution).map((result) => result.module);
+    const session = createHaxeCompilerBackend().createEmissionSession!({ moduleResolution, modules, options: {} });
+    const output = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(output).toContain('(Item)->Void');
+    expect(output).not.toContain('Item_2');
+  });
+
+  it('erases async settlement values at the assimilating resolve ABI boundary', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'async-return.ts',
+        'declare function load(): Promise<number>; export async function read(): Promise<number> { return load(); }',
+      ).module,
+    )[0]!.contents;
+
+    expect(output).toContain('resolveTask(cast(load()));');
+  });
+
   it('retains nested WebGL receiver and field types at native integer boundaries', () => {
     const output = emitIrModuleHaxe(
       lower(
