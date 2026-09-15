@@ -7702,6 +7702,56 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('.value_or(secondary())');
   });
 
+  it('lazily coalesces an imported optional result without local call evidence', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/images/src/detect.ts',
+      'export function detect(): string | null { return null; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/images/src/resolve.ts',
+      "import { detect } from './detect'; export function resolve(primary?: string): string | null { const result = primary ?? detect(); return result; }",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './detect',
+          target: { packageName: '@flighthq/images', source: 'packages/images/src/detect.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/images',
+          sourceFile: providerSource,
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/images',
+          sourceFile: consumerSource,
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const [provider, consumer] = modules;
+    if (!provider || !consumer) throw new Error('Expected provider and consumer modules');
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('if (nullish_coalesce_left.has_value()) return nullish_coalesce_left;');
+    expect(emitted).toContain('return flighthq_images::detect();');
+    expect(emitted).not.toContain('.value_or(flighthq_images::detect())');
+  });
+
   it('preserves contextual optional storage from record element and property reads', () => {
     const result = lower(
       'optional-member-read.ts',

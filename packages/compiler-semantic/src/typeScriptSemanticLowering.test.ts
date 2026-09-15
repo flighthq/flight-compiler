@@ -6829,6 +6829,30 @@ it('lowers nullish coalescing with matching left/right type evidence', () => {
   expect(ret.expression.operator).toBe('??');
 });
 
+it('flattens inferred nullish coalescing unions', () => {
+  const result = lower(
+    'nullish-union.ts',
+    `
+        function detect(): string | null { return null; }
+        export function run(value?: string): string | null {
+          const resolved = value ?? detect();
+          return resolved;
+        }
+      `,
+  );
+  expect(result.diagnostics).toEqual([]);
+  const fn = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'run',
+  );
+  if (fn?.kind !== 'function') throw new Error('Expected function');
+  const declaration = fn.body[0];
+  const variable = declaration?.kind === 'variable' ? declaration.declarations[0] : undefined;
+  expect(variable?.type).toEqual({
+    kind: 'union',
+    types: [{ kind: 'primitive', name: 'string' }, { kind: 'null' }],
+  });
+});
+
 it('lowers object rest binding pattern with computed key exclusion', () => {
   const result = lower(
     'object-rest-bind.ts',

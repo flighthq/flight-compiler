@@ -5680,7 +5680,8 @@ function isTypeScriptConstAssertion(node: ts.Expression): node is ts.AsExpressio
 }
 
 function commonType(types: readonly [IrType, ...IrType[]]): IrType {
-  const serialized = new Map(types.map((type) => [JSON.stringify(type), type]));
+  const flattened = types.flatMap((type): readonly IrType[] => (type.kind === 'union' ? type.types : [type]));
+  const serialized = new Map(flattened.map((type) => [JSON.stringify(type), type]));
   const values = [...serialized.values()];
   return values.length === 1 ? values[0]! : { kind: 'union', types: [values[0]!, values[1]!, ...values.slice(2)] };
 }

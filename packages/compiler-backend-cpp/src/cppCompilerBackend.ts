@@ -1563,6 +1563,18 @@ function emitExpression(
         ) {
           return emitOptionalExpressionCpp(expression.left, context, leftType);
         }
+        if (
+          leftUsesOptionalStorage &&
+          leftRuntime &&
+          expectedUnion &&
+          expectedPlan?.kind === 'optionalSingle' &&
+          expectedPlan.valueSlots[0]?.targetType === emitType(leftRuntime, context)
+        ) {
+          const unionType = emitUnionTypeCpp(expectedUnion, context);
+          const left = emitOptionalExpressionCpp(expression.left, context, leftType);
+          const right = emitExpression(expression.right, context, expectedType);
+          return `([&]() -> ${unionType} { auto nullish_coalesce_left = ${left}; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left; return ${right}; }())`;
+        }
         context.includes.add('optional');
         return `${emitOptionalExpressionCpp(expression.left, context, expectedType)}.value_or(${emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized)})`;
       }
@@ -5116,19 +5128,11 @@ function emitContextualUnionExpressionCpp(
       ) {
         return emitExpression(expression.left, context, leftType);
       }
-      const rightType = getIrExpressionTypeEvidenceCpp(expression.right, context);
-      const rightUnion = rightType ? getIrUnionTypeCpp(rightType, context, new Set()) : undefined;
-      if (rightUnion) {
-        const rightPlan = getCppUnionRepresentationPlan(rightUnion, context);
-        if (
-          hasEquivalentCppOptionalUnionRepresentation(plan, leftPlan) &&
-          hasEquivalentCppOptionalUnionRepresentation(plan, rightPlan)
-        ) {
-          const unionType = emitUnionTypeCpp(union, context);
-          const left = emitExpression(expression.left, context, leftType);
-          const right = emitExpression(expression.right, context, rightType);
-          return `([&]() -> ${unionType} { auto nullish_coalesce_left = ${left}; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left; return ${right}; }())`;
-        }
+      if (hasEquivalentCppOptionalUnionRepresentation(plan, leftPlan)) {
+        const unionType = emitUnionTypeCpp(union, context);
+        const left = emitExpression(expression.left, context, leftType);
+        const right = emitExpression(expression.right, context, expectedType);
+        return `([&]() -> ${unionType} { auto nullish_coalesce_left = ${left}; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left; return ${right}; }())`;
       }
     }
   }
