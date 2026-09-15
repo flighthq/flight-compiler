@@ -2794,6 +2794,7 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
     (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
       member.kind === 'null' || member.kind === 'undefined',
   );
+  const declaredSourceSentinels = sourceSentinels.filter((member) => member.kind !== 'undefined');
   const sourceValues = sourceUnion.types.filter(
     (member) => member.kind !== 'null' && member.kind !== 'undefined',
   );
@@ -2805,7 +2806,7 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
     (member) => member.kind !== 'null' && member.kind !== 'undefined',
   );
   if (
-    sourceSentinels.length !== 1 ||
+    declaredSourceSentinels.length !== 1 ||
     sourceValues.length !== 1 ||
     expectedSentinels.length !== 2 ||
     expectedValues.length !== 1 ||
@@ -2819,31 +2820,37 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
     context.module,
   );
   const targetObject = targetRow ? getCppStructuralRowObjectTypeCpp(targetRow) : undefined;
-  const sourcePlan = context.referenceRepresentationPlanner.plan(sourceValues[0]!, context.module);
-  if (
-    !targetRow ||
-    !targetObject ||
-    sourcePlan.kind !== 'represented' ||
-    sourcePlan.identityDomain !== 'object' ||
-    sourcePlan.valueRepresentation !== 'flightReference' ||
-    emitType(sourceValues[0]!, context) !== emitType(targetObject, context)
-  ) {
-    return undefined;
-  }
+  const sourcePlan = context.referenceRepresentationPlanner.plan(
+    sourceValues[0]!,
+    getCppTypeReferenceOwnerModuleCpp(sourceValues[0]!, context),
+  );
+  const sourceTargetType = emitType(sourceValues[0]!, context);
+  const expectedTargetType = emitType(expectedValues[0]!, context);
+  const structuralProjection =
+    targetRow &&
+    targetObject &&
+    sourcePlan.kind === 'represented' &&
+    sourcePlan.identityDomain === 'object' &&
+    sourcePlan.valueRepresentation === 'flightReference' &&
+    sourceTargetType === emitType(targetObject, context);
+  if (!structuralProjection && (targetRow || sourceTargetType !== expectedTargetType)) return undefined;
   const expectedPlan = getCppUnionRepresentationPlan(expectedUnion, context);
   if (expectedPlan.kind !== 'dualSentinelVariant') return undefined;
   const propertyName = getGeneratedTargetName('optionalProperty', context);
   const propertyValue = emitExpression(expression, context, undefined, false);
-  const targetType = emitType(expectedValues[0]!, context);
+  const targetType = expectedTargetType;
+  const presentValue = structuralProjection
+    ? `${targetType}(${propertyName}.value().value())`
+    : `${propertyName}.value().value()`;
   const present = emitCppUnionValueConstruction(
-    `${targetType}(${propertyName}.value().value())`,
+    presentValue,
     targetType,
     expectedUnion,
     expectedPlan.kind,
     context,
   );
   const declaredAbsence = emitCppUnionSentinelConstruction(
-    sourceSentinels[0]!.kind,
+    declaredSourceSentinels[0]!.kind,
     expectedUnion,
     expectedPlan.kind,
     context,
@@ -10010,6 +10017,15 @@ function getCppDirectBindingOwner(type: Readonly<IrType>, context: EmitContext):
     return undefined;
   }
   return context.directBindingOwners.get(type.reference.binding.id) ?? undefined;
+}
+
+function getCppTypeReferenceOwnerModuleCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrModule> {
+  const direct = getCppDirectBindingOwner(type, context);
+  if (direct) return direct.module;
+  if (type.kind === 'named' && type.reference.kind === 'binding' && type.reference.binding.kind === 'import') {
+    return context.importBindingOwners.get(type.reference.binding.id)?.module ?? context.module;
+  }
+  return context.module;
 }
 
 function createCppDirectBindingOwners(

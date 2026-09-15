@@ -6328,9 +6328,14 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const result = lower(
       'optional-property-sentinels.ts',
       `interface Skin { weights: number[] }
-       interface Attachment { skin?: Skin | null }
-       function consume(skin: Readonly<Skin> | null | undefined): void {}
-       export function pass(attachment: Readonly<Attachment>): void { consume(attachment.skin); }`,
+       interface Attachment { skin?: Skin | null | undefined; vertices?: Float32Array | null | undefined }
+       function consume(
+         skin: Readonly<Skin> | null | undefined,
+         vertices: Readonly<Float32Array> | null | undefined,
+       ): void {}
+       export function pass(attachment: Readonly<Attachment>): void {
+         consume(attachment.skin, attachment.vertices);
+       }`,
     );
     const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
@@ -6341,6 +6346,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('std::in_place_type<flight::Null>');
     expect(output).toContain(
       'flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Skin>>>>(optional_property.value().value())',
+    );
+    expect(output).toContain(
+      'std::variant<flight::Float32Array, flight::Null, flight::Undefined>{std::in_place_type<flight::Float32Array>, optional_property_2.value().value()}',
     );
   });
 
