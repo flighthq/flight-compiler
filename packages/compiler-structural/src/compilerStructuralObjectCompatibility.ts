@@ -47,9 +47,14 @@ interface StructuralModuleSet {
   readonly exportResolutions: Map<string, StructuralExportResolution>;
   readonly moduleByIdentity: ReadonlyMap<string, StructuralModuleRecord>;
   readonly modules: readonly StructuralModuleRecord[];
+  readonly modulesByPackageAndSource: ReadonlyMap<string, readonly StructuralModuleRecord[]>;
   readonly replacement?: StructuralModuleRecord | undefined;
   readonly resolution: Readonly<CompilerModuleResolutionPlan>;
-  readonly specifierModules: Map<string, readonly StructuralModuleRecord[]>;
+  readonly resolutionEdgesBySpecifier: ReadonlyMap<
+    string,
+    readonly Readonly<CompilerModuleResolutionPlan['edges'][number]>[]
+  >;
+  readonly specifierModuleIdentities: Map<string, readonly string[]>;
 }
 
 type StructuralBindingTypeReference = Readonly<
@@ -102,7 +107,6 @@ export function createIrModuleStructuralObjectCompatibilityAnalyzer(
       ...moduleSet,
       exportResolutions: new Map(),
       replacement,
-      specifierModules: new Map(),
     });
   };
 }
@@ -493,27 +497,38 @@ function getStructuralSpecifierModules(
   moduleSet: Readonly<StructuralModuleSet>,
 ): readonly StructuralModuleRecord[] {
   const cacheKey = `${from.identity}\0${specifier}`;
-  const cached = moduleSet.specifierModules.get(cacheKey);
-  if (cached) return cached;
+  const cached = moduleSet.specifierModuleIdentities.get(cacheKey);
+  if (cached) {
+    return cached.flatMap((identity) => {
+      const module =
+        moduleSet.replacement?.identity === identity ? moduleSet.replacement : moduleSet.moduleByIdentity.get(identity);
+      return module ? [module] : [];
+    });
+  }
   const candidates = getStructuralSpecifierSourceCandidates(from.source, specifier);
-  const matching = moduleSet.resolution.edges.filter((edge) => edge.specifier === specifier);
+  const matching = moduleSet.resolutionEdgesBySpecifier.get(specifier) ?? [];
   const exact = matching.filter(
     (edge) => edge.importer && getStructuralModuleIdentityKey(edge.importer) === from.identity,
   );
-  const resolutionTargets = new Set(
+  const targetKeys = new Set(
     (exact.length > 0 ? exact : matching.filter((edge) => !edge.importer)).map(
       (edge) => `${edge.target.packageName}\0${normalizePathPortable(edge.target.source)}`,
     ),
   );
-  const result = moduleSet.modules
-    .map((candidate) => (moduleSet.replacement?.identity === candidate.identity ? moduleSet.replacement : candidate))
-    .filter(
-      (candidate) =>
-        (candidate.module.packageName === from.module.packageName && candidates.has(candidate.source)) ||
-        resolutionTargets.has(`${candidate.module.packageName}\0${candidate.source}`),
-    );
-  moduleSet.specifierModules.set(cacheKey, result);
-  return result;
+  for (const source of candidates) targetKeys.add(`${from.module.packageName}\0${source}`);
+  const identities = [
+    ...new Set(
+      [...targetKeys].flatMap((target) =>
+        (moduleSet.modulesByPackageAndSource.get(target) ?? []).map((module) => module.identity),
+      ),
+    ),
+  ].sort(compareTextCodeUnits);
+  moduleSet.specifierModuleIdentities.set(cacheKey, identities);
+  return identities.flatMap((identity) => {
+    const module =
+      moduleSet.replacement?.identity === identity ? moduleSet.replacement : moduleSet.moduleByIdentity.get(identity);
+    return module ? [module] : [];
+  });
 }
 
 function getStructuralSpecifierSourceCandidates(source: string, specifier: string): ReadonlySet<string> {
@@ -560,12 +575,27 @@ function createStructuralModuleSet(
   if (records.some((record, index) => index > 0 && record.identity === records[index - 1]!.identity)) {
     throw new TypeError('Structural module set contains a duplicate module identity');
   }
+  const modulesByPackageAndSource = new Map<string, StructuralModuleRecord[]>();
+  for (const record of records) {
+    const key = `${record.module.packageName}\0${record.source}`;
+    const values = modulesByPackageAndSource.get(key) ?? [];
+    values.push(record);
+    modulesByPackageAndSource.set(key, values);
+  }
+  const resolutionEdgesBySpecifier = new Map<string, Readonly<CompilerModuleResolutionPlan['edges'][number]>[]>();
+  for (const edge of resolution.edges) {
+    const values = resolutionEdgesBySpecifier.get(edge.specifier) ?? [];
+    values.push(edge);
+    resolutionEdgesBySpecifier.set(edge.specifier, values);
+  }
   return {
     exportResolutions: new Map(),
     moduleByIdentity: new Map(records.map((record) => [record.identity, record])),
     modules: records,
+    modulesByPackageAndSource,
     resolution,
-    specifierModules: new Map(),
+    resolutionEdgesBySpecifier,
+    specifierModuleIdentities: new Map(),
   };
 }
 
