@@ -697,7 +697,12 @@ function emitCppImportedFunctionForwardDeclarations(context: EmitContext): strin
 
 function emitCppForwardParameterCpp(parameter: Readonly<IrParameter>, context: EmitContext): string {
   const name = getBindingTargetName(parameter.binding, context);
-  if (context.indexedObjectParameterBindingIds.has(parameter.binding.id)) return `auto ${name}`;
+  if (
+    context.indexedObjectParameterBindingIds.has(parameter.binding.id) ||
+    isCppGenericStructuralSequenceParameterCpp(parameter, context)
+  ) {
+    return `auto ${name}`;
+  }
   if (parameter.dependentCallablePack) {
     const pack = getCppDependentCallablePack(parameter, context);
     return `${pack.typeName}&&... ${name}`;
@@ -9516,7 +9521,12 @@ function statementDefinitelyCompletesCpp(statement: Readonly<IrStatement>): bool
 
 function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
   const name = getBindingTargetName(parameter.binding, context);
-  if (context.indexedObjectParameterBindingIds.has(parameter.binding.id)) return `auto ${name}`;
+  if (
+    context.indexedObjectParameterBindingIds.has(parameter.binding.id) ||
+    isCppGenericStructuralSequenceParameterCpp(parameter, context)
+  ) {
+    return `auto ${name}`;
+  }
   if (parameter.dependentCallablePack) {
     if (!context.activeDependentCallablePackIds.has(parameter.binding.id)) {
       emissionError(context, 'dependent callable parameter packs require a generic function or closure boundary');
@@ -9546,6 +9556,15 @@ function emitCppParameterTypeCpp(type: Readonly<IrType>, rest: boolean, context:
     return `flight::SequenceView<${emitType(array.element, context)}>`;
   }
   return emitType(type, context);
+}
+
+function isCppGenericStructuralSequenceParameterCpp(
+  parameter: Readonly<IrParameter>,
+  context: EmitContext,
+): boolean {
+  if (parameter.rest || getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  const array = getIrArrayTypeCpp(parameter.type, context, new Set());
+  return Boolean(array?.readonly && array.element.kind === 'object');
 }
 
 function emitImports(module: Readonly<IrModule>, context: EmitContext): string[] {

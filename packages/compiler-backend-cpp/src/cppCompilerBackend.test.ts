@@ -8999,6 +8999,22 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('flight::Ref<anonymous_');
   });
 
+  it('keeps readonly anonymous-object sequences generic over concrete element classes', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'structural-sequence.ts',
+        `interface Keyframe { time: number; value: number }
+         function firstTime(items: ReadonlyArray<{ time: number }>): number { return items[0].time; }
+         export function read(items: Keyframe[]): number { return firstTime(items); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('inline double first_time(auto items)');
+    expect(output).toContain('return first_time(items)');
+    expect(output).not.toContain('flight::Array<flight::Ref<time_');
+  });
+
   it('projects structurally assignable nominal arguments through their shared row owner', () => {
     const output = emitIrModuleCpp(
       lower(
