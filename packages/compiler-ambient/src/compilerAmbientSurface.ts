@@ -335,6 +335,7 @@ interface TextDecoderConstructor {
 declare var TextDecoder: TextDecoderConstructor;
 
 interface URL {
+  readonly origin: string;
   readonly protocol: string;
 }
 interface URLConstructor {

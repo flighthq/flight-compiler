@@ -70,6 +70,17 @@ describe('getCompilerHaxeAmbientMemberBinding', () => {
     });
   });
 
+  it('retains the portable URL property surface', () => {
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'origin', receiver: 'url' })).toEqual({
+      kind: 'property',
+      targetName: 'origin',
+    });
+    expect(getCompilerHaxeAmbientMemberBinding({ name: 'protocol', receiver: 'url' })).toEqual({
+      kind: 'property',
+      targetName: 'protocol',
+    });
+  });
+
   it('routes source-only collection and string semantics through the selected runtime', () => {
     expect(getCompilerHaxeAmbientMemberBinding({ name: 'slice', receiver: 'arrayBuffer' })).toEqual({
       intArguments: [0, 1],

@@ -164,4 +164,6 @@ const haxeAmbientMemberBindings: Readonly<Record<string, CompilerHaxeAmbientMemb
   'tuple.length': { kind: 'property', targetName: 'length' },
   'tuple.map': { kind: 'method', targetName: 'map' },
   'tuple.slice': { kind: 'method', targetName: 'slice' },
+  'url.origin': { kind: 'property', targetName: 'origin' },
+  'url.protocol': { kind: 'property', targetName: 'protocol' },
 };

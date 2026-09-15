@@ -54,6 +54,7 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('new (pattern: string | RegExp, flags?: string): RegExp;');
     expect(source).toContain('declare function parseInt(value: string, radix?: number): number;');
     expect(source).toContain('new (url: string, base?: string | URL): URL;');
+    expect(source).toContain('readonly origin: string;');
     expect(source).toContain('declare namespace Intl');
     expect(source).toContain('class RelativeTimeFormat');
   });
