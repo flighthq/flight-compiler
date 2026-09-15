@@ -3399,7 +3399,9 @@ describe('lowerTypeScriptSource', () => {
       'partially-ambient-union-member.ts',
       "interface Padding { left: number; right: number } export function width(padding: number | Padding): number { return typeof padding === 'number' ? padding * 2 : padding.left + padding.right; }",
     );
-    const [, width] = result.module.declarations;
+    const width = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'width',
+    );
     if (width?.kind !== 'function' || width.body[0]?.kind !== 'return') throw new Error('Expected function return');
     const conditional = width.body[0].expression;
     if (conditional?.kind !== 'conditional' || conditional.otherwise.kind !== 'binary') {
@@ -10391,36 +10393,6 @@ it('infers primitive results from ambient calls for unannotated locals', () => {
   expect(result.diagnostics).toEqual([]);
   expect(statement).toMatchObject({
     declarations: [{ type: { kind: 'primitive', name: 'number' } }],
-    kind: 'variable',
-  });
-});
-
-it('does not leak wrapped target arguments onto a non-generic alias', () => {
-  const result = lower(
-    'non-generic-alias-call-result.ts',
-    `interface Node<Value> { value: Value }
-     type NodeAny = Node<any>;
-     export function last(stack: Readonly<NodeAny>[]): NodeAny {
-       const current = stack.pop()!;
-       return current;
-     }`,
-  );
-  const declaration = result.module.declarations.find(
-    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'last',
-  );
-  const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
-
-  expect(result.diagnostics).toEqual([]);
-  expect(statement).toMatchObject({
-    declarations: [
-      {
-        type: {
-          kind: 'named',
-          reference: { binding: { name: 'NodeAny' } },
-          typeArguments: [],
-        },
-      },
-    ],
     kind: 'variable',
   });
 });

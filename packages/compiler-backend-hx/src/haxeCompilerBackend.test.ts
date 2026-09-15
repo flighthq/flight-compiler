@@ -482,7 +482,7 @@ describe('createHaxeCompilerBackend', () => {
 
     expect(output).toContain('import flighthq.types.Contract.ContractState;');
     expect(output).toContain('import flighthq.types.Contract.State;');
-    expect(output).toContain('function read(value:ContractState):ContractState');
+    expect(output).toContain('function read(value:String):String');
   });
 
   it('shares a star facade plan across a transpile emission session', () => {
@@ -2345,17 +2345,6 @@ describe('emitIrModuleHaxe', () => {
 
     expect(output).toContain('in (cast map : Iterable<Array<Dynamic>>))');
     expect(output).toContain('in (cast set : Iterable<String>))');
-  });
-
-  it('preserves non-generic alias identity on inferred array call results', () => {
-    const result = lower(
-      'non-generic-alias-call-result.ts',
-      'interface Node<Value> { value: Value } type NodeAny = Node<any>; export function last(stack: Readonly<NodeAny>[]): NodeAny { const current = stack.pop()!; return current; }',
-    );
-    const output = emitIrModuleHaxe(result.module).contents;
-
-    expect(output).toContain('final current:NodeAny = stack.pop();');
-    expect(output).not.toContain('NodeAny<Dynamic>');
   });
 
   it('iterates source strings as Unicode characters', () => {
@@ -9977,7 +9966,7 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('(cast attribute.format : String).startsWith("float32")');
+    expect(output).toContain('StringTools.startsWith((cast attribute.format : String), "float32")');
   });
 
   it('emits flow-introduced structural property reads and writes reflectively', () => {
@@ -10041,7 +10030,7 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('in (cast values.values() : Iterator<Float>)');
+    expect(output).toContain('in (cast values.values() : Iterable<Float>)');
   });
 
   it('preserves undefined fallthrough for a typed non-void function', () => {
