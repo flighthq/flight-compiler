@@ -8980,6 +8980,23 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('return total(rectangles)');
   });
 
+  it('projects structurally assignable nominal arguments through their shared row owner', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'structural-argument.ts',
+        `interface RectangleLike { x: number; y: number; width: number; height: number }
+         interface FreeRectangle { x: number; y: number; width: number; height: number }
+         function intersects(rectangle: Readonly<RectangleLike>): boolean { return rectangle.width > 0; }
+         export function measure(rectangle: FreeRectangle): boolean { return intersects(rectangle); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain(
+      'intersects(flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<RectangleLike>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<FreeRectangle>>>>(rectangle)))',
+    );
+  });
+
   it('materializes spread push arguments before mutating the receiver', () => {
     const module = lower(
       'push-spread.ts',

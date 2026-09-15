@@ -2806,9 +2806,15 @@ function emitCppContextualStructuralReferenceCpp(
   const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
   if (!sourceType) return undefined;
   const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module);
-  if (!sourceRow || context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module)) {
-    return undefined;
+  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module);
+  if (targetRow && !sourceRow) {
+    const sourceProjection = getCppStructuralProjectionRowCpp(sourceType, context);
+    if (!sourceProjection) return undefined;
+    const source = emitExpression(expression, context, undefined, false);
+    const sourceView = `${emitCppStructuralRowReferenceTypeCpp(sourceProjection, context)}(${source})`;
+    return `flight::structural_ref_cast<${emitType(expectedType, context)}>(${sourceView})`;
   }
+  if (!sourceRow || targetRow) return undefined;
   const source = emitExpression(expression, context, undefined, false);
   if (expectedType.kind === 'unknown' && expectedType.source === 'object') return `${source}.shared_object()`;
   const sourceObject = getCppStructuralRowObjectTypeCpp(sourceRow);
