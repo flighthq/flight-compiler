@@ -4006,6 +4006,15 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('value_or');
   });
 
+  it('preserves the contextual array representation in nested binding defaults', () => {
+    const result = lower(
+      'nested-default-value.ts',
+      'export function withDefault(pair: [[number]?]): number { const [[value] = [1]] = pair; return value; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('.value_or(flight::Array<double>{1.0})');
+  });
+
   it('emits tupleRest with std::get', () => {
     const result = lower(
       'tuple-rest.ts',

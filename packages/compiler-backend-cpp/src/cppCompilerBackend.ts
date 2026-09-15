@@ -2591,7 +2591,7 @@ function emitExpression(
       return emitUndefinedWithExpectedTypeCpp(expectedType, context);
     case 'undefinedDefault': {
       context.includes.add('optional');
-      return `${emitExpression(expression.value, context)}.value_or(${emitExpression(expression.fallback, context)})`;
+      return `${emitExpression(expression.value, context)}.value_or(${emitExpression(expression.fallback, context, expectedType)})`;
     }
     case 'tupleRest': {
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
