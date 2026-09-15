@@ -12,7 +12,7 @@ The 2026-09-14 audit used an isolated checkout and did not change the materializ
 | --------------- | ------------------------------------------ |
 | flight-cpp      | `ef60ec7d22f381cd8bc149b1040133cc1c00bcab` |
 | Flight          | `1274ec5c923947dc64d5ffedcbd8169fc758cd9f` |
-| flight-compiler | `0df3b26af4e8e3350bb9aa8e8cffc162a98dabcc` |
+| flight-compiler | `ee493b3186c49831c642267ea47d7ba71f15cb2b` |
 
 The complete SDL profile processed all 154 packages and 2,851 modules in about 160 seconds. It emitted 1,093 dependency-closed headers and recorded 1,758 deterministic refusals: 872 direct `unsupported-ir` refusals and 886 dependency-propagated refusals. No internal-error or invalid-target-name entry remains.
 
