@@ -1,5 +1,9 @@
 import { defineConfig } from 'vitest/config';
 
+const coverageEnabled = process.argv.some(
+  (argument) => argument === '--coverage' || argument.startsWith('--coverage.'),
+);
+
 export default defineConfig({
   test: {
     coverage: {
@@ -18,6 +22,9 @@ export default defineConfig({
     globals: true,
     include: ['golden/**/*.test.ts', 'packages/*/src/**/*.test.ts', 'scripts/**/*.test.ts'],
     passWithNoTests: false,
-    testTimeout: 15_000,
+    // V8 instrumentation makes the graph/facade integration cases roughly twice as slow on a
+    // saturated CI worker. Keep the ordinary test budget strict while giving the coverage gate a
+    // bounded allowance for the same assertions.
+    testTimeout: coverageEnabled ? 45_000 : 15_000,
   },
 });
