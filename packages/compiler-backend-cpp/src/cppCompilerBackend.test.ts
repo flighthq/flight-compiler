@@ -8770,6 +8770,28 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain(`flight::Array<${result?.groups?.element}> array_spread_result`);
   });
 
+  it('uses owner-preserving views for readonly structural array parameters', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'readonly-structural-array.ts',
+        `interface Rectangle { height: number; width: number }
+         function total(rectangles: readonly Readonly<Rectangle>[]): number {
+           let result = 0;
+           for (const rectangle of rectangles) result += rectangle.width * rectangle.height;
+           return result;
+         }
+         export function measure(rectangles: Rectangle[]): number { return total(rectangles); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('#include <flight/sequence_view.hpp>');
+    expect(output).toContain(
+      'total(flight::SequenceView<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Rectangle>>>>> rectangles)',
+    );
+    expect(output).toContain('return total(rectangles)');
+  });
+
   it('materializes spread push arguments before mutating the receiver', () => {
     const module = lower(
       'push-spread.ts',

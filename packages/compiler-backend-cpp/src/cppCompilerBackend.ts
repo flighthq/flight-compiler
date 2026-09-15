@@ -690,7 +690,7 @@ function emitCppForwardParameterCpp(parameter: Readonly<IrParameter>, context: E
     const pack = getCppDependentCallablePack(parameter, context);
     return `${pack.typeName}&&... ${name}`;
   }
-  const type = parameter.type ? emitType(parameter.type, context) : 'auto';
+  const type = parameter.type ? emitCppParameterTypeCpp(parameter.type, parameter.rest, context) : 'auto';
   if (parameter.optional) {
     context.includes.add('optional');
     return `std::optional<${type}> ${name}`;
@@ -3761,7 +3761,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     case 'function': {
       context.includes.add('functional');
       const parameters = type.parameters.map((parameter) =>
-        emitOptionalTypeCpp(emitType(parameter.type, context), parameter.optional, context),
+        emitOptionalTypeCpp(
+          emitCppParameterTypeCpp(parameter.type, parameter.rest, context),
+          parameter.optional,
+          context,
+        ),
       );
       const returns = emitType(type.returns, context);
       return `std::function<${returns}(${parameters.join(', ')})>`;
@@ -4557,7 +4561,7 @@ function createCppCallableOverloadStructCpp(
     fieldName: `overload_${String(overloadIndex)}`,
     parameters: callable.parameters.map((parameter, parameterIndex) => ({
       name: `argument_${String(parameterIndex)}`,
-      type: emitType(parameter.type, context),
+      type: emitCppParameterTypeCpp(parameter.type, parameter.rest, context),
     })),
     returns: emitType(callable.returns, context),
   }));
@@ -4590,7 +4594,7 @@ function createCppCallableObjectStructCpp(
   }));
   const parameters = representation.callable.parameters.map((parameter, index) => ({
     name: `argument_${String(index)}`,
-    type: emitType(parameter.type, context),
+    type: emitCppParameterTypeCpp(parameter.type, parameter.rest, context),
   }));
   const returns = emitType(representation.callable.returns, context);
   if (
@@ -4778,7 +4782,8 @@ function isCppFunctionExpressionCompatibleWithCallableCpp(
     expression.parameters.every(
       (parameter, index) =>
         (parameter.type.kind === 'unknown' && parameter.type.source === 'any') ||
-        emitType(parameter.type, context) === emitType(callable.parameters[index]!.type, context),
+        emitCppParameterTypeCpp(parameter.type, parameter.rest, context) ===
+        emitCppParameterTypeCpp(callable.parameters[index]!.type, callable.parameters[index]!.rest, context),
     ) &&
     isCppFunctionExpressionReturnCompatibleCpp(expression, callable.returns, context)
   );
@@ -9090,7 +9095,7 @@ function emitParameterInitializersCpp(parameters: readonly IrParameter[], contex
     }
     const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(parameter.binding.id);
     if (!sharedCaptureTargetName) continue;
-    const parameterType = emitType(parameter.type, context);
+    const parameterType = emitCppParameterTypeCpp(parameter.type, parameter.rest, context);
     const sharedType = emitOptionalTypeCpp(parameterType, parameter.optional, context);
     lines.push(
       `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(sharedType, parameterTargetName, context)};`,
@@ -9158,7 +9163,7 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
     const pack = getCppDependentCallablePack(parameter, context);
     return `${pack.typeName}&&... ${name}`;
   }
-  const type = parameter.type ? emitType(parameter.type, context) : 'auto';
+  const type = parameter.type ? emitCppParameterTypeCpp(parameter.type, parameter.rest, context) : 'auto';
   if (parameter.optional) {
     context.includes.add('optional');
     return `std::optional<${type}> ${name} = std::nullopt`;
@@ -9167,6 +9172,19 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
     return `${type} ${name}`;
   }
   return `${type} ${name}`;
+}
+
+function emitCppParameterTypeCpp(type: Readonly<IrType>, rest: boolean, context: EmitContext): string {
+  const array = rest ? undefined : getIrArrayTypeCpp(type, context, new Set());
+  if (
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    array?.readonly === true &&
+    context.referenceRepresentationPlanner.resolveStructuralRow(array.element, context.module)
+  ) {
+    context.includes.add('flight/sequence_view.hpp');
+    return `flight::SequenceView<${emitType(array.element, context)}>`;
+  }
+  return emitType(type, context);
 }
 
 function emitImports(module: Readonly<IrModule>, context: EmitContext): string[] {
