@@ -1394,6 +1394,12 @@ function emitExpression(
   denseArrayLengthInitialized = false,
 ): string {
   if (expectedType && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const optionalPropertyConversion = emitCppOptionalPropertyDualSentinelConversionCpp(
+      expression,
+      expectedType,
+      context,
+    );
+    if (optionalPropertyConversion) return optionalPropertyConversion;
     const structuralConversion = emitCppContextualStructuralReferenceCpp(expression, expectedType, context);
     if (structuralConversion) return structuralConversion;
   }
@@ -2730,6 +2736,84 @@ function emitCppContextualStructuralReferenceCpp(
   }
   context.includes.add('flight/structural_ref.hpp');
   return `flight::structural_ref_cast<${emitType(expectedType, context)}>(${source})`;
+}
+
+function emitCppOptionalPropertyDualSentinelConversionCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind !== 'property' || expression.optional || expression.optionalChain) return undefined;
+  const receiverType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const property = receiverType
+    ? context.referenceRepresentationPlanner
+        .resolveObjectShape(receiverType, context.module)
+        ?.find((candidate) => candidate.name === expression.name)
+    : undefined;
+  const sourceUnion = property?.optional ? getIrUnionTypeCpp(property.type, context, new Set()) : undefined;
+  const expectedUnion = getIrUnionTypeCpp(expectedType, context, new Set());
+  if (!property || !sourceUnion || !expectedUnion) return undefined;
+  const sourceSentinels = sourceUnion.types.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const sourceValues = sourceUnion.types.filter(
+    (member) => member.kind !== 'null' && member.kind !== 'undefined',
+  );
+  const expectedSentinels = expectedUnion.types.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const expectedValues = expectedUnion.types.filter(
+    (member) => member.kind !== 'null' && member.kind !== 'undefined',
+  );
+  if (
+    sourceSentinels.length !== 1 ||
+    sourceValues.length !== 1 ||
+    expectedSentinels.length !== 2 ||
+    expectedValues.length !== 1 ||
+    !expectedSentinels.some((member) => member.kind === 'null') ||
+    !expectedSentinels.some((member) => member.kind === 'undefined')
+  ) {
+    return undefined;
+  }
+  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(
+    expectedValues[0]!,
+    context.module,
+  );
+  const targetObject = targetRow ? getCppStructuralRowObjectTypeCpp(targetRow) : undefined;
+  const sourcePlan = context.referenceRepresentationPlanner.plan(sourceValues[0]!, context.module);
+  if (
+    !targetRow ||
+    !targetObject ||
+    sourcePlan.kind !== 'represented' ||
+    sourcePlan.identityDomain !== 'object' ||
+    sourcePlan.valueRepresentation !== 'flightReference' ||
+    emitType(sourceValues[0]!, context) !== emitType(targetObject, context)
+  ) {
+    return undefined;
+  }
+  const expectedPlan = getCppUnionRepresentationPlan(expectedUnion, context);
+  if (expectedPlan.kind !== 'dualSentinelVariant') return undefined;
+  const propertyName = getGeneratedTargetName('optionalProperty', context);
+  const propertyValue = emitExpression(expression, context, undefined, false);
+  const targetType = emitType(expectedValues[0]!, context);
+  const present = emitCppUnionValueConstruction(
+    `${targetType}(${propertyName}.value().value())`,
+    targetType,
+    expectedUnion,
+    expectedPlan.kind,
+    context,
+  );
+  const declaredAbsence = emitCppUnionSentinelConstruction(
+    sourceSentinels[0]!.kind,
+    expectedUnion,
+    expectedPlan.kind,
+    context,
+  );
+  const omitted = emitCppUnionSentinelConstruction('undefined', expectedUnion, expectedPlan.kind, context);
+  const resultType = emitUnionTypeCpp(expectedUnion, context);
+  return `([&]() -> ${resultType} { auto ${propertyName} = ${propertyValue}; if (!${propertyName}.has_value()) return ${omitted}; if (!${propertyName}.value().has_value()) return ${declaredAbsence}; return ${present}; }())`;
 }
 
 function getCppStructuralRowObjectTypeCpp(row: Readonly<CompilerCppStructuralRowPlan>): Readonly<IrType> | undefined {

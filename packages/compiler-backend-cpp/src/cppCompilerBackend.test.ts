@@ -6191,6 +6191,26 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('return std::get<double>(value)');
   });
 
+  it('preserves declared null separately from an omitted optional property', () => {
+    const result = lower(
+      'optional-property-sentinels.ts',
+      `interface Skin { weights: number[] }
+       interface Attachment { skin?: Skin | null }
+       function consume(skin: Readonly<Skin> | null | undefined): void {}
+       export function pass(attachment: Readonly<Attachment>): void { consume(attachment.skin); }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('if (!optional_property.has_value())');
+    expect(output).toContain('if (!optional_property.value().has_value())');
+    expect(output).toContain('std::in_place_type<flight::Undefined>');
+    expect(output).toContain('std::in_place_type<flight::Null>');
+    expect(output).toContain(
+      'flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Skin>>>>(optional_property.value().value())',
+    );
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',
