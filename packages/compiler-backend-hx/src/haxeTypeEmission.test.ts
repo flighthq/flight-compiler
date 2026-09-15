@@ -127,7 +127,15 @@ describe('emitIrTypeHaxe', () => {
             },
           ],
         },
-        context,
+        {
+          fail(message: string): never {
+            throw new Error(message);
+          },
+          getBindingName: () => 'Binding',
+          getExternalTypeName: () => undefined,
+          getMemberName: (member) => member,
+          getTypeName: (type) => type,
+        },
       ),
     ).toBe('Dynamic');
   });
