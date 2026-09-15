@@ -74,6 +74,7 @@ import type {
   IrTypeAliasDeclaration,
   IrTypeBindingIdentity,
   IrTypeParameter,
+  IrTupleTypeElement,
   IrUnionMemberTestEvidence,
   IrValueNameReference,
   IrVariable,
@@ -6916,12 +6917,24 @@ function getIrExpressionTypeEvidenceCpp(
         ? (getCppNonNullableType(propertyType, context, new Set()) ?? propertyType)
         : propertyType;
     }
+    case 'tuple': {
+      const elements = expression.elements.map((element) => {
+        if (!element.expression) return undefined;
+        const type = getIrExpressionTypeEvidenceCpp(element.expression, context);
+        return type ? { optional: element.optional, rest: false as const, type } : undefined;
+      });
+      if (elements.some((element) => !element)) return undefined;
+      return {
+        elements: elements as readonly IrTupleTypeElement[],
+        kind: 'tuple',
+        readonly: false,
+      };
+    }
     case 'literal':
     case 'objectRest':
     case 'regexp':
     case 'spread':
     case 'template':
-    case 'tuple':
     case 'tupleRest':
     case 'tupleSpread':
     case 'tupleSuffix':

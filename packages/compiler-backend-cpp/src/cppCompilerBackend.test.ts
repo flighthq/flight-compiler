@@ -4015,6 +4015,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('.value_or(flight::Array<double>{1.0})');
   });
 
+  it('infers homogeneous array storage for destructuring assignment tuples', () => {
+    const result = lower(
+      'destructuring-array-swap.ts',
+      'export function swap(values: number[][], a: number, b: number): void { [values[a], values[b]] = [values[b], values[a]]; }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain(
+      'auto destructuring_assignment_value = flight::Array<flight::Array<double>>{values.element(b), values.element(a)}',
+    );
+    expect(emitted.contents).toContain('values.element(a) = destructuring_assignment_value.element(0.0)');
+    expect(emitted.contents).not.toContain('destructuring_assignment_value[static_cast<size_t>');
+  });
+
   it('emits tupleRest with std::get', () => {
     const result = lower(
       'tuple-rest.ts',
