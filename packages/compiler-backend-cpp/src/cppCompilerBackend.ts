@@ -2014,6 +2014,15 @@ function emitExpression(
         if (expression.expression.kind === 'object') {
           return emitExpression(expression.expression, context, expression.type);
         }
+        const structuralSourceObject = structuralSource
+          ? getCppStructuralRowObjectTypeCpp(structuralSource)
+          : undefined;
+        if (
+          structuralSourceObject &&
+          emitType(structuralSourceObject, context) === emitType(expression.type, context)
+        ) {
+          return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
+        }
         const target = structuralProjectionTarget
           ? emitCppStructuralRowReferenceTypeCpp(structuralProjectionTarget, context)
           : emitType(expression.type, context);

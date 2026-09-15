@@ -2007,6 +2007,21 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted.contents).toContain('values.get(channel.shared_object())');
   });
 
+  it('recovers the exact nominal key from an explicit readonly structural assertion', () => {
+    const result = lower(
+      'weak-map-nominal-key.ts',
+      `interface World { id: number }
+       const values = new WeakMap<World, string>();
+       export function read(world: Readonly<World>): string | undefined {
+         return values.get(world as World);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('values.get(flight::structural_ref_cast<flight::Ref<World>>(world))');
+    expect(emitted.contents).not.toContain('values.get(flight::structural_ref_cast<flight::StructuralRef');
+  });
+
   it('emits optional literal regexp captures and concrete offset and input parameters', () => {
     const result = lower(
       'regexp-replacement.ts',
