@@ -6491,6 +6491,54 @@ describe('emitIrModuleHaxe narrowedMember with primitive typeof cast', () => {
 
     expect(output).toContain('(cast content : XmlElement).name');
   });
+
+  it('casts an imported named alternative after eliminating a primitive member', () => {
+    const typeSource = ts.createSourceFile(
+      '/flight/packages/types/src/XmlElement.ts',
+      'export interface XmlElement { readonly name: string; readonly content: Array<string | XmlElement>; }',
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const subjectSource = ts.createSourceFile(
+      '/flight/packages/scene2d-formats/src/svg.ts',
+      `import type { XmlElement } from '@flighthq/types/XmlElement';
+       export function firstName(element: Readonly<XmlElement>): string {
+         for (const content of element.content) {
+           if (typeof content === 'string') continue;
+           return content.name;
+         }
+         return '';
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: '@flighthq/types/XmlElement',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/XmlElement.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const [targetResult, subjectResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: typeSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/scene2d-formats', sourceFile: subjectSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const target = targetResult!.module;
+    const subject = subjectResult!.module;
+    const output = createHaxeCompilerBackend().emitModule(subject, {
+      moduleResolution,
+      modules: [subject, target],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain('import flighthq.types.XmlElement.XmlElement;');
+    expect(output).toContain('(cast content : XmlElement).name');
+  });
 });
 
 describe('emitIrModuleHaxe union type alias where member is typeAlias not interface', () => {

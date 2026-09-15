@@ -1542,17 +1542,17 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       }
       const narrowedType =
         expression.object.kind === 'identifier' && expression.object.narrowedMember
-          ? getIrSingleConcreteTypeHaxe(
-              getIrExpressionTypeHaxe(expression.object, context) ?? { kind: 'unknown', source: 'unknown' },
+          ? getIrNarrowedMemberTypeHaxe(
+              getIrExpressionTypeHaxe(expression.object, context),
+              expression.object.narrowedMember,
             )
           : undefined;
       const narrowed =
         expression.object.kind === 'identifier' && expression.object.narrowedMember
-          ? narrowedType?.kind === 'named' &&
-            narrowedType.reference.kind === 'binding' &&
-            narrowedType.reference.binding.name === expression.object.narrowedMember
+          ? narrowedType
             ? emitType(narrowedType, context)
             : (getIrModuleDeclaredTypeNameHaxe(expression.object.narrowedMember, context) ??
+              getIrImportedTypeNameByNameHaxe(expression.object.narrowedMember, context) ??
               getHaxePrimitiveNarrowedTypeName(expression.object.narrowedMember))
           : undefined;
       const object = narrowed
@@ -5362,6 +5362,29 @@ function getHaxePrimitiveNarrowedTypeName(name: string): string | undefined {
   return map[name];
 }
 
+function getIrNarrowedMemberTypeHaxe(type: Readonly<IrType> | undefined, name: string): Readonly<IrType> | undefined {
+  if (!type) return undefined;
+  if (type.kind === 'union') {
+    const matches = type.types.flatMap((member) => {
+      const match = getIrNarrowedMemberTypeHaxe(member, name);
+      return match ? [match] : [];
+    });
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Readonly' &&
+    type.typeArguments.length === 1
+  ) {
+    return getIrNarrowedMemberTypeHaxe(type.typeArguments[0], name) ? type : undefined;
+  }
+  if (type.kind === 'primitive') return type.name === name ? type : undefined;
+  return type.kind === 'named' && type.reference.kind === 'binding' && type.reference.binding.name === name
+    ? type
+    : undefined;
+}
+
 function getTypeofTypeTestHaxe(
   expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
 ): { haxeType: string; negated: boolean; operand: Readonly<IrExpression> } | undefined {
@@ -5432,6 +5455,20 @@ function getIrModuleDeclaredTypeNameHaxe(name: string, context: EmitContext): st
     declaration.typeParameters.length === 0
     ? getBindingTargetNameHaxe(declaration.binding, context)
     : undefined;
+}
+
+function getIrImportedTypeNameByNameHaxe(name: string, context: EmitContext): string | undefined {
+  const candidates = new Set<string>();
+  for (const imported of context.module.imports) {
+    for (const binding of imported.bindings) {
+      if (binding.binding.space !== 'type' || binding.binding.name !== name) continue;
+      const target =
+        context.importedTypeTargetNames.get(binding.binding.id) ??
+        context.facadeBindingTargetNames.get(binding.binding.id);
+      if (target) candidates.add(target);
+    }
+  }
+  return candidates.size === 1 ? [...candidates][0] : undefined;
 }
 
 function getIrUnionTypeFlattenedPropertiesHaxe(
