@@ -957,7 +957,10 @@ describe('createCppCompilerBackend', () => {
     }).emitModule(modules[1]!)[0]!.contents;
 
     expect(emitted).toContain(
-      'flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flight::types::EntityRuntime>>>>(',
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flight::types::EntityRuntime>>>>>(',
+    );
+    expect(emitted).toContain(
+      'flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<flight::types::EntityRuntime>>>>(',
     );
     expect(emitted).toContain(
       'flight::row_get<std::optional<flight::Ref<flight::types::EntityRuntime>>>(source, flight::types::entity_runtime_key).value())',
@@ -1098,8 +1101,9 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('const double brightness = options.value()->brightness.value_or(0.0)');
     expect(emitted).toContain('flight::row_set<flight::RowKey<"brightness">>(out, std::optional<double>{brightness})');
     expect(emitted).toContain(
-      'flight::row_set<flight::RowKey<"contrast">>(out, std::optional<double>{options.value()->contrast.value_or(1.0)})',
+      'flight::row_set<flight::RowKey<"contrast">>(out, ([&]() -> std::optional<double> { auto nullish_coalesce_left = options.value()->contrast;',
     );
+    expect(emitted).toContain('return std::optional<double>{1.0}; }()))');
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
@@ -9250,7 +9254,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const mapType =
       'flight::Map<flight::String, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Range>>>>>';
     expect(output).toContain(`${mapType} tables = ${mapType}()`);
-    expect(output).toContain('tables.set(flight::String("head"), flight::make_structural_ref');
+    expect(output).toContain('tables.set(flight::String("head"), flight::structural_ref_cast');
     expect(output).toContain('.tables = tables');
   });
 
@@ -9321,7 +9325,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const mapType =
       'flight::Map<flight::String, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::Range>>>>>';
     expect(output).toContain(`${mapType} tables = ${mapType}()`);
-    expect(output).toContain('tables.set(flight::String("head"), flight::make_structural_ref');
+    expect(output).toContain('tables.set(flight::String("head"), flight::structural_ref_cast');
     expect(output).toContain('.tables = tables');
   });
 
