@@ -7947,7 +7947,7 @@ describe('emitIrModuleHaxe interface extends chain', () => {
         packageName: '@flighthq/types',
         sourceFile: ts.createSourceFile(
           '/flight/packages/types/src/shape.ts',
-          "export type Flavor = 'first' | 'second'; export interface Shape { flavor: Flavor }",
+          "export type Flavor = 'first' | 'second'; export interface Shape<T> { flavor: T }",
           ts.ScriptTarget.Latest,
           true,
         ),
@@ -7967,7 +7967,7 @@ describe('emitIrModuleHaxe interface extends chain', () => {
         packageName: '@flighthq/render',
         sourceFile: ts.createSourceFile(
           '/flight/packages/render/src/use.ts',
-          "import type { Shape } from '@flighthq/types/contract'; export const shape: Shape = { flavor: 'first' };",
+          "import type { Flavor, Shape } from '@flighthq/types/contract'; export const shape: Shape<Flavor> = { flavor: 'first' };",
           ts.ScriptTarget.Latest,
           true,
         ),

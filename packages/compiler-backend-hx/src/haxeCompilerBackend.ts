@@ -2190,7 +2190,13 @@ function getIrObjectPropertyTypeHaxe(
   const target = getIrNamedDeclarationTargetHaxe(concrete, context);
   if (!target || seen.has(target.binding.id)) return undefined;
   if (target.declaration.kind === 'interface') {
-    return target.declaration.properties.find((property) => property.name === name)?.type;
+    const property = target.declaration.properties.find((candidate) => candidate.name === name);
+    return property
+      ? resolveIrTypeStructuralSubstitution(
+          property.type,
+          createIrTypeParameterSubstitutionPlan(target.declaration.typeParameters, concrete.typeArguments),
+        )
+      : undefined;
   }
   if (target.declaration.kind !== 'typeAlias') return undefined;
   const substituted = resolveIrTypeStructuralSubstitution(
