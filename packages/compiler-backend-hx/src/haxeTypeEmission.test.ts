@@ -3,7 +3,7 @@ import { emitIrTypeHaxe } from './haxeTypeEmission.js';
 
 describe('emitIrTypeHaxe', () => {
   it('uses explicit binding, external, member, and failure capabilities', () => {
-    const binding: IrTypeBindingIdentity = {
+    const binding: IrBindingIdentity = {
       column: 1,
       fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       id: 'binding',
@@ -207,7 +207,7 @@ describe('emitIrTypeHaxe', () => {
   });
 
   it('does not reapply generic arguments consumed by a named type resolver', () => {
-    const binding: IrBindingIdentity = {
+    const binding: IrTypeBindingIdentity = {
       column: 1,
       fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       id: 'private-alias',
