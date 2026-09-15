@@ -105,6 +105,7 @@ import { getIrHomogeneousTupleElementTypeCpp } from './cppTupleRepresentation.js
 import { createCppUnionRepresentationPlan } from './cppUnionRepresentationPlan.js';
 
 interface AnonymousStruct {
+  base?: string;
   callables?: readonly Readonly<{
     fieldName: string;
     parameters: readonly Readonly<{ name: string; type: string }>[];
@@ -729,9 +730,12 @@ function emitAnonymousStructCpp(struct: Readonly<AnonymousStruct>, context: Emit
   if (struct.typeParameters.length > 0) {
     lines.push(`template <${struct.typeParameters.map((parameter) => `typename ${parameter}`).join(', ')}>`);
   }
-  lines.push(
-    `struct ${struct.name}${getCppRuntimeProfile(context.options) === 'flight-cpp' && struct.referenceEnabled !== false ? ' : public flight::ReferenceEnabled' : ''} {`,
-  );
+  const base = struct.base
+    ? ` : public ${struct.base}`
+    : getCppRuntimeProfile(context.options) === 'flight-cpp' && struct.referenceEnabled !== false
+      ? ' : public flight::ReferenceEnabled'
+      : '';
+  lines.push(`struct ${struct.name}${base} {`);
   if (struct.callables) {
     context.includes.add('functional');
     for (const callable of struct.callables) {
@@ -3900,7 +3904,13 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         return emitCppCallableObjectStorageTypeCpp(type, callableObject, context);
       }
       const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
-      if (properties) return emitType({ kind: 'object', properties }, context, representation);
+      if (properties) {
+        const nominalImplementation =
+          getCppRuntimeProfile(context.options) === 'flight-cpp'
+            ? emitCppNominalIntersectionImplementationTypeCpp(type, properties, context)
+            : undefined;
+        return nominalImplementation ?? emitType({ kind: 'object', properties }, context, representation);
+      }
       const distributed = context.referenceRepresentationPlanner.resolveClosedIntersectionDistribution(
         type,
         context.module,
@@ -4096,6 +4106,57 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       }
       return 'auto';
   }
+}
+
+function emitCppNominalIntersectionImplementationTypeCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  properties: readonly Readonly<IrObjectTypeProperty>[],
+  context: EmitContext,
+): string | undefined {
+  const baseType = type.types.find((member) => {
+    if (
+      member.kind !== 'named' ||
+      member.reference.kind !== 'binding' ||
+      member.reference.binding.kind !== 'import' ||
+      member.reference.path.length > 0
+    ) {
+      return false;
+    }
+    const plan = context.referenceRepresentationPlanner.plan(member, context.module);
+    return plan.kind === 'represented' && plan.category === 'interface' && plan.valueRepresentation === 'flightReference';
+  });
+  if (!baseType) return undefined;
+  const baseProperties = context.referenceRepresentationPlanner.resolveObjectShape(baseType, context.module);
+  if (!baseProperties) return undefined;
+
+  const typeParameters = context.anonymousStructTypeParameters.map(
+    (parameter) => context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name),
+  );
+  const typeParameterKey = context.anonymousStructTypeParameters.map((parameter) => parameter.binding.id).join(',');
+  const key = `${typeParameterKey}\0nominalIntersection\0${normalizeCompilerStructuralValueCanonical(type)}`;
+  const existing = context.anonymousStructs.get(key);
+  if (existing) return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
+
+  const inheritedNames = new Set(baseProperties.map((property) => property.name));
+  const remaining = properties.filter((property) => !inheritedNames.has(property.name));
+  if (remaining.some((property) => property.optional)) context.includes.add('optional');
+  const emittedProperties = remaining.map((property) => ({
+    name: safeCppName(property.name),
+    optional: property.optional,
+    type: emitCppMaterializedObjectPropertyTypeCpp(property.type, context),
+  }));
+  if (emittedProperties.some((property) => /\bauto\b/u.test(property.type))) return undefined;
+
+  const structuralHash = getCppStableIdentifierHash(key);
+  const structName = generateAnonymousStructName(properties, structuralHash, context);
+  context.anonymousStructs.set(key, {
+    base: emitType(baseType, context, 'storage'),
+    guard: getCppAnonymousStructGuard(structuralHash, context),
+    name: structName,
+    properties: emittedProperties,
+    typeParameters,
+  });
+  return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
 }
 
 function getCppIndexedAccessType(

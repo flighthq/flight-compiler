@@ -4815,6 +4815,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     }).emitModule(modules[2]!)[0]!.contents;
 
     expect(emitted).toContain('flighthq_types::EntityConstruction<flight::Ref<');
+    expect(emitted).toMatch(/struct reset_entity_runtime_key_[0-9a-f]{16} : public flighthq_types::Backend/u);
+    expect(emitted).toContain('std::optional<flight::Ref<flighthq_types::EntityRuntime>> entity_runtime_key;');
+    expect(emitted).not.toMatch(/struct reset_entity_runtime_key_[^{]+\{\s+std::function<void\(\)> reset;/u);
     expect(emitted).not.toContain('flight::Ref<EntityConstruction<');
     expect(emitted).not.toContain('flight::Ref<flighthq_types::EntityConstruction<');
   });
