@@ -8178,6 +8178,19 @@ describe('emitIrModuleHaxe interface extends chain', () => {
     expect(output).toContain('(cast input.value : Null<Target>) ?? (cast fallback : Target)');
   });
 
+  it('casts nullish structural array branches before Haxe unifies them', () => {
+    const output = emitIrModuleHaxe(
+      lower(
+        'channel-layers.ts',
+        'interface Channel { value: number } interface Left { channel: Channel; sources: number[] } interface Right { channel: Channel; indices: number[] } export function channels(left: Left[] | null, right: Right[]): { channel: Channel }[] { return left ?? right; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      '(cast left : Null<Array<{ channel:Channel }>>) ?? (cast right : Array<{ channel:Channel }>)',
+    );
+  });
+
   it('selects literal DOM overload result types before Haxe native emission', () => {
     const output = emitIrModuleHaxe(
       lower(

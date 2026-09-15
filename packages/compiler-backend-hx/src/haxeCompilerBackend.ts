@@ -2108,10 +2108,11 @@ function emitExpressionAsExpectedTypeHaxe(
       concreteExpected.reference.kind === 'ambient' &&
       concreteExpected.reference.name === 'WebGLPowerPreference');
   if (
-    expectedStringNominal &&
     expression.kind === 'binary' &&
     expression.operator === '??' &&
-    isIrExpressionStringBackedHaxe(expression, context)
+    ((expectedStringNominal && isIrExpressionStringBackedHaxe(expression, context)) ||
+      concreteExpected.kind === 'array' ||
+      concreteExpected.kind === 'object')
   ) {
     const target = emitType(concreteExpected, context);
     return `((cast ${normalizeHaxeExpressionGrouping(emitExpression(expression.left, context))} : Null<${target}>) ?? (cast ${normalizeHaxeExpressionGrouping(emitExpression(expression.right, context))} : ${target}))`;
