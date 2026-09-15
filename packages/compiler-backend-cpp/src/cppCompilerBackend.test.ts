@@ -9040,7 +9040,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
            const created = { active: true };
            result.set(world, created);
            return result;
-         }`,
+         }
+         const publicationByWorld = new WeakMap<World, Publication>();`,
       ).module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
@@ -9048,6 +9049,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('auto result = flight::Map<double, flight::Ref<Row>>()');
     expect(output).toContain('result.set(row->key, row)');
     expect(output).toContain('auto result = flight::WeakMap<flight::Ref<World>, flight::Ref<Publication>>()');
+    expect(output).toContain(
+      'flight::WeakMap<flight::Ref<World>, flight::Ref<Publication>> publication_by_world = flight::WeakMap<flight::Ref<World>, flight::Ref<Publication>>()',
+    );
     expect(output).toContain('flight::Ref<Publication> created = flight::make_ref<Publication>');
     expect(output).toContain('result.set(world, created)');
   });

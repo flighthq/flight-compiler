@@ -1212,17 +1212,20 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   const arrayElement = context.arrayElementBindingIds.has(declaration.binding.id);
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(declaration.binding.id);
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(declaration.binding.id);
+  const preservedInitializerType = context.preservedInitializerTypes.get(declaration.binding.id);
   const type = externalStorageTarget
     ? emitCppExternalBindingStorageTypeCpp(declaration.type, externalStorageTarget, context)
     : contextualStorageTarget
       ? emitType(contextualStorageTarget, context)
+      : preservedInitializerType
+        ? emitType(preservedInitializerType, context)
       : declaration.type
         ? emitType(declaration.type, context)
         : 'auto';
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(declaration.mutable, declaration.type);
   const initializer = declaration.initializer
-    ? ` = ${arrayElement ? emitOptionalExpressionCpp(declaration.initializer, context, declaration.type) : emitExpression(declaration.initializer, context, contextualStorageTarget ?? declaration.type)}`
+    ? ` = ${arrayElement ? emitOptionalExpressionCpp(declaration.initializer, context, declaration.type) : emitExpression(declaration.initializer, context, contextualStorageTarget ?? preservedInitializerType ?? declaration.type)}`
     : '';
   return [`inline ${constness}${emittedType} ${name}${initializer};`];
 }
