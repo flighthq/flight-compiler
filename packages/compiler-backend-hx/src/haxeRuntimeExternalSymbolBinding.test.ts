@@ -238,6 +238,7 @@ describe('getCompilerRuntimeExternalSymbolTargetHaxe', () => {
     ['Array', 'value', 'flighthq._internal._Array'],
     ['ArrayBuffer', 'type', 'flighthq._internal._ArrayBuffer'],
     ['ArrayBuffer', 'value', 'flighthq._internal._ArrayBuffer'],
+    ['ArrayBufferLike', 'type', 'flighthq._internal._ArrayBuffer'],
     ['Boolean', 'type', 'Bool'],
     ['Date', 'type', 'flighthq._internal._Date'],
     ['Date', 'value', 'flighthq._internal._Date'],
