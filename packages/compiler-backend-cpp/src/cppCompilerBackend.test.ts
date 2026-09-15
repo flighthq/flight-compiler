@@ -1875,6 +1875,19 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted.contents).not.toContain('flight::ArrayBuffer buffer = bytes.buffer;');
   });
 
+  it('projects structural references to object keys at WeakMap call boundaries', () => {
+    const result = lower(
+      'weak-map-object-key.ts',
+      `interface Channel { id: number }
+       const values = new WeakMap<object, string>();
+       export function read(channel: Readonly<Channel>): string | undefined { return values.get(channel); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('values.get(channel.shared_object())');
+  });
+
   it('emits optional literal regexp captures and concrete offset and input parameters', () => {
     const result = lower(
       'regexp-replacement.ts',

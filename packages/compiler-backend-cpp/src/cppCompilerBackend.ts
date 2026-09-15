@@ -6479,6 +6479,11 @@ function getCppCollectionCallArgumentExpectedTypeCpp(
     const expected = getIrInvocationArgumentExpectedTypeCpp(expression, index);
     return expected ? (getCppNonNullableType(expected, context, new Set()) ?? expected) : undefined;
   }
+  const weakMap = getIrWeakMapTypeCpp(objectType, context, new Set());
+  if (weakMap && weakMap.typeArguments.length === 2) {
+    if (index === 0 && ['delete', 'get', 'has', 'set'].includes(name)) return weakMap.typeArguments[0];
+    if (index === 1 && name === 'set') return weakMap.typeArguments[1];
+  }
   if (!member) return undefined;
   const collection = getIrAmbientCollectionTypeCpp(objectType, context, new Set());
   if (!collection) return undefined;
