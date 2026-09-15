@@ -10131,6 +10131,17 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     expect(output).toContain('state.values = (cast [] : Array<Float>)');
   });
 
+  it('does not promote generic member signatures into repeated expression declarations', () => {
+    expect(() =>
+      emitIrModuleHaxe(
+        lower(
+          'generic-member-expression.ts',
+          'export function double(values: number[]): number[] { return values.map(value => value * 2); }',
+        ).module,
+      ),
+    ).not.toThrow();
+  });
+
   it('writes non-numeric typed-array indexes through the reflective property ABI', () => {
     const output = emitIrModuleHaxe(
       lower(

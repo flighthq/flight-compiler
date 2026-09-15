@@ -911,6 +911,10 @@ function lowerExpression(
         context,
       );
     }
+    const constructionType =
+      contextualShape?.kind === 'array' && isIrExpressionValueTypeEvidence(contextualShape)
+        ? contextualShape
+        : undefined;
     return {
       elements: node.elements.map((element) =>
         ts.isOmittedExpression(element)
@@ -923,7 +927,7 @@ function lowerExpression(
             ),
       ),
       kind: 'array',
-      ...(contextualShape?.kind === 'array' ? { type: contextualShape } : {}),
+      ...(constructionType ? { type: constructionType } : {}),
     };
   }
   if (ts.isObjectLiteralExpression(node)) {
@@ -972,7 +976,8 @@ function lowerExpression(
   if (ts.isPropertyAccessExpression(node)) {
     const optional = node.questionDotToken !== undefined;
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
-    const type = getTypeScriptExpressionBindingTypeEvidence(node, context);
+    const candidateType = getTypeScriptExpressionBindingTypeEvidence(node, context);
+    const type = candidateType && isIrExpressionValueTypeEvidence(candidateType) ? candidateType : undefined;
     const resolved =
       getIrResolvedMemberReceiver(receiver) ??
       getIrResolvedMemberReceiver(getIrTypeConstructionTargetShape(receiver, context)) ??
@@ -1169,6 +1174,39 @@ function lowerExpression(
     return { flags: node.text.slice(lastSlash + 1), kind: 'regexp', pattern: node.text.slice(1, lastSlash) };
   }
   unsupported(node, `unsupported expression ${ts.SyntaxKind[node.kind]}`);
+}
+
+// Expression result evidence is classification metadata, not a second declaration site. Retain the
+// closed type forms whose traversal can only reference existing bindings. Function/object shapes can
+// introduce generic binders, while arbitrary library ambient names can be checker-local parameters;
+// replaying either at every property access would manufacture duplicate declarations or runtime ABI
+// requirements. Calls and declared storage continue to carry their full authoritative types.
+function isIrExpressionValueTypeEvidence(type: Readonly<IrType>): boolean {
+  switch (type.kind) {
+    case 'array':
+      return isIrExpressionValueTypeEvidence(type.element);
+    case 'intersection':
+    case 'union':
+      return type.types.every(isIrExpressionValueTypeEvidence);
+    case 'tuple':
+      return type.elements.every((element) => isIrExpressionValueTypeEvidence(element.type));
+    case 'named':
+      return type.reference.kind === 'binding' && type.typeArguments.every(isIrExpressionValueTypeEvidence);
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'undefined':
+    case 'unknown':
+      return true;
+    case 'conditionalFacet':
+    case 'function':
+    case 'indexedAccess':
+    case 'keyof':
+    case 'object':
+    case 'typeOf':
+      return false;
+  }
 }
 
 function markIrExpressionPresent(expression: IrExpression): IrExpression {
