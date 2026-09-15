@@ -8721,6 +8721,24 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(flight).toContain('std::get<1>');
   });
 
+  it('carries structural array result context through self-returning methods', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'structural-array-sort.ts',
+        `export function sortRows(
+           rows: readonly Readonly<{ data: string; tag: number }>[],
+         ): Readonly<{ data: string; tag: number }>[] {
+           return [...rows].sort((left, right) => left.tag - right.tag);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    const result = /inline flight::Array<(?<element>.+)> sort_rows/u.exec(output);
+    expect(result?.groups?.element).toBeDefined();
+    expect(output).toContain(`flight::Array<${result?.groups?.element}> array_spread_result`);
+  });
+
   it('materializes spread push arguments before mutating the receiver', () => {
     const module = lower(
       'push-spread.ts',

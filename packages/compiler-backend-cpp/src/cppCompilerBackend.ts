@@ -1741,10 +1741,18 @@ function emitExpression(
           return `static_cast<double>(${receiver}${memberOp(expression.callee.object, context)}${binding.targetName}())`;
         }
         if (binding && binding.kind === 'method') {
+          // These mutating Array methods return the receiver itself. Carry the result context into
+          // the receiver so a spread and its inferred local do not acquire distinct anonymous C++
+          // element carriers for the same structural TypeScript row.
+          const receiverExpectedType =
+            expression.callee.member.receiver === 'array' &&
+            cppArraySelfReturningMethods.has(expression.callee.member.name)
+              ? expectedType
+              : undefined;
           const receiver = emitExpression(
             expression.callee.object,
             context,
-            undefined,
+            receiverExpectedType,
             true,
             binding.targetName === 'fill' &&
               expression.callee.member.receiver === 'array' &&
@@ -10355,6 +10363,8 @@ function emissionError(context: EmitContext, message: string): never {
 }
 
 const cppOptionalArrayMethods = new Set(['find', 'shift', 'pop']);
+
+const cppArraySelfReturningMethods = new Set(['fill', 'reverse', 'sort']);
 
 const cppMathSpreadFoldTargets: Readonly<Record<string, { algorithm: string; identity: string; runtime: string }>> = {
   max: {
