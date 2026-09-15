@@ -5527,7 +5527,22 @@ function getHaxeResolvedImportModuleFrom(
         path.posix.normalize(module.source) === path.posix.normalize(target.source),
     );
   }
-  if (!specifier.startsWith('.')) return undefined;
+  if (!specifier.startsWith('.')) {
+    const packageName = /^(@[^/]+\/[^/]+)/u.exec(specifier)?.[1];
+    if (!packageName || !importedName) return undefined;
+    const owners = modules.filter(
+      (module) =>
+        module.packageName === packageName &&
+        module.declarations.some(
+          (declaration) =>
+            'binding' in declaration &&
+            declaration.binding.name === importedName &&
+            'exported' in declaration &&
+            declaration.exported,
+        ),
+    );
+    return owners.length === 1 ? owners[0] : undefined;
+  }
   const source = path.posix.normalize(
     path.posix.join(path.posix.dirname(importer.source), specifier.replace(/\.[cm]?js$/u, '.ts')),
   );

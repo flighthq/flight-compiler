@@ -743,6 +743,27 @@ describe('createHaxeCompilerBackend', () => {
     expect(output).not.toContain('flighthq.particles.Update.Callbacks');
   });
 
+  it('recovers a unique cross-package declaration home outside the frozen import graph', () => {
+    const entity = lowerPackage(
+      '@flighthq/types',
+      'Entity.ts',
+      'export interface EntityRuntime { binding: object | null }',
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/media',
+      'audioDeviceBackend.ts',
+      "import type { EntityRuntime } from '@flighthq/types/contract'; export interface WebExtension { runtime: EntityRuntime }",
+    ).module;
+    const output = createHaxeCompilerBackend().createEmissionSession!({
+      moduleResolution: { edges: [], schema: 'flight-compiler-module-resolution/1' },
+      modules: [consumer, entity],
+      options: {},
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('import flighthq.types.Entity.EntityRuntime;');
+    expect(output).not.toContain('flighthq.types.Types.EntityRuntime');
+  });
+
   it('forwards an explicit value re-export through an intermediate star barrel', () => {
     const helper = lower('helper.ts', 'export function helper(): number { return 1; }').module;
     const barrel = lower('barrel.ts', "export * from './helper';").module;
