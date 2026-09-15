@@ -10245,6 +10245,8 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
            rows: Array<{ value: number }>;
            values: number[];
          }
+         interface Box<T> { items: T[] }
+         export const box: Box<number> = { items: [] };
          export function reset(state: State, source?: State): void {
            state.callbacks = [];
            state.rows = [];
@@ -10256,6 +10258,7 @@ describe('emitIrModuleHaxe complete Flight semantic tail', () => {
     expect(output).toContain('state.callbacks = (cast [] : Array<(Float)->Void>)');
     expect(output).toContain('state.rows = (cast [] : Array<{ value:Float }>)');
     expect(output).toContain('(cast [] : Array<Float>)');
+    expect(output).toContain('items: (cast [] : Array<Float>)');
   });
 
   it('does not promote generic member signatures into repeated expression declarations', () => {

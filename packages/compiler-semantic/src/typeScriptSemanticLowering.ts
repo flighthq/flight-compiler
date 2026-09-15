@@ -920,9 +920,10 @@ function lowerExpression(
         context,
       );
     }
+    const constructionShape = targetShape?.kind === 'array' ? targetShape : contextualShape;
     const constructionType =
-      contextualShape?.kind === 'array' && isIrExpressionValueTypeEvidence(contextualShape)
-        ? contextualShape
+      constructionShape?.kind === 'array' && isIrExpressionValueTypeEvidence(constructionShape)
+        ? constructionShape
         : undefined;
     return {
       elements: node.elements.map((element) =>
