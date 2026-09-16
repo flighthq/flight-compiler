@@ -424,15 +424,15 @@ function emitIrModuleCppWithContext(
   const forwardDeclarations = emitCppForwardDeclarations(module, context);
   // Only a module include can close a cycle, so a module that includes none keeps its usual layout
   // and publishes nothing early.
-  const earlyPublication =
-    imports.length > 0
-      ? planCppEarlyPublicationCpp(declarations, forwardDeclarations, context)
-      : { bindingIds: new Set<string>(), lines: [] };
-  const earlyLines = imports.length > 0 ? [...forwardDeclarations, ...earlyPublication.lines] : [];
   // The early region declares what a cyclic consumer may name, so it precedes this module's
   // includes. It follows the imported forward declarations because a published alias may name
   // another module's type, and only those declarations make it nameable this early.
   const importedForwardDeclarations = emitCppImportedForwardDeclarations(context);
+  const earlyPublication =
+    imports.length > 0
+      ? planCppEarlyPublicationCpp(declarations, forwardDeclarations, importedForwardDeclarations, context)
+      : { bindingIds: new Set<string>(), lines: [] };
+  const earlyLines = imports.length > 0 ? [...forwardDeclarations, ...earlyPublication.lines] : [];
   if (importedForwardDeclarations.length > 0) lines.push('', ...importedForwardDeclarations);
   if (earlyLines.length > 0) {
     lines.push('', `namespace ${namespaceName} {`, ...earlyLines, `} // namespace ${namespaceName}`);
@@ -611,6 +611,7 @@ function planCppEarlyPublicationCpp(
     lines: readonly string[];
   }>[],
   forwardDeclarations: readonly string[],
+  importedForwardDeclarations: readonly string[],
   context: EmitContext,
 ): Readonly<{ bindingIds: ReadonlySet<string>; lines: readonly string[] }> {
   const declaredNames = new Set<string>();
@@ -623,7 +624,7 @@ function planCppEarlyPublicationCpp(
     }
   }
   const forwardDeclaredNames = new Set<string>();
-  for (const line of forwardDeclarations) {
+  for (const line of [...forwardDeclarations, ...importedForwardDeclarations]) {
     for (const match of line.matchAll(/struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gu)) forwardDeclaredNames.add(match[1]!);
   }
   const candidates = declarations.filter(
@@ -639,13 +640,20 @@ function planCppEarlyPublicationCpp(
       const bindingId = entry.declaration.binding.id;
       if (published.has(bindingId)) continue;
       const ownName = getBindingTargetName(entry.declaration.binding, context);
-      const blocked = [...entry.lines.join('\n').matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)]
+      const text = entry.lines.join('\n');
+      const blocked = [...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)]
         .map((match) => match[1]!)
         .some(
           (name) =>
             name !== ownName && declaredNames.has(name) && !forwardDeclaredNames.has(name) && !publishedNames.has(name),
         );
-      if (blocked) continue;
+      // Another module's type is nameable this early only when it is forward-declared here. A
+      // foreign alias is not: it cannot be forward-declared at all, so it becomes nameable only
+      // after this module's includes, and an alias reaching one is not publishable.
+      const foreignUnavailable = [...text.matchAll(/flight::[A-Za-z_][A-Za-z0-9_]*::([A-Za-z_][A-Za-z0-9_]*)/gu)]
+        .map((match) => match[1]!)
+        .some((name) => !forwardDeclaredNames.has(name) && !publishedNames.has(name));
+      if (blocked || foreignUnavailable) continue;
       published.set(bindingId, entry.lines);
       publishedNames.add(ownName);
       progressed = true;
