@@ -429,11 +429,14 @@ function emitIrModuleCppWithContext(
       ? planCppEarlyPublicationCpp(declarations, forwardDeclarations, context)
       : { bindingIds: new Set<string>(), lines: [] };
   const earlyLines = imports.length > 0 ? [...forwardDeclarations, ...earlyPublication.lines] : [];
+  // The early region declares what a cyclic consumer may name, so it precedes this module's
+  // includes. It follows the imported forward declarations because a published alias may name
+  // another module's type, and only those declarations make it nameable this early.
+  const importedForwardDeclarations = emitCppImportedForwardDeclarations(context);
+  if (importedForwardDeclarations.length > 0) lines.push('', ...importedForwardDeclarations);
   if (earlyLines.length > 0) {
     lines.push('', `namespace ${namespaceName} {`, ...earlyLines, `} // namespace ${namespaceName}`);
   }
-  const importedForwardDeclarations = emitCppImportedForwardDeclarations(context);
-  if (importedForwardDeclarations.length > 0) lines.push('', ...importedForwardDeclarations);
   if (imports.length > 0) lines.push('', ...imports);
   if (importedFunctionForwardDeclarations.length > 0) {
     lines.push('', ...importedFunctionForwardDeclarations);
