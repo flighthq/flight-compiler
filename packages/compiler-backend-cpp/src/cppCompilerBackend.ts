@@ -639,15 +639,23 @@ function planCppEarlyPublicationCpp(
       if (entry.declaration.kind !== 'typeAlias') continue;
       const bindingId = entry.declaration.binding.id;
       if (published.has(bindingId)) continue;
-      // An alias whose emitted form defines a struct carries its members' dependencies with it, and
-      // a member may reach a type that is not nameable this early. Publish only pure aliases, which
-      // name their dependencies directly and are therefore checked below.
+      // An alias whose emitted form defines a struct carries its members' dependencies with it, and a
+      // member is expanded from the type it was built on rather than named by the source — so the
+      // module may reach a type it never imports and the IR never mentions. Those names cannot be
+      // read from the IR, so they are checked in the emitted member text, where the distinguishing
+      // signal is that runtime types arrive qualified while the ones that go wrong arrive bare.
       if (
         [...entry.lines, ...entry.anonymousStructLines].some((line) =>
           /^\s*(?:template <[^>]*>\s*)?(?:class|struct)\s+[A-Za-z_][A-Za-z0-9_]*\s*(?::|\{)/u.test(line),
         )
       ) {
-        continue;
+        const members = [...entry.lines, ...entry.anonymousStructLines].join('\n');
+        const unordered = [...members.matchAll(/[<,]\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*([A-Za-z_][A-Za-z0-9_]*)/gu)]
+          .map((match) => match[1]!)
+          .some(
+            (name) => !cppPrimitiveTypeNames.has(name) && !forwardDeclaredNames.has(name) && !publishedNames.has(name),
+          );
+        if (unordered) continue;
       }
       const ownName = getBindingTargetName(entry.declaration.binding, context);
       const text = entry.lines.join('\n');
@@ -692,6 +700,8 @@ function isCppReferenceLikeTypeArgumentCpp(text: string, index: number): boolean
   const wrapper = /([A-Za-z_][A-Za-z0-9_:]*)<$/u.exec(enclosing)?.[1]?.replace(/^flight::/u, '');
   return wrapper !== undefined && cppReferenceLikeWrapperNames.has(wrapper);
 }
+
+const cppPrimitiveTypeNames = new Set(['bool', 'char', 'double', 'float', 'int', 'long', 'short', 'unsigned', 'void']);
 
 const cppReferenceLikeWrapperNames = new Set([
   'Ref',
