@@ -432,7 +432,14 @@ function emitIrModuleCppWithContext(
     imports.length > 0
       ? planCppEarlyPublicationCpp(declarations, forwardDeclarations, importedForwardDeclarations, context)
       : { bindingIds: new Set<string>(), lines: [] };
-  const earlyLines = imports.length > 0 ? [...forwardDeclarations, ...earlyPublication.lines] : [];
+  const earlyLines =
+    imports.length > 0
+      ? [
+          ...forwardDeclarations,
+          ...collectCppMaterializedTypeForwardDeclarationsCpp(declarations),
+          ...earlyPublication.lines,
+        ]
+      : [];
   if (importedForwardDeclarations.length > 0) lines.push('', ...importedForwardDeclarations);
   if (earlyLines.length > 0) {
     lines.push('', `namespace ${namespaceName} {`, ...earlyLines, `} // namespace ${namespaceName}`);
@@ -717,6 +724,31 @@ const cppReferenceLikeWrapperNames = new Set([
   'RowWritable',
   'StructuralRef',
 ]);
+
+// A source alias that materializes to a nominal C++ type is a name a consumer may reach before this
+// module's includes, exactly as a class or interface is. `Node2D` is an intersection alias that emits
+// a struct definition; the module's own forward declarations skip it because the source spells it
+// `type`, so a cyclic consumer finds `Node2DTraits` and `Node2DData` there but not `Node2D` itself.
+// What decides the set is that the emitted declaration is a named type, not the source-level kind
+// that happened to stand in for that question. Only the NAME is made available early; the definition
+// keeps its place, because a definition still has to respect C++ dependency ordering.
+function collectCppMaterializedTypeForwardDeclarationsCpp(
+  declarations: readonly Readonly<{ declaration: Readonly<IrDeclaration>; lines: readonly string[] }>[],
+): string[] {
+  const found = new Map<string, string>();
+  for (const entry of declarations) {
+    if (entry.declaration.kind !== 'typeAlias') continue;
+    for (const line of entry.lines) {
+      const match = /^\s*(?:template <([^>]*)>\s*)?struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::|\{)/u.exec(line);
+      if (!match) continue;
+      const parameters = match[1];
+      const name = match[2]!;
+      found.set(name, `${parameters ? `template <${parameters}> ` : ''}struct ${name};`);
+      break;
+    }
+  }
+  return [...found.values()];
+}
 
 function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitContext): string[] {
   return module.declarations.flatMap((declaration): string[] => {
