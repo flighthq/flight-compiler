@@ -397,7 +397,7 @@ function emitIrModuleCppWithContext(
         '',
         ...emitAnonymousStructCpp(struct, context),
       ]);
-      return { anonymousStructLines, lines };
+      return { anonymousStructLines, declaration, lines };
     });
   const imports = emitImports(module, context);
   const importedFunctionForwardDeclarations = emitCppImportedFunctionForwardDeclarations(context);
@@ -420,18 +420,34 @@ function emitIrModuleCppWithContext(
       'static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");',
     );
   }
+  const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
+  const forwardDeclarations = emitCppForwardDeclarations(module, context);
+  // Only a module include can close a cycle, so a module that includes none keeps its usual layout
+  // and publishes nothing early.
+  const earlyPublication =
+    imports.length > 0
+      ? planCppEarlyPublicationCpp(declarations, forwardDeclarations, context)
+      : { bindingIds: new Set<string>(), lines: [] };
+  const earlyLines = imports.length > 0 ? [...forwardDeclarations, ...earlyPublication.lines] : [];
+  if (earlyLines.length > 0) {
+    lines.push('', `namespace ${namespaceName} {`, ...earlyLines, `} // namespace ${namespaceName}`);
+  }
   const importedForwardDeclarations = emitCppImportedForwardDeclarations(context);
   if (importedForwardDeclarations.length > 0) lines.push('', ...importedForwardDeclarations);
   if (imports.length > 0) lines.push('', ...imports);
   if (importedFunctionForwardDeclarations.length > 0) {
     lines.push('', ...importedFunctionForwardDeclarations);
   }
-  const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
   lines.push('', `namespace ${namespaceName} {`);
-  const forwardDeclarations = emitCppForwardDeclarations(module, context);
-  if (forwardDeclarations.length > 0) lines.push('', ...forwardDeclarations);
+  if (earlyLines.length === 0 && forwardDeclarations.length > 0) lines.push('', ...forwardDeclarations);
   if (reexports.length > 0) lines.push('', ...reexports);
   declarations.forEach((declaration) => {
+    if (
+      declaration.declaration.kind === 'typeAlias' &&
+      earlyPublication.bindingIds.has(declaration.declaration.binding.id)
+    ) {
+      return;
+    }
     lines.push(...declaration.anonymousStructLines);
     lines.push('', ...declaration.lines);
   });
@@ -574,6 +590,70 @@ function encodeCppPublicNameComponent(value: string): string {
       /^[a-z0-9]$/u.test(character) ? character : `_u${character.codePointAt(0)!.toString(16).padStart(6, '0')}_`,
     )
     .join('');
+}
+
+// A cyclically including consumer is processed while this header is still above its own namespace
+// body, so anything it can name must already be declared when this module's includes are read. The
+// decision is made over the WHOLE planned module — anonymous structural objects are materialized
+// during planning, not discovered while emitting — because whether a name is available early depends
+// on what the rest of the module turns out to declare. A name is available early only when this
+// header forward-declares it, or when an alias already published in the same region introduces it.
+// An alias reaching anything else, including an anonymous struct defined in the body, stays where it
+// is: publishing it would place a use above its definition, which fails silently at the C++ compiler
+// rather than refusing here.
+function planCppEarlyPublicationCpp(
+  declarations: readonly Readonly<{
+    anonymousStructLines: readonly string[];
+    declaration: Readonly<IrDeclaration>;
+    lines: readonly string[];
+  }>[],
+  forwardDeclarations: readonly string[],
+  context: EmitContext,
+): Readonly<{ bindingIds: ReadonlySet<string>; lines: readonly string[] }> {
+  const declaredNames = new Set<string>();
+  for (const text of [
+    ...declarations.flatMap((entry) => [...entry.anonymousStructLines, ...entry.lines]),
+    ...forwardDeclarations,
+  ]) {
+    for (const match of text.matchAll(/(?:^|\s)(?:class|struct|using)\s+([A-Za-z_][A-Za-z0-9_]*)/gu)) {
+      declaredNames.add(match[1]!);
+    }
+  }
+  const forwardDeclaredNames = new Set<string>();
+  for (const line of forwardDeclarations) {
+    for (const match of line.matchAll(/struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gu)) forwardDeclaredNames.add(match[1]!);
+  }
+  const candidates = declarations.filter(
+    (entry) => entry.declaration.kind === 'typeAlias' && entry.declaration.exported,
+  );
+  const publishedNames = new Set<string>();
+  const published = new Map<string, readonly string[]>();
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const entry of candidates) {
+      if (entry.declaration.kind !== 'typeAlias') continue;
+      const bindingId = entry.declaration.binding.id;
+      if (published.has(bindingId)) continue;
+      const ownName = getBindingTargetName(entry.declaration.binding, context);
+      const blocked = [...entry.lines.join('\n').matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)]
+        .map((match) => match[1]!)
+        .some(
+          (name) =>
+            name !== ownName && declaredNames.has(name) && !forwardDeclaredNames.has(name) && !publishedNames.has(name),
+        );
+      if (blocked) continue;
+      published.set(bindingId, entry.lines);
+      publishedNames.add(ownName);
+      progressed = true;
+    }
+  }
+  return {
+    bindingIds: new Set(published.keys()),
+    lines: candidates.flatMap((entry) =>
+      entry.declaration.kind === 'typeAlias' ? (published.get(entry.declaration.binding.id) ?? []) : [],
+    ),
+  };
 }
 
 function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitContext): string[] {
