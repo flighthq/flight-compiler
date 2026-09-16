@@ -786,6 +786,28 @@ function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
       const owner = getCppDirectBindingOwner(type, context);
       if (!owner || getCppModuleIdentityKey(owner.module) === getCppModuleIdentityKey(context.module)) return;
       if (owner.declaration.kind !== 'class' && owner.declaration.kind !== 'interface') return;
+      // An interface the facet representation elects is emitted as an alias, not a struct, so a
+      // forward declaration of it would conflict with that alias. The module's own forward
+      // declarations already skip these; a forward declaration made on another module's behalf has
+      // to skip them too, or the same name arrives here as a struct and there as a using.
+      if (
+        owner.declaration.kind === 'interface' &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        context.referenceRepresentationPlanner.resolveFacetReference(
+          {
+            kind: 'named',
+            reference: { binding: owner.declaration.binding, kind: 'binding', path: [] },
+            typeArguments: owner.declaration.typeParameters.map((parameter) => ({
+              kind: 'named',
+              reference: { binding: parameter.binding, kind: 'binding', path: [] },
+              typeArguments: [],
+            })),
+          },
+          owner.module,
+        )
+      ) {
+        return;
+      }
       const namespace = getCppCompilerPackageNamespace(owner.module.packageName, context.options.packageTargets);
       const targetName =
         context.targetNameMaps.get(getCppModuleIdentityKey(owner.module))?.get(owner.declaration.binding.id) ??
