@@ -762,6 +762,27 @@ function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
       declarations.set(`${namespace}\0${declaration}`, { declaration, namespace });
     }
   }
+  // A declaration published above the includes can reach a type this module never imports — a
+  // member of a published struct definition, say — and the source names no module that owns it. So
+  // the set is not the import list alone: every reference the module's own types make is considered
+  // too, which is what lets such a declaration have its types declared this early.
+  analyzeIrModuleTraversal(context.module, {
+    type(type) {
+      if (type.kind !== 'named') return;
+      const owner = getCppDirectBindingOwner(type, context);
+      if (!owner || getCppModuleIdentityKey(owner.module) === getCppModuleIdentityKey(context.module)) return;
+      if (owner.declaration.kind !== 'class' && owner.declaration.kind !== 'interface') return;
+      const namespace = getCppCompilerPackageNamespace(owner.module.packageName, context.options.packageTargets);
+      const targetName =
+        context.targetNameMaps.get(getCppModuleIdentityKey(owner.module))?.get(owner.declaration.binding.id) ??
+        safeCppTypeName(owner.declaration.binding.name);
+      const typeParameters = owner.declaration.typeParameters.map((parameter) =>
+        safeCppTypeName(parameter.binding.name),
+      );
+      const declaration = `${typeParameters.length > 0 ? `template <${typeParameters.map((name) => `typename ${name}`).join(', ')}> ` : ''}struct ${targetName};`;
+      declarations.set(`${namespace}\0${declaration}`, { declaration, namespace });
+    },
+  });
   return [...declarations.values()]
     .sort((left, right) =>
       compareTextCodeUnits(`${left.namespace}\0${left.declaration}`, `${right.namespace}\0${right.declaration}`),
