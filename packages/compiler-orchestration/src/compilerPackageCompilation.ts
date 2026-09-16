@@ -250,7 +250,12 @@ function compareCompilerPackageGraphRefusals(
 
 function createCompilerPackageGraphEmissionRefusal(error: unknown): CompilerPackageCompilationRefusal {
   if (isBackendEmissionFailure(error)) {
-    return { code: error.code, message: error.message, stage: 'emission' };
+    return {
+      code: error.code,
+      message: error.message,
+      ...(error.rule === undefined ? {} : { rule: error.rule }),
+      stage: 'emission',
+    };
   }
   if (isCompilerLoweringFailure(error) && error.code === 'unsupported-ir') {
     return { code: error.code, message: error.message, stage: 'emission' };

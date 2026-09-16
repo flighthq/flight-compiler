@@ -48,6 +48,16 @@ export interface BackendEmissionFailure extends Error, CompilerSourceIdentity {
   readonly backend: string;
   readonly code: BackendEmissionFailureCode;
   readonly kind: 'backend-emission';
+  /**
+   * The stable identity of the decision this refusal records, when the message is not one.
+   *
+   * A message that names no instance — `object getters require target-specific accessor lowering` —
+   * is already the identity of the decision and needs no second spelling. A message that embeds
+   * instance data is not: forty modules refused for forty different missing symbols produce forty
+   * messages describing one decision, and only the rule tells a consumer that. So `rule` is present
+   * exactly when the message varies by instance, and a consumer groups by `rule ?? message`.
+   */
+  readonly rule?: string | undefined;
 }
 
 export type HaxeCompilerEmissionMode = 'extern' | 'transpile';

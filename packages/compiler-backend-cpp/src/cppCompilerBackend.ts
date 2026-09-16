@@ -266,7 +266,7 @@ function emitIrModuleCppWithContext(
     ]);
   } catch (error) {
     if (isCompilerLoweringFailure(error) && error.code === 'unsupported-ir') {
-      throw createBackendEmissionFailure('cpp', sourceModule, error.message);
+      throw createBackendEmissionFailure('cpp', sourceModule, error.message, 'cpp-lowering-pass-refused');
     }
     throw error;
   }
@@ -291,6 +291,7 @@ function emitIrModuleCppWithContext(
         'cpp',
         module,
         `public declarations share fixed C++ target name ${error.targetName}`,
+        'cpp-fixed-target-name-collision',
       );
     }
     throw error;
@@ -458,7 +459,11 @@ function assertCppOutputHasNoUnresolvedTypePlaceholder(contents: string, context
     contents.match(/\busing\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*auto\s*;/u)?.[0] ??
     contents.match(/^\s*auto\s+[A-Za-z_][A-Za-z0-9_]*\s*;/mu)?.[0];
   if (invalid) {
-    emissionError(context, `flight-cpp type position retains unresolved auto placeholder: ${invalid.trim()}`);
+    emissionError(
+      context,
+      `flight-cpp type position retains unresolved auto placeholder: ${invalid.trim()}`,
+      'cpp-unresolved-type-placeholder',
+    );
   }
 }
 
@@ -905,7 +910,11 @@ function emitEnum(declaration: Readonly<IrEnumDeclaration>, context: EmitContext
   const namespaceFunctions = getIrEnumNamespaceFunctionsCpp(declaration, context);
   if (namespaceFunctions.length > 0) {
     if (allStringValues) {
-      emissionError(context, `string enum ${declaration.binding.name} value namespace requires wrapper lowering`);
+      emissionError(
+        context,
+        `string enum ${declaration.binding.name} value namespace requires wrapper lowering`,
+        'cpp-string-enum-value-namespace-wrapper',
+      );
     }
     return emitNumericEnumNamespaceWrapperCpp(declaration, namespaceFunctions, context);
   }
@@ -1082,7 +1091,11 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   );
   if (facet && getCppRuntimeProfile(context.options) === 'flight-cpp') {
     if (declaration.typeParameters.length > 0) {
-      emissionError(context, `facet interface ${declaration.binding.name} must be nongeneric`);
+      emissionError(
+        context,
+        `facet interface ${declaration.binding.name} must be nongeneric`,
+        'cpp-facet-interface-generic',
+      );
     }
     context.includes.add('flight/conditional_facet_ref.hpp');
     const tag = getCppFacetTagNameCpp(declaration.binding, context);
@@ -1225,7 +1238,11 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
     emissionError(context, 'binding patterns require destructuring lowering before C++ emission');
   }
   if (!declaration.type && !declaration.initializer) {
-    emissionError(context, `uninitialized variable ${declaration.binding.name} requires inferred type evidence`);
+    emissionError(
+      context,
+      `uninitialized variable ${declaration.binding.name} requires inferred type evidence`,
+      'cpp-uninitialized-variable-missing-type-evidence',
+    );
   }
   const name = getBindingTargetName(declaration.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(declaration.binding.id);
@@ -1257,7 +1274,11 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     emissionError(context, 'binding patterns require destructuring lowering before C++ emission');
   }
   if (!variable.type && !variable.initializer) {
-    emissionError(context, `uninitialized variable ${variable.binding.name} requires inferred type evidence`);
+    emissionError(
+      context,
+      `uninitialized variable ${variable.binding.name} requires inferred type evidence`,
+      'cpp-uninitialized-variable-missing-type-evidence',
+    );
   }
   const name = getBindingTargetName(variable.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(variable.binding.id);
@@ -1294,9 +1315,9 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       ? emitType(contextualStorageTarget, context)
       : structuralCastRow
         ? emitCppStructuralRowReferenceTypeCpp(structuralCastRow, context)
-      : weakMapViewPlan || !variable.type || preservedInitializerType
-        ? 'auto'
-        : emitType(variable.type, context);
+        : weakMapViewPlan || !variable.type || preservedInitializerType
+          ? 'auto'
+          : emitType(variable.type, context);
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
   const initializer = variable.initializer
@@ -1324,7 +1345,11 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       if (variable.initialValue === 'undefined') {
         return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(type, 'std::nullopt', context)};`;
       }
-      emissionError(context, `shared mutable capture ${variable.binding.name} requires explicit initial storage`);
+      emissionError(
+        context,
+        `shared mutable capture ${variable.binding.name} requires explicit initial storage`,
+        'cpp-shared-mutable-capture-missing-initial-storage',
+      );
     }
     const sharedType = emitOptionalTypeCpp(type, arrayElement, context);
     const sharedInitializer = arrayElement
@@ -1548,7 +1573,12 @@ function emitExpression(
             : expression.operator === '-='
               ? `static_cast<double>(assignment_receiver${operator}size()) - ${right}`
               : undefined;
-        if (!value) emissionError(context, `array length ${expression.operator} requires checked resize lowering`);
+        if (!value)
+          emissionError(
+            context,
+            `array length ${expression.operator} requires checked resize lowering`,
+            'cpp-array-length-assignment-unsupported',
+          );
         return `([&]() { auto&& assignment_receiver = ${receiver}; const auto assignment_value = ${value}; assignment_receiver${operator}resize(assignment_value); return assignment_value; }())`;
       }
       if (
@@ -2012,10 +2042,7 @@ function emitExpression(
       const structuralProjectionTarget = structuralSource
         ? getCppStructuralProjectionRowCpp(expression.type, context)
         : undefined;
-      if (
-        (structuralTarget || structuralProjectionTarget) &&
-        getCppRuntimeProfile(context.options) === 'flight-cpp'
-      ) {
+      if ((structuralTarget || structuralProjectionTarget) && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         if (expression.expression.kind === 'object') {
           return emitExpression(expression.expression, context, expression.type);
         }
@@ -2033,11 +2060,7 @@ function emitExpression(
           : emitType(expression.type, context);
         return `flight::structural_ref_cast<${target}>(${emitExpression(expression.expression, context)})`;
       }
-      if (
-        structuralSource &&
-        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        structuralSourceType
-      ) {
+      if (structuralSource && getCppRuntimeProfile(context.options) === 'flight-cpp' && structuralSourceType) {
         const targetPlan = context.referenceRepresentationPlanner.plan(expression.type, context.module);
         if (
           targetPlan.kind !== 'represented' ||
@@ -2596,8 +2619,7 @@ function emitExpression(
           ),
         );
         const evaluations = properties.map(
-          (property) =>
-            `auto ${temporaries.get(property)!} = ${emitPropertyValue(property)};`,
+          (property) => `auto ${temporaries.get(property)!} = ${emitPropertyValue(property)};`,
         );
         const initializer = `{${orderedProperties
           .map((property) => `.${safeCppName(property.name)} = ${temporaries.get(property)!}`)
@@ -2661,7 +2683,11 @@ function emitExpression(
         !context.narrowedBindingTypes.has(expression.object.reference.binding.id) &&
         getIrBindingVariantUnionTypeCpp(expression.object.reference.binding.id, context)
       ) {
-        emissionError(context, `property ${expression.name} on a C++ variant requires proven union member access`);
+        emissionError(
+          context,
+          `property ${expression.name} on a C++ variant requires proven union member access`,
+          'cpp-union-member-access-unguarded',
+        );
       }
       const classDeclaration = getIrExpressionClassDeclarationCpp(expression.object, context);
       if (classDeclaration) {
@@ -2831,7 +2857,11 @@ function emitExpression(
       return `std::make_tuple(${elements.join(', ')})`;
     }
     case 'objectRest':
-      emissionError(context, `${expression.kind} expressions require C++ structured binding lowering`);
+      emissionError(
+        context,
+        `${expression.kind} expressions require C++ structured binding lowering`,
+        `cpp-structured-binding-unsupported:${expression.kind}`,
+      );
   }
 }
 
@@ -2889,16 +2919,12 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
       member.kind === 'null' || member.kind === 'undefined',
   );
   const declaredSourceSentinels = sourceSentinels.filter((member) => member.kind !== 'undefined');
-  const sourceValues = sourceUnion.types.filter(
-    (member) => member.kind !== 'null' && member.kind !== 'undefined',
-  );
+  const sourceValues = sourceUnion.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
   const expectedSentinels = expectedUnion.types.filter(
     (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
       member.kind === 'null' || member.kind === 'undefined',
   );
-  const expectedValues = expectedUnion.types.filter(
-    (member) => member.kind !== 'null' && member.kind !== 'undefined',
-  );
+  const expectedValues = expectedUnion.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
   if (
     declaredSourceSentinels.length !== 1 ||
     sourceValues.length !== 1 ||
@@ -2909,10 +2935,7 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
   ) {
     return undefined;
   }
-  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(
-    expectedValues[0]!,
-    context.module,
-  );
+  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(expectedValues[0]!, context.module);
   const targetObject = targetRow ? getCppStructuralRowObjectTypeCpp(targetRow) : undefined;
   const sourcePlan = context.referenceRepresentationPlanner.plan(
     sourceValues[0]!,
@@ -2936,13 +2959,7 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
   const presentValue = structuralProjection
     ? `${targetType}(${propertyName}.value().value())`
     : `${propertyName}.value().value()`;
-  const present = emitCppUnionValueConstruction(
-    presentValue,
-    targetType,
-    expectedUnion,
-    expectedPlan.kind,
-    context,
-  );
+  const present = emitCppUnionValueConstruction(presentValue, targetType, expectedUnion, expectedPlan.kind, context);
   const declaredAbsence = emitCppUnionSentinelConstruction(
     declaredSourceSentinels[0]!.kind,
     expectedUnion,
@@ -3966,7 +3983,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       ) {
         const plan = context.referenceRepresentationPlanner.plan(type, context.module);
         if (plan.kind === 'refused') {
-          emissionError(context, `imported type ${type.reference.binding.name} has ${plan.reason}`);
+          emissionError(
+            context,
+            `imported type ${type.reference.binding.name} has ${plan.reason}`,
+            `cpp-imported-type-unsupported:${plan.reason}`,
+          );
         }
       }
       if (sourceName === 'Exclude') {
@@ -3976,14 +3997,22 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       }
       if (sourceName === 'Parameters' || sourceName === 'ReturnType') {
         if (type.typeArguments.length !== 1 || !type.typeArguments[0]) {
-          emissionError(context, `${sourceName}<T> requires exactly one callable type argument`);
+          emissionError(
+            context,
+            `${sourceName}<T> requires exactly one callable type argument`,
+            'cpp-callable-type-argument-count',
+          );
         }
         const externalCallResult =
           sourceName === 'ReturnType' ? getCppExternalCallResultTypeCpp(type.typeArguments[0], context) : undefined;
         if (externalCallResult) return externalCallResult;
         const callable = getCppClosedCallableType(type.typeArguments[0], context, new Set());
         if (!callable || callable.typeParameters.length > 0) {
-          emissionError(context, `${sourceName}<T> requires a statically resolvable non-generic callable type`);
+          emissionError(
+            context,
+            `${sourceName}<T> requires a statically resolvable non-generic callable type`,
+            'cpp-callable-type-unresolvable',
+          );
         }
         if (callable.parameters.some((parameter) => parameter.rest)) {
           emissionError(
@@ -4007,7 +4036,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
               };
         const emitted = emitType(projected, context, representation);
         if (/\bauto\b/u.test(emitted)) {
-          emissionError(context, `${sourceName}<T> result requires concrete C++ type evidence`);
+          emissionError(
+            context,
+            `${sourceName}<T> result requires concrete C++ type evidence`,
+            'cpp-callable-result-missing-type-evidence',
+          );
         }
         return emitted;
       }
@@ -4075,7 +4108,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       }));
       const unresolved = emittedProperties.find((property) => /\bauto\b/u.test(property.type));
       if (unresolved) {
-        emissionError(context, `anonymous object property ${unresolved.name} requires concrete C++ type evidence`);
+        emissionError(
+          context,
+          `anonymous object property ${unresolved.name} requires concrete C++ type evidence`,
+          'cpp-anonymous-object-property-missing-type-evidence',
+        );
       }
       // Literal discriminants can erase to one target scalar type while still requiring distinct
       // variant alternatives. Key helpers by neutral structure, not only their emitted field types.
@@ -4156,7 +4193,9 @@ function emitCppNominalIntersectionImplementationTypeCpp(
       return false;
     }
     const plan = context.referenceRepresentationPlanner.plan(member, context.module);
-    return plan.kind === 'represented' && plan.category === 'interface' && plan.valueRepresentation === 'flightReference';
+    return (
+      plan.kind === 'represented' && plan.category === 'interface' && plan.valueRepresentation === 'flightReference'
+    );
   });
   if (!baseType) return undefined;
   const baseProperties = context.referenceRepresentationPlanner.resolveObjectShape(baseType, context.module);
@@ -4937,17 +4976,29 @@ function emitCppRecordLiteralKey(name: string, keyType: Readonly<IrType>, contex
       ? keyPlan.valueSlots[0]!.runtimeType
       : getIrTypeRuntimeDomainCpp(keyType, context, new Set());
   if (runtimeType?.kind !== 'primitive') {
-    emissionError(context, `Record literal key ${name} requires a single string or number runtime domain`);
+    emissionError(
+      context,
+      `Record literal key ${name} requires a single string or number runtime domain`,
+      'cpp-record-key-no-single-runtime-domain',
+    );
   }
   if (runtimeType.name === 'string') {
     return emitExpression({ kind: 'literal', value: name }, context, runtimeType);
   }
   if (runtimeType.name !== 'number') {
-    emissionError(context, `Record literal key ${name} requires a string or number runtime domain`);
+    emissionError(
+      context,
+      `Record literal key ${name} requires a string or number runtime domain`,
+      'cpp-record-key-not-string-or-number-domain',
+    );
   }
   const numeric = Number(name);
   if (!Number.isFinite(numeric)) {
-    emissionError(context, `Record literal key ${name} is not a finite numeric key`);
+    emissionError(
+      context,
+      `Record literal key ${name} is not a finite numeric key`,
+      'cpp-record-key-not-finite-numeric',
+    );
   }
   return emitExpression({ kind: 'literal', value: numeric }, context, runtimeType);
 }
@@ -4973,7 +5024,7 @@ function isCppFunctionExpressionCompatibleWithCallableCpp(
       (parameter, index) =>
         (parameter.type.kind === 'unknown' && parameter.type.source === 'any') ||
         emitCppParameterTypeCpp(parameter.type, parameter.rest, context) ===
-        emitCppParameterTypeCpp(callable.parameters[index]!.type, callable.parameters[index]!.rest, context),
+          emitCppParameterTypeCpp(callable.parameters[index]!.type, callable.parameters[index]!.rest, context),
     ) &&
     isCppFunctionExpressionReturnCompatibleCpp(expression, callable.returns, context)
   );
@@ -5395,7 +5446,11 @@ function getCppUnionRepresentationPlan(
   });
   if (plan.kind === 'refused') {
     const targetTypes = plan.collisions.map((collision) => collision.targetType).join(', ');
-    emissionError(context, `union has distinct runtime domains erased by C++ target type ${targetTypes}`);
+    emissionError(
+      context,
+      `union has distinct runtime domains erased by C++ target type ${targetTypes}`,
+      'cpp-union-runtime-domains-erased',
+    );
   }
   return plan;
 }
@@ -5489,7 +5544,11 @@ function emitContextualUnionExpressionCpp(
   const expressionType = getIrExpressionTypeForUnionConstructionCpp(expression, plan.valueSlots, context);
   if (!expressionType) {
     if (plan.kind === 'singleValue') return undefined;
-    emissionError(context, `contextual ${plan.kind} construction requires expression type evidence`);
+    emissionError(
+      context,
+      `contextual ${plan.kind} construction requires expression type evidence`,
+      `cpp-contextual-union-missing-expression-type:${plan.kind}`,
+    );
   }
   const expressionUnion = getIrUnionTypeCpp(expressionType, context, new Set());
   if (expressionUnion) {
@@ -5522,12 +5581,20 @@ function emitContextualUnionExpressionCpp(
   }
   const runtimeType = getIrTypeRuntimeDomainCpp(expressionType, context, new Set());
   if (!runtimeType) {
-    emissionError(context, `contextual ${plan.kind} construction requires one runtime value domain`);
+    emissionError(
+      context,
+      `contextual ${plan.kind} construction requires one runtime value domain`,
+      `cpp-contextual-union-missing-value-domain:${plan.kind}`,
+    );
   }
   const targetType = emitType(runtimeType, context);
   const valueSlot = plan.valueSlots.findIndex((slot) => slot.targetType === targetType);
   if (valueSlot < 0) {
-    emissionError(context, `contextual union value type ${targetType} is not a represented runtime domain`);
+    emissionError(
+      context,
+      `contextual union value type ${targetType} is not a represented runtime domain`,
+      'cpp-contextual-union-value-type-unrepresented',
+    );
   }
   const emitted = emitExpression(expression, context, runtimeType, false);
   return emitCppUnionValueConstruction(emitted, targetType, union, plan.kind, context);
@@ -5619,7 +5686,11 @@ function emitAsyncTaskAdoptionCpp(expression: Readonly<IrExpression>, context: E
   if (!runtimeType) emissionError(context, 'async task adoption requires an awaited runtime value domain');
   const targetType = emitType(runtimeType, context);
   if (!plan.valueSlots.some((slot) => slot.targetType === targetType)) {
-    emissionError(context, `async task adoption value type ${targetType} is not a represented runtime domain`);
+    emissionError(
+      context,
+      `async task adoption value type ${targetType} is not a represented runtime domain`,
+      'cpp-async-task-value-type-unrepresented',
+    );
   }
   return emitCppUnionValueConstruction(awaited, targetType, union, plan.kind, context);
 }
@@ -5656,7 +5727,11 @@ function emitCppUnionSentinelConstruction(
     return 'std::nullopt';
   }
   if (planKind !== 'dualSentinelVariant') {
-    emissionError(context, `${sentinel} is not represented by the contextual C++ union`);
+    emissionError(
+      context,
+      `${sentinel} is not represented by the contextual C++ union`,
+      'cpp-union-sentinel-unrepresented',
+    );
   }
   const sentinels = getCppDualSentinelTargetTypes(context);
   const targetType = sentinels[sentinel];
@@ -6548,8 +6623,7 @@ function collectCppContextualBindingStorageTargetTypesCpp(
         !variable.mutable &&
         variable.initializer &&
         variable.type &&
-        ((variable.initializer.kind === 'object' &&
-          hasFlightReferenceRepresentationCpp(variable.type, context)) ||
+        ((variable.initializer.kind === 'object' && hasFlightReferenceRepresentationCpp(variable.type, context)) ||
           getIrArrayTypeCpp(inferredType, context, new Set()) !== undefined)
       ) {
         eligible.add(variable.binding.id);
@@ -6569,25 +6643,13 @@ function collectCppContextualBindingStorageTargetTypesCpp(
     const returnType = getCppNonNullableType(declaration.returns, context, new Set()) ?? declaration.returns;
     for (const statement of declaration.body) {
       if (statement.kind !== 'return' || statement.expression?.kind !== 'object') continue;
-      collectCppObjectContextualStorageTargetsCpp(
-        statement.expression,
-        returnType,
-        eligible,
-        candidates,
-        context,
-      );
+      collectCppObjectContextualStorageTargetsCpp(statement.expression, returnType, eligible, candidates, context);
     }
   }
   analyzeIrModuleTraversal(module, {
     expression(expression) {
       if (expression.kind === 'object') {
-        collectCppObjectContextualStorageTargetsCpp(
-          expression,
-          expression.type,
-          eligible,
-          candidates,
-          context,
-        );
+        collectCppObjectContextualStorageTargetsCpp(expression, expression.type, eligible, candidates, context);
       }
       if (expression.kind !== 'call') return;
       expression.arguments.forEach((argument, index) => {
@@ -6686,9 +6748,9 @@ function isCppContextualCollectionProjectionCpp(
   const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetArray.element, context.module);
   return Boolean(
     sourceShape &&
-      targetShape &&
-      hasFlightReferenceRepresentationCpp(targetArray.element, context) &&
-      areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context),
+    targetShape &&
+    hasFlightReferenceRepresentationCpp(targetArray.element, context) &&
+    areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context),
   );
 }
 
@@ -6726,12 +6788,20 @@ function emitCppExternalBindingStorageTypeCpp(
 ): string {
   if (!type || type.kind === 'unknown') return targetType;
   if (type.kind !== 'union') {
-    emissionError(context, `external binding storage ${targetType} requires unresolved source type evidence`);
+    emissionError(
+      context,
+      `external binding storage ${targetType} requires unresolved source type evidence`,
+      'cpp-external-binding-missing-source-type-evidence',
+    );
   }
   const present = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
   const absent = type.types.filter((member) => member.kind === 'null' || member.kind === 'undefined');
   if (present.length !== 1 || present[0]!.kind !== 'unknown' || absent.length !== 1) {
-    emissionError(context, `external binding storage ${targetType} requires one unresolved optional value domain`);
+    emissionError(
+      context,
+      `external binding storage ${targetType} requires one unresolved optional value domain`,
+      'cpp-external-binding-missing-optional-domain',
+    );
   }
   context.includes.add('optional');
   return `std::optional<${targetType}>`;
@@ -6850,7 +6920,12 @@ function appendCppOmittedInvocationArguments(
   const omitted = new Set([...(declaration ? (defaults?.omitted ?? []) : []), ...(optionals?.omitted ?? [])]);
   const result = [...emitted];
   for (let index = emitted.length; index < plan.parameterCount; index += 1) {
-    if (!omitted.has(index)) emissionError(context, `missing required call argument at position ${String(index)}`);
+    if (!omitted.has(index))
+      emissionError(
+        context,
+        `missing required call argument at position ${String(index)}`,
+        'cpp-call-argument-missing',
+      );
     result.push('std::nullopt');
   }
   context.includes.add('optional');
@@ -7464,11 +7539,7 @@ function getIrIdentifierTypeEvidenceCpp(
     const present = union.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
     if (present.length === 1) return present[0];
   }
-  if (
-    expression.presence !== 'narrowedPresent' &&
-    !union &&
-    context.nullableBindingIds.has(bindingId)
-  ) {
+  if (expression.presence !== 'narrowedPresent' && !union && context.nullableBindingIds.has(bindingId)) {
     return { kind: 'union', types: [declaredType, { kind: 'undefined' }] };
   }
   if (!expression.narrowedMember) return declaredType;
@@ -8958,22 +9029,17 @@ function emitCppForeignAnonymousObjectValueCpp(
     const temporaries = new Map(
       members.map((member) => [member, getGeneratedTargetName(`object_member_${member.name}`, context)] as const),
     );
-    const evaluations = members.map(
-      (member) => {
-        const expected = objectType.properties.find((property) => property.name === member.name)?.type;
-        return `auto ${temporaries.get(member)!} = ${emitMemberValue(member, expected)};`;
-      },
-    );
+    const evaluations = members.map((member) => {
+      const expected = objectType.properties.find((property) => property.name === member.name)?.type;
+      return `auto ${temporaries.get(member)!} = ${emitMemberValue(member, expected)};`;
+    });
     const initializer = ordered
       .map(({ member }) => `.${safeCppName(member.name)} = ${temporaries.get(member)!}`)
       .join(', ');
     return `([&]() { ${evaluations.join(' ')} return flight::make_ref<${qualified}>(${qualified}{${initializer}}); }())`;
   }
   const initializer = ordered
-    .map(
-      ({ expected, member }) =>
-        `.${safeCppName(member.name)} = ${emitMemberValue(member, expected.type)}`,
-    )
+    .map(({ expected, member }) => `.${safeCppName(member.name)} = ${emitMemberValue(member, expected.type)}`)
     .join(', ');
   return `flight::make_ref<${qualified}>(${qualified}{${initializer}})`;
 }
@@ -9182,7 +9248,12 @@ function emitOptionalPropertyCallExpressionCpp(
   }
   const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
   const returns = getCppCallableReturnType(semantics.valueType, context, new Set());
-  if (!returns) emissionError(context, `optional property call ${callee.name} requires callable result evidence`);
+  if (!returns)
+    emissionError(
+      context,
+      `optional property call ${callee.name} requires callable result evidence`,
+      'cpp-optional-property-call-missing-callable-result',
+    );
   const receiver = emitOptionalChainReceiverCpp(callee.object, context);
   const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';
   const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context)).join(', ');
@@ -9255,10 +9326,7 @@ function emitOptionalPropertyExpressionCpp(
   const object = emitOptionalChainReceiverCpp(expression.object, context);
   const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';
   let projected: string;
-  const structuralReceiver = context.referenceRepresentationPlanner.resolveStructuralRow(
-    receiverType,
-    context.module,
-  );
+  const structuralReceiver = context.referenceRepresentationPlanner.resolveStructuralRow(receiverType, context.module);
   if (structuralReceiver) {
     context.includes.add('flight/structural_ref.hpp');
     projected = `flight::row_get<flight::RowKey<${JSON.stringify(expression.name)}>>(optional_chain_receiver.value())`;
@@ -9293,8 +9361,7 @@ function emitOptionalPropertyExpressionCpp(
     declaredProperty?.optional === true &&
     (declaredUnionPlan?.kind === 'optionalSingle' || declaredUnionPlan?.kind === 'optionalVariant');
   const returned =
-    !structuralReceiver &&
-    (nestedOptionalStorage || projectedStorageType === `std::optional<${resultType}>`)
+    !structuralReceiver && (nestedOptionalStorage || projectedStorageType === `std::optional<${resultType}>`)
       ? `${projected}.value_or(std::nullopt)`
       : projected;
   context.includes.add('optional');
@@ -9676,10 +9743,7 @@ function emitCppParameterTypeCpp(type: Readonly<IrType>, rest: boolean, context:
   return emitType(type, context);
 }
 
-function isCppGenericStructuralSequenceParameterCpp(
-  parameter: Readonly<IrParameter>,
-  context: EmitContext,
-): boolean {
+function isCppGenericStructuralSequenceParameterCpp(parameter: Readonly<IrParameter>, context: EmitContext): boolean {
   if (parameter.rest || getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
   const array = getIrArrayTypeCpp(parameter.type, context, new Set());
   return Boolean(array?.readonly && array.element.kind === 'object');
@@ -9743,7 +9807,12 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
   return module.exports.flatMap((exported) => {
     if (exported.kind === 'namespace') {
       const targetModule = getCppResolvedImportModule(exported.specifier, context);
-      if (!targetModule) emissionError(context, `namespace reexport ${exported.exported} requires module resolution`);
+      if (!targetModule)
+        emissionError(
+          context,
+          `namespace reexport ${exported.exported} requires module resolution`,
+          'cpp-namespace-reexport-unresolved',
+        );
       return [
         `namespace ${safeCppName(exported.exported)} = ${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)};`,
       ];
@@ -9771,7 +9840,11 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
         : [`using ${safeCppTypeName(exported.exported)} = ${qualified};`];
     }
     if (exported.exported !== exported.imported) {
-      emissionError(context, `renamed value reexport ${exported.exported} requires callable or storage alias lowering`);
+      emissionError(
+        context,
+        `renamed value reexport ${exported.exported} requires callable or storage alias lowering`,
+        'cpp-renamed-value-reexport-unsupported',
+      );
     }
     return targetModule && targetModule.packageName !== module.packageName ? [`using ${qualified};`] : [];
   });
@@ -10598,7 +10671,11 @@ function getCppImportedBindingTargetName(
     const targetModule =
       directTargets.length === 1 ? directTargets[0]! : getCppResolvedImportModule(importItem.specifier, context);
     if (!targetModule) {
-      emissionError(context, `imported binding ${importedName} requires one module export target`);
+      emissionError(
+        context,
+        `imported binding ${importedName} requires one module export target`,
+        'cpp-imported-binding-no-export-target',
+      );
     }
     const targetName = getCppResolvedExportTargetName(targetModule, importedName, space, context);
     return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
@@ -10632,7 +10709,11 @@ function getCppNamespaceImportMemberTargetNameCpp(
     if (!importedBinding) continue;
     const targetModule = getCppResolvedImportModule(importItem.specifier, context);
     if (!targetModule) {
-      emissionError(context, `namespace import ${importedBinding.binding.name} requires module resolution`);
+      emissionError(
+        context,
+        `namespace import ${importedBinding.binding.name} requires module resolution`,
+        'cpp-namespace-import-unresolved',
+      );
     }
     const targetName = getCppResolvedExportTargetName(targetModule, expression.name, 'value', context);
     const namespaceName = getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets);
@@ -10773,6 +10854,7 @@ function assertRuntimeExternalSymbolBindingsCpp(
     'cpp',
     module,
     `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
+    'cpp-runtime-external-symbol-binding-incomplete',
   );
 }
 
@@ -10957,8 +11039,8 @@ function isSuperCallStatement(statement: Readonly<IrStatement>): boolean {
   );
 }
 
-function emissionError(context: EmitContext, message: string): never {
-  throw createBackendEmissionFailure('cpp', context.module, message);
+function emissionError(context: EmitContext, message: string, rule?: string): never {
+  throw createBackendEmissionFailure('cpp', context.module, message, rule);
 }
 
 const cppOptionalArrayMethods = new Set(['find', 'shift', 'pop']);

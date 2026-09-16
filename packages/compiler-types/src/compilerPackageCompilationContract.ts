@@ -87,6 +87,12 @@ export interface CompilerPackageCompilationRefusal {
    * reached.
    */
   readonly refusedDependencies?: readonly string[] | undefined;
+  /**
+   * The stable identity of the decision this refusal records, when `message` is not one. Group by
+   * `rule ?? message`: a message that embeds instance data describes one decision in as many
+   * spellings as it has instances, and only the rule joins them.
+   */
+  readonly rule?: string | undefined;
   readonly stage: 'dependency' | 'emission' | 'initialization' | 'lowering';
 }
 

@@ -223,6 +223,51 @@ describe('compileTypeScriptPackageGraph', () => {
     ]);
   });
 
+  it('carries a backend refusal rule into the report so instances of one decision group together', () => {
+    const badA = source('@local/source', 'source', 'badA.ts', 'export const badA = 1;');
+    const badB = source('@local/source', 'source', 'badB.ts', 'export const badB = 2;');
+    const stated = source('@local/source', 'source', 'stated.ts', 'export const stated = 3;');
+    const backend: CompilerBackend = {
+      emitModule(module) {
+        if (module.name === 'BadA') {
+          throw createBackendEmissionFailure(
+            'fixture',
+            module,
+            'missing: SharedArrayBuffer[type]',
+            'cpp-missing-binding',
+          );
+        }
+        if (module.name === 'BadB') {
+          throw createBackendEmissionFailure('fixture', module, 'missing: MapIterator[type]', 'cpp-missing-binding');
+        }
+        throw createBackendEmissionFailure(
+          'fixture',
+          module,
+          'object getters require target-specific accessor lowering',
+        );
+      },
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph([], [], [{ dependencies: [], name: '@local/source', root: stated.packageRoot }]),
+      sources: [badA, badB, stated],
+    });
+
+    const refusalOf = (name: string) =>
+      result.report.modules.find((module) => module.module.name === name)?.refusals[0];
+    // Two instances, two messages, one rule: that pair is the whole reason the field exists.
+    expect(refusalOf('BadA')?.message).not.toBe(refusalOf('BadB')?.message);
+    expect(refusalOf('BadA')?.rule).toBe('cpp-missing-binding');
+    expect(refusalOf('BadB')?.rule).toBe('cpp-missing-binding');
+    // A message that names no instance is already the identity, so it carries no second spelling.
+    expect(refusalOf('Stated')?.rule).toBeUndefined();
+    expect(refusalOf('Stated')?.message).toBe(
+      'fixture emission failed for @local/source/packages/source/src/stated.ts: object getters require target-specific accessor lowering',
+    );
+  });
+
   it('records stable lowering codes and source locations while emitting unaffected modules', () => {
     const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
     const bad = source(

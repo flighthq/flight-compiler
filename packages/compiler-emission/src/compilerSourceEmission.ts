@@ -16,6 +16,7 @@ export function createBackendEmissionFailure(
   backend: string,
   sourceIdentity: Readonly<CompilerSourceIdentity>,
   message: string,
+  rule?: string,
 ): BackendEmissionFailure {
   const subject = `${sourceIdentity.packageName}/${sourceIdentity.source}`;
   const failure = Object.assign(new Error(`${backend} emission failed for ${subject}: ${message}`), {
@@ -24,6 +25,7 @@ export function createBackendEmissionFailure(
     kind: 'backend-emission' as const,
     packageName: sourceIdentity.packageName,
     source: sourceIdentity.source,
+    ...(rule === undefined ? {} : { rule }),
   });
   failure.name = 'BackendEmissionError';
   return failure;

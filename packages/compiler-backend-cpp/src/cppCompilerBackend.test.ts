@@ -14,6 +14,18 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
 
+// Returns the refusal rather than asserting a throw, so a probe that stops refusing leaves the
+// caller comparing against a subject that was never produced instead of passing silently.
+function captureBackendEmissionFailure(run: () => unknown) {
+  try {
+    run();
+  } catch (error) {
+    if (isBackendEmissionFailure(error)) return error;
+    throw error;
+  }
+  throw new Error('expected C++ emission to refuse and it did not');
+}
+
 function lower(file: string, source: string) {
   return lowerPackage('@flighthq/math', file, source);
 }
@@ -3433,12 +3445,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
-    expect(output).toContain(
-      'struct Layer : public std::variant<flight::Ref<Group>, flight::Ref<Tile>>',
-    );
-    expect(output).toContain(
-      'struct Value : public std::optional<std::variant<flight::Array<Value>, flight::String>>',
-    );
+    expect(output).toContain('struct Layer : public std::variant<flight::Ref<Group>, flight::Ref<Tile>>');
+    expect(output).toContain('struct Value : public std::optional<std::variant<flight::Array<Value>, flight::String>>');
     expect(output.indexOf('struct Layer : public')).toBeLessThan(output.indexOf('struct Group : public'));
     expect(output).not.toContain('using Layer =');
     expect(output).not.toContain('using Value =');
@@ -5460,9 +5468,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<flighthq_types::HasAppearance>>>>>> obj = std::nullopt',
     );
     expect(emitted).toContain('auto optional_chain_receiver = obj;');
-    expect(emitted).toContain(
-      'flight::row_get<flight::RowKey<"alpha">>(optional_chain_receiver.value())',
-    );
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"alpha">>(optional_chain_receiver.value())');
     expect(emitted).toContain('std::optional<double>');
     expect(emitted).not.toContain('std::optional<auto>');
   });
@@ -5505,7 +5511,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(result.diagnostics).toEqual([]);
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
     expect(emitted).toContain('flight::row_get<flight::RowKey<"texture">>(optional_chain_receiver.value())');
-    expect(emitted).not.toContain('flight::row_get<flight::RowKey<"texture">>(optional_chain_receiver.value()).value_or');
+    expect(emitted).not.toContain(
+      'flight::row_get<flight::RowKey<"texture">>(optional_chain_receiver.value()).value_or',
+    );
   });
 
   it('emits C++ keywords with trailing underscore', () => {
@@ -6802,7 +6810,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
-    expect(output).toContain('flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<Adjustment>>>>>>(operation)');
+    expect(output).toContain(
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<Adjustment>>>>>>(operation)',
+    );
     expect(output).toContain('flight::row_get<flight::RowKey<"colorMatrix">>');
     expect(output).not.toContain('flight::structural_ref_cast<flight::Ref<color_matrix_');
   });
@@ -7586,6 +7596,21 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(() => emitIrModuleCpp(result.module)).toThrow(/runtime external symbol binding plan is incomplete/);
   });
 
+  it('gives one stable rule to every instance of a parameterized refusal', () => {
+    const flightCpp = lower('parse-call.ts', 'export function parse(x: string): number { return parseFloat(x); }');
+    const standardLibrary = lower('unknown-ambient.ts', 'export function read(): number { return parseInt("42"); }');
+    const first = captureBackendEmissionFailure(() => emitIrModuleCpp(flightCpp.module));
+    const second = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(standardLibrary.module, { runtimeProfile: 'standard-library' }),
+    );
+
+    // The two messages name different missing symbols. Without a rule the pair is two rules, and a
+    // report counting them has no way to see that they are one decision made twice.
+    expect(first.message).not.toBe(second.message);
+    expect(first.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(second.rule).toBe(first.rule);
+  });
+
   it('emits negated nullish comparison as has_value without prefix', () => {
     const result = lower('not-null.ts', 'export function isPresent(x: number | null): boolean { return x !== null; }');
     const emitted = emitIrModuleCpp(result.module);
@@ -8172,8 +8197,12 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toMatch(/auto assignment_existing(?:_\d+)? = assignment_receiver(?:_\d+)?\.get\(assignment_key(?:_\d+)?\)/u);
-    expect(emitted.contents).toMatch(/assignment_receiver(?:_\d+)?\.set\(assignment_key(?:_\d+)?, assignment_value(?:_\d+)?\)/u);
+    expect(emitted.contents).toMatch(
+      /auto assignment_existing(?:_\d+)? = assignment_receiver(?:_\d+)?\.get\(assignment_key(?:_\d+)?\)/u,
+    );
+    expect(emitted.contents).toMatch(
+      /assignment_receiver(?:_\d+)?\.set\(assignment_key(?:_\d+)?, assignment_value(?:_\d+)?\)/u,
+    );
     expect(emitted.contents).not.toContain('auto&& assignment_target = values.get');
   });
 
