@@ -639,6 +639,16 @@ function planCppEarlyPublicationCpp(
       if (entry.declaration.kind !== 'typeAlias') continue;
       const bindingId = entry.declaration.binding.id;
       if (published.has(bindingId)) continue;
+      // An alias whose emitted form defines a struct carries its members' dependencies with it, and
+      // a member may reach a type that is not nameable this early. Publish only pure aliases, which
+      // name their dependencies directly and are therefore checked below.
+      if (
+        [...entry.lines, ...entry.anonymousStructLines].some((line) =>
+          /^\s*(?:template <[^>]*>\s*)?(?:class|struct)\s+[A-Za-z_][A-Za-z0-9_]*\s*(?::|\{)/u.test(line),
+        )
+      ) {
+        continue;
+      }
       const ownName = getBindingTargetName(entry.declaration.binding, context);
       const text = entry.lines.join('\n');
       const blocked = [...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)]
