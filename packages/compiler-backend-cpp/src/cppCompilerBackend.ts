@@ -650,8 +650,12 @@ function planCppEarlyPublicationCpp(
         )
       ) {
         const members = [...entry.lines, ...entry.anonymousStructLines].join('\n');
-        const unordered = [...members.matchAll(/[<,]\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*([A-Za-z_][A-Za-z0-9_]*)/gu)]
-          .map((match) => match[1]!)
+        const unordered = [...members.matchAll(/[<,]\s*((?:[A-Za-z_][A-Za-z0-9_]*::)*)([A-Za-z_][A-Za-z0-9_]*)/gu)]
+          // A single qualifier segment names the runtime, whose headers precede the early region. A
+          // package-qualified name is another module's type and must be declared here; a bare one may
+          // name this module's type, so it must be declared here too.
+          .filter((match) => (match[1]!.match(/::/gu) ?? []).length !== 1)
+          .map((match) => match[2]!)
           .some(
             (name) => !cppPrimitiveTypeNames.has(name) && !forwardDeclaredNames.has(name) && !publishedNames.has(name),
           );
