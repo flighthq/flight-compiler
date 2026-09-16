@@ -651,19 +651,23 @@ function planCppEarlyPublicationCpp(
       }
       const ownName = getBindingTargetName(entry.declaration.binding, context);
       const text = entry.lines.join('\n');
-      const blocked = [...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)]
-        .map((match) => match[1]!)
-        .some(
-          (name) =>
-            name !== ownName && declaredNames.has(name) && !forwardDeclaredNames.has(name) && !publishedNames.has(name),
-        );
-      // Another module's type is nameable this early only when it is forward-declared here. A
-      // foreign alias is not: it cannot be forward-declared at all, so it becomes nameable only
-      // after this module's includes, and an alias reaching one is not publishable.
-      const foreignUnavailable = [...text.matchAll(/flight::[A-Za-z_][A-Za-z0-9_]*::([A-Za-z_][A-Za-z0-9_]*)/gu)]
-        .map((match) => match[1]!)
-        .some((name) => !forwardDeclaredNames.has(name) && !publishedNames.has(name));
-      if (blocked || foreignUnavailable) continue;
+      const unschedulable = [...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)].some((match) => {
+        const name = match[1]!;
+        if (name === ownName) return false;
+        // Another module's type is nameable this early only when it is forward-declared here. A
+        // foreign alias is not: it cannot be forward-declared at all, so it becomes nameable only
+        // after this module's includes. Only names this header schedules are judged; runtime and
+        // standard names come from includes that precede the early region.
+        const foreign = /flight::[A-Za-z_][A-Za-z0-9_]*::$/u.test(text.slice(0, match.index));
+        if (!declaredNames.has(name) && !foreign) return false;
+        if (!forwardDeclaredNames.has(name) && !publishedNames.has(name)) return true;
+        // A forward declaration makes a name usable, not complete. Only a reference-like wrapper
+        // stays complete for an incomplete argument, so a scheduled type reached any other way —
+        // bare, or under a value container such as optional, variant, tuple, or array — would be
+        // used where its definition is required, and cannot be published.
+        return !isCppReferenceLikeTypeArgumentCpp(text, match.index);
+      });
+      if (unschedulable) continue;
       published.set(bindingId, entry.lines);
       publishedNames.add(ownName);
       progressed = true;
@@ -676,6 +680,29 @@ function planCppEarlyPublicationCpp(
     ),
   };
 }
+
+// A reference-like wrapper stays complete for an incomplete argument, so a type reached through one
+// needs only a declaration. Every other position — bare, or under a value container such as optional,
+// variant, tuple, or array — requires that the type be defined, which a forward declaration cannot do.
+function isCppReferenceLikeTypeArgumentCpp(text: string, index: number): boolean {
+  const before = text.slice(0, index);
+  const qualifier = /([A-Za-z_][A-Za-z0-9_:]*::)?$/u.exec(before)?.[1] ?? '';
+  const enclosing = before.slice(0, before.length - qualifier.length);
+  if (!enclosing.endsWith('<')) return false;
+  const wrapper = /([A-Za-z_][A-Za-z0-9_:]*)<$/u.exec(enclosing)?.[1]?.replace(/^flight::/u, '');
+  return wrapper !== undefined && cppReferenceLikeWrapperNames.has(wrapper);
+}
+
+const cppReferenceLikeWrapperNames = new Set([
+  'Ref',
+  'RowKey',
+  'RowMerge',
+  'RowOf',
+  'RowPartial',
+  'RowReadonly',
+  'RowWritable',
+  'StructuralRef',
+]);
 
 function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitContext): string[] {
   return module.declarations.flatMap((declaration): string[] => {
