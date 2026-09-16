@@ -12,6 +12,17 @@ runtimeProfiles:
     runtime: sbx
     entrypoint: codex
     requiredTools: [codex]
+  deepseek-sbx:
+    runtime: sbx
+    entrypoint: claude
+    env:
+      # sbx policy allow network api.deepseek.com
+      ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
+      # sbx secret set-custom --host api.deepseek.com --placeholder deepseek-key --value (insert value)
+      ANTHROPIC_AUTH_TOKEN: deepseek-key
+      ANTHROPIC_MODEL: deepseek-v4-pro
+      ANTHROPIC_SMALL_FAST_MODEL: deepseek-flash
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '1000000'
 
 defaults:
   runtimeProfile: claude-sbx
@@ -36,7 +47,7 @@ services:
 
 layouts:
   default:
-    expr: (review | (builder builder2 builder3)):80 / (host $serve):20
+    expr: (review | (@builder)):80 / (host $serve):20
 
 default: default
 
@@ -59,4 +70,10 @@ presets:
       builder2:
         role: builder
       builder3:
+        role: builder
+      builder4:
+        runtimeProfile: deepseek-sbx
+        role: builder
+      builder5:
+        runtimeProfile: deepseek-sbx
         role: builder
