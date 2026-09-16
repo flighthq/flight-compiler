@@ -1,6 +1,6 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
-import type { CompilerRuntimeExternalSymbolIdentity, IrModule } from '../../compiler-types/src/index.js';
+import type { CompilerRuntimeExternalSymbolIdentity, IrExpression, IrModule } from '../../compiler-types/src/index.js';
 
 export function collectIrModulesRuntimeExternalSymbolIdentities(
   modules: readonly Readonly<IrModule>[],
@@ -15,9 +15,22 @@ export function collectIrModulesRuntimeExternalSymbolIdentities(
   };
   for (const module of modules) {
     const erasedTypeArgumentPaths: (readonly (number | string)[])[] = [];
+    // `typeof x` asks whether a global exists; it does not use it. ECMAScript evaluates a typeof
+    // operand naming an undeclared identifier to "undefined" rather than throwing, so a module that
+    // only probes a symbol makes no runtime claim on it and must not require a binding. Only a bare
+    // identifier is protected this way: `typeof a.b` still evaluates `a`, so it remains a use.
+    const presenceQueryOperands = new Set<Readonly<IrExpression>>();
     analyzeIrModuleTraversal(module, {
       expression(expression) {
-        if (expression.kind === 'identifier' && expression.reference.kind === 'ambient') {
+        if (expression.kind === 'unary' && expression.operator === 'typeof') {
+          presenceQueryOperands.add(expression.operand);
+          return;
+        }
+        if (
+          expression.kind === 'identifier' &&
+          expression.reference.kind === 'ambient' &&
+          !presenceQueryOperands.has(expression)
+        ) {
           add(expression.reference.name, 'value');
         }
       },

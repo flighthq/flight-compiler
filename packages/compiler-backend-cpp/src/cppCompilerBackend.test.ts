@@ -1939,6 +1939,32 @@ export interface BrowserPermissionMediaTypes {
     expect(emitted.contents).toContain('host::MediaStreamTrack track;');
   });
 
+  it('folds a typeof probe on an unbound ambient global to absent without claiming a binding', () => {
+    const result = lower(
+      'presence.ts',
+      `export function hasSharedMemory(): boolean { return typeof SharedArrayBuffer !== 'undefined'; }
+export function lacksSharedMemory(): boolean { return typeof SharedArrayBuffer === 'undefined'; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('bool has_shared_memory() {\n  return false;');
+    expect(emitted.contents).toContain('bool lacks_shared_memory() {\n  return true;');
+    expect(emitted.contents).not.toContain('SharedArrayBuffer');
+  });
+
+  it('answers typeof for an unbound ambient global without runtime type evidence', () => {
+    const result = lower(
+      'presence-kind.ts',
+      `export function sharedMemoryKind(): string { return typeof SharedArrayBuffer; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('return flight::String("undefined");');
+    expect(emitted.contents).not.toContain('SharedArrayBuffer');
+  });
+
   it('emits portable service surfaces through explicit flight-cpp runtime contracts', () => {
     const result = lower(
       'portable-services.ts',

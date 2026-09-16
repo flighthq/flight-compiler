@@ -348,6 +348,35 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     ]);
   });
 
+  it('does not treat a typeof probe as a use of the probed ambient global', () => {
+    const lowered = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/runtime/src/presence.ts',
+        `
+          export function present(): boolean {
+            return typeof SharedArrayBuffer !== 'undefined';
+          }
+          export function read(): string {
+            return document.title;
+          }
+          export function nested(): string {
+            return typeof window.location.href;
+          }
+        `,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+    );
+
+    // `typeof SharedArrayBuffer` is a presence query and claims nothing. A nested operand still
+    // evaluates its receiver, so `typeof window.location.href` remains a use of `window`.
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([lowered.module])).toEqual([
+      { sourceName: 'document', space: 'value' },
+      { sourceName: 'window', space: 'value' },
+    ]);
+  });
+
   it('collects an ambient value referenced only from a type query', () => {
     const lowered = lowerTypeScriptSource(
       ts.createSourceFile(

@@ -1653,8 +1653,8 @@ function emitExpression(
       }
       const inferredNullishComparison = emitCppInferredOptionalNullishComparison(expression, context);
       if (inferredNullishComparison) return inferredNullishComparison;
-      const boundAmbientTypeof = emitBoundAmbientTypeofUndefinedComparisonCpp(expression, context);
-      if (boundAmbientTypeof) return boundAmbientTypeof;
+      const ambientTypeofComparison = emitAmbientTypeofUndefinedComparisonCpp(expression, context);
+      if (ambientTypeofComparison) return ambientTypeofComparison;
       if (expression.operator === '??') {
         const leftType =
           getIrExpressionBindingTypeCpp(expression.left, context) ??
@@ -10423,7 +10423,7 @@ function emitBinaryOperator(
   return operator;
 }
 
-function emitBoundAmbientTypeofUndefinedComparisonCpp(
+function emitAmbientTypeofUndefinedComparisonCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
   context: EmitContext,
 ): string | undefined {
@@ -10451,17 +10451,23 @@ function emitBoundAmbientTypeofUndefinedComparisonCpp(
   if (
     ambient?.kind !== 'unary' ||
     ambient.operand.kind !== 'identifier' ||
-    ambient.operand.reference.kind !== 'ambient' ||
-    !getCompilerRuntimeExternalSymbolTargetCpp(
+    ambient.operand.reference.kind !== 'ambient'
+  ) {
+    return undefined;
+  }
+  // Presence is the target's own answer rather than an unknown: a global the target binds exists,
+  // and one it binds no value for has none at runtime, so the probe is false instead of unanswerable.
+  // Folding the absent case keeps the operand out of emitted code, so no binding is claimed for a
+  // symbol the target cannot provide, and it is what lets a capability guard read correctly there.
+  const present =
+    getCompilerRuntimeExternalSymbolTargetCpp(
       ambient.operand.reference.name,
       'value',
       getCppRuntimeProfile(context.options),
       context.options.externalBindings,
-    )
-  ) {
-    return undefined;
-  }
-  return expression.operator === '!=' || expression.operator === '!==' ? 'true' : 'false';
+    ) !== undefined;
+  const absent = expression.operator === '==' || expression.operator === '===';
+  return present !== absent ? 'true' : 'false';
 }
 
 function emitPrefixUnaryOperator(operator: string): string {
@@ -10478,6 +10484,22 @@ function getCppStaticTypeofValueCpp(
     return typeof expression.value;
   }
   if (expression.kind === 'undefinedValue' || expression.kind === 'undefinedDefault') return 'undefined';
+  // A bare ambient global this target binds no value for has no runtime value here, so `typeof` of it
+  // is exactly "undefined" — the answer ECMAScript gives for an absent global. A capability probe
+  // therefore reads as absent rather than folding to the type's shape, which would claim the symbol
+  // exists on a target that cannot provide it. A bound symbol keeps resolving through evidence below.
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'ambient' &&
+    !getCompilerRuntimeExternalSymbolTargetCpp(
+      expression.reference.name,
+      'value',
+      getCppRuntimeProfile(context.options),
+      context.options.externalBindings,
+    )
+  ) {
+    return 'undefined';
+  }
   const type = getIrExpressionTypeEvidenceCpp(expression, context);
   return type ? getCppStaticTypeofTypeCpp(type, context, new Set()) : undefined;
 }
