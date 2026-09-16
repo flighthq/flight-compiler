@@ -75,6 +75,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
   'compiler-backend-hx': {
     dependencies: [
       'compiler-canonical-form',
+      'compiler-completion',
       'compiler-emission',
       'compiler-ir-traversal',
       'compiler-lowering',
