@@ -34,7 +34,7 @@ inline std::tuple<double, std::optional<double>> create_values() {
 
 inline double select_nested_default(std::tuple<std::optional<flight::Array<double>>> values) {
   std::tuple<std::optional<flight::Array<double>>> array_pattern_value = values;
-  flight::Array<double> array_pattern_value_2 = std::get<0>(array_pattern_value).value_or(std::make_tuple(1.0));
+  flight::Array<double> array_pattern_value_2 = std::get<0>(array_pattern_value).value_or(flight::Array<double>{1.0});
   const double first = array_pattern_value_2.element(0.0);
   return first;
 }
