@@ -765,6 +765,27 @@ function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
       );
       if (matches.length !== 1) continue;
       const match = matches[0]!;
+      // An interface the facet representation elects is emitted as an alias in its own header, so a
+      // forward declaration of it here would conflict with that alias. The declaring module already
+      // skips these; a consumer declaring them on the module's behalf has to skip them as well.
+      if (
+        match.declaration.kind === 'interface' &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        context.referenceRepresentationPlanner.resolveFacetReference(
+          {
+            kind: 'named',
+            reference: { binding: match.declaration.binding, kind: 'binding', path: [] },
+            typeArguments: match.declaration.typeParameters.map((parameter) => ({
+              kind: 'named',
+              reference: { binding: parameter.binding, kind: 'binding', path: [] },
+              typeArguments: [],
+            })),
+          },
+          match.targetModule,
+        )
+      ) {
+        continue;
+      }
       const namespace = getCppCompilerPackageNamespace(match.targetModule.packageName, context.options.packageTargets);
       const targetName =
         context.targetNameMaps.get(getCppModuleIdentityKey(match.targetModule))?.get(match.declaration.binding.id) ??
