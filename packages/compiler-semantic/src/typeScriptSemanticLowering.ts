@@ -6644,9 +6644,7 @@ function getTypeScriptContextualParameterType(
   return checkerType;
 }
 
-function getTypeScriptRegExpReplacementParameterType(
-  node: ts.ParameterDeclaration,
-): Readonly<IrType> | undefined {
+function getTypeScriptRegExpReplacementParameterType(node: ts.ParameterDeclaration): Readonly<IrType> | undefined {
   const callback = node.parent;
   const call = callback.parent;
   if (
@@ -6703,11 +6701,7 @@ function getTypeScriptRegularExpressionCaptureCount(node: ts.RegularExpressionLi
       captureCount += 1;
       continue;
     }
-    if (
-      pattern[index + 2] === '<' &&
-      pattern[index + 3] !== '=' &&
-      pattern[index + 3] !== '!'
-    ) {
+    if (pattern[index + 2] === '<' && pattern[index + 3] !== '=' && pattern[index + 3] !== '!') {
       captureCount += 1;
     }
   }

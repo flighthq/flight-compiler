@@ -185,10 +185,7 @@ function resolveIrTypeStructuralRowCpp(
       return type.reference.name === 'Readonly' ? { kind: 'readonly', row } : row;
     }
     if (type.reference.name === 'Partial' && type.typeArguments.length === 1 && type.typeArguments[0]) {
-      if (
-        !allowRowOf &&
-        resolveIrTypeObjectShapeCpp(type.typeArguments[0], module, moduleSet, cache, new Set())
-      ) {
+      if (!allowRowOf && resolveIrTypeObjectShapeCpp(type.typeArguments[0], module, moduleSet, cache, new Set())) {
         return undefined;
       }
       const row = resolveIrTypeStructuralRowCpp(type.typeArguments[0], module, moduleSet, cache, aliases, true);
