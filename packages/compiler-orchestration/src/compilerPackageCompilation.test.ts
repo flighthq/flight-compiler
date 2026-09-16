@@ -177,6 +177,52 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(result.report.initialization.entries).toEqual([goodIdentity]);
   });
 
+  it('records every refused dependency that blocked a module, not only the first one scanned', () => {
+    const badA = source('@local/source', 'source', 'badA.ts', 'export const badA = 1;');
+    const badB = source('@local/source', 'source', 'badB.ts', 'export const badB = 2;');
+    const dependent = source(
+      '@local/source',
+      'source',
+      'dependent.ts',
+      "import { badA } from './badA.js'; import { badB } from './badB.js'; export const dependent = badA + badB;",
+    );
+    const badAIdentity = identity(badA, 'BadA');
+    const badBIdentity = identity(badB, 'BadB');
+    const dependentIdentity = identity(dependent, 'Dependent');
+    const backend: CompilerBackend = {
+      emitModule(module) {
+        if (module.name !== 'Dependent') {
+          throw createBackendEmissionFailure('fixture', module, `unsupported ${module.name}`);
+        }
+        return [{ contents: module.name, path: `${module.name}.txt` }];
+      },
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [],
+        [
+          { importer: dependentIdentity, specifier: './badA.js', target: badAIdentity },
+          { importer: dependentIdentity, specifier: './badB.js', target: badBIdentity },
+        ],
+        [{ dependencies: [], name: '@local/source', root: dependent.packageRoot }],
+      ),
+      sources: [dependent, badA, badB],
+    });
+
+    const blocked = result.report.modules.find((module) => module.module.name === 'Dependent');
+    expect(blocked?.status).toBe('refused');
+    expect(blocked?.refusals).toEqual([
+      expect.objectContaining({
+        code: 'dependency-refused',
+        refusedDependencies: ['@local/source/packages/source/src/badA.ts', '@local/source/packages/source/src/badB.ts'],
+        stage: 'dependency',
+      }),
+    ]);
+  });
+
   it('records stable lowering codes and source locations while emitting unaffected modules', () => {
     const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
     const bad = source(

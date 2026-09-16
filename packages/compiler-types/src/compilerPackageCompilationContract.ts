@@ -79,6 +79,14 @@ export interface CompilerPackageCompilationRefusal {
   readonly column?: number | undefined;
   readonly line?: number | undefined;
   readonly message: string;
+  /**
+   * Every refused dependency that blocked this module, as `<package>/<source>`, sorted. Present only
+   * on `dependency-refused`. Its message names the one dependency that made the module refused,
+   * because one is enough to decide the outcome; this names all of them, because a consumer ranking
+   * refusal rules by the work they unblock has to know the whole set and not the first edge a scan
+   * reached.
+   */
+  readonly refusedDependencies?: readonly string[] | undefined;
   readonly stage: 'dependency' | 'emission' | 'initialization' | 'lowering';
 }
 

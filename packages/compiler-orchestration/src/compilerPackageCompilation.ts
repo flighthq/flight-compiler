@@ -128,6 +128,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   propagateCompilerPackageGraphRefusals(records, moduleDependencies);
   const initialization = createCompilerPackageGraphInitialization(records, graphEntries, moduleDependencies);
   propagateCompilerPackageGraphRefusals(records, moduleDependencies);
+  const refusedDependencies = createCompilerPackageGraphRefusedDependencies(records, moduleDependencies);
   const exports = createCompilerPackageGraphExportPlan(modules, initialization);
 
   const files = [...records.values()]
@@ -135,7 +136,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     .flatMap((record) => record.files)
     .sort(compareCompilerPackageGraphFiles);
   validateCompilerPackageGraphOutput(files, options);
-  const moduleReports = createCompilerPackageGraphModuleReports(records);
+  const moduleReports = createCompilerPackageGraphModuleReports(records, refusedDependencies);
   const fileReports = createCompilerPackageGraphFileReports(records);
   return {
     compilation: { backend: options.backend.name, files },
@@ -327,15 +328,69 @@ function createCompilerPackageGraphInitialization(
 
 function createCompilerPackageGraphModuleReports(
   records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
+  refusedDependencies: ReadonlyMap<string, readonly string[]>,
 ): CompilerPackageCompilationModuleReport[] {
   return [...records.values()]
     .sort((left, right) => compareCompilerPackageGraphModules(left.module, right.module))
     .map((record) => ({
       module: cloneCompilerPackageGraphIdentity(record.module),
       outputFiles: record.refusals.length === 0 ? record.files.map((file) => file.path).sort(compareTextCodeUnits) : [],
-      refusals: [...record.refusals].sort(compareCompilerPackageGraphRefusals),
+      refusals: [...record.refusals]
+        .sort(compareCompilerPackageGraphRefusals)
+        .map((refusal) =>
+          attachCompilerPackageGraphRefusedDependencies(
+            refusal,
+            refusedDependencies.get(getCompilerPackageGraphModuleKey(record.module)),
+          ),
+        ),
       status: record.refusals.length === 0 ? ('emitted' as const) : ('refused' as const),
     }));
+}
+
+function attachCompilerPackageGraphRefusedDependencies(
+  refusal: Readonly<CompilerPackageCompilationRefusal>,
+  refusedDependencies: readonly string[] | undefined,
+): CompilerPackageCompilationRefusal {
+  if (refusal.code !== 'dependency-refused' || refusedDependencies === undefined) return refusal;
+  return { ...refusal, refusedDependencies };
+}
+
+// Every refused dependency that blocked a refused module.
+//
+// The propagation fixed point stops at the first refused edge it reaches for a module, because one
+// `dependency-refused` record is what makes the module refused. That is enough to decide the
+// outcome and not enough to plan against: a module held back by three refused dependencies is
+// attributed to whichever edge the sorted scan happened to reach first, so a ranking built on those
+// records ranks dependency order and reads as a ranking of causes.
+//
+// This records the complete edge set instead, which is what lets a consumer ask the question the
+// ranking actually needs - which modules would emit if this rule were closed - rather than a guess
+// at it. It reads the records rather than mutating them, so replaying it is free.
+function createCompilerPackageGraphRefusedDependencies(
+  records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
+  dependencies: readonly Readonly<CompilerModuleLinkDependency>[],
+): Map<string, string[]> {
+  const refusedDependencies = new Map<string, Set<string>>();
+  for (const dependency of dependencies) {
+    const importer = records.get(getCompilerPackageGraphModuleKey(dependency.importer));
+    const target = records.get(getCompilerPackageGraphModuleKey(dependency.target));
+    if (!importer || !target || target.refusals.length === 0) continue;
+    // Only a propagated refusal has refused dependencies; a module refused on its own account is
+    // refused for that reason and listing its refused neighbours would misattribute the cause.
+    if (!importer.refusals.some((refusal) => refusal.code === 'dependency-refused')) continue;
+    const blocked = refusedDependencies.get(getCompilerPackageGraphModuleKey(dependency.importer)) ?? new Set<string>();
+    blocked.add(getCompilerPackageGraphModuleSubject(dependency.target));
+    refusedDependencies.set(getCompilerPackageGraphModuleKey(dependency.importer), blocked);
+  }
+  return new Map(
+    [...refusedDependencies.entries()].map(([module, blocked]) => [module, [...blocked].sort(compareTextCodeUnits)]),
+  );
+}
+
+// How a refused dependency is named to a consumer. One definition, because the message and the
+// structured list have to agree on it or a reader matching one against the other sees two names.
+function getCompilerPackageGraphModuleSubject(module: Readonly<CompilerModuleIdentity>): string {
+  return `${module.packageName}/${module.source}`;
 }
 
 function createCompilerPackageGraphModuleDependencies(
@@ -622,7 +677,7 @@ function propagateCompilerPackageGraphRefusals(
       if (!importer || !target || importer.refusals.length > 0 || target.refusals.length === 0) continue;
       importer.refusals.push({
         code: 'dependency-refused',
-        message: `dependency ${dependency.specifier} was refused for ${dependency.target.packageName}/${dependency.target.source}`,
+        message: `dependency ${dependency.specifier} was refused for ${getCompilerPackageGraphModuleSubject(dependency.target)}`,
         stage: 'dependency',
       });
       importer.files.splice(0);
