@@ -43,6 +43,21 @@ The committed ledger was produced 153 commits behind this tree, so it is not att
 
 Inputs: Flight SDK `1274ec5c923947dc64d5ffedcbd8169fc758cd9f` (@flighthq/sdk 0.5.0), 154 packages, 2851 modules, the seven SDL binding profiles.
 
+## The compile gate runs now, and it changes what counts as progress
+
+Two installs unblocked the checks this document repeatedly called unverifiable: `g++` (15.2.0, the same version the downstream audit used) and `libsdl3-dev`, without which 79 of the failures were only `SDL3/SDL_video.h: No such file or directory`. `npm run compile:check` and the downstream `sdk:compile:sdl` both run to completion here now, and they must be run before any emission change is called an improvement.
+
+**Measured at `189f7397`: of 1,339 emitted modules, 1,216 compile and 123 do not.** Emitted count and compiling count are now two different numbers, and only the second one is progress.
+
+The failures are four classes, three of them with a reproduction:
+
+- **36 `name not declared`.** `flight/types/has_appearance.hpp` uses `Node<Traits>` inside `RowOf<flight::Ref<Node<Traits>>>` without declaring it — the module forward-declares names it references, but not one that appears only as a template argument inside a row projection of a materialized alias. `has_transform2d`, `has_transform3d` and `update_particle_objects` are the same.
+- **29 `flight::Any` mismatch.** These are the election's cost. `const first = bytes[index++]` compares a value whose IR element type was never recorded, so `auto`, which deduced the element, has become `Any` and `Any >= double` does not compile. The election did not create the missing evidence; it removed the deduction that was hiding it.
+- **5 runtime member name.** The compiler emits `to_lower_case` where the runtime spells it `to_lower`.
+- **52 other**, including a class the election surfaced: `redeclaration of 'flight::Any flight::types::GlContext::viewport'`.
+
+The tension worth stating plainly: the election moved some modules from _refusing_ to _emitting code that does not compile_. This repository requires emitted source to compile, so by its own rule those are defects now, not refusals — and the compile gate is the only instrument that says so. Every remaining stage must be measured against 1,216, not 1,339.
+
 ## Reproducing the ledger locally
 
 The corpus cannot be generated from inside this repository — the request needs a target repository's package graph, package targets, and binding profiles. It can still be generated on a machine with a Flight checkout, and doing so is the first step of every stage below.
