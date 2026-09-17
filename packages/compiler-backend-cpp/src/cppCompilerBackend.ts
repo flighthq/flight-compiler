@@ -2385,6 +2385,12 @@ function emitExpression(
       }
       return (
         asserted ??
+        getCppErasedValueAssertionCpp(
+          expression.type,
+          getIrExpressionTypeEvidenceCpp(expression.expression, context),
+          expression.expression,
+          context,
+        ) ??
         `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`
       );
     }
@@ -7792,6 +7798,40 @@ function getIrExpressionTypeEvidenceCpp(
     case 'undefinedValue':
       return undefined;
   }
+}
+
+// `source as string` on a position TypeScript states as unconstrained is an assertion about a value
+// the source cannot check. Once that position holds the erased dynamic value, no `static_cast` reaches
+// its alternative — the erased value has no conversion operator — so the assertion becomes the runtime's
+// own checked extraction, which is the closest faithful spelling of what the source wrote: it yields the
+// alternative, and it throws rather than inventing one when the value is something else. Only the
+// primitives are reached this way; an erased value asserted to an object reference is a different
+// question and keeps its refusal.
+function getCppErasedValueAssertionCpp(
+  target: Readonly<IrType>,
+  source: Readonly<IrType> | undefined,
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  if (!isCppErasedDynamicValueTypeCpp(source)) return undefined;
+  const extractions: Readonly<Record<string, string>> = {
+    boolean: 'as_boolean',
+    number: 'as_number',
+    string: 'as_string',
+    symbol: 'as_symbol',
+  };
+  if (target.kind !== 'primitive') return undefined;
+  const extraction = extractions[target.name];
+  if (!extraction) return undefined;
+  context.includes.add('flight/any.hpp');
+  return `${emitExpression(expression, context)}.${extraction}()`;
+}
+
+// Exactly the positions `emitType` routes to `flight::Any`: an unconstrained type that is neither the
+// dynamic `this` nor an erased object reference, which have their own representations.
+function isCppErasedDynamicValueTypeCpp(type: Readonly<IrType> | undefined): boolean {
+  return type?.kind === 'unknown' && type.source !== 'this' && type.source !== 'object';
 }
 
 function getIrFunctionDeclarationTypeCpp(

@@ -1827,6 +1827,18 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(deducedOutput).not.toContain('flight::Any rows');
     expect(deducedOutput).toContain('flight::Any mutable_ = ');
 
+    // Asserting an erased value to a primitive reads the alternative rather than casting to it: the
+    // erased value has no conversion operator, so `static_cast` does not compile.
+    const asserted = lower(
+      'asserted-unknown.ts',
+      `export function asText(input: unknown): string { return input as string; }
+       export function asCount(input: unknown): number { return input as number; }`,
+    ).module;
+    const assertedOutput = emitIrModuleCpp(asserted, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(assertedOutput).toContain('input.as_string()');
+    expect(assertedOutput).toContain('input.as_number()');
+    expect(assertedOutput).not.toContain('static_cast<flight::String>(input)');
+
     const rest = lower(
       'rest-parameters.ts',
       'export type RestParameters = Parameters<(...values: number[]) => void>;',
