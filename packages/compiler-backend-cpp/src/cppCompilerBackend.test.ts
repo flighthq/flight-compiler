@@ -1255,6 +1255,25 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
+  it('takes a named function as the evidence for an optional function slot', () => {
+    const module = lower(
+      'optional-function-guard.ts',
+      `type Guard = ((value: number) => void) | null;
+       export function setGuard(guard: Guard): void { void guard; }
+       function warn(value: number): void { void value; }
+       export function enable(): void {
+         setGuard(warn);
+         setGuard(null);
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+    // The declaration's own signature is the evidence. It has no binding type of its own, so without
+    // it the call is indistinguishable from passing a value of no stated type.
+    expect(emitted).toContain('std::optional<std::function<void(double)>>{warn}');
+    expect(emitted).toContain('std::nullopt');
+  });
+
   it('refuses ambient call construction without an exact matching contextual result type', () => {
     const module = lower(
       'timer-call-result-controls.ts',

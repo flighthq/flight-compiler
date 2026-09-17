@@ -6059,7 +6059,17 @@ function getIrExpressionTypeForUnionConstructionCpp(
         typeParameters: expression.typeParameters,
       };
     case 'identifier': {
-      return getIrIdentifierTypeEvidenceCpp(expression, context);
+      const declared = getIrIdentifierTypeEvidenceCpp(expression, context);
+      if (declared) return declared;
+      // A function declaration's binding records no type of its own, so its own signature is the
+      // evidence. Without it, passing a named function where a function type is expected is
+      // indistinguishable from passing a value of no stated type, which is the difference between a
+      // guard being instalable and the module refusing.
+      const declaration =
+        expression.reference.kind === 'binding'
+          ? getCppFunctionDeclarationForBindingCpp(expression.reference.binding.id, context)
+          : undefined;
+      return declaration ? getIrFunctionDeclarationTypeCpp(declaration) : undefined;
     }
     case 'literal':
       return typeof expression.value === 'boolean'
@@ -7782,6 +7792,22 @@ function getIrExpressionTypeEvidenceCpp(
     case 'undefinedValue':
       return undefined;
   }
+}
+
+function getIrFunctionDeclarationTypeCpp(
+  declaration: Readonly<IrFunctionDeclaration>,
+): Readonly<Extract<IrType, { kind: 'function' }>> {
+  return {
+    kind: 'function',
+    parameters: declaration.parameters.map((parameter) => {
+      const common = { name: parameter.binding.name, type: parameter.type };
+      if (parameter.optional) return { ...common, optional: true, rest: false } as const;
+      if (parameter.rest) return { ...common, optional: false, rest: true } as const;
+      return { ...common, optional: false, rest: false } as const;
+    }),
+    returns: declaration.returns,
+    typeParameters: declaration.typeParameters,
+  };
 }
 
 function getIrIdentifierTypeEvidenceCpp(
