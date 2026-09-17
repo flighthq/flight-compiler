@@ -1186,10 +1186,21 @@ describe('lowerTypeScriptSource', () => {
       `,
     );
 
-    expect(rejected.module.declarations).toHaveLength(6);
+    expect(rejected.module.declarations).toHaveLength(7);
     expect(rejected.module.declarations).toMatchObject([
       { binding: { name: 'Unique' }, kind: 'typeAlias', type: { kind: 'primitive', name: 'symbol' } },
       { binding: { name: 'Conditional' }, kind: 'typeAlias', type: { kind: 'primitive', name: 'boolean' } },
+      // A selection over the alias's own subject carries the subject's row, so the member types it
+      // reaches through are already resolved and only the key predicate is left open.
+      {
+        binding: { name: 'Mapped' },
+        kind: 'typeAlias',
+        type: {
+          kind: 'named',
+          reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'T' }) }),
+          typeArguments: [],
+        },
+      },
       { binding: { name: 'Constructor' }, kind: 'typeAlias', type: { kind: 'function' } },
       { binding: { name: 'TemplateValue' }, kind: 'typeAlias', type: { kind: 'primitive', name: 'string' } },
       { binding: { name: 'ComputedProperty' }, kind: 'typeAlias', type: { kind: 'object', properties: [] } },
@@ -1197,14 +1208,13 @@ describe('lowerTypeScriptSource', () => {
     ]);
     expect(rejected.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
       'unsupported literal type',
-      'unsupported type MappedType',
       'unsupported type member CallSignature',
       'property signature requires a type',
     ]);
     expect(rejected.diagnostics.every((diagnostic) => diagnostic.severity === 'warning')).toBe(true);
   });
 
-  it('keeps ambient utilities named and expands only checker-concrete mapped types', () => {
+  it('keeps ambient utilities named and expands mapped types that select from their own subject', () => {
     const result = lower(
       'mapped-types.ts',
       `
@@ -1283,8 +1293,14 @@ describe('lowerTypeScriptSource', () => {
         { name: 'done', optional: true, readonly: true, type: { kind: 'primitive', name: 'boolean' } },
       ],
     });
-    expect(aliases.has('Generic')).toBe(false);
-    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type MappedType']);
+    // A selection over the alias's own subject keeps the subject's row and leaves only the key
+    // predicate to the source types, so it resolves where a projection with no subject does not.
+    expect(aliases.get('Generic')).toEqual({
+      kind: 'named',
+      reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'Value' }) }),
+      typeArguments: [],
+    });
+    expect(result.diagnostics).toEqual([]);
   });
 
   it('preserves readonly-removal identity mappings over a generic source type', () => {

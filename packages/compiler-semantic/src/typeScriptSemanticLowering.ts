@@ -3981,6 +3981,46 @@ function getTypeScriptPartialRowSubject(
   };
 }
 
+// A mapped type over `keyof Subject` that keeps `Subject[Key]` as written selects some of the
+// subject's own members and changes nothing about them. Under the same row model that lets `Omit`
+// drop its key removal over a reference-preserving subject, the selection is a refinement the row
+// carries: the storage is still the subject's, and a caller who passes a member the selection
+// excluded is refused by the source types rather than by the emitted storage. Lowering it as the
+// subject keeps `MethodsOf` — whose key predicate is a conditional — from dropping to opaque and
+// taking `Partial<…>` of an opaque with it.
+function getTypeScriptMappedSubjectSelection(
+  node: ts.TypeAliasDeclaration,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  if (node.typeParameters?.length !== 1 || !ts.isMappedTypeNode(node.type)) return undefined;
+  const parameter = node.typeParameters[0];
+  const parameterSymbol = parameter && context.checker.getSymbolAtLocation(parameter.name);
+  const keySymbol = context.checker.getSymbolAtLocation(node.type.typeParameter.name);
+  const constraint = node.type.typeParameter.constraint;
+  if (
+    !parameter ||
+    !parameterSymbol ||
+    !keySymbol ||
+    !constraint ||
+    !ts.isTypeOperatorNode(constraint) ||
+    constraint.operator !== ts.SyntaxKind.KeyOfKeyword ||
+    !isTypeScriptBareTypeReferenceToSymbol(constraint.type, parameterSymbol, context)
+  ) {
+    return undefined;
+  }
+  const value = node.type.type;
+  if (
+    !value ||
+    !ts.isIndexedAccessTypeNode(value) ||
+    !isTypeScriptBareTypeReferenceToSymbol(value.objectType, parameterSymbol, context) ||
+    !isTypeScriptBareTypeReferenceToSymbol(value.indexType, keySymbol, context)
+  ) {
+    return undefined;
+  }
+  const reference = lowerTypeNameReference(parameter.name, context);
+  return reference ? { kind: 'named', reference, typeArguments: [] } : undefined;
+}
+
 function getTypeScriptPartialOmitKeys(
   node: ts.TypeNode,
   parameterSymbol: ts.Symbol,
@@ -4021,7 +4061,8 @@ function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext)
   const objectView = getTypeScriptReadonlyRemovalIdentityMappedTypeSource(node.type, context)
     ? ('writable' as const)
     : undefined;
-  const partialRowSubject = getTypeScriptPartialRowSubject(node, context);
+  const partialRowSubject =
+    getTypeScriptPartialRowSubject(node, context) ?? getTypeScriptMappedSubjectSelection(node, context);
   return {
     binding: lowerTypeBindingIdentity(node.name, context),
     exported: isExported(node),
