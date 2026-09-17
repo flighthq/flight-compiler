@@ -4421,6 +4421,17 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         context.includes.add('memory');
         return 'std::shared_ptr<void>';
       }
+      // An `any` or `unknown` position is a value of no stated type, and flight-cpp's erased dynamic
+      // value is exactly that: a closed variant over every language type the runtime has, so a number
+      // stays a number rather than being misstated as an object reference. Elected only after `this`
+      // and `object`, so residue from an alias the compiler could not expand still reaches the guard
+      // below as `auto` and stays refused rather than being silently widened.
+      if (type.source === 'any' || type.source === 'unknown') {
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          context.includes.add('flight/any.hpp');
+          return 'flight::Any';
+        }
+      }
       return 'auto';
   }
 }
