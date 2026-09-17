@@ -4337,6 +4337,17 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         if (type.typeArguments.length > 0) emissionError(context, 'PropertyKey does not accept type arguments');
         return emitType(createCppPropertyKeyTypeCpp(), context, representation);
       }
+      // A projection utility reduces at its use site from a statically known key set, so the lowering
+      // removes it. One that survives to emission had no static key set, and its name has no C++
+      // spelling: writing `Pick<...>` out emits invalid C++ that only the target compiler discovers,
+      // far from the declaration that caused it. Refuse here instead.
+      if (sourceName === 'Omit' || sourceName === 'Pick') {
+        emissionError(
+          context,
+          `${sourceName}<T, K> requires a statically known key set before C++ emission`,
+          'cpp-unlowered-projection-utility',
+        );
+      }
       if (sourceName === 'Partial' && type.typeArguments[0]) {
         const properties = context.referenceRepresentationPlanner.resolveObjectShape(
           type.typeArguments[0],

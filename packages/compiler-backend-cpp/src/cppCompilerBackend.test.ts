@@ -12243,4 +12243,18 @@ describe('emitIrModuleCpp conditional capability facets', () => {
     expect(result.diagnostics).toEqual([]);
     expect(emitted.contents.match(/\bactive_texture;/gu)).toHaveLength(1);
   });
+
+  it('refuses a projection utility that reaches emission without a static key set', () => {
+    const result = lower(
+      'unlowered-projection.ts',
+      `interface Provider { subscribe(): void; unsubscribe(): void; name: string }
+export function project<Key extends keyof Provider>(): Pick<Provider, Key> {
+  return null as unknown as Pick<Provider, Key>;
+}`,
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'requires a statically known key set',
+    );
+  });
 });
