@@ -1398,7 +1398,7 @@ describe('lowerTypeScriptSource', () => {
     );
   });
 
-  it('keeps the construct an unlowerable helper could not express out of the consumer', () => {
+  it('lowers a partial row that re-states a member, and keeps it out of the consumer', () => {
     const helper = ts.createSourceFile(
       '/flight/packages/types/src/generic-helpers.ts',
       `export type PartialNode<Value> = { data?: Partial<Value extends { data: infer Data } ? Data : never> } & Partial<Omit<Value, 'data'>>;`,
@@ -1430,14 +1430,27 @@ describe('lowerTypeScriptSource', () => {
       },
     );
 
-    // The helper's own module is where the construct it cannot lower belongs, and its position is a
-    // position in that module's text.
-    const located = helperResult!.diagnostics.find((candidate) => candidate.message.startsWith('unsupported type'));
-    expect(located?.message).toBe('unsupported type ConditionalType');
-    expect(located?.source).toBe('packages/types/src/generic-helpers.ts');
-    expect(located?.line).toBe(1);
-    expect(located?.column).toBe(51);
-    // The consumer keeps the named reference rather than carrying the helper's refusal as its own.
+    // The re-stated `data` member rides on the row rather than being materialized, so the helper's
+    // own unlowerable member never reaches lowering as a failure at all.
+    expect(helperResult!.diagnostics).toEqual([]);
+    expect(helperResult!.module.declarations).toContainEqual(
+      expect.objectContaining({
+        binding: expect.objectContaining({ name: 'PartialNode' }),
+        kind: 'typeAlias',
+        type: {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Partial' },
+          typeArguments: [
+            {
+              kind: 'named',
+              reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'Value' }) }),
+              typeArguments: [],
+            },
+          ],
+        },
+      }),
+    );
+    // The consumer keeps the named reference and reports nothing of its own.
     expect(result!.diagnostics).toEqual([]);
     expect(result!.module.declarations).toContainEqual(
       expect.objectContaining({ binding: expect.objectContaining({ name: 'create' }), kind: 'function' }),

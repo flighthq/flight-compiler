@@ -3944,17 +3944,91 @@ function lowerTypeScriptIndexedAccessSyntax(node: ts.IndexedAccessTypeNode, cont
   };
 }
 
+// `{ key?: Value } & Partial<Omit<Subject, 'key'>>` states the partial row of one subject with a
+// member re-stated on top of it. Once the row is the representation — which is how this compiler
+// already emits `Omit` over a reference-preserving subject, by projecting nothing and keeping the
+// subject's own row — the re-statement is a type-level refinement the row carries through its
+// accessors, and the whole body is the partial row of the subject. Recognising it here is what lets
+// an alias whose re-stated member cannot itself be lowered still name a type, instead of dropping
+// the declaration to opaque.
+function getTypeScriptPartialRowSubject(
+  node: ts.TypeAliasDeclaration,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  if (node.typeParameters?.length !== 1 || !ts.isIntersectionTypeNode(node.type)) return undefined;
+  const parameter = node.typeParameters[0];
+  const parameterSymbol = parameter && context.checker.getSymbolAtLocation(parameter.name);
+  if (!parameter || !parameterSymbol) return undefined;
+  const [first, second, ...rest] = node.type.types;
+  if (!first || !second || rest.length > 0) return undefined;
+  const members = [first, second];
+  const removed = members.map((member) => getTypeScriptPartialOmitKeys(member, parameterSymbol, context));
+  const literal = members.find(ts.isTypeLiteralNode);
+  const keys = removed.find((candidate) => candidate !== undefined);
+  if (!literal || !keys || keys.size === 0) return undefined;
+  const restated = literal.members.map((member) =>
+    ts.isPropertySignature(member) && member.questionToken && ts.isIdentifier(member.name)
+      ? member.name.text
+      : undefined,
+  );
+  if (restated.length === 0 || restated.some((name) => name === undefined || !keys.has(name))) return undefined;
+  const reference = lowerTypeNameReference(parameter.name, context);
+  if (!reference) return undefined;
+  return {
+    kind: 'named',
+    reference: { kind: 'ambient', name: 'Partial' },
+    typeArguments: [{ kind: 'named', reference, typeArguments: [] }],
+  };
+}
+
+function getTypeScriptPartialOmitKeys(
+  node: ts.TypeNode,
+  parameterSymbol: ts.Symbol,
+  context: LoweringContext,
+): ReadonlySet<string> | undefined {
+  if (
+    !ts.isTypeReferenceNode(node) ||
+    !ts.isIdentifier(node.typeName) ||
+    node.typeName.text !== 'Partial' ||
+    node.typeArguments?.length !== 1
+  ) {
+    return undefined;
+  }
+  const omitted = node.typeArguments[0];
+  if (
+    !omitted ||
+    !ts.isTypeReferenceNode(omitted) ||
+    !ts.isIdentifier(omitted.typeName) ||
+    omitted.typeName.text !== 'Omit' ||
+    omitted.typeArguments?.length !== 2
+  ) {
+    return undefined;
+  }
+  const [subject, keys] = omitted.typeArguments;
+  if (
+    !subject ||
+    !ts.isTypeReferenceNode(subject) ||
+    !ts.isIdentifier(subject.typeName) ||
+    subject.typeArguments ||
+    context.checker.getSymbolAtLocation(subject.typeName) !== parameterSymbol
+  ) {
+    return undefined;
+  }
+  return keys ? getTypeScriptObjectProjectionKeys(keys) : undefined;
+}
+
 function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext): IrTypeAliasDeclaration {
   const objectView = getTypeScriptReadonlyRemovalIdentityMappedTypeSource(node.type, context)
     ? ('writable' as const)
     : undefined;
+  const partialRowSubject = getTypeScriptPartialRowSubject(node, context);
   return {
     binding: lowerTypeBindingIdentity(node.name, context),
     exported: isExported(node),
     kind: 'typeAlias',
     ...(objectView ? { objectView } : {}),
     origin: origin(node, context),
-    type: lowerType(node.type, context),
+    type: partialRowSubject ?? lowerType(node.type, context),
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
 }
