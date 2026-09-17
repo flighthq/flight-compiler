@@ -38,7 +38,7 @@ Direct refusals are modules the compiler refused on their own contents; blocked 
 
 | direct | blocked | family                                                                        |
 | ------ | ------- | ----------------------------------------------------------------------------- |
-| 18     | 446     | `unsupported type ConditionalType`                                            |
+| 18     | 446     | `unsupported type ConditionalType` — cleared in Stage 1, now zero modules     |
 | 56     | 262     | `flight-cpp type position retains unresolved auto placeholder`                |
 | 8      | 117     | the same placeholder, reached through `Node<auto>`                            |
 | 83     | 158     | `runtime external symbol binding plan is incomplete`                          |
@@ -85,6 +85,19 @@ Two consequences worth carrying into the work:
 - **The fix is one change, in the declaration-site path**, and it is the row-partial collapse above rather than an infer binding. It has to hold for a free `T`, because the concrete argument is already erased when it runs.
 - **The consumer's error is a propagation, not a second site.** The throw happens while lowering the imported declaration and is caught by the _consumer's_ top-level statement loop, so the diagnostic names the consumer as `source` while its message names the file the syntax is in. That is also why the position was meaningless before `83a03c67`, and why the sixteen concrete modules are not currently listed as dependency-refused on `node.ts`: they record their own first failure, and the dependency edge only becomes visible once it clears.
 
+### What landed, and what it revealed
+
+`2ed2a2ef` takes the first half: **the consumer no longer carries the helper's refusal into its own module.** `getTypeScriptNarrowingAlternatives` resolved a named type through its declaration and lowered that declaration's body in the _declaring_ module's context with no `try`/`catch`, so an unexpandable helper threw out of the consumer's statement loop. Its sibling resolver for the same shape already caught `isUnsupportedSyntaxFailure` and kept the named type; this one now does too.
+
+Verified against the corpus, not extrapolated. The `ConditionalType` family goes **18 direct modules to zero**, the three named tests go green, and `npm run golden:check` is unchanged at 604/604 — emitted output did not move. Total coverage is unchanged at 1106/2851, which is the point below.
+
+- **Each module now reports its true next blocker**, which is what the family was hiding. `@flighthq/node`'s `node.ts` and `@flighthq/scene2d`'s `displayObject.ts` move to `Partial<T> requires a statically resolvable C++ object shape`, because the consumer keeps the named reference and the helper's alias behind it is still opaque. The other fifteen move straight past `PartialNode` to their real blockers — `structural-row projection requires a represented object-reference target`, `contextual optionalSingle construction requires expression type evidence`, `contextual C++ union conversion requires equivalent source union evidence`, `type assertion target must identify exactly one C++ variant alternative`. Those are Stage 3 families, and they were invisible before.
+- **This is the lower-bound property working as designed.** Thirteen of the seventeen were never about `PartialNode` at all; the compiler simply stopped at their first failure. Anyone reading coverage numbers should expect the same again from every stage.
+
+### The remainder
+
+Two modules — `@flighthq/node`'s `node.ts` and `@flighthq/scene2d`'s `displayObject.ts` — are held by the helper alias itself, which is where the row-partial decision lands. The named reference now reaches the C++ backend intact; it refuses because the alias it names is still opaque. Making the alias lower to `RowPartial<RowOf<T>>` is the remaining change, and it is the one this plan has described from the start: it has to hold for a free `T`, because the concrete argument is erased by the time the declaration-site lowering runs.
+
 **Verification.** The three named tests go green; `npm run test` holds its pre-existing failure count; then §Reproducing the ledger, expecting the seventeen modules to emit and the dependency closure behind them to open. Read the new ledger before starting Stage 2 — the yield will be lower than 446, because each module records only its first refusal.
 
 ## Stage 2 — an erased value for `any` and `unknown` type positions (64 direct, up to 315 blocked)
@@ -95,7 +108,7 @@ These are opaque handles by intent — "the animation core never interprets `tar
 
 This stage is therefore downstream-led: `flight-cpp` needs a supported erased dynamic value that keeps a missing entry distinct from a present `undefined`, and this compiler elects it once it exists. Recording the gap is Stage 2's first deliverable; see [`flight-cpp-adoption.md`](flight-cpp-adoption.md).
 
-A sub-case inside the same family is compiler-side. An unresolvable generic alias is preserved as an opaque alias with `kind: 'unknown'`, whose C++ spelling is `auto`, so the diagnostic says "placeholder" while the cause is the helper that could not lower. Clearing Stage 1 removes those modules from this family without any runtime work.
+A sub-case inside the same family is compiler-side, and Stage 1 moved seven modules into it. An unresolvable generic alias is preserved as an opaque alias with `kind: 'unknown'`, whose C++ spelling is `auto`, so the diagnostic says "placeholder" while the cause is a helper that could not lower. Clearing Stage 1 walked those modules off `ConditionalType` and onto this rule — the family reads 64 direct modules before that change and 71 after, with total coverage unmoved. Distinguish the two before treating this family as one job: a module that refuses here because of an opaque helper is Stage 1's remainder, not a missing runtime capability.
 
 ## Stage 3 — construction and assertion evidence (179 direct, 250 blocked)
 
