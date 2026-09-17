@@ -723,6 +723,19 @@ function isCppReferenceLikeTypeArgumentCpp(text: string, index: number): boolean
 
 const cppPrimitiveTypeNames = new Set(['bool', 'char', 'double', 'float', 'int', 'long', 'short', 'unsigned', 'void']);
 
+// Two source member names can normalize to one C++ name: `WebGL2RenderingContext` holds both the
+// `ACTIVE_TEXTURE` constant and the `activeTexture` method, and both spell `active_texture` here. A
+// struct cannot declare one name twice, and every access site resolves through the same spelling, so
+// the first declaration owns the member and a later one is that same member said again. The later
+// property's TYPE is still emitted before this is asked, so a member with no C++ evidence refuses
+// rather than disappearing.
+function isCppDuplicateStructMemberCpp(seen: Set<string>, name: string): boolean {
+  const targetName = safeCppName(name);
+  if (seen.has(targetName)) return true;
+  seen.add(targetName);
+  return false;
+}
+
 const cppReferenceLikeWrapperNames = new Set([
   'Ref',
   'RowKey',
@@ -1357,8 +1370,10 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   lines.push(
     `struct ${name}${getCppRuntimeProfile(context.options) === 'flight-cpp' ? ' : public flight::ReferenceEnabled' : ''} {`,
   );
+  const emittedMemberNames = new Set<string>();
   for (const property of declaration.properties) {
     const propType = emitOptionalTypeCpp(emitType(property.type, context), property.optional, context);
+    if (isCppDuplicateStructMemberCpp(emittedMemberNames, property.name)) continue;
     lines.push(`  ${propType} ${safeCppName(property.name)};`);
   }
   lines.push('};');
@@ -1461,8 +1476,10 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
     lines.push(
       `struct ${name}${getCppRuntimeProfile(context.options) === 'flight-cpp' ? ' : public flight::ReferenceEnabled' : ''} {`,
     );
+    const emittedMemberNames = new Set<string>();
     for (const property of objectProperties) {
       const propertyType = emitOptionalTypeCpp(emitType(property.type, context), property.optional, context);
+      if (isCppDuplicateStructMemberCpp(emittedMemberNames, property.name)) continue;
       lines.push(`  ${propertyType} ${safeCppName(property.name)};`);
     }
     lines.push('};');

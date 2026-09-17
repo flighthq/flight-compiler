@@ -12232,4 +12232,15 @@ describe('emitIrModuleCpp conditional capability facets', () => {
     expect(emitted).toContain('flight::assume_conditional_facets<TrayIconForHost<Host>>(icon)');
     expect(emitted).toContain('return icon->runtime;');
   });
+
+  it('emits one member when two source names normalize to the same C++ name', () => {
+    const result = lower(
+      'member-collision.ts',
+      'export interface Ctx { ACTIVE_TEXTURE: number; activeTexture: number }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents.match(/\bactive_texture;/gu)).toHaveLength(1);
+  });
 });
