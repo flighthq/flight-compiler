@@ -1398,7 +1398,7 @@ describe('lowerTypeScriptSource', () => {
     );
   });
 
-  it('names the module an unlowerable construct came from instead of placing it in the consumer', () => {
+  it('keeps the construct an unlowerable helper could not express out of the consumer', () => {
     const helper = ts.createSourceFile(
       '/flight/packages/types/src/generic-helpers.ts',
       `export type PartialNode<Value> = { data?: Partial<Value extends { data: infer Data } ? Data : never> } & Partial<Omit<Value, 'data'>>;`,
@@ -1412,7 +1412,7 @@ describe('lowerTypeScriptSource', () => {
       ts.ScriptTarget.Latest,
       true,
     );
-    const [, result] = lowerTypeScriptSources(
+    const [helperResult, result] = lowerTypeScriptSources(
       [
         { packageName: '@flight/types', sourceFile: helper, upstreamDirectory: '/flight' },
         { packageName: '@flight/node', sourceFile: consumer, upstreamDirectory: '/flight' },
@@ -1430,13 +1430,18 @@ describe('lowerTypeScriptSource', () => {
       },
     );
 
-    const located = result!.diagnostics.find((candidate) => candidate.message.startsWith('unsupported type'));
-    // The offset this diagnostic reaches lowering with belongs to the helper's text, so reading it
-    // against the consumer would name an unrelated line of the consumer.
-    expect(located?.message).toBe('unsupported type ConditionalType in packages/types/src/generic-helpers.ts');
-    expect(located?.source).toBe('packages/node/src/node.ts');
-    expect(located?.line).toBeUndefined();
-    expect(located?.column).toBeUndefined();
+    // The helper's own module is where the construct it cannot lower belongs, and its position is a
+    // position in that module's text.
+    const located = helperResult!.diagnostics.find((candidate) => candidate.message.startsWith('unsupported type'));
+    expect(located?.message).toBe('unsupported type ConditionalType');
+    expect(located?.source).toBe('packages/types/src/generic-helpers.ts');
+    expect(located?.line).toBe(1);
+    expect(located?.column).toBe(51);
+    // The consumer keeps the named reference rather than carrying the helper's refusal as its own.
+    expect(result!.diagnostics).toEqual([]);
+    expect(result!.module.declarations).toContainEqual(
+      expect.objectContaining({ binding: expect.objectContaining({ name: 'create' }), kind: 'function' }),
+    );
   });
 
   it('keeps the position when the unlowerable construct is in the module being lowered', () => {

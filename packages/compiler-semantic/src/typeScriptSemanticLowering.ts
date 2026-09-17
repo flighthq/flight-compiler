@@ -5925,8 +5925,18 @@ function getTypeScriptNarrowingAlternatives(
   const declarationOptions = context.analysisModuleOptions.get(declarationSourceFile.fileName);
   if (!declarationOptions) return [type];
   const declarationContext = { ...context, options: declarationOptions, sourceFile: declarationSourceFile };
+  // The alias body belongs to the module that declares it. When its instantiation cannot be
+  // expanded there, this module keeps the named type rather than carrying the declaring module's
+  // refusal as its own failure.
+  let unresolved: IrType;
+  try {
+    unresolved = lowerType(declaration.type, declarationContext);
+  } catch (error) {
+    if (isUnsupportedSyntaxFailure(error)) return [type];
+    throw error;
+  }
   const target = resolveIrTypeStructuralSubstitution(
-    lowerType(declaration.type, declarationContext),
+    unresolved,
     createIrTypeParameterSubstitutionPlan(
       lowerTypeParameters(declaration.typeParameters, declarationContext),
       type.typeArguments,
