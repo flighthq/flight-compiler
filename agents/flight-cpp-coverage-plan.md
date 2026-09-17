@@ -150,15 +150,33 @@ This stage is therefore downstream-led: `flight-cpp` needs a supported erased dy
 
 A sub-case inside the same family is compiler-side, and Stage 1 moved seven modules into it. An unresolvable generic alias is preserved as an opaque alias with `kind: 'unknown'`, whose C++ spelling is `auto`, so the diagnostic says "placeholder" while the cause is a helper that could not lower. Clearing Stage 1 walked those modules off `ConditionalType` and onto this rule — the family reads 64 direct modules before that change and 71 after, with total coverage unmoved. Distinguish the two before treating this family as one job: a module that refuses here because of an opaque helper is Stage 1's remainder, not a missing runtime capability.
 
-## Stage 3 — construction and assertion evidence (179 direct, 250 blocked)
+## Stage 3 — construction and assertion evidence
+
+Ranked against the ledger at `bbf51466` rather than the plan baseline, because Stage 1 moved this group.
+
+### Open with the symbol-keyed structural row (7 direct, and `node.ts`'s 24 dependents behind it)
+
+The highest-leverage compiler-side item left, and it is small and fully reproduced. `node.ts`'s `createNode` builds its result as a structural row and includes a computed member:
+
+```ts
+const out = { data: …, name: …, kind: nodeKind, [EntityRuntimeKey]: runtimeFactory() } as Node<Traits> & Traits;
+```
+
+The C++ structural-row construction path accepts only `kind: 'property'` members, so any `computedProperty` refuses the module (`cppCompilerBackend.ts`, the non-spread arm of the structural-row construction). Seven modules refuse on exactly this and the other six are `application-gl`'s `glApplicationRenderView`, `materials`' `materialPresets` and `phongToPbr`, and the three pipeline modules `scene2dCanvasPipeline`, `scene2dGlPipeline`, `scene2dWgpuPipeline`.
+
+Reproduced at minimal size: a `declare const RuntimeKey: unique symbol`-style key in an object literal cast to a structural row refuses with this exact message.
+
+The naming is available and sound. The SDK writes `export const EntityRuntimeKey = Symbol.for('EntityRuntime');` — a **global-registry** symbol, so its description is a stable identity that two distinct keys cannot share, unlike a non-global `Symbol('…')`. The compiler already names symbol-keyed members elsewhere (an emitted member is spelled `entity_runtime_key`), so what remains is carrying that name into the row key and into `emitCppStructuralRowSchemaTypeCpp`, and keeping the refusal for a computed key that is _not_ statically nameable. Prefer the row-key spelling over emitting the symbol's runtime value as a key: a row key is a compile-time name, and `flight::Symbol::for_key` is the binding for the `Symbol.for` _call_, not for a row position.
+
+### Then the evidence families
 
 Three families share one shape: the compiler has the contextual slot but not the evidence to fill it.
 
-- `contextual C++ union conversion requires equivalent source union evidence` (118 direct) — the source union and the target variant do not line up.
-- `contextual optionalSingle construction requires expression type evidence` (61 direct).
-- `type assertion target must identify exactly one C++ variant alternative` (30 direct).
+- `contextual C++ union conversion requires equivalent source union evidence` (217 direct, 83 blocked) — the source union and the target variant do not line up. The largest direct count in the corpus, but spread thinly: its top packages are `scene3d-gl` (15), `scene3d-wgpu` (12), `render-gl` (11), `scene2d-gl` (11), and its blocked count is low because these are mostly leaves rather than foundations. High effort per module won.
+- `contextual optionalSingle construction requires expression type evidence` (81 direct, 60 blocked).
+- `type assertion target must identify exactly one C++ variant alternative` (72 direct, 33 blocked).
 
-These are semantic-lowering work of the ordinary kind: extend the evidence each site collects rather than adding a fallback. Rank within the stage by re-measuring after Stage 1, because several members of this group sit behind the `types` modules Stage 1 unblocks.
+These are semantic-lowering work of the ordinary kind: extend the evidence each site collects rather than adding a fallback.
 
 ## Stage 4 — host bindings (83 direct, 158 blocked)
 
