@@ -307,7 +307,13 @@ const cppFlightRuntimeExternalSymbolBindings = [
     kind: 'native',
     members: [
       { sourceMember: 'E', targetName: 'flight::e' },
+      // The runtime carries `e` and `pi` and no other Math constant, so the two square-root
+      // constants are computed from the standard library rather than baked in as digits. Haxe binds
+      // `Math.SQRT2` to exactly this expression; what matters is that the value is the best double
+      // and that the compiler carries no constant the runtime does not own.
       { sourceMember: 'PI', targetName: 'flight::pi' },
+      { sourceMember: 'SQRT1_2', targetName: 'std::sqrt(0.5)' },
+      { sourceMember: 'SQRT2', targetName: 'std::sqrt(2.0)' },
       { sourceMember: 'abs', targetName: 'std::abs' },
       { sourceMember: 'acos', targetName: 'std::acos' },
       { sourceMember: 'asin', targetName: 'std::asin' },
@@ -318,6 +324,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
       { sourceMember: 'cos', targetName: 'std::cos' },
       { sourceMember: 'exp', targetName: 'std::exp' },
       { sourceMember: 'floor', targetName: 'std::floor' },
+      { sourceMember: 'fround', targetName: 'flight::fround' },
       { sourceMember: 'hypot', targetName: 'std::hypot' },
       { sourceMember: 'imul', targetName: cppMathImulTarget },
       { sourceMember: 'log', targetName: 'std::log' },

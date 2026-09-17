@@ -459,6 +459,15 @@ describe('getCompilerRuntimeExternalSymbolTargetCpp', () => {
     ).toBeUndefined();
   });
 
+  it('binds the Math members the runtime provides, constants included', () => {
+    // `flight::fround` is the runtime's own binary32 narrowing, not a standard-library call.
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'fround', 'flight-cpp')).toBe('flight::fround');
+    // The runtime carries `e` and `pi` and no other constant, so these two are computed rather than
+    // read from a name that does not exist.
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'SQRT2', 'flight-cpp')).toBe('std::sqrt(2.0)');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Math', 'SQRT1_2', 'flight-cpp')).toBe('std::sqrt(0.5)');
+  });
+
   it('maps Promise static operations in both runtime profiles', () => {
     expect(getCompilerRuntimeExternalMemberTargetCpp('Promise', 'resolve')).toBe('FlightTask::resolve');
     expect(getCompilerRuntimeExternalMemberTargetCpp('Promise', 'reject')).toBe('FlightTask::reject');

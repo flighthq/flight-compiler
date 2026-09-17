@@ -1389,14 +1389,14 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('if (flight::to_boolean(quote))');
   });
 
-  it('refuses unresolved auto placeholders in flight-cpp type positions', () => {
+  it('elects the erased dynamic value in any and unknown positions', () => {
     const alias = lower('unknown-alias.ts', 'export type UnknownAlias = unknown;').module;
     const property = lower('unknown-property.ts', 'export interface UnknownProperty { value?: unknown }').module;
 
     for (const module of [alias, property]) {
-      expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow(
-        'flight-cpp type position retains unresolved auto placeholder',
-      );
+      const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' });
+      expect(emitted.contents).toContain('flight::Any');
+      expect(emitted.contents).toContain('#include <flight/any.hpp>');
     }
 
     const optionalChain = lower(
@@ -1784,10 +1784,29 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
       'ReturnType<T> requires a statically resolvable non-generic callable type',
     );
 
+    // `unknown` has a representation now, so a callable returning it resolves rather than being
+    // refused for lacking one.
     const unknownReturn = lower('unknown-return.ts', 'export type UnknownReturn = ReturnType<() => unknown>;').module;
-    expect(() => emitIrModuleCpp(unknownReturn, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'ReturnType<T> result requires concrete C++ type evidence',
+    expect(emitIrModuleCpp(unknownReturn, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'using UnknownReturn = flight::Any;',
     );
+
+    // A position with nothing to deduce from is erased; a const whose initializer already states the
+    // type keeps the deduction, so `grid.length` stays a number rather than becoming a value of no
+    // stated type.
+    const deduced = lower(
+      'deduced-unknown.ts',
+      `export function lengths(grid: readonly (readonly number[])[]): number {
+  const rows = grid.length;
+  let mutable = grid.length;
+  mutable = rows;
+  return rows + mutable;
+}`,
+    ).module;
+    const deducedOutput = emitIrModuleCpp(deduced, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(deducedOutput).toContain('auto rows = ');
+    expect(deducedOutput).not.toContain('flight::Any rows');
+    expect(deducedOutput).toContain('flight::Any mutable_ = ');
 
     const rest = lower(
       'rest-parameters.ts',

@@ -28,6 +28,7 @@ Kept here so each round starts from the last one's answers rather than re-derivi
 
 | Ledger                                         | Compiler   | Emitted     | Direct | Propagated |
 | ---------------------------------------------- | ---------- | ----------- | ------ | ---------- |
+| After the erased-value election                | `85a6576a` | 1338 / 2851 | 806    | 707        |
 | After Stage 1                                  | `bbf51466` | 1108 / 2851 | 649    | 1094       |
 | Mid Stage 1 (partial-row collapse only)        | `d12e08ca` | 1107 / 2851 | 650    | 1094       |
 | Fresh SDL-profile run (plan baseline)          | `9cc35da`  | 1106 / 2851 | 651    | 1094       |
@@ -58,19 +59,18 @@ Two properties of the ledger decide how it is read:
 
 Direct refusals are modules the compiler refused on their own contents; blocked is the dependency closure behind them — the modules that would become reachable if that family were resolved.
 
-| direct | blocked | family                                                                        |
-| ------ | ------- | ----------------------------------------------------------------------------- |
-| 18     | 446     | `unsupported type ConditionalType` — cleared in Stage 1, now zero modules     |
-| 56     | 262     | `flight-cpp type position retains unresolved auto placeholder`                |
-| 8      | 117     | the same placeholder, reached through `Node<auto>`                            |
-| 83     | 158     | `runtime external symbol binding plan is incomplete`                          |
-| 118    | 156     | `contextual C++ union conversion requires equivalent source union evidence`   |
-| 61     | 94      | `contextual optionalSingle construction requires expression type evidence`    |
-| 30     | 51      | `type assertion target must identify exactly one C++ variant alternative`     |
-| 5      | 40      | `contextual union value type flight::Map is not a represented runtime domain` |
-| 34     | 34      | `anonymous object property <property> requires concrete C++ type evidence`    |
-| 18     | 25      | `typeof requires closed runtime type evidence`                                |
-| 19     | 23      | `typeOf types require C++ type computation lowering`                          |
+| direct | blocked | family |
+| --- | --- | --- |
+| 18 | 446 | `unsupported type ConditionalType` — cleared in Stage 1, now zero modules |
+| — | — | `flight-cpp type position retains unresolved auto placeholder` — cleared in Stage 2, now zero modules |
+| 46 | 91 | `runtime external symbol binding plan is incomplete` — down from 110 |
+| 118 | 156 | `contextual C++ union conversion requires equivalent source union evidence` |
+| 61 | 94 | `contextual optionalSingle construction requires expression type evidence` |
+| 30 | 51 | `type assertion target must identify exactly one C++ variant alternative` |
+| 5 | 40 | `contextual union value type flight::Map is not a represented runtime domain` |
+| 34 | 34 | `anonymous object property <property> requires concrete C++ type evidence` |
+| 18 | 25 | `typeof requires closed runtime type evidence` |
+| 19 | 23 | `typeOf types require C++ type computation lowering` |
 
 The single most blocking module in the corpus is `@flighthq/types/packages/types/src/AnimationChannel.ts` at 99 blocked dependents, followed by `@flighthq/types/packages/types/src/Node.ts` at 76 and `@flighthq/types/packages/types/src/ApplicationWindow.ts` at 49. `@flighthq/types` alone carries 56 of the 651 direct refusals and 252 refused modules.
 
@@ -162,13 +162,13 @@ Those are Stage 3 families, they were invisible while the helpers stood in front
 
 ## Stage 2 — an erased value for `any` and `unknown` type positions (64 direct, up to 315 blocked)
 
-`emitTypeCpp` maps `IrType { kind: 'unknown' }` to `auto` whenever `source` is neither `this` nor `object`, and the emission guard then fails the module with `cpp-unresolved-type-placeholder`. `source: 'object'` already has a decided representation, `flight::Ref<void>`. The remaining `any` and `unknown` do not, and the largest blockers in the corpus are exactly this: `AnimationChannel.targetRef: unknown` (99 blocked), `type NativeWindowHandle = unknown` (49), `GlContext.viewport` (25), and `Node<any>` as `NodeAny` (76).
+**Done, and it is the largest single step so far.** `flight-cpp` added `flight::Any` — a closed variant over every language type the runtime has, so a position written `unknown` that holds a number stays a number — and this compiler elects it. The election goes in `emitTypeCpp`'s `unknown` arm, after the `this` and `object` cases; it cannot be reached through a binding profile, which is why it needed a compiler change rather than a profile entry.
 
-These are opaque handles by intent — "the animation core never interprets `targetRef`"; "a host-defined native window identity … deliberately does not narrow the representation" — and they are not all objects. A blanket `flight::Ref<void>` would be the "blanket opaque or dynamic fallback" the adoption register forbids, and would silently misrepresent a value that is a number.
+**Measured: the auto-placeholder family falls from 69 direct modules to zero and the corpus goes from 1,108 to 1,338 emitted of 2,851.** That is 230 modules from one arm of one switch. It is also the whole of what the ranking called the largest lever, and the reason the earlier framing — that a rough half of the 1,108 → 1,500 band lived downstream — was right.
 
-This stage is therefore downstream-led: `flight-cpp` needs a supported erased dynamic value that keeps a missing entry distinct from a present `undefined`, and this compiler elects it once it exists. Recording the gap is Stage 2's first deliverable; see [`flight-cpp-adoption.md`](flight-cpp-adoption.md).
+**The election is scoped to positions with nothing to deduce from, and that scoping is load-bearing.** Taking the whole `unknown` arm to `Any` regressed `const rows = grid.length` — a `const` with an initializer whose recorded type is unconstrained — from `auto rows`, which deduces the `double` the initializer already states, to `flight::Any rows`, which erases a type that was never in doubt. The golden corpus caught it. So a non-mutable binding with an initializer keeps the deduction, and the erased value serves the positions that have none: fields, parameters, type aliases, and mutable bindings that may be reassigned across alternatives. The distinction is the initializer, not the type: where C++ can deduce, deduction is never wider than erasure.
 
-A sub-case inside the same family is compiler-side, and Stage 1 moved seven modules into it. An unresolvable generic alias is preserved as an opaque alias with `kind: 'unknown'`, whose C++ spelling is `auto`, so the diagnostic says "placeholder" while the cause is a helper that could not lower. Clearing Stage 1 walked those modules off `ConditionalType` and onto this rule — the family reads 64 direct modules before that change and 71 after, with total coverage unmoved. Distinguish the two before treating this family as one job: a module that refuses here because of an opaque helper is Stage 1's remainder, not a missing runtime capability.
+Two things to carry forward. The election also catches the opaque-alias residue Stage 1 left behind, because that residue is produced as `IrType { kind: 'unknown', source: 'unknown' }` and `unknown` is one of the two sources the election names. `flight-cpp`'s record expects residue to stay refused as `auto`; it does not, and the unresolved-placeholder guard is consequently unreachable across the whole corpus. Either the election spares residue or the guard goes — leaving both means a guard no test can reach. And the election _exposes_ a precision gap rather than causing it: a callable whose result type is not bound, `Symbol.for` and `new Symbol` in evidence, now erases to `Any` where the old `auto` deduced the concrete type from the initializer. Sound, but wider; a member binding cannot carry a call-result type today.
 
 ## Stage 3 — construction and assertion evidence
 

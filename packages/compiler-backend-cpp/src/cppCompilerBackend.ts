@@ -1480,6 +1480,21 @@ function emitStringLiteralUnionCpp(declaration: Readonly<IrTypeAliasDeclaration>
   return [`using ${getBindingTargetName(declaration.binding, context)} = ${emitCppStringType(context)};`];
 }
 
+// A `const` whose recorded type is unconstrained still has a type at this point: its initializer's.
+// The emitted C++ deduces it, and deduction is never wider than the erased value, so a const with an
+// initializer keeps `auto` rather than erasing a type the initializer already states — `const rows =
+// grid.length` is a `double`, not a value of no stated type. A mutable binding does not, because it
+// can be reassigned to a different alternative and the erased value is the only storage that accepts
+// both. This is deliberately narrower than the `unknown` arm of `emitType`, which serves the positions
+// that have no initializer to deduce from: fields, parameters, and type aliases.
+function isCppDeducibleUnknownStorageCpp(
+  mutable: boolean,
+  initializer: Readonly<IrExpression> | undefined,
+  type: Readonly<IrType> | undefined,
+): boolean {
+  return !mutable && initializer !== undefined && type?.kind === 'unknown';
+}
+
 function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, context: EmitContext): string[] {
   if ('pattern' in declaration) {
     emissionError(context, 'binding patterns require destructuring lowering before C++ emission');
@@ -1505,7 +1520,8 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
         ? emitType(preservedInitializerType, context)
         : structuralCastRow
           ? emitCppStructuralRowReferenceTypeCpp(structuralCastRow, context)
-          : declaration.type
+          : declaration.type &&
+              !isCppDeducibleUnknownStorageCpp(declaration.mutable, declaration.initializer, declaration.type)
             ? emitType(declaration.type, context)
             : 'auto';
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
@@ -1562,7 +1578,10 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
       ? emitType(contextualStorageTarget, context)
       : structuralCastRow
         ? emitCppStructuralRowReferenceTypeCpp(structuralCastRow, context)
-        : weakMapViewPlan || !variable.type || preservedInitializerType
+        : weakMapViewPlan ||
+            !variable.type ||
+            preservedInitializerType ||
+            isCppDeducibleUnknownStorageCpp(variable.mutable, variable.initializer, variable.type)
           ? 'auto'
           : emitType(variable.type, context);
   const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
