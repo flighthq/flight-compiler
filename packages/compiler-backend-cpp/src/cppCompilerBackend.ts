@@ -4451,11 +4451,27 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       if (weakMapTypeArgumentPlan?.weakKeyPolicyTargetName) {
         arguments_.push(weakMapTypeArgumentPlan.weakKeyPolicyTargetName);
       }
+      // A reference that names a generic without arguments relies on the declaration's defaults, and
+      // `X<>` still requires a default to be visible at the use site. A default may be declared in
+      // only one declaration, and the consuming module is not the one that declares it, so this
+      // spells the defaults out instead: the reference then depends on nothing but the declaration.
+      const defaultArguments =
+        arguments_.length === 0 && type.reference.kind === 'binding'
+          ? getCppTypeReferenceDefaultArgumentsCpp(type, context)
+          : undefined;
       const usesDefaultArguments =
         arguments_.length === 0 &&
         type.reference.kind === 'binding' &&
         getCppTypeReferenceUsesDefaultArgumentsCpp(type, context);
-      return `${mapped}${arguments_.length > 0 ? `<${arguments_.join(', ')}>` : usesDefaultArguments ? '<>' : ''}`;
+      const emittedArguments =
+        arguments_.length > 0
+          ? `<${arguments_.join(', ')}>`
+          : defaultArguments
+            ? `<${defaultArguments.join(', ')}>`
+            : usesDefaultArguments
+              ? '<>'
+              : '';
+      return `${mapped}${emittedArguments}`;
     }
     case 'never':
       return 'void';
@@ -10724,6 +10740,29 @@ function emitCppTypeArgumentCpp(type: Readonly<IrType>, context: EmitContext): s
   if (type.kind !== 'never') return emitType(type, context);
   context.includes.add('variant');
   return 'std::monostate';
+}
+
+function getCppTypeReferenceDefaultArgumentsCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+): readonly string[] | undefined {
+  // A consumer refers to another module's generic through an import, and the direct-owner index
+  // excludes imports, so the import resolves through its own owner first.
+  const owner = getCppDirectBindingOwner(type, context) ?? getCppImportedBindingDeclarationCpp(type, context);
+  const declaration = owner?.declaration;
+  if (
+    !owner ||
+    !declaration ||
+    (declaration.kind !== 'class' && declaration.kind !== 'interface' && declaration.kind !== 'typeAlias') ||
+    declaration.typeParameters.length === 0 ||
+    !declaration.typeParameters.every((parameter) => parameter.default !== undefined)
+  ) {
+    return undefined;
+  }
+  // `X<>` already works where the declaration is in scope, so only a reference that resolves to
+  // another module needs the defaults spelled out.
+  if (getCppModuleIdentityKey(owner.module) === getCppModuleIdentityKey(context.module)) return undefined;
+  return declaration.typeParameters.map((parameter) => emitCppTypeArgumentCpp(parameter.default!, context));
 }
 
 function getCppTypeReferenceUsesDefaultArgumentsCpp(

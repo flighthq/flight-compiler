@@ -12257,4 +12257,39 @@ export function project<Key extends keyof Provider>(): Pick<Provider, Key> {
       'requires a statically known key set',
     );
   });
+
+  it('spells out a defaulted generic argument a consuming module never saw', () => {
+    const provider = lowerPackage(
+      '@flighthq/types',
+      'node.ts',
+      `export interface Node<Container extends object = object, Item extends object = object> {
+         container: Container | null;
+       }`,
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/app',
+      'tree.ts',
+      `import type { Node } from '@flighthq/types/node';
+       export interface Tree { nodes: readonly Node[]; }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: consumer,
+          specifier: '@flighthq/types/node',
+          target: { packageName: provider.packageName, source: provider.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    // A default may be declared in only one declaration and the consumer is not that module, so the
+    // reference cannot rely on `<>` resolving here.
+    expect(emitted).toContain('flight::Ref<flighthq_types::Node<flight::Ref<void>, flight::Ref<void>>>');
+  });
 });
