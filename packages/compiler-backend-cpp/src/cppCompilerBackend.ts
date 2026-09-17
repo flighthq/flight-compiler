@@ -799,6 +799,85 @@ function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitCon
   });
 }
 
+// A published declaration can reach a type this module never imports. A member of a published struct
+// definition is one way; an alias expanded at emission is another, and it is the one this walk has to
+// follow: `NodeOf<Traits>` lowers to `Node<Traits> & NoInfer<Traits>`, so `Node` arrives in the
+// emitted text while the module imports only `NodeOf`, and no import could name it. The walk
+// therefore follows alias declarations into what they name and recurses through every compound type,
+// rather than reading only the references this module's own IR spells out.
+function collectCppEarlyForwardDeclarationCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  declarations: Map<string, { namespace: string; declaration: string }>,
+  visited: Set<string>,
+): void {
+  switch (type.kind) {
+    case 'array':
+      collectCppEarlyForwardDeclarationCpp(type.element, context, declarations, visited);
+      return;
+    case 'function':
+      type.parameters.forEach((parameter) =>
+        collectCppEarlyForwardDeclarationCpp(parameter.type, context, declarations, visited),
+      );
+      collectCppEarlyForwardDeclarationCpp(type.returns, context, declarations, visited);
+      return;
+    case 'intersection':
+    case 'union':
+      type.types.forEach((member) => collectCppEarlyForwardDeclarationCpp(member, context, declarations, visited));
+      return;
+    case 'tuple':
+      type.elements.forEach((element) =>
+        collectCppEarlyForwardDeclarationCpp(element.type, context, declarations, visited),
+      );
+      return;
+    case 'named':
+      break;
+    default:
+      return;
+  }
+  const owner = getCppDirectBindingOwner(type, context);
+  if (owner && getCppModuleIdentityKey(owner.module) !== getCppModuleIdentityKey(context.module)) {
+    if (owner.declaration.kind === 'typeAlias') {
+      const key = `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}`;
+      if (!visited.has(key)) {
+        visited.add(key);
+        collectCppEarlyForwardDeclarationCpp(owner.declaration.type, context, declarations, visited);
+      }
+    } else if (
+      (owner.declaration.kind === 'class' || owner.declaration.kind === 'interface') &&
+      !(
+        owner.declaration.kind === 'interface' &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        context.referenceRepresentationPlanner.resolveFacetReference(
+          {
+            kind: 'named',
+            reference: { binding: owner.declaration.binding, kind: 'binding', path: [] },
+            typeArguments: owner.declaration.typeParameters.map((parameter) => ({
+              kind: 'named',
+              reference: { binding: parameter.binding, kind: 'binding', path: [] },
+              typeArguments: [],
+            })),
+          },
+          owner.module,
+        )
+      )
+    ) {
+      const namespace = getCppCompilerPackageNamespace(owner.module.packageName, context.options.packageTargets);
+      const targetName =
+        context.targetNameMaps.get(getCppModuleIdentityKey(owner.module))?.get(owner.declaration.binding.id) ??
+        safeCppTypeName(owner.declaration.binding.name);
+      const typeParameters = owner.declaration.typeParameters.map((parameter) =>
+        safeCppTypeName(parameter.binding.name),
+      );
+      const declaration = `${typeParameters.length > 0 ? `template <${typeParameters.map((name) => `typename ${name}`).join(', ')}> ` : ''}struct ${targetName};`;
+      declarations.set(`${namespace}\0${declaration}`, { declaration, namespace });
+    }
+  }
+  type.typeArguments.forEach((argument) =>
+    collectCppEarlyForwardDeclarationCpp(argument, context, declarations, visited),
+  );
+}
+
 function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
   const declarations = new Map<string, { namespace: string; declaration: string }>();
   for (const importItem of context.module.imports) {
@@ -857,41 +936,7 @@ function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
   // too, which is what lets such a declaration have its types declared this early.
   analyzeIrModuleTraversal(context.module, {
     type(type) {
-      if (type.kind !== 'named') return;
-      const owner = getCppDirectBindingOwner(type, context);
-      if (!owner || getCppModuleIdentityKey(owner.module) === getCppModuleIdentityKey(context.module)) return;
-      if (owner.declaration.kind !== 'class' && owner.declaration.kind !== 'interface') return;
-      // An interface the facet representation elects is emitted as an alias, not a struct, so a
-      // forward declaration of it would conflict with that alias. The module's own forward
-      // declarations already skip these; a forward declaration made on another module's behalf has
-      // to skip them too, or the same name arrives here as a struct and there as a using.
-      if (
-        owner.declaration.kind === 'interface' &&
-        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        context.referenceRepresentationPlanner.resolveFacetReference(
-          {
-            kind: 'named',
-            reference: { binding: owner.declaration.binding, kind: 'binding', path: [] },
-            typeArguments: owner.declaration.typeParameters.map((parameter) => ({
-              kind: 'named',
-              reference: { binding: parameter.binding, kind: 'binding', path: [] },
-              typeArguments: [],
-            })),
-          },
-          owner.module,
-        )
-      ) {
-        return;
-      }
-      const namespace = getCppCompilerPackageNamespace(owner.module.packageName, context.options.packageTargets);
-      const targetName =
-        context.targetNameMaps.get(getCppModuleIdentityKey(owner.module))?.get(owner.declaration.binding.id) ??
-        safeCppTypeName(owner.declaration.binding.name);
-      const typeParameters = owner.declaration.typeParameters.map((parameter) =>
-        safeCppTypeName(parameter.binding.name),
-      );
-      const declaration = `${typeParameters.length > 0 ? `template <${typeParameters.map((name) => `typename ${name}`).join(', ')}> ` : ''}struct ${targetName};`;
-      declarations.set(`${namespace}\0${declaration}`, { declaration, namespace });
+      collectCppEarlyForwardDeclarationCpp(type, context, declarations, new Set());
     },
   });
   return [...declarations.values()]
