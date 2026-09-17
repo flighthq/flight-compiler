@@ -805,6 +805,30 @@ function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitCon
 // emitted text while the module imports only `NodeOf`, and no import could name it. The walk
 // therefore follows alias declarations into what they name and recurses through every compound type,
 // rather than reading only the references this module's own IR spells out.
+function getCppImportedBindingDeclarationCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+): Readonly<{ declaration: Readonly<IrDeclaration>; module: Readonly<IrModule> }> | undefined {
+  const reference = type.reference;
+  if (reference.kind !== 'binding' || reference.binding.kind !== 'import') return undefined;
+  const bindingId = reference.binding.id;
+  for (const importItem of context.module.imports) {
+    const binding = importItem.bindings.find((candidate) => candidate.binding.id === bindingId);
+    if (!binding) continue;
+    const importedName = binding.imported === '*' ? reference.path[0] : binding.imported;
+    if (!importedName) return undefined;
+    const matches = getCppResolvedImportModules(importItem.specifier, context).flatMap((targetModule) =>
+      targetModule.declarations.flatMap((declaration) => {
+        if (!('binding' in declaration) || declaration.binding.name !== importedName) return [];
+        if (!hasCppDirectExportName(targetModule, importedName)) return [];
+        return [{ declaration, module: targetModule }];
+      }),
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+  return undefined;
+}
+
 function collectCppEarlyForwardDeclarationCpp(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -835,7 +859,9 @@ function collectCppEarlyForwardDeclarationCpp(
     default:
       return;
   }
-  const owner = getCppDirectBindingOwner(type, context);
+  // `getCppDirectBindingOwner` deliberately excludes import bindings, and an imported alias is
+  // exactly the case this walk exists for, so an import resolves through its own owner index.
+  const owner = getCppDirectBindingOwner(type, context) ?? getCppImportedBindingDeclarationCpp(type, context);
   if (owner && getCppModuleIdentityKey(owner.module) !== getCppModuleIdentityKey(context.module)) {
     if (owner.declaration.kind === 'typeAlias') {
       const key = `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}`;
