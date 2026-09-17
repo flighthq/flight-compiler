@@ -8,8 +8,9 @@ The measure of progress is the SDK corpus ledger, not `npm run readiness`. The g
 
 | Ledger                                         | Compiler   | Emitted     | Direct | Propagated |
 | ---------------------------------------------- | ---------- | ----------- | ------ | ---------- |
-| After Stage 1                                  | `d12e08ca` | 1107 / 2851 | 650    | 1094       |
-| Fresh SDL-profile run (this plan)              | `9cc35da`  | 1106 / 2851 | 651    | 1094       |
+| After Stage 1                                  | `bbf51466` | 1108 / 2851 | 649    | 1094       |
+| Mid Stage 1 (partial-row collapse only)        | `d12e08ca` | 1107 / 2851 | 650    | 1094       |
+| Fresh SDL-profile run (plan baseline)          | `9cc35da`  | 1106 / 2851 | 651    | 1094       |
 | Committed `.dependencies/flight-cpp/generated` | `9f6ce1c`  | 950 / 2851  | 1105   | 796        |
 
 The committed ledger was produced 153 commits behind this tree, so it is not attributable to current work and must not be read as a delta. Regenerate before reading any number as this repository's.
@@ -112,13 +113,30 @@ export type MethodsOf<T> = { [K in keyof T as T[K] extends (...args: any) => any
 
 `MethodsOf` is a mapped type whose key remapping is a conditional, so it lowers to an opaque alias, and `Partial<opaque>` is what refuses.
 
-**This one is not a collapse away, and the reason is a policy the repository already states.** Extending the Stage 1 recognition to "a mapped type over `keyof Subject` that keeps `Subject[Key]` as written" was implemented and reverted: it turns two existing tests red, and one of them is the policy itself. `keeps ambient utilities named and expands only checker-concrete mapped types` asserts that `export type Generic<Value> = { [Key in keyof Value]: Value[Key] }` — an identity projection over a generic parameter, the mildest case there is — is **omitted** with an `unsupported type MappedType` diagnostic. So refusing a generic mapped alias is deliberate, not an oversight, and lowering `MethodsOf` means overturning that named decision rather than extending it.
+**Key projections are representation-carrying — decided, and the policy test changed with the decision.** Extending the Stage 1 recognition to "a mapped type over `keyof Subject` that keeps `Subject[Key]` as written" was first implemented and reverted, because it turned two tests red and one of them was the policy itself: `keeps ambient utilities named and expands only checker-concrete mapped types` asserted that `export type Generic<Value> = { [Key in keyof Value]: Value[Key] }` — an identity projection over a generic parameter, the mildest case there is — is _omitted_ with an `unsupported type MappedType` diagnostic. That made it a policy decision rather than a fifth application of the Stage 1 pattern, and it was taken deliberately rather than inferred from momentum: a generic key projection is representation-carrying, exactly as `Omit`'s key removal already is over a reference-preserving subject.
 
-Nor is the surrounding argument as free as it looks. `MethodsOf`'s own specification test enforces the key filter — `WidgetMethods['id']` is a `@ts-expect-error`, and `MethodsOf<DataOnly>` is asserted empty — so the excluded members are a checked contract, and a collapse that keeps them is a widening of it. The counter-argument is real too: the backend already drops `Omit`'s key removal over a reference-preserving subject, which is the same relaxation, and it emits a dynamic row rather than a fabricated struct. The two are genuinely in tension, and resolving it is a decision about how far the row model relaxes key sets — not a fifth application of the Stage 1 pattern.
+The two tests were updated to the new policy rather than deleted — `Generic` now lowers to its subject, and the unsupported-families test lists `Mapped` among the resolved declarations and no longer expects its diagnostic. Nothing else was relaxed: the recognition requires a mapped type whose constraint is `keyof` the alias's _own single type parameter_ and whose value type is `Subject[Key]` as written, so a mapped type over a literal union (`[Key in 'ready' | 'done']`) and a mapped type over a concrete subject are unaffected.
 
-Decide it before implementing, and decide it as policy: either generic key projections are representation-carrying (and the `Generic` test changes), or they are not (and `Partial<MethodsOf<…>>` needs a different answer, most likely a deliberate refusal that names the projection rather than `Partial<T> requires a statically resolvable C++ object shape`).
+`MethodsOf`'s own specification test still enforces the filter at the source level — `WidgetMethods['id']` is a `@ts-expect-error`, and `MethodsOf<DataOnly>` is asserted empty. What the decision settles is that the _emitted storage_ does not re-enforce it: the row is the subject's, and a caller who passes a member the selection excluded is refused by the source types rather than by the generated header. The emitted alias is degenerate and honest about that:
 
-The yield so far is one module, and that is the honest number: this stage bought the mechanism and the diagnosis, not the closure. It removed a family, proved the representation end-to-end in emitted C++, and left two modules one helper away from emitting — with the helper named.
+```cpp
+template <typename T>
+using MethodsOf = T;
+```
+
+### The yield, measured
+
+**1106 → 1108 across the whole stage** — two modules, one per helper, both of them the helper's own file (`PartialNode.ts`, then `MethodsOf.ts`). Both refusal families are now empty. Everything else the stage was expected to reach reached its _next_ blocker instead, and that is the honest number: this stage bought the mechanism and the diagnosis, not the closure.
+
+What the two modules revealed once the helpers stopped standing in front of them:
+
+| module                                 | next blocker                                                                |
+| -------------------------------------- | --------------------------------------------------------------------------- |
+| `@flighthq/node` `node.ts`             | `structural-row construction requires explicit named properties`            |
+| `@flighthq/scene2d` `displayObject.ts` | `contextual C++ union conversion requires equivalent source union evidence` |
+| `@flighthq/shape` `shape.ts`           | `structural-row projection requires a represented object-reference target`  |
+
+Those are Stage 3 families, they were invisible while the helpers stood in front, and they confirm the lower-bound property a third time: two helpers cleared, and the modules behind them simply moved to the next refusal rather than emitting. Expect Stage 3 to behave the same way, and rank it from a fresh ledger rather than from this table.
 
 **Verification.** The three named tests go green; `npm run test` holds its pre-existing failure count; then §Reproducing the ledger, expecting the seventeen modules to emit and the dependency closure behind them to open. Read the new ledger before starting Stage 2 — the yield will be lower than 446, because each module records only its first refusal.
 
