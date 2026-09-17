@@ -28,7 +28,7 @@ Kept here so each round starts from the last one's answers rather than re-derivi
 
 | Ledger                                         | Compiler   | Emitted     | Direct | Propagated |
 | ---------------------------------------------- | ---------- | ----------- | ------ | ---------- |
-| After the erased-value election                | `85a6576a` | 1338 / 2851 | 806    | 707        |
+| After the erased-value election                | `04b4fd35` | 1339 / 2851 | 806    | 707        |
 | After Stage 1                                  | `bbf51466` | 1108 / 2851 | 649    | 1094       |
 | Mid Stage 1 (partial-row collapse only)        | `d12e08ca` | 1107 / 2851 | 650    | 1094       |
 | Fresh SDL-profile run (plan baseline)          | `9cc35da`  | 1106 / 2851 | 651    | 1094       |
@@ -164,7 +164,7 @@ Those are Stage 3 families, they were invisible while the helpers stood in front
 
 **Done, and it is the largest single step so far.** `flight-cpp` added `flight::Any` — a closed variant over every language type the runtime has, so a position written `unknown` that holds a number stays a number — and this compiler elects it. The election goes in `emitTypeCpp`'s `unknown` arm, after the `this` and `object` cases; it cannot be reached through a binding profile, which is why it needed a compiler change rather than a profile entry.
 
-**Measured: the auto-placeholder family falls from 69 direct modules to zero and the corpus goes from 1,108 to 1,338 emitted of 2,851.** That is 230 modules from one arm of one switch. It is also the whole of what the ranking called the largest lever, and the reason the earlier framing — that a rough half of the 1,108 → 1,500 band lived downstream — was right.
+**Measured: the auto-placeholder family falls from 69 direct modules to zero and the corpus goes from 1,108 to 1,339 emitted of 2,851.** That is 230 modules from one arm of one switch. It is also the whole of what the ranking called the largest lever, and the reason the earlier framing — that a rough half of the 1,108 → 1,500 band lived downstream — was right.
 
 **The election is scoped to positions with nothing to deduce from, and that scoping is load-bearing.** Taking the whole `unknown` arm to `Any` regressed `const rows = grid.length` — a `const` with an initializer whose recorded type is unconstrained — from `auto rows`, which deduces the `double` the initializer already states, to `flight::Any rows`, which erases a type that was never in doubt. The golden corpus caught it. So a non-mutable binding with an initializer keeps the deduction, and the erased value serves the positions that have none: fields, parameters, type aliases, and mutable bindings that may be reassigned across alternatives. The distinction is the initializer, not the type: where C++ can deduce, deduction is never wider than erasure.
 
