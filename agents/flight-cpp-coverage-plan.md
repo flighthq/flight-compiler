@@ -18,11 +18,11 @@ Kept here so each round starts from the last one's answers rather than re-derivi
 
 ### Next five
 
-1. Bind the remaining ambient lib-lane symbols that need no new runtime type (`Function[value]`, `globalThis[value]`, `structuredClone[value]` — 7 modules between them), checking each against `flight-cpp` before adding a table entry.
-2. Take the largest single payload in `contextual C++ union value type <type> is not a represented runtime domain` (58 direct, 47 blocked) and find whether the union plan's value-slot matching has a systematic gap rather than per-site causes.
-3. `contextual optionalSingle construction requires expression type evidence` (81 direct, 60 blocked) — semantic-layer evidence work, verified by unit tests and the golden corpus.
-4. `type assertion target must identify exactly one C++ variant alternative` (72 direct, 33 blocked) — same lane.
-5. Re-open the symbol-keyed structural row only where emitted C++ can be compiled. It is 7 direct modules including `node.ts` and 24 dependents behind it, and the reproduction and naming argument are in Stage 3 — but it writes a row key into emitted output, and this sandbox has no C++ toolchain, so a wrong key would be invisible to every gate that runs here. Deferred on verifiability, not on difficulty.
+1. **Re-rank from the current ledger.** 803 direct refusals over 1,512 entries, and nothing above is ranked against it. The auto family and both helper families are closed, so the leaderboard is a different shape than any table in this document.
+2. **Give a member binding a call-result type.** `Symbol.for` and `new Symbol` are the evidence: their results erase to `Any` where the old `auto` deduced the concrete type. `CompilerRuntimeExternalMemberBinding` carries only `sourceMember` and `targetName`, so this is a contract addition before it is a table entry.
+3. **Decide the placeholder guard.** The election made it unreachable across the corpus, and `flight-cpp`'s record expects otherwise for alias residue. Either the election spares `source: 'unknown'` or the guard goes; leaving both means a guard no test can reach.
+4. **The three defects `flight-cpp` named in this round.** A local array literal over native-binding property reads loses its element type (`const restored = [ctx.globalAlpha, ctx.lineWidth]` emits `flight::Array<auto`); `captured referent mutation of ctx` needs the compiler's reference representation for a captured binding; and the upstream example manifests need the Web host package declared. The first is a compiler bug with a reproduction.
+5. **Then the evidence families**, re-ranked: contextual union conversion and optional construction were 217 and 81 direct before this round and neither moved.
 
 ## Where the number stands
 
