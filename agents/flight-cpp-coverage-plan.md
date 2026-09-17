@@ -6,10 +6,11 @@ The measure of progress is the SDK corpus ledger, not `npm run readiness`. The g
 
 ## Where the number stands
 
-| Ledger                                         | Compiler  | Emitted     | Direct | Propagated |
-| ---------------------------------------------- | --------- | ----------- | ------ | ---------- |
-| Fresh SDL-profile run (this plan)              | `9cc35da` | 1106 / 2851 | 651    | 1094       |
-| Committed `.dependencies/flight-cpp/generated` | `9f6ce1c` | 950 / 2851  | 1105   | 796        |
+| Ledger                                         | Compiler   | Emitted     | Direct | Propagated |
+| ---------------------------------------------- | ---------- | ----------- | ------ | ---------- |
+| After Stage 1                                  | `d12e08ca` | 1107 / 2851 | 650    | 1094       |
+| Fresh SDL-profile run (this plan)              | `9cc35da`  | 1106 / 2851 | 651    | 1094       |
+| Committed `.dependencies/flight-cpp/generated` | `9f6ce1c`  | 950 / 2851  | 1105   | 796        |
 
 The committed ledger was produced 153 commits behind this tree, so it is not attributable to current work and must not be read as a delta. Regenerate before reading any number as this repository's.
 
@@ -68,7 +69,7 @@ The set is exactly `@flighthq/node` (node), `@flighthq/scene2d` (displayObject, 
 
 `PartialNode<T>` is a bag of the node's own named properties with every member optional — "any named property of a node, without requiring the whole thing", which is how call sites use it: `createNode3D(source.kind, { alpha, enabled, name, visible })` and `createNode3D(node.kind, { name: node.name })` pass arbitrary subsets. Checking the alias against the TypeScript checker confirms it: for `PartialNode<Node>` the properties are `data?, enabled?, name?`, and it is assignable to `Partial<Node>` in one direction only, because `data`'s value type is `Partial<T['data']>` rather than `T['data']`. So the alias is a partial structural row over the node's row, with one member — `data`, itself a bag — narrowed to a partial of itself. `data` is not special; it is the one named property whose value happens to be another bag, which is why its consumer casts it: `createData(obj?.data as Partial<Data>)`.
 
-This matters because **the representation already exists and the concrete form already lowers to it.** With the conditional written out concretely, this compiler emits the bag exactly as described — a nominal struct whose members are all `std::optional`, `data` among them holding a nested partial struct, passed as `StructuralRef<RowReadonly<RowOf<Bag>>>`. No new runtime primitive is needed for the concrete case, and an earlier draft of this plan asked downstream for a generic "row minus one key" projection on that assumption; that ask is withdrawn.
+This matters because **the representation already exists and the concrete form already lowers to it.** With the conditional written out concretely, this compiler emits the bag exactly as described — a nominal struct whose members are all `std::optional`, `data` among them holding a nested partial struct, passed as `StructuralRef<RowReadonly<RowOf<Bag>>>`. No new runtime primitive is needed for the generic form either: the backend already emits `Omit<T, K>` over a reference-preserving subject by projecting nothing and keeping the subject's own row, so key removal is a type-level refinement the row carries through its accessors. An earlier draft of this plan asked downstream for a "row minus one key" projection on the assumption that it did not; that ask is withdrawn.
 
 ### The decision, and the one site it lands at
 
@@ -96,7 +97,22 @@ Verified against the corpus, not extrapolated. The `ConditionalType` family goes
 
 ### The remainder
 
-Two modules — `@flighthq/node`'s `node.ts` and `@flighthq/scene2d`'s `displayObject.ts` — are held by the helper alias itself, which is where the row-partial decision lands. The named reference now reaches the C++ backend intact; it refuses because the alias it names is still opaque. Making the alias lower to `RowPartial<RowOf<T>>` is the remaining change, and it is the one this plan has described from the start: it has to hold for a free `T`, because the concrete argument is erased by the time the declaration-site lowering runs.
+`d12e08ca` takes the row-partial decision. `PartialNode<T>` is a partial row that re-states one of the members the `Omit` removed, so once the row _is_ the representation the re-statement is a type-level refinement the row carries — which is already how the backend emits `Omit` over a reference-preserving subject, projecting nothing and keeping the subject's row. `lowerTypeAlias` now recognises that shape and lowers the whole body as `Partial<subject>`. The emitted header is one definition and no per-site machinery:
+
+```cpp
+template <typename T>
+using PartialNode = flight::StructuralRef<flight::RowPartial<flight::RowOf<T>>>;
+```
+
+`PartialNode.ts` now emits, and the two modules that were held by it move on. **The blocker there is not `PartialNode` at all — it is the second helper in the same file.** `node.ts` and `displayObject.ts` both fail on `Partial<MethodsOf<…>>`:
+
+```ts
+export type MethodsOf<T> = { [K in keyof T as T[K] extends (...args: any) => any ? K : never]: T[K] };
+```
+
+`MethodsOf` is a mapped type whose key remapping is a conditional, so it lowers to an opaque alias, and `Partial<opaque>` is what refuses. That is the same shape of problem one helper over, and it is not covered by the collapse above: `MethodsOf` filters keys by a predicate rather than re-stating keys the `Omit` removed, so the same argument does not carry it. Treat it as its own decision — under the row model a key-filtered projection of a row is likewise a refinement the row carries, but that widens the row rather than re-stating it, and widening is a different claim than the closed one `PartialNode` makes. Decide it on emitted C++ at these two modules, as with Stage 1.
+
+The yield so far is one module, and that is the honest number: this stage bought the mechanism and the diagnosis, not the closure. It removed a family, proved the representation end-to-end in emitted C++, and left two modules one helper away from emitting — with the helper named.
 
 **Verification.** The three named tests go green; `npm run test` holds its pre-existing failure count; then §Reproducing the ledger, expecting the seventeen modules to emit and the dependency closure behind them to open. Read the new ledger before starting Stage 2 — the yield will be lower than 446, because each module records only its first refusal.
 
