@@ -94,8 +94,8 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     if (!record) continue;
     record.refusals.push({
       code: diagnostic.code,
-      column: diagnostic.column,
-      line: diagnostic.line,
+      ...(diagnostic.column === undefined ? {} : { column: diagnostic.column }),
+      ...(diagnostic.line === undefined ? {} : { line: diagnostic.line }),
       message: diagnostic.message,
       stage: 'lowering',
     });
@@ -206,8 +206,8 @@ function compareCompilerPackageGraphDiagnostics(
   return (
     compareTextCodeUnits(left.packageName, right.packageName) ||
     compareTextCodeUnits(left.source, right.source) ||
-    left.line - right.line ||
-    left.column - right.column ||
+    (left.line ?? 0) - (right.line ?? 0) ||
+    (left.column ?? 0) - (right.column ?? 0) ||
     compareTextCodeUnits(left.code, right.code) ||
     compareTextCodeUnits(left.message, right.message)
   );

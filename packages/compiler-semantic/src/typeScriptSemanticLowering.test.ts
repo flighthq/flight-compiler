@@ -1398,6 +1398,63 @@ describe('lowerTypeScriptSource', () => {
     );
   });
 
+  it('names the module an unlowerable construct came from instead of placing it in the consumer', () => {
+    const helper = ts.createSourceFile(
+      '/flight/packages/types/src/generic-helpers.ts',
+      `export type PartialNode<Value> = { data?: Partial<Value extends { data: infer Data } ? Data : never> } & Partial<Omit<Value, 'data'>>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/node/src/node.ts',
+      `import type { PartialNode } from '@flight/types';
+       export function create<Value extends { data: object }>(obj?: Readonly<PartialNode<Value>>): void { void obj; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: helper, upstreamDirectory: '/flight' },
+        { packageName: '@flight/node', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            importer: { name: 'node', packageName: '@flight/node', source: 'packages/node/src/node.ts' },
+            importedNames: ['PartialNode'],
+            specifier: '@flight/types',
+            target: { packageName: '@flight/types', source: 'packages/types/src/generic-helpers.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+
+    const located = result!.diagnostics.find((candidate) => candidate.message.startsWith('unsupported type'));
+    // The offset this diagnostic reaches lowering with belongs to the helper's text, so reading it
+    // against the consumer would name an unrelated line of the consumer.
+    expect(located?.message).toBe('unsupported type ConditionalType in packages/types/src/generic-helpers.ts');
+    expect(located?.source).toBe('packages/node/src/node.ts');
+    expect(located?.line).toBeUndefined();
+    expect(located?.column).toBeUndefined();
+  });
+
+  it('keeps the position when the unlowerable construct is in the module being lowered', () => {
+    const result = lower(
+      'local-conditional.ts',
+      `type Inner<Value> = Value extends { data: infer Data } ? Data : never;
+export function read<Value extends { data: object }>(value: Readonly<Partial<Inner<Value>>>): void {
+  void value;
+}`,
+    );
+
+    const located = result.diagnostics.find((candidate) => candidate.message.startsWith('unsupported type'));
+    expect(located?.message).toBe('unsupported type ConditionalType');
+    expect(located?.source).toBe('packages/math/src/local-conditional.ts');
+    expect(located?.line).toBe(1);
+    expect(located?.column).toBe(21);
+  });
+
   it('keeps unresolved generic utility construction targets opaque through a barrel', () => {
     const helper = ts.createSourceFile(
       '/flight/packages/types/src/generic-helpers.ts',

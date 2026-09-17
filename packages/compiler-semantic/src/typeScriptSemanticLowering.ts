@@ -477,17 +477,44 @@ function diagnostic(
   context: LoweringContext,
   severity: CompilerDiagnosticSeverity = 'error',
 ): CompilerDiagnostic {
-  const start = node.getStart(context.sourceFile);
-  const position = context.sourceFile.getLineAndCharacterOfPosition(start);
+  const location = getTypeScriptDiagnosticLocation(node, message, context);
   return {
     code: 'unsupported-typescript',
-    column: position.character + 1,
-    line: position.line + 1,
-    message,
+    ...location.position,
+    message: location.message,
     packageName: context.options.packageName,
     severity,
     source: relativeSource(context.sourceFile.fileName, context.options.upstreamDirectory),
   };
+}
+
+// A diagnostic is attributed to the module being lowered, so a line and column on it must be a
+// position in that module's own text. Lowering follows declarations into imported modules, and a
+// node from another source file carries an offset that means nothing in this one: reading it against
+// this text names an unrelated line. Name the file the syntax is actually in instead, and leave the
+// position off rather than invent one.
+function getTypeScriptDiagnosticLocation(
+  node: ts.Node,
+  message: string,
+  context: LoweringContext,
+): Readonly<{ message: string; position?: Readonly<{ column: number; line: number }> }> {
+  const sourceFile = node.getSourceFile();
+  if (!sourceFile || !ts.isSourceFile(sourceFile)) return { message };
+  if (sourceFile !== context.sourceFile) {
+    const origin = getTypeScriptDiagnosticOrigin(sourceFile, context);
+    return { message: origin === undefined ? message : `${message} in ${origin}` };
+  }
+  const start = node.getStart(sourceFile);
+  if (start < 0) return { message };
+  const position = sourceFile.getLineAndCharacterOfPosition(start);
+  return { message, position: { column: position.character + 1, line: position.line + 1 } };
+}
+
+function getTypeScriptDiagnosticOrigin(sourceFile: ts.SourceFile, context: LoweringContext): string | undefined {
+  if (sourceFile.fileName === getCompilerAmbientSurfaceFileName()) return 'the compiler ambient surface';
+  const relative = path.relative(path.resolve(context.options.upstreamDirectory), path.resolve(sourceFile.fileName));
+  if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return undefined;
+  return normalizePathPortable(relative);
 }
 
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {

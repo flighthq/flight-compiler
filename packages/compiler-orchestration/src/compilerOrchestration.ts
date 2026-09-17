@@ -95,10 +95,7 @@ export function createCompilerDiagnosticsFailure(
 ): CompilerDiagnosticsFailure {
   const orderedDiagnostics = diagnostics.map((diagnostic) => ({ ...diagnostic })).sort(compareDiagnostics);
   const message = `TypeScript lowering produced ${String(orderedDiagnostics.length)} diagnostic(s):\n${orderedDiagnostics
-    .map(
-      (diagnostic) =>
-        `${diagnostic.packageName}/${diagnostic.source}:${String(diagnostic.line)}:${String(diagnostic.column)} [${diagnostic.code}] ${diagnostic.message}`,
-    )
+    .map((diagnostic) => `${formatCompilerDiagnosticLocation(diagnostic)} [${diagnostic.code}] ${diagnostic.message}`)
     .join('\n')}`;
   const failure = Object.assign(new Error(message), {
     diagnostics: orderedDiagnostics,
@@ -128,11 +125,28 @@ function compareDiagnostics(left: Readonly<CompilerDiagnostic>, right: Readonly<
   return (
     compareTextCodeUnits(left.packageName, right.packageName) ||
     compareTextCodeUnits(left.source, right.source) ||
-    left.line - right.line ||
-    left.column - right.column ||
+    getCompilerDiagnosticLine(left) - getCompilerDiagnosticLine(right) ||
+    getCompilerDiagnosticColumn(left) - getCompilerDiagnosticColumn(right) ||
     compareTextCodeUnits(left.code, right.code) ||
     compareTextCodeUnits(left.message, right.message)
   );
+}
+
+// An absent position is a diagnostic whose syntax lives in another module. Order those before the
+// located ones so the ordering stays total and deterministic.
+function getCompilerDiagnosticLine(diagnostic: Readonly<CompilerDiagnostic>): number {
+  return diagnostic.line ?? 0;
+}
+
+function getCompilerDiagnosticColumn(diagnostic: Readonly<CompilerDiagnostic>): number {
+  return diagnostic.column ?? 0;
+}
+
+function formatCompilerDiagnosticLocation(diagnostic: Readonly<CompilerDiagnostic>): string {
+  const location = `${diagnostic.packageName}/${diagnostic.source}`;
+  return diagnostic.line === undefined || diagnostic.column === undefined
+    ? location
+    : `${location}:${String(diagnostic.line)}:${String(diagnostic.column)}`;
 }
 
 function compareEmittedFiles(left: Readonly<EmittedFile>, right: Readonly<EmittedFile>): number {
@@ -146,14 +160,8 @@ function isCompilerDiagnosticValue(value: unknown): value is CompilerDiagnostic 
     'code' in value &&
     typeof value.code === 'string' &&
     Object.hasOwn(compilerDiagnosticCodes, value.code) &&
-    'column' in value &&
-    typeof value.column === 'number' &&
-    Number.isInteger(value.column) &&
-    value.column >= 1 &&
-    'line' in value &&
-    typeof value.line === 'number' &&
-    Number.isInteger(value.line) &&
-    value.line >= 1 &&
+    isOptionalCompilerDiagnosticPosition(value, 'column') &&
+    isOptionalCompilerDiagnosticPosition(value, 'line') &&
     'message' in value &&
     typeof value.message === 'string' &&
     'packageName' in value &&
@@ -163,6 +171,11 @@ function isCompilerDiagnosticValue(value: unknown): value is CompilerDiagnostic 
     'source' in value &&
     typeof value.source === 'string'
   );
+}
+
+function isOptionalCompilerDiagnosticPosition(value: object, key: 'column' | 'line'): boolean {
+  const position: unknown = Reflect.get(value, key);
+  return position === undefined || (typeof position === 'number' && Number.isInteger(position) && position >= 1);
 }
 
 function compareModules(left: Readonly<IrModule>, right: Readonly<IrModule>): number {

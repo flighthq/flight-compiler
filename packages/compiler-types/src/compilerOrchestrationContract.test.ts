@@ -47,7 +47,11 @@ describe('compiler orchestration contracts', () => {
 
     expect(options.modules[0]).toBe(module);
     expect(result.report).toBe(report);
-    expectTypeOf(diagnostic).toMatchTypeOf<CompilerSourceLocation>();
+    // A diagnostic names a module and a message. Its position is optional because lowering follows
+    // declarations into imported modules, so the offending syntax is not always in `source`.
+    expectTypeOf(diagnostic).toMatchTypeOf<Omit<CompilerSourceLocation, 'column' | 'line'>>();
+    expectTypeOf(diagnostic.line).toEqualTypeOf<number | undefined>();
+    expectTypeOf(diagnostic.column).toEqualTypeOf<number | undefined>();
   });
 });
 
