@@ -17,11 +17,13 @@ export function createBackendEmissionFailure(
   sourceIdentity: Readonly<CompilerSourceIdentity>,
   message: string,
   rule?: string,
+  position?: Readonly<{ column: number; line: number }>,
 ): BackendEmissionFailure {
   const subject = `${sourceIdentity.packageName}/${sourceIdentity.source}`;
   const failure = Object.assign(new Error(`${backend} emission failed for ${subject}: ${message}`), {
     backend,
     code: 'unsupported-ir' as const,
+    ...position,
     kind: 'backend-emission' as const,
     packageName: sourceIdentity.packageName,
     source: sourceIdentity.source,

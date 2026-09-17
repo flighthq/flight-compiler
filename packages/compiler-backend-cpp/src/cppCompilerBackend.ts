@@ -165,6 +165,10 @@ interface EmitContext {
   contextualBindingStorageTargetTypes: ReadonlyMap<string, Readonly<IrType>>;
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
+  // The declaration being emitted, so a refusal can name where in the module it is. A backend emits
+  // whole declarations and a refusal names one of them; without this a refused module is a message
+  // with no position at all, and 649 of them are otherwise indistinguishable.
+  currentOrigin?: Readonly<{ column: number; line: number }> | undefined;
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
@@ -389,7 +393,10 @@ function emitIrModuleCppWithContext(
     .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
     .map((declaration) => {
       const existingAnonymousStructs = new Set(context.anonymousStructs.keys());
-      const lines = emitDeclaration(declaration, context);
+      const lines = emitDeclaration(declaration, {
+        ...context,
+        currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+      });
       const anonymousStructs = [...context.anonymousStructs]
         .filter(([key]) => !existingAnonymousStructs.has(key))
         .map(([, struct]) => struct);
@@ -464,7 +471,9 @@ function emitIrModuleCppWithContext(
   lines.push('', `} // namespace ${namespaceName}`);
   const contents = lines.join('\n');
   if (getCppRuntimeProfile(options) === 'flight-cpp') {
-    assertCppOutputHasNoUnresolvedTypePlaceholder(contents, context);
+    // This guard reads the assembled module, so it cannot say which declaration left the placeholder
+    // in it. Carrying the last declaration's position here would name an innocent one.
+    assertCppOutputHasNoUnresolvedTypePlaceholder(contents, { ...context, currentOrigin: undefined });
   }
   const runtimeDependency =
     options.runtimeHeader ?? (getCppRuntimeProfile(options) === 'flight-cpp' ? 'flight/runtime.hpp' : undefined);
@@ -11300,7 +11309,7 @@ function isSuperCallStatement(statement: Readonly<IrStatement>): boolean {
 }
 
 function emissionError(context: EmitContext, message: string, rule?: string): never {
-  throw createBackendEmissionFailure('cpp', context.module, message, rule);
+  throw createBackendEmissionFailure('cpp', context.module, message, rule, context.currentOrigin);
 }
 
 const cppOptionalArrayMethods = new Set(['find', 'shift', 'pop']);

@@ -47,7 +47,14 @@ export type BackendEmissionFailureCode = 'unsupported-ir';
 export interface BackendEmissionFailure extends Error, CompilerSourceIdentity {
   readonly backend: string;
   readonly code: BackendEmissionFailureCode;
+  /**
+   * One-based source column, absent when the backend cannot place the construct it refused. A backend
+   * emits whole declarations, so the position is the declaration being emitted when the refusal names
+   * syntax inside one, and absent when the refusal is about the module rather than a declaration in it.
+   */
+  readonly column?: number;
   readonly kind: 'backend-emission';
+  readonly line?: number;
   /**
    * The stable identity of the decision this refusal records, when the message is not one.
    *

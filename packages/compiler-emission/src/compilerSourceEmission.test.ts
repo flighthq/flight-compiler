@@ -30,6 +30,28 @@ describe('createBackendEmissionFailure', () => {
       source: 'packages/math/src/value.ts',
     });
   });
+
+  it('places the refusal where the backend could, and leaves no position when it could not', () => {
+    const placed = createBackendEmissionFailure(
+      'cpp',
+      { packageName: '@flighthq/math', source: 'packages/math/src/value.ts' },
+      'unsupported',
+      undefined,
+      { column: 4, line: 12 },
+    );
+    // A position is a position in `source`, so a consumer can read the two together.
+    expect(placed).toMatchObject({ column: 4, line: 12 });
+    expect(placed.line).toBe(12);
+
+    const unplaced = createBackendEmissionFailure(
+      'cpp',
+      { packageName: '@flighthq/math', source: 'packages/math/src/value.ts' },
+      'unsupported',
+    );
+    // Absent, not zero: a fabricated position is worse than none.
+    expect(unplaced.line).toBeUndefined();
+    expect(unplaced.column).toBeUndefined();
+  });
 });
 
 describe('createCompilerInvariantFailure', () => {

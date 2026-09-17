@@ -252,6 +252,8 @@ function createCompilerPackageGraphEmissionRefusal(error: unknown): CompilerPack
   if (isBackendEmissionFailure(error)) {
     return {
       code: error.code,
+      ...(error.column === undefined ? {} : { column: error.column }),
+      ...(error.line === undefined ? {} : { line: error.line }),
       message: error.message,
       ...(error.rule === undefined ? {} : { rule: error.rule }),
       stage: 'emission',

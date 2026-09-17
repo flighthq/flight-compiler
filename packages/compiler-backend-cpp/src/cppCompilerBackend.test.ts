@@ -1650,6 +1650,29 @@ describe('createCppCompilerBackend', () => {
 });
 
 describe('emitIrModuleCpp', () => {
+  it('places an emission refusal at the declaration being emitted', () => {
+    const result = lower(
+      'placed-refusal.ts',
+      `export const MissingKey = Symbol.for('MissingKey');
+export interface NodeTraits { readonly enabled: boolean }
+export interface Node<Traits extends object = NodeTraits> { [MissingKey]: Traits | undefined }
+export function build<Traits extends object = NodeTraits>(runtime: Traits): Node<Traits> & Traits {
+  const out = { enabled: true, [MissingKey]: runtime } as Node<Traits> & Traits;
+  return out;
+}`,
+    );
+
+    let failure: unknown;
+    try {
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    } catch (error) {
+      failure = error;
+    }
+
+    // The declaration is where the refused construct is, so the position is a position in the module.
+    expect(failure).toMatchObject({ column: 1, line: 4 });
+  });
+
   it('emits a simple constant declaration as a C++ header', () => {
     const result = lower('value.ts', 'export const value = 1;');
     const emitted = emitIrModuleCpp(result.module);
