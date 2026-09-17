@@ -4,6 +4,25 @@ Bring the C++ target from the current share of the Flight SDK to zero refusals w
 
 The measure of progress is the SDK corpus ledger, not `npm run readiness`. The golden corpus is a set of probes for behaviour the compiler already has, so it reports ~99% while most of the SDK refuses; `npm run readiness:corpus` reads the ledger a downstream run leaves behind and ranks refusal families by the modules they block directly and transitively.
 
+## Running step list
+
+Kept here so each round starts from the last one's answers rather than re-deriving them. Completed steps keep their evidence; the pending five are the current list.
+
+### Done
+
+1. **Does `flight-cpp` provide a type for erased `any`/`unknown` type positions?** No. Its only variants are `PropertyKey = std::variant<String, double, Symbol>` and `Presence<Value> = std::variant<Undefined, Null, Value>`. The compiler side of the corpus's largest family (~320 blocked modules) is closed; the ask is in [`flight-cpp-adoption.md`](flight-cpp-adoption.md).
+2. **What sub-cause carries the auto-placeholder family?** Source-written `unknown`/`any`, not compiler residue. The top blockers are `AnimationChannel.targetRef` (99 dependents), `Node<any>` (76), `ApplicationWindow` (49), `GlContext` (25), `NodeInteractiveStateBinding` (17) — all fields or type arguments written as unconstrained types by the SDK, all now covered by one downstream ask.
+3. **Is `CanvasRenderingContext2D` compiler-side?** No, and both halves are missing: `bindings/web-types.json` declares the settings type but not the context, and `flight/web_types.hpp` does not define it either. 53 of the 110 external-symbol refusals; recorded downstream.
+4. **Can `PromiseFulfilledResult`/`PromiseRejectedResult` bind to something that exists?** Not faithfully. `flight::TaskSettlement<Value>` is the union of both arms, and the binding contract takes one `targetName`, so binding an arm to the settlement would misstate it. Recorded downstream.
+
+### Next five
+
+1. Bind the remaining ambient lib-lane symbols that need no new runtime type (`Function[value]`, `globalThis[value]`, `structuredClone[value]` — 7 modules between them), checking each against `flight-cpp` before adding a table entry.
+2. Take the largest single payload in `contextual C++ union value type <type> is not a represented runtime domain` (58 direct, 47 blocked) and find whether the union plan's value-slot matching has a systematic gap rather than per-site causes.
+3. `contextual optionalSingle construction requires expression type evidence` (81 direct, 60 blocked) — semantic-layer evidence work, verified by unit tests and the golden corpus.
+4. `type assertion target must identify exactly one C++ variant alternative` (72 direct, 33 blocked) — same lane.
+5. Re-open the symbol-keyed structural row only where emitted C++ can be compiled. It is 7 direct modules including `node.ts` and 24 dependents behind it, and the reproduction and naming argument are in Stage 3 — but it writes a row key into emitted output, and this sandbox has no C++ toolchain, so a wrong key would be invisible to every gate that runs here. Deferred on verifiability, not on difficulty.
+
 ## Where the number stands
 
 | Ledger                                         | Compiler   | Emitted     | Direct | Propagated |
