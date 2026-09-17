@@ -25,7 +25,7 @@ inline std::variant<double, flight::String> from_unary(double n) {
 }
 
 inline std::variant<double, flight::String> from_cast(flight::Any input) {
-  const std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<flight::String>, static_cast<flight::String>(input)};
+  const std::variant<double, flight::String> value = std::variant<double, flight::String>{std::in_place_type<flight::String>, input.as_string()};
   return std::variant<double, flight::String>{std::in_place_type<flight::String>, std::get<1>(value)};
 }
 
