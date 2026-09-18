@@ -5786,7 +5786,7 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   }
   if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
     const bindingType = getTypeScriptExpressionBindingTypeEvidence(node, context);
-    if (bindingType) return bindingType;
+    if (bindingType && bindingType.kind !== 'unknown') return bindingType;
   }
   // Where no written type reaches the value — a call into the ambient surface returns the surface's
   // own type parameter, which names nothing here — the checker's instantiation of it does.
