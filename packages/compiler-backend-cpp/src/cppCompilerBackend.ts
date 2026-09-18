@@ -5985,7 +5985,18 @@ function emitContextualUnionExpressionCpp(
         );
       }
     }
-    emissionError(context, 'contextual C++ union conversion requires equivalent source union evidence');
+    // The two plans are compared slot by slot, so naming the slots is what makes a refusal
+    // reproducible from the message alone: the reader sees which alternative the source union
+    // represents and which slot it has no counterpart for.
+    emissionError(
+      context,
+      `contextual C++ union conversion requires equivalent source union evidence: target ${plan.kind} [${plan.valueSlots
+        .map((slot) => slot.representationKey)
+        .join(', ')}] from source ${expressionPlan.kind} [${expressionPlan.valueSlots
+        .map((slot) => slot.representationKey)
+        .join(', ')}]`,
+      'cpp-contextual-union-inequivalent',
+    );
   }
   if (expressionType.kind === 'null' || expressionType.kind === 'undefined') {
     const sentinel = expressionType.kind;
