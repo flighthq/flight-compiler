@@ -60,6 +60,21 @@ The failures are four classes, three of them with a reproduction:
 
 The tension worth stating plainly: the election moved some modules from _refusing_ to _emitting code that does not compile_. This repository requires emitted source to compile, so by its own rule those are defects now, not refusals — and the compile gate is the only instrument that says so. Every remaining stage must be measured against 1,216, not 1,339.
 
+## The `flight::Any` arithmetic family is a trade-off with a named correct fix, not a missing operator
+
+Twenty-six of the forty-four compile failures are one shape: a value erased to `flight::Any` and then used as a number. The tempting read is that the runtime lacks `operator>=`; it is not, and adding operators would fix none of `Array<Any>::push(Ref<X>)`, `(flight::Any)()` or `cannot convert Any to double`.
+
+The reproduction is two lines:
+
+```ts
+const codePoint = text.charCodeAt(0); // emits `auto code_point = ...`   — compiles
+let codePoint = text.charCodeAt(0); // emits `flight::Any code_point`  — does not
+```
+
+Both recorded types are `unknown`, because the call-result evidence was missing when the binding type was recorded. The difference is the storage decision: a non-mutable binding with an initializer keeps C++ deduction, which is never wider than erasure, and a mutable one takes the erased value because it may be reassigned across alternatives. That decision is what `encoding/utf8.hpp` fails on — `let codePoint = text.charCodeAt(index)` inside a loop that never reassigns it to anything else.
+
+So the storage choice is a real trade-off and neither side is free: relaxing it for `let` fixes this family and breaks a later reassignment across alternatives; keeping it is safe and breaks arithmetic on a value whose type was merely unrecorded. **The fix is neither.** `charCodeAt` returns `number`, the compiler knows it, and the binding should say so; the erased value is a symptom of evidence that was never recorded, and `Symbol.for` is the same gap in a different shape. Note that the backend already has the answer for the _call_ — `getCppRuntimeMemberCallResultTypeEvidence` returns `number` for `charCodeAt` via `cppNumberReturningStringCallNames` — and the _binding_ never sees it.
+
 ## Reproducing the ledger locally
 
 The corpus cannot be generated from inside this repository — the request needs a target repository's package graph, package targets, and binding profiles. It can still be generated on a machine with a Flight checkout, and doing so is the first step of every stage below.
