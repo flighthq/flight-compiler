@@ -4214,6 +4214,18 @@ function describeIrTypeForDiagnosticCpp(type: Readonly<IrType>): string {
   return type.kind;
 }
 
+// Naming a shapeless member is not enough when the member is a wrapper: `NoInfer<T>` has no shape of
+// its own, and the reader cannot tell from the name whether the wrapper is the missing arm or whether
+// the argument under it is the thing that had no shape. Reporting the argument's own resolution
+// separates the two, so the next probe is not needed to ask which level failed.
+function describeShapelessIntersectionMemberCpp(member: Readonly<IrType>, context: EmitContext): string {
+  const name = describeIrTypeForDiagnosticCpp(member);
+  const argument = member.kind === 'named' ? member.typeArguments[0] : undefined;
+  if (!argument) return name;
+  const argumentResolves = Boolean(context.referenceRepresentationPlanner.resolveObjectShape(argument, context.module));
+  return `${name} (argument ${describeIrTypeForDiagnosticCpp(argument)} ${argumentResolves ? 'has a shape, so the wrapper is the gap' : 'has no shape either'})`;
+}
+
 function emitType(type: Readonly<IrType>, context: EmitContext, representation: 'storage' | 'value' = 'value'): string {
   if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
     if (
@@ -4367,7 +4379,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         emissionError(
           context,
           `intersection types require C++ multiple-inheritance lowering: no shape for ${shapeless
-            .map(describeIrTypeForDiagnosticCpp)
+            .map((member) => describeShapelessIntersectionMemberCpp(member, context))
             .join(', ')}`,
           'cpp-intersection-member-shapeless',
         );
