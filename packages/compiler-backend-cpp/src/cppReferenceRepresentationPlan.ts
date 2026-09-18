@@ -183,13 +183,8 @@ function resolveIrTypeStructuralRowCpp(
           aliases,
           type.reference.name === 'NoInfer' ? allowRowOf : true,
         ) ??
-        // `Required` is the one marker a plain subject reference cannot express: it states that a
-        // member cell is present, and only the row vocabulary has a cell to state that about. A key
-        // projection written under it names a subset of the subject's members, every one of which
-        // the subject's own row already carries, so the projection resolves to that row. This is the
-        // spelling the downstream register names for `Required<Pick<HostClipboardChangeProvider,
-        // 'subscribe' | 'unsubscribe'>>`, where the optional member has to read as its value at the
-        // call site. `Readonly`, `Partial`, and a bare projection stay on the subject reference.
+        // `Required` is the one marker a plain subject reference cannot express, so it is the one
+        // that needs the projection resolved to a row. See the helper.
         (type.reference.name === 'Required'
           ? resolveIrTypeProjectionSubjectRowCpp(argument, module, moduleSet, cache, aliases)
           : undefined);
