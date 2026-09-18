@@ -377,39 +377,55 @@ function resolveIrTypeDistributedObjectShapeCpp(
       true,
     );
   }
-  // A union usually arrives as the alias that names it -- `Partial<TextureLike>` holds `TextureLike`
-  // as a binding, not as a union of its branches -- and the branch that only inspects the type would
-  // never see it. The alias is resolved here, one step, exactly as the structural-row resolver does,
-  // so the distribution above is reached for the shape the alias stands for.
-  if (type.kind === 'named' && type.reference.kind === 'binding') {
-    const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
-    if (resolution.kind === 'location' && resolution.location.declaration.kind === 'typeAlias') {
-      const declaration = resolution.location.declaration;
-      const key = `${resolution.location.identity}\0${JSON.stringify(type.typeArguments)}`;
-      if (ancestors.has(key)) return undefined;
-      const typeArguments =
-        type.typeArguments.length === 0 && declaration.typeParameters.length > 0
-          ? declaration.typeParameters.map(
-              (parameter): IrType => ({
-                kind: 'named',
-                reference: { binding: parameter.binding, kind: 'binding', path: [] },
-                typeArguments: [],
-              }),
-            )
-          : type.typeArguments;
-      return resolveIrTypeDistributedObjectShapeCpp(
-        resolveIrTypeStructuralSubstitution(
-          declaration.type,
-          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
-        ),
-        resolution.location.module,
-        moduleSet,
-        cache,
-        new Set(ancestors).add(key),
-      );
-    }
-  }
-  return resolveIrTypeObjectShapeCpp(type, module, moduleSet, cache, ancestors);
+  const step = resolveIrTypeShapeAliasStepCpp(type, module, moduleSet, cache, ancestors);
+  return step
+    ? resolveIrTypeDistributedObjectShapeCpp(step.type, step.module, moduleSet, cache, step.ancestors)
+    : resolveIrTypeObjectShapeCpp(type, module, moduleSet, cache, ancestors);
+}
+
+interface IrTypeShapeAliasStepCpp {
+  readonly ancestors: ReadonlySet<string>;
+  readonly module: Readonly<ReferenceModuleRecord>;
+  readonly type: Readonly<IrType>;
+}
+
+// A union usually arrives as the alias that names it -- `Partial<TextureLike>` holds `TextureLike` as a
+// binding, not as a union of its branches, and `Exclude<TrayCreateProviderResult, ...>` holds an alias
+// too -- so a branch that only inspects the type never sees the union underneath. The alias is
+// resolved here, one step, exactly as the structural-row resolver does, and the caller is told which
+// module and which ancestor set to continue in. Undefined means the type is not an alias, NOT that it
+// has no shape.
+function resolveIrTypeShapeAliasStepCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  ancestors: ReadonlySet<string>,
+): IrTypeShapeAliasStepCpp | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
+  if (resolution.kind !== 'location' || resolution.location.declaration.kind !== 'typeAlias') return undefined;
+  const declaration = resolution.location.declaration;
+  const key = `${resolution.location.identity}\0${JSON.stringify(type.typeArguments)}`;
+  if (ancestors.has(key)) return undefined;
+  const typeArguments =
+    type.typeArguments.length === 0 && declaration.typeParameters.length > 0
+      ? declaration.typeParameters.map(
+          (parameter): IrType => ({
+            kind: 'named',
+            reference: { binding: parameter.binding, kind: 'binding', path: [] },
+            typeArguments: [],
+          }),
+        )
+      : type.typeArguments;
+  return {
+    ancestors: new Set(ancestors).add(key),
+    module: resolution.location.module,
+    type: resolveIrTypeStructuralSubstitution(
+      declaration.type,
+      createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
+    ),
+  };
 }
 
 // `Exclude<T, U>` is `T extends U ? never : T`: the members of `T` that `U` does not accept. The
@@ -434,14 +450,31 @@ function resolveIrTypeExcludedObjectShapeCpp(
     ancestors: new WeakMap(),
     valueQueries: new Set(),
   };
-  const members = subject.kind === 'union' ? subject.types : [subject];
+  // `Exclude` is `T extends U ? never : T` applied to the members `T` distributes into, so an alias
+  // subject has to be resolved before there are any members to test. Without this the subject is one
+  // binding, the test is made against the binding, and the refusal names `Exclude` at a site whose
+  // answer was already decided.
+  const step = resolveIrTypeShapeAliasStepCpp(subject, module, moduleSet, cache, ancestors);
+  const resolved = step?.type ?? subject;
+  const resolvedModule = step?.module ?? module;
+  const resolvedAncestors = step?.ancestors ?? ancestors;
+  const members = resolved.kind === 'union' ? resolved.types : [resolved];
   const surviving = members.filter(
-    (member) => !isIrTypeStructurallyAssignableCpp(member, exclusion, module, moduleSet, cache, ancestors, comparison),
+    (member) =>
+      !isIrTypeStructurallyAssignableCpp(
+        member,
+        exclusion,
+        resolvedModule,
+        moduleSet,
+        cache,
+        resolvedAncestors,
+        comparison,
+      ),
   );
   const [first, second, ...rest] = surviving;
   if (!first) return undefined;
   const remaining: Readonly<IrType> = second ? { kind: 'union', types: [first, second, ...rest] } : first;
-  return resolveIrTypeObjectShapeCpp(remaining, module, moduleSet, cache, ancestors);
+  return resolveIrTypeObjectShapeCpp(remaining, resolvedModule, moduleSet, cache, resolvedAncestors);
 }
 
 function resolveIrTypeObjectShapeCpp(
