@@ -2353,7 +2353,11 @@ function emitExpression(
             ) {
               return emitExpression(argument.expression, context);
             }
-            return emitExpression(argument, context, getIrCallArgumentExpectedTypeCpp(expression, index, context));
+            return emitExpression(
+              argument,
+              context,
+              getIrCallArgumentExpectedTypeCpp(expression, index, context, expectedType),
+            );
           }),
         context,
       );
@@ -7279,11 +7283,38 @@ function emitCppExternalBindingStorageTypeCpp(
   return `std::optional<${targetType}>`;
 }
 
+// `Promise.resolve(value)` says nothing about the value beyond the promise it lands in, so where the
+// position names the promise's value type the value adopts it. Without this the argument is typed by
+// the members it happens to spell: `Promise.resolve({ reason: 'blocked-scheme' })` returned from a
+// function declared `Promise<ShellExternalOutcome>` built a fresh one-member record and a task over
+// that, which is a different task type from the one the declaration names.
+function getCppResolvedPromiseArgumentExpectedTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  index: number,
+  expectedType: Readonly<IrType> | undefined,
+): Readonly<IrType> | undefined {
+  if (index !== 0 || expression.arguments.length !== 1 || !expectedType) return undefined;
+  if (expression.callee.kind !== 'property' || expression.callee.name !== 'resolve') return undefined;
+  const receiver = expression.callee.object;
+  if (receiver.kind !== 'identifier' || receiver.reference.kind !== 'ambient') return undefined;
+  if (receiver.reference.name !== 'Promise') return undefined;
+  return expectedType.kind === 'named' &&
+    expectedType.reference.kind === 'ambient' &&
+    expectedType.reference.name === 'Promise' &&
+    expectedType.typeArguments.length === 1 &&
+    expectedType.typeArguments[0]
+    ? expectedType.typeArguments[0]
+    : undefined;
+}
+
 function getIrCallArgumentExpectedTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   index: number,
   context: EmitContext,
+  expectedType?: Readonly<IrType> | undefined,
 ): Readonly<IrType> | undefined {
+  const resolvedPromiseArgument = getCppResolvedPromiseArgumentExpectedTypeCpp(expression, index, expectedType);
+  if (resolvedPromiseArgument) return resolvedPromiseArgument;
   const collectionType = getCppCollectionCallArgumentExpectedTypeCpp(expression, index, context);
   if (collectionType) return collectionType;
   if (expression.callee.kind === 'property' && expression.callee.member) {

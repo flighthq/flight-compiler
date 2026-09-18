@@ -12403,4 +12403,23 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('NodeAny');
     expect(emitted).toContain('node.hpp');
   });
+
+  it('types a resolved promise value by the task the position declares', () => {
+    const result = lower(
+      'resolved-outcome.ts',
+      `interface Outcome { reason: string }
+       export function open(): Promise<Outcome> {
+         return Promise.resolve({ reason: 'blocked' });
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('flight::Task<flight::Ref<Outcome>> open()');
+    expect(emitted.contents).toContain(
+      'flight::resolve_task(flight::make_ref<Outcome>(Outcome{.reason = flight::String("blocked")}))',
+    );
+    // The value is the declared outcome, not a fresh record of the shape the literal spelled.
+    expect(emitted.contents).not.toContain('resolve_task<flight::Ref<reason_');
+  });
 });
