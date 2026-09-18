@@ -736,6 +736,16 @@ function isCppDuplicateStructMemberCpp(seen: Set<string>, name: string): boolean
   return false;
 }
 
+// A `void`-typed property is a brand, not storage. `readonly [ButtonControllerTypeKey]?: void` gives
+// an interface a nominal identity; there is no value it can hold, and `std::optional<void>` is not a
+// type C++ can form. The member is therefore left out of the emitted struct — but only out of the
+// struct: the property stays in the declared shape, which is what key projections read, so `Omit`
+// over a brand key still removes it. Nothing in generated code can read a value from it, because
+// there is none to read.
+function isCppValuelessStructMemberCpp(type: Readonly<IrType>): boolean {
+  return type.kind === 'primitive' && type.name === 'void';
+}
+
 const cppReferenceLikeWrapperNames = new Set([
   'Ref',
   'RowKey',
@@ -1443,6 +1453,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   );
   const emittedMemberNames = new Set<string>();
   for (const property of declaration.properties) {
+    if (isCppValuelessStructMemberCpp(property.type)) continue;
     const propType = emitOptionalTypeCpp(emitType(property.type, context), property.optional, context);
     if (isCppDuplicateStructMemberCpp(emittedMemberNames, property.name)) continue;
     lines.push(`  ${propType} ${safeCppName(property.name)};`);
@@ -1549,6 +1560,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
     );
     const emittedMemberNames = new Set<string>();
     for (const property of objectProperties) {
+      if (isCppValuelessStructMemberCpp(property.type)) continue;
       const propertyType = emitOptionalTypeCpp(emitType(property.type, context), property.optional, context);
       if (isCppDuplicateStructMemberCpp(emittedMemberNames, property.name)) continue;
       lines.push(`  ${propertyType} ${safeCppName(property.name)};`);
@@ -4356,6 +4368,17 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         const excluded = getCppExcludedType(type.typeArguments, context);
         if (!excluded) emissionError(context, 'Exclude types require closed C++ type computation lowering');
         return emitType(excluded, context, representation);
+      }
+      // `NoInfer<T>` withholds a position from TypeScript's inference and is otherwise exactly `T`:
+      // it states nothing about the value the position holds. C++ has no inference to withhold, so
+      // the marker is erased and the argument emitted. Writing it out names a template the target
+      // has never seen, which the target compiler reports far from the declaration that used it.
+      if (sourceName === 'NoInfer') {
+        const argument = type.typeArguments[0];
+        if (type.typeArguments.length !== 1 || !argument) {
+          emissionError(context, 'NoInfer<T> requires exactly one type argument', 'cpp-noinfer-argument-count');
+        }
+        return emitType(argument, context, representation);
       }
       if (sourceName === 'Parameters' || sourceName === 'ReturnType') {
         if (type.typeArguments.length !== 1 || !type.typeArguments[0]) {

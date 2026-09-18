@@ -12295,6 +12295,34 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).toContain('flight::row_get<flight::RowKey<"subscribe">>(provider)(');
   });
 
+  it('erases an inference marker that states nothing about the value', () => {
+    const result = lower(
+      'inference-marker.ts',
+      `interface Provider { send(target: string): void }
+       export function sendTo<Type extends string>(provider: Provider, target: NoInfer<Type>): void {
+         provider.send(target);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('Type target');
+    expect(emitted.contents).not.toContain('NoInfer');
+  });
+
+  it('leaves a void brand out of the struct that has no value to store', () => {
+    const result = lower(
+      'brand-member.ts',
+      `declare const WidgetTypeKey: unique symbol;
+       export interface Widget { readonly [WidgetTypeKey]?: void; name: string; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('flight::String name;');
+    expect(emitted.contents).not.toContain('std::optional<void>');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',
