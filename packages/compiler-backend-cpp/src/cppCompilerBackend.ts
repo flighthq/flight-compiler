@@ -4204,6 +4204,16 @@ function getCppFacetTagNameCpp(binding: Readonly<IrTypeBindingIdentity>, context
   return name;
 }
 
+// A short, allocation-free name for a type inside a diagnostic: the ambient name for a runtime type,
+// the binding name for a declared one, the kind otherwise. Emitting the type instead would allocate
+// generated names and register includes while the emitter is already failing.
+function describeIrTypeForDiagnosticCpp(type: Readonly<IrType>): string {
+  if (type.kind === 'named') {
+    return type.reference.kind === 'ambient' ? type.reference.name : type.reference.binding.name;
+  }
+  return type.kind;
+}
+
 function emitType(type: Readonly<IrType>, context: EmitContext, representation: 'storage' | 'value' = 'value'): string {
   if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
     if (
@@ -4346,7 +4356,22 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         type,
         context.module,
       );
-      if (!distributed) emissionError(context, 'intersection types require C++ multiple-inheritance lowering');
+      if (!distributed) {
+        // This refusal is reached by several unrelated causes -- a union with no shape arm, an exclusion
+        // with no arm, a member that is not an object at all -- and the message is the only thing they
+        // share, so it cannot tell them apart. Naming the members that had no shape is what turns a
+        // bisect into a read: a caller sees which conjunct failed rather than that the whole type did.
+        const shapeless = type.types.filter(
+          (member) => !context.referenceRepresentationPlanner.resolveObjectShape(member, context.module),
+        );
+        emissionError(
+          context,
+          `intersection types require C++ multiple-inheritance lowering: no shape for ${shapeless
+            .map(describeIrTypeForDiagnosticCpp)
+            .join(', ')}`,
+          'cpp-intersection-member-shapeless',
+        );
+      }
       return emitType(distributed, context, representation);
     }
     case 'literal':
