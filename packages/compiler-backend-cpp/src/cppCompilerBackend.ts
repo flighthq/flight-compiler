@@ -9875,7 +9875,12 @@ function emitOptionalPropertyCallExpressionCpp(
   const receiver = emitOptionalChainReceiverCpp(callee.object, context);
   const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';
   const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context)).join(', ');
-  const invocation = `optional_chain_receiver.value()${memberOperator}${safeCppName(callee.name)}(${arguments_})`;
+  // The member is spelled the same way here as everywhere else. This path wrote `safeCppName` of the
+  // source name directly, so an ambient member reached through an optional chain kept its TypeScript
+  // spelling -- `url.split('.').pop()?.toLowerCase()` emitted `to_lower_case` while the identical call
+  // written without the chain emitted `to_lower`. The table already knew the answer; this site was the
+  // one not asking it.
+  const invocation = `optional_chain_receiver.value()${memberOperator}${getCppProjectedMemberNameCpp(callee, context)}(${arguments_})`;
   context.includes.add('optional');
   if (returns.kind === 'primitive' && returns.name === 'void') {
     return `([&]() { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return; ${invocation}; }())`;

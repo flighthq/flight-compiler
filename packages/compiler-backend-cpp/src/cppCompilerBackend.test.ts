@@ -12445,6 +12445,23 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('multiple-inheritance');
   });
 
+  it('spells an ambient member through an optional chain the same way as without one', () => {
+    const result = lower(
+      'optional-chain-member.ts',
+      `export function hostOf(url: string): string {
+         const top = url.split('.').pop();
+         return top?.toLowerCase() ?? '';
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // The identical call written without the chain spells `to_lower`; this path wrote the source name
+    // straight out, so the same member had two spellings depending on how it was reached.
+    expect(emitted.contents).toContain('to_lower');
+    expect(emitted.contents).not.toContain('to_lower_case');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',
