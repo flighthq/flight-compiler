@@ -474,7 +474,11 @@ function resolveIrTypeExcludedObjectShapeCpp(
   const [first, second, ...rest] = surviving;
   if (!first) return undefined;
   const remaining: Readonly<IrType> = second ? { kind: 'union', types: [first, second, ...rest] } : first;
-  return resolveIrTypeObjectShapeCpp(remaining, resolvedModule, moduleSet, cache, resolvedAncestors);
+  // The survivors of an exclusion over a union alias are themselves a union -- `Exclude<TrayCreateProviderResult,
+  // { outcome: 'created' }>` keeps four of five branches -- so what remains has to be resolved the way any
+  // other union is, by merging the branches. Asking for its object shape alone is the path that has no arm
+  // for a union, which is how this arm resolved its subject correctly and still refused.
+  return resolveIrTypeDistributedObjectShapeCpp(remaining, resolvedModule, moduleSet, cache, resolvedAncestors);
 }
 
 function resolveIrTypeObjectShapeCpp(

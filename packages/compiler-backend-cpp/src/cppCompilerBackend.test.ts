@@ -12382,6 +12382,29 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
   });
 
+  it('merges what survives an exclusion over a union alias', () => {
+    const result = lower(
+      'exclusion-union.ts',
+      `interface Entity { readonly id: string; }
+       interface Created { readonly outcome: 'created'; }
+       interface Cancelled { readonly outcome: 'cancelled'; }
+       interface Failed { readonly outcome: 'tray-create-failed'; readonly error?: unknown; }
+       export type ProviderResult = Created | Cancelled | Failed;
+       export type CreateResult = Entity & Exclude<ProviderResult, Created>;
+       export function readResult(result: CreateResult): string { return result.outcome; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // Four of five branches would survive a larger union; here two do, and what remains is a union
+    // again, so it has to merge rather than be asked for the object shape a union does not have.
+    // The survivors' members are readable through the merged shape -- `error` is only on the failed
+    // branch -- and the exclusion itself is gone rather than written out as C++.
+    expect(emitted.contents).toContain('outcome');
+    expect(emitted.contents).toContain('error');
+    expect(emitted.contents).not.toContain('Exclude<');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',
