@@ -127,7 +127,7 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
     resolveClosedIntersectionDistribution(
       type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
       module: Readonly<IrModule>,
-    ): Readonly<Extract<IrType, { kind: 'union' }>> | undefined {
+    ): Readonly<IrType> | undefined {
       const subject = getReferenceModuleRecordCpp(module, moduleSet);
       if (!subject) throw new TypeError('C++ intersection-distribution subject must belong to the explicit module set');
       return resolveIrTypeClosedIntersectionDistributionCpp(type, subject, moduleSet, resolutionCache);
@@ -724,7 +724,7 @@ function resolveIrTypeClosedIntersectionDistributionCpp(
   module: Readonly<ReferenceModuleRecord>,
   moduleSet: Readonly<ReferenceModuleSet>,
   cache: ReferenceResolutionCache,
-): Readonly<Extract<IrType, { kind: 'union' }>> | undefined {
+): Readonly<IrType> | undefined {
   // A union usually arrives as the alias that names it. `CollisionBuiltInShape2D & Entity` holds
   // `CollisionBuiltInShape2D`, a binding, and looking only for a literal union member found no union at
   // all -- so distribution never ran and the intersection refused with a message about
@@ -755,12 +755,28 @@ function resolveIrTypeClosedIntersectionDistributionCpp(
       // no union left to find.
       const nested = resolveIrTypeClosedIntersectionDistributionCpp(distributed, module, moduleSet, cache);
       if (!nested) {
+        const memberShapes = distributedMembers.map((member) =>
+          resolveIrTypeObjectShapeCpp(member, module, moduleSet, cache, new Set()),
+        );
+        if (memberShapes.some((properties) => !properties)) return undefined;
+        // A branch whose discriminant contradicts another member is `never` and drops out of the union:
+        // no value is both a sphere and a capsule, so `CollisionBuiltInShape3D & { kind: 'capsule' }`
+        // keeps only the capsule branch. The check is narrow on purpose -- both sides must be literal
+        // values that cannot overlap -- so a member that is merely unresolvable still refuses rather
+        // than silently dropping a branch that might be inhabited.
+        const shapes = memberShapes.map((properties) => properties!);
+        const contradicts = shapes.some((left, index) =>
+          shapes.slice(index + 1).some((right) => isIrContradictoryObjectShapePairCpp(left, right)),
+        );
+        if (contradicts) return [];
         const properties = resolveIrTypeObjectShapeCpp(distributed, module, moduleSet, cache, new Set());
         return properties ? [{ kind: 'object', properties }] : undefined;
       }
       // The nested branches stay SEPARATE alternatives rather than being merged into one. Merging would
-      // claim the value carries every branch's members at once, which is what a union does not say.
-      const nestedProperties = nested.types.map((member) =>
+      // claim the value carries every branch's members at once, which is what a union does not say. A
+      // fully narrowed nested branch is not a union at all, so it is one alternative.
+      const nestedMembers = nested.kind === 'union' ? nested.types : [nested];
+      const nestedProperties = nestedMembers.map((member) =>
         resolveIrTypeObjectShapeCpp(member, module, moduleSet, cache, new Set()),
       );
       if (nestedProperties.some((properties) => !properties)) return undefined;
@@ -770,8 +786,31 @@ function resolveIrTypeClosedIntersectionDistributionCpp(
   if (branchAlternatives.some((alternatives) => !alternatives)) return undefined;
   const alternatives = branchAlternatives.flatMap((alternatives) => alternatives!);
   const [first, second, ...rest] = alternatives;
-  if (!second) return undefined;
-  return { kind: 'union', types: [first!, second, ...rest] };
+  if (!first) return undefined;
+  return second ? { kind: 'union', types: [first, second, ...rest] } : first;
+}
+
+// Two object shapes contradict when they state the same member as literal values that cannot overlap.
+// That is the discriminant case and only that case: a member one side leaves unresolvable, or states as
+// a non-literal type, is not a contradiction and the caller keeps refusing for it.
+function isIrContradictoryObjectShapePairCpp(
+  left: readonly Readonly<IrObjectTypeProperty>[],
+  right: readonly Readonly<IrObjectTypeProperty>[],
+): boolean {
+  return left.some((property) => {
+    const other = right.find((candidate) => candidate.name === property.name);
+    if (!other) return false;
+    const leftValues = getIrLiteralValueSetCpp(property.type);
+    const rightValues = getIrLiteralValueSetCpp(other.type);
+    return Boolean(leftValues && rightValues && ![...leftValues].some((value) => rightValues.has(value)));
+  });
+}
+
+function getIrLiteralValueSetCpp(type: Readonly<IrType>): ReadonlySet<string> | undefined {
+  if (type.kind === 'literal') return new Set([JSON.stringify(type.value)]);
+  if (type.kind !== 'union') return undefined;
+  const members = type.types.map(getIrLiteralValueSetCpp);
+  return members.some((member) => !member) ? undefined : new Set(members.flatMap((member) => [...member!]));
 }
 
 // A member repeated across the branches of a distributed union names the union of what those branches

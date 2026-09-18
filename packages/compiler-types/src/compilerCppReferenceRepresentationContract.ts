@@ -95,10 +95,13 @@ export interface CompilerCppReferenceRepresentationPlanner {
     type: Readonly<IrType>,
     module: Readonly<IrModule>,
   ) => Readonly<CompilerCppFacetReferencePlan> | undefined;
+  // The result is a union when more than one branch survives, and the single surviving branch when
+  // every other branch contradicts a member and is therefore `never`: `CollisionBuiltInShape3D &
+  // { kind: 'capsule' }` is the capsule branch alone, not a one-member union.
   readonly resolveClosedIntersectionDistribution: (
     type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
     module: Readonly<IrModule>,
-  ) => Readonly<Extract<IrType, { kind: 'union' }>> | undefined;
+  ) => Readonly<IrType> | undefined;
   readonly resolveModule: (specifier: string, module: Readonly<IrModule>) => Readonly<IrModule> | undefined;
   readonly resolveModules: (specifier: string, module: Readonly<IrModule>) => readonly Readonly<IrModule>[];
   readonly resolveObjectShape: (

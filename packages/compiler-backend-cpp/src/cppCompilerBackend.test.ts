@@ -12462,6 +12462,37 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('to_lower_case');
   });
 
+  it('drops the union branches a discriminant contradicts', () => {
+    const result = lower(
+      'discriminant-intersection.ts',
+      `interface Sphere { readonly radius: number; }
+       interface Capsule { readonly halfHeight: number; }
+       type BuiltIn = (Sphere & { kind: 'sphere' }) | (Capsule & { kind: 'capsule' });
+       export function readCapsule(shape: Readonly<BuiltIn & { kind: 'capsule' }>): number {
+         return shape.halfHeight;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // No value is both a sphere and a capsule, so the sphere branch is `never` and drops. One branch
+    // survives, so the parameter is that branch alone rather than a variant. (`BuiltIn` itself is still
+    // a variant -- it has two live branches -- which is why this asserts on the parameter.)
+    expect(emitted.contents).toMatch(/read_capsule\(flight::Ref<half_height_kind_[0-9a-f]+> shape\)/u);
+
+    const impossible = lower(
+      'discriminant-never.ts',
+      `interface Sphere { readonly radius: number; }
+       interface Capsule { readonly halfHeight: number; }
+       type BuiltIn = (Sphere & { kind: 'sphere' }) | (Capsule & { kind: 'capsule' });
+       export function readWedge(shape: Readonly<BuiltIn & { kind: 'wedge' }>): number { return 0; }`,
+    );
+    // Nothing survives, which is `never`, and `never` has no shape to emit.
+    expect(() => emitIrModuleCpp(impossible.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'intersection types require C++ multiple-inheritance lowering',
+    );
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',

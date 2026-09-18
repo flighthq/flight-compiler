@@ -141,9 +141,10 @@ describe('C++ reference planner object shapes', () => {
 
     const distributed = resolver.resolveClosedIntersectionDistribution(result, module);
 
-    expect(distributed?.types.map((alternative) => alternative.kind)).toEqual(['object', 'object']);
+    const distributedAlternatives = distributed?.kind === 'union' ? distributed.types : [];
+    expect(distributedAlternatives.map((alternative) => alternative.kind)).toEqual(['object', 'object']);
     expect(
-      distributed?.types.map((alternative) =>
+      distributedAlternatives.map((alternative) =>
         alternative.kind === 'object' ? alternative.properties.map((property) => property.name) : [],
       ),
     ).toEqual([
