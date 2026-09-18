@@ -4325,7 +4325,16 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     }
     case 'indexedAccess': {
       const indexed = getCppIndexedAccessType(type, context);
-      if (!indexed) emissionError(context, 'indexedAccess types require C++ type computation lowering');
+      if (!indexed) {
+        // Naming what the index was taken FROM is what separates "the object has no shape" from "the
+        // index names nothing" -- and a type parameter here means the alias's own argument never
+        // reached the object, which is a different fix from a shape the walker cannot resolve.
+        emissionError(
+          context,
+          `indexedAccess types require C++ type computation lowering: object is ${describeIrTypeForDiagnosticCpp(type.object)}, index is ${describeIrTypeForDiagnosticCpp(type.index)}`,
+          'cpp-indexed-access-unlowered',
+        );
+      }
       return emitType(indexed, context, representation);
     }
     case 'keyof': {

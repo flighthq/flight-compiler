@@ -740,20 +740,38 @@ function resolveIrTypeClosedIntersectionDistributionCpp(
   const unionIndex = unionIndexes[0]!;
   const union = resolvedMembers[unionIndex];
   if (union?.kind !== 'union') return undefined;
-  const alternatives = union.types.map((alternative): Readonly<Extract<IrType, { kind: 'object' }>> | undefined => {
-    const distributedMembers = resolvedMembers.map((member, index) => (index === unionIndex ? alternative : member));
-    const distributed: Readonly<Extract<IrType, { kind: 'intersection' }>> = {
-      kind: 'intersection',
-      types: [distributedMembers[0]!, distributedMembers[1]!, ...distributedMembers.slice(2)],
-    };
-    const properties = resolveIrTypeObjectShapeCpp(distributed, module, moduleSet, cache, new Set());
-    return properties ? { kind: 'object', properties } : undefined;
-  });
-  if (alternatives.some((alternative) => !alternative)) return undefined;
-  return {
-    kind: 'union',
-    types: [alternatives[0]!, alternatives[1]!, ...alternatives.slice(2).map((alternative) => alternative!)],
-  };
+  const branchAlternatives = union.types.map(
+    (alternative): readonly Readonly<Extract<IrType, { kind: 'object' }>>[] | undefined => {
+      const distributedMembers = resolvedMembers.map((member, index) => (index === unionIndex ? alternative : member));
+      const distributed: Readonly<Extract<IrType, { kind: 'intersection' }>> = {
+        kind: 'intersection',
+        types: [distributedMembers[0]!, distributedMembers[1]!, ...distributedMembers.slice(2)],
+      };
+      // A branch that is ITSELF a union alias distributes the same way one level down.
+      // `CollisionColliderShape3D` is `CollisionBuiltInShape3D | CollisionStaticShape3D` and both members
+      // are unions, so the branch reaches here as an alias to a union -- and asking it for an object shape
+      // is asking a union for the one thing it does not have. Recursing terminates because each level's
+      // union is strictly a branch of the one above it, and the innermost branches are intersections with
+      // no union left to find.
+      const nested = resolveIrTypeClosedIntersectionDistributionCpp(distributed, module, moduleSet, cache);
+      if (!nested) {
+        const properties = resolveIrTypeObjectShapeCpp(distributed, module, moduleSet, cache, new Set());
+        return properties ? [{ kind: 'object', properties }] : undefined;
+      }
+      // The nested branches stay SEPARATE alternatives rather than being merged into one. Merging would
+      // claim the value carries every branch's members at once, which is what a union does not say.
+      const nestedProperties = nested.types.map((member) =>
+        resolveIrTypeObjectShapeCpp(member, module, moduleSet, cache, new Set()),
+      );
+      if (nestedProperties.some((properties) => !properties)) return undefined;
+      return nestedProperties.map((properties) => ({ kind: 'object', properties: properties! }));
+    },
+  );
+  if (branchAlternatives.some((alternatives) => !alternatives)) return undefined;
+  const alternatives = branchAlternatives.flatMap((alternatives) => alternatives!);
+  const [first, second, ...rest] = alternatives;
+  if (!second) return undefined;
+  return { kind: 'union', types: [first!, second, ...rest] };
 }
 
 // A member repeated across the branches of a distributed union names the union of what those branches

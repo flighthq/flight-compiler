@@ -12424,6 +12424,27 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('multiple-inheritance');
   });
 
+  it('distributes a union whose branches are themselves union aliases', () => {
+    const result = lower(
+      'nested-union.ts',
+      `interface Entity { readonly id: string; }
+       interface Sphere { readonly radius: number; }
+       interface Box { readonly width: number; }
+       interface Mesh { readonly indices: number; }
+       export type BuiltIn = (Sphere & { kind: 'sphere' }) | (Box & { kind: 'box' });
+       export type Static = Mesh & { kind: 'mesh' };
+       export type Collider = BuiltIn | Static;
+       export function readCollider(shape: Collider & Entity): string { return shape.id; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // Distribution ran one level and then asked a union for an object shape. The nested branches stay
+    // separate alternatives: merging them would claim the value carries every branch's members at once.
+    expect(emitted.contents).toContain('std::variant<');
+    expect(emitted.contents).not.toContain('multiple-inheritance');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',
