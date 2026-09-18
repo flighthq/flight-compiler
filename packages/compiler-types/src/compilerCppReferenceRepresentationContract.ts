@@ -80,6 +80,7 @@ export type CompilerCppStructuralRowPlan =
     }>
   | Readonly<{ kind: 'partial'; row: CompilerCppStructuralRowPlan }>
   | Readonly<{ kind: 'readonly'; row: CompilerCppStructuralRowPlan }>
+  | Readonly<{ kind: 'required'; row: CompilerCppStructuralRowPlan }>
   | Readonly<{ kind: 'rowOf'; type: IrType }>
   | Readonly<{ kind: 'writable'; row: CompilerCppStructuralRowPlan }>;
 

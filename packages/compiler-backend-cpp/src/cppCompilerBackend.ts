@@ -4167,6 +4167,8 @@ function emitCppStructuralRowSchemaTypeCpp(
       return `flight::RowPartial<${emitCppStructuralRowSchemaTypeCpp(representation.row, context)}>`;
     case 'readonly':
       return `flight::RowReadonly<${emitCppStructuralRowSchemaTypeCpp(representation.row, context)}>`;
+    case 'required':
+      return `flight::RowRequired<${emitCppStructuralRowSchemaTypeCpp(representation.row, context)}>`;
     case 'rowOf':
       return `flight::RowOf<${emitType(representation.type, context)}>`;
     case 'writable':

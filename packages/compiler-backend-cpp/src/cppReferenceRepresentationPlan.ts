@@ -169,7 +169,7 @@ function resolveIrTypeStructuralRowCpp(
 ): Readonly<CompilerCppStructuralRowPlan> | undefined {
   if (type.kind === 'named' && type.reference.kind === 'ambient') {
     if (
-      (type.reference.name === 'NoInfer' || type.reference.name === 'Readonly') &&
+      (type.reference.name === 'NoInfer' || type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
       type.typeArguments.length === 1 &&
       type.typeArguments[0]
     ) {
@@ -182,7 +182,11 @@ function resolveIrTypeStructuralRowCpp(
         type.reference.name === 'NoInfer' ? allowRowOf : true,
       );
       if (!row) return undefined;
-      return type.reference.name === 'Readonly' ? { kind: 'readonly', row } : row;
+      if (type.reference.name === 'Readonly') return { kind: 'readonly', row };
+      // `Required` names every member as present, which is what the row marker states: the subject
+      // keeps its own storage, and the row is what makes an optional member readable as its value.
+      if (type.reference.name === 'Required') return { kind: 'required', row };
+      return row;
     }
     if (type.reference.name === 'Partial' && type.typeArguments.length === 1 && type.typeArguments[0]) {
       if (!allowRowOf && resolveIrTypeObjectShapeCpp(type.typeArguments[0], module, moduleSet, cache, new Set())) {

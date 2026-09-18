@@ -526,7 +526,15 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
       storageRepresentation: 'runtimeManaged',
       valueRepresentation: 'runtimeReference',
     });
-    for (const type of utilities.slice(1)) {
+    // `Required` is the dual of `Partial` as a row marker, so it rides the row lane with `Readonly`
+    // rather than the anonymous-object lane the remaining utilities take.
+    expect(createIrTypeReferenceRepresentationPlanCpp(utilities[1]!, module)).toMatchObject({
+      category: 'structuralRow',
+      kind: 'represented',
+      storageRepresentation: 'runtimeManaged',
+      valueRepresentation: 'runtimeReference',
+    });
+    for (const type of utilities.slice(2)) {
       expect(createIrTypeReferenceRepresentationPlanCpp(type, module)).toMatchObject({
         category: 'anonymousObject',
         kind: 'represented',
