@@ -47,7 +47,9 @@ Inputs: Flight SDK `1274ec5c923947dc64d5ffedcbd8169fc758cd9f` (@flighthq/sdk 0.5
 
 Two installs unblocked the checks this document repeatedly called unverifiable: `g++` (15.2.0, the same version the downstream audit used) and `libsdl3-dev`, without which 79 of the failures were only `SDL3/SDL_video.h: No such file or directory`. `npm run compile:check` and the downstream `sdk:compile:sdl` both run to completion here now, and they must be run before any emission change is called an improvement.
 
-**Measured at `189f7397`: of 1,339 emitted modules, 1,216 compile and 123 do not.** Emitted count and compiling count are now two different numbers, and only the second one is progress.
+**Measured at `491f74aa`: of 1,339 emitted modules, 1,216 compile and 123 do not.**
+
+Emitted and compiling are not two strengths of one signal — they are orthogonal, and a fix can move the compile count while moving the emitted count by exactly zero. builder5 supplied the proof from the same week: a clipboard fix changed two calls on a `std::optional` to `row_get`, the emitted module count did not move at all, and the golden corpus had no fixture for it. Anyone reading emitted count as progress would have scored that fix at zero. Treat compiling as the primary number for representation work and emitted count as a separate question that can be flat across real work.
 
 The failures are four classes, three of them with a reproduction:
 
