@@ -348,6 +348,70 @@ function resolveIrTypeAliasCpp(
   return result ?? undefined;
 }
 
+// `Partial`, `Readonly` and `Required` are homomorphic: they distribute over a union, so
+// `Partial<A | B>` is `Partial<A> | Partial<B>`. The target keeps one storage shape, so the
+// distributed members are merged into the one object their union can name -- a member any branch
+// carries is a member the value may have. `Pick` and `Omit` are deliberately not distributed: they
+// key off `keyof T`, which over a union is the keys the branches agree on, so distributing them would
+// name members the source cannot reach. Without this a utility applied to a union of interfaces has
+// no shape at all, which is why `Partial<TextureLike> & { resource?: ... }` refused while
+// `Partial<Texture2D> & { resource?: ... }` emitted and the Omit-over-Partial case refused the same way.
+function resolveIrTypeDistributedObjectShapeCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  ancestors: ReadonlySet<string>,
+): readonly Readonly<IrObjectTypeProperty>[] | undefined {
+  if (type.kind === 'union') {
+    const members = type.types.map((member) =>
+      resolveIrTypeDistributedObjectShapeCpp(member, module, moduleSet, cache, ancestors),
+    );
+    if (members.some((properties) => !properties)) return undefined;
+    return mergeIrObjectShapePropertiesCpp(
+      members.flatMap((properties) => properties!),
+      module,
+      moduleSet,
+      cache,
+      ancestors,
+      true,
+    );
+  }
+  // A union usually arrives as the alias that names it -- `Partial<TextureLike>` holds `TextureLike`
+  // as a binding, not as a union of its branches -- and the branch that only inspects the type would
+  // never see it. The alias is resolved here, one step, exactly as the structural-row resolver does,
+  // so the distribution above is reached for the shape the alias stands for.
+  if (type.kind === 'named' && type.reference.kind === 'binding') {
+    const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
+    if (resolution.kind === 'location' && resolution.location.declaration.kind === 'typeAlias') {
+      const declaration = resolution.location.declaration;
+      const key = `${resolution.location.identity}\0${JSON.stringify(type.typeArguments)}`;
+      if (ancestors.has(key)) return undefined;
+      const typeArguments =
+        type.typeArguments.length === 0 && declaration.typeParameters.length > 0
+          ? declaration.typeParameters.map(
+              (parameter): IrType => ({
+                kind: 'named',
+                reference: { binding: parameter.binding, kind: 'binding', path: [] },
+                typeArguments: [],
+              }),
+            )
+          : type.typeArguments;
+      return resolveIrTypeDistributedObjectShapeCpp(
+        resolveIrTypeStructuralSubstitution(
+          declaration.type,
+          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
+        ),
+        resolution.location.module,
+        moduleSet,
+        cache,
+        new Set(ancestors).add(key),
+      );
+    }
+  }
+  return resolveIrTypeObjectShapeCpp(type, module, moduleSet, cache, ancestors);
+}
+
 function resolveIrTypeObjectShapeCpp(
   type: Readonly<IrType>,
   module: Readonly<ReferenceModuleRecord>,
@@ -391,7 +455,13 @@ function resolveIrTypeObjectShapeCpp(
       );
     }
     if (type.typeArguments.length !== 1 || !type.typeArguments[0]) return undefined;
-    const properties = resolveIrTypeObjectShapeCpp(type.typeArguments[0], module, moduleSet, cache, ancestors);
+    const properties = resolveIrTypeDistributedObjectShapeCpp(
+      type.typeArguments[0],
+      module,
+      moduleSet,
+      cache,
+      ancestors,
+    );
     if (!properties) return undefined;
     if (type.reference.name === 'Partial') {
       return properties.map((property) => ({ ...property, optional: true }));
@@ -604,6 +674,20 @@ function resolveIrTypeClosedIntersectionDistributionCpp(
   };
 }
 
+// A member repeated across the branches of a distributed union names the union of what those branches
+// carry. An already-union member stays flat, so three branches spell one three-member union rather
+// than a union nested inside another.
+function createIrTypeDistributedMemberTypeCpp(
+  existing: Readonly<IrType>,
+  property: Readonly<IrType>,
+): Readonly<IrType> {
+  const members = [
+    ...(existing.kind === 'union' ? existing.types : [existing]),
+    ...(property.kind === 'union' ? property.types : [property]),
+  ];
+  return { kind: 'union', types: [members[0]!, members[1]!, ...members.slice(2)] };
+}
+
 function getIrObjectProjectionKeysCpp(type: Readonly<IrType>): ReadonlySet<string> | undefined {
   if (type.kind === 'literal' && (typeof type.value === 'number' || typeof type.value === 'string')) {
     return new Set([String(type.value)]);
@@ -616,12 +700,19 @@ function getIrObjectProjectionKeysCpp(type: Readonly<IrType>): ReadonlySet<strin
   return members.some((member) => !member) ? undefined : new Set(members.flatMap((member) => [...member!]));
 }
 
+// `unionOnConflict` separates the two readings of a repeated member name. Members of an INTERSECTION
+// must agree: TypeScript gives `{ a: 'x' } & { a: 'y' }` the member `a: never`, so a disagreement is a
+// refusal, which is the default. Members of a DISTRIBUTED union must not: `Partial<A | B>` is
+// `Partial<A> | Partial<B>`, so reading that member yields the union of what the branches carry, and
+// the merged shape states exactly that. Using the intersection reading there would refuse an
+// expression whose own type is well formed.
 function mergeIrObjectShapePropertiesCpp(
   properties: readonly Readonly<IrObjectTypeProperty>[],
   module: Readonly<ReferenceModuleRecord>,
   moduleSet: Readonly<ReferenceModuleSet>,
   cache: ReferenceResolutionCache,
   ancestors: ReadonlySet<string>,
+  unionOnConflict = false,
 ): readonly Readonly<IrObjectTypeProperty>[] | undefined {
   const result = new Map<string, Readonly<IrObjectTypeProperty>>();
   for (const property of properties) {
@@ -636,11 +727,17 @@ function mergeIrObjectShapePropertiesCpp(
     ) {
       return undefined;
     }
-    const type = mergeIrObjectShapePropertyTypesCpp(existing.type, property.type, module, moduleSet, cache, ancestors, {
-      aliases: new Set(),
-      ancestors: new WeakMap(),
-      valueQueries: new Set(),
-    });
+    const type =
+      mergeIrObjectShapePropertyTypesCpp(
+        existing.type,
+        property.type,
+        module,
+        moduleSet,
+        cache,
+        ancestors,
+        { aliases: new Set(), ancestors: new WeakMap(), valueQueries: new Set() },
+        unionOnConflict,
+      ) ?? (unionOnConflict ? createIrTypeDistributedMemberTypeCpp(existing.type, property.type) : undefined);
     if (!type) return undefined;
     result.set(property.name, {
       ...existing,
@@ -691,6 +788,7 @@ function mergeIrObjectShapePropertyTypesCpp(
   cache: ReferenceResolutionCache,
   ancestors: ReadonlySet<string>,
   comparison: IrTypeStructuralComparisonStateCpp,
+  unionOnConflict = false,
 ): Readonly<IrType> | undefined {
   if (JSON.stringify(existing) === JSON.stringify(property)) return existing;
   if (isIrTypeStructurallyAssignableCpp(property, existing, module, moduleSet, cache, ancestors, comparison)) {
@@ -708,6 +806,7 @@ function mergeIrObjectShapePropertyTypesCpp(
     moduleSet,
     cache,
     ancestors,
+    unionOnConflict,
   );
   return properties ? { kind: 'object', properties } : undefined;
 }

@@ -4472,7 +4472,14 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           context.module,
         );
         if (!properties) {
-          emissionError(context, 'Partial<T> requires a statically resolvable C++ object shape');
+          // Naming what `T` turned out to be is what separates "the shape walker has not reached
+          // this form yet" from "this is not an object at all": `Partial<TextureLike>` holds an
+          // alias, so a reader who expects a union here is looking in the wrong place.
+          emissionError(
+            context,
+            `Partial<T> requires a statically resolvable C++ object shape; T is ${type.typeArguments[0].kind}`,
+            'cpp-partial-shape-unresolvable',
+          );
         }
         return emitType(
           { kind: 'object', properties: properties.map((property) => ({ ...property, optional: true })) },

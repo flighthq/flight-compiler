@@ -12328,6 +12328,25 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('std::optional<void>');
   });
 
+  it('distributes a homomorphic utility over the union its alias names', () => {
+    const result = lower(
+      'partial-union.ts',
+      `interface Horizontal { axis: 'x'; length: number; }
+       interface Vertical { axis: 'y'; height: number; }
+       type Direction = Horizontal | Vertical;
+       export type Options = Partial<Direction> & { readonly label?: string };
+       export function describe(options: Options): string { return options.label ?? ''; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // `Partial<Direction>` is `Partial<Horizontal> | Partial<Vertical>`, so a member either branch
+    // carries is a member the value may have, and both branches' members are readable.
+    expect(emitted.contents).toContain('length');
+    expect(emitted.contents).toContain('height');
+    expect(emitted.contents).not.toContain('Partial<');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',
