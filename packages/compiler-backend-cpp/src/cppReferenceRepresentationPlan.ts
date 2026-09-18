@@ -402,6 +402,13 @@ function resolveIrTypeObjectShapeCpp(
     if (type.reference.name === 'Required') {
       return properties.map((property) => ({ ...property, optional: false }));
     }
+    // `NoInfer<T>` withholds a position from TypeScript's inference and is otherwise exactly `T`, so it
+    // contributes the shape its argument has. Without this arm the conjunct that `NodeOf<Traits>` turns
+    // on -- `Node<Traits> & NoInfer<Traits>` -- is the one member of the intersection with no shape, and
+    // the whole family refuses for a wrapper that says nothing about the value it wraps.
+    if (type.reference.name === 'NoInfer') {
+      return properties;
+    }
     return undefined;
   }
   const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
