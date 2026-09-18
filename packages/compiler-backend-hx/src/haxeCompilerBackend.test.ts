@@ -5568,7 +5568,10 @@ describe('emitIrModuleHaxe object literal', () => {
     );
     const output = emitIrModuleHaxe(result.module).contents;
 
-    expect(output).toContain('final doubles:Array<Dynamic> = ([Math.NaN] : Array<Dynamic>);');
+    // `doubles` has no annotation in the source: TypeScript infers `number[]` and widens at the return,
+    // which is what this now states. `Array<Dynamic>` was the compiler declining to infer an element it
+    // could not see, not the source asking for a dynamic one.
+    expect(output).toContain('final doubles:Array<Float> = ([Math.NaN] : Array<Float>);');
   });
 
   it('preserves a declared unique-symbol key for a computed object property', () => {

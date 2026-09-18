@@ -1823,9 +1823,14 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
 }`,
     ).module;
     const deducedOutput = emitIrModuleCpp(deduced, { runtimeProfile: 'flight-cpp' }).contents;
-    expect(deducedOutput).toContain('auto rows = ');
+    // The member read's type is recorded now, so the local states it rather than deducing it from the
+    // initializer. `auto` was the fallback for a type nobody had recorded, not the contract.
+    expect(deducedOutput).toContain('double rows = ');
     expect(deducedOutput).not.toContain('flight::Any rows');
-    expect(deducedOutput).toContain('flight::Any mutable_ = ');
+    // The mutable binding keeps its stated type too, which is the whole point: the erased value was
+    // never the right answer here, it was the fallback for a type that had not been recorded.
+    expect(deducedOutput).toContain('double mutable_ = ');
+    expect(deducedOutput).not.toContain('flight::Any mutable_');
 
     // Asserting an erased value to a primitive reads the alternative rather than casting to it: the
     // erased value has no conversion operator, so `static_cast` does not compile.
