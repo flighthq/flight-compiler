@@ -4408,6 +4408,21 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         if (type.typeArguments.length > 0) emissionError(context, 'PropertyKey does not accept type arguments');
         return emitType(createCppPropertyKeyTypeCpp(), context, representation);
       }
+      // A key projection over a subject that keeps a reference or row representation keeps that
+      // subject's row: `Pick<T, K>` names a subset of T's members, and the view the target already
+      // has for T carries every one of them. Lowering it to the subject is therefore a superset the
+      // consumer can use, which is the same reading `Omit` is given, and it is what the downstream
+      // register asks for: `Pick<Ref<HostClipboardChangeProvider>, 'subscribe'>` should be
+      // `Ref<HostClipboardChangeProvider>`, not a name the C++ compiler has never seen.
+      if (sourceName === 'Pick' && type.typeArguments[0]) {
+        const subject = type.typeArguments[0];
+        if (
+          hasFlightReferenceRepresentationCpp(subject, context) ||
+          hasFlightStructuralRowRepresentationCpp(subject, context)
+        ) {
+          return emitType(subject, context, representation);
+        }
+      }
       // A projection utility reduces at its use site from a statically known key set, so the lowering
       // removes it. One that survives to emission had no static key set, and its name has no C++
       // spelling: writing `Pick<...>` out emits invalid C++ that only the target compiler discovers,

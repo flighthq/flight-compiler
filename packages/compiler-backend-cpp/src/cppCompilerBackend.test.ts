@@ -12244,18 +12244,35 @@ describe('emitIrModuleCpp conditional capability facets', () => {
     expect(emitted.contents.match(/\bactive_texture;/gu)).toHaveLength(1);
   });
 
-  it('refuses a projection utility that reaches emission without a static key set', () => {
+  it('lowers a key projection onto the subject row it selects from', () => {
+    const result = lower(
+      'projection-lowering.ts',
+      `interface Provider { subscribe(): void; unsubscribe(): void; name: string }
+       export function project<Key extends keyof Provider>(): Pick<Provider, Key> {
+         return null as unknown as Pick<Provider, Key>;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('flight::Ref<Provider> project()');
+    expect(emitted.contents).not.toContain('Pick<');
+  });
+
+  it('lowers a key removal onto the same subject row', () => {
     const result = lower(
       'unlowered-projection.ts',
       `interface Provider { subscribe(): void; unsubscribe(): void; name: string }
-export function project<Key extends keyof Provider>(): Pick<Provider, Key> {
-  return null as unknown as Pick<Provider, Key>;
+export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
+  return null as unknown as Omit<Provider, Key>;
 }`,
     );
 
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'requires a statically known key set',
-    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('flight::Ref<Provider> omit_keys()');
+    expect(emitted.contents).not.toContain('Omit<');
   });
 
   it('spells out a defaulted generic argument a consuming module never saw', () => {
