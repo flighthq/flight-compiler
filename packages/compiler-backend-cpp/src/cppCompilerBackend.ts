@@ -6131,6 +6131,19 @@ function hasEquivalentCppOptionalUnionRepresentation(
   );
 }
 
+// Two unions are interchangeable at a conversion site when they build the same C++ value: the same
+// representation kind and the same target type in every slot. The source alternatives' own
+// identities are deliberately not compared. A source spelling is not a representation:
+// `readonly number[]` and `number[]` are one `flight::Array<double>` with no mutation in generated
+// code, and one interface imported by two modules is one `flight::Ref` even though the two import
+// bindings carry different identities. Comparing the spellings refused conversions whose target
+// types were already identical, which was the largest single refusal family in the SDK corpus.
+//
+// Which sentinel an optional union spells is also not compared, and must not be: `string | undefined`
+// and `string | null` are one `std::optional<flight::String>` whose absence is `std::nullopt` either
+// way, which is what lets the nullish-coalesce path convert between them. Distinct runtime domains
+// that erase onto one target type remain refused, by the collision check inside the planner that
+// runs before this comparison.
 function hasEquivalentCppUnionRepresentation(
   left: ReturnType<typeof getCppUnionRepresentationPlan>,
   right: ReturnType<typeof getCppUnionRepresentationPlan>,
@@ -6138,7 +6151,7 @@ function hasEquivalentCppUnionRepresentation(
   return (
     left.kind === right.kind &&
     left.valueSlots.length === right.valueSlots.length &&
-    left.valueSlots.every((slot, index) => slot.representationKey === right.valueSlots[index]?.representationKey)
+    left.valueSlots.every((slot, index) => slot.targetType === right.valueSlots[index]?.targetType)
   );
 }
 
