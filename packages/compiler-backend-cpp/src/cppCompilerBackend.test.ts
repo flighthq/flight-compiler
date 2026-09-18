@@ -12405,6 +12405,25 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('Exclude<');
   });
 
+  it('distributes a union that arrives as the alias naming it', () => {
+    const result = lower(
+      'union-alias.ts',
+      `interface Entity { readonly id: string; }
+       interface Circle { readonly radius: number; }
+       interface Aabb { readonly width: number; }
+       export type BuiltIn = (Circle & { kind: 'circle' }) | (Aabb & { kind: 'aabb' });
+       export function readShape(shape: BuiltIn & Entity): string { return shape.id; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // The union arrives as the alias, not as a literal union member, and distribution used to look only
+    // for the literal -- so the intersection refused with a message about multiple-inheritance lowering
+    // several call sites away from the alias that caused it.
+    expect(emitted.contents).toContain('std::variant<');
+    expect(emitted.contents).not.toContain('multiple-inheritance');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',

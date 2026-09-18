@@ -725,13 +725,23 @@ function resolveIrTypeClosedIntersectionDistributionCpp(
   moduleSet: Readonly<ReferenceModuleSet>,
   cache: ReferenceResolutionCache,
 ): Readonly<Extract<IrType, { kind: 'union' }>> | undefined {
-  const unionIndexes = type.types.flatMap((member, index) => (member.kind === 'union' ? [index] : []));
+  // A union usually arrives as the alias that names it. `CollisionBuiltInShape2D & Entity` holds
+  // `CollisionBuiltInShape2D`, a binding, and looking only for a literal union member found no union at
+  // all -- so distribution never ran and the intersection refused with a message about
+  // multiple-inheritance lowering, four call sites away from the alias that caused it. Each member is
+  // resolved one alias step first, the same rule the rest of this file applies: the wrapper is between
+  // the value and the thing being looked for, and it is invisible from the symptom every time.
+  const resolvedMembers = type.types.map((member, index) => {
+    const step = resolveIrTypeShapeAliasStepCpp(member, module, moduleSet, cache, new Set());
+    return step?.type ?? type.types[index]!;
+  });
+  const unionIndexes = resolvedMembers.flatMap((member, index) => (member.kind === 'union' ? [index] : []));
   if (unionIndexes.length !== 1) return undefined;
   const unionIndex = unionIndexes[0]!;
-  const union = type.types[unionIndex];
+  const union = resolvedMembers[unionIndex];
   if (union?.kind !== 'union') return undefined;
   const alternatives = union.types.map((alternative): Readonly<Extract<IrType, { kind: 'object' }>> | undefined => {
-    const distributedMembers = type.types.map((member, index) => (index === unionIndex ? alternative : member));
+    const distributedMembers = resolvedMembers.map((member, index) => (index === unionIndex ? alternative : member));
     const distributed: Readonly<Extract<IrType, { kind: 'intersection' }>> = {
       kind: 'intersection',
       types: [distributedMembers[0]!, distributedMembers[1]!, ...distributedMembers.slice(2)],
