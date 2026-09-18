@@ -12357,4 +12357,50 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // reference cannot rely on `<>` resolving here.
     expect(emitted).toContain('flight::Ref<flighthq_types::Node<flight::Ref<void>, flight::Ref<void>>>');
   });
+
+  it('carries the module that declares a default argument the consumer only inherits', () => {
+    const node = lowerPackage(
+      '@flighthq/types',
+      'node.ts',
+      `export interface Node<Container extends object = object> { container: Container | null; }
+       export type NodeAny = Node<object>;`,
+    ).module;
+    const hierarchy = lowerPackage(
+      '@flighthq/hierarchy',
+      'hierarchy.ts',
+      `import type { NodeAny } from '@flighthq/types/node';
+       export interface Gizmo<NodeType = NodeAny> { node: NodeType | null; }`,
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/app',
+      'gizmoState.ts',
+      `import type { Gizmo } from '@flighthq/hierarchy/hierarchy';
+       export interface GizmoState { gizmo: Gizmo | null; }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: consumer,
+          specifier: '@flighthq/hierarchy/hierarchy',
+          target: { packageName: hierarchy.packageName, source: hierarchy.source },
+        },
+        {
+          importer: hierarchy,
+          specifier: '@flighthq/types/node',
+          target: { packageName: node.packageName, source: node.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, hierarchy, node],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    // The consumer never imports `NodeAny`; the default is declared where the alias lives, so the
+    // header that spells the default out is the one that has to carry that module.
+    expect(emitted).toContain('NodeAny');
+    expect(emitted).toContain('node.hpp');
+  });
 });

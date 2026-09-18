@@ -10409,6 +10409,7 @@ function emitTypeParameters(
 
 function emitCppTemplateDefaultTypeArgumentCpp(type: Readonly<IrType>, context: EmitContext): string {
   if (type.kind === 'named' && type.reference.kind === 'binding') {
+    collectCppDefaultArgumentModuleIncludeCpp(type, context);
     const resolved = resolveCppTypeAliasTarget(type, context);
     if (resolved) return emitCppTypeArgumentCpp(resolved, context);
   }
@@ -10843,7 +10844,22 @@ function getCppTypeReferenceDefaultArgumentsCpp(
   // `X<>` already works where the declaration is in scope, so only a reference that resolves to
   // another module needs the defaults spelled out.
   if (getCppModuleIdentityKey(owner.module) === getCppModuleIdentityKey(context.module)) return undefined;
-  return declaration.typeParameters.map((parameter) => emitCppTypeArgumentCpp(parameter.default!, context));
+  return declaration.typeParameters.map((parameter) => {
+    collectCppDefaultArgumentModuleIncludeCpp(parameter.default!, context);
+    return emitCppTypeArgumentCpp(parameter.default!, context);
+  });
+}
+
+// Spelled out, a default argument names a type in the same breath as using it, so whatever header
+// spells it out has to declare that type. The default is written where the parameter is declared and
+// the header spelling it out is often a different module: `GizmoState` inherits `NodeType = NodeAny`
+// through `HierarchyNode` and never imports `NodeAny`, so emitting the name alone left the target
+// compiler to report an undeclared type far from the declaration that caused it.
+function collectCppDefaultArgumentModuleIncludeCpp(type: Readonly<IrType>, context: EmitContext): void {
+  const owner = getCppTypeReferenceOwnerModuleCpp(type, context);
+  if (getCppModuleIdentityKey(owner) !== getCppModuleIdentityKey(context.module)) {
+    context.includes.add(getCppModuleFilePath(owner, context.options));
+  }
 }
 
 function getCppTypeReferenceUsesDefaultArgumentsCpp(
