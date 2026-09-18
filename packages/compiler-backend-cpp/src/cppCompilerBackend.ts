@@ -5625,7 +5625,16 @@ function emitUnionMemberAssertionCpp(
       slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)),
   );
   if (alternatives.length !== 1) {
-    emissionError(context, 'type assertion target must identify exactly one C++ variant alternative');
+    // The alternatives are matched by target type, so naming the target and the types it was
+    // compared against is what makes the refusal readable without a debugger: the asserted target
+    // is often the whole optional the union already spells, compared against a slot's stored value.
+    emissionError(
+      context,
+      `type assertion target must identify exactly one C++ variant alternative: target ${assertedTarget} against [${plan.valueSlots
+        .map((slot) => slot.targetType)
+        .join(', ')}]`,
+      'cpp-type-assertion-unidentified',
+    );
   }
   const value = emitExpression(expression, context);
   if (plan.kind === 'singleValue') return value;
