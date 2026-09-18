@@ -12275,6 +12275,26 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('Omit<');
   });
 
+  it('marks a required key projection so its optional member reads as its value', () => {
+    const result = lower(
+      'attach-provider.ts',
+      `interface Provider { subscribe?: (callback: () => void) => void; unsubscribe?: () => void; name: string }
+       export function attach(
+         provider: Readonly<Required<Pick<Provider, 'subscribe' | 'unsubscribe'>>>,
+       ): void {
+         provider.subscribe(() => {});
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('flight::StructuralRef<flight::RowReadonly<flight::RowRequired<flight::RowOf<');
+    expect(emitted.contents).not.toContain('Pick<');
+    // The projection's own cells stay optional where they are stored; the marker is what makes the
+    // read a value, which is the call site that could not be written before.
+    expect(emitted.contents).toContain('flight::row_get<flight::RowKey<"subscribe">>(provider)(');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',

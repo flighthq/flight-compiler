@@ -173,14 +173,26 @@ function resolveIrTypeStructuralRowCpp(
       type.typeArguments.length === 1 &&
       type.typeArguments[0]
     ) {
-      const row = resolveIrTypeStructuralRowCpp(
-        type.typeArguments[0],
-        module,
-        moduleSet,
-        cache,
-        aliases,
-        type.reference.name === 'NoInfer' ? allowRowOf : true,
-      );
+      const argument = type.typeArguments[0];
+      const row =
+        resolveIrTypeStructuralRowCpp(
+          argument,
+          module,
+          moduleSet,
+          cache,
+          aliases,
+          type.reference.name === 'NoInfer' ? allowRowOf : true,
+        ) ??
+        // `Required` is the one marker a plain subject reference cannot express: it states that a
+        // member cell is present, and only the row vocabulary has a cell to state that about. A key
+        // projection written under it names a subset of the subject's members, every one of which
+        // the subject's own row already carries, so the projection resolves to that row. This is the
+        // spelling the downstream register names for `Required<Pick<HostClipboardChangeProvider,
+        // 'subscribe' | 'unsubscribe'>>`, where the optional member has to read as its value at the
+        // call site. `Readonly`, `Partial`, and a bare projection stay on the subject reference.
+        (type.reference.name === 'Required'
+          ? resolveIrTypeProjectionSubjectRowCpp(argument, module, moduleSet, cache, aliases)
+          : undefined);
       if (!row) return undefined;
       if (type.reference.name === 'Readonly') return { kind: 'readonly', row };
       // `Required` names every member as present, which is what the row marker states: the subject
@@ -265,6 +277,25 @@ function resolveIrTypeStructuralRowCpp(
     };
   }
   return allowRowOf && type.kind === 'object' ? { kind: 'rowOf', type } : undefined;
+}
+
+// A key projection is a subset of its subject's members, every one of which the row the target keeps
+// for that subject already carries, so the projection's row is its subject's row. `Required` is the
+// one marker that needs it: the projection alone is still a view the subject reference can carry,
+// but stating that a member is present needs a member cell to state it about. This is the spelling
+// the downstream register names for `Required<Pick<HostClipboardChangeProvider, 'subscribe' |
+// 'unsubscribe'>>`, where the optional member has to read as its value at the call site.
+function resolveIrTypeProjectionSubjectRowCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  aliases: ReadonlySet<string>,
+): Readonly<CompilerCppStructuralRowPlan> | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'ambient') return undefined;
+  if (type.reference.name !== 'Omit' && type.reference.name !== 'Pick') return undefined;
+  if (type.typeArguments.length !== 2 || !type.typeArguments[0]) return undefined;
+  return resolveIrTypeStructuralRowCpp(type.typeArguments[0], module, moduleSet, cache, aliases, true);
 }
 
 function isIrBareStructuralRowTypeParameterCpp(type: Readonly<IrType>): boolean {
