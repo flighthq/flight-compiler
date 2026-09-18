@@ -5711,13 +5711,27 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   }
   if (ts.isCallExpression(node)) {
     const signature = getTypeScriptInvocationSignatureResolution(node, context.checker);
-    const callResult =
+    // `??` continues only past null and undefined, and an unknown-shaped type is neither: a step that has
+    // no answer and says `unknown` stops the chain before the checker, which is why the list ends in it.
+    // `let codePoint = text.charCodeAt(i)` recorded `unknown` and erased to a `flight::Any` for exactly
+    // this reason, while the same line written with `const` kept its deduction. An unknown is therefore
+    // read as "no answer yet" rather than as an answer, and the authored answer is kept if the checker
+    // has nothing either.
+    const authored =
       getTypeScriptKnownAmbientCallResultTypeEvidence(node, context) ??
       getTypeScriptCollectionCallResultTypeEvidence(node, context) ??
       getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
-      getTypeScriptWrittenCallResultTypeEvidence(signature, context) ??
-      getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0, true, node);
-    if (callResult) return callResult;
+      getTypeScriptWrittenCallResultTypeEvidence(signature, context);
+    if (authored && authored.kind !== 'unknown') return authored;
+    const callResult = getTypeScriptCheckerTypeEvidence(
+      context.checker.getTypeAtLocation(node),
+      context,
+      0,
+      true,
+      node,
+    );
+    if (callResult && callResult.kind !== 'unknown') return callResult;
+    if (authored) return authored;
   }
   const writtenConstruction = getTypeScriptWrittenNewExpressionTypeEvidence(node, context);
   if (writtenConstruction) return writtenConstruction;

@@ -1378,7 +1378,10 @@ describe('createCppCompilerBackend', () => {
       { runtimeProfile: 'flight-cpp' },
     ).contents;
 
-    expect(emitted).toContain('auto match = input.match(');
+    // The binding's type is now recorded, so it is stated rather than deduced. `auto` was the emitter
+    // standing in for a type nobody had, not the contract -- and a `const` source binding is now marked
+    // `const` in C++ too, which a deduced binding could not be.
+    expect(emitted).toContain('match = input.match(');
     expect(emitted).toContain('return match.value().element(1.0);');
   });
 
@@ -2273,7 +2276,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('#include <flight/symbol.hpp>');
-    expect(emitted.contents).toContain('auto key = flight::Symbol::for_key(flight::String("key"))');
+    expect(emitted.contents).toContain('flight::Symbol key = flight::Symbol::for_key(flight::String("key"))');
     expect(emitted.dependencies).toContain('flight/symbol.hpp');
   });
 
@@ -4893,7 +4896,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('struct EntityRuntime : public flight::ReferenceEnabled');
     expect(emitted.contents).toContain('std::optional<flight::Ref<void>> binding;');
     expect(emitted.contents).toContain(
-      'auto entity_runtime_key = flight::Symbol::for_key(flight::String("EntityRuntime"))',
+      'flight::Symbol entity_runtime_key = flight::Symbol::for_key(flight::String("EntityRuntime"))',
     );
     expect(emitted.contents).toContain('return entity->entity_runtime_key;');
     expect(emitted.contents).toContain('(entity->entity_runtime_key = runtime);');

@@ -26,8 +26,8 @@ inline flight::Array<double> flatten(flight::Array<flight::Array<double>> grid) 
 }
 
 inline flight::Array<flight::Array<double>> transpose(flight::Array<flight::Array<double>> grid) {
-  auto rows = static_cast<double>(grid.size());
-  auto cols = static_cast<double>(grid.element(0.0).size());
+  const double rows = static_cast<double>(grid.size());
+  const double cols = static_cast<double>(grid.element(0.0).size());
   flight::Array<flight::Array<double>> result = flight::Array<flight::Array<double>>{};
   {
     double c = 0.0;

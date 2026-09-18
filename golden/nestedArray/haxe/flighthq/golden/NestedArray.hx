@@ -22,8 +22,8 @@ function flatten(grid:Array<Array<Float>>):Array<Float> {
 }
 
 function transpose(grid:Array<Array<Float>>):Array<Array<Float>> {
-  final rows:Dynamic = grid.length;
-  final cols:Dynamic = grid[0].length;
+  final rows:Float = grid.length;
+  final cols:Float = grid[0].length;
   final result:Array<Array<Float>> = (cast [] : Array<Array<Float>>);
   {
     var c:Float = 0;
