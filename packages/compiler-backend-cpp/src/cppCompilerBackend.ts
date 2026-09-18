@@ -9976,7 +9976,12 @@ function hasFlightReferenceRepresentationCpp(type: Readonly<IrType>, context: Em
   if (getCppCallableObjectIrTypeCpp(type, context, new Set())) return true;
   const identityPreserving = getCppIdentityPreservingUtilityArgument(type);
   if (identityPreserving) return hasFlightReferenceRepresentationCpp(identityPreserving, context);
-  const owner = getCppDirectBindingOwner(type, context);
+  // An imported subject resolves through its own owner: the direct index is import-blind, and
+  // falling back to this module would plan the type against the wrong one and report no
+  // representation for a type that plainly has one.
+  const owner =
+    getCppDirectBindingOwner(type, context) ??
+    (type.kind === 'named' ? getCppImportedBindingDeclarationCpp(type, context) : undefined);
   const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   return plan.kind === 'represented' && plan.valueRepresentation === 'flightReference';
 }
