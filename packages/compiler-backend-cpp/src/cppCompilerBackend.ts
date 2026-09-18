@@ -406,6 +406,10 @@ function emitIrModuleCppWithContext(
       ]);
       return { anonymousStructLines, declaration, lines };
     });
+  // Emitted before the include list is read: a forward declaration spells a default type argument
+  // out, and that names a type whose module has to be included. Collected any later and the include
+  // is dropped on the floor while the declaration that needed it is still emitted.
+  const forwardDeclarations = emitCppForwardDeclarations(module, context);
   const imports = emitImports(module, context);
   const importedFunctionForwardDeclarations = emitCppImportedFunctionForwardDeclarations(context);
   const reexports = emitReexportsCpp(module, context);
@@ -428,7 +432,6 @@ function emitIrModuleCppWithContext(
     );
   }
   const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
-  const forwardDeclarations = emitCppForwardDeclarations(module, context);
   // Only a module include can close a cycle, so a module that includes none keeps its usual layout
   // and publishes nothing early.
   // The early region declares what a cyclic consumer may name, so it precedes this module's
