@@ -12347,6 +12347,41 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('Partial<');
   });
 
+  // `Exclude<T, U>` is `T extends U ? never : T`, and every one of these is a case where the answer
+  // depends on ASSIGNABILITY rather than on the two shapes matching. The last is the one that would
+  // pass under an equality rule and is wrong there: `'created'` IS assignable to `string`, so the
+  // member the source drops has to be dropped, not kept.
+  it('resolves an exclusion by assignability rather than by matching shapes', () => {
+    const result = lower(
+      'exclusion.ts',
+      `interface Entity { readonly id: string; }
+       interface Wide { readonly outcome: string; readonly detail: number; }
+       interface Narrow { readonly outcome: 'created'; }
+       interface Absent { readonly outcome: 'created'; readonly missing: number; }
+       export type KeptWide = Entity & Exclude<Wide, Narrow>;
+       export type KeptAbsent = Entity & Exclude<Entity, Absent>;
+       export function readResult(result: KeptWide): number { return result.detail; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // `string` is not assignable to `'created'`, and a property the subject lacks is not assignable
+    // either, so both subjects survive their exclusions and keep their own members.
+    expect(emitted.contents).toContain('double detail;');
+    expect(emitted.contents).not.toContain('Exclude<');
+
+    const dropped = lower(
+      'exclusion-never.ts',
+      `interface Entity { readonly id: string; }
+       export type Gone = Entity & Exclude<Entity, Entity>;
+       export function readGone(value: Gone): string { return value.id; }`,
+    );
+    // `never` has no object shape to emit, so the intersection refuses rather than inventing one.
+    expect(() => emitIrModuleCpp(dropped.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'intersection types require C++ multiple-inheritance lowering',
+    );
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',

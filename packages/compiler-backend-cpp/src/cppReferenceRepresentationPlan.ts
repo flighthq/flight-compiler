@@ -412,6 +412,38 @@ function resolveIrTypeDistributedObjectShapeCpp(
   return resolveIrTypeObjectShapeCpp(type, module, moduleSet, cache, ancestors);
 }
 
+// `Exclude<T, U>` is `T extends U ? never : T`: the members of `T` that `U` does not accept. The
+// comparison is ASSIGNABILITY and not shape equality, and the difference is not academic. A subject
+// whose `outcome` is the literal `'created'` IS assignable to an exclusion naming `outcome: string`,
+// so an equality rule would keep a member the source resolves to `never`. Worse, the shape that
+// prompted this -- `Exclude<TrayCreateProviderResult, { outcome: 'created' }>` -- is right under
+// either rule, which is exactly how a rule that is wrong in general passes the one case in front of
+// it. A member `U` accepts is dropped, and if none survive the answer is `never`, which has no object
+// shape and refuses.
+function resolveIrTypeExcludedObjectShapeCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  ancestors: ReadonlySet<string>,
+): readonly Readonly<IrObjectTypeProperty>[] | undefined {
+  const [subject, exclusion] = type.typeArguments;
+  if (!subject || !exclusion) return undefined;
+  const comparison: IrTypeStructuralComparisonStateCpp = {
+    aliases: new Set(),
+    ancestors: new WeakMap(),
+    valueQueries: new Set(),
+  };
+  const members = subject.kind === 'union' ? subject.types : [subject];
+  const surviving = members.filter(
+    (member) => !isIrTypeStructurallyAssignableCpp(member, exclusion, module, moduleSet, cache, ancestors, comparison),
+  );
+  const [first, second, ...rest] = surviving;
+  if (!first) return undefined;
+  const remaining: Readonly<IrType> = second ? { kind: 'union', types: [first, second, ...rest] } : first;
+  return resolveIrTypeObjectShapeCpp(remaining, module, moduleSet, cache, ancestors);
+}
+
 function resolveIrTypeObjectShapeCpp(
   type: Readonly<IrType>,
   module: Readonly<ReferenceModuleRecord>,
@@ -453,6 +485,9 @@ function resolveIrTypeObjectShapeCpp(
       return properties.filter((property) =>
         projection === 'Pick' ? keys.has(property.name) : !keys.has(property.name),
       );
+    }
+    if (type.reference.name === 'Exclude' && type.typeArguments.length === 2) {
+      return resolveIrTypeExcludedObjectShapeCpp(type, module, moduleSet, cache, ancestors);
     }
     if (type.typeArguments.length !== 1 || !type.typeArguments[0]) return undefined;
     const properties = resolveIrTypeDistributedObjectShapeCpp(
