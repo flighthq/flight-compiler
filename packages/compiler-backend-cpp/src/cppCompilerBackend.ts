@@ -9738,7 +9738,7 @@ function emitOptionalExpressionCpp(
     const payload = emitType(expectedType, context);
     const receiver = `${emitExpression(expression.object.object, context)}.get(${emitExpression(expression.object.index, context)})`;
     context.includes.add('optional');
-    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().${safeCppName(expression.name)}; }())`;
+    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().${getCppProjectedMemberNameCpp(expression, context)}; }())`;
   }
   return emitExpression(
     expression,
@@ -11562,6 +11562,20 @@ function getCppStableIdentifierHash(value: string): string {
     second = Math.imul(second ^ code, 0x85ebca6b) >>> 0;
   }
   return `${first.toString(16).padStart(8, '0')}${second.toString(16).padStart(8, '0')}`;
+}
+
+// A projected member reached through an optional receiver is still a member of whatever the runtime
+// resolved it against, so its target spelling comes from the binding table rather than from the source
+// name. `toLowerCase` is `to_lower` in the runtime, and deriving `to_lower_case` from the source name
+// produces a member that does not exist. The fallback stays for members no table decides.
+function getCppProjectedMemberNameCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string {
+  const binding = expression.member
+    ? getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options))
+    : undefined;
+  return binding && binding.kind !== 'algorithm' ? binding.targetName : safeCppName(expression.name);
 }
 
 function safeCppName(name: string): string {
