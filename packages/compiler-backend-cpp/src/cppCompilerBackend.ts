@@ -9966,7 +9966,11 @@ function hasSharedReferentRepresentationCpp(type: Readonly<IrType>, context: Emi
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
   const identityPreserving = getCppIdentityPreservingUtilityArgument(type);
   if (identityPreserving) return hasSharedReferentRepresentationCpp(identityPreserving, context);
-  const owner = getCppDirectBindingOwner(type, context);
+  // The direct index is import-blind, so an imported subject would plan against this module instead
+  // of the one that owns it and report no representation for a type that plainly has one.
+  const owner =
+    getCppDirectBindingOwner(type, context) ??
+    (type.kind === 'named' ? getCppImportedBindingDeclarationCpp(type, context) : undefined);
   const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   return plan.kind === 'represented' && plan.valueRepresentation !== 'inlineValue';
 }
@@ -10046,7 +10050,11 @@ function getCppStructuralProjectionRowCpp(
     }
     return { kind: 'partial', row: { kind: 'rowOf', type: object } };
   }
-  const owner = getCppDirectBindingOwner(type, context);
+  // The direct index is import-blind, so an imported subject would plan against this module instead
+  // of the one that owns it and report no representation for a type that plainly has one.
+  const owner =
+    getCppDirectBindingOwner(type, context) ??
+    (type.kind === 'named' ? getCppImportedBindingDeclarationCpp(type, context) : undefined);
   const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   if (
     !context.referenceRepresentationPlanner.resolveObjectShape(type, context.module) ||
@@ -10061,7 +10069,11 @@ function getCppStructuralProjectionRowCpp(
 
 function hasFlightFacetReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
-  const owner = getCppDirectBindingOwner(type, context);
+  // The direct index is import-blind, so an imported subject would plan against this module instead
+  // of the one that owns it and report no representation for a type that plainly has one.
+  const owner =
+    getCppDirectBindingOwner(type, context) ??
+    (type.kind === 'named' ? getCppImportedBindingDeclarationCpp(type, context) : undefined);
   const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   return plan.kind === 'represented' && plan.category === 'facet' && plan.valueRepresentation === 'runtimeReference';
 }
@@ -10790,7 +10802,8 @@ function getCppTypeReferenceUsesDefaultArgumentsCpp(
   context: EmitContext,
 ): boolean {
   if (type.reference.kind !== 'binding') return false;
-  const declaration = getCppDirectBindingOwner(type, context)?.declaration;
+  const declaration = (getCppDirectBindingOwner(type, context) ?? getCppImportedBindingDeclarationCpp(type, context))
+    ?.declaration;
   if (
     !declaration ||
     (declaration.kind !== 'class' && declaration.kind !== 'interface' && declaration.kind !== 'typeAlias') ||
