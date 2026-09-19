@@ -2029,27 +2029,7 @@ function emitExpression(
           getIrExpressionBindingTypeCpp(expression.left, context) ??
           getIrExpressionTypeEvidenceCpp(expression.left, context);
         const union = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
-        const leftUsesOptionalStorage =
-          (expression.left.kind === 'identifier' &&
-            expression.left.reference.kind === 'binding' &&
-            (context.nullableBindingIds.has(expression.left.reference.binding.id) ||
-              context.arrayElementBindingIds.has(expression.left.reference.binding.id))) ||
-          (expression.left.kind === 'element' &&
-            getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-            (hasCppRegExpExecArrayIndexedReceiverCpp(expression.left, context) ||
-              hasIndexedRuntimeReceiverCpp(expression.left, context) ||
-              Boolean(
-                getCppRecordTypeArgumentsCpp(
-                  getIrExpressionTypeEvidenceCpp(expression.left.object, context),
-                  context,
-                  new Set(),
-                ),
-              ))) ||
-          (expression.left.kind === 'property' &&
-            expression.left.optional &&
-            expression.left.object.kind === 'element' &&
-            getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-            hasIndexedRuntimeReceiverCpp(expression.left.object, context));
+        const leftUsesOptionalStorage = hasCppAbsenceStorageCpp(expression.left, context);
         if (
           leftType &&
           !union &&
@@ -5684,29 +5664,29 @@ function emitNullishComparisonCpp(
     expression.left.kind === 'identifier' && expression.left.reference.kind === 'ambient'
       ? expression.right
       : expression.left;
-  const operandType =
-    operand.kind === 'identifier' && operand.reference.kind === 'binding'
-      ? getCppBindingTypeCpp(operand.reference.binding.id, context)
-      : undefined;
-  const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
-  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
   if (evidence.admitsNull && evidence.admitsUndefined) {
+    const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
+    const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
+    const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
     if (!plan || plan.kind !== 'dualSentinelVariant') {
       emissionError(context, 'nullish comparison admitting null and undefined requires dual-sentinel union evidence');
     }
-    context.includes.add('variant');
-    const sentinels = getCppDualSentinelTargetTypes(context);
-    const value = emitExpression(operand, context);
-    const selected = evidence.literal === 'null' ? sentinels.null : sentinels.undefined;
-    const strict = expression.operator === '===' || expression.operator === '!==';
-    const test = strict
-      ? `std::holds_alternative<${selected}>(${value})`
-      : `(std::holds_alternative<${sentinels.null}>(${value}) || std::holds_alternative<${sentinels.undefined}>(${value}))`;
-    return expression.operator === '!=' || expression.operator === '!==' ? `!(${test})` : test;
   }
-  context.includes.add('optional');
-  const negated = expression.operator === '!=' || expression.operator === '!==';
-  return `${negated ? '' : '!'}${emitOptionalExpressionCpp(operand, context, operandType)}.has_value()`;
+  const test = emitCppPresenceTestCpp(
+    operand,
+    evidence.literal,
+    expression.operator === '!=' || expression.operator === '!==',
+    expression.operator === '===' || expression.operator === '!==',
+    context,
+  );
+  if (test === undefined) {
+    emissionError(
+      context,
+      `a presence test against ${evidence.literal} has no absence channel in the emitted C++ storage for ${operand.kind}`,
+      'cpp-presence-test-without-absence-storage',
+    );
+  }
+  return test;
 }
 
 function emitCppInferredOptionalNullishComparison(
@@ -5717,18 +5697,132 @@ function emitCppInferredOptionalNullishComparison(
   const leftSentinel = getCppNullishLiteralKind(expression.left);
   const rightSentinel = getCppNullishLiteralKind(expression.right);
   if ((leftSentinel ? 1 : 0) + (rightSentinel ? 1 : 0) !== 1) return undefined;
-  const sentinel = leftSentinel ?? rightSentinel!;
-  const operand = leftSentinel ? expression.right : expression.left;
-  const operandType = getIrExpressionTypeEvidenceCpp(operand, context);
+  return emitCppPresenceTestCpp(
+    leftSentinel ? expression.right : expression.left,
+    leftSentinel ?? rightSentinel!,
+    expression.operator === '!=' || expression.operator === '!==',
+    expression.operator === '===' || expression.operator === '!==',
+    context,
+  );
+}
+
+// The declared type of a presence-test operand. A binding is asked for its binding type rather than
+// its narrowed type: a presence test reads its operand outside the branch it guards, so the narrowing
+// the body sees is not the one the test asks about.
+function getCppNullishComparisonOperandTypeCpp(
+  operand: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  return operand.kind === 'identifier' && operand.reference.kind === 'binding'
+    ? getCppBindingTypeCpp(operand.reference.binding.id, context)
+    : getIrExpressionTypeEvidenceCpp(operand, context);
+}
+
+// Whether the emitted expression carries absence in its own storage: an `std::optional<...>` from an
+// indexed read, or a read of an optional row member. This is the STORAGE axis and the declared type
+// is a separate question -- a `Readonly<Record<string, V>>` index read shows no union in its type
+// while the lowering elected `std::optional` storage for it, so neither axis can be read off the
+// other.
+function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    (context.nullableBindingIds.has(expression.reference.binding.id) ||
+      context.arrayElementBindingIds.has(expression.reference.binding.id))
+  ) {
+    return true;
+  }
+  if (
+    expression.kind === 'element' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    (hasCppRegExpExecArrayIndexedReceiverCpp(expression, context) ||
+      hasIndexedRuntimeReceiverCpp(expression, context) ||
+      Boolean(
+        getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(expression.object, context), context, new Set()),
+      ))
+  ) {
+    return true;
+  }
+  return (
+    expression.kind === 'property' &&
+    expression.optional &&
+    expression.object.kind === 'element' &&
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    hasIndexedRuntimeReceiverCpp(expression.object, context)
+  );
+}
+
+// Emits a presence test on `operand` -- `operand === sentinel`, `operand !== sentinel`, and their loose
+// forms -- or refuses when no emitted storage can answer it.
+//
+// Two axes decide the answer and neither alone is sufficient. The STORAGE axis asks whether the
+// emitted expression carries absence, and it is the only axis that can answer for a `Record` index
+// read whose declared type shows no union while the lowering elected `std::optional` storage. The
+// TYPE axis asks what the declared type admits, and it is the only axis that can answer for a
+// `flight::Ref<T>` whose type excludes the sentinel, where the reference has no overload to compare
+// against `flight::undefined` and the comparison is a tautology the source wrote deliberately.
+//
+// A storage query answers the test at runtime; a type that excludes the sentinel answers it at
+// compile time, which is the same rule the `??` lane already applies to a non-nullable left operand.
+// The remaining combination -- storage with no absence channel whose type admits the sentinel -- is a
+// value whose absence the emitted representation cannot observe, and it is refused rather than
+// guessed at.
+function emitCppPresenceTestCpp(
+  operand: Readonly<IrExpression>,
+  sentinel: 'null' | 'undefined',
+  present: boolean,
+  strict: boolean,
+  context: EmitContext,
+): string | undefined {
+  const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
   const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
-  if (!union) return undefined;
-  const plan = getCppUnionRepresentationPlan(union, context);
-  if (plan.kind !== 'optionalSingle' && plan.kind !== 'optionalVariant') return undefined;
-  const strict = expression.operator === '===' || expression.operator === '!==';
-  if (strict && !union.types.some((member) => member.kind === sentinel)) return undefined;
-  context.includes.add('optional');
-  const present = expression.operator === '!=' || expression.operator === '!==';
-  return `${present ? '' : '!'}${emitOptionalExpressionCpp(operand, context, operandType)}.has_value()`;
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (plan?.kind === 'dualSentinelVariant') {
+    context.includes.add('variant');
+    const sentinels = getCppDualSentinelTargetTypes(context);
+    const selected = sentinel === 'null' ? sentinels.null : sentinels.undefined;
+    const value = emitExpression(operand, context);
+    const test = strict
+      ? `std::holds_alternative<${selected}>(${value})`
+      : `(std::holds_alternative<${sentinels.null}>(${value}) || std::holds_alternative<${sentinels.undefined}>(${value}))`;
+    return present ? `!(${test})` : test;
+  }
+  if (
+    plan?.kind === 'optionalSingle' ||
+    plan?.kind === 'optionalVariant' ||
+    hasCppAbsenceStorageCpp(operand, context)
+  ) {
+    context.includes.add('optional');
+    return `${present ? '' : '!'}${emitOptionalExpressionCpp(operand, context, operandType)}.has_value()`;
+  }
+  // An erased dynamic value keeps presence in its own kind tag rather than in the value's type, and
+  // the target names that test through members this backend binds nowhere: `flight::Any::is_nullish`
+  // and its siblings exist, but nothing here declares them, so the type cannot be asked and the value
+  // must not be guessed at. Deciding it from the declared type alone would answer a question an
+  // `any`-typed binding does not answer.
+  if (isCppErasedDynamicValueTypeCpp(operandType)) return undefined;
+  // A loose comparison is true for either sentinel, so a type decides it only when it admits neither.
+  const admitted = strict
+    ? admitsCppNullishSentinelCpp(operandType, sentinel, context)
+    : admitsCppNullishSentinelCpp(operandType, 'null', context) ||
+      admitsCppNullishSentinelCpp(operandType, 'undefined', context);
+  return admitted ? undefined : present ? 'true' : 'false';
+}
+
+// Whether the declared type admits the nullish sentinel. A type that admits it can be absent at
+// runtime, so a presence test on it is a question about storage; a type that excludes it makes the
+// test a question the type already answers. `any` and `unknown` admit both, because neither names a
+// value type that excludes one.
+function admitsCppNullishSentinelCpp(
+  type: Readonly<IrType> | undefined,
+  sentinel: 'null' | 'undefined',
+  context: EmitContext,
+): boolean {
+  if (!type) return true;
+  if (type.kind === 'unknown') return type.source === 'any' || type.source === 'unknown';
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  const members = union ? union.types : [type];
+  return members.some((member) => (sentinel === 'null' ? member.kind === 'null' : member.kind === 'undefined'));
 }
 
 function getCppNullishLiteralKind(expression: Readonly<IrExpression>): 'null' | 'undefined' | undefined {

@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/nullishPresenceTest.ts: computed object access requires JavaScript property-key coercion lowering

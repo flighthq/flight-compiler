@@ -138,6 +138,9 @@ describe('createCppCompilerBackend', () => {
   // capability as a parameter and calls through it. No entity identity and no hidden state anywhere in
   // the shape, which is the point: a capability is a bag of plain functions.
   it('calls through a plain-object host capability a consumer receives as a parameter', () => {
+    // The coverage plan records the same shape at compile level: a direct `g++` translation unit that
+    // includes these headers and calls the seam, so `row_get` and every method body instantiate.
+
     const types = lowerPackage(
       '@flighthq/types',
       'hostGl.ts',
@@ -150,6 +153,13 @@ describe('createCppCompilerBackend', () => {
        }
        export interface HostGlCapabilities {
          readonly context?: HostGlCapability;
+       }
+       export interface PointerTarget { readonly id: number }
+       export interface HostInputPointerCapability {
+         request(target: Readonly<PointerTarget>): boolean;
+       }
+       export interface HostInputCapabilities {
+         readonly pointer?: HostInputPointerCapability;
        }`,
     ).module;
     const hostWeb = lowerPackage(
@@ -169,21 +179,45 @@ describe('createCppCompilerBackend', () => {
     const app = lowerPackage(
       '@flighthq/app',
       'appWindow.ts',
-      `import type { HostGlCapability, Surface } from '@flighthq/types';
+      `import type {
+         HostGlCapabilities,
+         HostGlCapability,
+         HostInputCapabilities,
+         PointerTarget,
+         Surface,
+       } from '@flighthq/types';
        import { webHostGlGroup } from '@flighthq/host-web';
        export function attachWindowRenderContext(hostGl: Readonly<HostGlCapability>, surface: Readonly<Surface>): void {
          void hostGl.acquire(surface);
+         hostGl.release(surface);
          hostGl.subscribe(surface, () => {}, () => {});
        }
-       export function attachWebWindowRenderContext(surface: Readonly<Surface>): void {
+       export function attachPresentWindowRenderContext(surface: Readonly<Surface>): void {
          const group = webHostGlGroup;
          if (group.context !== undefined) attachWindowRenderContext(group.context, surface);
+       }
+       export function attachOptionalWindowRenderContext(
+         group: Readonly<HostGlCapabilities>,
+         surface: Readonly<Surface>,
+       ): void {
+         if (group.context !== undefined) attachWindowRenderContext(group.context, surface);
+       }
+       export function requestPointerLock(input: Readonly<HostInputCapabilities>, target: Readonly<PointerTarget>): boolean {
+         if (input.pointer === undefined) return false;
+         return input.pointer.request(target);
        }`,
     ).module;
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
-          importedNames: ['GlContext', 'HostGlCapability', 'HostGlCapabilities', 'Surface'],
+          importedNames: [
+            'GlContext',
+            'HostGlCapabilities',
+            'HostGlCapability',
+            'HostInputCapabilities',
+            'PointerTarget',
+            'Surface',
+          ],
           specifier: '@flighthq/types',
           target: { packageName: types.packageName, source: types.source },
         },
@@ -201,7 +235,7 @@ describe('createCppCompilerBackend', () => {
       options: { runtimeProfile: 'flight-cpp' },
     });
 
-    const emitted = session.emitModule(app)[0]?.contents;
+    const emitted = session.emitModule(app)[0]?.contents ?? '';
     // The capability crosses the package boundary as a plain interface: the consumer forward declares it
     // and includes the module that defines it, with no entity identity and no hidden state anywhere.
     expect(emitted).toContain('namespace flighthq_types { struct HostGlCapability; }');
@@ -209,12 +243,62 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('#include "host_gl.hpp"');
     expect(emitted).toContain('#include "web_gl_host.hpp"');
     expect(emitted).toContain('flighthq_types::HostGlCapability');
-    // The consumer takes the capability as a parameter and calls through it. The two compile-level
-    // defects this shape exposes are recorded in the coverage plan rather than pinned here: a
-    // method-bearing interface reaches emission as a structural row whose schema has no row member for
-    // the method, and an optional capability member checks presence by comparing a reference against
-    // `flight::undefined`. Both are proven by compiling the emitted header, not by reading it.
+    // The consumer calls two methods with different signatures through the capability, both as
+    // `row_get` projections the callee's row can answer.
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"acquire">>(host_gl)(surface)');
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"release">>(host_gl)(surface)');
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"subscribe">>(host_gl)(surface,');
+    // A member the provider's object literal states is present folds by type; the same member read
+    // through the interface that declares it optional keeps its presence projection. Same member, same
+    // producer, two storages -- which is the whole reason the decision needs both axes.
+    expect(emitted).toContain('attach_present_window_render_context');
+    expect(emitted).toContain('if (true)');
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"context">>(group).has_value()');
+    // An unrelated capability interface asks its own question about its own member without borrowing
+    // the GL capability's row: it neither names the requested method nor reads the group above.
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"pointer">>(input).has_value()');
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"pointer">>(input).value()->request(target)');
     expect(emitted).toContain('attach_window_render_context(');
+    expect(emitted).not.toContain('flight::undefined');
+  });
+
+  // A presence test has two axes and the emitting rule needs both. The STORAGE axis asks whether the
+  // emitted expression carries absence -- `std::optional`, a `flight::Presence` variant, and nothing
+  // else -- and the TYPE axis asks what the declared type admits. Each axis answers the shapes the
+  // other cannot: a `Record` index read shows no union in its type while the lowering elected
+  // `std::optional` storage for it, and a `flight::Ref<T>` field excludes the sentinel while its
+  // storage is a `std::shared_ptr` with no presence to query. Reading only one axis produced two
+  // spellings that cannot compile: `x.has_value()` on a `std::shared_ptr` or a `std::string`, and
+  // `x != flight::undefined`, which has no overload for a reference.
+  it('decides a nullish comparison by storage when the storage carries absence and by type otherwise', () => {
+    const module = lower(
+      'nullish-axes.ts',
+      `interface Surface { readonly handle: number }
+       interface Present { readonly context: Surface }
+       interface Optional { readonly context?: Surface }
+       export function plain(value: string): boolean { return value !== undefined; }
+       export function required(group: Present): boolean { return group.context !== undefined; }
+       export function optional(group: Optional): boolean { return group.context !== undefined; }
+       export function indexed(values: Readonly<Record<string, string>>, key: string): boolean {
+         return values[key] !== undefined;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+    // A plain storage whose type excludes the sentinel is a compile-time answer: a `flight::String`
+    // parameter is never `undefined`, and neither is a required member holding a `flight::Ref`.
+    expect(emitted).toContain('inline bool plain(flight::String value) {\n  return true;');
+    expect(emitted).toContain('inline bool required(flight::Ref<Present> group) {\n  return true;');
+    // The optional member keeps its presence projection, because its storage is an `std::optional`.
+    expect(emitted).toContain(
+      'inline bool optional(flight::Ref<Optional> group) {\n  return group->context.has_value();',
+    );
+    // An indexed read of a `Record` has no union in its type and an `std::optional` in its storage, so
+    // the storage answers a question the type cannot: this is the axis no type-only rule can reach.
+    expect(emitted).toContain(
+      'inline bool indexed(flight::Record<flight::String, flight::String> values, flight::String key) {\n  return values.get(key).has_value();',
+    );
+    expect(emitted).not.toContain('flight::undefined');
   });
 
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
