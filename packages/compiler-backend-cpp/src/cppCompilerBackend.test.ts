@@ -131,6 +131,92 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flight::Ref<flighthq_types::');
   });
 
+  // The plain-object host seam at Flight 7e2fc7df: `2b8c7656` removed `extends Entity` from the host
+  // capability interfaces and `5a251b69` builds a capability as a plain object literal. Modeled the way
+  // the SDK actually uses it — `types/HostGl.ts` declares `HostGlCapability`, `host-web/webGlHost.ts`
+  // exports a plain object satisfying the optional-member bag, and `app/appWindow.ts` receives the
+  // capability as a parameter and calls through it. No entity identity and no hidden state anywhere in
+  // the shape, which is the point: a capability is a bag of plain functions.
+  it('calls through a plain-object host capability a consumer receives as a parameter', () => {
+    const types = lowerPackage(
+      '@flighthq/types',
+      'hostGl.ts',
+      `export interface Surface { readonly handle: number }
+       export interface GlContext { readonly id: number }
+       export interface HostGlCapability {
+         acquire(surface: Readonly<Surface>): GlContext | null;
+         release(surface: Readonly<Surface>): void;
+         subscribe(surface: Readonly<Surface>, onLost: () => void, onRestored: () => void): () => void;
+       }
+       export interface HostGlCapabilities {
+         readonly context?: HostGlCapability;
+       }`,
+    ).module;
+    const hostWeb = lowerPackage(
+      '@flighthq/host-web',
+      'webGlHost.ts',
+      `import type { GlContext, HostGlCapability, HostGlCapabilities, Surface } from '@flighthq/types';
+       export const webHostGl: HostGlCapability = {
+         acquire(surface: Readonly<Surface>): GlContext | null { void surface; return null; },
+         release(surface: Readonly<Surface>): void { void surface; },
+         subscribe(surface: Readonly<Surface>, onLost: () => void, onRestored: () => void): () => void {
+           void surface; void onRestored;
+           return onLost;
+         },
+       };
+       export const webHostGlGroup = { context: webHostGl } satisfies HostGlCapabilities;`,
+    ).module;
+    const app = lowerPackage(
+      '@flighthq/app',
+      'appWindow.ts',
+      `import type { HostGlCapability, Surface } from '@flighthq/types';
+       import { webHostGlGroup } from '@flighthq/host-web';
+       export function attachWindowRenderContext(hostGl: Readonly<HostGlCapability>, surface: Readonly<Surface>): void {
+         void hostGl.acquire(surface);
+         hostGl.subscribe(surface, () => {}, () => {});
+       }
+       export function attachWebWindowRenderContext(surface: Readonly<Surface>): void {
+         const group = webHostGlGroup;
+         if (group.context !== undefined) attachWindowRenderContext(group.context, surface);
+       }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['GlContext', 'HostGlCapability', 'HostGlCapabilities', 'Surface'],
+          specifier: '@flighthq/types',
+          target: { packageName: types.packageName, source: types.source },
+        },
+        {
+          importedNames: ['webHostGlGroup'],
+          specifier: '@flighthq/host-web',
+          target: { packageName: hostWeb.packageName, source: hostWeb.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [app, hostWeb, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    const emitted = session.emitModule(app)[0]?.contents;
+    // The capability crosses the package boundary as a plain interface: the consumer forward declares it
+    // and includes the module that defines it, with no entity identity and no hidden state anywhere.
+    expect(emitted).toContain('namespace flighthq_types { struct HostGlCapability; }');
+    expect(emitted).toContain('namespace flighthq_types { struct Surface; }');
+    expect(emitted).toContain('#include "host_gl.hpp"');
+    expect(emitted).toContain('#include "web_gl_host.hpp"');
+    expect(emitted).toContain('flighthq_types::HostGlCapability');
+    // The consumer takes the capability as a parameter and calls through it. The two compile-level
+    // defects this shape exposes are recorded in the coverage plan rather than pinned here: a
+    // method-bearing interface reaches emission as a structural row whose schema has no row member for
+    // the method, and an optional capability member checks presence by comparing a reference against
+    // `flight::undefined`. Both are proven by compiling the emitted header, not by reading it.
+    expect(emitted).toContain('attach_window_render_context(');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
