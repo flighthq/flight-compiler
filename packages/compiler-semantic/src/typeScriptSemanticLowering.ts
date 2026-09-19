@@ -7672,6 +7672,16 @@ function isTypeScriptAmbientSymbol(symbol: ts.Symbol | undefined, context: Lower
   return (
     declarations !== undefined &&
     declarations.length > 0 &&
+    !declarations.every((declaration) => ts.isTypeParameterDeclaration(declaration)) &&
+    // A type parameter is a compiler generic, never a runtime ambient type. Its declaration normally
+    // lives in a library file, which is exactly what the test below asks about, so a type parameter
+    // answers it "yes": `T` in `ReturnType<T extends ...>` and `V` in `Map<K, V>` are declared in
+    // lib.es5.d.ts and lib.es2015.collection.d.ts, and were therefore lowered as ambient references
+    // named `T` and `V`. Runtime external-symbol reachability collects ambient references, so both
+    // entered the binding plan as though a global type of that name had to exist. The question is what
+    // the declaration IS, not which file it lives in: a symbol declared as a type parameter is one
+    // wherever it lives. Substitution applies it in scope, the emitted generic carries it explicitly,
+    // or the compiler fails with an evidence diagnostic -- it never becomes a runtime symbol.
     declarations.every(
       (declaration) =>
         !context.analysisModuleOptions.has(declaration.getSourceFile().fileName) ||

@@ -1,5 +1,6 @@
 import ts from 'typescript';
 
+import { analyzeIrModuleTraversal } from '../../compiler-ir-traversal/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type { IrModule } from '../../compiler-types/src/index.js';
 import { collectIrModulesRuntimeExternalSymbolIdentities } from './compilerRuntimeExternalSymbolReachability.js';
@@ -452,5 +453,119 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
       { sourceName: 'SemanticResult', space: 'type' },
       { sourceName: 'invoke', space: 'value' },
     ]);
+  });
+});
+
+describe('collectIrModulesRuntimeExternalSymbolIdentities type parameters', () => {
+  // A call to an IMPORTED generic function, and the standard-library operations that carry an external
+  // parameter into the result: `Array<T>.pop` returns `T | undefined` and `Map<K, V>.get` returns
+  // `V | undefined`, with `T` and `V` declared in the libraries rather than in any analyzed module.
+  // Those declarations live outside the module set, which is the test that decided the ambient branch,
+  // so each parameter was lowered as an ambient reference named after itself and entered the plan as
+  // though a global type `T` or `V` had to exist. A type parameter is a compiler generic, and what says
+  // so is its declaration kind rather than where the declaration happens to live.
+  const provider = `
+    export function identity<X>(value: X): X { return value; }
+    export interface Box<Y> { readonly items: Y[]; }
+    export const table = new Map<string, number>();
+  `;
+  const consumer = `
+    import { identity, table } from '@flighthq/app/provider';
+    import type { Box } from '@flighthq/app/provider';
+
+    export type IdentityResult = ReturnType<typeof identity>;
+    export type IdentityParameters = Parameters<typeof identity>;
+    export function identityOf(value: string): IdentityResult { return identity(value); }
+    export function identityWith(value: string): IdentityParameters { return [value]; }
+
+    export function firstOf<Z>(box: Box<Z>): Z | undefined { const items = box.items; return items.pop(); }
+    export function lookUp(key: string): number | undefined { return table.get(key); }
+    export function optionOf<Z>(box: Box<Z>): Z | undefined { const items = box.items; return items[0]; }
+    export function callbackOf<Z>(box: Box<Z>): () => Z | undefined {
+      const items = box.items;
+      return () => items.pop();
+    }
+  `;
+
+  function lowerBoth() {
+    const providerFile = ts.createSourceFile(
+      '/flight/packages/app/src/provider.ts',
+      provider,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerFile = ts.createSourceFile(
+      '/flight/packages/app/src/consumer.ts',
+      consumer,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    return lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/app', sourceFile: providerFile, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/app', sourceFile: consumerFile, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flighthq/app/provider',
+            target: { packageName: '@flighthq/app', source: 'packages/app/src/provider.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    ).map((result) => result.module);
+  }
+
+  it('never collects a library type parameter as a runtime external symbol', () => {
+    const identities = collectIrModulesRuntimeExternalSymbolIdentities(lowerBoth());
+
+    expect(identities.map((identity) => identity.sourceName)).not.toContain('R');
+    expect(identities.map((identity) => identity.sourceName)).not.toContain('X');
+    expect(identities.map((identity) => identity.sourceName)).not.toContain('V');
+    expect(identities.map((identity) => identity.sourceName)).not.toContain('T');
+    expect(identities.map((identity) => identity.sourceName)).not.toContain('P');
+  });
+
+  // The wrappers are the audit, and `ReturnType` and `Parameters` are the conditional ones: both are
+  // declared in the library as `T extends (...args: infer R) => any ? R : never`, so their bodies carry
+  // the parameter inside a conditional whose branches are inferred parameters. An array, a map read, a
+  // callback return, an index read and a nullish widening carry it too, and every one of them funnels
+  // through the same type-reference lowering. A rule that held for one wrapper and not another would be
+  // a two-site patch.
+  it('holds through arrays, map reads, callbacks, indexed reads and optional widening', () => {
+    const ambient = new Set<string>();
+    for (const module of lowerBoth()) {
+      analyzeIrModuleTraversal(module, {
+        type(type) {
+          if (type.kind === 'named' && type.reference.kind === 'ambient') ambient.add(type.reference.name);
+        },
+      });
+    }
+
+    expect([...ambient].filter((name) => /^[A-Z]$/u.test(name))).toEqual([]);
+    expect([...ambient]).toContain('Map');
+  });
+
+  // The counterexample that keeps the rule honest: the fix must not ban a letter. A global the analyzer
+  // cannot see is a runtime symbol the plan has to require, whatever it is called, so `T` reaching the
+  // plan as an unresolved global is correct and stays. What changed is that a name whose declaration IS
+  // a type parameter no longer arrives here at all, because a type parameter is a compiler generic and
+  // not a runtime symbol.
+  it('still requires a genuine external type that happens to be named with one letter', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/app/src/external.ts',
+      `export function use(value: T, other: Widget): void { void value; void other; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const module = lowerTypeScriptSource(sourceFile, {
+      packageName: '@flighthq/app',
+      upstreamDirectory: '/flight',
+    }).module;
+
+    const names = collectIrModulesRuntimeExternalSymbolIdentities([module]).map((identity) => identity.sourceName);
+    expect(names).toContain('T');
+    expect(names).toContain('Widget');
   });
 });
