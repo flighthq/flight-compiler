@@ -10815,6 +10815,180 @@ it('keeps a caller type parameter in imported generic NodeOf traversal evidence'
   expect(JSON.stringify(traversal.module)).not.toContain('"source":"unknown"');
 });
 
+it('keeps caller-owned NodeOf evidence across an imported generic and a recursive overload', () => {
+  const moduleResolution = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+      {
+        specifier: './node',
+        target: { packageName: '@flighthq/node', source: 'packages/node/src/node.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  } as const;
+  const results = lowerTypeScriptSources(
+    [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          `export interface Node<Traits extends object> { readonly name: string }
+           export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+           export interface NodeRuntime<Traits extends object> { children: NodeOf<Traits>[] | null }
+           export interface NodeTraits { readonly name: string }
+           export type NodeDescendantVisitor<Traits extends object> = (node: Node<Traits>) => boolean;`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/node',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/node/src/node.ts',
+          `import type { Node, NodeOf, NodeRuntime } from '@flighthq/types/contract';
+           export function getNodeParent<Traits extends object>(source: Readonly<Node<Traits>>): NodeOf<Traits> | null {
+             return source.name.length > 0 ? source as NodeOf<Traits> : null;
+           }
+           export function getNodeRuntime<Traits extends object>(source: Readonly<Node<Traits>>): Readonly<NodeRuntime<Traits>> {
+             return source as unknown as NodeRuntime<Traits>;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/node',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/node/src/hierarchy.ts',
+          `import type { Node } from '@flighthq/types/contract';
+           import { getNodeParent } from './node';
+           export function containsNodeChild<Traits extends object>(
+             source: Readonly<Node<Traits>>,
+             child: Readonly<Node<Traits>>,
+           ): boolean {
+             let current: Node<Traits> | null = child;
+             while (current !== source && current !== null) current = getNodeParent(current);
+             return current === source;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/node',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/node/src/traversal.ts',
+          `import type { Node, NodeDescendantVisitor, NodeOf, NodeTraits } from '@flighthq/types/contract';
+           import { getNodeRuntime } from './node';
+           export function findNode<Traits extends object, Result extends Node<Traits>>(
+             source: Readonly<Node<Traits>>,
+             predicate: (node: Node<Traits>) => node is Result,
+           ): Result | null;
+           export function findNode<Traits extends object = NodeTraits>(
+             source: Readonly<Node<Traits>>,
+             predicate: NodeDescendantVisitor<Traits>,
+           ): NodeOf<Traits> | null;
+           export function findNode<Traits extends object = NodeTraits>(
+             source: Readonly<Node<Traits>>,
+             predicate: NodeDescendantVisitor<Traits>,
+           ): NodeOf<Traits> | null {
+             const children = getNodeRuntime(source).children;
+             if (children === null) return null;
+             for (let i = 0; i < children.length; i++) {
+               const child = children[i];
+               if (predicate(child)) return child;
+               const found = findNode(child, predicate);
+               if (found !== null) return found;
+             }
+             return null;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ],
+    moduleResolution,
+  );
+  const hierarchy = results[2]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'containsNodeChild',
+  );
+  const traversal = results[3]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'findNode',
+  );
+  if (hierarchy?.kind !== 'function' || traversal?.kind !== 'function') {
+    throw new Error('Expected Node hierarchy and traversal functions');
+  }
+  const hierarchyResults: IrType[] = [];
+  const traversalResults: IrType[] = [];
+  analyzeIrModuleTraversal(results[2]!.module, {
+    expression(expression) {
+      if (
+        expression.kind === 'call' &&
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'binding' &&
+        expression.callee.reference.binding.name === 'getNodeParent'
+      ) {
+        hierarchyResults.push(expression.semantics.resultType);
+      }
+    },
+  });
+  analyzeIrModuleTraversal(results[3]!.module, {
+    expression(expression) {
+      if (
+        expression.kind === 'call' &&
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'binding' &&
+        expression.callee.reference.binding.id === traversal.binding.id
+      ) {
+        traversalResults.push(expression.semantics.resultType);
+      }
+    },
+  });
+
+  expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+  expect(hierarchyResults).toMatchObject([
+    {
+      kind: 'union',
+      types: [
+        {
+          kind: 'named',
+          reference: { binding: { name: 'NodeOf' } },
+          typeArguments: [
+            { kind: 'named', reference: { binding: hierarchy.typeParameters[0]!.binding, kind: 'binding' } },
+          ],
+        },
+        { kind: 'null' },
+      ],
+    },
+  ]);
+  expect(traversal.overloads[0]?.returns).toMatchObject({
+    kind: 'union',
+    types: [{ kind: 'named', reference: { binding: { kind: 'typeParameter', name: 'Result' } } }, { kind: 'null' }],
+  });
+  expect(traversalResults).toMatchObject([
+    {
+      kind: 'union',
+      types: [
+        {
+          kind: 'named',
+          reference: { binding: { name: 'NodeOf' } },
+          typeArguments: [
+            { kind: 'named', reference: { binding: traversal.typeParameters[0]!.binding, kind: 'binding' } },
+          ],
+        },
+        { kind: 'null' },
+      ],
+    },
+  ]);
+});
+
 it('instantiates optional Map and WeakMap lookup results from their receivers', () => {
   const result = lower(
     'optional-map-lookup.ts',

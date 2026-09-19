@@ -6,7 +6,10 @@ import {
   getCompilerAmbientSurfaceFileName,
   createCompilerAmbientSurfaceSource,
 } from '../../compiler-ambient/src/index.js';
-import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+import {
+  normalizeCompilerStructuralValueCanonical,
+  normalizePathPortable,
+} from '../../compiler-canonical-form/src/index.js';
 import {
   createIrAwaitSemantics,
   createIrCatchSemantics,
@@ -1828,7 +1831,9 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
       true,
       node,
     );
-    if (instantiated) return instantiated;
+    if (instantiated && instantiated.kind !== 'unknown') return instantiated;
+    const written = getTypeScriptDegradedCallResultTypeEvidence(node, signature, context);
+    if (written) return written;
     throw error;
   }
   if (callee?.kind === 'function' && callee.typeParameters.length === 0) {
@@ -1837,7 +1842,173 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
       ? addIrTypeBindingPatternUndefined(callee.returns)
       : callee.returns;
   }
-  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0, true, node);
+  const instantiated = getTypeScriptCheckerTypeEvidence(
+    context.checker.getTypeAtLocation(node),
+    context,
+    0,
+    true,
+    node,
+  );
+  return instantiated && instantiated.kind !== 'unknown'
+    ? instantiated
+    : getTypeScriptDegradedCallResultTypeEvidence(node, signature, context);
+}
+
+function getTypeScriptDegradedCallResultTypeEvidence(
+  node: ts.CallExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  return (
+    getTypeScriptRecursiveOverloadImplementationResultTypeEvidence(node, signature, context) ??
+    getTypeScriptGenericWrittenCallResultTypeEvidence(node, signature, context)
+  );
+}
+
+// The checker may retain the instantiated parameter types of an ordinary generic call while
+// degrading a result alias that contains NoInfer. Substitute the written result only when every
+// declaration parameter is proved from those instantiated inputs. Overload calls use their own
+// implementation rule below, so a defaulted overload cannot silently replace a caller-owned type.
+function getTypeScriptGenericWrittenCallResultTypeEvidence(
+  node: ts.CallExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const declaration = signature?.overloadIndex === undefined ? signature?.resolved : undefined;
+  const declarationTypeParameters = declaration?.typeParameters?.filter(ts.isTypeParameterDeclaration);
+  if (!declaration?.type || !ts.isTypeNode(declaration.type) || !declarationTypeParameters?.length) return undefined;
+  const typeParameters = lowerTypeParameters(declarationTypeParameters, context);
+  const parameterIds = new Set(typeParameters.map((parameter) => parameter.binding.id));
+  const substitutions = new Map<string, Readonly<IrType>>();
+  const parameters = declaration.parameters.filter(ts.isParameter);
+  node.arguments.forEach((argument, index) => {
+    const parameter = parameters[index];
+    if (!parameter) return;
+    const written = lowerFunctionTypeParameter(parameter, context).type;
+    const argumentCandidates = [
+      getTypeScriptInstantiatedInvocationParameterType(node, index, argument, context),
+      lowerTypeScriptExpressionTypeEvidence(argument, context),
+      inferInitializerType(argument, context),
+    ].flatMap((candidate): readonly Readonly<IrType>[] => {
+      if (!candidate) return [];
+      if (candidate.kind !== 'union') return [candidate];
+      const present = candidate.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+      return present.length === 1 ? present : [candidate];
+    });
+    for (const candidate of argumentCandidates) {
+      const candidates = new Map(substitutions);
+      if (collectTypeScriptCallResultSubstitutions(written, candidate, parameterIds, candidates)) {
+        substitutions.clear();
+        candidates.forEach((value, key) => substitutions.set(key, value));
+        break;
+      }
+    }
+  });
+  const arguments_ = typeParameters.map((parameter) => substitutions.get(parameter.binding.id) ?? parameter.default);
+  if (!arguments_.every((argument): argument is Readonly<IrType> => argument !== undefined)) return undefined;
+  return resolveIrTypeStructuralSubstitution(
+    lowerType(declaration.type, context),
+    createIrTypeParameterSubstitutionPlan(typeParameters, arguments_),
+  );
+}
+
+// TypeScript exposes overloads at a call site but executes the implementation ABI. On a recursive
+// call from that implementation, the checker can degrade the selected generic overload result to
+// `any` even though the implementation's written result remains in the current type-parameter
+// scope. Recover only that self-contained ABI result; a nonrecursive caller still needs concrete
+// checker evidence and a return-only type-guard Result is never replaced with its constraint.
+function getTypeScriptRecursiveOverloadImplementationResultTypeEvidence(
+  node: ts.CallExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const implementation = signature?.overloadIndex === undefined ? undefined : signature.implementation;
+  if (!implementation?.type || !ts.isTypeNode(implementation.type) || !isTypeScriptNodeWithin(node, implementation)) {
+    return undefined;
+  }
+  return lowerType(implementation.type, context);
+}
+
+function collectTypeScriptCallResultSubstitutions(
+  pattern: Readonly<IrType>,
+  candidate: Readonly<IrType>,
+  parameterIds: ReadonlySet<string>,
+  substitutions: Map<string, Readonly<IrType>>,
+): boolean {
+  const patternIdentity = getTypeScriptCallResultIdentityArgument(pattern);
+  if (patternIdentity) {
+    return collectTypeScriptCallResultSubstitutions(patternIdentity, candidate, parameterIds, substitutions);
+  }
+  const candidateIdentity = getTypeScriptCallResultIdentityArgument(candidate);
+  if (candidateIdentity) {
+    return collectTypeScriptCallResultSubstitutions(pattern, candidateIdentity, parameterIds, substitutions);
+  }
+  if (
+    pattern.kind === 'named' &&
+    pattern.reference.kind === 'binding' &&
+    pattern.reference.binding.kind === 'typeParameter' &&
+    pattern.reference.path.length === 0 &&
+    pattern.typeArguments.length === 0 &&
+    parameterIds.has(pattern.reference.binding.id)
+  ) {
+    const previous = substitutions.get(pattern.reference.binding.id);
+    if (!previous) {
+      substitutions.set(pattern.reference.binding.id, candidate);
+      return true;
+    }
+    return normalizeCompilerStructuralValueCanonical(previous) === normalizeCompilerStructuralValueCanonical(candidate);
+  }
+  if (pattern.kind === 'named' && candidate.kind === 'named') {
+    const sameReference =
+      pattern.reference.kind === 'ambient' && candidate.reference.kind === 'ambient'
+        ? pattern.reference.name === candidate.reference.name
+        : pattern.reference.kind === 'binding' && candidate.reference.kind === 'binding'
+          ? pattern.reference.binding.id === candidate.reference.binding.id
+          : false;
+    return (
+      sameReference &&
+      pattern.typeArguments.length === candidate.typeArguments.length &&
+      pattern.typeArguments.every((argument, index) =>
+        collectTypeScriptCallResultSubstitutions(
+          argument,
+          candidate.typeArguments[index]!,
+          parameterIds,
+          substitutions,
+        ),
+      )
+    );
+  }
+  if (pattern.kind === 'array' && candidate.kind === 'array') {
+    return collectTypeScriptCallResultSubstitutions(pattern.element, candidate.element, parameterIds, substitutions);
+  }
+  if (
+    pattern.kind === 'function' &&
+    candidate.kind === 'function' &&
+    pattern.typeParameters.length === 0 &&
+    candidate.typeParameters.length === 0 &&
+    pattern.parameters.length === candidate.parameters.length
+  ) {
+    return (
+      pattern.parameters.every((parameter, index) =>
+        collectTypeScriptCallResultSubstitutions(
+          parameter.type,
+          candidate.parameters[index]!.type,
+          parameterIds,
+          substitutions,
+        ),
+      ) && collectTypeScriptCallResultSubstitutions(pattern.returns, candidate.returns, parameterIds, substitutions)
+    );
+  }
+  return normalizeCompilerStructuralValueCanonical(pattern) === normalizeCompilerStructuralValueCanonical(candidate);
+}
+
+function getTypeScriptCallResultIdentityArgument(type: Readonly<IrType>): Readonly<IrType> | undefined {
+  return type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1
+    ? type.typeArguments[0]
+    : undefined;
 }
 
 // The checker can preserve an uninstantiated standard-library method result instead of the
