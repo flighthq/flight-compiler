@@ -4720,22 +4720,13 @@ function emitCppUnknownBridgedGenericFactoryAssertionCpp(
     return undefined;
   }
   const target = getCppClosedCallableType(expression.type, context, new Set());
-  const source = getCppFunctionDeclarationForBindingCpp(
-    expression.expression.expression.reference.binding.id,
-    context,
-  );
+  const source = getCppFunctionDeclarationForBindingCpp(expression.expression.expression.reference.binding.id, context);
   if (!target || !source || source.parameters.length !== 0 || source.typeParameters.length === 0) return undefined;
   const targetReturnConstraint = getCppTypeParameterConstraintCpp(target.returns, context) ?? target.returns;
   const parameterIds = new Set(source.typeParameters.map((parameter) => parameter.binding.id));
   const substitutions = new Map<string, Readonly<IrType>>();
   if (
-    !collectCppResultTypeSubstitutionsCpp(
-      source.returns,
-      targetReturnConstraint,
-      parameterIds,
-      substitutions,
-      context,
-    )
+    !collectCppResultTypeSubstitutionsCpp(source.returns, targetReturnConstraint, parameterIds, substitutions, context)
   ) {
     return undefined;
   }
@@ -4757,10 +4748,7 @@ function emitCppUnknownBridgedGenericFactoryAssertionCpp(
   return `[&](${parameters.join(', ')}) -> ${returnType} { ${ignored}${ignored ? ' ' : ''}return static_cast<${returnType}>(${sourceCall}); }`;
 }
 
-function getCppTypeParameterConstraintCpp(
-  type: Readonly<IrType>,
-  context: EmitContext,
-): Readonly<IrType> | undefined {
+function getCppTypeParameterConstraintCpp(type: Readonly<IrType>, context: EmitContext): Readonly<IrType> | undefined {
   if (
     type.kind !== 'named' ||
     type.reference.kind !== 'binding' ||
@@ -4771,9 +4759,7 @@ function getCppTypeParameterConstraintCpp(
     return undefined;
   }
   const bindingId = type.reference.binding.id;
-  return context.anonymousStructTypeParameters.find(
-    (parameter) => parameter.binding.id === bindingId,
-  )?.constraint;
+  return context.anonymousStructTypeParameters.find((parameter) => parameter.binding.id === bindingId)?.constraint;
 }
 
 function emitCppNominalIntersectionImplementationTypeCpp(
@@ -5785,9 +5771,18 @@ function emitUnionMemberAssertionCpp(
     plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
       ? getCppReferenceNarrowingCpp(plan.valueSlots[0]!.targetType, assertedPlan.valueSlots[0]!.targetType)
       : undefined;
+  const structuralNarrowing =
+    plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
+      ? isCppExplicitStructuralRowExtensionCpp(
+          plan.valueSlots[0]!.runtimeType,
+          assertedPlan.valueSlots[0]!.runtimeType,
+          context,
+        )
+      : false;
   const alternatives = plan.valueSlots.filter(
     (slot) =>
       narrowing !== undefined ||
+      structuralNarrowing ||
       slot.targetType === assertedTarget ||
       slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)),
   );
@@ -5814,6 +5809,10 @@ function emitUnionMemberAssertionCpp(
     narrowing?.cast ??
     (alternatives[0]!.targetType === assertedTarget ? undefined : getCppReferenceElementTypeNameCpp(assertedTarget));
   const narrowed = (inner: string): string => {
+    if (structuralNarrowing) {
+      context.includes.add('flight/structural_ref.hpp');
+      return `flight::structural_ref_cast<${assertedPlan!.valueSlots[0]!.targetType}>(${inner})`;
+    }
     if (cast === undefined) return inner;
     context.includes.add('memory');
     return `std::static_pointer_cast<${cast}>(${inner})`;
@@ -5821,6 +5820,30 @@ function emitUnionMemberAssertionCpp(
   if (plan.kind === 'optionalSingle') return narrowed(`${value}.value()`);
   if (plan.kind === 'optionalVariant') return narrowed(`std::get<${alternatives[0]!.targetType}>(${value}.value())`);
   return narrowed(`std::get<${alternatives[0]!.targetType}>(${value})`);
+}
+
+// A structural assertion may add a row only when the target plan literally contains the source
+// plan. That is the generic `NodeOf<Traits> -> NodeOf<Traits> & HasTransform3D` relationship: the
+// target is an explicit view extension of the same referent. Merely overlapping object properties do
+// not satisfy this proof, so a foreign or wider source row still refuses.
+function isCppExplicitStructuralRowExtensionCpp(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(source, context.module);
+  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(target, context.module);
+  return Boolean(sourceRow && targetRow && cppStructuralRowContainsPlanCpp(targetRow, sourceRow));
+}
+
+function cppStructuralRowContainsPlanCpp(
+  target: Readonly<CompilerCppStructuralRowPlan>,
+  source: Readonly<CompilerCppStructuralRowPlan>,
+): boolean {
+  if (normalizeCompilerStructuralValueCanonical(target) === normalizeCompilerStructuralValueCanonical(source)) {
+    return true;
+  }
+  return target.kind === 'merge' && target.rows.some((row) => cppStructuralRowContainsPlanCpp(row, source));
 }
 
 // How an assertion relates the union's one value slot to the type it names. Both sides being references
@@ -6288,9 +6311,7 @@ function getCppConstrainedTypeParameterUnionValueSlotCpp(
     return undefined;
   }
   const bindingId = type.reference.binding.id;
-  const declaration = context.anonymousStructTypeParameters.find(
-    (parameter) => parameter.binding.id === bindingId,
-  );
+  const declaration = context.anonymousStructTypeParameters.find((parameter) => parameter.binding.id === bindingId);
   const constraint = declaration?.constraint;
   if (!constraint || !hasFlightReferenceRepresentationCpp(constraint, context)) return undefined;
   const runtimeType = getIrTypeRuntimeDomainCpp(constraint, context, new Set());
@@ -7673,6 +7694,7 @@ function appendCppOmittedInvocationArguments(
   const optionals = expression.semantics.optionalParameters;
   const plan = defaults ?? optionals;
   if (!plan) {
+    if (emitted.length > 0) return emitted;
     const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
     const callable = calleeType ? getCppClosedCallableType(calleeType, context, new Set()) : undefined;
     if (!callable || emitted.length >= callable.parameters.length) return emitted;

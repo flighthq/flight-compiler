@@ -5184,14 +5184,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
           target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
         },
         {
-          importedNames: [
-            'Node',
-            'NodeData',
-            'NodeDataFactory',
-            'NodeRuntime',
-            'NodeRuntimeFactory',
-            'NodeTraits',
-          ],
+          importedNames: ['Node', 'NodeData', 'NodeDataFactory', 'NodeRuntime', 'NodeRuntimeFactory', 'NodeTraits'],
           specifier: '@flighthq/types/contract',
           target: { packageName: '@flighthq/types', source: 'packages/types/src/Node.ts' },
         },
@@ -12726,6 +12719,67 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('flight::structural_ref_cast<flighthq_types::NodeOf<Traits>>(source)');
     expect(emitted).not.toContain('NoInfer');
     expect(emitted).not.toContain('flight::Any');
+  });
+
+  it('keeps erased entity bindings generic until a runtime cast contract exists', () => {
+    const result = lower(
+      'entity-binding.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export interface EntityRuntime { binding: object | null }
+       export function getEntityBinding(source: Readonly<Entity>): object | null {
+         return source[EntityRuntimeKey]?.binding ?? null;
+       }
+       export function getEntityBindingAs<Type>(source: Readonly<Entity>): Type | null {
+         return getEntityBinding(source) as Type | null;
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.message).toContain('target std::optional<Type> against [flight::Ref<void>]');
+    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
+  });
+
+  it('narrows a nullable generic node row to its explicit transform extension', () => {
+    const result = lower(
+      'transform-parent.ts',
+      `export interface Node<Traits extends object> { readonly name: string }
+       export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+       export interface NodeRuntime<Traits extends object> { parent: NodeOf<Traits> | null }
+       export interface HasTransform3D { position: number; rotation: number; scale: number }
+       export type Transform3DNode<Traits extends object> = NodeOf<Traits> & HasTransform3D;
+       export function getParent<Traits extends object>(
+         runtime: NodeRuntime<Traits>,
+       ): Transform3DNode<Traits> | null {
+         return runtime.parent as Transform3DNode<Traits> | null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('flight::structural_ref_cast<Transform3DNode<Traits>>(runtime->parent.value())');
+  });
+
+  it('refuses a nullable foreign row as a transform extension', () => {
+    const result = lower(
+      'foreign-transform-parent.ts',
+      `export interface Node<Traits extends object> { readonly name: string }
+       export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+       export interface HasTransform3D { position: number; rotation: number; scale: number }
+       export type Transform3DNode<Traits extends object> = NodeOf<Traits> & HasTransform3D;
+       export interface ForeignNode { readonly name: string; readonly foreign: boolean }
+       export function assumeTransform<Traits extends object>(
+         source: ForeignNode | null,
+       ): Transform3DNode<Traits> | null {
+         return source as Transform3DNode<Traits> | null;
+       }`,
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'type assertion target must identify exactly one C++ variant alternative',
+    );
   });
 
   it('leaves a void brand out of the struct that has no value to store', () => {
