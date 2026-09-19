@@ -4965,6 +4965,101 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('flight::Ref<flighthq_types::EntityConstruction<');
   });
 
+  it('preserves entity construction through a generic node initializer', () => {
+    const entityTypes = ts.createSourceFile(
+      '/flight/packages/types/src/Entity.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime { binding: object | null }
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
+       export interface NodeTraits { enabled: boolean; kind: string }
+       export interface NodeRuntime<Traits extends object = NodeTraits> extends EntityRuntime { traits?: Traits }
+       export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {
+         [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const entity = ts.createSourceFile(
+      '/flight/packages/entity/src/entity.ts',
+      `import type { Entity, EntityConstruction } from '@flighthq/types/contract';
+       import { EntityRuntimeKey } from '@flighthq/types/contract';
+       export function allocateEntity<Type extends Entity>(): EntityConstruction<Type> {
+         const out = {} as EntityConstruction<Type>;
+         out[EntityRuntimeKey] = undefined;
+         return out;
+       }
+       export function finishEntity<Type extends Entity>(out: EntityConstruction<Type>): Type {
+         return out as Type;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const node = ts.createSourceFile(
+      '/flight/packages/node/src/node.ts',
+      `import { allocateEntity, finishEntity } from '@flighthq/entity/contract';
+       import type { EntityConstruction, Node, NodeRuntime, NodeTraits } from '@flighthq/types/contract';
+       import { EntityRuntimeKey } from '@flighthq/types/contract';
+       export function createNode<Traits extends object = NodeTraits>(kind: string): Node<Traits> & Traits {
+         const out = allocateEntity<Node<Traits> & Traits>();
+         initializeNode(out, kind);
+         return finishEntity(out);
+       }
+       export function initializeNode<Traits extends object = NodeTraits>(
+         out: EntityConstruction<Node<Traits> & Traits>,
+         kind: string,
+       ): void {
+         out.kind = kind;
+         out.enabled = true;
+         out[EntityRuntimeKey] = { binding: null } as NodeRuntime<Traits>;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          specifier: '@flighthq/entity/contract',
+          target: { packageName: '@flighthq/entity', source: 'packages/entity/src/entity.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: entityTypes, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/entity', sourceFile: entity, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/node', sourceFile: node, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/entity': { includePrefix: 'flight/entity', namespace: 'flight::entity' },
+          '@flighthq/node': { includePrefix: 'flight/node', namespace: 'flight::node' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('flight::entity::allocate_entity<');
+    expect(emitted).toContain('initialize_node<Traits>(out, kind)');
+    expect(emitted).toContain('return flight::entity::finish_entity<');
+    expect(emitted).toContain('>(out);');
+    expect(emitted).toContain('flight::row_set(out, flight::types::entity_runtime_key');
+  });
+
   it('emits the exact structural Entity write proxy and refuses a handler with another trap', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',

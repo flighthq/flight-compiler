@@ -6819,6 +6819,15 @@ function collectCppResultTypeSubstitutionsCpp(
       context,
     );
   }
+  if (
+    pattern.kind === 'intersection' &&
+    candidate.kind === 'intersection' &&
+    pattern.types.length === candidate.types.length
+  ) {
+    return pattern.types.every((type, index) =>
+      collectCppResultTypeSubstitutionsCpp(type, candidate.types[index]!, parameterIds, substitutions, context),
+    );
+  }
   if (pattern.kind === 'tuple' && candidate.kind === 'tuple' && pattern.elements.length === candidate.elements.length) {
     return pattern.elements.every(
       (element, index) =>
