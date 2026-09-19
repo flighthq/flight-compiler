@@ -3252,26 +3252,40 @@ function emitCppContextualStructuralReferenceCpp(
 ): string | undefined {
   const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
   if (!sourceType) return undefined;
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  if (!emitCppStructuralReferenceValueConversionCpp('source', sourceType, expectedType, isolatedContext)) {
+    return undefined;
+  }
+  const source = emitExpression(expression, context, undefined, false);
+  return emitCppStructuralReferenceValueConversionCpp(source, sourceType, expectedType, context);
+}
+
+function emitCppStructuralReferenceValueConversionCpp(
+  source: string,
+  sourceType: Readonly<IrType>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
   const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module);
   const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module);
   if (targetRow && !sourceRow) {
     const sourceProjection = getCppStructuralProjectionRowCpp(sourceType, context);
     if (!sourceProjection) return undefined;
-    const source = emitExpression(expression, context, undefined, false);
     const sourceView = `${emitCppStructuralRowReferenceTypeCpp(sourceProjection, context)}(${source})`;
     return `flight::structural_ref_cast<${emitType(expectedType, context)}>(${sourceView})`;
   }
   if (!sourceRow || targetRow) return undefined;
-  const source = emitExpression(expression, context, undefined, false);
   if (expectedType.kind === 'unknown' && expectedType.source === 'object') return `${source}.shared_object()`;
   const sourceObject = getCppStructuralRowObjectTypeCpp(sourceRow);
   const targetPlan = context.referenceRepresentationPlanner.plan(expectedType, context.module);
+  const projectsTarget =
+    (sourceObject !== undefined && emitType(sourceObject, context) === emitType(expectedType, context)) ||
+    hasCppStructuralRowObjectProjectionCpp(sourceRow, expectedType, context);
   if (
-    !sourceObject ||
     targetPlan.kind !== 'represented' ||
     targetPlan.identityDomain !== 'object' ||
     targetPlan.valueRepresentation !== 'flightReference' ||
-    emitType(sourceObject, context) !== emitType(expectedType, context)
+    !projectsTarget
   ) {
     return undefined;
   }
@@ -3360,6 +3374,19 @@ function getCppStructuralRowObjectTypeCpp(row: Readonly<CompilerCppStructuralRow
   return sources.every((source) => normalizeCompilerStructuralValueCanonical(source!) === canonical)
     ? sources[0]
     : undefined;
+}
+
+function hasCppStructuralRowObjectProjectionCpp(
+  row: Readonly<CompilerCppStructuralRowPlan>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  // A merged row can recover only an object explicitly carried by one of its RowOf branches. A
+  // target that merely happens to compile to a reference spelling is not projection evidence.
+  if (row.kind === 'rowOf') return emitType(row.type, context) === emitType(target, context);
+  if (row.kind === 'merge')
+    return row.rows.some((member) => hasCppStructuralRowObjectProjectionCpp(member, target, context));
+  return hasCppStructuralRowObjectProjectionCpp(row.row, target, context);
 }
 
 function emitArrayExpressionCpp(
@@ -6430,6 +6457,42 @@ function emitContextualUnionExpressionCpp(
         );
       }
     }
+    if (
+      expressionPlan.kind === 'optionalSingle' &&
+      plan.kind === 'optionalSingle' &&
+      expressionPlan.valueSlots.length === 1 &&
+      plan.valueSlots.length === 1
+    ) {
+      const sourceSlot = expressionPlan.valueSlots[0]!;
+      const targetSlot = plan.valueSlots[0]!;
+      const source = getGeneratedTargetName('contextualUnionSource', context);
+      const conversions = (
+        sourceSlot.sourceAlternatives.length > 0 ? sourceSlot.sourceAlternatives : [sourceSlot.runtimeType]
+      ).flatMap((sourceType) =>
+        (targetSlot.sourceAlternatives.length > 0 ? targetSlot.sourceAlternatives : [targetSlot.runtimeType]).flatMap(
+          (targetType) => {
+            const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+            return emitCppStructuralReferenceValueConversionCpp('source', sourceType, targetType, isolatedContext)
+              ? [{ sourceType, targetType }]
+              : [];
+          },
+        ),
+      );
+      if (conversions.length === 1) {
+        const conversion = conversions[0]!;
+        const converted = emitCppStructuralReferenceValueConversionCpp(
+          `${source}.value()`,
+          conversion.sourceType,
+          conversion.targetType,
+          context,
+        )!;
+        context.includes.add('optional');
+        const resultType = emitUnionTypeCpp(union, context);
+        const present = emitCppUnionValueConstruction(converted, targetSlot.targetType, union, plan.kind, context);
+        const value = emitExpression(expression, context, expressionType, false);
+        return `([&]() -> ${resultType} { auto ${source} = ${value}; if (!${source}.has_value()) return std::nullopt; return ${present}; }())`;
+      }
+    }
     // The two plans are compared slot by slot, so naming the slots is what makes a refusal
     // reproducible from the message alone: the reader sees which alternative the source union
     // represents and which slot it has no counterpart for.
@@ -6464,6 +6527,23 @@ function emitContextualUnionExpressionCpp(
     valueSlot < 0 ? getCppConstrainedTypeParameterUnionValueSlotCpp(runtimeType, plan.valueSlots, context) : undefined;
   const representedValueSlot = constrainedValueSlot ?? valueSlot;
   if (representedValueSlot < 0) {
+    const structuralSlots = plan.valueSlots.flatMap((slot) => {
+      const alternatives = slot.sourceAlternatives.filter((alternative) => {
+        const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+        return (
+          emitCppStructuralReferenceValueConversionCpp('source', runtimeType, alternative, isolatedContext) !==
+          undefined
+        );
+      });
+      return alternatives.length === 1 ? [{ alternative: alternatives[0]!, slot }] : [];
+    });
+    if (structuralSlots.length === 1) {
+      const structural = structuralSlots[0]!;
+      const converted = emitCppContextualStructuralReferenceCpp(expression, structural.alternative, context);
+      if (converted) {
+        return emitCppUnionValueConstruction(converted, structural.slot.targetType, union, plan.kind, context);
+      }
+    }
     emissionError(
       context,
       `contextual union value type ${targetType} is not a represented runtime domain`,

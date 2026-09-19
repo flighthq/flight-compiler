@@ -12933,6 +12933,383 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
   });
 
+  it('emits a nullable imported Matrix after a null-check in generic bounds recursion', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/geometry/contract',
+          target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface Entity { readonly runtime: object | undefined }
+             export interface Matrix extends Entity { a: number; tx: number }
+             export type MatrixLike = Omit<Matrix, 'runtime'>;
+             export interface Node<Traits extends object> { readonly traits: Traits }
+             export interface RectangleLike { x: number; width: number }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/geometry',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/geometry/src/contract.ts',
+            `import type { Matrix, MatrixLike, RectangleLike } from '@flighthq/types/contract';
+             export function acquireMatrix(): Matrix { return { a: 1, tx: 0, runtime: undefined }; }
+             export function copyRectangle(out: RectangleLike, source: Readonly<RectangleLike>): void { out.x = source.x; }
+             export function matrixTransformRectangle(
+               out: RectangleLike,
+               transform: Readonly<MatrixLike>,
+               source: Readonly<RectangleLike>,
+             ): void { out.x = source.x + transform.tx; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/node',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/node/src/boundsRectangle.ts',
+            `import { acquireMatrix, copyRectangle, matrixTransformRectangle } from '@flighthq/geometry/contract';
+             import type { Matrix, Node, RectangleLike } from '@flighthq/types/contract';
+             export function mergeRootLocalBounds<Traits extends object>(
+               out: RectangleLike,
+               node: Node<Traits>,
+               localBounds: Readonly<RectangleLike>,
+               transform: Readonly<Matrix> | null,
+             ): void {
+               if (transform === null) copyRectangle(out, localBounds);
+               else matrixTransformRectangle(out, transform, localBounds);
+               const childTransform = acquireMatrix();
+               if (transform !== null) mergeRootLocalBounds(out, node, localBounds, childTransform);
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const merge = modules[2]!.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'mergeRootLocalBounds',
+    );
+    if (merge?.kind !== 'function') throw new Error('Expected mergeRootLocalBounds');
+    const recursiveResults: IrType[] = [];
+    merge.body.forEach((statement) =>
+      analyzeIrStatementSubtreeTraversal(statement, {
+        expression(expression) {
+          if (
+            expression.kind === 'call' &&
+            expression.callee.kind === 'identifier' &&
+            expression.callee.reference.kind === 'binding' &&
+            expression.callee.reference.binding.name === 'mergeRootLocalBounds'
+          ) {
+            recursiveResults.push(expression.semantics.resultType);
+          }
+        },
+      }),
+    );
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(merge.parameters[3]?.type).toMatchObject({
+      kind: 'union',
+      types: [
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Readonly' },
+          typeArguments: [{ kind: 'named', reference: { binding: { name: 'Matrix' } } }],
+        },
+        { kind: 'null' },
+      ],
+    });
+    expect(recursiveResults).toEqual([{ kind: 'primitive', name: 'void' }]);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('std::optional<flight::StructuralRef<');
+    expect(emitted).toContain('matrix_transform_rectangle(out, transform.value(), local_bounds)');
+    expect(emitted).toContain('merge_root_local_bounds<Traits>(out, node, local_bounds, std::optional<');
+  });
+
+  it('assigns a nullable NodeOf parent to a nullable Node loop variable', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './node',
+          target: { packageName: '@flighthq/node', source: 'packages/node/src/node.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface Node<Traits extends object> { readonly name: string }
+             export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/node',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/node/src/node.ts',
+            `import type { Node, NodeOf } from '@flighthq/types/contract';
+             export function getNodeParent<Traits extends object>(source: Readonly<Node<Traits>>): NodeOf<Traits> | null {
+               return source.name.length > 0 ? source as NodeOf<Traits> : null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/node',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/node/src/hierarchy.ts',
+            `import type { Node } from '@flighthq/types/contract';
+             import { getNodeParent } from './node';
+             export function containsNodeChild<Traits extends object>(
+               source: Readonly<Node<Traits>>,
+               child: Readonly<Node<Traits>>,
+             ): boolean {
+               let current: Node<Traits> | null = child;
+               while (current !== source && current !== null) current = getNodeParent(current);
+               return current === source;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const contains = modules[2]!.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'containsNodeChild',
+    );
+    if (contains?.kind !== 'function') throw new Error('Expected containsNodeChild');
+    const parentResults: IrType[] = [];
+    contains.body.forEach((statement) =>
+      analyzeIrStatementSubtreeTraversal(statement, {
+        expression(expression) {
+          if (
+            expression.kind === 'call' &&
+            expression.callee.kind === 'identifier' &&
+            expression.callee.reference.kind === 'binding' &&
+            expression.callee.reference.binding.name === 'getNodeParent'
+          ) {
+            parentResults.push(expression.semantics.resultType);
+          }
+        },
+      }),
+    );
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(contains.body[0]).toMatchObject({
+      declarations: [
+        {
+          binding: { name: 'current' },
+          mutable: true,
+          type: {
+            kind: 'union',
+            types: [{ kind: 'named', reference: { binding: { name: 'Node' } } }, { kind: 'null' }],
+          },
+        },
+      ],
+      kind: 'variable',
+    });
+    expect(parentResults).toMatchObject([
+      {
+        kind: 'union',
+        types: [{ kind: 'named', reference: { binding: { name: 'NodeOf' } } }, { kind: 'null' }],
+      },
+    ]);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('std::optional<flight::Ref<flighthq_types::Node<Traits>>> current');
+    expect(emitted).toContain('flighthq_node::get_node_parent(');
+    expect(emitted).toContain('if (!contextual_union_source.has_value()) return std::nullopt;');
+    expect(emitted).toContain('flight::structural_ref_cast<flight::Ref<flighthq_types::Node<Traits>>>');
+  });
+
+  it('refuses an unrelated nullable structural row as a concrete reference', () => {
+    const result = lower(
+      'unrelated-nullable-row.ts',
+      `interface Source { readonly source: number }
+       interface Target { readonly target: number }
+       export function reject(value: Readonly<Source> | null): Target | null { return value; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+  });
+
+  it('emits overloaded recursive NodeOf search without erasing the implementation result', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './node',
+          target: { packageName: '@flighthq/node', source: 'packages/node/src/node.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface Node<Traits extends object> { readonly name: string }
+             export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+             export interface NodeRuntime<Traits extends object> { children: NodeOf<Traits>[] | null }
+             export interface NodeTraits { readonly name: string }
+             export type NodeDescendantVisitor<Traits extends object> = (node: Node<Traits>) => boolean;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/node',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/node/src/node.ts',
+            `import type { Node, NodeRuntime } from '@flighthq/types/contract';
+             export function getNodeRuntime<Traits extends object>(source: Readonly<Node<Traits>>): Readonly<NodeRuntime<Traits>> {
+               return source as unknown as NodeRuntime<Traits>;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/node',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/node/src/traversal.ts',
+            `import type { Node, NodeDescendantVisitor, NodeOf, NodeTraits } from '@flighthq/types/contract';
+             import { getNodeRuntime } from './node';
+             export function findNode<Traits extends object, Result extends Node<Traits>>(
+               source: Readonly<Node<Traits>>,
+               predicate: (node: Node<Traits>) => node is Result,
+             ): Result | null;
+             export function findNode<Traits extends object = NodeTraits>(
+               source: Readonly<Node<Traits>>,
+               predicate: NodeDescendantVisitor<Traits>,
+             ): NodeOf<Traits> | null;
+             export function findNode<Traits extends object = NodeTraits>(
+               source: Readonly<Node<Traits>>,
+               predicate: NodeDescendantVisitor<Traits>,
+             ): NodeOf<Traits> | null {
+               const children = getNodeRuntime(source).children;
+               if (children === null) return null;
+               for (let i = 0; i < children.length; i++) {
+                 const child = children[i];
+                 if (predicate(child)) return child;
+                 const found = findNode(child, predicate);
+                 if (found !== null) return found;
+               }
+               return null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const find = modules[2]!.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'findNode',
+    );
+    if (find?.kind !== 'function') throw new Error('Expected findNode');
+    const recursiveResults: IrType[] = [];
+    find.body.forEach((statement) =>
+      analyzeIrStatementSubtreeTraversal(statement, {
+        expression(expression) {
+          if (
+            expression.kind === 'call' &&
+            expression.callee.kind === 'identifier' &&
+            expression.callee.reference.kind === 'binding' &&
+            expression.callee.reference.binding.id === find.binding.id
+          ) {
+            recursiveResults.push(expression.semantics.resultType);
+          }
+        },
+      }),
+    );
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(find.overloads[0]?.returns).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'named', reference: { binding: { kind: 'typeParameter', name: 'Result' } } }, { kind: 'null' }],
+    });
+    expect(recursiveResults).toMatchObject([
+      {
+        kind: 'union',
+        types: [
+          {
+            kind: 'named',
+            reference: { binding: { name: 'NodeOf' } },
+            typeArguments: [
+              { kind: 'named', reference: { binding: find.typeParameters[0]!.binding, kind: 'binding' } },
+            ],
+          },
+          { kind: 'null' },
+        ],
+      },
+    ]);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('std::optional<flighthq_types::NodeOf<Traits>> find_node');
+    expect(emitted).toContain('std::optional<flighthq_types::NodeOf<Traits>> found = find_node<Traits>');
+    expect(emitted).not.toContain('flight::Any');
+  });
+
   it('leaves a void brand out of the struct that has no value to store', () => {
     const result = lower(
       'brand-member.ts',
