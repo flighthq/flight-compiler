@@ -45,7 +45,7 @@ const option = (name: string): string | undefined =>
 const foundations = arguments_
   .filter((argument) => argument.startsWith('--foundation='))
   .map((argument) => argument.slice('--foundation='.length));
-const known = /^--(json|corpus|compile|out)=|^--json$/u;
+const known = /^--(corpus|compile|foundation|out)=|^--json$/u;
 const unknown = arguments_.filter((argument) => !known.test(argument));
 if (unknown.length > 0) {
   process.stderr.write(`Unknown corpus issue census option(s): ${unknown.join(', ')}\n`);
