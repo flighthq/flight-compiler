@@ -7325,6 +7325,12 @@ function getTypeScriptExpressionBindingTypeEvidence(
   // surface returns the surface's own type parameter. The checker's instantiation is what says an
   // array came back, which is what decides whether the member read next is an array's.
   if (ts.isCallExpression(expression)) {
+    const signature = getTypeScriptInvocationSignatureResolution(expression, context.checker);
+    const result = signature?.resolved.type;
+    if (result && ts.isTypeNode(result) && hasExternalTypeScriptTypeParameter(result, context)) {
+      const instantiated = getTypeScriptInstantiatedCallResultTypeEvidence(expression, signature, context);
+      if (instantiated) return instantiated;
+    }
     return getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(expression), context, 0, true);
   }
   if (ts.isElementAccessExpression(expression)) {

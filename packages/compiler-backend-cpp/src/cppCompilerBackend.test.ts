@@ -12413,6 +12413,90 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('NoInfer');
   });
 
+  it('emits imported generic NodeOf traversal returns and assertions with their bound row', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './node',
+          target: { packageName: '@flighthq/node', source: 'packages/node/src/node.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface Node<Traits extends object> { readonly name: string }
+             export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+             export interface NodeRuntime<Traits extends object> { children: NodeOf<Traits>[] | null }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/node',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/node/src/node.ts',
+            `import type { Node, NodeRuntime } from '@flighthq/types/contract';
+             export function getNodeRuntime<Traits extends object>(
+               source: Readonly<Node<Traits>>,
+             ): Readonly<NodeRuntime<Traits>> {
+               return source as unknown as NodeRuntime<Traits>;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/node',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/node/src/traversal.ts',
+            `import type { Node, NodeOf } from '@flighthq/types/contract';
+             import { getNodeRuntime } from './node';
+             export function getNodeChildAt<Traits extends object>(
+               source: Readonly<Node<Traits>>,
+               index: number,
+             ): NodeOf<Traits> | null {
+               const children = getNodeRuntime(source).children;
+               if (children !== null && index >= 0 && index < children.length) return children[index];
+               return null;
+             }
+             export function getNodeRoot<Traits extends object>(
+               source: Readonly<Node<Traits>>,
+             ): NodeOf<Traits> {
+               return source as NodeOf<Traits>;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('std::optional<flighthq_types::NodeOf<Traits>> get_node_child_at');
+    expect(emitted).toContain('flighthq_types::NodeOf<Traits> get_node_root');
+    expect(emitted).toContain('flight::structural_ref_cast<flighthq_types::NodeOf<Traits>>(source)');
+    expect(emitted).not.toContain('NoInfer');
+    expect(emitted).not.toContain('flight::Any');
+  });
+
   it('leaves a void brand out of the struct that has no value to store', () => {
     const result = lower(
       'brand-member.ts',
