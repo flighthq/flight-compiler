@@ -170,6 +170,7 @@ describe('collectCorpusFoundations', () => {
         record('packages/entity/src/a.ts', '@flighthq/entity', 'cpp emission failed for a: has no C++ binding'),
         record('packages/entity/src/b.ts', '@flighthq/entity', 'dependency ./a was refused for b.ts'),
       ],
+      [],
       ['@flighthq/entity'],
     );
 
@@ -181,8 +182,26 @@ describe('collectCorpusFoundations', () => {
   });
 
   it('reports a foundation with no issues as zero rather than omitting it', () => {
-    const report = collectCorpusFoundations(packages, [], ['@flighthq/math']);
+    const report = collectCorpusFoundations(packages, [], [], ['@flighthq/math']);
     expect(report[0]?.identity).toBe('@flighthq/math');
     expect(report[0]?.issues).toEqual([]);
+  });
+
+  it('reports emitted and refused module identities from their ledgers', () => {
+    const emitted = collectCorpusFoundations(
+      packages,
+      [],
+      [{ packageName: '@flighthq/node', source: 'packages/node/src/traversal.ts' }],
+      ['src/traversal.ts'],
+    );
+    const refused = collectCorpusFoundations(
+      packages,
+      [record('packages/node/src/hierarchy.ts', '@flighthq/node', 'cpp emission failed for hierarchy: no shape')],
+      [],
+      ['src/hierarchy.ts'],
+    );
+
+    expect(emitted[0]).toMatchObject({ emittedModules: 1, refusedModules: 0, sourceModules: 1 });
+    expect(refused[0]).toMatchObject({ emittedModules: 0, refusedModules: 1, sourceModules: 1 });
   });
 });

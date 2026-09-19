@@ -9,7 +9,11 @@ import {
   createCorpusIssueFingerprint,
   isCorpusRefusalCascade,
 } from './corpusIssueAnalysis.js';
-import type { CorpusCompilationRecord, CorpusPackageSummary } from './corpusIssueAnalysis.js';
+import type {
+  CorpusCompilationRecord,
+  CorpusEmittedModuleRecord,
+  CorpusPackageSummary,
+} from './corpusIssueAnalysis.js';
 import { describeCorpusIssueLane } from './corpusIssueLane.js';
 import type { CorpusRefusalLedger } from './corpusRefusalAnalysis.js';
 import { resolveDependency } from './dependencyLock.js';
@@ -68,8 +72,9 @@ const outputOption = option('out');
 const outputFile = outputOption === undefined ? undefined : path.resolve(root, outputOption);
 
 const manifestFile = path.join(corpusDirectory, 'manifest.json');
+const initializationFile = path.join(corpusDirectory, 'initialization.json');
 const refusalFile = path.join(corpusDirectory, 'refusals.json');
-for (const file of [manifestFile, refusalFile]) {
+for (const file of [initializationFile, manifestFile, refusalFile]) {
   if (!existsSync(file)) {
     process.stderr.write(
       `Corpus issue census needs ${file}, which a downstream SDK run writes. ` +
@@ -80,6 +85,9 @@ for (const file of [manifestFile, refusalFile]) {
 }
 
 const ledger = JSON.parse(readFileSync(refusalFile, 'utf8')) as Readonly<CorpusRefusalLedger>;
+const initialization = JSON.parse(readFileSync(initializationFile, 'utf8')) as Readonly<{
+  entries: readonly Readonly<CorpusEmittedModuleRecord>[];
+}>;
 const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Readonly<{
   packages: readonly Readonly<CorpusPackageSummary>[];
   source: Readonly<{ revision: string }>;
@@ -106,6 +114,7 @@ const laneTotals = collectCorpusIssueLaneTotals([...refusalGroups, ...compileGro
 const foundationReports = collectCorpusFoundations(
   manifest.packages,
   ledger.refusals,
+  initialization.entries,
   foundations.length > 0 ? foundations : [...defaultFoundations],
 );
 

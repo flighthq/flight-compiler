@@ -54,6 +54,11 @@ export interface CorpusPackageSummary {
   readonly sourceModules: number;
 }
 
+export interface CorpusEmittedModuleRecord {
+  readonly packageName: string;
+  readonly source: string;
+}
+
 // A dependency cascade is not a second issue; it is the first one seen twice. A module refuses because
 // something it imports refused, and the ledger records one such edge per blocked module, so counting
 // these as issues inflates the list more than twofold on the current corpus.
@@ -147,10 +152,16 @@ export function isCorpusFoundationRecord(record: Readonly<CorpusRefusalRecord>, 
 export function collectCorpusFoundations(
   packages: readonly CorpusPackageSummary[],
   refusals: readonly Readonly<CorpusRefusalRecord>[],
+  emittedModules: readonly Readonly<CorpusEmittedModuleRecord>[],
   foundations: readonly string[],
 ): readonly CorpusFoundationSummary[] {
   return foundations.map((identity) => {
-    const matched = packages.filter((entry) => (identity.startsWith('@') ? entry.package === identity : false));
+    const packageIdentity = identity.startsWith('@');
+    const matched = packages.filter((entry) => packageIdentity && entry.package === identity);
+    const refused = packageIdentity ? [] : refusals.filter((record) => isCorpusFoundationRecord(record, identity));
+    const emitted = packageIdentity
+      ? []
+      : emittedModules.filter((record) => record.source === identity || record.source.endsWith(`/${identity}`));
     const direct = refusals.filter(
       (record) => !isCorpusRefusalCascade(record.reason) && isCorpusFoundationRecord(record, identity),
     );
@@ -161,12 +172,27 @@ export function collectCorpusFoundations(
       })),
     );
     return {
-      emittedModules: matched.reduce((total, entry) => total + entry.emittedModules, 0),
+      emittedModules: packageIdentity
+        ? matched.reduce((total, entry) => total + entry.emittedModules, 0)
+        : new Set(emitted.map((record) => `${record.packageName}\u0000${record.source}`)).size,
       identity,
       issues: groups.map((group) => ({ count: group.occurrences, key: group.key })),
-      packages: [...new Set(matched.map((entry) => entry.package))].sort(),
-      refusedModules: matched.reduce((total, entry) => total + entry.refusedModules, 0),
-      sourceModules: matched.reduce((total, entry) => total + entry.sourceModules, 0),
+      packages: [
+        ...new Set([
+          ...matched.map((entry) => entry.package),
+          ...refused.map((record) => record.package),
+          ...emitted.map((record) => record.packageName),
+        ]),
+      ].sort(),
+      refusedModules: packageIdentity
+        ? matched.reduce((total, entry) => total + entry.refusedModules, 0)
+        : new Set(refused.map((record) => `${record.package}\u0000${record.module}`)).size,
+      sourceModules: packageIdentity
+        ? matched.reduce((total, entry) => total + entry.sourceModules, 0)
+        : new Set([
+            ...refused.map((record) => `${record.package}\u0000${record.module}`),
+            ...emitted.map((record) => `${record.packageName}\u0000${record.source}`),
+          ]).size,
     };
   });
 }
