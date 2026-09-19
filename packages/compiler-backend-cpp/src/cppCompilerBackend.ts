@@ -5672,21 +5672,13 @@ function emitNullishComparisonCpp(
       emissionError(context, 'nullish comparison admitting null and undefined requires dual-sentinel union evidence');
     }
   }
-  const test = emitCppPresenceTestCpp(
+  return emitCppPresenceTestCpp(
     operand,
     evidence.literal,
     expression.operator === '!=' || expression.operator === '!==',
     expression.operator === '===' || expression.operator === '!==',
     context,
   );
-  if (test === undefined) {
-    emissionError(
-      context,
-      `a presence test against ${evidence.literal} has no absence channel in the emitted C++ storage for ${operand.kind}`,
-      'cpp-presence-test-without-absence-storage',
-    );
-  }
-  return test;
 }
 
 function emitCppInferredOptionalNullishComparison(
@@ -5753,7 +5745,8 @@ function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: Em
 }
 
 // Emits a presence test on `operand` -- `operand === sentinel`, `operand !== sentinel`, and their loose
-// forms -- or refuses when no emitted storage can answer it.
+// forms. Total: every shape either has an emitted storage that can answer the question or is refused
+// with the rule that names which representation is missing.
 //
 // Two axes decide the answer and neither alone is sufficient. The STORAGE axis asks whether the
 // emitted expression carries absence, and it is the only axis that can answer for a `Record` index
@@ -5764,16 +5757,13 @@ function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: Em
 //
 // A storage query answers the test at runtime; a type that excludes the sentinel answers it at
 // compile time, which is the same rule the `??` lane already applies to a non-nullable left operand.
-// The remaining combination -- storage with no absence channel whose type admits the sentinel -- is a
-// value whose absence the emitted representation cannot observe, and it is refused rather than
-// guessed at.
 function emitCppPresenceTestCpp(
   operand: Readonly<IrExpression>,
   sentinel: 'null' | 'undefined',
   present: boolean,
   strict: boolean,
   context: EmitContext,
-): string | undefined {
+): string {
   const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
   const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
@@ -5795,31 +5785,52 @@ function emitCppPresenceTestCpp(
     context.includes.add('optional');
     return `${present ? '' : '!'}${emitOptionalExpressionCpp(operand, context, operandType)}.has_value()`;
   }
-  // An erased dynamic value keeps presence in its own kind tag rather than in the value's type, and
-  // the target names that test through members this backend binds nowhere: `flight::Any::is_nullish`
-  // and its siblings exist, but nothing here declares them, so the type cannot be asked and the value
-  // must not be guessed at. Deciding it from the declared type alone would answer a question an
-  // `any`-typed binding does not answer.
-  if (isCppErasedDynamicValueTypeCpp(operandType)) return undefined;
   // A loose comparison is true for either sentinel, so a type decides it only when it admits neither.
   const admitted = strict
     ? admitsCppNullishSentinelCpp(operandType, sentinel, context)
     : admitsCppNullishSentinelCpp(operandType, 'null', context) ||
       admitsCppNullishSentinelCpp(operandType, 'undefined', context);
-  return admitted ? undefined : present ? 'true' : 'false';
+  if (!admitted) return present ? 'true' : 'false';
+  refuseCppPresenceTestCpp(operand, sentinel, operandType, context);
+}
+
+// A presence test the emitted storage cannot answer, and the two causes are different work. An erased
+// dynamic value does have presence, in a kind tag this backend binds nowhere: `flight::Any` carries
+// `is_undefined`, `is_null`, and `is_nullish`, and `is_nullish` is documented as exactly this test, so
+// no ABI addition is needed to answer it -- only a decision that the backend may name those members.
+// A storage with no absence channel whose type admits the sentinel has lost the information outright.
+// Separating the reasons keeps the refusal ranking able to tell them apart.
+function refuseCppPresenceTestCpp(
+  operand: Readonly<IrExpression>,
+  sentinel: 'null' | 'undefined',
+  operandType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): never {
+  if (isCppErasedDynamicValueTypeCpp(operandType)) {
+    emissionError(
+      context,
+      `a presence test against ${sentinel} on an erased dynamic value requires the runtime presence predicate lowering`,
+      'cpp-presence-test-erased-dynamic-value-unsupported',
+    );
+  }
+  emissionError(
+    context,
+    `a presence test against ${sentinel} has no absence channel in the emitted C++ storage for ${operand.kind}`,
+    'cpp-presence-test-without-absence-storage',
+  );
 }
 
 // Whether the declared type admits the nullish sentinel. A type that admits it can be absent at
 // runtime, so a presence test on it is a question about storage; a type that excludes it makes the
-// test a question the type already answers. `any` and `unknown` admit both, because neither names a
-// value type that excludes one.
+// test a question the type already answers. An erased dynamic value names no value type at all, so it
+// admits whatever it is asked about.
 function admitsCppNullishSentinelCpp(
   type: Readonly<IrType> | undefined,
   sentinel: 'null' | 'undefined',
   context: EmitContext,
 ): boolean {
   if (!type) return true;
-  if (type.kind === 'unknown') return type.source === 'any' || type.source === 'unknown';
+  if (isCppErasedDynamicValueTypeCpp(type)) return true;
   const union = getIrUnionTypeCpp(type, context, new Set());
   const members = union ? union.types : [type];
   return members.some((member) => (sentinel === 'null' ? member.kind === 'null' : member.kind === 'undefined'));

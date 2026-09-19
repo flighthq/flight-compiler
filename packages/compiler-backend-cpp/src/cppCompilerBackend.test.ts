@@ -260,6 +260,17 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('flight::row_get<flight::RowKey<"pointer">>(input).value()->request(target)');
     expect(emitted).toContain('attach_window_render_context(');
     expect(emitted).not.toContain('flight::undefined');
+
+    const provider = session.emitModule(hostWeb)[0]?.contents ?? '';
+    // The provider is a plain object literal, built as an aggregate over the capability struct's own
+    // function members, and the group is a second literal whose member is the capability itself.
+    expect(provider).toContain(
+      'flight::make_ref<flighthq_types::HostGlCapability>(flighthq_types::HostGlCapability{.acquire =',
+    );
+    expect(provider).toContain('{.context = web_host_gl}');
+    // The interface's optional member is still an `std::optional`: absence stays distinguishable from a
+    // present reference without entity identity and without a side table.
+    expect(session.emitModule(types)[0]?.contents).toContain('std::optional<flight::Ref<HostGlCapability>> context;');
   });
 
   // A presence test has two axes and the emitting rule needs both. The STORAGE axis asks whether the
