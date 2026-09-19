@@ -234,7 +234,7 @@ function resolveIrTypeStructuralRowCpp(
       declaration.type,
       createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
     );
-    const row = resolveIrTypeStructuralRowCpp(
+    let row = resolveIrTypeStructuralRowCpp(
       resolved,
       location.module,
       moduleSet,
@@ -242,6 +242,29 @@ function resolveIrTypeStructuralRowCpp(
       new Set(aliases).add(key),
       declaration.objectView === 'writable',
     );
+    // A generic homomorphic partial alias can establish a structural view while its concrete
+    // expansion becomes a closed object shape. Keep that declared view instead of falling back to
+    // RowOf<Alias<...>>, which would inspect the StructuralRef wrapper rather than its subject row.
+    if (
+      !row ||
+      (row.kind === 'rowOf' &&
+        normalizeCompilerStructuralValueCanonical(row.type) === normalizeCompilerStructuralValueCanonical(type))
+    ) {
+      const openRow = resolveIrTypeStructuralRowCpp(
+        declaration.type,
+        location.module,
+        moduleSet,
+        cache,
+        new Set(aliases).add(key),
+        declaration.objectView === 'writable',
+      );
+      if (openRow?.kind === 'partial') {
+        row = substituteCppStructuralRowPlan(
+          openRow,
+          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
+        );
+      }
+    }
     if (row) return declaration.objectView === 'writable' ? { kind: 'writable', row } : row;
     if (
       declaration.objectView === 'writable' &&
@@ -272,6 +295,30 @@ function resolveIrTypeStructuralRowCpp(
     };
   }
   return allowRowOf && type.kind === 'object' ? { kind: 'rowOf', type } : undefined;
+}
+
+function substituteCppStructuralRowPlan(
+  row: Readonly<CompilerCppStructuralRowPlan>,
+  substitutions: Parameters<typeof resolveIrTypeStructuralSubstitution>[1],
+): Readonly<CompilerCppStructuralRowPlan> {
+  switch (row.kind) {
+    case 'merge':
+      return {
+        kind: 'merge',
+        rows: [
+          substituteCppStructuralRowPlan(row.rows[0], substitutions),
+          substituteCppStructuralRowPlan(row.rows[1], substitutions),
+          ...row.rows.slice(2).map((member) => substituteCppStructuralRowPlan(member, substitutions)),
+        ],
+      };
+    case 'partial':
+    case 'readonly':
+    case 'required':
+    case 'writable':
+      return { kind: row.kind, row: substituteCppStructuralRowPlan(row.row, substitutions) };
+    case 'rowOf':
+      return { kind: 'rowOf', type: resolveIrTypeStructuralSubstitution(row.type, substitutions) };
+  }
 }
 
 // A key projection is a subset of its subject's members, every one of which the row the target keeps

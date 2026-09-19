@@ -5054,15 +5054,48 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
   it('preserves entity construction through a generic node initializer', () => {
     const entityTypes = ts.createSourceFile(
       '/flight/packages/types/src/Entity.ts',
-      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
-       export interface EntityRuntime { binding: object | null }
+      `export type Kind = string;
        export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
        export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
-       export interface NodeTraits { enabled: boolean; kind: string }
-       export interface NodeRuntime<Traits extends object = NodeTraits> extends EntityRuntime { traits?: Traits }
+       export interface EntityRuntime { binding: object | null; uid?: string }
+       export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const nodeTypes = ts.createSourceFile(
+      '/flight/packages/types/src/Node.ts',
+      `import type { Entity, EntityRuntime, EntityRuntimeKey, Kind } from './Entity';
+       export interface ColorAdjustmentRuntime {}
+       export interface NodeData extends Entity {}
+       export type NodeDataFactory<Data extends NodeData> = (obj?: Readonly<Partial<Data>>) => Data;
+       export type NodeRuntimeFactory<Runtime extends EntityRuntime> = (obj?: Readonly<Partial<Runtime>>) => Runtime;
+       export interface NodeTraits {
+         readonly data: NodeData | null;
+         enabled: boolean;
+         kind: Kind;
+         name: string | null;
+       }
        export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {
          [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+       }
+       export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+       export interface NodeRuntime<Traits extends object = NodeTraits>
+         extends EntityRuntime, ColorAdjustmentRuntime {
+         parent: NodeOf<Traits> | null;
+         localTransformId: number;
+         localTransformUsingLocalTransformId: number;
+         worldTransformId: number;
+         worldTransformUsingLocalTransformId: number;
+         worldTransformUsingParentTransformId: number;
        }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const partialNodeType = ts.createSourceFile(
+      '/flight/packages/types/src/PartialNode.ts',
+      `export type PartialNode<Type> = {
+         data?: Partial<Type extends { data: infer Data } ? Data : never>;
+       } & Partial<Omit<Type, 'data'>>;`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -5084,20 +5117,61 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const node = ts.createSourceFile(
       '/flight/packages/node/src/node.ts',
       `import { allocateEntity, finishEntity } from '@flighthq/entity/contract';
-       import type { EntityConstruction, Node, NodeRuntime, NodeTraits } from '@flighthq/types/contract';
+       import type {
+         EntityConstruction,
+         Node,
+         NodeData,
+         NodeDataFactory,
+         NodeRuntime,
+         NodeRuntimeFactory,
+         NodeTraits,
+         PartialNode,
+       } from '@flighthq/types/contract';
        import { EntityRuntimeKey } from '@flighthq/types/contract';
-       export function createNode<Traits extends object = NodeTraits>(kind: string): Node<Traits> & Traits {
+       export function createNodeRuntime<Traits extends object = NodeTraits>(): NodeRuntime<Traits> {
+         return {
+           binding: null,
+           parent: null,
+           localTransformId: 0,
+           localTransformUsingLocalTransformId: -1,
+           worldTransformId: 0,
+           worldTransformUsingLocalTransformId: -1,
+           worldTransformUsingParentTransformId: -1,
+         } as NodeRuntime<Traits>;
+       }
+       export function createNode<
+         Traits extends object = NodeTraits,
+         Data extends NodeData = NodeData,
+         Runtime extends NodeRuntime<Traits> = NodeRuntime<Traits>
+       >(
+         nodeKind: string,
+         obj?: Readonly<PartialNode<Node<Traits>>>,
+         createData?: NodeDataFactory<Data>,
+         createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+       ): Node<Traits> & Traits {
          const out = allocateEntity<Node<Traits> & Traits>();
-         initializeNode(out, kind);
+         initializeNode(out, nodeKind, obj, createData, createNodeRuntimeFactory);
          return finishEntity(out);
        }
-       export function initializeNode<Traits extends object = NodeTraits>(
+       export function initializeNode<
+         Traits extends object = NodeTraits,
+         Data extends NodeData = NodeData,
+         Runtime extends NodeRuntime<Traits> = NodeRuntime<Traits>
+       >(
          out: EntityConstruction<Node<Traits> & Traits>,
-         kind: string,
+         nodeKind: string,
+         obj?: Readonly<PartialNode<Node<Traits>>>,
+         createData?: NodeDataFactory<Data>,
+         createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
        ): void {
-         out.kind = kind;
-         out.enabled = true;
-         out[EntityRuntimeKey] = { binding: null } as NodeRuntime<Traits>;
+         const runtimeFactory = createNodeRuntimeFactory ??
+           (createNodeRuntime as unknown as NodeRuntimeFactory<Runtime>);
+         const node = out as EntityConstruction<Node<Traits>>;
+         (node as { [EntityRuntimeKey]?: unknown })[EntityRuntimeKey] = runtimeFactory();
+         node.data = createData !== undefined ? createData(obj?.data as Partial<Data>) : null;
+         node.name = obj?.name ?? null;
+         node.kind = nodeKind;
+         node.enabled = obj?.enabled ?? true;
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -5105,7 +5179,29 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
+          importedNames: ['Entity', 'EntityConstruction', 'EntityRuntimeKey', 'Kind'],
           specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          importedNames: [
+            'Node',
+            'NodeData',
+            'NodeDataFactory',
+            'NodeRuntime',
+            'NodeRuntimeFactory',
+            'NodeTraits',
+          ],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Node.ts' },
+        },
+        {
+          importedNames: ['PartialNode'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/PartialNode.ts' },
+        },
+        {
+          specifier: './Entity',
           target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
         },
         {
@@ -5118,6 +5214,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const results = lowerTypeScriptSources(
       [
         { packageName: '@flighthq/types', sourceFile: entityTypes, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: nodeTypes, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: partialNodeType, upstreamDirectory: '/flight' },
         { packageName: '@flighthq/entity', sourceFile: entity, upstreamDirectory: '/flight' },
         { packageName: '@flighthq/node', sourceFile: node, upstreamDirectory: '/flight' },
       ],
@@ -5136,14 +5234,61 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         runtimeProfile: 'flight-cpp',
       },
     });
-    const emitted = session.emitModule(modules[2]!)[0]!.contents;
+    const emitted = session.emitModule(modules[4]!)[0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(emitted).toContain('flight::entity::allocate_entity<');
-    expect(emitted).toContain('initialize_node<Traits>(out, kind)');
+    expect(emitted).toContain('initialize_node<Traits, Data, Runtime>');
     expect(emitted).toContain('return flight::entity::finish_entity<');
     expect(emitted).toContain('>(out);');
-    expect(emitted).toContain('flight::row_set(out, flight::types::entity_runtime_key');
+    expect(emitted).toContain('std::optional<flight::Ref<flight::types::NodeData>>{');
+    expect(emitted).toContain('runtime_factory(std::nullopt)');
+    expect(emitted).toContain('create_data.value()(');
+    expect(emitted).toContain('flight::types::entity_runtime_key, runtime_factory(std::nullopt)');
+    expect(emitted).toContain('create_node_runtime<Traits>()');
+    expect(emitted).not.toContain('flight::Any');
+    expect(emitted).not.toContain('RowOf<flight::types::PartialNode<');
+  });
+
+  it('refuses a structurally assignable sibling constraint as a contextual entity reference', () => {
+    const result = lowerPackage(
+      '@flighthq/node',
+      'sibling-node-data.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface Entity { [EntityRuntimeKey]: object | undefined }
+       export interface NodeData extends Entity {}
+       export interface SiblingData extends Entity { sibling: boolean }
+       export interface Node { data: NodeData | null }
+       export function assignSibling<Data extends SiblingData>(node: Node, data: Data): void {
+         node.data = data;
+       }`,
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'contextual union value type Data is not a represented runtime domain',
+    );
+  });
+
+  it('constructs a constrained entity generic into its base optional slot', () => {
+    const result = lowerPackage(
+      '@flighthq/node',
+      'generic-node-data.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime {}
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export interface NodeData extends Entity {}
+       export interface Node { data: NodeData | null }
+       export function initialize<Data extends NodeData = NodeData>(
+         node: Node,
+         createData?: () => Data,
+       ): void {
+         node.data = createData !== undefined ? createData() : null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('std::optional<flight::Ref<NodeData>>{create_data.value()()}');
   });
 
   it('emits the exact structural Entity write proxy and refuses a handler with another trap', () => {

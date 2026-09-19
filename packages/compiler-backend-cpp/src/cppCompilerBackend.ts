@@ -2371,10 +2371,15 @@ function emitExpression(
         expression.callee.reference.kind === 'binding' &&
         expression.callee.presence === 'narrowedPresent' &&
         context.nullableBindingIds.has(expression.callee.reference.binding.id);
+      const calleeHasOptionalStorage =
+        (expression.callee.kind === 'identifier' &&
+          expression.callee.reference.kind === 'binding' &&
+          context.nullableBindingIds.has(expression.callee.reference.binding.id)) ||
+        hasIrTypeAbsentMember(calleeStorageType);
       const optionalCallable = Boolean(
         calleeStorageType &&
         !calleeAlreadyUnwrapped &&
-        hasIrTypeAbsentMember(calleeStorageType) &&
+        calleeHasOptionalStorage &&
         getCppClosedCallableType(calleeStorageType, context, new Set()),
       );
       const callableObject = getCppCallableObjectExpressionCpp(expression.callee, context);
@@ -2470,6 +2475,7 @@ function emitExpression(
         return `flight::assume_conditional_facets<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context, conditionalFacet.base)})`;
       }
       const asserted = emitUnionMemberAssertionCpp(expression.expression, expression.type, context);
+      const assertedGenericFactory = emitCppUnknownBridgedGenericFactoryAssertionCpp(expression, context);
       const callableTypeParameter = getCppCallableTypeParameterCpp(expression.type, context);
       if (
         callableTypeParameter &&
@@ -2492,6 +2498,7 @@ function emitExpression(
       }
       return (
         asserted ??
+        assertedGenericFactory ??
         getCppErasedValueAssertionCpp(
           expression.type,
           getIrExpressionTypeEvidenceCpp(expression.expression, context),
@@ -4700,6 +4707,75 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
   }
 }
 
+function emitCppUnknownBridgedGenericFactoryAssertionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.expression.kind !== 'cast' ||
+    expression.expression.type.kind !== 'unknown' ||
+    expression.expression.expression.kind !== 'identifier' ||
+    expression.expression.expression.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const target = getCppClosedCallableType(expression.type, context, new Set());
+  const source = getCppFunctionDeclarationForBindingCpp(
+    expression.expression.expression.reference.binding.id,
+    context,
+  );
+  if (!target || !source || source.parameters.length !== 0 || source.typeParameters.length === 0) return undefined;
+  const targetReturnConstraint = getCppTypeParameterConstraintCpp(target.returns, context) ?? target.returns;
+  const parameterIds = new Set(source.typeParameters.map((parameter) => parameter.binding.id));
+  const substitutions = new Map<string, Readonly<IrType>>();
+  if (
+    !collectCppResultTypeSubstitutionsCpp(
+      source.returns,
+      targetReturnConstraint,
+      parameterIds,
+      substitutions,
+      context,
+    )
+  ) {
+    return undefined;
+  }
+  const typeArguments = source.typeParameters.map(
+    (parameter) => substitutions.get(parameter.binding.id) ?? parameter.default,
+  );
+  if (!typeArguments.every((argument): argument is Readonly<IrType> => argument !== undefined)) return undefined;
+  const parameters = target.parameters.map((parameter, index) => {
+    const type = emitOptionalTypeCpp(
+      emitCppParameterTypeCpp(parameter.type, parameter.rest, context),
+      parameter.optional,
+      context,
+    );
+    return `${type} ignored_${String(index)}`;
+  });
+  const ignored = target.parameters.map((_, index) => `(void)ignored_${String(index)};`).join(' ');
+  const returnType = emitType(target.returns, context);
+  const sourceCall = `${emitIdentifierReference(expression.expression.expression.reference, context)}${emitCppTypeArguments(typeArguments, context)}()`;
+  return `[&](${parameters.join(', ')}) -> ${returnType} { ${ignored}${ignored ? ' ' : ''}return static_cast<${returnType}>(${sourceCall}); }`;
+}
+
+function getCppTypeParameterConstraintCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind !== 'typeParameter' ||
+    type.reference.path.length !== 0 ||
+    type.typeArguments.length !== 0
+  ) {
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  return context.anonymousStructTypeParameters.find(
+    (parameter) => parameter.binding.id === bindingId,
+  )?.constraint;
+}
+
 function emitCppNominalIntersectionImplementationTypeCpp(
   type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
   properties: readonly Readonly<IrObjectTypeProperty>[],
@@ -6177,7 +6253,10 @@ function emitContextualUnionExpressionCpp(
   }
   const targetType = emitType(runtimeType, context);
   const valueSlot = plan.valueSlots.findIndex((slot) => slot.targetType === targetType);
-  if (valueSlot < 0) {
+  const constrainedValueSlot =
+    valueSlot < 0 ? getCppConstrainedTypeParameterUnionValueSlotCpp(runtimeType, plan.valueSlots, context) : undefined;
+  const representedValueSlot = constrainedValueSlot ?? valueSlot;
+  if (representedValueSlot < 0) {
     emissionError(
       context,
       `contextual union value type ${targetType} is not a represented runtime domain`,
@@ -6185,7 +6264,40 @@ function emitContextualUnionExpressionCpp(
     );
   }
   const emitted = emitExpression(expression, context, runtimeType, false);
-  return emitCppUnionValueConstruction(emitted, targetType, union, plan.kind, context);
+  return emitCppUnionValueConstruction(
+    emitted,
+    plan.valueSlots[representedValueSlot]!.targetType,
+    union,
+    plan.kind,
+    context,
+  );
+}
+
+function getCppConstrainedTypeParameterUnionValueSlotCpp(
+  type: Readonly<IrType>,
+  valueSlots: readonly Readonly<{ targetType: string }>[],
+  context: EmitContext,
+): number | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind !== 'typeParameter' ||
+    type.reference.path.length !== 0 ||
+    type.typeArguments.length !== 0
+  ) {
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  const declaration = context.anonymousStructTypeParameters.find(
+    (parameter) => parameter.binding.id === bindingId,
+  );
+  const constraint = declaration?.constraint;
+  if (!constraint || !hasFlightReferenceRepresentationCpp(constraint, context)) return undefined;
+  const runtimeType = getIrTypeRuntimeDomainCpp(constraint, context, new Set());
+  if (!runtimeType) return undefined;
+  const targetType = emitType(runtimeType, { ...context, anonymousStructs: new Map(), includes: new Set() });
+  const index = valueSlots.findIndex((slot) => slot.targetType === targetType);
+  return index < 0 ? undefined : index;
 }
 
 // Optional-chain IR records the member/call value before the receiver's undefined short circuit.
@@ -6743,11 +6855,14 @@ function getCppContextualCallTypeArgumentsCpp(
   let argumentSubstitutions = new Map<string, Readonly<IrType>>();
   expression.arguments.forEach((argument, index) => {
     const parameter = declaration.parameters[index];
-    const argumentType = getIrExpressionTypeEvidenceCpp(argument, context);
+    const argumentType =
+      getIrInvocationProvidedArgumentTypeCpp(expression, index) ?? getIrExpressionTypeEvidenceCpp(argument, context);
     if (!parameter?.type || !argumentType || argumentType.kind === 'unknown') return;
+    const deductionType = parameter.optional ? getCppProvidedOptionalArgumentTypeCpp(argumentType) : argumentType;
+    if (!deductionType) return;
     const candidateSubstitutions = new Map(argumentSubstitutions);
     if (
-      collectCppResultTypeSubstitutionsCpp(parameter.type, argumentType, parameterIds, candidateSubstitutions, context)
+      collectCppResultTypeSubstitutionsCpp(parameter.type, deductionType, parameterIds, candidateSubstitutions, context)
     ) {
       argumentSubstitutions = candidateSubstitutions;
     }
@@ -6769,6 +6884,17 @@ function getCppContextualCallTypeArgumentsCpp(
     (parameter) => argumentSubstitutions.get(parameter.binding.id) ?? parameter.default,
   );
   return arguments_.every((argument): argument is Readonly<IrType> => argument !== undefined) ? arguments_ : undefined;
+}
+
+// A supplied optional argument is recorded with the parameter's `undefined` branch even when the
+// expression itself is present. Strip only that sentinel here. Resolving the remaining alias would
+// erase the named generic application which template deduction needs to align with the declaration.
+function getCppProvidedOptionalArgumentTypeCpp(type: Readonly<IrType>): Readonly<IrType> | undefined {
+  if (type.kind !== 'union') return type.kind === 'undefined' ? undefined : type;
+  const present = type.types.filter((member) => member.kind !== 'undefined');
+  if (present.length === 0) return undefined;
+  if (present.length === 1) return present[0];
+  return { kind: 'union', types: [present[0]!, present[1]!, ...present.slice(2)] };
 }
 
 function collectCppResultTypeSubstitutionsCpp(
@@ -7546,7 +7672,16 @@ function appendCppOmittedInvocationArguments(
   const defaults = expression.semantics.defaultParameters;
   const optionals = expression.semantics.optionalParameters;
   const plan = defaults ?? optionals;
-  if (!plan || emitted.length >= plan.parameterCount) return emitted;
+  if (!plan) {
+    const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
+    const callable = calleeType ? getCppClosedCallableType(calleeType, context, new Set()) : undefined;
+    if (!callable || emitted.length >= callable.parameters.length) return emitted;
+    const omitted = callable.parameters.slice(emitted.length);
+    if (!omitted.every((parameter) => parameter.optional)) return emitted;
+    context.includes.add('optional');
+    return [...emitted, ...omitted.map(() => 'std::nullopt')];
+  }
+  if (emitted.length >= plan.parameterCount) return emitted;
   if (expression.callee.kind === 'property') {
     const receiverType = getIrExpressionTypeEvidenceCpp(expression.callee.object, context);
     const standardRuntimeReceiver =
