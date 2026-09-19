@@ -173,6 +173,10 @@ interface EmitContext {
   denseArrayLengthBindingIds: ReadonlySet<string>;
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
+  // The bindings whose declaration elected the erased dynamic value as its storage. A presence test
+  // asks this rather than the declared type, because the two disagree in both directions and each
+  // direction is a shape the SDK writes.
+  erasedDynamicStorageBindingIds: ReadonlySet<string>;
   externalBindingStorageTargetTypes: ReadonlyMap<string, string>;
   importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
   importedBindingTypes: Map<string, Readonly<IrType> | null>;
@@ -314,6 +318,7 @@ function emitIrModuleCppWithContext(
   const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
   const preservedInitializerTypes = collectCppExplicitCollectionConstructionBindingTypesCpp(module);
   const structuralCastBindingRows = new Map<string, Readonly<CompilerCppStructuralRowPlan>>();
+  const erasedDynamicStorageBindingIds = new Set<string>();
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
     anonymousStructs: new Map(),
@@ -327,6 +332,7 @@ function emitIrModuleCppWithContext(
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
     dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
+    erasedDynamicStorageBindingIds,
     externalBindingStorageTargetTypes,
     facetTagNames: new Map(),
     importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
@@ -360,7 +366,15 @@ function emitIrModuleCppWithContext(
     structuralCastBindingRows.set(bindingId, row);
   }
   analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      if (hasCppErasedDynamicStorageCpp({ binding: parameter.binding, mutable: true, type: parameter.type }, context)) {
+        erasedDynamicStorageBindingIds.add(parameter.binding.id);
+      }
+    },
     variable(variable) {
+      if ('binding' in variable && hasCppErasedDynamicStorageCpp(variable, context)) {
+        erasedDynamicStorageBindingIds.add(variable.binding.id);
+      }
       if (!('binding' in variable) || !variable.initializer) return;
       if (variable.initializer.kind === 'call' && variable.initializer.presence === 'narrowedPresent') return;
       if (hasIrTypeAbsentMember(getIrExpressionTypeEvidenceCpp(variable.initializer, context))) {
@@ -5785,34 +5799,99 @@ function emitCppPresenceTestCpp(
     context.includes.add('optional');
     return `${present ? '' : '!'}${emitOptionalExpressionCpp(operand, context, operandType)}.has_value()`;
   }
+  if (hasCppErasedDynamicTestOperandCpp(operand, operandType, context)) {
+    context.includes.add('flight/any.hpp');
+    // The erased dynamic value keeps presence in its own kind tag and carries the predicate for it, so
+    // the test is an operation on the chosen representation rather than a comparison the target's
+    // operator set has to have been given. `is_nullish` is the loose test exactly -- the runtime
+    // documents it as ``== null`` in TypeScript -- so a strict comparison asks the named predicate and
+    // a loose one asks that.
+    const predicate = strict ? (sentinel === 'null' ? 'is_null' : 'is_undefined') : 'is_nullish';
+    // The operand is evaluated once. A presence test may be written against a call or an indexed read
+    // as easily as against a plain binding, and asking the predicate twice would run it twice.
+    return `([&]() { const auto& presence_operand = ${emitExpression(operand, context)}; return ${present ? '!' : ''}presence_operand.${predicate}(); }())`;
+  }
   // A loose comparison is true for either sentinel, so a type decides it only when it admits neither.
   const admitted = strict
     ? admitsCppNullishSentinelCpp(operandType, sentinel, context)
     : admitsCppNullishSentinelCpp(operandType, 'null', context) ||
       admitsCppNullishSentinelCpp(operandType, 'undefined', context);
   if (!admitted) return present ? 'true' : 'false';
-  refuseCppPresenceTestCpp(operand, sentinel, operandType, context);
+  refuseCppPresenceTestCpp(operand, sentinel, context);
 }
 
-// A presence test the emitted storage cannot answer, and the two causes are different work. An erased
-// dynamic value does have presence, in a kind tag this backend binds nowhere: `flight::Any` carries
-// `is_undefined`, `is_null`, and `is_nullish`, and `is_nullish` is documented as exactly this test, so
-// no ABI addition is needed to answer it -- only a decision that the backend may name those members.
-// A storage with no absence channel whose type admits the sentinel has lost the information outright.
-// Separating the reasons keeps the refusal ranking able to tell them apart.
+// Whether a presence test on `operand` is answered by the erased dynamic value's own kind tag.
+//
+// The question is about STORAGE, not about the declared type, and the two disagree in both directions.
+// A binding answers from `erasedDynamicStorageBindingIds`, because its declaration made the decision:
+// a `let` annotated `any` is stored erased so it can be reassigned across alternatives, while a
+// `const` with an initializer keeps whatever the initializer proves -- `const rows = grid.length` is a
+// `double` -- and an annotation of `unknown` there describes nothing the storage actually does. Asking
+// the annotation would give both of those the wrong answer.
+//
+// Anything that is not a binding is a read of a declared member, and a member is emitted with its own
+// declared type, so there the type is the storage and no second source is needed.
+function hasCppErasedDynamicTestOperandCpp(
+  operand: Readonly<IrExpression>,
+  operandType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): boolean {
+  if (!isCppErasedDynamicValueTypeCpp(operandType)) return false;
+  return operand.kind === 'identifier' && operand.reference.kind === 'binding'
+    ? context.erasedDynamicStorageBindingIds.has(operand.reference.binding.id)
+    : true;
+}
+
+// Whether a declaration's storage decision elected the erased dynamic value.
+//
+// This mirrors the spelling election the declaration emitters perform a few lines below their own
+// start, and it is the single owner of the answer for every binding: the collector records bindings
+// through it and reports the result to `erasedDynamicStorageBindingIds`, so a presence test reads the
+// decision instead of re-deriving it. A parameter passes `mutable: true`, which is only to say that
+// nothing about a parameter is deduced from an initializer -- a parameter is emitted with its declared
+// type, so its type is its storage.
+function hasCppErasedDynamicStorageCpp(
+  declaration: Readonly<{
+    binding: Readonly<{ id: string }>;
+    initializer?: Readonly<IrExpression> | undefined;
+    mutable: boolean;
+    type?: Readonly<IrType> | undefined;
+  }>,
+  context: EmitContext,
+): boolean {
+  const bindingId = declaration.binding.id;
+  // A storage spelling named by an override is that spelling, whatever the annotation says.
+  if (
+    context.externalBindingStorageTargetTypes.has(bindingId) ||
+    context.contextualBindingStorageTargetTypes.has(bindingId) ||
+    context.preservedInitializerTypes.has(bindingId) ||
+    context.structuralCastBindingRows.has(bindingId)
+  ) {
+    return false;
+  }
+  if (
+    !declaration.type ||
+    isCppDeducibleUnknownStorageCpp(declaration.mutable, declaration.initializer, declaration.type)
+  ) {
+    // The declaration emits `auto` and the initializer decides the storage, so the initializer's own
+    // evidence is the answer -- and it is the same answer whether this is asked before emission, as
+    // the collector does, or after, when a concrete inferred type has been preserved.
+    const initializerType = declaration.initializer
+      ? getIrExpressionTypeEvidenceCpp(declaration.initializer, context)
+      : undefined;
+    return isCppErasedDynamicValueTypeCpp(initializerType);
+  }
+  return isCppErasedDynamicValueTypeCpp(declaration.type);
+}
+
+// A presence test whose emitted storage has no absence channel at all, which happens only where the
+// type admits the sentinel: the value can be absent at runtime and the representation cannot say so.
+// Reported with a named rule rather than guessed at.
 function refuseCppPresenceTestCpp(
   operand: Readonly<IrExpression>,
   sentinel: 'null' | 'undefined',
-  operandType: Readonly<IrType> | undefined,
   context: EmitContext,
 ): never {
-  if (isCppErasedDynamicValueTypeCpp(operandType)) {
-    emissionError(
-      context,
-      `a presence test against ${sentinel} on an erased dynamic value requires the runtime presence predicate lowering`,
-      'cpp-presence-test-erased-dynamic-value-unsupported',
-    );
-  }
   emissionError(
     context,
     `a presence test against ${sentinel} has no absence channel in the emitted C++ storage for ${operand.kind}`,
@@ -11230,6 +11309,13 @@ function emitUndefinedWithExpectedTypeCpp(expectedType: Readonly<IrType> | undef
     if (getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::undefined';
     context.includes.add('variant');
     return 'std::monostate{}';
+  }
+  // The erased dynamic value carries `undefined` as one of its own alternatives and has no constructor
+  // for `std::nullopt`, so a position whose storage is erased spells the sentinel through the value
+  // itself. This is the same projection the presence test asks, reached through an assignment.
+  if (isCppErasedDynamicValueTypeCpp(expectedType) && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    context.includes.add('flight/any.hpp');
+    return 'flight::undefined';
   }
   const union = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
   if (union) {

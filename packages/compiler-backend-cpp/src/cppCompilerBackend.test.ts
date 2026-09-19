@@ -312,6 +312,62 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flight::undefined');
   });
 
+  // The erased dynamic value carries presence in its own kind tag, so the test is an operation on the
+  // chosen C++ representation rather than a comparison the target's operator set has to have been
+  // given. The runtime names it: `is_undefined`, `is_null`, and `is_nullish`, the last documented as
+  // exactly the loose test.
+  //
+  // Which shapes HAVE that storage is a decision rather than an annotation, and the two disagree in
+  // both directions. A `let` annotated `any` is erased because it may be reassigned across
+  // alternatives; a `const` keeps whatever its initializer proves, so `const rows = grid.length` is a
+  // `double` and its comparison folds. Asking the annotation would answer both of those the wrong way
+  // round, which is why the declaration's storage decision is recorded and read rather than re-derived.
+  it('asks the erased dynamic value for presence by its own predicate and folds an inferred storage', () => {
+    const module = lower(
+      'erased-presence.ts',
+      `export interface Holder { readonly value: any }
+       export function absentLoose(value: any): boolean { return value == null; }
+       export function absentStrict(value: any): boolean { return value === undefined; }
+       export function fieldPresent(holder: Readonly<Holder>): boolean { return holder.value !== undefined; }
+       export function immutableAuto(grid: ReadonlyArray<number>): boolean {
+         const rows = grid.length;
+         return rows !== undefined;
+       }
+       export function mutablePresent(flag: boolean): boolean {
+         let value: any = 3;
+         if (flag) value = undefined;
+         return value !== undefined;
+       }
+       export function notNull(value: any): boolean { return value !== null; }
+       export function presentLoose(value: any): boolean { return value != null; }
+       export function presentStrict(value: any): boolean { return value !== undefined; }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain('#include <flight/any.hpp>');
+    // A strict comparison asks the named predicate and a loose one asks the predicate that means both.
+    expect(emitted).toContain('return !presence_operand.is_undefined();');
+    expect(emitted).toContain('return presence_operand.is_undefined();');
+    expect(emitted).toContain('return !presence_operand.is_null();');
+    expect(emitted).toContain('return !presence_operand.is_nullish();');
+    expect(emitted).toContain('return presence_operand.is_nullish();');
+    // Nothing compares a reference against a sentinel, and nothing asks an erased value for
+    // `has_value`, which it does not have.
+    expect(emitted).not.toContain('flight::undefined;');
+    expect(emitted).not.toContain('.has_value()');
+    // A field is emitted with its declared type, so its read is the erased value and its presence is
+    // the same predicate reached through the row rather than through a binding.
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"value">>(holder)');
+    // The binding is mutable, so its storage is erased and the sentinel it is reassigned to has to be
+    // the value's own: `flight::Any` has no constructor for `std::nullopt`.
+    expect(emitted).toContain('flight::Any value = 3.0;');
+    expect(emitted).toContain('value = flight::undefined);');
+    expect(emitted).not.toContain('value = std::nullopt');
+    // The counterexample: an immutable binding whose initializer proves a concrete storage keeps it,
+    // so the comparison is decided by the type and never consults the erased value at all.
+    expect(emitted).toContain('const double rows = static_cast<double>(grid.size());\n  return true;');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
