@@ -12523,6 +12523,24 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents.match(/std::static_pointer_cast</gu)).toHaveLength(1);
   });
 
+  it('spells a dependent member type the way the runtime spells it', () => {
+    const result = lower(
+      'dependent-member.ts',
+      `interface Texture2D { dimension: '2d'; width: number; }
+       interface Texture3D { dimension: '3d'; depth: number; }
+       type TextureLike = Texture2D | Texture3D;
+       export type DimensionOf<Type extends TextureLike> = Type['dimension'];`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // A type parameter has no shape to resolve, so the member's type has to be spelled directly. The
+    // construct is not new -- the runtime writes `remove_cvref_t<decltype(declval<Object&>().member)>`
+    // in generated_row_member -- and without it a generic alias reading a member's type cannot be
+    // emitted at all, even though nothing instantiates it.
+    expect(emitted.contents).toContain('std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',

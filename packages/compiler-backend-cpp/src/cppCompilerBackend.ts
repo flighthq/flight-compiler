@@ -4175,6 +4175,22 @@ function emitCppStructuralRowReferenceTypeCpp(
   return `flight::StructuralRef<${emitCppStructuralRowSchemaTypeCpp(representation, context)}>`;
 }
 
+// The member type of a dependent parameter, spelled the way the runtime already spells it. `remove_cvref_t`
+// makes an optional member and a plain one agree, because an optional member's C++ storage is the target's
+// spelling of `U | undefined` rather than `U`.
+function emitCppDependentIndexedAccessCpp(
+  type: Readonly<Extract<IrType, { kind: 'indexedAccess' }>>,
+  context: EmitContext,
+): string | undefined {
+  const reference = type.object.kind === 'named' ? type.object.reference : undefined;
+  if (reference?.kind !== 'binding' || reference.binding.kind !== 'typeParameter') return undefined;
+  if (type.index.kind !== 'literal' || typeof type.index.value !== 'string') return undefined;
+  const objectType = emitType(type.object, context);
+  context.includes.add('type_traits');
+  context.includes.add('utility');
+  return `std::remove_cvref_t<decltype(std::declval<${objectType}&>().${safeCppName(type.index.value)})>`;
+}
+
 function emitCppStructuralRowSchemaTypeCpp(
   representation: Readonly<CompilerCppStructuralRowPlan>,
   context: EmitContext,
@@ -4326,6 +4342,14 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     case 'indexedAccess': {
       const indexed = getCppIndexedAccessType(type, context);
       if (!indexed) {
+        // `T['k']` where T is a type PARAMETER has no shape to resolve -- the parameter is whatever the
+        // instantiation supplies -- but C++ spells it directly, and this emitter already writes the same
+        // construct elsewhere (`typename decltype(std::declval<Object&>().p)::value_type`). Without this
+        // a generic alias whose body reads a member's type cannot be emitted AT ALL: `type PickD<Type
+        // extends TextureLike> = Type['dimension']` refuses on its own declaration, before anything
+        // instantiates it, and one such alias blocked 105 modules transitively.
+        const dependent = emitCppDependentIndexedAccessCpp(type, context);
+        if (dependent) return dependent;
         // Naming what the index was taken FROM is what separates "the object has no shape" from "the
         // index names nothing" -- and a type parameter here means the alias's own argument never
         // reached the object, which is a different fix from a shape the walker cannot resolve.
@@ -5706,14 +5730,21 @@ function emitUnionMemberAssertionCpp(
   const value = emitExpression(expression, context);
   if (plan.kind === 'singleValue') return value;
   context.includes.add(plan.kind === 'optionalSingle' ? 'optional' : 'variant');
-  if (plan.kind === 'optionalSingle') {
-    const cast = narrowing?.cast;
-    if (cast === undefined) return `${value}.value()`;
+  // The cast names the asserted type whenever the slot's stored spelling is not already it: a narrowing
+  // has its own element, a subtype assertion narrows the slot to what was named, and an exact match
+  // needs nothing. Only a reference can be pointer-cast; anything else keeps the slot's spelling, which
+  // is what the union already stores.
+  const cast =
+    narrowing?.cast ??
+    (alternatives[0]!.targetType === assertedTarget ? undefined : getCppReferenceElementTypeNameCpp(assertedTarget));
+  const narrowed = (inner: string): string => {
+    if (cast === undefined) return inner;
     context.includes.add('memory');
-    return `std::static_pointer_cast<${cast}>(${value}.value())`;
-  }
-  if (plan.kind === 'optionalVariant') return `std::get<${alternatives[0]!.targetType}>(${value}.value())`;
-  return `std::get<${alternatives[0]!.targetType}>(${value})`;
+    return `std::static_pointer_cast<${cast}>(${inner})`;
+  };
+  if (plan.kind === 'optionalSingle') return narrowed(`${value}.value()`);
+  if (plan.kind === 'optionalVariant') return narrowed(`std::get<${alternatives[0]!.targetType}>(${value}.value())`);
+  return narrowed(`std::get<${alternatives[0]!.targetType}>(${value})`);
 }
 
 // How an assertion relates the union's one value slot to the type it names. Both sides being references
