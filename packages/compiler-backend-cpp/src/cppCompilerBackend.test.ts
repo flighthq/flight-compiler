@@ -12496,6 +12496,33 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
   });
 
+  it('narrows the one value slot of a union the assertion names', () => {
+    const result = lower(
+      'runtime-key-assertion.ts',
+      `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       interface EntityRuntime { kind: string; }
+       interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
+       interface WidgetRuntime extends EntityRuntime { size: number; }
+       interface Widget extends Entity { label: string; }
+       export function readWidget(widget: Readonly<Widget>): WidgetRuntime | undefined {
+         return widget[EntityRuntimeKey] as WidgetRuntime | undefined;
+       }
+       export function readRuntime(holder: Readonly<Entity>): EntityRuntime | undefined {
+         return holder[EntityRuntimeKey] as EntityRuntime | undefined;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // Both assertions are answerable because both sides are one-value unions of the same kind: the
+    // target is the whole optional and the slot is the value inside it, so matching by spelling can
+    // never succeed. Narrowing to a different record is a cast; naming the same one is not.
+    expect(emitted.contents).toContain('std::static_pointer_cast<WidgetRuntime>(');
+    // Exactly one cast: the narrowing to a DIFFERENT record needs one, and naming the same record does
+    // not. Both assertions read the same slot, so a second cast is the bug this pins.
+    expect(emitted.contents.match(/std::static_pointer_cast</gu)).toHaveLength(1);
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',

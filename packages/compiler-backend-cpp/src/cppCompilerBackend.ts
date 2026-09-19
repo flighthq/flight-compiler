@@ -5672,8 +5672,22 @@ function emitUnionMemberAssertionCpp(
     anonymousStructs: new Map(),
     includes: new Set(),
   });
+  // An assertion that names the union's own value type with a marker around it -- `mesh[key] as
+  // MeshRuntime | undefined` against a slot holding `Ref<EntityRuntime>` -- cannot match a slot by
+  // spelling, because the asserted target is the whole optional and the slot is the value inside it.
+  // When both sides are one-value unions of the same representation kind, the assertion is narrowing
+  // that single alternative, and the narrowing is a reference cast between two records. The cast is
+  // only built when BOTH spellings are references, so an assertion between unrelated forms still
+  // refuses rather than emitting something that cannot compile.
+  const assertedUnion = getIrUnionTypeCpp(assertedType, context, new Set());
+  const assertedPlan = assertedUnion ? getCppUnionRepresentationPlan(assertedUnion, context) : undefined;
+  const narrowing =
+    plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
+      ? getCppReferenceNarrowingCpp(plan.valueSlots[0]!.targetType, assertedPlan.valueSlots[0]!.targetType)
+      : undefined;
   const alternatives = plan.valueSlots.filter(
     (slot) =>
+      narrowing !== undefined ||
       slot.targetType === assertedTarget ||
       slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)),
   );
@@ -5692,9 +5706,34 @@ function emitUnionMemberAssertionCpp(
   const value = emitExpression(expression, context);
   if (plan.kind === 'singleValue') return value;
   context.includes.add(plan.kind === 'optionalSingle' ? 'optional' : 'variant');
-  if (plan.kind === 'optionalSingle') return `${value}.value()`;
+  if (plan.kind === 'optionalSingle') {
+    const cast = narrowing?.cast;
+    if (cast === undefined) return `${value}.value()`;
+    context.includes.add('memory');
+    return `std::static_pointer_cast<${cast}>(${value}.value())`;
+  }
   if (plan.kind === 'optionalVariant') return `std::get<${alternatives[0]!.targetType}>(${value}.value())`;
   return `std::get<${alternatives[0]!.targetType}>(${value})`;
+}
+
+// How an assertion relates the union's one value slot to the type it names. Both sides being references
+// is what makes the assertion answerable: `mesh[key] as MeshRuntime | undefined` reads a slot holding
+// `Ref<EntityRuntime>` and states the concrete runtime, and `as Base | undefined` on a union already
+// holding `Ref<Base>` states the same one. The first needs a cast, the second does not, and both are the
+// same slot. A side that is not a reference spelling -- a type parameter, a scalar -- has no pointer
+// cast and no answer here, so those still refuse rather than emitting something that cannot compile.
+function getCppReferenceNarrowingCpp(fromTarget: string, toTarget: string): Readonly<{ cast?: string }> | undefined {
+  const from = getCppReferenceElementTypeNameCpp(fromTarget);
+  const to = getCppReferenceElementTypeNameCpp(toTarget);
+  if (!from || !to) return undefined;
+  return from === to ? {} : { cast: to };
+}
+
+function getCppReferenceElementTypeNameCpp(target: string): string | undefined {
+  for (const prefix of ['flight::Ref<', 'std::shared_ptr<']) {
+    if (target.startsWith(prefix) && target.endsWith('>')) return target.slice(prefix.length, -1);
+  }
+  return undefined;
 }
 
 function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, context: EmitContext): string {
