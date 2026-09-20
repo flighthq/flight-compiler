@@ -3234,7 +3234,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const result = lower('symbol.ts', "export const key = Symbol('key');");
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('auto key = flight::Symbol(flight::String("key"))');
+    // Exact call-result evidence now names the storage. The direct constructor path must still avoid
+    // contextualizing the string as the source declaration's `string | number` parameter union.
+    expect(emitted.contents).toContain('flight::Symbol key = flight::Symbol(flight::String("key"))');
     expect(emitted.contents).not.toContain('flight::Symbol(std::variant');
   });
 
