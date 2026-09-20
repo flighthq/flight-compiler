@@ -734,6 +734,56 @@ describe('createCppCompilerBackend', () => {
     ).toContain('co_return v;');
   });
 
+  // The two halves have to hold in ONE function, or a fix that treats every async return the same way
+  // passes. `return await host.prompt()` reaches the target already awaited; `return host.prompt()` is
+  // the task itself and needs `co_await` for C++ to adopt it; `return { reason: 'ok' }` is neither.
+  it('awaits a bare task-returning call and not the literal beside it', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'async-task-call.ts',
+        `interface Outcome { readonly reason: string }
+         interface Host { prompt(): Promise<Outcome> }
+         export async function f(host: Readonly<Host>, flag: boolean): Promise<Outcome> {
+           if (flag) return host.prompt();
+           return { reason: 'ok' };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('co_return co_await flight::row_get<flight::RowKey<"prompt">>(host)()');
+    expect(emitted).toContain('co_return flight::make_ref<Outcome>(Outcome{.reason = flight::String("ok")})');
+    expect(emitted).not.toContain('co_await {');
+  });
+
+  // The identity boundary a cross-module fix has to respect. Two records that differ only in a literal
+  // discriminant erase to ONE C++ runtime domain, and the union plan says so deliberately: the emitted
+  // field type is `flight::String` for both, so one struct serves both arms and the plan is
+  // `singleValue` rather than a variant. A fix that keyed union alternatives on their emitted members
+  // alone would have to leave this exactly as it is -- and a fix that instead made the arms distinct
+  // would change a representation the plan already decided.
+  it('collapses records that differ only in a literal discriminant to one runtime domain', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'literal-discriminant-arms.ts',
+        `export type Left = { readonly kind: 'left'; readonly value: number };
+         export type Right = { readonly kind: 'right'; readonly value: number };
+         export function pick(kind: 'left' | 'right'): Left | Right {
+           if (kind === 'left') return { kind: 'left', value: 1 };
+           return { kind: 'right', value: 2 };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // One anonymous struct for the collapsed domain, named by every construction, and no variant.
+    const arms = [...emitted.matchAll(/^struct (kind_value_[0-9a-f]+) :/gmu)].map((match) => match[1]!);
+    expect(new Set(arms).size).toBe(1);
+    expect(emitted).toContain(`inline flight::Ref<${arms[0]}> pick(`);
+    expect(emitted.match(new RegExp(`flight::make_ref<${arms[0]}>\\(${arms[0]}\\{`, 'gu'))).toHaveLength(2);
+    expect(emitted).not.toContain('std::variant');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
