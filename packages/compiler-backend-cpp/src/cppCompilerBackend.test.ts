@@ -5143,6 +5143,124 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('clones and strips a constrained entity through its PropertyKey record view', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime { binding: object | null }
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;
+       export interface Widget extends Entity { count: number; label: string }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const clone = ts.createSourceFile(
+      '/flight/packages/entity/src/clone.ts',
+      `import type { Entity, EntityWithoutRuntime } from '@flighthq/types/contract';
+       import { EntityRuntimeKey } from '@flighthq/types/contract';
+       export function cloneEntity<Type extends Entity>(source: Readonly<Type>): Type {
+         const copy = { ...source } as Record<PropertyKey, unknown>;
+         copy[EntityRuntimeKey] = undefined;
+         return copy as Type;
+       }
+       export function stripEntityRuntime<Type extends Entity>(source: Readonly<Type>): EntityWithoutRuntime<Type> {
+         const copy = { ...source } as Record<PropertyKey, unknown>;
+         delete copy[EntityRuntimeKey];
+         return copy as unknown as EntityWithoutRuntime<Type>;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/entity', sourceFile: clone, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain(
+      'flight::StructuralRef<flight::RowWritable<flight::RowOf<Type>>> copy = flight::StructuralRef<flight::RowWritable<flight::RowOf<Type>>>(flight::make_ref<typename Type::element_type>(*flight::structural_ref_cast<Type>(source)))',
+    );
+    expect(emitted.match(/flight::row_set\(copy, flighthq_types::entity_runtime_key, std::nullopt\)/gu)).toHaveLength(
+      2,
+    );
+    expect(emitted).toContain('return flight::structural_ref_cast<Type>(copy);');
+    expect(emitted).toContain('return flight::structural_ref_cast<flighthq_types::EntityWithoutRuntime<Type>>(copy);');
+    expect(emitted).not.toContain('flight::Any');
+    expect(emitted).not.toContain('flight::Record');
+  });
+
+  it('refuses record clone views without the exact generic row, keys, values, and symbol property', () => {
+    const source = (constraint: string, record: string, assignment = 'copy[EntityRuntimeKey] = undefined;'): string =>
+      `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       const ForeignRuntimeKey = Symbol.for('ForeignRuntime');
+       interface EntityRuntime { binding: object | null }
+       ${constraint}
+       export function clone<Type extends Constraint>(source: Readonly<Type>): Type {
+         const copy = { ...source } as ${record};
+         ${assignment}
+         return copy as unknown as Type;
+       }`;
+    const failures = [
+      lower(
+        'string-key-clone.ts',
+        source('interface Constraint { [EntityRuntimeKey]: EntityRuntime | undefined }', 'Record<string, unknown>'),
+      ),
+      lower(
+        'known-value-clone.ts',
+        source('interface Constraint { [EntityRuntimeKey]: EntityRuntime | undefined }', 'Record<PropertyKey, string>'),
+      ),
+      lower(
+        'missing-symbol-clone.ts',
+        source('interface Constraint { label: string }', 'Record<PropertyKey, unknown>'),
+      ),
+      lower('unconstrained-clone.ts', source('type Constraint = object', 'Record<PropertyKey, unknown>', '')),
+    ];
+    for (const result of failures) {
+      expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+        'structural-row projection requires a represented object-reference target',
+      );
+    }
+
+    const foreign = lower(
+      'foreign-symbol-clone.ts',
+      source('interface Constraint { [ForeignRuntimeKey]: EntityRuntime | undefined }', 'Record<PropertyKey, unknown>'),
+    );
+    const foreignFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(foreign.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(foreignFailure.rule).toBe('cpp-structural-row-computed-write-unproven');
+
+    const arbitrary = lower(
+      'arbitrary-record-assertion.ts',
+      `interface Entity { value: number }
+       export function coerce<Type extends Entity>(value: Record<PropertyKey, unknown>): Type {
+         return value as unknown as Type;
+       }`,
+    );
+    expect(() => emitIrModuleCpp(arbitrary.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'generic Record assertion requires a proven cloned structural-row identity',
+    );
+  });
+
   it('does not nest references around structural aliases instantiated with intersections', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/Entity.ts',

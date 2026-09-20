@@ -151,6 +151,13 @@ interface CppWeakMapViewPlan {
   readonly value: Readonly<IrType>;
 }
 
+interface CppStructuralCloneRecordViewPlan {
+  readonly row: Readonly<CompilerCppStructuralRowPlan>;
+  readonly source: Readonly<IrExpression>;
+  readonly sourceType: Readonly<IrType>;
+  readonly typeParameter: Readonly<IrType>;
+}
+
 type CppDirectBindingOwner = Readonly<{ declaration: IrDeclaration; module: IrModule }>;
 type CppImportBindingOwner = Readonly<{ imported: string; module: IrModule; specifier: string }>;
 
@@ -197,6 +204,7 @@ interface EmitContext {
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
   sourceModules: readonly Readonly<IrModule>[];
   structuralCastBindingRows: ReadonlyMap<string, Readonly<CompilerCppStructuralRowPlan>>;
+  structuralCloneRecordBindingIds: ReadonlySet<string>;
   targetNameMaps: ReadonlyMap<string, ReadonlyMap<string, string>>;
   targetNames: ReadonlyMap<string, string>;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
@@ -318,6 +326,7 @@ function emitIrModuleCppWithContext(
   const uninitializedCaptureStorageBindingIds = collectIrModuleUninitializedBindingIdsCpp(module);
   const preservedInitializerTypes = collectCppExplicitCollectionConstructionBindingTypesCpp(module);
   const structuralCastBindingRows = new Map<string, Readonly<CompilerCppStructuralRowPlan>>();
+  const structuralCloneRecordBindingIds = new Set<string>();
   const erasedDynamicStorageBindingIds = new Set<string>();
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
@@ -354,6 +363,7 @@ function emitIrModuleCppWithContext(
     sharedCaptureTargetNames,
     sourceModules,
     structuralCastBindingRows,
+    structuralCloneRecordBindingIds,
     targetNameMaps: targetNameMaps ?? createCppTargetNameMaps(sourceModules),
     targetNames,
     uninitializedCaptureStorageBindingIds,
@@ -362,7 +372,11 @@ function emitIrModuleCppWithContext(
   for (const [bindingId, targetType] of collectCppContextualBindingStorageTargetTypesCpp(module, context)) {
     contextualBindingStorageTargetTypes.set(bindingId, targetType);
   }
-  for (const [bindingId, row] of collectCppStructuralCastBindingRowsCpp(module, context)) {
+  for (const [bindingId, row] of collectCppStructuralCastBindingRowsCpp(
+    module,
+    context,
+    structuralCloneRecordBindingIds,
+  )) {
     structuralCastBindingRows.set(bindingId, row);
   }
   analyzeIrModuleTraversal(module, {
@@ -1781,11 +1795,18 @@ function collectCppExplicitCollectionConstructionBindingTypesCpp(
 function collectCppStructuralCastBindingRowsCpp(
   module: Readonly<IrModule>,
   context: EmitContext,
+  structuralCloneRecordBindingIds: Set<string>,
 ): ReadonlyMap<string, Readonly<CompilerCppStructuralRowPlan>> {
   const rows = new Map<string, Readonly<CompilerCppStructuralRowPlan>>();
   analyzeIrModuleTraversal(module, {
     variable(variable) {
       if (!('binding' in variable) || variable.initializer?.kind !== 'cast') return;
+      const structuralCloneRecordView = getCppStructuralCloneRecordViewPlanCpp(variable.initializer, context);
+      if (structuralCloneRecordView) {
+        rows.set(variable.binding.id, structuralCloneRecordView.row);
+        structuralCloneRecordBindingIds.add(variable.binding.id);
+        return;
+      }
       const sourceType = getIrExpressionTypeEvidenceCpp(variable.initializer.expression, context);
       if (!sourceType || !context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module)) {
         return;
@@ -2403,14 +2424,32 @@ function emitExpression(
         }
         emissionError(context, 'erased WeakMap assertion target requires an approved typed WeakMap view');
       }
+      const structuralCloneRecordView = getCppStructuralCloneRecordViewPlanCpp(expression, context);
+      if (structuralCloneRecordView) {
+        const typeParameter = emitType(structuralCloneRecordView.typeParameter, context);
+        const source = emitExpression(structuralCloneRecordView.source, context, structuralCloneRecordView.sourceType);
+        context.includes.add('flight/structural_ref.hpp');
+        return `${emitCppStructuralRowReferenceTypeCpp(structuralCloneRecordView.row, context)}(flight::make_ref<typename ${typeParameter}::element_type>(*flight::structural_ref_cast<${typeParameter}>(${source})))`;
+      }
+      const structuralCloneRecovery = emitCppStructuralCloneRecordRecoveryCpp(expression, context);
+      if (structuralCloneRecovery) return structuralCloneRecovery;
+      if (isCppUnprovenGenericRecordAssertionCpp(expression, context)) {
+        emissionError(
+          context,
+          'generic Record assertion requires a proven cloned structural-row identity',
+          'cpp-generic-record-assertion-unproven',
+        );
+      }
       const structuralTarget = context.referenceRepresentationPlanner.resolveStructuralRow(
         expression.type,
         context.module,
       );
       const structuralSourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
-      const structuralSource = structuralSourceType
-        ? context.referenceRepresentationPlanner.resolveStructuralRow(structuralSourceType, context.module)
-        : undefined;
+      const structuralSource =
+        getCppStructuralRowExpressionPlanCpp(expression.expression, context) ??
+        (structuralSourceType
+          ? context.referenceRepresentationPlanner.resolveStructuralRow(structuralSourceType, context.module)
+          : undefined);
       const structuralProjectionTarget = structuralSource
         ? getCppStructuralProjectionRowCpp(expression.type, context)
         : undefined;
@@ -3128,6 +3167,8 @@ function emitExpression(
         : emitCppInlineTupleConstructionCpp(elements, context);
     }
     case 'unary': {
+      const structuralRowDelete = emitCppStructuralRowDeleteCpp(expression, context);
+      if (structuralRowDelete) return structuralRowDelete;
       const nullishNegation = emitCppNullishObjectNegation(expression, context);
       if (nullishNegation) return nullishNegation;
       if (
@@ -3374,6 +3415,198 @@ function getCppStructuralRowObjectTypeCpp(row: Readonly<CompilerCppStructuralRow
   return sources.every((source) => normalizeCompilerStructuralValueCanonical(source!) === canonical)
     ? sources[0]
     : undefined;
+}
+
+function getCppStructuralCloneRecordViewPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): CppStructuralCloneRecordViewPlan | undefined {
+  // A generic object spread has one representation proof a plain Record does not: a constrained
+  // Flight reference names the concrete C++ referent at template instantiation. Copy that referent
+  // into fresh ownership and retain its row; do not turn arbitrary Record assertions into this path.
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    !isCppUnknownRecordTypeCpp(expression.type, 'PropertyKey') ||
+    expression.expression.kind !== 'object' ||
+    expression.expression.members.length !== 1 ||
+    expression.expression.members[0]?.kind !== 'spread'
+  ) {
+    return undefined;
+  }
+  const source = expression.expression.members[0].expression;
+  const sourceType = getIrExpressionTypeEvidenceCpp(source, context);
+  const typeParameter = getCppReadonlyBareTypeParameterCpp(sourceType);
+  const sourceRow = sourceType
+    ? context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module)
+    : undefined;
+  const sourceObject = sourceRow ? getCppStructuralRowObjectTypeCpp(sourceRow) : undefined;
+  const declaration = typeParameter ? getCppTypeParameterDeclarationCpp(typeParameter, context) : undefined;
+  const constraintProperties = declaration?.constraint
+    ? context.referenceRepresentationPlanner.resolveObjectShape(declaration.constraint, context.module)
+    : undefined;
+  if (
+    !sourceType ||
+    !typeParameter ||
+    !sourceRow ||
+    !sourceObject ||
+    normalizeCompilerStructuralValueCanonical(sourceObject) !==
+      normalizeCompilerStructuralValueCanonical(typeParameter) ||
+    !declaration?.constraint ||
+    !hasFlightReferenceRepresentationCpp(declaration.constraint, context) ||
+    !constraintProperties?.some(
+      (property) => property.computedKey && (property.optional || hasIrTypeAbsentMember(property.type)),
+    )
+  ) {
+    return undefined;
+  }
+  return {
+    row: { kind: 'writable', row: { kind: 'rowOf', type: typeParameter } },
+    source,
+    sourceType,
+    typeParameter,
+  };
+}
+
+function emitCppStructuralCloneRecordRecoveryCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): string | undefined {
+  // Only the binding recorded by the clone construction above may recover its original generic
+  // identity. Matching row spellings alone would make an unrelated `as Type` assertion a cast rule.
+  const source =
+    expression.expression.kind === 'cast' &&
+    expression.expression.type.kind === 'unknown' &&
+    expression.expression.type.source === 'unknown'
+      ? expression.expression.expression
+      : expression.expression;
+  if (source.kind !== 'identifier' || source.reference.kind !== 'binding') return undefined;
+  if (!context.structuralCloneRecordBindingIds.has(source.reference.binding.id)) return undefined;
+  const row = context.structuralCastBindingRows.get(source.reference.binding.id);
+  const sourceObject = row ? getCppStructuralRowObjectTypeCpp(row) : undefined;
+  const targetObject = getCppReferencePreservingProjectionSubjectCpp(expression.type, context);
+  if (
+    !row ||
+    !sourceObject ||
+    !targetObject ||
+    normalizeCompilerStructuralValueCanonical(sourceObject) !== normalizeCompilerStructuralValueCanonical(targetObject)
+  ) {
+    return undefined;
+  }
+  context.includes.add('flight/structural_ref.hpp');
+  return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitExpression(source, context)})`;
+}
+
+function getCppReferencePreservingProjectionSubjectCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'binding' &&
+    type.reference.binding.kind === 'typeParameter' &&
+    type.reference.path.length === 0 &&
+    type.typeArguments.length === 0
+  ) {
+    return type;
+  }
+  const target =
+    type.kind === 'named' && type.reference.kind === 'binding' ? resolveCppTypeAliasTarget(type, context) : type;
+  if (
+    target?.kind !== 'named' ||
+    target.reference.kind !== 'ambient' ||
+    target.reference.name !== 'Omit' ||
+    target.typeArguments.length !== 2 ||
+    !target.typeArguments[0]
+  ) {
+    return undefined;
+  }
+  return hasFlightReferenceRepresentationCpp(target.typeArguments[0], context) ? target.typeArguments[0] : undefined;
+}
+
+function isCppUnprovenGenericRecordAssertionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): boolean {
+  if (
+    expression.type.kind !== 'named' ||
+    expression.type.reference.kind !== 'binding' ||
+    expression.type.reference.binding.kind !== 'typeParameter' ||
+    expression.type.reference.path.length !== 0 ||
+    expression.type.typeArguments.length !== 0
+  ) {
+    return false;
+  }
+  const source =
+    expression.expression.kind === 'cast' &&
+    expression.expression.type.kind === 'unknown' &&
+    expression.expression.type.source === 'unknown'
+      ? expression.expression.expression
+      : expression.expression;
+  const sourceType = getIrExpressionTypeEvidenceCpp(source, context);
+  return Boolean(getCppRecordTypeArgumentsCpp(sourceType, context, new Set()));
+}
+
+function isCppUnknownRecordTypeCpp(type: Readonly<IrType>, key: 'PropertyKey' | 'string'): boolean {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'ambient' ||
+    type.reference.name !== 'Record' ||
+    type.typeArguments.length !== 2 ||
+    type.typeArguments[1]?.kind !== 'unknown' ||
+    type.typeArguments[1].source !== 'unknown'
+  ) {
+    return false;
+  }
+  const keyType = type.typeArguments[0];
+  return key === 'string'
+    ? keyType?.kind === 'primitive' && keyType.name === 'string'
+    : keyType?.kind === 'named' &&
+        keyType.reference.kind === 'ambient' &&
+        keyType.reference.name === 'PropertyKey' &&
+        keyType.typeArguments.length === 0;
+}
+
+function getCppReadonlyBareTypeParameterCpp(type: Readonly<IrType> | undefined): Readonly<IrType> | undefined {
+  if (
+    type?.kind !== 'named' ||
+    type.reference.kind !== 'ambient' ||
+    type.reference.name !== 'Readonly' ||
+    type.typeArguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const argument = type.typeArguments[0];
+  return argument?.kind === 'named' &&
+    argument.reference.kind === 'binding' &&
+    argument.reference.binding.kind === 'typeParameter' &&
+    argument.reference.path.length === 0 &&
+    argument.typeArguments.length === 0
+    ? argument
+    : undefined;
+}
+
+function getCppTypeParameterDeclarationCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<IrTypeParameter> | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind !== 'typeParameter' ||
+    type.reference.path.length !== 0 ||
+    type.typeArguments.length !== 0
+  ) {
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  const active = context.anonymousStructTypeParameters.find((parameter) => parameter.binding.id === bindingId);
+  if (active) return active;
+  for (const declaration of context.module.declarations) {
+    if (!('typeParameters' in declaration)) continue;
+    const parameter = declaration.typeParameters.find((candidate) => candidate.binding.id === bindingId);
+    if (parameter) return parameter;
+  }
+  return undefined;
 }
 
 function hasCppStructuralRowObjectProjectionCpp(
@@ -8262,6 +8495,29 @@ function getComputedSymbolElementPropertyCpp(
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+function getCppStructuralRowComputedPropertyCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): Readonly<IrObjectTypeProperty> | undefined {
+  if (expression.semantics.key !== 'symbol') return undefined;
+  const key = getIrExpressionValueNameReferenceCpp(expression.index);
+  const row = getCppStructuralRowExpressionPlanCpp(expression.object, context);
+  const objectType = row ? getCppStructuralRowObjectTypeCpp(row) : undefined;
+  if (!key || !objectType) return undefined;
+  const typeParameterConstraint = getCppTypeParameterDeclarationCpp(objectType, context)?.constraint;
+  const properties =
+    context.referenceRepresentationPlanner.resolveObjectShape(objectType, context.module) ??
+    (typeParameterConstraint
+      ? context.referenceRepresentationPlanner.resolveObjectShape(typeParameterConstraint, context.module)
+      : undefined);
+  if (!properties) return undefined;
+  const keyName = getCppComputedPropertySourceName(key, context);
+  const matches = properties.filter(
+    (property) => property.computedKey && getCppComputedPropertySourceName(property.computedKey, context) === keyName,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 function getIrExpressionValueNameReferenceCpp(
   expression: Readonly<IrExpression>,
 ): Readonly<IrValueNameReference> | undefined {
@@ -9919,10 +10175,55 @@ function emitCppStructuralRowAssignment(
     return `flight::row_set<flight::RowKey<${JSON.stringify(target.name)}>>(${emitExpression(target.object, context)}, ${value})`;
   }
   if (target.kind === 'element' && getCppStructuralRowExpressionPlanCpp(target.object, context)) {
+    if (
+      target.semantics.key === 'symbol' &&
+      target.object.kind === 'identifier' &&
+      target.object.reference.kind === 'binding' &&
+      context.structuralCloneRecordBindingIds.has(target.object.reference.binding.id) &&
+      !getCppStructuralRowComputedPropertyCpp(target, context)
+    ) {
+      emissionError(
+        context,
+        'computed structural-row write requires one declared symbol property',
+        'cpp-structural-row-computed-write-unproven',
+      );
+    }
     context.includes.add('flight/structural_ref.hpp');
     return `flight::row_set(${emitExpression(target.object, context)}, ${emitExpression(target.index, context)}, ${value})`;
   }
   return undefined;
+}
+
+function emitCppStructuralRowDeleteCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'unary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.operator !== 'delete' ||
+    expression.operand.kind !== 'element' ||
+    getCppRuntimeProfile(context.options) !== 'flight-cpp'
+  ) {
+    return undefined;
+  }
+  const property = getCppStructuralRowComputedPropertyCpp(expression.operand, context);
+  if (
+    !property &&
+    expression.operand.object.kind === 'identifier' &&
+    expression.operand.object.reference.kind === 'binding' &&
+    context.structuralCloneRecordBindingIds.has(expression.operand.object.reference.binding.id)
+  ) {
+    emissionError(
+      context,
+      'computed structural-row delete requires one declared optional symbol property',
+      'cpp-structural-row-computed-delete-unproven',
+    );
+  }
+  if (!property || (!property.optional && !hasIrTypeAbsentMember(property.type))) return undefined;
+  const target = emitExpression(expression.operand.object, context);
+  const key = emitExpression(expression.operand.index, context);
+  const absent = emitUndefinedWithExpectedTypeCpp(property.type, context);
+  context.includes.add('flight/structural_ref.hpp');
+  return `([&]() { flight::row_set(${target}, ${key}, ${absent}); return true; }())`;
 }
 
 function getSharedCaptureTargetNameCpp(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
@@ -10240,7 +10541,13 @@ function getIrAssignmentTargetTypeCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  return getIrExpressionBindingTypeCpp(expression, context) ?? getIrExpressionTypeEvidenceCpp(expression, context);
+  const structuralProperty =
+    expression.kind === 'element' ? getCppStructuralRowComputedPropertyCpp(expression, context) : undefined;
+  return (
+    structuralProperty?.type ??
+    getIrExpressionBindingTypeCpp(expression, context) ??
+    getIrExpressionTypeEvidenceCpp(expression, context)
+  );
 }
 
 function getIrExpressionBindingTypeCpp(
