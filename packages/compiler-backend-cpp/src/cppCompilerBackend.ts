@@ -5187,9 +5187,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         }
       }
       if (sourceName === 'Exclude') {
-        const excluded = getCppExcludedType(type.typeArguments, context);
-        if (!excluded) emissionError(context, 'Exclude types require closed C++ type computation lowering');
-        return emitType(excluded, context, representation);
+        return emitType(getCppExcludedType(type.typeArguments, context), context, representation);
       }
       // `NoInfer<T>` withholds a position from TypeScript's inference and is otherwise exactly `T`:
       // it states nothing about the value the position holds. C++ has no inference to withhold, so
@@ -5584,64 +5582,213 @@ function getCppKeyofType(type: Readonly<IrType>, context: EmitContext): Readonly
   return createCppClosedTypeUnion(keyTypes);
 }
 
-function getCppExcludedType(
-  typeArguments: readonly Readonly<IrType>[],
-  context: EmitContext,
-): Readonly<IrType> | undefined {
-  if (typeArguments.length !== 2 || !typeArguments[0] || !typeArguments[1]) return undefined;
-  const included = getCppClosedTypeMembers(typeArguments[0], context);
-  const excluded = getCppClosedTypeMembers(typeArguments[1], context);
-  if (!included || !excluded) return undefined;
-  return createCppClosedTypeUnion(
-    included.filter((member) => !excluded.some((candidate) => isCppClosedTypeAssignable(member, candidate))),
-  );
+function getCppExcludedType(typeArguments: readonly Readonly<IrType>[], context: EmitContext): Readonly<IrType> {
+  if (typeArguments.length !== 2 || !typeArguments[0] || !typeArguments[1]) {
+    emissionError(context, 'Exclude<T, U> requires exactly two type arguments', 'cpp-exclude-argument-count');
+  }
+  const included = getCppClosedTypeDomain(typeArguments[0], context);
+  const excluded = getCppClosedTypeDomain(typeArguments[1], context);
+  if (included.kind === 'refused') {
+    const rule =
+      included.reason === 'open'
+        ? 'cpp-exclude-open-domain'
+        : included.reason === 'mismatch'
+          ? 'cpp-exclude-domain-mismatch'
+          : 'cpp-exclude-unresolved-domain';
+    emissionError(context, `Exclude types require closed C++ type computation: ${included.message}`, rule);
+  }
+  if (excluded.kind === 'refused') {
+    const rule =
+      excluded.reason === 'open'
+        ? 'cpp-exclude-open-domain'
+        : excluded.reason === 'mismatch'
+          ? 'cpp-exclude-domain-mismatch'
+          : 'cpp-exclude-unresolved-domain';
+    emissionError(context, `Exclude types require closed C++ type computation: ${excluded.message}`, rule);
+  }
+  if (included.category && excluded.category && included.category !== excluded.category) {
+    emissionError(
+      context,
+      `Exclude cannot compare ${included.category} and ${excluded.category} C++ type domains`,
+      'cpp-exclude-domain-mismatch',
+    );
+  }
+  const surviving: Readonly<IrType>[] = [];
+  for (const member of included.members) {
+    let removed = false;
+    for (const candidate of excluded.members) {
+      const assignability = getCppClosedTypeAssignability(member, candidate, included.category, context);
+      if (assignability === 'indeterminate') {
+        emissionError(
+          context,
+          'Exclude object member assignability requires unresolved semantic evidence',
+          'cpp-exclude-assignability-indeterminate',
+        );
+      }
+      if (assignability === 'compatible') {
+        removed = true;
+        break;
+      }
+    }
+    if (!removed) surviving.push(member);
+  }
+  return createCppClosedTypeUnion(surviving);
 }
 
-function getCppClosedTypeMembers(
+type CppClosedTypeDomainCategory = 'object' | 'scalar';
+
+type CppClosedTypeDomain =
+  | Readonly<{
+      category: CppClosedTypeDomainCategory | undefined;
+      kind: 'resolved';
+      members: readonly Readonly<IrType>[];
+    }>
+  | Readonly<{ kind: 'refused'; message: string; reason: 'mismatch' | 'open' | 'unresolved' }>;
+
+function getCppClosedTypeDomain(
   type: Readonly<IrType>,
   context: EmitContext,
   resolvingAliases: ReadonlySet<string> = new Set(),
-): readonly Readonly<IrType>[] | undefined {
+): CppClosedTypeDomain {
   if (
     type.kind === 'named' &&
     type.reference.kind === 'ambient' &&
     type.reference.name === 'PropertyKey' &&
     type.typeArguments.length === 0
   ) {
-    return getCppClosedTypeMembers(createCppPropertyKeyTypeCpp(), context, resolvingAliases);
+    return getCppClosedTypeDomain(createCppPropertyKeyTypeCpp(), context, resolvingAliases);
   }
   if (type.kind === 'keyof' || type.kind === 'typeOf') {
     const resolved = type.kind === 'keyof' ? getCppKeyofType(type.type, context) : getCppTypeOfValueType(type, context);
-    return resolved ? getCppClosedTypeMembers(resolved, context, resolvingAliases) : undefined;
+    return resolved
+      ? getCppClosedTypeDomain(resolved, context, resolvingAliases)
+      : { kind: 'refused', message: `${type.kind} domain is unresolved`, reason: 'unresolved' };
   }
   if (type.kind === 'named' && type.reference.kind === 'binding') {
+    if (type.reference.binding.kind === 'typeParameter') {
+      return {
+        kind: 'refused',
+        message: `type parameter ${type.reference.binding.name} is open`,
+        reason: 'open',
+      };
+    }
     const bindingId = type.reference.binding.id;
-    if (resolvingAliases.has(bindingId)) return undefined;
+    if (resolvingAliases.has(bindingId)) {
+      return {
+        kind: 'refused',
+        message: `type alias ${type.reference.binding.name} is recursive`,
+        reason: 'unresolved',
+      };
+    }
     const alias = resolveCppTypeAliasTarget(type, context);
     if (alias) {
       const nextResolvingAliases = new Set(resolvingAliases);
       nextResolvingAliases.add(bindingId);
-      return getCppClosedTypeMembers(alias, context, nextResolvingAliases);
+      return getCppClosedTypeDomain(alias, context, nextResolvingAliases);
     }
   }
-  if (type.kind === 'never') return [];
+  if (type.kind === 'never') return { category: undefined, kind: 'resolved', members: [] };
   if (type.kind === 'union') {
-    const members = type.types.map((member) => getCppClosedTypeMembers(member, context, resolvingAliases));
-    return members.some((member) => !member) ? undefined : members.flatMap((member) => member!);
+    const domains = type.types.map((member) => getCppClosedTypeDomain(member, context, resolvingAliases));
+    const resolvedDomains: Extract<CppClosedTypeDomain, { kind: 'resolved' }>[] = [];
+    for (const domain of domains) {
+      if (domain.kind === 'refused') return domain;
+      resolvedDomains.push(domain);
+    }
+    const categories = new Set(
+      resolvedDomains.map((domain) => domain.category).filter((category) => category !== undefined),
+    );
+    if (categories.size > 1) {
+      return { kind: 'refused', message: 'one type domain mixes primitive and object members', reason: 'mismatch' };
+    }
+    return {
+      category: categories.values().next().value,
+      kind: 'resolved',
+      members: resolvedDomains.flatMap((domain) => domain.members),
+    };
   }
-  return type.kind === 'literal' || type.kind === 'null' || type.kind === 'primitive' || type.kind === 'undefined'
-    ? [type]
-    : undefined;
+  if (type.kind === 'literal' || type.kind === 'null' || type.kind === 'primitive' || type.kind === 'undefined') {
+    return { category: 'scalar', kind: 'resolved', members: [type] };
+  }
+  const openTypeParameter = getCppOpenTypeParameterName(type);
+  if (openTypeParameter) {
+    return { kind: 'refused', message: `type parameter ${openTypeParameter} is open`, reason: 'open' };
+  }
+  if (context.referenceRepresentationPlanner.resolveObjectShape(type, context.module)) {
+    return { category: 'object', kind: 'resolved', members: [type] };
+  }
+  return { kind: 'refused', message: `${type.kind} domain is unresolved`, reason: 'unresolved' };
 }
 
-function isCppClosedTypeAssignable(source: Readonly<IrType>, target: Readonly<IrType>): boolean {
-  if (target.kind === 'primitive') {
-    if (source.kind === 'primitive') return source.name === target.name;
-    if (source.kind !== 'literal') return false;
-    return typeof source.value === target.name;
+function getCppOpenTypeParameterName(type: Readonly<IrType>): string | undefined {
+  switch (type.kind) {
+    case 'array':
+      return getCppOpenTypeParameterName(type.element);
+    case 'conditionalFacet':
+      return getCppOpenTypeParameterName(type.check) ?? getCppOpenTypeParameterName(type.facet);
+    case 'function':
+      return (
+        getCppOpenTypeParameterNameFromTypes(type.parameters.map((parameter) => parameter.type)) ??
+        getCppOpenTypeParameterName(type.returns)
+      );
+    case 'indexedAccess':
+      return getCppOpenTypeParameterName(type.object) ?? getCppOpenTypeParameterName(type.index);
+    case 'intersection':
+    case 'union':
+      return getCppOpenTypeParameterNameFromTypes(type.types);
+    case 'keyof':
+      return getCppOpenTypeParameterName(type.type);
+    case 'named':
+      return type.reference.kind === 'binding' && type.reference.binding.kind === 'typeParameter'
+        ? type.reference.binding.name
+        : getCppOpenTypeParameterNameFromTypes(type.typeArguments);
+    case 'object':
+      return getCppOpenTypeParameterNameFromTypes(type.properties.map((property) => property.type));
+    case 'tuple':
+      return getCppOpenTypeParameterNameFromTypes(type.elements.map((element) => element.type));
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'typeOf':
+    case 'undefined':
+    case 'unknown':
+      return undefined;
   }
-  if (target.kind === 'literal') return source.kind === 'literal' && Object.is(source.value, target.value);
-  return source.kind === target.kind;
+}
+
+function getCppOpenTypeParameterNameFromTypes(types: readonly Readonly<IrType>[]): string | undefined {
+  for (const type of types) {
+    const name = getCppOpenTypeParameterName(type);
+    if (name) return name;
+  }
+  return undefined;
+}
+
+function getCppClosedTypeAssignability(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  category: CppClosedTypeDomainCategory | undefined,
+  context: EmitContext,
+): 'compatible' | 'incompatible' | 'indeterminate' {
+  if (category === 'object') {
+    const sourceProperties = context.referenceRepresentationPlanner.resolveObjectShape(source, context.module);
+    const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(target, context.module);
+    if (!sourceProperties || !targetProperties) return 'indeterminate';
+    return analyzeIrTypeStructuralAssignability(
+      { kind: 'object', properties: sourceProperties },
+      { kind: 'object', properties: targetProperties },
+    ).status;
+  }
+  if (target.kind === 'primitive') {
+    if (source.kind === 'primitive') return source.name === target.name ? 'compatible' : 'incompatible';
+    if (source.kind !== 'literal') return 'incompatible';
+    return typeof source.value === target.name ? 'compatible' : 'incompatible';
+  }
+  if (target.kind === 'literal') {
+    return source.kind === 'literal' && Object.is(source.value, target.value) ? 'compatible' : 'incompatible';
+  }
+  return source.kind === target.kind ? 'compatible' : 'incompatible';
 }
 
 function createCppClosedTypeUnion(types: readonly Readonly<IrType>[]): Readonly<IrType> {

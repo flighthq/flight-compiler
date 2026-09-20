@@ -14174,6 +14174,49 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('Exclude<');
   });
 
+  it('emits the closed object union that survives a direct exclusion', () => {
+    const result = lower(
+      'tray-result.ts',
+      `export type TrayImageUpdateResult =
+         | { outcome: 'updated' }
+         | { outcome: 'tray-destroyed' }
+         | { error?: unknown; outcome: 'invalid-icon' }
+         | { error?: unknown; outcome: 'image-update-failed' };
+       export type TrayAnimationStartResult =
+         | { outcome: 'started'; release: () => void }
+         | { outcome: 'empty' }
+         | Exclude<TrayImageUpdateResult, { outcome: 'updated' }>;`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toMatch(/using TrayAnimationStartResult = std::variant<[^;]+>;/u);
+    expect(emitted.contents).not.toContain('Exclude<');
+  });
+
+  it('names exclusions whose domains are open, unresolved, or from different runtime categories', () => {
+    const open = lower(
+      'open-exclusion.ts',
+      'export type Open<T> = Exclude<{ readonly value: T }, { readonly value: string }>;',
+    );
+    const unresolved = lower(
+      'unresolved-exclusion.ts',
+      'export type Unresolved = Exclude<Promise<string>, Promise<number>>;',
+    );
+    const mismatched = lower(
+      'mismatched-exclusion.ts',
+      "export type Mismatched = Exclude<'updated', { outcome: 'updated' }>;",
+    );
+
+    expect(captureBackendEmissionFailure(() => emitIrModuleCpp(open.module)).rule).toBe('cpp-exclude-open-domain');
+    expect(captureBackendEmissionFailure(() => emitIrModuleCpp(unresolved.module)).rule).toBe(
+      'cpp-exclude-unresolved-domain',
+    );
+    expect(captureBackendEmissionFailure(() => emitIrModuleCpp(mismatched.module)).rule).toBe(
+      'cpp-exclude-domain-mismatch',
+    );
+  });
+
   it('distributes a union that arrives as the alias naming it', () => {
     const result = lower(
       'union-alias.ts',
