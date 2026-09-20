@@ -15497,6 +15497,105 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('std::optional<flight::String>');
   });
 
+  it('reads an imported own member without treating an unresolved inherited shape as complete', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './TextLabelData',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/TextLabelData.ts' },
+        },
+        {
+          specifier: './RichText',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RichText.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/TextLabelData.ts',
+            'export interface TextLabelData { inherited: string }',
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/RichText.ts',
+            `import type { TextLabelData } from './TextLabelData';
+             export interface RichTextData extends TextLabelData { multiline: boolean; textColor: number }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            "export * from './RichText';",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/textlayout',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/textlayout/src/own.ts',
+            `import type { RichTextData } from '@flighthq/types/contract';
+             interface Result { multiline: boolean | null; textColor: number | null }
+             export function read(data: Readonly<RichTextData>): Result {
+               return { multiline: data.multiline, textColor: data.textColor };
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/textlayout',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/textlayout/src/inherited.ts',
+            `import type { RichTextData } from '@flighthq/types/contract';
+             interface Result { inherited: string | null }
+             export function read(data: Readonly<RichTextData>): Result { return { inherited: data.inherited }; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    // The source graph is valid, but the emission graph deliberately omits the inherited declaration:
+    // this is the boundary at which the complete shape is unavailable while RichTextData's own
+    // declaration remains uniquely reachable through the contract barrel.
+    const emissionModules = modules.slice(1);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules: emissionModules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const own = session.emitModule(modules[3]!)[0]!.contents;
+    const inheritedFailure = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(own).toContain('std::optional<bool>{flight::row_get<flight::RowKey<"multiline">>(data)}');
+    expect(own).toContain('std::optional<double>{flight::row_get<flight::RowKey<"textColor">>(data)}');
+    expect(inheritedFailure.message).toContain('optionalSingle construction requires expression type evidence');
+  });
+
   it('refuses an Extract that reached emission unresolved', () => {
     const result = lower(
       'cube-texture-open.ts',

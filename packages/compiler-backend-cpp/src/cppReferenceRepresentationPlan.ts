@@ -150,6 +150,11 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
       if (!subject) throw new TypeError('C++ object-shape subject must belong to the explicit module set');
       return resolveIrTypeObjectShapeCpp(type, subject, moduleSet, resolutionCache, new Set());
     },
+    resolveOwnObjectProperty(type: Readonly<IrType>, propertyName: string, module: Readonly<IrModule>) {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ own-property subject must belong to the explicit module set');
+      return resolveIrTypeOwnObjectPropertyCpp(type, propertyName, subject, moduleSet, resolutionCache);
+    },
     resolveStructuralRow(type: Readonly<IrType>, module: Readonly<IrModule>) {
       const subject = getReferenceModuleRecordCpp(module, moduleSet);
       if (!subject) throw new TypeError('C++ structural-row subject must belong to the explicit module set');
@@ -157,6 +162,48 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
     },
     schema: 'flight-compiler-cpp-reference-representation-planner/1',
   });
+}
+
+function resolveIrTypeOwnObjectPropertyCpp(
+  type: Readonly<IrType>,
+  propertyName: string,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+): Readonly<IrObjectTypeProperty> | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const resolution = getReferenceDeclarationResolutionCpp(type.reference, module, moduleSet, cache);
+  if (resolution.kind !== 'location') return undefined;
+  const declaration = resolution.location.declaration;
+  if (declaration.kind === 'typeAlias') return undefined;
+  const substitution = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments);
+  if (declaration.kind === 'interface') {
+    const property = declaration.properties.find((candidate) => candidate.name === propertyName);
+    return property
+      ? { ...property, type: resolveIrTypeStructuralSubstitution(property.type, substitution) }
+      : undefined;
+  }
+  const field = declaration.fields.find(
+    (candidate) =>
+      candidate.name === propertyName && !candidate.static && candidate.visibility === 'public' && !candidate.branded,
+  );
+  if (field) return { ...field, type: resolveIrTypeStructuralSubstitution(field.type, substitution) };
+  const getter = declaration.methods.find(
+    (candidate) =>
+      candidate.name === propertyName &&
+      candidate.accessor === 'get' &&
+      !candidate.static &&
+      candidate.visibility === 'public' &&
+      !candidate.branded,
+  );
+  return getter
+    ? {
+        name: getter.name,
+        optional: false,
+        readonly: true,
+        type: resolveIrTypeStructuralSubstitution(getter.returns, substitution),
+      }
+    : undefined;
 }
 
 function resolveIrTypeStructuralRowCpp(

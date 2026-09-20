@@ -108,6 +108,11 @@ export interface CompilerCppReferenceRepresentationPlanner {
     type: Readonly<IrType>,
     module: Readonly<IrModule>,
   ) => readonly Readonly<IrObjectTypeProperty>[] | undefined;
+  readonly resolveOwnObjectProperty: (
+    type: Readonly<IrType>,
+    propertyName: string,
+    module: Readonly<IrModule>,
+  ) => Readonly<IrObjectTypeProperty> | undefined;
   readonly resolveStructuralRow: (
     type: Readonly<IrType>,
     module: Readonly<IrModule>,

@@ -9613,6 +9613,16 @@ function getIrObjectPropertyTypeCpp(
   if (objectShape) {
     return getIrObjectPropertyReadTypeCpp(objectShape.find((property) => property.name === propertyName));
   }
+  // A declared member remains knowable when an imported base is not: resolving the member through the
+  // declaration location keeps that one fact without publishing an incomplete whole-object shape to
+  // callers which require every inherited field. This is deliberately property-specific; inherited
+  // members still require the complete shape above.
+  const ownProperty = context.referenceRepresentationPlanner.resolveOwnObjectProperty(
+    type,
+    propertyName,
+    context.module,
+  );
+  if (ownProperty) return getIrObjectPropertyReadTypeCpp(ownProperty);
   // `length` is the one member every array and string has, and it is a number however the element or
   // character type varies -- so the answer is a property of the BASE, which is already resolved here,
   // rather than a selection among alternatives. That is the whole reason it can be answered where an
