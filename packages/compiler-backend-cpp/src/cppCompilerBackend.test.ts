@@ -3931,6 +3931,67 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('value.to_string');
   });
 
+  it('routes the exact effects-canvas Number.toFixed sources through the flight runtime contract', () => {
+    const sources = [
+      [
+        'canvasEffectDropShadowCss.ts',
+        `function cssRgbaFromColor(color: number, alpha: number): string {
+         const r = (color >>> 24) & 0xff;
+         const g = (color >>> 16) & 0xff;
+         const b = (color >>> 8) & 0xff;
+         return \`rgba(\${r},\${g},\${b},\${(alpha * ((color & 0xff) / 255)).toFixed(3)})\`;
+       }`,
+      ],
+      [
+        'canvasSourceModeCompositing.ts',
+        `function cssRgbaFromColor(color: number, alpha: number): string {
+         const r = (color >>> 24) & 0xff;
+         const g = (color >>> 16) & 0xff;
+         const b = (color >>> 8) & 0xff;
+         const a = Math.max(0, Math.min(1, alpha * ((color & 0xff) / 255)));
+         return \`rgba(\${r},\${g},\${b},\${a.toFixed(3)})\`;
+       }`,
+      ],
+    ] as const;
+
+    for (const [file, source] of sources) {
+      const output = emitIrModuleCpp(lower(file, source).module, {
+        runtimeProfile: 'flight-cpp',
+      }).contents;
+      expect(output).toContain('#include <flight/number.hpp>');
+      expect(output).toContain('flight::number_to_fixed(');
+      expect(output).toContain(', 3.0)');
+      expect(output).not.toContain('.to_fixed(');
+    }
+  });
+
+  it('preserves empty and edge Number.toFixed calls for the JavaScript-compatible runtime helper', () => {
+    const result = lower(
+      'number-to-fixed-edge.ts',
+      `export function defaultDigits(value: number): string { return value.toFixed(); }
+       export function maximumDigits(value: number): string { return value.toFixed(100); }
+       export function negativeZero(): string { return (-0).toFixed(3); }
+       export function notANumber(): string { return Number.NaN.toFixed(3); }
+       export function positiveInfinity(): string { return (1 / 0).toFixed(3); }
+       export function largeMagnitude(): string { return (1e21).toFixed(3); }
+       export function binaryEdge(): string { return (1.005).toFixed(2); }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('flight::number_to_fixed(value)');
+    expect(output).toContain('flight::number_to_fixed(value, 100.0)');
+    expect(output).toContain('flight::number_to_fixed(-0.0, 3.0)');
+    expect(output).toContain('flight::number_to_fixed(std::numeric_limits<double>::quiet_NaN(), 3.0)');
+    expect(output).toContain('flight::number_to_fixed((1.0 / 0.0), 3.0)');
+    expect(output).toContain('flight::number_to_fixed(1e+21, 3.0)');
+    expect(output).toContain('flight::number_to_fixed(1.005, 2.0)');
+    expect(output).not.toContain('.to_fixed(');
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'standard-library' })).toThrow(
+      expect.objectContaining({ rule: 'cpp-number-to-fixed-runtime-helper-required' }),
+    );
+  });
+
   it('recovers numeric toString receivers from expression evidence', () => {
     const result = lower(
       'radix-expression-text.ts',

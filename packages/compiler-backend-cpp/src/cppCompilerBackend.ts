@@ -2573,6 +2573,30 @@ function emitExpression(
       if (typedArrayFill) return typedArrayFill;
       if (
         expression.callee.kind === 'property' &&
+        expression.callee.name === 'toFixed' &&
+        (expression.callee.member?.receiver === 'number' ||
+          isIrNumberTypeEvidenceCpp(getIrExpressionTypeEvidenceCpp(expression.callee.object, context)))
+      ) {
+        if (getCppRuntimeProfile(context.options) !== 'flight-cpp') {
+          emissionError(
+            context,
+            'Number.toFixed requires a JavaScript-compatible downstream runtime helper',
+            'cpp-number-to-fixed-runtime-helper-required',
+          );
+        }
+        // The flight-cpp contract owns ECMAScript formatting and digit normalization. Keeping this
+        // a free helper prevents primitive `double` from acquiring a coincidentally named method.
+        context.includes.add('flight/number.hpp');
+        const arguments_ = expression.arguments.map((argument) =>
+          emitExpression(argument, context, { kind: 'primitive', name: 'number' }),
+        );
+        return `flight::number_to_fixed(${[
+          emitExpression(expression.callee.object, context, { kind: 'primitive', name: 'number' }),
+          ...arguments_,
+        ].join(', ')})`;
+      }
+      if (
+        expression.callee.kind === 'property' &&
         expression.callee.name === 'toString' &&
         (expression.callee.member?.receiver === 'number' ||
           isIrNumberTypeEvidenceCpp(getIrExpressionTypeEvidenceCpp(expression.callee.object, context)))
