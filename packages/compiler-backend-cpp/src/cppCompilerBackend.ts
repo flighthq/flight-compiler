@@ -4095,12 +4095,24 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
   if (!structuralProjection && (targetRow || sourceTargetType !== expectedTargetType)) return undefined;
   const expectedPlan = getCppUnionRepresentationPlan(expectedUnion, context);
   if (expectedPlan.kind !== 'dualSentinelVariant') return undefined;
+  // The property is `?`-marked and its own type carries one sentinel, so its STORAGE answers the same
+  // three-state question the target asks: absent, null, and present. Reading it through `has_value()`
+  // described the nested optional this representation replaced, and a variant has no such member — the
+  // expression is emitted as a variant, so the read has to be the variant's own. The storage's plan is
+  // therefore derived from the property's *effective* type, with the `?` marker contributing its absence
+  // exactly as it does for the declaration; deriving it from the declared type alone is what lost it.
+  const sourceReadUnion = getIrUnionTypeCpp(
+    getIrObjectPropertyReadTypeCpp(property) ?? property.type,
+    context,
+    new Set(),
+  );
+  const sourceReadPlan = sourceReadUnion ? getCppUnionRepresentationPlan(sourceReadUnion, context) : undefined;
+  if (sourceReadPlan?.kind !== 'dualSentinelVariant' || sourceReadPlan.valueSlots.length !== 1) return undefined;
   const propertyName = getGeneratedTargetName('optionalProperty', context);
   const propertyValue = emitExpression(expression, context, undefined, false);
   const targetType = expectedTargetType;
-  const presentValue = structuralProjection
-    ? `${targetType}(${propertyName}.value().value())`
-    : `${propertyName}.value().value()`;
+  const sourceValue = `std::get<${sourceReadPlan.valueSlots[0]!.targetType}>(${propertyName})`;
+  const presentValue = structuralProjection ? `${targetType}(${sourceValue})` : sourceValue;
   const present = emitCppUnionValueConstruction(presentValue, targetType, expectedUnion, expectedPlan.kind, context);
   const declaredAbsence = emitCppUnionSentinelConstruction(
     declaredSourceSentinels[0]!.kind,
@@ -4110,7 +4122,9 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
   );
   const omitted = emitCppUnionSentinelConstruction('undefined', expectedUnion, expectedPlan.kind, context);
   const resultType = emitUnionTypeCpp(expectedUnion, context);
-  return `([&]() -> ${resultType} { auto ${propertyName} = ${propertyValue}; if (!${propertyName}.has_value()) return ${omitted}; if (!${propertyName}.value().has_value()) return ${declaredAbsence}; return ${present}; }())`;
+  const sentinels = getCppDualSentinelTargetTypes(context);
+  context.includes.add('variant');
+  return `([&]() -> ${resultType} { auto ${propertyName} = ${propertyValue}; if (std::holds_alternative<${sentinels.undefined}>(${propertyName})) return ${omitted}; if (std::holds_alternative<${sentinels.null}>(${propertyName})) return ${declaredAbsence}; return ${present}; }())`;
 }
 
 function getCppStructuralRowObjectTypeCpp(row: Readonly<CompilerCppStructuralRowPlan>): Readonly<IrType> | undefined {

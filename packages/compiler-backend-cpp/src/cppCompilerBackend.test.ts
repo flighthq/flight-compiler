@@ -9407,16 +9407,54 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
-    expect(output).toContain('if (!optional_property.has_value())');
-    expect(output).toContain('if (!optional_property.value().has_value())');
+    // The property is `?`-marked and its own type carries the sentinels, so its storage is the same
+    // three-state variant the target asks for, and every crossing reads it as one. Absent, null, and
+    // present are distinguished by the alternative — the nested optional's two `has_value()` calls
+    // described a representation this storage does not have, and a variant has no such member.
+    expect(output).toContain('if (std::holds_alternative<flight::Undefined>(optional_property))');
+    expect(output).toContain('if (std::holds_alternative<flight::Null>(optional_property))');
     expect(output).toContain('std::in_place_type<flight::Undefined>');
     expect(output).toContain('std::in_place_type<flight::Null>');
     expect(output).toContain(
-      'flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Skin>>>>(optional_property.value().value())',
+      'flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Skin>>>>(std::get<flight::Ref<Skin>>(optional_property))',
     );
     expect(output).toContain(
-      'std::variant<flight::Float32Array, flight::Null, flight::Undefined>{std::in_place_type<flight::Float32Array>, optional_property_2.value().value()}',
+      'std::variant<flight::Float32Array, flight::Null, flight::Undefined>{std::in_place_type<flight::Float32Array>, std::get<flight::Float32Array>(optional_property_2)}',
     );
+  });
+
+  it('leaves a heterogeneous optional property to its own storage rather than naming a value domain', () => {
+    const emit = (source: string): string =>
+      emitIrModuleCpp(lower('heterogeneous-optional.ts', source).module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Two value domains leave no single alternative for `get` to name, so the property's own storage is
+    // already the answer and no conversion is composed over it.
+    const matched = emit(
+      `interface Skin { weights: number[] }
+       interface Attachment { skin?: Skin | number | null }
+       function consume(value: Skin | number | null | undefined): void {}
+       export function pass(attachment: Attachment): void { consume(attachment.skin); }`,
+    );
+    expect(matched).toContain('consume(attachment->skin)');
+    expect(matched).not.toContain('optional_property');
+
+    // A target whose union does not match the property still refuses rather than picking a domain.
+    const refusal = (source: string): string | undefined => {
+      try {
+        emit(source);
+        return undefined;
+      } catch (error) {
+        return isBackendEmissionFailure(error) ? error.rule : undefined;
+      }
+    };
+    expect(
+      refusal(
+        `interface Skin { weights: number[] }
+         interface Attachment { skin?: Skin | null }
+         function consume(value: Skin | Float32Array | null | undefined): void {}
+         export function pass(attachment: Attachment): void { consume(attachment.skin); }`,
+      ),
+    ).toBe('cpp-contextual-union-inequivalent');
   });
 
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
