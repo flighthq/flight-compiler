@@ -5639,11 +5639,40 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     });
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+
+    // `explainHost` enumerates a host and then enumerates each capability group it finds. The second
+    // enumeration reads through the value the first one produced, and that value is erased: the runtime
+    // view takes a typed reference or a row and has no overload for `flight::Any`, so the type it was
+    // stored as is not recoverable from it. That is a runtime gap rather than a lowering one, and the
+    // refusal names it.
     const failure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
-    expect(failure.rule).toBe('cpp-structural-row-dynamic-string-view-runtime-unsupported');
+    expect(failure.rule).toBe('cpp-named-properties-source-unproven');
     expect(failure.message).toContain(
-      'dynamic string Record view over a structural row requires runtime named-property enumeration and erased lookup',
+      'a dynamic named view needs an object whose properties the runtime can enumerate, and an erased value has no recoverable property set',
     );
+
+    // The first level lowers, and it pins the exact include and expressions it reaches for.
+    const firstLevel = lower(
+      'host-enumeration.ts',
+      `interface Host { readonly audio: { readonly device: number } }
+       export function enumerateHost(host: Readonly<Host>): readonly string[] {
+         const groups: string[] = [];
+         for (const [group, value] of Object.entries(host)) {
+           if (typeof value !== 'object' || value === null) continue;
+           groups.push(group);
+         }
+         return groups;
+       }`,
+    );
+    const firstLevelOutput = emitIrModuleCpp(firstLevel.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(firstLevelOutput).toContain('#include <flight/structural_ref.hpp>');
+    expect(firstLevelOutput).toContain('#include <flight/any.hpp>');
+    // Keys come from the primitive in source declaration order, so the emitter neither sorts nor counts.
+    expect(firstLevelOutput).toContain('const auto named_view = flight::named_properties(host);');
+    expect(firstLevelOutput).toContain('for (const auto& named_key : named_view.keys())');
+    expect(firstLevelOutput).toContain('named_view.get(named_key)');
+    // `typeof` over an erased value is the runtime's own ECMAScript `typeof`, not a folded shape.
+    expect(firstLevelOutput).toContain('.type_of()');
 
     const record = lower(
       'dynamic-record-lookup.ts',

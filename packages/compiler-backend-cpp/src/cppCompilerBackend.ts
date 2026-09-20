@@ -1685,19 +1685,25 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(declaration.binding.id);
   const preservedInitializerType = context.preservedInitializerTypes.get(declaration.binding.id);
   const structuralCastRow = context.structuralCastBindingRows.get(declaration.binding.id);
-  const type = externalStorageTarget
-    ? emitCppExternalBindingStorageTypeCpp(declaration.type, externalStorageTarget, context)
-    : contextualStorageTarget
-      ? emitType(contextualStorageTarget, context)
-      : preservedInitializerType
-        ? emitType(preservedInitializerType, context)
-        : structuralCastRow
-          ? emitCppStructuralRowReferenceTypeCpp(structuralCastRow, context)
-          : declaration.type &&
-              !isCppDeducibleUnknownStorageCpp(declaration.mutable, declaration.initializer, declaration.type)
-            ? emitType(declaration.type, context)
-            : 'auto';
-  const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
+  const type =
+    getCppNamedPropertiesStorageTypeCpp(declaration.initializer, context) ??
+    (externalStorageTarget
+      ? emitCppExternalBindingStorageTypeCpp(declaration.type, externalStorageTarget, context)
+      : contextualStorageTarget
+        ? emitType(contextualStorageTarget, context)
+        : preservedInitializerType
+          ? emitType(preservedInitializerType, context)
+          : structuralCastRow
+            ? emitCppStructuralRowReferenceTypeCpp(structuralCastRow, context)
+            : declaration.type &&
+                !isCppDeducibleUnknownStorageCpp(declaration.mutable, declaration.initializer, declaration.type)
+              ? emitType(declaration.type, context)
+              : 'auto');
+  // An `auto` storage cannot be wrapped: `std::optional<auto>` is not a type, and a module that
+  // emitted one never compiled. Skipping the wrap therefore cannot regress a working shape, and an
+  // element whose type is still unspecified is better spelled by deduction than by a wrapper that has
+  // nothing to wrap.
+  const emittedType = arrayElement && type !== 'auto' ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(declaration.mutable, declaration.type);
   const initializer = declaration.initializer
     ? ` = ${arrayElement ? emitOptionalExpressionCpp(declaration.initializer, context, declaration.type) : emitExpression(declaration.initializer, context, contextualStorageTarget ?? preservedInitializerType ?? declaration.type)}`
@@ -1745,19 +1751,21 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(variable.binding.id);
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(variable.binding.id);
   const structuralCastRow = context.structuralCastBindingRows.get(variable.binding.id);
-  const type = externalStorageTarget
-    ? emitCppExternalBindingStorageTypeCpp(variable.type, externalStorageTarget, context)
-    : contextualStorageTarget
-      ? emitType(contextualStorageTarget, context)
-      : structuralCastRow
-        ? emitCppStructuralRowReferenceTypeCpp(structuralCastRow, context)
-        : weakMapViewPlan ||
-            !variable.type ||
-            preservedInitializerType ||
-            isCppDeducibleUnknownStorageCpp(variable.mutable, variable.initializer, variable.type)
-          ? 'auto'
-          : emitType(variable.type, context);
-  const emittedType = arrayElement ? emitOptionalTypeCpp(type, true, context) : type;
+  const type =
+    getCppNamedPropertiesStorageTypeCpp(variable.initializer, context) ??
+    (externalStorageTarget
+      ? emitCppExternalBindingStorageTypeCpp(variable.type, externalStorageTarget, context)
+      : contextualStorageTarget
+        ? emitType(contextualStorageTarget, context)
+        : structuralCastRow
+          ? emitCppStructuralRowReferenceTypeCpp(structuralCastRow, context)
+          : weakMapViewPlan ||
+              !variable.type ||
+              preservedInitializerType ||
+              isCppDeducibleUnknownStorageCpp(variable.mutable, variable.initializer, variable.type)
+            ? 'auto'
+            : emitType(variable.type, context));
+  const emittedType = arrayElement && type !== 'auto' ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
   const initializer = variable.initializer
     ? ` = ${
@@ -2073,6 +2081,22 @@ function emitExpression(
     case 'array':
       return emitArrayExpressionCpp(expression, context, expectedType);
     case 'assignment': {
+      // The named-property view is the read side only, and that is the point of it: a name that was
+      // never declared cannot become a way to mutate the object behind it. A write through the view is
+      // refused here rather than emitted as a `get` on the left of an assignment, which would be an
+      // rvalue and would not compile anyway.
+      // The double cast is the view idiom the source writes to make a dynamic named read type-check;
+      // a single cast of an object spread is the clone lane's, and its refusals are its own.
+      if (
+        expression.left.kind === 'element' &&
+        isCppNamedPropertiesErasedMarkerViewCpp(expression.left.object, context)
+      ) {
+        emissionError(
+          context,
+          'a dynamic named view is read-only, so it cannot be an assignment target',
+          'cpp-named-properties-write-unsupported',
+        );
+      }
       const assignmentType = getIrAssignmentTargetTypeCpp(expression.left, context);
       const rightType = getIrExpressionTypeEvidenceCpp(expression.right, context);
       const exactCallableFieldAssignment =
@@ -2351,6 +2375,8 @@ function emitExpression(
       if (isCppAmbientObjectMemberCallCpp(expression, 'freeze') && expression.arguments.length === 1) {
         return emitExpression(expression.arguments[0]!, context, expectedType);
       }
+      const namedPropertiesEnumeration = emitCppNamedPropertiesEnumerationCpp(expression, context);
+      if (namedPropertiesEnumeration) return namedPropertiesEnumeration;
       if (
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
         expression.callee.kind === 'property' &&
@@ -2578,12 +2604,34 @@ function emitExpression(
         }
         emissionError(context, 'erased WeakMap assertion target requires an approved typed WeakMap view');
       }
-      if (isCppStructuralDynamicStringRecordViewCpp(expression, context)) {
-        emissionError(
-          context,
-          'dynamic string Record view over a structural row requires runtime named-property enumeration and erased lookup',
-          'cpp-structural-row-dynamic-string-view-runtime-unsupported',
-        );
+      const namedPropertiesSource = getCppNamedPropertiesViewSourceCpp(expression, context);
+      if (
+        isCppUnknownRecordTypeCpp(expression.type, 'PropertyKey') &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp'
+      ) {
+        const inner = expression.expression;
+        const keyedSource =
+          inner.kind === 'cast' && inner.type.kind === 'unknown' && inner.type.source === 'unknown'
+            ? inner.expression
+            : inner;
+        // The view reports own enumerable STRING keys and nothing else, so a `PropertyKey`-keyed view
+        // over one has no symbol property to reach. This is the negative side of the same invariant the
+        // runtime states: a name and a symbol of the same spelling are two properties and neither view
+        // sees the other.
+        if (getCppNamedPropertiesViewExpressionCpp(keyedSource, context)) {
+          emissionError(
+            context,
+            'a dynamic named view reports own string keys only, so a PropertyKey-keyed view over one has no symbol property to read',
+            'cpp-named-properties-symbol-key-unsupported',
+          );
+        }
+      }
+      if (namedPropertiesSource) {
+        // The view IS the value of the cast: `Record<string, unknown>` here names a set of properties to
+        // read by name, and `flight::NamedProperties` is the runtime's handle on exactly that. Keys come
+        // back in source declaration order from the primitive itself, so the emitter adds no ordering.
+        context.includes.add('flight/structural_ref.hpp');
+        return `flight::named_properties(${emitExpression(namedPropertiesSource, context)})`;
       }
       const structuralCloneRecordView = getCppStructuralCloneRecordViewPlanCpp(expression, context);
       if (structuralCloneRecordView) {
@@ -2594,6 +2642,39 @@ function emitExpression(
       }
       const structuralCloneRecovery = emitCppStructuralCloneRecordRecoveryCpp(expression, context);
       if (structuralCloneRecovery) return structuralCloneRecovery;
+      if (
+        !namedPropertiesSource &&
+        isCppUnknownRecordTypeCpp(expression.type, 'string') &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp'
+      ) {
+        // The view idiom over something that is neither a `Record` nor an object the runtime can
+        // enumerate. An erased value is the case that matters: it holds an object, but the type it was
+        // stored as is not recoverable from it, and `named_properties` takes a typed reference or a row
+        // and has no overload for the erased value. Refusing keeps the read honest rather than emitting
+        // a cast that cannot compile.
+        const inner = expression.expression;
+        const refusedSource =
+          inner.kind === 'cast' && inner.type.kind === 'unknown' && inner.type.source === 'unknown'
+            ? inner.expression
+            : inner;
+        const refusedType = getIrExpressionTypeEvidenceCpp(refusedSource, context);
+        const refusedRuntime = refusedType ? getIrTypeRuntimeDomainCpp(refusedType, context, new Set()) : undefined;
+        // Only the erased value is claimed here. Other unenumerable sources reach lanes of their own --
+        // a clone projection among them -- and a refusal from this lane would take their question away
+        // from them.
+        if (
+          refusedRuntime &&
+          isCppErasedDynamicValueTypeCpp(refusedRuntime) &&
+          !getCppRecordTypeArgumentsCpp(refusedType, context, new Set())
+        ) {
+          emissionError(
+            context,
+            'a dynamic named view needs an object whose properties the runtime can enumerate, and an erased value has no recoverable property set',
+            'cpp-named-properties-source-unproven',
+          );
+        }
+      }
+
       if (isCppUnprovenGenericRecordAssertionCpp(expression, context)) {
         emissionError(
           context,
@@ -2776,6 +2857,20 @@ function emitExpression(
       const object = emitExpression(expression.object, context);
       const index = emitExpression(expression.index, context);
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+      // A dynamic named view reads through the runtime's own `get`, which answers `flight::Any` and reads
+      // an absent key as `undefined`. This is checked before the `Record` path because the view's
+      // declared type IS `Record<string, unknown>`, and only the storage tells the two apart.
+      if (getCppNamedPropertiesViewExpressionCpp(expression.object, context)) {
+        if (!isCppStringKeyIndexCpp(expression.index, context)) {
+          emissionError(
+            context,
+            'a dynamic named view reads only own string keys, so a symbol or computed key has no property this view can report',
+            'cpp-named-properties-key-not-a-string',
+          );
+        }
+        context.includes.add('flight/structural_ref.hpp');
+        return `${object}.get(${index})`;
+      }
       const record = getCppRecordTypeArgumentsCpp(objectType, context, new Set());
       if (record && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         return `${object}.get(${emitCppRequiredRecordKeyCpp(expression.index, record.key, context)}).value()`;
@@ -3404,10 +3499,21 @@ function emitExpression(
       }
       if (expression.operator === 'typeof') {
         const value = getCppStaticTypeofValueCpp(expression.operand, context);
-        if (!value) emissionError(context, 'typeof requires closed runtime type evidence');
-        return getCppRuntimeProfile(context.options) === 'flight-cpp'
-          ? `flight::String(${JSON.stringify(value)})`
-          : `std::string(${JSON.stringify(value)})`;
+        if (value) {
+          return getCppRuntimeProfile(context.options) === 'flight-cpp'
+            ? `flight::String(${JSON.stringify(value)})`
+            : `std::string(${JSON.stringify(value)})`;
+        }
+        // An erased dynamic value has no static type to fold, and it does not need one: the runtime
+        // names the operation, and `Any::type_of` is ECMAScript `typeof` including the `null` that
+        // reports `object`. Answering it at run time is what the value is for; folding it would be
+        // claiming a shape the source did not state.
+        const typeofOperandType = getCppNullishComparisonOperandTypeCpp(expression.operand, context);
+        if (hasCppErasedDynamicTestOperandCpp(expression.operand, typeofOperandType, context)) {
+          context.includes.add('flight/any.hpp');
+          return `${emitExpression(expression.operand, context)}.type_of()`;
+        }
+        emissionError(context, 'typeof requires closed runtime type evidence');
       }
       const sharedCaptureTargetName = getSharedCaptureTargetNameCpp(expression.operand, context);
       if (
@@ -3842,21 +3948,6 @@ function getCppStructuralCloneRecordViewPlanCpp(
   };
 }
 
-function isCppStructuralDynamicStringRecordViewCpp(
-  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
-  context: EmitContext,
-): boolean {
-  // StructuralRef exposes dynamic Symbol attachments, but not dynamic reads or enumeration of its
-  // generated named string cells. Keep the two key domains distinct until flight-cpp provides that ABI.
-  if (!isCppUnknownRecordTypeCpp(expression.type, 'string')) return false;
-  const unknownView = expression.expression;
-  if (unknownView.kind !== 'cast' || unknownView.type.kind !== 'unknown' || unknownView.type.source !== 'unknown') {
-    return false;
-  }
-  const sourceType = getIrExpressionTypeEvidenceCpp(unknownView.expression, context);
-  return Boolean(sourceType && context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module));
-}
-
 function emitCppStructuralCloneRecordRecoveryCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
   context: EmitContext,
@@ -3954,6 +4045,136 @@ function isCppUnknownRecordTypeCpp(type: Readonly<IrType>, key: 'PropertyKey' | 
         keyType.reference.kind === 'ambient' &&
         keyType.reference.name === 'PropertyKey' &&
         keyType.typeArguments.length === 0;
+}
+
+// Whether a type is one whose named properties the runtime can enumerate and read: a generated object
+// held by reference, or a structural row. It is the same question `flight::named_properties` answers,
+// asked before emitting so an unproven receiver is refused rather than handed to an overload that will
+// not accept it.
+function isCppNamedPropertiesSourceCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module)) return true;
+  const runtime = getIrTypeRuntimeDomainCpp(type, context, new Set());
+  return Boolean(runtime && hasFlightReferenceRepresentationCpp(runtime, context));
+}
+
+// The object a `value as unknown as Record<string, unknown>` dynamic view reads through, or undefined
+// when the expression is not that view.
+//
+// The cast is how the SDK makes a dynamic named read type-check, and the inner `as unknown` is the
+// compiler's own erased marker rather than something the source wrote, so both are seen through. The
+// result is the view the runtime builds, not a `Record`: `Record<string, unknown>` here names a set of
+// properties to read by name, and only a structural object has those.
+function getCppNamedPropertiesViewSourceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrExpression> | undefined {
+  if (expression.kind !== 'cast' || getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  if (!isCppUnknownRecordTypeCpp(expression.type, 'string')) return undefined;
+  // A constructed object is not what this view is for. `Object.keys(host)` enumerates the properties an
+  // object was GIVEN, and an object literal's properties are the ones the compiler just wrote -- its
+  // shape is already known, so a dynamic view over it would be asking the runtime a question the
+  // emitter can answer. Letting the literal through here would also take it from the lane that owns it.
+  if (expression.expression.kind === 'object') return undefined;
+  const inner = expression.expression;
+  const source =
+    inner.kind === 'cast' && inner.type.kind === 'unknown' && inner.type.source === 'unknown'
+      ? inner.expression
+      : inner;
+  const sourceType = getIrExpressionTypeEvidenceCpp(source, context);
+  return sourceType && isCppNamedPropertiesSourceCpp(sourceType, context) ? source : undefined;
+}
+
+// Whether an expression holds a dynamic named view, which is what makes `view[name]` a `get` rather
+// than a subscript. A binding is asked for its recorded INITIALIZER rather than its declared type,
+// because `Record<string, unknown>` is also the declared type of a real `flight::Record`, and only the
+// initializer says which storage the declaration elected.
+// `Object.keys` and `Object.entries` over an object whose properties the runtime enumerates by name.
+//
+// The generic binding for these is an external profile symbol, and it cannot serve this case: the
+// runtime's `object_keys`/`object_entries` take a `Record` or a container with `begin()`/`end()`, and a
+// structural object is neither. The runtime's named-property view is, and it hands the keys back in
+// source declaration order, so the emitter adds no ordering of its own.
+function emitCppNamedPropertiesEnumerationCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  if (expression.arguments.length !== 1) return undefined;
+  if (expression.callee.kind !== 'property' || expression.callee.optional) return undefined;
+  const member = expression.callee.name;
+  if (member !== 'keys' && member !== 'entries') return undefined;
+  if (!isCppAmbientObjectMemberCallCpp(expression, member)) return undefined;
+  const argument = expression.arguments[0]!;
+  // An argument that already IS a view is the view; one that is an object is enumerated by asking the
+  // runtime for its view. Wrapping a view in `named_properties` again would be a call the runtime has no
+  // overload for, because a view is not an object with properties -- it is the handle on one.
+  const argumentIsView = getCppNamedPropertiesViewExpressionCpp(argument, context);
+  if (!argumentIsView) {
+    const sourceType = getIrExpressionTypeEvidenceCpp(argument, context);
+    if (!sourceType || !isCppNamedPropertiesSourceCpp(sourceType, context)) return undefined;
+  }
+  context.includes.add('flight/structural_ref.hpp');
+  const source = emitExpression(argument, context);
+  const viewExpression = argumentIsView ? source : `flight::named_properties(${source})`;
+  const viewName = getGeneratedTargetName('named_view', context);
+  if (member === 'keys') {
+    const keysName = getGeneratedTargetName('named_keys', context);
+    return `([&]() { const auto ${viewName} = ${viewExpression}; const auto ${keysName} = ${viewName}.keys(); return flight::Array<flight::String>(${keysName}.begin(), ${keysName}.end()); }())`;
+  }
+  context.includes.add('tuple');
+  const entriesName = getGeneratedTargetName('named_entries', context);
+  const keyName = getGeneratedTargetName('named_key', context);
+  return `([&]() { const auto ${viewName} = ${viewExpression}; flight::Array<std::tuple<flight::String, flight::Any>> ${entriesName}; for (const auto& ${keyName} : ${viewName}.keys()) { ${entriesName}.push(std::tuple<flight::String, flight::Any>(${keyName}, ${viewName}.get(${keyName}))); } return ${entriesName}; }())`;
+}
+
+// The storage a declaration elected for a dynamic named view is the runtime's view itself, not the
+// `Record` its declared type names. `flight::Record` and `flight::NamedProperties` are different things
+// with different operations: one is storage the program owns, the other is a handle on properties that
+// already exist on an object. The declared type cannot tell them apart, so the initializer decides.
+function getCppNamedPropertiesStorageTypeCpp(
+  initializer: Readonly<IrExpression> | undefined,
+  context: EmitContext,
+): string | undefined {
+  if (!initializer || !getCppNamedPropertiesViewSourceCpp(initializer, context)) return undefined;
+  context.includes.add('flight/structural_ref.hpp');
+  return 'flight::NamedProperties';
+}
+
+function getCppNamedPropertiesViewExpressionCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (getCppNamedPropertiesViewSourceCpp(expression, context)) return true;
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
+  // A clone projection is a structural row reference, not a view. It is reached through the same
+  // object-spread-to-`Record` cast syntax, and the clone lane owns what it means, so this lane must not
+  // claim it -- a write to a clone projection is the clone lane's own refusal to give.
+  if (context.structuralCloneRecordBindingIds.has(expression.reference.binding.id)) return false;
+  const initializer = context.bindingInitializers.get(expression.reference.binding.id);
+  return initializer !== undefined && getCppNamedPropertiesViewSourceCpp(initializer, context) !== undefined;
+}
+
+// Whether an index names a string key. The view reports own enumerable STRING keys, so a symbol key is a
+// different property that this view cannot see and a number would have to be coerced to a spelling the
+// compiler would be choosing on the source's behalf. Both are refused rather than guessed at.
+function isCppStringKeyIndexCpp(index: Readonly<IrExpression>, context: EmitContext): boolean {
+  const type = getIrExpressionTypeEvidenceCpp(index, context);
+  if (!type) return false;
+  if (type.kind === 'literal') return typeof type.value === 'string';
+  return type.kind === 'primitive' && type.name === 'string';
+}
+
+// Whether an expression is bound to the `value as unknown as Record<string, unknown>` view the source
+// writes to reach a dynamic read. Narrower than the view test on purpose: the write refusal must catch
+// only the view, and an object spread cast reaches a different lane whose refusals are its own.
+function isCppNamedPropertiesErasedMarkerViewCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
+  const initializer = context.bindingInitializers.get(expression.reference.binding.id);
+  if (!initializer || initializer.kind !== 'cast') return false;
+  const inner = initializer.expression;
+  return (
+    inner.kind === 'cast' &&
+    inner.type.kind === 'unknown' &&
+    inner.type.source === 'unknown' &&
+    getCppNamedPropertiesViewSourceCpp(initializer, context) !== undefined
+  );
 }
 
 function getCppReadonlyBareTypeParameterCpp(type: Readonly<IrType> | undefined): Readonly<IrType> | undefined {
