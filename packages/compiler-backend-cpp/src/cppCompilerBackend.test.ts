@@ -9294,6 +9294,35 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  // The invariant the erased election exists to hold: a position the SOURCE wrote as `any` or
+  // `unknown` is a value of no stated type, and flight-cpp's erased dynamic value is exactly that, so it
+  // stays a number when it holds a number rather than being misstated as an object reference. Pinned
+  // across the positions a written annotation can appear in, because the election is one rule and the
+  // positions are what would diverge if it were moved.
+  it('elects the erased dynamic value in every position the source writes an unconstrained type', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'erased-positions.ts',
+        `interface Holder { value: any; other: unknown }
+         export function readHolder(holder: Holder): void { void holder.value; void holder.other; }
+         export function readList(values: readonly unknown[]): void { void values; }
+         export function readOptional(value?: unknown): void { void value; }
+         export function readRecord(values: Readonly<Record<string, unknown>>): void { void values; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('#include <flight/any.hpp>');
+    expect(emitted).toContain('flight::Any value;');
+    expect(emitted).toContain('flight::Any other;');
+    expect(emitted).toContain('flight::Array<flight::Any> values');
+    expect(emitted).toContain('std::optional<flight::Any> value');
+    expect(emitted).toContain('flight::Record<flight::String, flight::Any> values');
+    // Nothing in a type position is left as an `auto` placeholder, which is what the guard refuses.
+    expect(emitted).not.toMatch(/<[^>\n]*\bauto\b/u);
+    expect(emitted).not.toMatch(/\busing\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*auto\s*;/u);
+  });
+
   it('materializes a template argument inferred only from a contextual return type', () => {
     const result = lower(
       'contextual-generic-result.ts',
