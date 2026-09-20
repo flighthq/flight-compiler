@@ -9,6 +9,7 @@ import { analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerModuleResolutionPlan,
+  IrModule,
   IrType,
   IrUnionMemberTestEvidence,
 } from '../../compiler-types/src/index.js';
@@ -423,6 +424,65 @@ describe('createCppCompilerBackend', () => {
     // The counterexample: an immutable binding whose initializer proves a concrete storage keeps it,
     // so the comparison is decided by the type and never consults the erased value at all.
     expect(emitted).toContain('const double rows = static_cast<double>(grid.size());\n  return true;');
+  });
+
+  // One structural shape is one C++ type, so every module of a package that writes it has to spell it
+  // the same way -- and the guard around its definition has to follow the name it actually got.
+  //
+  // It did not. The name was resolved against the module's own `generatedNames`, which a probe
+  // emission into a throwaway context also feeds, so one module could resolve `kind_<hash>` and
+  // another `kind_<hash>_1`; the guard meanwhile came from the structural hash alone. Including the
+  // first then suppressed the second, and the second's uses had no declaration at all -- removed by
+  // the preprocessor, with nothing to report.
+  //
+  // The declared name here is chosen to be exactly the base name the shape resolves to, which forces
+  // the suffix through a real source symbol rather than through a hash a test cannot aim at.
+  it('names an anonymous structural type and its guard identically in every module of a package', () => {
+    const colliding = lowerPackage(
+      '@flighthq/probe',
+      'collides.ts',
+      `export const kind_6fea82d7aa842443 = 1;
+       export function collidesWithDeclaredName(operation: Readonly<{ kind: string }>): string {
+         return operation.kind;
+       }`,
+    ).module;
+    const plain = lowerPackage(
+      '@flighthq/probe',
+      'plain.ts',
+      `export function usesSameShape(operation: Readonly<{ kind: string }>): string {
+         return operation.kind;
+       }`,
+    ).module;
+    const resolutionPlan: CompilerModuleResolutionPlan = {
+      edges: [],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+
+    const structOf = (text: string): string | undefined => /^struct (\S+) /mu.exec(text)?.[1];
+    const guardOf = (text: string): string | undefined => /^#ifndef (\S+)/mu.exec(text)?.[1];
+
+    const emitBoth = (order: readonly [Readonly<IrModule>, Readonly<IrModule>]): readonly string[] => {
+      const session = createCppCompilerBackend().createEmissionSession!({
+        moduleResolution: resolutionPlan,
+        modules: [colliding, plain],
+        options: { runtimeProfile: 'flight-cpp' },
+      });
+      return order.map((entry) => session.emitModule(entry)[0]?.contents ?? '');
+    };
+    const forward = emitBoth([colliding, plain]);
+    const reversed = emitBoth([plain, colliding]);
+
+    // The declared name took the unsuffixed spelling, so the shape is the suffixed one -- asserted, so
+    // that the test cannot quietly stop covering the collision if the structural key ever changes.
+    const [collidingHeader, plainHeader] = forward;
+    expect(structOf(collidingHeader!)).toMatch(/_1$/u);
+    expect(structOf(collidingHeader!)).toBe(structOf(plainHeader!));
+    expect(guardOf(collidingHeader!)).toBe(guardOf(plainHeader!));
+    // The guard names the struct it guards: a guard taken from the hash alone does not end with the
+    // resolved name, and that disagreement is the whole defect.
+    expect(guardOf(collidingHeader!)?.endsWith(structOf(collidingHeader!)!.toUpperCase())).toBe(true);
+    // Emission order is not part of the answer.
+    expect([...reversed].reverse()).toEqual([...forward]);
   });
 
   it('inlines imported scalar aliases when type and value exports share a source name', () => {

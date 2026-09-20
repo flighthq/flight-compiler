@@ -11,13 +11,13 @@ inline bool is_empty(flight::Array<double> values) {
   return (static_cast<double>(values.size()) < 1.0);
 }
 
-#ifndef FLIGHT_COMPILER_ANONYMOUS__FLIGHTHQ_GOLDEN_6A2B928B7D011B27
-#define FLIGHT_COMPILER_ANONYMOUS__FLIGHTHQ_GOLDEN_6A2B928B7D011B27
+#ifndef FLIGHT_COMPILER_ANONYMOUS__FLIGHTHQ_GOLDEN_WIDTH_HEIGHT_6A2B928B7D011B27
+#define FLIGHT_COMPILER_ANONYMOUS__FLIGHTHQ_GOLDEN_WIDTH_HEIGHT_6A2B928B7D011B27
 struct width_height_6a2b928b7d011b27 : public flight::ReferenceEnabled {
   double width;
   double height;
 };
-#endif // FLIGHT_COMPILER_ANONYMOUS__FLIGHTHQ_GOLDEN_6A2B928B7D011B27
+#endif // FLIGHT_COMPILER_ANONYMOUS__FLIGHTHQ_GOLDEN_WIDTH_HEIGHT_6A2B928B7D011B27
 
 inline double width_of(flight::Ref<width_height_6a2b928b7d011b27> shape) {
   return (shape->width * shape->height);

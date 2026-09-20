@@ -213,7 +213,26 @@ interface EmitContext {
   targetNames: ReadonlyMap<string, string>;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
   generatedNames: Set<string>;
+  // Anonymous structural type naming, shared by every module of one emission so a shape names the
+  // same type wherever it is written. See `generateAnonymousStructName`.
+  anonymousStructNaming: AnonymousStructNaming;
   enclosingReturnType?: Readonly<IrType> | undefined;
+}
+
+// Anonymous structural type naming, held across the modules of one emission rather than per module.
+//
+// One structural shape is one C++ type, so every module that writes it must spell it the same way, and
+// a per-module allocator cannot promise that. It could not before: the name was resolved against the
+// module's own `generatedNames`, which a probe emission into a throwaway context also feeds, so the
+// same shape could come out `kind_<hash>` in one module and `kind_<hash>_1` in another. Both were then
+// emitted under a guard derived from the hash alone, so including the first suppressed the second and
+// the second's uses had no definition at all.
+//
+// The taken set is seeded from the package-wide declared names, which every module sees identically,
+// and each resolved name is memoized, so the second module reaches the first module's answer.
+interface AnonymousStructNaming {
+  readonly names: Map<string, string>;
+  readonly taken: Set<string>;
 }
 
 export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOptions> {
@@ -228,6 +247,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const directBindingOwners = createCppDirectBindingOwners(modules);
       const importBindingOwners = createCppImportBindingOwners(modules);
       const targetNameMaps = createCppTargetNameMaps(modules);
+      const anonymousStructNaming = createCppAnonymousStructNaming(targetNameMaps);
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
@@ -241,6 +261,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
               directBindingOwners,
               importBindingOwners,
               targetNameMaps,
+              anonymousStructNaming,
             ),
           ];
         },
@@ -270,6 +291,7 @@ function emitIrModuleCppWithContext(
   directBindingOwners?: ReadonlyMap<string, CppDirectBindingOwner | null> | undefined,
   importBindingOwners?: ReadonlyMap<string, CppImportBindingOwner | null> | undefined,
   targetNameMaps?: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
+  anonymousStructNaming?: AnonymousStructNaming | undefined,
 ): EmittedFile {
   let module: IrModule;
   try {
@@ -291,11 +313,10 @@ function emitIrModuleCppWithContext(
     throw error;
   }
   assertRuntimeExternalSymbolBindingsCpp(module, options);
+  const resolvedTargetNameMaps = targetNameMaps ?? createCppTargetNameMaps(sourceModules);
   let targetNames: Map<string, string>;
   try {
-    targetNames = new Map(
-      (targetNameMaps ?? createCppTargetNameMaps(sourceModules)).get(getCppModuleIdentityKey(module)) ?? [],
-    );
+    targetNames = new Map(resolvedTargetNameMaps.get(getCppModuleIdentityKey(module)) ?? []);
     // Binding-pattern lowering introduces compiler-owned temporaries after package-wide target
     // names have been allocated from the source graph. Allocate the lowered module as well so
     // repeated destructuring in one scope cannot fall back to the same unchecked preferred name.
@@ -369,11 +390,12 @@ function emitIrModuleCppWithContext(
     sourceModules,
     structuralCastBindingRows,
     structuralCloneRecordBindingIds,
-    targetNameMaps: targetNameMaps ?? createCppTargetNameMaps(sourceModules),
+    targetNameMaps: resolvedTargetNameMaps,
     targetNames,
     typeParameterConstraints,
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
+    anonymousStructNaming: anonymousStructNaming ?? createCppAnonymousStructNaming(resolvedTargetNameMaps),
   };
   for (const [bindingId, targetType] of collectCppContextualBindingStorageTargetTypesCpp(module, context)) {
     contextualBindingStorageTargetTypes.set(bindingId, targetType);
@@ -5130,9 +5152,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
       }
       const structuralHash = getCppStableIdentifierHash(key);
-      const structName = generateAnonymousStructName(type.properties, structuralHash, context);
+      const structName = generateAnonymousStructName(key, type.properties, structuralHash, context);
       context.anonymousStructs.set(key, {
-        guard: getCppAnonymousStructGuard(structuralHash, context),
+        guard: getCppAnonymousStructGuard(structName, context),
         name: structName,
         properties: emittedProperties,
         typeParameters,
@@ -5293,10 +5315,10 @@ function emitCppNominalIntersectionImplementationTypeCpp(
   if (emittedProperties.some((property) => /\bauto\b/u.test(property.type))) return undefined;
 
   const structuralHash = getCppStableIdentifierHash(key);
-  const structName = generateAnonymousStructName(properties, structuralHash, context);
+  const structName = generateAnonymousStructName(key, properties, structuralHash, context);
   context.anonymousStructs.set(key, {
     base: emitType(baseType, context, 'storage'),
-    guard: getCppAnonymousStructGuard(structuralHash, context),
+    guard: getCppAnonymousStructGuard(structName, context),
     name: structName,
     properties: emittedProperties,
     typeParameters,
@@ -5821,13 +5843,14 @@ function emitCppCallableObjectStorageTypeCpp(
   if (existing) return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
   const structuralHash = getCppStableIdentifierHash(key);
   const structName = generateAnonymousStructName(
+    key,
     [{ name: 'callable' }, ...representation.properties],
     structuralHash,
     context,
   );
   context.anonymousStructs.set(key, {
     ...createCppCallableObjectStructCpp(structName, representation, typeParameters, context),
-    guard: getCppAnonymousStructGuard(structuralHash, context),
+    guard: getCppAnonymousStructGuard(structName, context),
   });
   return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
 }
@@ -5845,10 +5868,10 @@ function emitCppCallableOverloadStorageTypeCpp(
   const existing = context.anonymousStructs.get(key);
   if (existing) return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
   const structuralHash = getCppStableIdentifierHash(key);
-  const structName = generateAnonymousStructName([{ name: 'callableOverloads' }], structuralHash, context);
+  const structName = generateAnonymousStructName(key, [{ name: 'callableOverloads' }], structuralHash, context);
   context.anonymousStructs.set(key, {
     ...createCppCallableOverloadStructCpp(structName, representation, typeParameters, context),
-    guard: getCppAnonymousStructGuard(structuralHash, context),
+    guard: getCppAnonymousStructGuard(structName, context),
   });
   return `${structName}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
 }
@@ -12724,18 +12747,39 @@ function generateUniqueName(base: string, context: EmitContext): string {
   return candidate;
 }
 
+function createCppAnonymousStructNaming(
+  targetNameMaps: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): AnonymousStructNaming {
+  // The declared names of every module in the emission, so the same shape resolves the same way
+  // wherever it is written. Iteration is over a Map built in source order, and `createCppTargetNameMaps`
+  // is deterministic, so the seed is too.
+  const taken = new Set<string>();
+  for (const names of targetNameMaps.values()) {
+    for (const name of names.values()) taken.add(name);
+  }
+  return { names: new Map(), taken };
+}
+
 function generateAnonymousStructName(
+  key: string,
   properties: readonly { readonly name: string }[],
   structuralHash: string,
   context: EmitContext,
 ): string {
+  const naming = context.anonymousStructNaming;
+  const existing = naming.names.get(key);
+  if (existing) return existing;
   const base = getCppAnonymousStructBaseName(properties, structuralHash);
   let candidate = base;
   let suffix = 0;
-  while (context.generatedNames.has(candidate)) {
+  while (naming.taken.has(candidate)) {
     suffix++;
     candidate = `${base}_${suffix}`;
   }
+  naming.names.set(key, candidate);
+  naming.taken.add(candidate);
+  // Keep the module's own set aware of it as well, so a name generated later in this module does not
+  // land on the one this shape already took.
   context.generatedNames.add(candidate);
   return candidate;
 }
@@ -12748,9 +12792,14 @@ function getCppAnonymousStructBaseName(
   return `${propertyStem}_${structuralHash}`;
 }
 
-function getCppAnonymousStructGuard(structuralHash: string, context: EmitContext): string {
+// The guard is derived from the NAME rather than from the structural hash, which is what keeps the
+// definition, the guard, and the forward declaration that precedes it naming one thing. A guard taken
+// from the hash alone lets a definition of one name suppress a definition of another whenever the two
+// share a hash, and the suppressed one's uses then have no declaration at all -- with no diagnostic,
+// because the preprocessor removed it.
+function getCppAnonymousStructGuard(name: string, context: EmitContext): string {
   const packageIdentity = context.module.packageName.replace(/[^A-Za-z0-9]+/gu, '_').toUpperCase();
-  return `FLIGHT_COMPILER_ANONYMOUS_${packageIdentity}_${structuralHash.toUpperCase()}`;
+  return `FLIGHT_COMPILER_ANONYMOUS_${packageIdentity}_${name.toUpperCase()}`;
 }
 
 function getCppStableIdentifierHash(value: string): string {
