@@ -12285,6 +12285,25 @@ function isCppBooleanExpressionTypeCpp(expression: Readonly<IrExpression>, conte
 }
 
 function emitCppTruthinessExpression(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    expression.kind === 'binary' &&
+    (expression.operator === '&&' || expression.operator === '||') &&
+    (expression.semantics.left.flow === 'string' || expression.semantics.right.flow === 'string')
+  ) {
+    // Logical expressions preserve operand values in JavaScript, but this caller needs only the
+    // expression's truthiness. Convert each string operand at that semantic boundary so short
+    // circuiting stays intact without making Flight String an implicitly boolean C++ type.
+    const left =
+      expression.semantics.left.flow === 'boolean'
+        ? emitExpression(expression.left, context, { kind: 'primitive', name: 'boolean' })
+        : emitCppTruthinessExpression(expression.left, context);
+    const right =
+      expression.semantics.right.flow === 'boolean'
+        ? emitExpression(expression.right, context, { kind: 'primitive', name: 'boolean' })
+        : emitCppTruthinessExpression(expression.right, context);
+    return `(${left} ${expression.operator} ${right})`;
+  }
   const emitted = emitExpression(expression, context);
   if (
     getCppRuntimeProfile(context.options) !== 'flight-cpp' ||

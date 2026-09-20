@@ -8428,6 +8428,67 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('||');
   });
 
+  it('uses JavaScript string truthiness for logical operands in boolean context', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'string-logical-condition.ts',
+        `interface ParsedProtocolUrl {
+           scheme: string;
+           host: string;
+           path: string;
+           query: Record<string, string>;
+         }
+         export function createProtocolUrl(parts: Readonly<Partial<ParsedProtocolUrl>>): string {
+           const scheme = parts.scheme ?? 'unknown';
+           const host = parts.host ?? '';
+           const path = parts.path ?? '';
+           const query = parts.query;
+           const authority = host ? \`//\${host}\` : '';
+           const normalizedPath = path && !path.startsWith('/') ? \`/\${path}\` : path;
+           let url = \`\${scheme}:\${authority}\${normalizedPath}\`;
+           if (query) {
+             const entries = Object.entries(query).filter(([key]) => key.length > 0);
+             if (entries.length > 0) {
+               const queryString = entries
+                 .map(([key, value]) => \`\${encodeURIComponent(key)}=\${encodeURIComponent(value)}\`)
+                 .join('&');
+               url += \`?\${queryString}\`;
+             }
+           }
+           return url;
+         }
+         export function empty(): boolean { return '' && true ? true : false; }
+         export function nonempty(): boolean { return 'value' && true ? true : false; }
+         export function both(left: string, right: string): boolean {
+           return left && right ? true : false;
+         }`,
+      ).module,
+      {
+        externalBindings: {
+          bindings: [
+            {
+              callResultType: 'flight::String',
+              headers: ['flight/uri.hpp'],
+              nullability: 'non-null',
+              ownership: 'borrowed',
+              sourceName: 'encodeURIComponent',
+              space: 'value',
+              targetName: 'flight::encode_uri_component',
+            },
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    ).contents;
+
+    expect(output).toContain('flight::to_boolean(path) && !path.starts_with(flight::String("/"))');
+    expect(output).toContain('flight::to_boolean(flight::String("")) && true');
+    expect(output).toContain('flight::to_boolean(flight::String("value")) && true');
+    expect(output).toContain('flight::to_boolean(left) && flight::to_boolean(right)');
+    expect(output).not.toContain('(path &&');
+  });
+
   it('preserves operand values and JavaScript truthiness for non-boolean logical OR', () => {
     const output = emitIrModuleCpp(
       lower(
