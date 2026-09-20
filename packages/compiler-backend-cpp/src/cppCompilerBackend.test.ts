@@ -10568,15 +10568,108 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('defaulted(2.0, std::nullopt)');
   });
 
+  it('materializes an omitted trailing optional callable-member argument', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './Sensors',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Sensors.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, contents: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(
+        `/flight/packages/${packageName.slice(packageName.lastIndexOf('/') + 1)}/src/${file}`,
+        contents,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'Sensors.ts',
+          `export interface SubscribeOptions { interval?: number }
+           export interface HostSensorsCapability {
+             subscribe(listener: (value: number) => void, options?: Readonly<SubscribeOptions>): () => void;
+           }`,
+        ),
+        source('@flighthq/types', 'contract.ts', `export * from './Sensors';`),
+        source(
+          '@flighthq/sensors',
+          'sensors.ts',
+          `import type { HostSensorsCapability } from '@flighthq/types/contract';
+           export function attach(hostSensors: Readonly<HostSensorsCapability>): () => void {
+             const backend = hostSensors;
+             return backend.subscribe((value) => { void value; });
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const types = modules.find((module) => module.source.endsWith('/Sensors.ts'))!;
+    const consumer = modules.find((module) => module.packageName === '@flighthq/sensors')!;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(consumer)[0]?.contents ?? '';
+
+    expect(session.emitModule(types)[0]?.contents).toContain('std::optional<flight::StructuralRef<');
+    expect(emitted).toContain('}, std::nullopt)');
+  });
+
+  it('does not invent an absent carrier for an omitted required callable-member argument', () => {
+    const result = lower(
+      'omitted-required-callable-member-argument.ts',
+      `interface SubscribeOptions { interval?: number }
+       interface HostSensorsCapability {
+         subscribe(listener: (value: number) => void, options: Readonly<SubscribeOptions>): () => void;
+       }
+       export function attach(host: Readonly<HostSensorsCapability>): () => void {
+         return host.subscribe((value) => { void value; });
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).not.toContain('}, std::nullopt)');
+  });
+
+  it('preserves ordinary callback calls at their declared arity', () => {
+    const result = lower(
+      'ordinary-callback-arity.ts',
+      `export function invoke(listener: (value: number) => void): void {
+         listener(1);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('listener(1.0)');
+    expect(emitted.contents).not.toContain('listener(1.0,');
+  });
+
   it('leaves runtime-member default arguments to the runtime declaration', () => {
     const result = lower(
       'runtime-member-defaults.ts',
-      `export function copy(values: readonly number[]): number[] { return values.slice(); }`,
+      `export function copy(values: readonly number[]): number[] { return values.slice(); }
+       export function copyFrom(values: readonly number[]): number[] { return values.slice(1); }`,
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('return values.slice()');
+    expect(emitted.contents).toContain('return values.slice(1.0)');
     expect(emitted.contents).not.toContain('values.slice(std::nullopt');
+    expect(emitted.contents).not.toContain('values.slice(1.0, std::nullopt');
   });
 
   it('leaves nested readonly-array defaults to the runtime declaration', () => {

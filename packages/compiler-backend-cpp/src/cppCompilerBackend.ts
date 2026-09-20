@@ -10576,7 +10576,6 @@ function appendCppOmittedInvocationArguments(
   const optionals = expression.semantics.optionalParameters;
   const plan = defaults ?? optionals;
   if (!plan) {
-    if (emitted.length > 0) return emitted;
     const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
     const callable = calleeType ? getCppClosedCallableType(calleeType, context, new Set()) : undefined;
     if (!callable || emitted.length >= callable.parameters.length) return emitted;
@@ -10588,11 +10587,14 @@ function appendCppOmittedInvocationArguments(
   if (emitted.length >= plan.parameterCount) return emitted;
   if (expression.callee.kind === 'property') {
     const receiverType = getIrExpressionTypeEvidenceCpp(expression.callee.object, context);
+    const structuralReceiver = receiverType
+      ? context.referenceRepresentationPlanner.resolveStructuralRow(receiverType, context.module)
+      : undefined;
     const standardRuntimeReceiver =
       expression.callee.member !== undefined ||
       getIrArrayTypeCpp(receiverType, context, new Set()) !== undefined ||
       (receiverType !== undefined && isCppStringValueTypeCpp(receiverType, context, new Set())) ||
-      (receiverType?.kind === 'named' && receiverType.reference.kind === 'ambient');
+      (receiverType?.kind === 'named' && receiverType.reference.kind === 'ambient' && !structuralReceiver);
     if (standardRuntimeReceiver) return emitted;
   }
   const declaration =
