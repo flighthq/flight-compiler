@@ -6363,9 +6363,14 @@ function getCppTypeOfValueType(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (type.reference.kind !== 'binding') return undefined;
+  // Resolved aliases can carry a type query declared in another module. Its binding is then neither
+  // local nor an import of the module currently being emitted, but the package-wide owner index still
+  // identifies the declaration whose value type the query asks for.
+  const directOwner = context.directBindingOwners.get(type.reference.binding.id);
   const functionDeclaration = getCppFunctionDeclarationForBindingCpp(type.reference.binding.id, context);
   let valueType =
     getCppBindingTypeCpp(type.reference.binding.id, context) ??
+    (directOwner ? collectIrModuleBindingTypesCpp(directOwner.module).get(type.reference.binding.id) : undefined) ??
     (functionDeclaration
       ? {
           kind: 'function' as const,
@@ -10321,29 +10326,70 @@ function getCppImportedBindingTypeCpp(bindingId: string, context: EmitContext): 
     candidate.bindings.some((binding) => binding.binding.id === bindingId),
   );
   const importedBinding = importItem?.bindings.find((binding) => binding.binding.id === bindingId);
-  if (!importItem || !importedBinding || importedBinding.imported === '*') {
+  const foreignOwner = context.importBindingOwners.get(bindingId);
+  const ownerModule = importItem && importedBinding ? context.module : foreignOwner?.module;
+  const specifier = importItem && importedBinding ? importItem.specifier : foreignOwner?.specifier;
+  const imported = importItem && importedBinding ? importedBinding.imported : foreignOwner?.imported;
+  if (!ownerModule || !specifier || !imported || imported === '*') {
     context.importedBindingTypes.set(bindingId, null);
     return undefined;
   }
-  const candidates = getCppResolvedImportModules(importItem.specifier, context).flatMap((targetModule) => {
-    const direct = targetModule.declarations.find(
-      (declaration) =>
-        'binding' in declaration && declaration.exported && declaration.binding.name === importedBinding.imported,
-    );
-    const local = targetModule.exports.find(
-      (exported) => exported.kind === 'local' && !exported.typeOnly && exported.exported === importedBinding.imported,
-    );
-    const targetBindingId =
-      direct && 'binding' in direct ? direct.binding.id : local?.kind === 'local' ? local.binding.id : undefined;
-    const type = targetBindingId ? collectIrModuleBindingTypesCpp(targetModule).get(targetBindingId) : undefined;
-    return type ? [type] : [];
-  });
+  const ownerContext = ownerModule === context.module ? context : { ...context, module: ownerModule };
+  const candidates = getCppResolvedImportModules(specifier, ownerContext).flatMap((targetModule) =>
+    getCppExportedBindingTypesCpp(targetModule, imported, context, new Set()),
+  );
   const canonical = new Map(
     candidates.map((candidate) => [normalizeCompilerStructuralValueCanonical(candidate), candidate]),
   );
   const resolved = canonical.size === 1 ? [...canonical.values()][0]! : null;
   context.importedBindingTypes.set(bindingId, resolved);
   return resolved ?? undefined;
+}
+
+function getCppExportedBindingTypesCpp(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): readonly Readonly<IrType>[] {
+  // A type query retains a value binding, while the consumer may see that value through any number
+  // of named or star reexports. Follow the recorded export graph to the declaration that owns the
+  // binding type; the exported spelling alone is never type evidence.
+  const key = `${getCppModuleIdentityKey(module)}\0${exportedName}`;
+  if (visited.has(key)) return [];
+  const nextVisited = new Set(visited).add(key);
+  const bindingIds = new Set([
+    ...module.declarations.flatMap((declaration) =>
+      'binding' in declaration && declaration.exported && declaration.binding.name === exportedName
+        ? [declaration.binding.id]
+        : [],
+    ),
+    ...module.exports.flatMap((exported) =>
+      exported.kind === 'local' && !exported.typeOnly && exported.exported === exportedName
+        ? [exported.binding.id]
+        : [],
+    ),
+  ]);
+  const bindingTypes = collectIrModuleBindingTypesCpp(module);
+  const direct = [...bindingIds].flatMap((bindingId) => {
+    const type = bindingTypes.get(bindingId);
+    return type ? [type] : [];
+  });
+  const forwarded = module.exports.flatMap((exported): readonly Readonly<IrType>[] => {
+    if ('typeOnly' in exported && exported.typeOnly) return [];
+    const importedName =
+      exported.kind === 'all'
+        ? exportedName
+        : exported.kind === 'reexport' && exported.exported === exportedName
+          ? exported.imported
+          : undefined;
+    if (!importedName || (exported.kind !== 'all' && exported.kind !== 'reexport')) return [];
+    const moduleContext = module === context.module ? context : { ...context, module };
+    return getCppResolvedImportModules(exported.specifier, moduleContext).flatMap((targetModule) =>
+      getCppExportedBindingTypesCpp(targetModule, importedName, context, nextVisited),
+    );
+  });
+  return [...direct, ...forwarded];
 }
 
 function getIrNewExpressionTypeEvidenceCpp(

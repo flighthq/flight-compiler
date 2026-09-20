@@ -9384,6 +9384,187 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('using');
   });
 
+  it('resolves a value query retained by an imported registry entry declaration', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './RegistryTable',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RegistryTable.ts' },
+        },
+        {
+          specifier: './CanvasRenderState',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/CanvasRenderState.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/scene2d-canvas/contract',
+          target: { packageName: '@flighthq/scene2d-canvas', source: 'packages/scene2d-canvas/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/RegistryTable.ts',
+            `export const RegistryEntryState = {
+               Bound: 'bound',
+               Tombstoned: 'tombstoned',
+             } as const;
+             export type RegistryTableEntry<T> =
+               | { readonly state: typeof RegistryEntryState.Bound; readonly value: T }
+               | { readonly state: typeof RegistryEntryState.Tombstoned };
+             export interface KeyedTable<T> {
+               readonly entries: ReadonlyMap<string, RegistryTableEntry<T>>;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/CanvasRenderState.ts',
+            `import type { KeyedTable } from './RegistryTable';
+             export type CanvasRenderEffectRunner = (value: number) => void;
+             export interface CanvasRenderState { readonly name: string }
+             export interface CanvasRenderStateRuntime {
+               readonly registries: {
+                 readonly renderEffects: KeyedTable<CanvasRenderEffectRunner>;
+               };
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export * from './RegistryTable';
+             export type {
+               CanvasRenderEffectRunner,
+               CanvasRenderState,
+               CanvasRenderStateRuntime,
+             } from './CanvasRenderState';`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/scene2d-canvas',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/scene2d-canvas/src/contract.ts',
+            `import type { CanvasRenderState, CanvasRenderStateRuntime } from '@flighthq/types/contract';
+             export function getCanvasRenderStateRuntime(state: CanvasRenderState): CanvasRenderStateRuntime {
+               return state as unknown as CanvasRenderStateRuntime;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/effects-canvas',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/effects-canvas/src/canvasRenderEffectRegistry.ts',
+            `import { getCanvasRenderStateRuntime } from '@flighthq/scene2d-canvas/contract';
+             import type { CanvasRenderEffectRunner, CanvasRenderState } from '@flighthq/types/contract';
+             import { RegistryEntryState } from '@flighthq/types/contract';
+             export function getCanvasRenderEffectRunner(
+               state: CanvasRenderState,
+               kind: string,
+             ): CanvasRenderEffectRunner | null {
+               const entry = getCanvasRenderStateRuntime(state).registries.renderEffects.entries.get(kind);
+               return entry?.state === RegistryEntryState.Bound ? entry.value : null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/effects-canvas',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/effects-canvas/src/hasCanvasRenderEffectRunner.ts',
+            `import { getCanvasRenderStateRuntime } from '@flighthq/scene2d-canvas/contract';
+             import type { CanvasRenderState } from '@flighthq/types/contract';
+             import { RegistryEntryState } from '@flighthq/types/contract';
+             export function hasCanvasRenderEffectRunner(state: CanvasRenderState, kind: string): boolean {
+               return (
+                 getCanvasRenderStateRuntime(state).registries.renderEffects.entries.get(kind)?.state ===
+                 RegistryEntryState.Bound
+               );
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const registryEntry = modules[0]!.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'RegistryTableEntry',
+    );
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(registryEntry).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'union',
+        types: [
+          {
+            kind: 'object',
+            properties: [
+              {
+                name: 'state',
+                type: {
+                  kind: 'typeOf',
+                  reference: { binding: { name: 'RegistryEntryState' }, kind: 'binding', path: ['Bound'] },
+                },
+              },
+              { name: 'value' },
+            ],
+          },
+          {
+            kind: 'object',
+            properties: [
+              {
+                name: 'state',
+                type: {
+                  kind: 'typeOf',
+                  reference: { binding: { name: 'RegistryEntryState' }, kind: 'binding', path: ['Tombstoned'] },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const nextFailure = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+    const siblingFailure = captureBackendEmissionFailure(() => session.emitModule(modules[5]!));
+
+    expect(nextFailure.rule).toBe('cpp-contextual-union-missing-expression-type:optionalSingle');
+    expect(nextFailure.message).not.toContain('typeOf types require C++ type computation lowering');
+    expect(siblingFailure.message).toContain('optional chain receiver requires one concrete nullable union member');
+    expect(siblingFailure.message).not.toContain('typeOf types require C++ type computation lowering');
+  });
+
   it('emits generic function with template parameter', () => {
     const result = lower('generic.ts', 'export function identity<T>(x: T): T { return x; }');
     const emitted = emitIrModuleCpp(result.module);
