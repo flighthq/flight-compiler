@@ -10981,6 +10981,165 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('widens readonly derived structural rows at argument, assignment, and return boundaries', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'structural-row-widening.ts',
+        `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         interface Entity { [EntityRuntimeKey]: object | undefined }
+         interface MeshGeometry extends Entity { readonly vertices: readonly number[] }
+         function hasEntityRuntime(entity: Readonly<Entity>): boolean {
+           return entity[EntityRuntimeKey] !== undefined;
+         }
+         export function widenArgument(geometry: Readonly<MeshGeometry>): boolean {
+           return hasEntityRuntime(geometry);
+         }
+         export function widenAssignment(geometry: Readonly<MeshGeometry>): Readonly<Entity> {
+           const entity: Readonly<Entity> = geometry;
+           return entity;
+         }
+         export function widenReturn(geometry: Readonly<MeshGeometry>): Readonly<Entity> {
+           return geometry;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    const casts = output.match(
+      /flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Entity>>>>>/gu,
+    );
+    expect(casts).toHaveLength(3);
+  });
+
+  it('does not widen readonly rows to writable rows and refuses narrowing or unrelated rows', () => {
+    const readonlyToWritable = lower(
+      'readonly-row-to-writable.ts',
+      `interface Entity { id: number }
+       interface MeshGeometry extends Entity { vertices: number[] }
+       type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
+       function mutate<Type extends Entity>(entity: EntityConstruction<Type>): void { entity.id = 1; }
+       export function reject(geometry: Readonly<MeshGeometry>): void { mutate<MeshGeometry>(geometry); }`,
+    );
+    const narrowing = lower(
+      'structural-row-narrowing.ts',
+      `interface Entity { readonly id: number }
+       interface MeshGeometry extends Entity { readonly vertices: readonly number[] }
+       function mesh(geometry: Readonly<MeshGeometry>): void { geometry.vertices; }
+       export function reject(entity: Readonly<Entity>): void { mesh(entity); }`,
+    );
+    const unrelated = lower(
+      'unrelated-structural-rows.ts',
+      `interface Source { readonly source: number }
+       interface Target { readonly target: number }
+       function target(value: Readonly<Target>): void { value.target; }
+       export function reject(value: Readonly<Source>): void { target(value); }`,
+    );
+
+    const readonlyOutput = emitIrModuleCpp(readonlyToWritable.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(readonlyOutput).not.toContain('flight::structural_ref_cast<flight::StructuralRef<flight::RowWritable');
+
+    for (const result of [narrowing, unrelated]) {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+      );
+      expect(failure.rule).toBe('cpp-structural-row-widening-unproven');
+    }
+  });
+
+  it('refuses structural row widening through indeterminate imported heritage', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/base/contract',
+          target: { packageName: '@flighthq/base', source: 'packages/base/src/contract.ts' },
+        },
+        {
+          specifier: './base-a.js',
+          target: { packageName: '@flighthq/base', source: 'packages/base/src/base-a.ts' },
+        },
+        {
+          specifier: './base-b.js',
+          target: { packageName: '@flighthq/base', source: 'packages/base/src/base-b.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/mesh.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/base',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/base/src/contract.ts',
+            "export * from './base-a.js'; export * from './base-b.js';",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/base',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/base/src/base-a.ts',
+            'export interface Entity { readonly id: number }',
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/base',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/base/src/base-b.ts',
+            'export interface Entity { readonly uid: string }',
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/mesh.ts',
+            `import type { Entity } from '@flighthq/base/contract';
+             export interface MeshGeometry extends Entity { readonly vertices: readonly number[] }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/consumer.ts',
+            `import type { MeshGeometry } from '@flighthq/types/contract';
+             interface Entity { readonly id: number }
+             function entityId(entity: Readonly<Entity>): number { return entity.id; }
+             export function reject(geometry: Readonly<MeshGeometry>): number { return entityId(geometry); }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const failure = captureBackendEmissionFailure(
+      () =>
+        createCppCompilerBackend().createEmissionSession!({
+          moduleResolution,
+          modules,
+          options: { runtimeProfile: 'flight-cpp' },
+        }).emitModule(modules[4]!)[0],
+    );
+
+    expect(failure.rule).toBe('cpp-structural-row-widening-unproven');
+  });
+
   it('materializes spread push arguments before mutating the receiver', () => {
     const module = lower(
       'push-spread.ts',
@@ -14397,7 +14556,9 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     }).emitModule(modules[2]!)[0]!.contents;
 
     expect(emitted).toContain('std::optional<flight::StructuralRef<');
-    expect(emitted).toContain('matrix_transform_rectangle(out, transform.value(), local_bounds)');
+    expect(emitted).toContain(
+      'matrix_transform_rectangle(out, flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::MatrixLike>>>>>(transform.value()),',
+    );
     expect(emitted).toContain('merge_root_local_bounds<Traits>(out, node, local_bounds, std::optional<');
   });
 

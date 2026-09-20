@@ -3673,7 +3673,44 @@ function emitCppStructuralReferenceValueConversionCpp(
     const sourceView = `${emitCppStructuralRowReferenceTypeCpp(sourceProjection, context)}(${source})`;
     return `flight::structural_ref_cast<${emitType(expectedType, context)}>(${sourceView})`;
   }
-  if (!sourceRow || targetRow) return undefined;
+  if (sourceRow && targetRow) {
+    if (normalizeCompilerStructuralValueCanonical(sourceRow) === normalizeCompilerStructuralValueCanonical(targetRow)) {
+      return undefined;
+    }
+    const sourceObject = getCppStructuralRowObjectTypeCpp(sourceRow);
+    const targetObject = getCppStructuralRowObjectTypeCpp(targetRow);
+    if (
+      !sourceObject ||
+      !targetObject ||
+      getCppOpenTypeParameterName(sourceObject) ||
+      getCppOpenTypeParameterName(targetObject)
+    ) {
+      return undefined;
+    }
+    if (isCppStructuralRowReadonlyCpp(sourceRow) && !isCppStructuralRowReadonlyCpp(targetRow)) {
+      emissionError(
+        context,
+        'a readonly structural row cannot be converted to a writable structural row',
+        'cpp-structural-row-widening-unproven',
+      );
+    }
+    if (
+      normalizeCompilerStructuralValueCanonical(sourceObject) ===
+      normalizeCompilerStructuralValueCanonical(targetObject)
+    ) {
+      return undefined;
+    }
+    if (!isCppStructuralRowObjectWideningProvenCpp(sourceObject, targetObject, context)) {
+      emissionError(
+        context,
+        'structural row conversion requires a resolved source shape that contains every target member',
+        'cpp-structural-row-widening-unproven',
+      );
+    }
+    context.includes.add('flight/structural_ref.hpp');
+    return `flight::structural_ref_cast<${emitType(expectedType, context)}>(${source})`;
+  }
+  if (!sourceRow) return undefined;
   if (expectedType.kind === 'unknown' && expectedType.source === 'object') return `${source}.shared_object()`;
   const sourceObject = getCppStructuralRowObjectTypeCpp(sourceRow);
   const targetPlan = context.referenceRepresentationPlanner.plan(expectedType, context.module);
@@ -3690,6 +3727,68 @@ function emitCppStructuralReferenceValueConversionCpp(
   }
   context.includes.add('flight/structural_ref.hpp');
   return `flight::structural_ref_cast<${emitType(expectedType, context)}>(${source})`;
+}
+
+function isCppStructuralRowReadonlyCpp(row: Readonly<CompilerCppStructuralRowPlan>): boolean {
+  switch (row.kind) {
+    case 'readonly':
+      return true;
+    case 'partial':
+    case 'required':
+      return isCppStructuralRowReadonlyCpp(row.row);
+    case 'merge':
+    case 'rowOf':
+    case 'writable':
+      return false;
+  }
+}
+
+// The runtime keeps the source object and owner when one structural row is read through a base row.
+// That is safe only when the compiler can resolve both subjects and every target field is represented
+// by the same C++ storage in the source. The shared structural analyzer supplies the source-language
+// direction check; the exact field check mirrors the runtime member-table proof used by StructuralRef.
+function isCppStructuralRowObjectWideningProvenCpp(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const sourceProperties = context.referenceRepresentationPlanner.resolveObjectShape(source, context.module);
+  const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(target, context.module);
+  if (!sourceProperties || !targetProperties) return false;
+  if (
+    analyzeIrTypeStructuralAssignability(
+      { kind: 'object', properties: sourceProperties },
+      { kind: 'object', properties: targetProperties },
+    ).status !== 'compatible'
+  ) {
+    return false;
+  }
+  const sourceFields = new Map(
+    sourceProperties
+      .filter((property) => !property.phantom)
+      .map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
+  );
+  const targetFields = targetProperties.filter((property) => !property.phantom);
+  return (
+    targetFields.length > 0 &&
+    targetFields.every((property) => {
+      const sourceProperty = sourceFields.get(getCppStructuralRowPropertyIdentityCpp(property, context));
+      return (
+        sourceProperty !== undefined &&
+        sourceProperty.optional === property.optional &&
+        emitType(sourceProperty.type, context) === emitType(property.type, context)
+      );
+    })
+  );
+}
+
+function getCppStructuralRowPropertyIdentityCpp(
+  property: Readonly<IrObjectTypeProperty>,
+  context: EmitContext,
+): string {
+  return property.computedKey
+    ? `computed:${getCppComputedPropertySourceName(property.computedKey, context)}`
+    : `named:${property.name}`;
 }
 
 // A record written into a slot that declares a DIFFERENT record of the same shape. TypeScript records
