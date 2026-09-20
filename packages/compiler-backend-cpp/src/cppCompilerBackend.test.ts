@@ -14726,6 +14726,52 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // between a diagnostic a reader can act on and a name that escapes.
     expect(failure.rule).toBe('cpp-typescript-utility-unexpanded:Extract');
     expect(failure.message).toContain('Extract was not resolved before emission and has no C++ lowering');
+
+    const unresolved = lower(
+      'cube-texture-unresolved.ts',
+      `import type { Texture } from '@flighthq/external';
+       export type CubeTexture = Extract<Texture, { dimension: 'cube' }>;`,
+    );
+    const unresolvedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(unresolved.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(unresolvedFailure.rule).toBe('cpp-typescript-utility-unexpanded:Extract');
+
+    const indeterminate = structuredClone(lower('indeterminate-extract.ts', 'export type Result = string;').module);
+    const alias = indeterminate.declarations.find((declaration) => declaration.kind === 'typeAlias');
+    if (alias?.kind !== 'typeAlias') throw new TypeError('expected Result type alias');
+    (alias as { type: IrType }).type = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Extract' },
+      typeArguments: [
+        {
+          kind: 'object',
+          properties: [
+            {
+              name: 'dimension',
+              optional: false,
+              readonly: true,
+              type: { kind: 'unknown', source: 'unknown' },
+            },
+          ],
+        },
+        {
+          kind: 'object',
+          properties: [
+            {
+              name: 'dimension',
+              optional: false,
+              readonly: false,
+              type: { kind: 'literal', value: 'cube' },
+            },
+          ],
+        },
+      ],
+    };
+    const indeterminateFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(indeterminate, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(indeterminateFailure.rule).toBe('cpp-typescript-utility-unexpanded:Extract');
   });
 
   it('resolves a conditional alias reference whose check names a parameter inside an indexed access', () => {

@@ -5412,6 +5412,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       if (sourceName === 'Exclude') {
         return emitType(getCppExcludedType(type.typeArguments, context), context, representation);
       }
+      if (sourceName === 'Extract') {
+        const extracted = getCppExtractedType(type.typeArguments, context);
+        if (!extracted) refuseCppUnexpandedTypeScriptUtilityAlias('Extract', context);
+        return emitType(extracted, context, representation);
+      }
       // `NoInfer<T>` withholds a position from TypeScript's inference and is otherwise exactly `T`:
       // it states nothing about the value the position holds. C++ has no inference to withhold, so
       // the marker is erased and the argument emitted. Writing it out names a template the target
@@ -5863,6 +5868,28 @@ function getCppExcludedType(typeArguments: readonly Readonly<IrType>[], context:
   return createCppClosedTypeUnion(surviving);
 }
 
+function getCppExtractedType(
+  typeArguments: readonly Readonly<IrType>[],
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (typeArguments.length !== 2 || !typeArguments[0] || !typeArguments[1]) return undefined;
+  const source = getCppClosedTypeDomain(typeArguments[0], context);
+  const filter = getCppClosedTypeDomain(typeArguments[1], context);
+  if (source.kind === 'refused' || filter.kind === 'refused') return undefined;
+  if (source.category && filter.category && source.category !== filter.category) return undefined;
+  const surviving: Readonly<IrType>[] = [];
+  for (const member of source.members) {
+    let selected = false;
+    for (const candidate of filter.members) {
+      const assignability = getCppClosedTypeAssignability(member, candidate, source.category, context);
+      if (assignability === 'indeterminate') return undefined;
+      if (assignability === 'compatible') selected = true;
+    }
+    if (selected) surviving.push(member);
+  }
+  return createCppClosedTypeUnion(surviving);
+}
+
 type CppClosedTypeDomainCategory = 'object' | 'scalar';
 
 type CppClosedTypeDomain =
@@ -6004,8 +6031,8 @@ function getCppClosedTypeAssignability(
     const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(target, context.module);
     if (!sourceProperties || !targetProperties) return 'indeterminate';
     return analyzeIrTypeStructuralAssignability(
-      { kind: 'object', properties: sourceProperties },
-      { kind: 'object', properties: targetProperties },
+      { kind: 'object', properties: getCppConditionalTypeProperties(sourceProperties) },
+      { kind: 'object', properties: getCppConditionalTypeProperties(targetProperties) },
     ).status;
   }
   if (target.kind === 'primitive') {
@@ -6017,6 +6044,16 @@ function getCppClosedTypeAssignability(
     return source.kind === 'literal' && Object.is(source.value, target.value) ? 'compatible' : 'incompatible';
   }
   return source.kind === target.kind ? 'compatible' : 'incompatible';
+}
+
+function getCppConditionalTypeProperties(
+  properties: readonly Readonly<IrObjectTypeProperty>[],
+): readonly Readonly<IrObjectTypeProperty>[] {
+  // Property writability does not participate in TypeScript conditional-type assignability: a
+  // readonly discriminant still satisfies the otherwise identical mutable filter used by Extract.
+  // Storage assignability remains stricter elsewhere; only the closed type-level comparison erases
+  // this modifier before asking the shared structural analyzer about the property values.
+  return properties.map((property) => ({ ...property, readonly: false }));
 }
 
 function createCppClosedTypeUnion(types: readonly Readonly<IrType>[]): Readonly<IrType> {
@@ -13177,15 +13214,13 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
     // that fails wherever it is included, naming nothing the compiler can point at. Refusing says which
     // utility went unresolved, at the declaration that reached emission holding it.
     //
-    // Only the utilities with no C++ lowering are listed. The ones this emitter does lower -- `Omit`,
-    // `Partial`, `Readonly`, `Required`, `Pick`, `Record`, `Exclude`, `NonNullable`, `NoInfer`,
-    // `Parameters`, `ReturnType`, `PropertyKey` -- were handled above and never reach this line.
+    // Only utilities without unconditional C++ lowering are listed. `Extract` is the guarded member:
+    // the closed evaluator handles it above, while an open or indeterminate instance deliberately
+    // reaches the same named refusal. Utilities with total handling -- `Omit`, `Partial`, `Readonly`,
+    // `Required`, `Pick`, `Record`, `Exclude`, `NonNullable`, `NoInfer`, `Parameters`, `ReturnType`,
+    // `PropertyKey` -- never reach this line.
     if (cppUnexpandedTypeScriptUtilityAliases.has(type.reference.name)) {
-      emissionError(
-        context,
-        `${type.reference.name} was not resolved before emission and has no C++ lowering`,
-        `cpp-typescript-utility-unexpanded:${type.reference.name}`,
-      );
+      refuseCppUnexpandedTypeScriptUtilityAlias(type.reference.name, context);
     }
     return type.reference.name;
   }
@@ -13201,6 +13236,14 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
     return `${getCppCompilerPackageNamespace(owner.module.packageName, context.options.packageTargets)}::${targetName}`;
   }
   return context.targetNames.get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
+}
+
+function refuseCppUnexpandedTypeScriptUtilityAlias(name: string, context: EmitContext): never {
+  emissionError(
+    context,
+    `${name} was not resolved before emission and has no C++ lowering`,
+    `cpp-typescript-utility-unexpanded:${name}`,
+  );
 }
 
 function getCppDirectBindingOwner(type: Readonly<IrType>, context: EmitContext): CppDirectBindingOwner | undefined {
@@ -13748,9 +13791,10 @@ function emissionError(context: EmitContext, message: string, rule?: string): ne
 // purpose: they decide membership, so they are resolved through the shape planner rather than assumed.
 const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial', 'Readonly', 'Required']);
 
-// The lib.d.ts type utilities this emitter has no lowering for. Each names a type-level operation --
-// `Extract` filters a union, `Uppercase` transforms a string literal -- that a target must COMPUTE, and
-// writing the name out would ask the target's compiler to compute it with a template it does not have.
+// The lib.d.ts type utilities this emitter cannot lower unconditionally. Each names a type-level
+// operation -- `Extract` filters a union, `Uppercase` transforms a string literal -- that a target must
+// COMPUTE, and writing the name out would ask the target's compiler to compute it with a template it does
+// not have. Closed `Extract` is computed before this fallback; open or indeterminate instances stay here.
 const cppUnexpandedTypeScriptUtilityAliases = new Set([
   'Awaited',
   'Capitalize',
