@@ -29,42 +29,105 @@ defaults:
   tmux: true
   hostAlias: remote
 
-# Every delivered parcel wakes its recipient — advisory notes included, not only directed ones.
-# The RECIPIENT governs interruption, so one top-level declaration covers both agents and neither
-# overrides it: review's directed work wakes builder, and builder's replies wake review back.
+# Directed tasks, replies, and escalations wake their recipients. Advisory notes remain passive.
 # Read once when `quimby serve` starts, so restart the server after changing it.
-nudge: all
+nudge: directed
 whenFocused: nudge
 
 roles:
-  review:
-    runtimeProfile: claude-sbx
+  foreman:
+    runtimeProfile: codex-sbx
+    directs: ['@builder']
+    agents:
+      read: true
+      write: false
+      write_paths: []
+    instructions: |
+      You are the user-facing execution coordinator for approved work.
+
+      Divide approved work into concrete, independent builder tasks and keep every builder
+      supplied. Builders own ordinary implementation choices. Resolve ordinary questions from
+      the approved work and repository context; surface only genuine scope or architectural
+      decisions to the user.
+
+      Keep expensive global measurements centralized. Builders use focused tests and typechecks.
+      Run SDK generation, corpus/readiness scoring, and full generated-header sweeps only at
+      explicit folded checkpoints after related work has been integrated.
+
+      Builders send ready commits directly to Integration and reply to you with results and
+      availability. When Integration rejects work, re-task the responsible builder. Treat a
+      completed builder as immediately available for the next useful task.
+
+      Do not create approval gates, bookkeeping requirements, or per-commit global validation.
+      All agents/ documentation is read-only to you.
+
   builder:
     runtimeProfile: codex-sbx
+    directs: [integration]
+    escalatesTo: [foreman]
+    agents:
+      read: true
+      write: false
+      write_paths: []
+    instructions: |
+      Do the assigned work in repo/ and commit as you go.
+
+      Own ordinary implementation details using the approved requirements, repository
+      conventions, and engineering judgment. Escalate to Foreman only when blocked by a real
+      ambiguity, scope decision, external dependency, or repeated inability to progress.
+
+      Use the narrowest focused tests and typechecks that validate the change. Do not run SDK
+      generation, corpus/readiness scoring, full generated-header sweeps, or broad release
+      validation unless Foreman explicitly assigns a folded checkpoint.
+
+      When ready, send the commit to Integration and reply to Foreman with the result, validation,
+      blockers, and availability for more work. Continue with another assigned task when
+      available. All agents/ documentation is read-only to you.
+
+  integration:
+    runtimeProfile: codex-sbx
+    escalatesTo: [foreman]
+    agents:
+      read: true
+      write: false
+      write_paths: []
+    instructions: |
+      Continuously merge builder work into the integration branch.
+
+      Do not become a queue or wait for approval after a clean handoff. Resolve routine conflicts
+      and integrate all available work. Run focused or inexpensive checks appropriate to each
+      folded batch. Do not run SDK generation, corpus/readiness scoring, or a full generated-header
+      sweep for each commit; Foreman owns those checkpoints.
+
+      If a merge causes a concrete conflict or regression that is not quickly resolved, report it
+      to Foreman and continue integrating other independent work. Do not re-task builders directly.
+      All agents/ documentation is read-only to you.
+
+  # review:
+  #   runtimeProfile: claude-sbx
 
 services:
   serve: quimby serve
 
 layouts:
   default:
-    expr: (review | (@builder)):80 / (host $serve):20
+    expr: '((foreman integration) | (@builder)):80 / (host $serve):20'
 
 default: default
 
 integrate:
-  from: review
+  from: integration
 
 presets:
   default:
     layout: default
     agents:
-      review:
-        role: review
-        # The coordination edge, host-enforced at dispatch: review may direct builder on its own
-        # initiative, which stamps those parcels `userDirected` in meta.yaml. Authority is separate
-        # from interruption — `nudge: all` above already wakes both sides, so what this edge adds
-        # is directive weight one way. Escalation is the inverse edge, so builder may summon review.
-        directs: [builder]
+      foreman:
+        role: foreman
+      integration:
+        role: integration
+      # review:
+      #   role: review
       builder:
         role: builder
       builder2:
@@ -74,6 +137,6 @@ presets:
       builder4:
         runtimeProfile: deepseek-sbx
         role: builder
-      builder5:
-        runtimeProfile: deepseek-sbx
-        role: builder
+      # builder5:
+      #   runtimeProfile: deepseek-sbx
+      #   role: builder
