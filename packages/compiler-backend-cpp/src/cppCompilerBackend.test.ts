@@ -13214,6 +13214,49 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('std::optional<flight::Map<double, double>>{flight::Map<double, double>()}');
   });
 
+  it('retains an exact nested Map value through an optional lookup and refuses unproven receivers', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'nested-optional-map-lookup.ts',
+        `interface World { suppressions: Map<number, Map<number, number>> }
+         export function suppressed(world: Readonly<World>, first: number, second: number): boolean {
+           return (world.suppressions.get(first)?.get(second) ?? 0) > 0;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('([&]() -> std::optional<double> {');
+    expect(output).toContain('return optional_chain_receiver.value().get(second); }()).value_or(0.0) > 0.0');
+    expect(output).not.toContain('flight::Any');
+
+    const erased = lower(
+      'erased-optional-map-lookup.ts',
+      `interface World { suppressions: Map<number, any> }
+       export function suppressed(world: World, first: number, second: number): boolean {
+         return (world.suppressions.get(first)?.get(second) ?? 0) > 0;
+       }`,
+    ).module;
+    const erasedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(erased, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(erasedFailure.rule).toBe('cpp-optional-property-call-missing-callable-result');
+
+    const heterogeneous = lower(
+      'heterogeneous-optional-map-lookup.ts',
+      `interface World { suppressions: Map<number, Map<number, number> | Map<number, string>> }
+       export function read(world: World, first: number, second: number): unknown {
+         return world.suppressions.get(first)?.get(second);
+       }`,
+    ).module;
+    const heterogeneousFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(heterogeneous, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(heterogeneousFailure.message).toContain(
+      'optional chain receiver requires one concrete nullable union member',
+    );
+  });
+
   it('keeps an empty Map constructor unrepresented when two union slots match', () => {
     const module = lower(
       'ambiguous-contextual-map.ts',

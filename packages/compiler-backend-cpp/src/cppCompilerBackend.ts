@@ -9465,8 +9465,13 @@ function getIrCallReturnTypeCpp(
   const objectProjection = getCppObjectProjectionCallResultTypeCpp(expression, context);
   if (objectProjection) return objectProjection;
   if (expression.callee.kind === 'property' && expression.callee.optionalChain) {
-    const returns = getCppCallableReturnType(expression.callee.optionalChain.valueType, context, new Set());
-    if (returns) {
+    const callableReturns = getCppCallableReturnType(expression.callee.optionalChain.valueType, context, new Set());
+    const recovered =
+      getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(expression, context) ??
+      getCppRuntimeMemberCallResultTypeEvidence(expression, context);
+    const returns =
+      callableReturns?.kind === 'unknown' ? (recovered ?? callableReturns) : (callableReturns ?? recovered);
+    if (returns && returns.kind !== 'unknown') {
       return expression.callee.optionalChain.receiverNullish === 'possible'
         ? { kind: 'union', types: [returns, { kind: 'undefined' }] }
         : returns;
@@ -9772,6 +9777,31 @@ function getCppRuntimeMemberCallResultTypeEvidence(
     if (callee.name === 'test') return { kind: 'primitive', name: 'boolean' };
   }
   return undefined;
+}
+
+// An optional continuation can lose its ambient method signature when the lean package-graph checker
+// sees the nullable receiver as `any`. The call immediately before it still retains the instantiated
+// collection result, so recover only the value selected by a concrete Map/ReadonlyMap `get` receiver.
+// A lookalike method, an erased value, or a union of different collection instantiations supplies no
+// such proof and stays unrepresented.
+function getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const callee = expression.callee;
+  if (callee.kind !== 'property' || !callee.optional || callee.name !== 'get') return undefined;
+  const receiver = getIrExpressionTypeEvidenceCpp(callee.object, context);
+  const presentReceiver = receiver ? getCppNonNullableType(receiver, context, new Set()) : undefined;
+  const collection = getIrAmbientCollectionTypeCpp(presentReceiver, context, new Set());
+  if (
+    !collection ||
+    !['Map', 'ReadonlyMap'].includes(collection.reference.name) ||
+    collection.typeArguments.length !== 2
+  ) {
+    return undefined;
+  }
+  const value = collection.typeArguments[1];
+  return value?.kind === 'unknown' ? undefined : value;
 }
 
 const cppNumericMathCallNames = new Set([
@@ -13302,8 +13332,12 @@ function emitOptionalPropertyCallExpressionCpp(
     return emitExpression({ ...expression, callee: { ...callee, optional: false } }, context);
   }
   const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
-  const returns = getCppCallableReturnType(semantics.valueType, context, new Set());
-  if (!returns)
+  const callableReturns = getCppCallableReturnType(semantics.valueType, context, new Set());
+  const recovered =
+    getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(expression, context) ??
+    getCppRuntimeMemberCallResultTypeEvidence(expression, context);
+  const returns = callableReturns?.kind === 'unknown' ? (recovered ?? callableReturns) : (callableReturns ?? recovered);
+  if (!returns || returns.kind === 'unknown')
     emissionError(
       context,
       `optional property call ${callee.name} requires callable result evidence`,
@@ -13322,7 +13356,7 @@ function emitOptionalPropertyCallExpressionCpp(
   if (returns.kind === 'primitive' && returns.name === 'void') {
     return `([&]() { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return; ${invocation}; }())`;
   }
-  const payload = emitType(returns, context);
+  const payload = emitOptionalChainPayloadTypeCpp(returns, context);
   return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${invocation}; }())`;
 }
 
