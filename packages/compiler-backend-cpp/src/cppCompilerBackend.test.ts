@@ -12032,6 +12032,128 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('substitutes an imported generic Node2D slot and preserves the Renderable ABI refusal', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime {}
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export interface NodeTraits {
+         enabled: boolean;
+         kind: string;
+         name: string | null;
+       }
+       export interface NodeRuntime<Traits extends object> extends EntityRuntime {}
+       export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {
+         [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+       }
+       export type NodeAny = Node<any>;
+       export interface Node2DTraits extends NodeTraits {
+         alpha: number;
+         visible: boolean;
+         x: number;
+         y: number;
+       }
+       export type Node2D = Node<Node2DTraits> & Node2DTraits;
+       export interface FocusManager<N extends NodeAny> { focused: N | null }
+       export interface GuiDialogEntry { readonly initialFocus?: Node2D; readonly root: Node2D }
+       export interface RenderCache extends Entity { cache: boolean }
+       export type Renderable = NodeAny | RenderCache;
+       export interface RenderProxy2D extends Entity {}
+       export interface RenderState extends Entity {}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const interaction = ts.createSourceFile(
+      '/flight/packages/interaction/src/focusManager.ts',
+      `import type { FocusManager, NodeAny } from '@flighthq/types/contract';
+       export function setFocusedNode<N extends NodeAny>(manager: FocusManager<N>, node: N | null): boolean {
+         manager.focused = node; return true;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const guiDialog = ts.createSourceFile(
+      '/flight/packages/gui/src/guiDialog.ts',
+      `import { setFocusedNode } from '@flighthq/interaction/contract';
+       import type { FocusManager, GuiDialogEntry, Node2D } from '@flighthq/types/contract';
+       export function activateGuiDialogEntry(
+         focusManager: FocusManager<Node2D> | null,
+         entry: Readonly<GuiDialogEntry>,
+       ): void {
+         if (focusManager !== null && entry.initialFocus !== undefined) {
+           setFocusedNode(focusManager, entry.initialFocus);
+         }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const render = ts.createSourceFile(
+      '/flight/packages/render/src/renderProxy.ts',
+      `import type { Renderable, RenderProxy2D, RenderState } from '@flighthq/types/contract';
+       export function getOrCreateRenderProxy2D(state: RenderState, source: Renderable): RenderProxy2D {
+         void state; void source; throw new Error('fixture');
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const canvas = ts.createSourceFile(
+      '/flight/packages/scene2d-canvas/src/canvasCSSFilterBinding.ts',
+      `import { getOrCreateRenderProxy2D } from '@flighthq/render/contract';
+       import type { Node2D, RenderState } from '@flighthq/types/contract';
+       export function setCanvasCssFilter(state: RenderState, node: Node2D, filter: string | null): void {
+         const renderProxy = getOrCreateRenderProxy2D(state, node);
+         void renderProxy; void filter;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/interaction/contract',
+          target: { packageName: '@flighthq/interaction', source: 'packages/interaction/src/focusManager.ts' },
+        },
+        {
+          specifier: '@flighthq/render/contract',
+          target: { packageName: '@flighthq/render', source: 'packages/render/src/renderProxy.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/interaction', sourceFile: interaction, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/gui', sourceFile: guiDialog, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/render', sourceFile: render, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/scene2d-canvas', sourceFile: canvas, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const guiIndex = results.findIndex((result) => result.module.source.endsWith('/guiDialog.ts'));
+    const canvasIndex = results.findIndex((result) => result.module.source.endsWith('/canvasCSSFilterBinding.ts'));
+    expect(guiIndex).toBeGreaterThanOrEqual(0);
+    expect(canvasIndex).toBeGreaterThanOrEqual(0);
+    const guiOutput = emitCppModuleCppSession(results, moduleResolution, guiIndex);
+    const canvasFailure = captureBackendEmissionFailure(() =>
+      emitCppModuleCppSession(results, moduleResolution, canvasIndex),
+    );
+    expect(guiOutput).toContain(
+      'set_focused_node<flighthq_types::Node2D>(focus_manager.value(), std::optional<flight::StructuralRef<',
+    );
+    expect(canvasFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(canvasFailure.message).toContain(
+      'flight::StructuralRef<flight::RowMerge<flight::RowOf<flight::Ref<Node<flight::Ref<Node2DTraits>>>>, flight::RowOf<flight::Ref<Node2DTraits>>>> is not a represented runtime domain',
+    );
+  });
+
   it('refuses unsafe structural row widening without claiming unrelated conversions', () => {
     const readonlyToWritable = lower(
       'readonly-row-to-writable.ts',

@@ -9998,11 +9998,24 @@ function getIrCallArgumentExpectedTypeCpp(
     if (provided) return provided;
   }
   const semanticType = getIrInvocationArgumentExpectedTypeCpp(expression, index);
-  if (semanticType) return semanticType;
   if (expression.callee.kind === 'function') return expression.callee.parameters[index]?.type;
-  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return undefined;
-  return getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context)?.parameters[index]
-    ?.type;
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return semanticType;
+  const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
+  const parameterType = semanticType ?? declaration?.parameters[index]?.type;
+  if (!declaration || !parameterType || declaration.typeParameters.length === 0) return parameterType;
+  // Semantic invocation evidence can retain the declaration's type parameter even though template
+  // emission has already inferred its concrete argument. Apply that same complete substitution to
+  // the parameter slot so contextual union construction does not compare a value against raw `N`.
+  const typeArguments =
+    declaration.typeParameters.length === expression.typeArguments.length
+      ? expression.typeArguments
+      : getCppContextualCallTypeArgumentsCpp(expression, expectedType, context);
+  return typeArguments?.length === declaration.typeParameters.length
+    ? resolveIrTypeStructuralSubstitution(
+        parameterType,
+        createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
+      )
+    : parameterType;
 }
 
 function getCppContextualArrayMapCallbackTypeCpp(
