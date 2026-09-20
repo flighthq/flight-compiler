@@ -1211,6 +1211,36 @@ describe('createCppCompilerBackend', () => {
     expect(output).not.toContain('name + frame.frame');
   });
 
+  it('preserves exact Object.entries tuple storage through array filter and map', () => {
+    const precise = emitIrModuleCpp(
+      lower(
+        'precise-filtered-entries.ts',
+        `export function encode(query: Record<string, string>): string {
+           const entries = Object.entries(query).filter(([key]) => key.length > 0);
+           return entries.map(([key, value]) => key + value).join('&');
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const dynamic = emitIrModuleCpp(
+      lower(
+        'dynamic-filtered-entries.ts',
+        `export function count(query: Record<string, unknown>): number {
+           const entries = Object.entries(query).filter(([key]) => key.length > 0);
+           return entries.length;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(precise).toContain('auto entries = flight::object_entries(query).filter');
+    expect(precise.match(/std::tuple<flight::String, flight::String> parameter_pattern_value/gu)).toHaveLength(2);
+    expect(precise).toContain('flight::String value;');
+    expect(precise).not.toContain('flight::Any');
+    expect(dynamic).toContain('flight::Array<std::tuple<flight::String, flight::Any>> entries');
+    expect(dynamic).toContain('std::tuple<flight::String, flight::Any> parameter_pattern_value');
+  });
+
   it('uses the destructured element type to materialize inline tuple arrays', () => {
     const result = lower(
       'inline-tuple-rows.ts',

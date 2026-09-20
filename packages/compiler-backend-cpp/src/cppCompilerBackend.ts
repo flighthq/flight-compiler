@@ -203,7 +203,7 @@ interface EmitContext {
   async?: boolean | undefined;
   bindingClasses: ReadonlyMap<string, Readonly<IrClassDeclaration>>;
   bindingInitializers: ReadonlyMap<string, Readonly<IrExpression>>;
-  contextualBindingStorageTargetTypes: ReadonlyMap<string, Readonly<IrType>>;
+  contextualBindingStorageTargetTypes: Map<string, Readonly<IrType>>;
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   // Every type parameter the module declares, by binding identity, wherever it is declared. An index
   // rather than a lookup at the use site because the constraint is what proves a dependent member read,
@@ -248,6 +248,11 @@ interface EmitContext {
   sharedCaptureTargetNames: ReadonlyMap<string, string>;
   sourceModules: readonly Readonly<IrModule>[];
   structuralCastBindingRows: ReadonlyMap<string, Readonly<CompilerCppStructuralRowPlan>>;
+  // `Object.entries` physically returns std::tuple rows even when both slots have the same type.
+  // Keep that runtime representation attached to immutable array storage, callback parameters, and
+  // destructuring bindings, since the ordinary homogeneous TypeScript tuple is a flight::Array.
+  objectEntriesTupleArrayBindingIds: Set<string>;
+  objectEntriesTupleBindingIds: Set<string>;
   structuralCloneRecordBindingIds: ReadonlySet<string>;
   structuralOpenRowConstructionAssignments: ReadonlyMap<
     Readonly<Extract<IrExpression, { kind: 'object' }>>,
@@ -439,6 +444,8 @@ function emitIrModuleCppWithContext(
     sharedCaptureTargetNames,
     sourceModules,
     structuralCastBindingRows,
+    objectEntriesTupleArrayBindingIds: new Set(),
+    objectEntriesTupleBindingIds: new Set(),
     structuralCloneRecordBindingIds,
     structuralOpenRowConstructionAssignments: collectCppStructuralOpenRowConstructionAssignmentsCpp(module),
     targetNameMaps: resolvedTargetNameMaps,
@@ -1197,6 +1204,17 @@ function emitCppForwardParameterCpp(parameter: Readonly<IrParameter>, context: E
   return `${type} ${name}`;
 }
 
+function emitCppStdTupleTypeCpp(type: Readonly<Extract<IrType, { kind: 'tuple' }>>, context: EmitContext): string {
+  context.includes.add('tuple');
+  const elements = type.elements.map((element) => {
+    const emitted = emitType(element.type, context);
+    if (!element.optional) return emitted;
+    context.includes.add('optional');
+    return `std::optional<${emitted}>`;
+  });
+  return `std::tuple<${elements.join(', ')}>`;
+}
+
 function emitDeclaration(declaration: Readonly<IrDeclaration>, context: EmitContext): string[] {
   switch (declaration.kind) {
     case 'class':
@@ -1816,13 +1834,25 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
         variable.type.element.types.some((type) => type.kind === 'unknown')))
       ? getIrExpressionTypeEvidenceCpp(variable.initializer, context)
       : undefined;
+  const invariantCollectionInitializerType =
+    !arrayElement && !variable.mutable && variable.type && variable.initializer?.kind === 'call'
+      ? getCppRuntimeCollectionResultRefinementCpp(variable.initializer, variable.type, context)
+      : undefined;
   const preservedInitializerType = arrayElement
     ? undefined
     : (context.preservedInitializerTypes.get(variable.binding.id) ??
+      invariantCollectionInitializerType ??
       getCppStructurallyEquivalentInitializerTypeCpp(variable, context) ??
       (inferredInitializerType?.kind === 'unknown' ? undefined : inferredInitializerType));
   if (preservedInitializerType) {
     context.preservedInitializerTypes.set(variable.binding.id, preservedInitializerType);
+  }
+  if (
+    !variable.mutable &&
+    variable.initializer &&
+    isCppObjectEntriesTupleArrayExpressionCpp(variable.initializer, context)
+  ) {
+    context.objectEntriesTupleArrayBindingIds.add(variable.binding.id);
   }
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(variable.binding.id);
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(variable.binding.id);
@@ -2595,7 +2625,7 @@ function emitExpression(
             emitExpression(
               argument,
               context,
-              getCppContextualArrayMapCallbackTypeCpp(expression, expectedType, index, context) ??
+              getCppContextualArrayCallbackTypeCpp(expression, expectedType, index, context) ??
                 getIrCallArgumentExpectedTypeCpp(expression, index, context),
             ),
           );
@@ -2992,7 +3022,11 @@ function emitExpression(
       ) {
         return `${emitExpression(expression.object, context)}.char_at(${emitExpression(expression.index, context)})`;
       }
-      if (getCppRuntimeProfile(context.options) === 'flight-cpp' && hasIndexedRuntimeReceiverCpp(expression, context)) {
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        !isCppObjectEntriesTupleStorageExpressionCpp(expression.object, context) &&
+        hasIndexedRuntimeReceiverCpp(expression, context)
+      ) {
         const access = `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
         return expectedType?.kind === 'primitive' &&
           expectedType.name === 'number' &&
@@ -3066,7 +3100,13 @@ function emitExpression(
           ? expression.parameters.map((parameter, index) =>
               parameter.type.kind === 'unknown' && parameter.type.source === 'any'
                 ? { ...parameter, type: expectedCallable.parameters[index]!.type }
-                : parameter,
+                : (() => {
+                    const refined = getCppInvariantCollectionEvidenceRefinementCpp(
+                      parameter.type,
+                      expectedCallable.parameters[index]!.type,
+                    );
+                    return refined ? { ...parameter, type: refined } : parameter;
+                  })(),
             )
           : expression.parameters;
       const returns = expectedCallable?.returns ?? expression.returns;
@@ -3094,6 +3134,7 @@ function emitExpression(
         namespaceScope: false,
         returnsAbsent: hasIrTypeAbsentMember(returns),
       };
+      refineCppObjectEntriesDestructuringBindingsCpp(expression.body, functionContext);
       const usesThis = irFunctionExpressionUsesThisCpp(expression);
       if (usesThis && expression.thisMode === 'dynamic') {
         emissionError(context, 'dynamic-this closures require receiver lowering');
@@ -9489,8 +9530,14 @@ function getIrCallReturnTypeCpp(
       }
     }
   }
-  if (expression.semantics.resultType.kind !== 'unknown') return expression.semantics.resultType;
   const runtimeResult = getCppRuntimeMemberCallResultTypeEvidence(expression, context);
+  if (expression.semantics.resultType.kind !== 'unknown') {
+    return (
+      (runtimeResult
+        ? getCppInvariantCollectionEvidenceRefinementCpp(expression.semantics.resultType, runtimeResult)
+        : undefined) ?? expression.semantics.resultType
+    );
+  }
   if (runtimeResult) return runtimeResult;
   const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
   return calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined;
@@ -9802,6 +9849,56 @@ function getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(
   }
   const value = collection.typeArguments[1];
   return value?.kind === 'unknown' ? undefined : value;
+}
+
+function getCppRuntimeCollectionResultRefinementCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  declaredType: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const runtimeType = getCppRuntimeMemberCallResultTypeEvidence(expression, context);
+  return runtimeType ? getCppInvariantCollectionEvidenceRefinementCpp(declaredType, runtimeType) : undefined;
+}
+
+// Array and tuple storage is invariant in C++, so a standard method that preserves its receiver's
+// element values must keep that exact element type. Semantic library evidence may leave an `any` or
+// `unknown` hole inside the same array/tuple skeleton; fill only those holes from the runtime contract.
+// A different concrete leaf, arity, or optional/rest shape is not a refinement and remains ineligible,
+// which prevents this path from becoming an unchecked container conversion.
+function getCppInvariantCollectionEvidenceRefinementCpp(
+  declaredType: Readonly<IrType>,
+  runtimeType: Readonly<IrType>,
+): Readonly<IrType> | undefined {
+  const refine = (
+    declared: Readonly<IrType>,
+    runtime: Readonly<IrType>,
+  ): Readonly<{ changed: boolean; type: Readonly<IrType> }> | undefined => {
+    if (normalizeCompilerStructuralValueCanonical(declared) === normalizeCompilerStructuralValueCanonical(runtime)) {
+      return { changed: false, type: declared };
+    }
+    if (isCppErasedDynamicValueTypeCpp(declared) && runtime.kind !== 'unknown') {
+      return { changed: true, type: runtime };
+    }
+    if (declared.kind === 'array' && runtime.kind === 'array') {
+      const element = refine(declared.element, runtime.element);
+      return element ? { changed: element.changed, type: { ...declared, element: element.type } } : undefined;
+    }
+    if (declared.kind !== 'tuple' || runtime.kind !== 'tuple') return undefined;
+    if (declared.elements.length !== runtime.elements.length) return undefined;
+    const elements = declared.elements.map((element, index) => {
+      const runtimeElement = runtime.elements[index]!;
+      if (element.optional !== runtimeElement.optional || element.rest !== runtimeElement.rest) return undefined;
+      const type = refine(element.type, runtimeElement.type);
+      return type ? { changed: type.changed, element: { ...element, type: type.type } } : undefined;
+    });
+    if (elements.some((element) => !element)) return undefined;
+    return {
+      changed: elements.some((element) => element!.changed),
+      type: { ...declared, elements: elements.map((element) => element!.element) },
+    };
+  };
+  const refinement = refine(declaredType, runtimeType);
+  return refinement?.changed ? refinement.type : undefined;
 }
 
 const cppNumericMathCallNames = new Set([
@@ -10533,23 +10630,121 @@ function getCppTaskFulfillmentCallbackTypeCpp(
   };
 }
 
-function getCppContextualArrayMapCallbackTypeCpp(
+function getCppContextualArrayCallbackTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   expectedType: Readonly<IrType> | undefined,
   index: number,
   context: EmitContext,
 ): Readonly<Extract<IrType, { kind: 'function' }>> | undefined {
-  if (
-    index !== 0 ||
-    expression.callee.kind !== 'property' ||
-    expression.callee.member?.receiver !== 'array' ||
-    expression.callee.member.name !== 'map'
-  ) {
+  if (index !== 0 || expression.callee.kind !== 'property' || expression.callee.member?.receiver !== 'array') {
     return undefined;
   }
-  const result = getIrArrayTypeCpp(expectedType, context, new Set());
   const callback = getIrExpressionTypeEvidenceCpp(expression.arguments[index]!, context);
-  return result && callback?.kind === 'function' ? { ...callback, returns: result.element } : undefined;
+  if (callback?.kind !== 'function') return undefined;
+  const receiver = getIrArrayTypeCpp(
+    getIrExpressionTypeEvidenceCpp(expression.callee.object, context),
+    context,
+    new Set(),
+  );
+  const first = callback.parameters[0];
+  const refinedParameter =
+    receiver && first ? getCppInvariantCollectionEvidenceRefinementCpp(first.type, receiver.element) : undefined;
+  const callbackExpression = expression.arguments[index]!;
+  if (
+    callbackExpression.kind === 'function' &&
+    callbackExpression.parameters[0] &&
+    isCppObjectEntriesTupleArrayExpressionCpp(expression.callee.object, context)
+  ) {
+    context.objectEntriesTupleBindingIds.add(callbackExpression.parameters[0].binding.id);
+  }
+  const result =
+    expression.callee.member.name === 'map' ? getIrArrayTypeCpp(expectedType, context, new Set()) : undefined;
+  if (!refinedParameter && !result) return undefined;
+  return {
+    ...callback,
+    parameters: refinedParameter
+      ? [{ ...first!, type: refinedParameter }, ...callback.parameters.slice(1)]
+      : callback.parameters,
+    returns: result?.element ?? callback.returns,
+  };
+}
+
+function isCppObjectEntriesTupleArrayExpressionCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    return context.objectEntriesTupleArrayBindingIds.has(expression.reference.binding.id);
+  }
+  if (expression.kind !== 'call' || expression.callee.kind !== 'property') return false;
+  if (isCppAmbientObjectMemberCallCpp(expression, 'entries')) return true;
+  return (
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'filter' &&
+    isCppObjectEntriesTupleArrayExpressionCpp(expression.callee.object, context)
+  );
+}
+
+function isCppObjectEntriesTupleStorageExpressionCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): boolean {
+  return (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.objectEntriesTupleBindingIds.has(expression.reference.binding.id)
+  );
+}
+
+function getCppObjectEntriesTupleElementTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const tuple = objectType ? getIrTupleTypeCpp(objectType, context, new Set()) : undefined;
+  const index =
+    expression.index.kind === 'literal' && typeof expression.index.value === 'number'
+      ? expression.index.value
+      : undefined;
+  return index === undefined ? undefined : tuple?.elements[index]?.type;
+}
+
+function refineCppObjectEntriesDestructuringBindingsCpp(
+  statements: readonly Readonly<IrStatement>[],
+  context: EmitContext,
+): void {
+  // Binding-pattern lowering runs before callback context is recovered. Once an Object.entries
+  // callback regains its exact tuple parameter, carry that evidence through the compiler-owned
+  // temporary and into the hoisted leaf bindings before any declaration chooses C++ storage.
+  for (const statement of statements) {
+    if (statement.kind === 'variable') {
+      for (const variable of statement.declarations) {
+        if ('pattern' in variable || !variable.initializer) continue;
+        if (!isCppObjectEntriesTupleStorageExpressionCpp(variable.initializer, context)) continue;
+        const initializerType = getIrExpressionTypeEvidenceCpp(variable.initializer, context);
+        if (!initializerType || !variable.type) continue;
+        const refined = getCppInvariantCollectionEvidenceRefinementCpp(variable.type, initializerType);
+        context.preservedInitializerTypes.set(variable.binding.id, refined ?? initializerType);
+        context.objectEntriesTupleBindingIds.add(variable.binding.id);
+      }
+      continue;
+    }
+    if (
+      statement.kind === 'expression' &&
+      statement.expression.kind === 'assignment' &&
+      statement.expression.operator === '=' &&
+      statement.expression.left.kind === 'identifier' &&
+      statement.expression.left.reference.kind === 'binding' &&
+      statement.expression.right.kind === 'element' &&
+      isCppObjectEntriesTupleStorageExpressionCpp(statement.expression.right.object, context)
+    ) {
+      const type = getCppObjectEntriesTupleElementTypeCpp(statement.expression.right, context);
+      if (type) {
+        context.contextualBindingStorageTargetTypes.set(statement.expression.left.reference.binding.id, type);
+      }
+      continue;
+    }
+    if (statement.kind === 'block') {
+      refineCppObjectEntriesDestructuringBindingsCpp(statement.statements, context);
+    }
+  }
 }
 
 function getCppCollectionCallArgumentExpectedTypeCpp(
@@ -13941,13 +14136,19 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
     const pack = getCppDependentCallablePack(parameter, context);
     return `${pack.typeName}&&... ${name}`;
   }
-  const type = parameter.type
-    ? getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-      isCppBareObjectTypeCpp(parameter.type) &&
-      !context.erasedObjectParameterBindingIds.has(parameter.binding.id)
-      ? 'flight::Ref<void>'
-      : emitCppParameterTypeCpp(parameter.type, parameter.rest, context)
-    : 'auto';
+  const objectEntriesTuple =
+    context.objectEntriesTupleBindingIds.has(parameter.binding.id) && parameter.type.kind === 'tuple'
+      ? parameter.type
+      : undefined;
+  const type = objectEntriesTuple
+    ? emitCppStdTupleTypeCpp(objectEntriesTuple, context)
+    : parameter.type
+      ? getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        isCppBareObjectTypeCpp(parameter.type) &&
+        !context.erasedObjectParameterBindingIds.has(parameter.binding.id)
+        ? 'flight::Ref<void>'
+        : emitCppParameterTypeCpp(parameter.type, parameter.rest, context)
+      : 'auto';
   if (parameter.optional) {
     context.includes.add('optional');
     return `std::optional<${type}> ${name} = std::nullopt`;
