@@ -186,6 +186,10 @@ interface CppStructuralOpenRowConstructionPlan {
 
 type CppDirectBindingOwner = Readonly<{ declaration: IrDeclaration; module: IrModule }>;
 type CppImportBindingOwner = Readonly<{ imported: string; module: IrModule; specifier: string }>;
+type CppValueBindingOwner = Readonly<{
+  binding: IrBindingIdentity | IrTypeBindingIdentity;
+  module: IrModule;
+}>;
 
 interface EmitContext {
   activeDependentCallablePackIds: ReadonlySet<string>;
@@ -14328,29 +14332,116 @@ function getCppImportedBindingTargetName(
   space: 'type' | 'value',
   context: EmitContext,
 ): string | undefined {
-  for (const importItem of context.module.imports) {
-    const importedBinding = importItem.bindings.find((candidate) => candidate.binding.id === bindingId);
-    if (!importedBinding) continue;
-    const importedName = importedBinding.imported === '*' ? referencePath[0] : importedBinding.imported;
-    if (!importedName) return undefined;
-    const targetModules = getCppResolvedImportModules(importItem.specifier, context);
-    if (targetModules.length === 0) {
-      return context.targetNames.get(bindingId) ?? safeCppName(importedBinding.binding.name);
+  const importItem = context.module.imports.find((candidate) =>
+    candidate.bindings.some((binding) => binding.binding.id === bindingId),
+  );
+  const importedBinding = importItem?.bindings.find((binding) => binding.binding.id === bindingId);
+  const foreignOwner = context.importBindingOwners.get(bindingId);
+  const ownerModule = importItem && importedBinding ? context.module : foreignOwner?.module;
+  const specifier = importItem && importedBinding ? importItem.specifier : foreignOwner?.specifier;
+  const imported = importItem && importedBinding ? importedBinding : foreignOwner;
+  if (!ownerModule || !specifier || !imported) return undefined;
+  const importedName = imported.imported === '*' ? referencePath[0] : imported.imported;
+  if (!importedName) return undefined;
+  const ownerContext = ownerModule === context.module ? context : { ...context, module: ownerModule };
+  const targetModules = getCppResolvedImportModules(specifier, ownerContext);
+  if (targetModules.length === 0) {
+    return context.targetNames.get(bindingId) ?? safeCppName(importedBinding?.binding.name ?? importedName);
+  }
+  if (space === 'value') {
+    // A facade owns the import route but not the declaration's C++ name. Follow named and star
+    // reexports to the value declaration so its package namespace and allocated spelling travel
+    // together; deriving either from the facade produces a name that no emitted header declares.
+    const candidates = targetModules.flatMap((targetModule) =>
+      getCppExportedValueBindingOwnersCpp(targetModule, importedName, context, new Set()),
+    );
+    const unique = new Map(
+      candidates.map((candidate) => [
+        `${getCppModuleIdentityKey(candidate.module)}\0${candidate.binding.id}`,
+        candidate,
+      ]),
+    );
+    if (unique.size === 1) {
+      const target = [...unique.values()][0]!;
+      const targetName =
+        context.targetNameMaps.get(getCppModuleIdentityKey(target.module))?.get(target.binding.id) ??
+        safeCppName(target.binding.name);
+      return `${getCppCompilerPackageNamespace(target.module.packageName, context.options.packageTargets)}::${targetName}`;
     }
-    const directTargets = targetModules.filter((target) => hasCppDirectExportName(target, importedName));
-    const targetModule =
-      directTargets.length === 1 ? directTargets[0]! : getCppResolvedImportModule(importItem.specifier, context);
-    if (!targetModule) {
+    if (unique.size > 1) {
       emissionError(
         context,
         `imported binding ${importedName} requires one module export target`,
         'cpp-imported-binding-no-export-target',
       );
     }
-    const targetName = getCppResolvedExportTargetName(targetModule, importedName, space, context);
-    return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
   }
-  return undefined;
+  const directTargets = targetModules.filter((target) => hasCppDirectExportName(target, importedName));
+  const targetModule =
+    directTargets.length === 1 ? directTargets[0]! : getCppResolvedImportModule(specifier, ownerContext);
+  if (!targetModule) {
+    emissionError(
+      context,
+      `imported binding ${importedName} requires one module export target`,
+      'cpp-imported-binding-no-export-target',
+    );
+  }
+  const targetName = getCppResolvedExportTargetName(targetModule, importedName, space, context);
+  return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
+}
+
+function getCppExportedValueBindingOwnersCpp(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): readonly CppValueBindingOwner[] {
+  const key = `${getCppModuleIdentityKey(module)}\0${exportedName}`;
+  if (visited.has(key)) return [];
+  const nextVisited = new Set(visited).add(key);
+  const directBindingIds = new Set([
+    ...module.declarations.flatMap((declaration) =>
+      declaration.exported && getCppValueDeclarationBindingCpp(declaration)?.name === exportedName
+        ? [getCppValueDeclarationBindingCpp(declaration)!.id]
+        : [],
+    ),
+    ...module.exports.flatMap((exported) =>
+      exported.kind === 'local' && !exported.typeOnly && exported.exported === exportedName
+        ? [exported.binding.id]
+        : [],
+    ),
+  ]);
+  const direct = module.declarations.flatMap((declaration): readonly CppValueBindingOwner[] => {
+    const binding = getCppValueDeclarationBindingCpp(declaration);
+    return binding && directBindingIds.has(binding.id) ? [{ binding, module }] : [];
+  });
+  const forwarded = module.exports.flatMap((exported): readonly CppValueBindingOwner[] => {
+    if ('typeOnly' in exported && exported.typeOnly) return [];
+    const importedName =
+      exported.kind === 'all'
+        ? exportedName
+        : exported.kind === 'reexport' && exported.exported === exportedName
+          ? exported.imported
+          : undefined;
+    if (!importedName || (exported.kind !== 'all' && exported.kind !== 'reexport')) return [];
+    const moduleContext = module === context.module ? context : { ...context, module };
+    return getCppResolvedImportModules(exported.specifier, moduleContext).flatMap((targetModule) =>
+      getCppExportedValueBindingOwnersCpp(targetModule, importedName, context, nextVisited),
+    );
+  });
+  return [...direct, ...forwarded];
+}
+
+function getCppValueDeclarationBindingCpp(
+  declaration: Readonly<IrDeclaration>,
+): Readonly<IrBindingIdentity | IrTypeBindingIdentity> | undefined {
+  if (!('binding' in declaration)) return undefined;
+  return declaration.kind === 'class' ||
+    declaration.kind === 'enum' ||
+    declaration.kind === 'function' ||
+    declaration.kind === 'variable'
+    ? declaration.binding
+    : undefined;
 }
 
 function hasCppDirectExportName(module: Readonly<IrModule>, exportedName: string): boolean {

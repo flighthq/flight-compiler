@@ -59,4 +59,91 @@ describe('C++ imported value qualification', () => {
     expect(output).toContain('flight::math::epsilon + epsilon.value()');
     expect(output).not.toContain('constants.scale');
   });
+
+  it('qualifies values resolved through a barrel without capturing a shadow', () => {
+    const typesPackage = '@flighthq/types';
+    const lightingPackage = '@flighthq/lighting';
+    const sources = [
+      {
+        packageName: typesPackage,
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/LightUnit.ts',
+          `export type LightUnit = 'Lux' | 'Unitless';
+           export const LuxLightUnit = 'Lux';
+           export const UnitlessLightUnit = 'Unitless';`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: typesPackage,
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './LightUnit';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: lightingPackage,
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/lighting/src/ambientLight.ts',
+          `import type { LightUnit } from '@flighthq/types/contract';
+           import { LuxLightUnit, UnitlessLightUnit } from '@flighthq/types/contract';
+           export function getDefaultLightUnit(): LightUnit { return UnitlessLightUnit; }
+           export function getLuxLightUnit(): LightUnit { return LuxLightUnit; }
+           export function retainShadow(UnitlessLightUnit: string): string { return UnitlessLightUnit; }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const modules = lowerTypeScriptSources(sources, {
+      edges: [
+        {
+          specifier: './LightUnit',
+          target: { packageName: typesPackage, source: 'packages/types/src/LightUnit.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: typesPackage, source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    });
+    expect(modules.flatMap((result) => result.diagnostics)).toEqual([]);
+    const lowered = modules.map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            importer: lowered[1],
+            specifier: './LightUnit',
+            target: { packageName: typesPackage, source: 'packages/types/src/LightUnit.ts' },
+          },
+          {
+            importer: lowered[2],
+            specifier: '@flighthq/types/contract',
+            target: { packageName: typesPackage, source: 'packages/types/src/contract.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: lowered,
+      options: {
+        packageTargets: {
+          [lightingPackage]: { includePrefix: 'flight/lighting', namespace: 'flight::lighting' },
+          [typesPackage]: { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(lowered[2]!)[0]!.contents;
+
+    expect(output).toContain('return flight::types::unitless_light_unit;');
+    expect(output).toContain('return flight::types::lux_light_unit;');
+    expect(output).toContain('return unitless_light_unit;');
+  });
 });
