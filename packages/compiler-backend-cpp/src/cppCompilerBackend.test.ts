@@ -3455,6 +3455,38 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('keeps identity-only object parameters on the erased WeakMap ABI through typed calls and signal selection', () => {
+    const result = lower(
+      'channel-signals.ts',
+      `export interface Channel { playing: boolean }
+       export interface Signal { emit: () => void }
+       export interface Signals { onPlay: Signal; onStop: Signal }
+       const channelSignals = new WeakMap<object, Signals>();
+       function enableChannelSignals(channel: object): Signals {
+         let signals = channelSignals.get(channel);
+         if (signals === undefined) {
+           signals = { onPlay: { emit: () => {} }, onStop: { emit: () => {} } };
+           channelSignals.set(channel, signals);
+         }
+         return signals;
+       }
+       function emitSignal(signal: Signal): void { signal.emit(); }
+       export function enableSignals(channel: Channel): Signals { return enableChannelSignals(channel); }
+       export function emitChannelSignal(channel: Channel, name: 'onPlay' | 'onStop'): void {
+         const signals = channelSignals.get(channel);
+         if (signals !== undefined) emitSignal(signals[name]);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('enable_channel_signals(flight::Ref<void> channel)');
+    expect(emitted).toContain('return enable_channel_signals(channel);');
+    expect(emitted).toContain('channel_signals.get(channel)');
+    expect(emitted).toMatch(/emit_signal\(\(\[&\]\(\) -> flight::Ref<emit_[0-9a-f]{16}>/u);
+    expect(emitted).not.toContain('emit_signal(([&]() -> flight::ErasedRef');
+    expect(emitted).not.toContain('enable_channel_signals(flight::ErasedRef channel)');
+  });
+
   it('emits one cohesive weak-key policy for exact and homogeneous external key types', () => {
     const result = lower(
       'wgpu-device-runtime.ts',
@@ -9462,6 +9494,24 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('auto&& assignment_target = values.get');
   });
 
+  it('opens a typed symbol Record view from an identity-only object parameter', () => {
+    const result = lower(
+      'object-record-view.ts',
+      `interface Item { enabled: boolean }
+       const itemSlot = Symbol('item');
+       function createItem(): Item { return { enabled: true }; }
+       export function enableItem(state: object): Item {
+         const items = state as Record<symbol, Item | undefined>;
+         return (items[itemSlot] ??= createItem());
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('enable_item(flight::Ref<void> state)');
+    expect(emitted).toContain('static_cast<flight::Record<flight::Symbol, std::optional<flight::Ref<Item>>>>(state)');
+    expect(emitted).not.toContain('enable_item(flight::ErasedRef state)');
+  });
+
   it('preserves effectful null call results while constructing optional absence', () => {
     const result = lower(
       'effectful-null.ts',
@@ -13557,6 +13607,9 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
        export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
        export interface EntityRuntime { binding: object | null }
+       export function attachEntityBinding(source: Entity, binding: object): void {
+         source[EntityRuntimeKey]!.binding = binding;
+       }
        export function getEntityBinding(source: Readonly<Entity>): object | null {
          return source[EntityRuntimeKey]?.binding ?? null;
        }
@@ -13568,8 +13621,64 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     expect(emitted.contents).toContain('#include <flight/erased_ref.hpp>');
     expect(emitted.contents).toContain('std::optional<flight::ErasedRef> binding;');
+    expect(emitted.contents).toContain('attach_entity_binding(flight::Ref<Entity> source, flight::ErasedRef binding)');
     expect(emitted.contents).toContain('flight::erased_ref_as<typename Type::element_type>');
     expect(emitted.contents).not.toContain('std::static_pointer_cast');
+
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const importedModules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+             export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+             export interface EntityRuntime { binding: object | null }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/entity',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/entity/src/binding.ts',
+            `import type { Entity } from '@flighthq/types/contract';
+             import { EntityRuntimeKey } from '@flighthq/types/contract';
+             export function attachEntityBinding(entity: Entity, binding: object): void {
+               entity[EntityRuntimeKey]!.binding = binding;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((lowered) => lowered.module);
+    const importedBinding = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: importedModules,
+      options: {
+        packageTargets: {
+          '@flighthq/entity': { includePrefix: 'flight/entity', namespace: 'flight::entity' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(importedModules[1]!)[0]!.contents;
+    expect(importedBinding).toContain(
+      'attach_entity_binding(flight::Ref<flight::types::Entity> entity, flight::ErasedRef binding)',
+    );
 
     const scalar = lower(
       'scalar-binding-assertion.ts',

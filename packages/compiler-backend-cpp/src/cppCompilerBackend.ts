@@ -197,6 +197,10 @@ interface EmitContext {
   // asks this rather than the declared type, because the two disagree in both directions and each
   // direction is a shape the SDK writes.
   erasedDynamicStorageBindingIds: ReadonlySet<string>;
+  // A bare `object` parameter normally carries identity only, which is the ABI used by WeakMap
+  // keys and attached Record views. Parameters in this set cross a storage boundary that later
+  // recovers their concrete type, so they must retain the type tag carried by `ErasedRef`.
+  erasedObjectParameterBindingIds: ReadonlySet<string>;
   externalBindingStorageTargetTypes: ReadonlyMap<string, string>;
   importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
   importedBindingTypes: Map<string, Readonly<IrType> | null>;
@@ -367,6 +371,7 @@ function emitIrModuleCppWithContext(
   const structuralCastBindingRows = new Map<string, Readonly<CompilerCppStructuralRowPlan>>();
   const structuralCloneRecordBindingIds = new Set<string>();
   const erasedDynamicStorageBindingIds = new Set<string>();
+  const erasedObjectParameterBindingIds = new Set<string>();
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
     anonymousStructs: new Map(),
@@ -381,6 +386,7 @@ function emitIrModuleCppWithContext(
     dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
     erasedDynamicStorageBindingIds,
+    erasedObjectParameterBindingIds,
     externalBindingStorageTargetTypes,
     facetTagNames: new Map(),
     importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
@@ -420,6 +426,9 @@ function emitIrModuleCppWithContext(
     structuralCloneRecordBindingIds,
   )) {
     structuralCastBindingRows.set(bindingId, row);
+  }
+  for (const bindingId of collectCppErasedObjectParameterBindingIds(module, context)) {
+    erasedObjectParameterBindingIds.add(bindingId);
   }
   analyzeIrModuleTraversal(module, {
     parameter(parameter) {
@@ -1130,7 +1139,13 @@ function emitCppForwardParameterCpp(parameter: Readonly<IrParameter>, context: E
     const pack = getCppDependentCallablePack(parameter, context);
     return `${pack.typeName}&&... ${name}`;
   }
-  const type = parameter.type ? emitCppParameterTypeCpp(parameter.type, parameter.rest, context) : 'auto';
+  const type = parameter.type
+    ? getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+      isCppBareObjectTypeCpp(parameter.type) &&
+      !context.erasedObjectParameterBindingIds.has(parameter.binding.id)
+      ? 'flight::Ref<void>'
+      : emitCppParameterTypeCpp(parameter.type, parameter.rest, context)
+    : 'auto';
   if (parameter.optional) {
     context.includes.add('optional');
     return `std::optional<${type}> ${name}`;
@@ -10364,6 +10379,79 @@ function collectCppIndexedObjectParameterBindingIds(
   return indexed;
 }
 
+// A bare `object` parameter has two possible C++ jobs. Most such parameters are opaque identities:
+// they key a WeakMap or open a symbol-keyed Record view, and `Ref<void>` is the runtime ABI for both.
+// A parameter copied into an erased object slot is different, because a later checked assertion must
+// recover the concrete reference type captured at that boundary. Find those direct storage crossings
+// before declarations are emitted so only they use `ErasedRef`.
+function collectCppErasedObjectParameterBindingIds(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): ReadonlySet<string> {
+  const result = new Set<string>();
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'function') continue;
+    const parameters = new Set(
+      declaration.parameters
+        .filter((parameter) => isCppBareObjectTypeCpp(parameter.type))
+        .map((parameter) => parameter.binding.id),
+    );
+    if (parameters.size === 0) continue;
+    for (const statement of declaration.body) {
+      analyzeIrStatementSubtreeTraversal(statement, {
+        expression(expression) {
+          // A nested closure owns its own parameters and returns. Its body cannot decide the ABI of
+          // this declaration merely because it captures a same-named outer value.
+          if (expression.kind === 'function') return false;
+          if (
+            expression.kind === 'assignment' &&
+            expression.operator === '=' &&
+            expression.right.kind === 'identifier' &&
+            expression.right.reference.kind === 'binding' &&
+            parameters.has(expression.right.reference.binding.id)
+          ) {
+            // Imported nested fields can carry checker-owned property evidence even when resolving
+            // the receiver shape through a computed symbol is intentionally conservative. The
+            // declared property type is the storage contract for this assignment.
+            const targetType =
+              expression.left.kind === 'property'
+                ? (expression.left.type ?? getIrAssignmentTargetTypeCpp(expression.left, context))
+                : getIrAssignmentTargetTypeCpp(expression.left, context);
+            if (targetType && isCppTypePreservingErasedObjectStorageCpp(targetType, context)) {
+              result.add(expression.right.reference.binding.id);
+            }
+          }
+          return undefined;
+        },
+        statement(candidate) {
+          if (
+            candidate.kind === 'return' &&
+            candidate.expression?.kind === 'identifier' &&
+            candidate.expression.reference.kind === 'binding' &&
+            parameters.has(candidate.expression.reference.binding.id) &&
+            isCppTypePreservingErasedObjectStorageCpp(declaration.returns, context)
+          ) {
+            result.add(candidate.expression.reference.binding.id);
+          }
+        },
+      });
+    }
+  }
+  return result;
+}
+
+function isCppBareObjectTypeCpp(type: Readonly<IrType>): boolean {
+  return type.kind === 'unknown' && type.source === 'object';
+}
+
+function isCppTypePreservingErasedObjectStorageCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  if (!union) return isCppBareObjectTypeCpp(type);
+  const plan = getCppUnionRepresentationPlan(union, context);
+  return plan.valueSlots.some((slot) => slot.targetType === 'flight::ErasedRef');
+}
+
 function collectIrModuleArrayElementBindingIdsCpp(module: Readonly<IrModule>): ReadonlySet<string> {
   const candidates = new Set<string>();
   const nullishUsed = new Set<string>();
@@ -12338,7 +12426,13 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
     const pack = getCppDependentCallablePack(parameter, context);
     return `${pack.typeName}&&... ${name}`;
   }
-  const type = parameter.type ? emitCppParameterTypeCpp(parameter.type, parameter.rest, context) : 'auto';
+  const type = parameter.type
+    ? getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+      isCppBareObjectTypeCpp(parameter.type) &&
+      !context.erasedObjectParameterBindingIds.has(parameter.binding.id)
+      ? 'flight::Ref<void>'
+      : emitCppParameterTypeCpp(parameter.type, parameter.rest, context)
+    : 'auto';
   if (parameter.optional) {
     context.includes.add('optional');
     return `std::optional<${type}> ${name} = std::nullopt`;
