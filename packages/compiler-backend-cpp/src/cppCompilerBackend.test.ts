@@ -14429,6 +14429,42 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('multiple-inheritance');
   });
 
+  it('emits a closed-key conditional payload carrier and retains concrete key selections', () => {
+    const result = lower(
+      'closed-key-payload.ts',
+      `export interface KeyboardData { key: string; kind: 'keyboard' }
+       export interface FocusData { kind: 'focus'; target: string }
+       export interface PointerData { kind: 'pointer'; x: number }
+       type KeyboardName = 'onKeyDown' | 'onKeyUp';
+       type FocusName = 'onFocusIn' | 'onFocusOut';
+       interface Signals {
+         onFocusIn: () => void;
+         onFocusOut: () => void;
+         onKeyDown: () => void;
+         onKeyUp: () => void;
+         onPointerDown: () => void;
+       }
+       type SignalName = keyof Signals;
+       export type Payload<Name extends SignalName> = Name extends KeyboardName
+         ? Readonly<KeyboardData>
+         : Name extends FocusName
+           ? Readonly<FocusData>
+           : Readonly<PointerData>;
+       export type Slot<Name extends SignalName> = (value: Payload<Name>) => void;
+       export type KeyboardPayload = Payload<'onKeyDown'>;
+       export type FocusPayload = Payload<'onFocusIn'>;`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain(
+      'using Payload = std::variant<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<KeyboardData>>>>, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<FocusData>>>>, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<PointerData>>>>>;',
+    );
+    expect(emitted.contents).toContain('using Slot = std::function<void(Payload<Name>)>;');
+    expect(emitted.contents).not.toContain('flight::Any');
+    expect(emitted.contents).not.toContain('unknown');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',
