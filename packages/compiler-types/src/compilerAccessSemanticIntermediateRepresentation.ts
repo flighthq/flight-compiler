@@ -20,6 +20,10 @@ export type IrIndexedReceiver =
   | 'unknown';
 
 export interface IrElementAccessSemantics {
+  // The checker-resolved key domain when every possible key is a string literal. Written aliases
+  // such as `keyof Backend` otherwise remain opaque to targets, while widening to `string` must not
+  // be mistaken for a finite member set.
+  readonly closedKeys?: readonly [string, ...string[]] | undefined;
   readonly key: IrPropertyKeyCoercion;
   readonly optionalChain?: IrOptionalChainSemantics | undefined;
   readonly receivers: readonly [IrIndexedReceiver, ...IrIndexedReceiver[]];

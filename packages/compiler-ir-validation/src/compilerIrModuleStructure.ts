@@ -549,6 +549,20 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       if (!compilerIrPropertyKeyCoercions.has(expression.semantics.key)) {
         addFailure('invalid-node-shape', `${path}.semantics.key`, 'element access key coercion is invalid', state);
       }
+      if (
+        expression.semantics.closedKeys !== undefined &&
+        (!Array.isArray(expression.semantics.closedKeys) ||
+          expression.semantics.closedKeys.length === 0 ||
+          expression.semantics.closedKeys.some((key) => typeof key !== 'string') ||
+          new Set(expression.semantics.closedKeys).size !== expression.semantics.closedKeys.length)
+      ) {
+        addFailure(
+          'invalid-node-shape',
+          `${path}.semantics.closedKeys`,
+          'closed element keys require one or more distinct strings',
+          state,
+        );
+      }
       validateIrOptionalChainEvidence(expression.optional, expression.semantics.optionalChain, path, state);
       visitExpression(expression.index, `${path}.index`, state);
       visitExpression(expression.object, `${path}.object`, state);

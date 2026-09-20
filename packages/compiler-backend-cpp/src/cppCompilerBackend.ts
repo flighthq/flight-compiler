@@ -2930,7 +2930,7 @@ function emitExpression(
       if (record && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         return `${object}.get(${emitCppRequiredRecordKeyCpp(expression.index, record.key, context)}).value()`;
       }
-      const closedKeys = getCppClosedElementKeyNamesCpp(expression.index, context);
+      const closedKeys = getCppClosedElementKeyNamesCpp(expression, context);
       if (closedKeys) return emitCppClosedKeyElementSelectionCpp(expression, closedKeys, context);
       // An object held by reference as a set of named members has no subscript at all, and the row
       // mechanism has no string-keyed form, so an index the compiler cannot resolve to a member would
@@ -3555,6 +3555,8 @@ function emitExpression(
         emissionError(context, 'typeof on a C++ variant requires proven union member test evidence');
       }
       if (expression.operator === 'typeof') {
+        const closedKeyTypeof = emitCppClosedKeyElementTypeofCpp(expression.operand, context);
+        if (closedKeyTypeof) return closedKeyTypeof;
         const value = getCppStaticTypeofValueCpp(expression.operand, context);
         if (value) {
           return getCppRuntimeProfile(context.options) === 'flight-cpp'
@@ -7497,14 +7499,16 @@ function admitsCppNullishSentinelCpp(
   return members.some((member) => (sentinel === 'null' ? member.kind === 'null' : member.kind === 'undefined'));
 }
 
-// The finite key set of an index whose static type is a closed union of string literals -- `signals[name]`
-// with `name` declared `'onComplete' | 'onLoop' | 'onPause' | 'onPlay' | 'onStop'`. A key widened to
+// The finite key set retained from the checker's resolved string-literal domain, or directly visible
+// in the index's IR type -- `signals[name]` with `name` declared as a literal union. A key widened to
 // `string` has no such set, and that difference is the whole reason this can be attempted here and
-// refused there: the union says which members the access can reach, and a `string` says nothing.
+// refused there: the closed evidence says which members the access can reach, while `string` says nothing.
 function getCppClosedElementKeyNamesCpp(
-  index: Readonly<IrExpression>,
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
 ): readonly string[] | undefined {
+  if (expression.semantics.closedKeys) return expression.semantics.closedKeys;
+  const index = expression.index;
   const type = getIrExpressionTypeEvidenceCpp(index, context);
   if (!type) return undefined;
   if (type.kind === 'literal') return typeof type.value === 'string' ? [type.value] : undefined;
@@ -7516,6 +7520,50 @@ function getCppClosedElementKeyNamesCpp(
     if (!keys.includes(member.value)) keys.push(member.value);
   }
   return keys;
+}
+
+// `typeof backend[operation]` does not need a common C++ value type for every selected member. It
+// needs the smaller runtime domain that `typeof` observes. A finite key set proves which represented
+// fields can be reached, and each field independently proves its present domain; optional fields
+// retain their runtime absence test. Distinct present domains remain unanswerable here, as does an
+// open key, because neither identifies one operation the target can perform without erasing values.
+function emitCppClosedKeyElementTypeofCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind !== 'element') return undefined;
+  const keys = getCppClosedElementKeyNamesCpp(expression, context);
+  if (!keys) return undefined;
+  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const runtime = objectType ? getIrTypeRuntimeDomainCpp(objectType, context, new Set()) : undefined;
+  const properties = runtime
+    ? context.referenceRepresentationPlanner.resolveObjectShape(runtime, context.module)
+    : undefined;
+  if (!runtime || !properties || !hasFlightReferenceRepresentationCpp(runtime, context)) return undefined;
+  const members = new Map<string, Readonly<IrObjectTypeProperty>>();
+  for (const property of properties) {
+    if (isCppValuelessStructMemberCpp(property.type)) continue;
+    if (!members.has(property.name)) members.set(property.name, property);
+  }
+  const selections = keys.map((key) => ({ key, property: members.get(key) }));
+  if (selections.some((selection) => !selection.property)) return undefined;
+  const domains = selections.map((selection) =>
+    getCppStaticTypeofTypeCpp(selection.property!.type, context, new Set()),
+  );
+  const domain = domains[0];
+  if (!domain || domains.some((candidate) => candidate !== domain)) return undefined;
+  const receiver = getGeneratedTargetName('typeofReceiver', context);
+  const key = getGeneratedTargetName('typeofKey', context);
+  const branches = selections.map((selection) => {
+    const selected = `${receiver}->${safeCppName(selection.property!.name)}`;
+    const value = selection.property!.optional
+      ? `${selected}.has_value() ? ${emitLiteral(domain, context)} : ${emitLiteral('undefined', context)}`
+      : emitLiteral(domain, context);
+    return `if (${key} == ${emitLiteral(selection.key, context)}) return ${value};`;
+  });
+  context.includes.add('stdexcept');
+  const result = emitType({ kind: 'primitive', name: 'string' }, context);
+  return `([&]() -> ${result} { const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${key} = ${emitExpression(expression.index, context)}; ${branches.join(' ')} throw std::logic_error("Flight finite-key typeof reached no member"); }())`;
 }
 
 // Selects the member a finite key names. This is still a dispatch at runtime, because the key's value

@@ -546,7 +546,7 @@ describe('validateIrModuleStructure', () => {
     }
   });
 
-  it('validates optional-chain and property-key coercion evidence together', () => {
+  it('validates optional-chain, property-key coercion, and closed-key evidence together', () => {
     const valid = lower(
       'optional-element.ts',
       'export function first(values?: number[]): number | undefined { return values?.[0]; }',
@@ -580,6 +580,31 @@ describe('validateIrModuleStructure', () => {
       failures: [expect.objectContaining({ path: expect.stringContaining('.optionalChain') })],
       kind: 'invalid',
     });
+
+    const closed = lower(
+      'closed-element.ts',
+      `interface Values { '': number; first: number }
+       export function read(values: Values, key: keyof Values): number { return values[key]; }`,
+    );
+    expect(validateIrModuleStructure(closed)).toEqual({ kind: 'valid' });
+    const closedDeclaration = closed.declarations[1];
+    const closedStatement = closedDeclaration?.kind === 'function' ? closedDeclaration.body[0] : undefined;
+    const closedExpression = closedStatement?.kind === 'return' ? closedStatement.expression : undefined;
+    if (closedExpression?.kind !== 'element') throw new Error('Expected closed-key element expression');
+    expect(closedExpression.semantics.closedKeys).toEqual(['', 'first']);
+
+    for (const closedKeys of [[], ['first', 'first'], ['first', 1]]) {
+      const malformed = structuredClone(closed);
+      const declaration = malformed.declarations[1];
+      const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      const expression = statement?.kind === 'return' ? statement.expression : undefined;
+      if (expression?.kind !== 'element') throw new Error('Expected closed-key element expression');
+      (expression.semantics as { closedKeys: unknown }).closedKeys = closedKeys;
+      expect(validateIrModuleStructure(malformed)).toMatchObject({
+        failures: [expect.objectContaining({ path: expect.stringContaining('.semantics.closedKeys') })],
+        kind: 'invalid',
+      });
+    }
   });
 
   it('validates exact default-parameter call arity, ordering, and omissions', () => {

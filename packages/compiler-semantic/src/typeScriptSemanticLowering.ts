@@ -1679,11 +1679,32 @@ function lowerElementAccessSemantics(
   receiver: ts.Expression,
   key: ts.Expression,
   context: LoweringContext,
-): { key: IrPropertyKeyCoercion; receivers: [IrIndexedReceiver, ...IrIndexedReceiver[]] } {
+): {
+  closedKeys?: readonly [string, ...string[]] | undefined;
+  key: IrPropertyKeyCoercion;
+  receivers: [IrIndexedReceiver, ...IrIndexedReceiver[]];
+} {
+  const closedKeys = getTypeScriptClosedElementKeys(key, context);
   return {
+    ...(closedKeys ? { closedKeys } : {}),
     key: getTypeScriptPropertyKeyCoercion(key, context),
     receivers: getTypeScriptExpressionIndexedReceiverSet(receiver, context),
   };
+}
+
+function getTypeScriptClosedElementKeys(
+  expression: ts.Expression,
+  context: LoweringContext,
+): [string, ...string[]] | undefined {
+  const type = context.checker.getTypeAtLocation(expression);
+  const members = type.isUnion() ? type.types : [type];
+  const keys: string[] = [];
+  for (const member of members) {
+    if ((member.flags & ts.TypeFlags.StringLiteral) === 0) return undefined;
+    const key = (member as ts.StringLiteralType).value;
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys.length > 0 ? [keys[0]!, ...keys.slice(1)] : undefined;
 }
 
 function getTypeScriptPropertyKeyCoercion(expression: ts.Expression, context: LoweringContext): IrPropertyKeyCoercion {

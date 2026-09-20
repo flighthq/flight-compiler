@@ -2027,23 +2027,87 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
-  it('preserves the pinned text-shaper chain continuation as exact optional result evidence', () => {
+  it('preserves the pinned text-shaper chain and closed operation-key evidence', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',
-      `export interface TextFormat { size?: number }
+      `export interface BackendOperationExplanation {
+         readonly implemented: boolean;
+         readonly layer: 'custom' | 'host' | 'none' | 'sentinel';
+         readonly operation: string;
+       }
+       export interface FontMetrics { ascent: number }
+       export interface GlyphExtents { width: number }
+       export interface ShapedRun { advance: number }
+       export type TextDirection = 'ltr' | 'rtl';
+       export interface TextFormat { size?: number }
        export type TextMeasureFunction = (text: string, format: TextFormat) => number;
-       export interface TextShaperBackend { measureText: TextMeasureFunction }
+       export interface ShapeRunOptions { direction?: TextDirection; script?: string }
+       export interface TextShaperBackend {
+         getCodePointForGlyph?: (glyphId: number) => number;
+         getFontMetrics?: (format: Readonly<TextFormat>) => FontMetrics | null;
+         getGlyphExtents?: (glyphId: number) => GlyphExtents | null;
+         getGlyphIndexForCodePoint?: (codePoint: number) => number;
+         getGlyphName?: (glyphId: number) => string;
+         measureText: TextMeasureFunction;
+         shapeRun?: (
+           text: string,
+           format: Readonly<TextFormat>,
+           options?: Readonly<ShapeRunOptions>,
+         ) => ShapedRun;
+       }
+       export type TextShaperOperation = keyof TextShaperBackend;
        export interface HasTextShaper { readonly text: { readonly shaper: TextShaperBackend } }`,
       ts.ScriptTarget.Latest,
       true,
     );
     const textShaper = ts.createSourceFile(
       '/flight/packages/textshaper/src/textShaper.ts',
-      `import type { HasTextShaper, TextShaperBackend } from '@flighthq/types/contract';
+      `import type {
+         BackendOperationExplanation,
+         HasTextShaper,
+         TextFormat,
+         TextShaperBackend,
+         TextShaperOperation,
+       } from '@flighthq/types/contract';
+       import { _textShaperBackendHook } from './_textShaperHooks';
+       export function explainTextShaperOperation(
+         operation: TextShaperOperation,
+         host?: HasTextShaper,
+       ): BackendOperationExplanation {
+         const backend = getTextShaperBackend(host);
+         if (backend !== null && typeof backend[operation] === 'function') {
+           return { implemented: true, layer: host === undefined ? 'custom' : 'host', operation };
+         }
+         return { implemented: false, layer: 'none', operation };
+       }
        export function getTextShaperBackend(host?: HasTextShaper): TextShaperBackend | null {
          return host?.text.shaper ?? _backend;
        }
+       export function hasTextShaperOperation(operation: TextShaperOperation, host?: HasTextShaper): boolean {
+         return explainTextShaperOperation(operation, host).implemented;
+       }
+       export function measureText(text: string, format: Readonly<TextFormat>, host?: HasTextShaper): number {
+         const backend = getTextShaperBackend(host);
+         if (backend === null) return -1;
+         return backend.measureText(text, format);
+       }
+       export function setTextShaperBackend(backend: TextShaperBackend | null): void {
+         _backend = backend;
+         _textShaperBackendHook?.(backend);
+       }
        let _backend: TextShaperBackend | null = null;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const hooks = ts.createSourceFile(
+      '/flight/packages/textshaper/src/_textShaperHooks.ts',
+      `import type { TextShaperBackend } from '@flighthq/types/contract';
+       export let _textShaperBackendHook: ((backend: TextShaperBackend | null) => void) | null = null;
+       export function _setTextShaperBackendHook(
+         hook: ((backend: TextShaperBackend | null) => void) | null,
+       ): void {
+         _textShaperBackendHook = hook;
+       }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -2053,27 +2117,41 @@ describe('createCppCompilerBackend', () => {
           specifier: '@flighthq/types/contract',
           target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
         },
+        {
+          specifier: './_textShaperHooks',
+          target: { packageName: '@flighthq/textshaper', source: 'packages/textshaper/src/_textShaperHooks.ts' },
+        },
       ],
       schema: 'flight-compiler-module-resolution/1',
     };
     const results = lowerTypeScriptSources(
       [
         { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/textshaper', sourceFile: hooks, upstreamDirectory: '/flight' },
         { packageName: '@flighthq/textshaper', sourceFile: textShaper, upstreamDirectory: '/flight' },
       ],
       moduleResolution,
     );
     const modules = results.map((result) => result.module);
-    const getter = modules[1]!.declarations.find(
+    const getter = modules[2]!.declarations.find(
       (declaration) => declaration.kind === 'function' && declaration.binding.name === 'getTextShaperBackend',
+    );
+    const explanation = modules[2]!.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'explainTextShaperOperation',
     );
     const returned = getter?.kind === 'function' ? getter.body[0] : undefined;
     const chain =
       returned?.kind === 'return' && returned.expression?.kind === 'binary' ? returned.expression.left : undefined;
+    const guard = explanation?.kind === 'function' ? explanation.body[1] : undefined;
+    const operationTest =
+      guard?.kind === 'if' && guard.condition.kind === 'binary' && guard.condition.right.kind === 'binary'
+        ? guard.condition.right.left
+        : undefined;
+    const indexed = operationTest?.kind === 'unary' ? operationTest.operand : undefined;
 
-    // This is the exact expression and contextual slot from the pinned Flight module. The `?.` token
-    // belongs to `.text`, but TypeScript marks the following `.shaper` as part of the same chain. Its
-    // selected type and its inherited undefined short circuit are both source evidence.
+    // These are the exact expressions and declarations from the pinned Flight module. The `?.` token
+    // belongs to `.text`, but TypeScript marks the following `.shaper` as part of the same chain. The
+    // indexed read then retains the narrowed backend and the imported `keyof` operation domain.
     expect(getter?.kind === 'function' ? getter.returns : undefined).toMatchObject({
       kind: 'union',
       types: [{ kind: 'named', reference: { binding: { name: 'TextShaperBackend' } } }, { kind: 'null' }],
@@ -2088,17 +2166,62 @@ describe('createCppCompilerBackend', () => {
       },
       type: { kind: 'named', reference: { binding: { name: 'TextShaperBackend' } } },
     });
+    expect(explanation?.kind === 'function' ? explanation.parameters[0]?.type : undefined).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'TextShaperOperation' } },
+    });
+    expect(indexed).toMatchObject({
+      index: { kind: 'identifier', reference: { binding: { name: 'operation' } } },
+      kind: 'element',
+      object: {
+        kind: 'identifier',
+        narrowedMember: 'TextShaperBackend',
+        presence: 'narrowedPresent',
+        reference: { binding: { name: 'backend' } },
+      },
+      semantics: {
+        closedKeys: [
+          'getCodePointForGlyph',
+          'getFontMetrics',
+          'getGlyphExtents',
+          'getGlyphIndexForCodePoint',
+          'getGlyphName',
+          'measureText',
+          'shapeRun',
+        ],
+        receivers: ['object'],
+      },
+    });
 
     const emitted = createCppCompilerBackend().createEmissionSession!({
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
-    }).emitModule(modules[1]!)[0]!.contents;
+    }).emitModule(modules[2]!)[0]!.contents;
 
     expect(emitted).toContain('std::optional<flight::Ref<flighthq_types::TextShaperBackend>>');
     expect(emitted).toContain('auto nullish_coalesce_left =');
     expect(emitted).toContain('optional_chain_receiver.value()->shaper');
     expect(emitted).toContain('return backend;');
+    expect(emitted).toContain('auto typeof_key = operation;');
+    expect(emitted).toContain('typeof_receiver->get_code_point_for_glyph.has_value()');
+    expect(emitted).toContain('if (typeof_key == flight::String("measureText")) return flight::String("function");');
+  });
+
+  it('refuses typeof selection across heterogeneous or open property keys', () => {
+    const emit = (key: string): void => {
+      const module = lower(
+        'indexed-typeof-domain.ts',
+        `interface Backend { callback?: () => void; label: string }
+         export function isFunction(backend: Backend, key: ${key}): boolean {
+           return typeof backend[key] === 'function';
+         }`,
+      ).module;
+      emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' });
+    };
+
+    expect(() => emit('keyof Backend')).toThrow('typeof requires closed runtime type evidence');
+    expect(() => emit('string')).toThrow('typeof requires closed runtime type evidence');
   });
 
   it('constructs a buffered-log interval handle from exact ambient call-result evidence', () => {
