@@ -3810,11 +3810,28 @@ function lowerConcreteTypeScriptConditionalAliasReference(
   );
   if (!substitutions) return undefined;
   try {
-    return lowerConcreteTypeScriptConditionalTypeEvidence(declaration.type, context, new Set([symbol]), substitutions);
+    const evidence = lowerConcreteTypeScriptConditionalTypeEvidence(
+      declaration.type,
+      context,
+      new Set([symbol]),
+      substitutions,
+    );
+    if (evidence) return evidence;
   } catch (error) {
-    if (isUnsupportedSyntaxFailure(error)) return undefined;
-    throw error;
+    if (!isUnsupportedSyntaxFailure(error)) throw error;
   }
+  // The declaration's conditional can be unresolvable from the substitution alone: the evaluator asks
+  // whether the check is assignable to the extends type, and the syntactic substitution replaces a
+  // parameter only where the node IS the bare reference. `Type['dimension'] extends '2d'` names it
+  // inside an indexed access, so the substituted check still names the parameter and the evaluator
+  // bails -- which left the whole conditional `unknown` and lost the branches entirely.
+  //
+  // The instantiation is known here, and the checker has already resolved it: `Inner<TextureLike>` is
+  // `{ readonly a: '2d' | '3d' }`. Asking for the reference's own type is therefore the same answer the
+  // evaluator would have reached, obtained from the compiler rather than reconstructed, and it needs no
+  // new IR form and no representation change. References that still name an external parameter returned
+  // above, so this is reached only for a reference whose arguments are concrete.
+  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
 }
 
 function lowerOpenTypeScriptConditionalFacetAliasReference(

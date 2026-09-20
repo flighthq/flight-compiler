@@ -14028,6 +14028,43 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).toContain('std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>');
   });
 
+  it('resolves a conditional alias reference whose check names a parameter inside an indexed access', () => {
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/types/src/createTextureOptions.ts',
+      `export interface Texture2D { dimension: '2d'; width: number; height: number; }
+       export interface Texture3D { dimension: '3d'; depth: number; }
+       export type TextureLike = Texture2D | Texture3D;
+       export interface ImageResourceReference { url: string; }
+       type CreateTextureVariantOptions<Type extends TextureLike> = Type extends TextureLike
+         ? Omit<Partial<Type>, 'dimension'> &
+             (Type['dimension'] extends '2d'
+               ? { readonly dimension?: '2d' }
+               : { readonly dimension: Type['dimension'] })
+         : never;
+       export type CreateTextureOptions = CreateTextureVariantOptions<TextureLike> & {
+         readonly resource?: ImageResourceReference | null;
+       };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/types', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+    const emitted = emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' });
+
+    // The generic DECLARATION stays erased, which is the documented contract for a conditional whose
+    // check cannot be decided where it is written; the diagnostic is that contract, not a new failure.
+    // Resolving it is the instantiated REFERENCE's job, and that is what changed.
+    expect(result!.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type ConditionalType']);
+    // The declaration's conditional cannot be evaluated from the substitution alone: the syntactic
+    // substitution replaces a parameter only where the node IS the bare reference, and the check names
+    // it inside an indexed access. The instantiation is known at the reference, so the checker's answer
+    // for that reference is used instead -- and the distributive outer conditional makes the branches
+    // separate alternatives, which is how a union of object types is emitted everywhere else.
+    expect(emitted.contents).toContain('std::variant<');
+    expect(emitted.contents).not.toContain('multiple-inheritance');
+  });
+
   it('spells out a defaulted generic argument a consuming module never saw', () => {
     const provider = lowerPackage(
       '@flighthq/types',
