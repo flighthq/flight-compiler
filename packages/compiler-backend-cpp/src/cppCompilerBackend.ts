@@ -2174,6 +2174,8 @@ function emitExpression(
   denseArrayLengthInitialized = false,
 ): string {
   if (expectedType && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const voidValueConversion = emitCppContextualVoidValueCpp(expression, expectedType, context);
+    if (voidValueConversion) return voidValueConversion;
     const optionalPropertyConversion = emitCppOptionalPropertyDualSentinelConversionCpp(
       expression,
       expectedType,
@@ -2653,6 +2655,11 @@ function emitExpression(
         callableExpression.kind === 'function'
           ? `(${emitExpression(callableExpression, context)})`
           : emitExpression(callableExpression, context);
+      const sourceTypeArguments =
+        expression.typeArguments.length > 0
+          ? expression.typeArguments
+          : (getCppContextualCallTypeArgumentsCpp(expression, expectedType, context) ?? []);
+      const typeArguments = getCppValueRepresentedCallTypeArgumentsCpp(expression, sourceTypeArguments, context);
       const args = appendCppOmittedInvocationArguments(
         expression,
         emitCppClosedRestCallArguments(expression, context) ??
@@ -2674,7 +2681,7 @@ function emitExpression(
             return emitExpression(
               argument,
               context,
-              getIrCallArgumentExpectedTypeCpp(expression, index, context, expectedType),
+              getIrCallArgumentExpectedTypeCpp(expression, index, context, expectedType, typeArguments),
             );
           }),
         context,
@@ -2705,10 +2712,6 @@ function emitExpression(
         : optionalCallable
           ? `${callee}.value()`
           : callee;
-      const typeArguments =
-        expression.typeArguments.length > 0
-          ? expression.typeArguments
-          : (getCppContextualCallTypeArgumentsCpp(expression, expectedType, context) ?? []);
       const invocation = `${invocationTarget}${emitCppTypeArguments(typeArguments, context)}(${args.join(', ')})`;
       const returnType = getIrCallReturnTypeCpp(expression, context);
       const returnUnion = returnType ? getIrUnionTypeCpp(returnType, context, new Set()) : undefined;
@@ -3783,6 +3786,21 @@ function emitCppContextualStructuralReferenceCpp(
   }
   const source = emitExpression(expression, context, undefined, false);
   return emitCppStructuralReferenceValueConversionCpp(source, sourceType, expectedType, context);
+}
+
+function emitCppContextualVoidValueCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (expectedType.kind !== 'undefined') return undefined;
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (sourceType?.kind !== 'primitive' || sourceType.name !== 'void') return undefined;
+  // A JavaScript call declared `void` still produces the `undefined` value. C++ has no value of type
+  // `void`, so materialize that sentinel only when a proven value position asks for it, after the
+  // source expression has run and preserved its side effects.
+  context.includes.add('flight/presence.hpp');
+  return `(${emitExpression(expression, context)}, ${emitUndefinedWithExpectedTypeCpp(expectedType, context)})`;
 }
 
 function emitCppStructuralReferenceValueConversionCpp(
@@ -6559,6 +6577,19 @@ function getIrWeakMapTypeCpp(
   const alias = context.referenceRepresentationPlanner.resolveAlias(type, context.module);
   if (!alias) return undefined;
   return getIrWeakMapTypeCpp(alias, context, new Set(resolvingAliases).add(type.reference.binding.id));
+}
+
+function getIrWeakSetTypeCpp(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<Extract<IrType, { kind: 'named' }>> | undefined {
+  if (!type || type.kind !== 'named') return undefined;
+  if (type.reference.kind === 'ambient' && type.reference.name === 'WeakSet') return type;
+  if (type.reference.kind !== 'binding' || resolvingAliases.has(type.reference.binding.id)) return undefined;
+  const alias = context.referenceRepresentationPlanner.resolveAlias(type, context.module);
+  if (!alias) return undefined;
+  return getIrWeakSetTypeCpp(alias, context, new Set(resolvingAliases).add(type.reference.binding.id));
 }
 
 function getCppErasedWeakMapViewPlan(
@@ -9394,6 +9425,55 @@ function getCppContextualCallTypeArgumentsCpp(
   return arguments_.every((argument): argument is Readonly<IrType> => argument !== undefined) ? arguments_ : undefined;
 }
 
+function getCppValueRepresentedCallTypeArgumentsCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  typeArguments: readonly Readonly<IrType>[],
+  context: EmitContext,
+): readonly Readonly<IrType>[] {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    !typeArguments.some((type) => type.kind === 'primitive' && type.name === 'void') ||
+    expression.callee.kind !== 'identifier' ||
+    expression.callee.reference.kind !== 'binding'
+  ) {
+    return typeArguments;
+  }
+  const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
+  if (!declaration || declaration.typeParameters.length !== typeArguments.length) return typeArguments;
+  const substitutions = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments);
+  const reifiedParameterIds = new Set<string>();
+  expression.arguments.forEach((argument, index) => {
+    const parameter = declaration.parameters[index];
+    const argumentType = getIrExpressionTypeEvidenceCpp(argument, context);
+    if (
+      !parameter ||
+      parameter.rest ||
+      argumentType?.kind !== 'primitive' ||
+      argumentType.name !== 'void' ||
+      parameter.type.kind !== 'named' ||
+      parameter.type.reference.kind !== 'binding' ||
+      parameter.type.reference.binding.kind !== 'typeParameter' ||
+      parameter.type.reference.path.length !== 0 ||
+      parameter.type.typeArguments.length !== 0
+    ) {
+      return;
+    }
+    const represented = resolveIrTypeStructuralSubstitution(parameter.type, substitutions);
+    if (represented.kind === 'primitive' && represented.name === 'void') {
+      reifiedParameterIds.add(parameter.type.reference.binding.id);
+    }
+  });
+  if (reifiedParameterIds.size === 0) return typeArguments;
+  context.includes.add('flight/presence.hpp');
+  return typeArguments.map((type, index) =>
+    type.kind === 'primitive' &&
+    type.name === 'void' &&
+    reifiedParameterIds.has(declaration.typeParameters[index]!.binding.id)
+      ? { kind: 'undefined' as const }
+      : type,
+  );
+}
+
 // A supplied optional argument is recorded with the parameter's `undefined` branch even when the
 // expression itself is present. Strip only that sentinel here. Resolving the remaining alias would
 // erase the named generic application which template deduction needs to align with the declaration.
@@ -10116,6 +10196,7 @@ function getIrCallArgumentExpectedTypeCpp(
   index: number,
   context: EmitContext,
   expectedType?: Readonly<IrType> | undefined,
+  representedTypeArguments?: readonly Readonly<IrType>[] | undefined,
 ): Readonly<IrType> | undefined {
   const resolvedPromiseArgument = getCppResolvedPromiseArgumentExpectedTypeCpp(expression, index, expectedType);
   if (resolvedPromiseArgument) return resolvedPromiseArgument;
@@ -10159,9 +10240,10 @@ function getIrCallArgumentExpectedTypeCpp(
   // emission has already inferred its concrete argument. Apply that same complete substitution to
   // the parameter slot so contextual union construction does not compare a value against raw `N`.
   const typeArguments =
-    declaration.typeParameters.length === expression.typeArguments.length
+    representedTypeArguments ??
+    (declaration.typeParameters.length === expression.typeArguments.length
       ? expression.typeArguments
-      : getCppContextualCallTypeArgumentsCpp(expression, expectedType, context);
+      : getCppContextualCallTypeArgumentsCpp(expression, expectedType, context));
   return typeArguments?.length === declaration.typeParameters.length
     ? resolveIrTypeStructuralSubstitution(
         parameterType,
@@ -10240,6 +10322,10 @@ function getCppCollectionCallArgumentExpectedTypeCpp(
   if (weakMap && weakMap.typeArguments.length === 2) {
     if (index === 0 && ['delete', 'get', 'has', 'set'].includes(name)) return weakMap.typeArguments[0];
     if (index === 1 && name === 'set') return weakMap.typeArguments[1];
+  }
+  const weakSet = getIrWeakSetTypeCpp(objectType, context, new Set());
+  if (weakSet && weakSet.typeArguments.length === 1 && index === 0 && ['add', 'delete', 'has'].includes(name)) {
+    return weakSet.typeArguments[0];
   }
   if (!member) return undefined;
   const collection = getIrAmbientCollectionTypeCpp(objectType, context, new Set());

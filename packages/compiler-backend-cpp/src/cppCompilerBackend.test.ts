@@ -3472,6 +3472,67 @@ export function compare(left: string, right: string, locale: string, options: In
     expect(emitted.contents).toContain('values.get(channel.shared_object())');
   });
 
+  it('projects readonly structural references to WeakSet keys', () => {
+    const result = lower(
+      'weak-set-readonly-key.ts',
+      `interface Provider { destroy?(): void }
+       const destroyed: WeakSet<Provider> = new WeakSet<Provider>();
+       export function hasDestroyed(provider: Readonly<Provider>): boolean {
+         return destroyed.has(provider);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['flight/weak_set.hpp'],
+            nullability: 'non-null',
+            ownership: 'value',
+            sourceName: 'WeakSet',
+            space: 'type',
+            targetName: 'flight::WeakSet',
+          },
+          {
+            construction: { kind: 'constructor', targetName: 'flight::WeakSet' },
+            headers: ['flight/weak_set.hpp'],
+            nullability: 'non-null',
+            ownership: 'value',
+            sourceName: 'WeakSet',
+            space: 'value',
+            targetName: 'flight::WeakSet',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      runtimeProfile: 'flight-cpp',
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('destroyed.has(flight::structural_ref_cast<flight::Ref<Provider>>(provider))');
+    expect(emitted.contents).not.toContain('static_cast<flight::Ref<Provider>>');
+  });
+
+  it('materializes a void generic call argument as the JavaScript undefined value', () => {
+    const result = lower(
+      'void-generic-parameter.ts',
+      `type IsAny<T> = 0 extends 1 & T ? true : false;
+       function assertSyncVoid<T>(value: T & (IsAny<T> extends true ? never : T extends void ? unknown : never)): void {
+         void value;
+       }
+       interface Provider { destroy?(): void }
+       export function destroy(provider: Provider): void {
+         if (provider.destroy !== undefined) assertSyncVoid(provider.destroy());
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain(
+      'assert_sync_void<flight::Undefined>((provider->destroy.value()(), flight::undefined))',
+    );
+    expect(emitted.contents).not.toContain('assert_sync_void<void>');
+  });
+
   it('recovers the exact nominal key from an explicit readonly structural assertion', () => {
     const result = lower(
       'weak-map-nominal-key.ts',
