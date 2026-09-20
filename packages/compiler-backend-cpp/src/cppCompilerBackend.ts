@@ -8293,7 +8293,11 @@ function emitContextualUnionExpressionInContextCpp(
   const valueSlot = plan.valueSlots.findIndex((slot) => slot.targetType === targetType);
   const constrainedValueSlot =
     valueSlot < 0 ? getCppConstrainedTypeParameterUnionValueSlotCpp(runtimeType, plan.valueSlots, context) : undefined;
-  const representedValueSlot = constrainedValueSlot ?? valueSlot;
+  const callableValueSlot =
+    valueSlot < 0 && constrainedValueSlot === undefined
+      ? getCppCallableUnionValueSlotCpp(runtimeType, plan.valueSlots, context)
+      : undefined;
+  const representedValueSlot = constrainedValueSlot ?? callableValueSlot ?? valueSlot;
   if (representedValueSlot < 0) {
     const structuralSlots = plan.valueSlots.flatMap((slot) => {
       const alternatives = slot.sourceAlternatives.filter((alternative) => {
@@ -8326,6 +8330,38 @@ function emitContextualUnionExpressionInContextCpp(
     plan.kind,
     context,
   );
+}
+
+function getCppCallableUnionValueSlotCpp(
+  source: Readonly<IrType>,
+  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  context: EmitContext,
+): number | undefined {
+  if (source.kind !== 'function' || source.typeParameters.length > 0) return undefined;
+  const matches = valueSlots.flatMap((slot, index) => {
+    const target = getCppClosedCallableType(slot.runtimeType, context, new Set());
+    if (!target || target.typeParameters.length > 0 || source.parameters.length !== target.parameters.length) {
+      return [];
+    }
+    const parametersAgree = source.parameters.every((parameter, parameterIndex) => {
+      const targetParameter = target.parameters[parameterIndex]!;
+      return (
+        parameter.optional === targetParameter.optional &&
+        parameter.rest === targetParameter.rest &&
+        emitCppParameterTypeCpp(parameter.type, parameter.rest, context) ===
+          emitCppParameterTypeCpp(targetParameter.type, targetParameter.rest, context)
+      );
+    });
+    if (!parametersAgree) return [];
+    if (emitType(source.returns, context) === emitType(target.returns, context)) return [index];
+    // A nominal reference returned through its own structural row is the same object with a
+    // read-only call surface. Keep the slot's one declared std::function type and prove the
+    // callable against it from the same emitType spellings used to write both signatures.
+    const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(target.returns, context.module);
+    const targetObject = targetRow ? getCppStructuralRowObjectTypeCpp(targetRow) : undefined;
+    return targetObject && emitType(source.returns, context) === emitType(targetObject, context) ? [index] : [];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function getCppConstrainedTypeParameterUnionValueSlotCpp(

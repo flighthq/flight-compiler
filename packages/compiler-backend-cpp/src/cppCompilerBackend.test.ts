@@ -2018,21 +2018,75 @@ describe('createCppCompilerBackend', () => {
   });
 
   it('takes a named function as the evidence for an optional function slot', () => {
-    const module = lower(
-      'optional-function-guard.ts',
-      `type Guard = ((value: number) => void) | null;
-       export function setGuard(guard: Guard): void { void guard; }
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/resolvers.ts',
+      `export interface Input { value: number }
+       export interface Output { value: number }
+       export type Guard = (value: number) => void;
+       export type RefTransform = (value: Input) => Output;
+       export type StructuralTransform = (value: Readonly<Input>) => Readonly<Output>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const registry = ts.createSourceFile(
+      '/flight/packages/registry/src/registry.ts',
+      `import type { Guard, RefTransform, StructuralTransform } from '@flight/types';
+       export function setGuard(guard: Guard | null): void { void guard; }
+       export function setRefTransform(transform: RefTransform | null): void { void transform; }
+       export function setStructuralTransform(transform: StructuralTransform | null): void { void transform; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/consumer/src/register.ts',
+      `import type { Input, Output } from '@flight/types';
+       import { setGuard, setRefTransform, setStructuralTransform } from '@flight/registry';
        function warn(value: number): void { void value; }
+       function transform(value: Input): Output { return { value: value.value }; }
+       function transformReadonly(value: Readonly<Input>): Output { return { value: value.value }; }
        export function enable(): void {
          setGuard(warn);
+         setRefTransform(transform);
+         setStructuralTransform(transformReadonly);
          setGuard(null);
        }`,
-    ).module;
-
-    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flight/types',
+          target: { packageName: '@flight/types', source: 'packages/types/src/resolvers.ts' },
+        },
+        {
+          specifier: '@flight/registry',
+          target: { packageName: '@flight/registry', source: 'packages/registry/src/registry.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flight/registry', sourceFile: registry, upstreamDirectory: '/flight' },
+        { packageName: '@flight/consumer', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const emitted = emitCppModuleCppSession(results, moduleResolution, 2);
     // The declaration's own signature is the evidence. It has no binding type of its own, so without
     // it the call is indistinguishable from passing a value of no stated type.
     expect(emitted).toContain('std::optional<std::function<void(double)>>{warn}');
+    expect(emitted).toContain(
+      'std::optional<std::function<flight::Ref<flighthq_types::Output>(flight::Ref<flighthq_types::Input>)>>{transform}',
+    );
+    expect(emitted).toContain(
+      'inline flight::Ref<flighthq_types::Output> transform_readonly(flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::Input>>>> value)',
+    );
+    expect(emitted).toContain(
+      'std::optional<std::function<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::Output>>>>(flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::Input>>>>)>>{transform_readonly}',
+    );
     expect(emitted).toContain('std::nullopt');
   });
 
