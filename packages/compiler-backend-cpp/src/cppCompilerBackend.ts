@@ -2679,7 +2679,9 @@ function emitExpression(
         context.includes.add('flight/conditional_facet_ref.hpp');
         return `flight::assume_conditional_facets<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context, conditionalFacet.base)})`;
       }
-      const asserted = emitUnionMemberAssertionCpp(expression.expression, expression.type, context);
+      const asserted =
+        emitCppErasedRefAssertionCpp(expression.expression, expression.type, context) ??
+        emitUnionMemberAssertionCpp(expression.expression, expression.type, context);
       const assertedGenericFactory = emitCppUnknownBridgedGenericFactoryAssertionCpp(expression, context);
       const callableTypeParameter = getCppCallableTypeParameterCpp(expression.type, context);
       if (
@@ -5313,7 +5315,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           : type.typeArguments.map((argument, index) =>
               weakMapTypeArgumentPlan?.valueRepresentation === 'erased' && index === 1
                 ? 'flight::ErasedValue'
-                : emitCppTypeArgumentCpp(argument, context),
+                : sourceName === 'WeakMap' && index === 0 && argument.kind === 'unknown' && argument.source === 'object'
+                  ? 'flight::Ref<void>'
+                  : emitCppTypeArgumentCpp(argument, context),
             );
       if (weakMapTypeArgumentPlan?.weakKeyPolicyTargetName) {
         arguments_.push(weakMapTypeArgumentPlan.weakKeyPolicyTargetName);
@@ -5424,7 +5428,10 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         return getBindingTargetName(context.currentClass.binding, context);
       }
       if (type.source === 'object') {
-        if (getCppRuntimeProfile(context.options) === 'flight-cpp') return 'flight::Ref<void>';
+        if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+          context.includes.add('flight/erased_ref.hpp');
+          return 'flight::ErasedRef';
+        }
         context.includes.add('memory');
         return 'std::shared_ptr<void>';
       }
@@ -6902,6 +6909,45 @@ function getCppNullishLiteralKind(expression: Readonly<IrExpression>): 'null' | 
     expression.reference.name === 'undefined'
     ? 'undefined'
     : undefined;
+}
+
+function emitCppErasedRefAssertionCpp(
+  expression: Readonly<IrExpression>,
+  assertedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
+  const sourceUnion = sourceType ? getIrUnionTypeCpp(sourceType, context, new Set()) : undefined;
+  const assertedUnion = getIrUnionTypeCpp(assertedType, context, new Set());
+  if (!sourceUnion || !assertedUnion) return undefined;
+  const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, context);
+  const assertedPlan = getCppUnionRepresentationPlan(assertedUnion, context);
+  if (
+    sourcePlan.kind !== 'optionalSingle' ||
+    sourcePlan.valueSlots.length !== 1 ||
+    sourcePlan.valueSlots[0]!.targetType !== 'flight::ErasedRef' ||
+    assertedPlan.kind !== 'optionalSingle' ||
+    assertedPlan.valueSlots.length !== 1
+  ) {
+    return undefined;
+  }
+  const assertedSlot = assertedPlan.valueSlots[0]!;
+  const concreteObject = getCppReferenceElementTypeNameCpp(assertedSlot.targetType);
+  const genericReference = assertedSlot.sourceAlternatives.some(
+    (alternative) =>
+      alternative.kind === 'named' &&
+      alternative.reference.kind === 'binding' &&
+      alternative.reference.binding.kind === 'typeParameter' &&
+      alternative.typeArguments.length === 0,
+  );
+  const objectType =
+    concreteObject ?? (genericReference ? `typename ${assertedSlot.targetType}::element_type` : undefined);
+  if (!objectType) return undefined;
+  context.includes.add('flight/erased_ref.hpp');
+  context.includes.add('optional');
+  const recovered = getGeneratedTargetName('erasedReference', context);
+  return `([&]() -> ${emitType(assertedType, context)} { auto ${recovered} = flight::erased_ref_as<${objectType}>(${emitExpression(expression, context)}); if (!${recovered}) return std::nullopt; return ${recovered}; }())`;
 }
 
 function emitUnionMemberAssertionCpp(
@@ -10051,7 +10097,13 @@ function collectIrModuleArrayElementBindingIdsCpp(module: Readonly<IrModule>): R
       return undefined;
     },
     variable(variable) {
-      if (!('binding' in variable) || variable.initializer?.kind !== 'element') return;
+      if (
+        !('binding' in variable) ||
+        variable.initializer?.kind !== 'element' ||
+        !variable.initializer.semantics.receivers.includes('array')
+      ) {
+        return;
+      }
       candidates.add(variable.binding.id);
     },
   });

@@ -1618,6 +1618,10 @@ describe('createCppCompilerBackend', () => {
        import { EntityRuntimeKey } from '@flighthq/types/contract';
        export function getEntityBinding(source: Readonly<Entity>): object | null {
          return source[EntityRuntimeKey]?.binding ?? null;
+       }
+       export function detachEntityBinding(entity: Entity): void {
+         const runtime = entity[EntityRuntimeKey];
+         if (runtime !== undefined) runtime.binding = null;
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -1650,8 +1654,10 @@ describe('createCppCompilerBackend', () => {
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(modules[2]!)[0]!.contents;
 
-    expect(emitted).toContain('std::optional<flight::Ref<void>>');
+    expect(emitted).toContain('std::optional<flight::ErasedRef>');
     expect(emitted).toContain('optional_chain_receiver.value()->binding');
+    expect(emitted).toContain('auto runtime = entity->entity_runtime_key');
+    expect(emitted).not.toContain('std::optional<std::optional');
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
@@ -5410,7 +5416,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     expect(emitted.contents).toContain('using EntityWithoutRuntime = Type');
     expect(emitted.contents).toContain('struct EntityRuntime : public flight::ReferenceEnabled');
-    expect(emitted.contents).toContain('std::optional<flight::Ref<void>> binding;');
+    expect(emitted.contents).toContain('std::optional<flight::ErasedRef> binding;');
     expect(emitted.contents).toContain(
       'flight::Symbol entity_runtime_key = flight::Symbol::for_key(flight::String("EntityRuntime"))',
     );
@@ -8169,7 +8175,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain(
-      'template <typename Container = flight::Ref<void>, typename Item = flight::Ref<void>>',
+      'template <typename Container = flight::ErasedRef, typename Item = flight::ErasedRef>',
     );
     expect(emitted.contents).toContain('flight::Array<flight::Ref<Node<>>> nodes;');
   });
@@ -13427,7 +13433,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).not.toContain('flight::Any');
   });
 
-  it('keeps erased entity bindings generic until a runtime cast contract exists', () => {
+  it('recovers erased entity bindings through their checked runtime type and refuses scalar assertions', () => {
     const result = lower(
       'entity-binding.ts',
       `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
@@ -13441,10 +13447,22 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
        }`,
     );
 
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(emitted.contents).toContain('#include <flight/erased_ref.hpp>');
+    expect(emitted.contents).toContain('std::optional<flight::ErasedRef> binding;');
+    expect(emitted.contents).toContain('flight::erased_ref_as<typename Type::element_type>');
+    expect(emitted.contents).not.toContain('std::static_pointer_cast');
+
+    const scalar = lower(
+      'scalar-binding-assertion.ts',
+      `export function assumeNumber(binding: object | null): number | null {
+         return binding as number | null;
+       }`,
     );
-    expect(failure.message).toContain('target std::optional<Type> against [flight::Ref<void>]');
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(scalar.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.message).toContain('target std::optional<double> against [flight::ErasedRef]');
     expect(failure.rule).toBe('cpp-type-assertion-unidentified');
   });
 
@@ -14650,7 +14668,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
 
     // A default may be declared in only one declaration and the consumer is not that module, so the
     // reference cannot rely on `<>` resolving here.
-    expect(emitted).toContain('flight::Ref<flighthq_types::Node<flight::Ref<void>, flight::Ref<void>>>');
+    expect(emitted).toContain('flight::Ref<flighthq_types::Node<flight::ErasedRef, flight::ErasedRef>>');
   });
 
   it('carries the module that declares a default argument the consumer only inherits', () => {
