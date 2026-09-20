@@ -7216,7 +7216,7 @@ function isCppExpressionExactlyRepresentableAsTypeCpp(
 function emitUnionTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, context: EmitContext): string {
   const plan = getCppUnionRepresentationPlan(type, context);
   const importedValueAlias = getCppOptionalImportedUnionValueAliasCpp(type, context);
-  if (importedValueAlias && (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant')) {
+  if (importedValueAlias && plan.kind === 'optionalVariant') {
     context.includes.add('optional');
     return `std::optional<${emitType(importedValueAlias, context)}>`;
   }
