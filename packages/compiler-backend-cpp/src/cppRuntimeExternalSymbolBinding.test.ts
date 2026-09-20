@@ -238,10 +238,8 @@ describe('getCompilerExternalBindingCallResultTypeCpp', () => {
   });
 });
 
-describe('runtime/external call-result evidence', () => {
-  it('returns exact evidence for runtime values and their static members', () => {
-    expect(getCompilerRuntimeExternalSymbolCallResultTypeCpp('Symbol')).toBeUndefined();
-    expect(getCompilerRuntimeExternalSymbolCallResultTypeCpp('Symbol', 'flight-cpp')).toBe('flight::Symbol');
+describe('getCompilerRuntimeExternalMemberCallResultTypeCpp', () => {
+  it('returns exact evidence for runtime static members', () => {
     expect(getCompilerRuntimeExternalMemberCallResultTypeCpp('Symbol', 'for')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberCallResultTypeCpp('Symbol', 'for', 'flight-cpp')).toBe('flight::Symbol');
   });
@@ -269,6 +267,13 @@ describe('runtime/external call-result evidence', () => {
         ],
       }),
     ).toBeUndefined();
+  });
+});
+
+describe('getCompilerRuntimeExternalSymbolCallResultTypeCpp', () => {
+  it('returns exact evidence for runtime values', () => {
+    expect(getCompilerRuntimeExternalSymbolCallResultTypeCpp('Symbol')).toBeUndefined();
+    expect(getCompilerRuntimeExternalSymbolCallResultTypeCpp('Symbol', 'flight-cpp')).toBe('flight::Symbol');
   });
 });
 
