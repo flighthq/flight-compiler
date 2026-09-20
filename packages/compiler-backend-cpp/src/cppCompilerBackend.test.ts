@@ -2852,7 +2852,11 @@ describe('createCppCompilerBackend', () => {
       },
     }).emitModule(modules[2]!)[0]!.contents;
 
-    expect(emitted).toContain('flight::Ref<flight::types::ColorLut> lut = flight::adjustments::bake_color_lut()');
+    // The annotation this used to spell is the initializer's own type, so the declaration names it once:
+    // `auto` deduces `flight::Ref<flight::types::ColorLut>` here, which the enclosing `bake` returning
+    // that type and doing `return lut;` proves. What the case is about — the nullable storage — is
+    // unchanged.
+    expect(emitted).toContain('auto lut = flight::adjustments::bake_color_lut();');
     expect(emitted).toContain('std::optional<flight::Ref<flight::types::ColorLut>>{lut}');
   });
 
@@ -4135,7 +4139,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('flight::Ref<State> state = flight::make_ref<State>(State{.value = 1.0})');
+    // `make_ref<State>` returns exactly the reference the annotation used to restate, so `auto` keeps that
+    // identity rather than naming it twice. The aliasing the case is about is unchanged: `alias` is still
+    // the same referent, which is what `alias->value = 2.0` writing through to `state` proves below.
+    expect(emitted.contents).toContain('auto state = flight::make_ref<State>(State{.value = 1.0});');
     expect(emitted.contents).toContain('alias->value = 2.0');
     expect(emitted.contents).toContain('return (state == alias)');
   });
@@ -9459,8 +9466,13 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(modules[2]!)[0]!.contents;
 
-    expect(output).toContain('flight::make_structural_ref<');
-    expect(output).toContain('flight::row_get<flight::RowKey<"redScale">>(structural_spread_source)');
+    // `{ ...scale }` is a copy, and a spread now materializes into a concrete object rather than a
+    // structural row, so the members are read directly instead of through `row_get`. The property the
+    // case exists for is unchanged: `value` is an independent object with concrete members, and the
+    // element type is still not a placeholder.
+    expect(output).toMatch(/auto value = flight::make_ref<red_scale_red_bias_[0-9a-f]+>\(\*scale\);/u);
+    expect(output).toContain('value->red_scale');
+    expect(output).toContain('value->red_bias');
     expect(output).toContain('flight::Array<double> result = flight::Array<double>');
     expect(output).not.toContain('std::variant<double, auto>');
   });
@@ -12273,7 +12285,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       { runtimeProfile: 'flight-cpp' },
     ).contents;
 
-    expect(output).toContain('flight::Ref<FreeRectangle> node = rectangle;');
+    // `rectangle` is already the reference the annotation restated, so `auto` deduces it unchanged; the
+    // row-owner conversion below is the argument the case is about and is untouched.
+    expect(output).toContain('auto node = rectangle;');
     expect(output).toContain(
       'intersects(flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<RectangleLike>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<FreeRectangle>>>>(node)))',
     );

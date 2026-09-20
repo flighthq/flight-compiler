@@ -13,6 +13,7 @@ import { createCppCompilerBackend } from './cppCompilerBackend.js';
 import {
   createIrTypeReferenceRepresentationPlanCpp,
   createIrTypeReferenceRepresentationPlannerCpp,
+  getCppRuntimeReferenceCategory,
 } from './cppReferenceRepresentationPlan.js';
 
 const numberType = { kind: 'primitive', name: 'number' } as const satisfies IrType;
@@ -1262,6 +1263,50 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     expect(() => planner.resolveModule('./snapshot.js', other)).toThrow(
       'C++ module resolution subject must belong to the explicit module set',
     );
+  });
+});
+
+describe('getCppRuntimeReferenceCategory', () => {
+  it('names the runtime category every modelled reference belongs to', () => {
+    expect(
+      [
+        'Array',
+        'ReadonlyArray',
+        'Map',
+        'ReadonlyMap',
+        'Set',
+        'ReadonlySet',
+        'Promise',
+        'PromiseLike',
+        'Float32Array',
+        'Uint8ClampedArray',
+        'Date',
+        'WeakMap',
+      ].map((name) => getCppRuntimeReferenceCategory(name)),
+    ).toEqual([
+      'array',
+      'array',
+      'map',
+      'map',
+      'set',
+      'set',
+      'task',
+      'task',
+      'typedArray',
+      'typedArray',
+      'date',
+      'weakMap',
+    ]);
+  });
+
+  it('names no category for a reference the runtime does not model, including its nearest spellings', () => {
+    // `ArrayLike`, `WeakSet` and `DateLike` sit closest to a modelled reference without being one, which
+    // is what separates the exact-membership sets and the two single-name comparisons from a prefix rule.
+    expect(getCppRuntimeReferenceCategory('ArrayLike')).toBeUndefined();
+    expect(getCppRuntimeReferenceCategory('WeakSet')).toBeUndefined();
+    expect(getCppRuntimeReferenceCategory('DateLike')).toBeUndefined();
+    expect(getCppRuntimeReferenceCategory('array')).toBeUndefined();
+    expect(getCppRuntimeReferenceCategory('')).toBeUndefined();
   });
 });
 
