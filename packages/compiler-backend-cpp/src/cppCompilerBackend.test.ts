@@ -1495,6 +1495,81 @@ describe('createCppCompilerBackend', () => {
     expect(localOutput).not.toContain('flighthq_types::reason_');
   });
 
+  it('stores a returned local record as its reexported generic outcome', () => {
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(
+        `/flight/packages/${packageName.slice(packageName.lastIndexOf('/') + 1)}/src/${file}`,
+        text,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    });
+    const resolutionPlan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './outcome',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/outcome.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'outcome.ts',
+          `export type OperationReason = 'invalid-duration' | 'operation-failed';
+           export interface OperationOutcome<Reason extends OperationReason = OperationReason> {
+             readonly reason: 'ok' | Reason;
+           }
+           export type PositionOutcome = OperationOutcome<'invalid-duration' | 'operation-failed'>;`,
+        ),
+        source('@flighthq/types', 'contract.ts', `export * from './outcome';`),
+        source(
+          '@flighthq/mediasession',
+          'mediasession.ts',
+          `import type { PositionOutcome } from '@flighthq/types/contract';
+           const INVALID_DURATION = { reason: 'invalid-duration' } as const;
+           const UNUSED_LOCAL = { reason: 'unused' } as const;
+           export function position(valid: boolean): PositionOutcome {
+             if (!valid) return INVALID_DURATION;
+             return { reason: 'operation-failed' };
+           }
+           export function unusedReason(): string { return UNUSED_LOCAL.reason; }`,
+        ),
+      ],
+      resolutionPlan,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolutionPlan,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const owner = modules.find((module) => module.source.endsWith('/outcome.ts'))!;
+    const consumer = modules.find((module) => module.packageName === '@flighthq/mediasession')!;
+    const ownerOutput = session.emitModule(owner)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(ownerOutput).toContain('template <typename Reason>');
+    expect(ownerOutput).toContain('flight::String reason;');
+    expect(ownerOutput).not.toContain('std::variant<Reason, flight::String> reason;');
+    expect(consumerOutput).toContain('flight::Ref<flighthq_types::OperationOutcome<flight::String>> invalid_duration');
+    expect(consumerOutput).toContain('flight::make_ref<flighthq_types::OperationOutcome<flight::String>>');
+    expect(consumerOutput).toContain('.reason = flight::String("invalid-duration")');
+    expect(consumerOutput).toContain('return invalid_duration;');
+    expect(consumerOutput.match(/^struct reason_[0-9a-f]+ :/gmu)).toHaveLength(1);
+    expect(consumerOutput).not.toContain('flight::Any');
+    expect(consumerOutput).not.toContain('static_cast');
+  });
+
   // The other half of the ownership rule: a LOCAL alias keeps its own records. Rewriting these to any
   // other module's namespace would be the same mistake in the opposite direction.
   it('keeps a local union alias and its records in its own module', () => {
@@ -5624,6 +5699,31 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('std::current_exception()');
     expect(emitted.contents).toContain('std::rethrow_exception');
     expect(emitted.contents).toContain('#include <exception>');
+  });
+
+  it('preserves a caught unknown value through deferred rethrow storage', () => {
+    const result = lower(
+      'deferred-caught-error.ts',
+      `export function release(actions: Array<() => void>): void {
+         let firstError: unknown;
+         let failed = false;
+         for (const action of actions) {
+           try { action(); }
+           catch (error) { if (!failed) firstError = error; failed = true; }
+         }
+         if (failed) throw firstError;
+       }
+       export function retain(value: unknown): unknown { const kept: unknown = value; return kept; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('std::exception_ptr first_error;');
+    expect(emitted).toContain('first_error = std::current_exception()');
+    expect(emitted).toContain('std::rethrow_exception(first_error);');
+    expect(emitted).toContain('flight::Any retain(flight::Any value)');
+    expect(emitted).toContain('auto kept = value;');
+    expect(emitted).not.toContain('first_error = error');
+    expect(emitted).not.toContain('throw first_error');
   });
 
   it('emits return-in-try-with-finally using deferred return variable', () => {

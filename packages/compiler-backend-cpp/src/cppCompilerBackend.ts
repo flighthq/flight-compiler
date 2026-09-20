@@ -218,6 +218,7 @@ interface EmitContext {
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
+  exceptionPointerBindingIds: ReadonlySet<string>;
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
   // The bindings whose declaration elected the erased dynamic value as its storage. A presence test
   // asks this rather than the declared type, because the two disagree in both directions and each
@@ -416,6 +417,7 @@ function emitIrModuleCppWithContext(
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
     erasedDynamicStorageBindingIds,
     erasedObjectParameterBindingIds,
+    exceptionPointerBindingIds: collectCppExceptionPointerBindingIdsCpp(module, bindingTypes),
     externalBindingStorageTargetTypes,
     facetTagNames: new Map(),
     importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
@@ -1758,7 +1760,10 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(declaration.binding.id);
   const preservedInitializerType = context.preservedInitializerTypes.get(declaration.binding.id);
   const structuralCastRow = context.structuralCastBindingRows.get(declaration.binding.id);
+  const exceptionPointer = context.exceptionPointerBindingIds.has(declaration.binding.id);
+  if (exceptionPointer) context.includes.add('exception');
   const type =
+    (exceptionPointer ? 'std::exception_ptr' : undefined) ??
     getCppNamedPropertiesStorageTypeCpp(declaration.initializer, context) ??
     (externalStorageTarget
       ? emitCppExternalBindingStorageTypeCpp(declaration.type, externalStorageTarget, context)
@@ -1822,7 +1827,10 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(variable.binding.id);
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(variable.binding.id);
   const structuralCastRow = context.structuralCastBindingRows.get(variable.binding.id);
+  const exceptionPointer = context.exceptionPointerBindingIds.has(variable.binding.id);
+  if (exceptionPointer) context.includes.add('exception');
   const type =
+    (exceptionPointer ? 'std::exception_ptr' : undefined) ??
     getCppNamedPropertiesStorageTypeCpp(variable.initializer, context) ??
     (externalStorageTarget
       ? emitCppExternalBindingStorageTypeCpp(variable.type, externalStorageTarget, context)
@@ -2117,6 +2125,8 @@ function areCppObjectShapesRepresentationEquivalent(
   right: readonly Readonly<IrObjectTypeProperty>[],
   context: EmitContext,
 ): boolean {
+  // Readonly controls source writes but does not change a field's emitted C++ storage, so otherwise
+  // identical readonly and mutable records can share one contextual reference representation.
   if (left.length !== right.length) return false;
   const rightByName = new Map(right.map((property) => [property.name, property] as const));
   return left.every((property) => {
@@ -2124,7 +2134,6 @@ function areCppObjectShapesRepresentationEquivalent(
     if (
       !other ||
       property.optional !== other.optional ||
-      property.readonly !== other.readonly ||
       Boolean(property.computedKey) !== Boolean(other.computedKey)
     ) {
       return false;
@@ -2214,6 +2223,18 @@ function emitExpression(
           'a dynamic named view is read-only, so it cannot be an assignment target',
           'cpp-named-properties-write-unsupported',
         );
+      }
+      if (
+        expression.operator === '=' &&
+        expression.left.kind === 'identifier' &&
+        expression.left.reference.kind === 'binding' &&
+        context.exceptionPointerBindingIds.has(expression.left.reference.binding.id) &&
+        expression.right.kind === 'identifier' &&
+        expression.right.reference.kind === 'binding' &&
+        expression.right.reference.binding.kind === 'catch'
+      ) {
+        context.includes.add('exception');
+        return `${emitExpression(expression.left, context)} = std::current_exception()`;
       }
       const assignmentType = getIrAssignmentTargetTypeCpp(expression.left, context);
       const rightType = getIrExpressionTypeEvidenceCpp(expression.right, context);
@@ -5117,6 +5138,14 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       return ['{', ...indentSourceLines(lines), '}'];
     }
     case 'throw':
+      if (
+        statement.expression.kind === 'identifier' &&
+        statement.expression.reference.kind === 'binding' &&
+        context.exceptionPointerBindingIds.has(statement.expression.reference.binding.id)
+      ) {
+        context.includes.add('exception');
+        return [`std::rethrow_exception(${emitExpression(statement.expression, context)});`];
+      }
       return [`throw ${emitExpression(statement.expression, context)};`];
     case 'try': {
       if (statement.finallyBody)
@@ -9363,6 +9392,11 @@ function getIrTypeRuntimeDomainCpp(
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return type;
   const bindingId = type.reference.binding.id;
   if (resolvingAliases.has(bindingId)) return type;
+  if (type.reference.binding.kind === 'typeParameter') {
+    const constraint = getCppDependentTypeParameterConstraintCpp(bindingId, context);
+    if (!constraint) return type;
+    return getIrTypeRuntimeDomainCpp(constraint, context, new Set(resolvingAliases).add(bindingId)) ?? type;
+  }
   const alias = resolveCppTypeAliasTarget(type, context);
   if (!alias) return type;
   const nextResolvingAliases = new Set(resolvingAliases);
@@ -10041,12 +10075,121 @@ function collectCppExternalBindingStorageTargetTypesCpp(
   );
 }
 
+function collectCppExceptionPointerBindingIdsCpp(
+  module: Readonly<IrModule>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+): ReadonlySet<string> {
+  // Preserve the caught exception object only for the closed capture-and-rethrow pattern. Counting
+  // every reference keeps ordinary unknown storage on the dynamic-value path as soon as it is read,
+  // initialized, or assigned from anything other than a catch binding.
+  const candidates = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if (
+        'binding' in variable &&
+        variable.mutable &&
+        !variable.initializer &&
+        bindingTypes.get(variable.binding.id)?.kind === 'unknown'
+      ) {
+        candidates.add(variable.binding.id);
+      }
+    },
+  });
+  const assignmentCounts = new Map<string, number>();
+  const invalidAssignments = new Set<string>();
+  const referenceCounts = new Map<string, number>();
+  const throwCounts = new Map<string, number>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+        const bindingId = expression.reference.binding.id;
+        if (candidates.has(bindingId)) referenceCounts.set(bindingId, (referenceCounts.get(bindingId) ?? 0) + 1);
+      }
+      if (
+        expression.kind !== 'assignment' ||
+        expression.left.kind !== 'identifier' ||
+        expression.left.reference.kind !== 'binding' ||
+        !candidates.has(expression.left.reference.binding.id)
+      ) {
+        return;
+      }
+      const bindingId = expression.left.reference.binding.id;
+      assignmentCounts.set(bindingId, (assignmentCounts.get(bindingId) ?? 0) + 1);
+      if (
+        expression.operator !== '=' ||
+        expression.right.kind !== 'identifier' ||
+        expression.right.reference.kind !== 'binding' ||
+        expression.right.reference.binding.kind !== 'catch'
+      ) {
+        invalidAssignments.add(bindingId);
+      }
+    },
+    statement(statement) {
+      if (
+        statement.kind === 'throw' &&
+        statement.expression.kind === 'identifier' &&
+        statement.expression.reference.kind === 'binding' &&
+        candidates.has(statement.expression.reference.binding.id)
+      ) {
+        const bindingId = statement.expression.reference.binding.id;
+        throwCounts.set(bindingId, (throwCounts.get(bindingId) ?? 0) + 1);
+      }
+    },
+  });
+  return new Set(
+    [...candidates].filter((bindingId) => {
+      const assignments = assignmentCounts.get(bindingId) ?? 0;
+      const throws = throwCounts.get(bindingId) ?? 0;
+      return (
+        assignments > 0 &&
+        throws > 0 &&
+        !invalidAssignments.has(bindingId) &&
+        referenceCounts.get(bindingId) === assignments + throws
+      );
+    }),
+  );
+}
+
 function collectCppContextualBindingStorageTargetTypesCpp(
   module: Readonly<IrModule>,
   context: EmitContext,
 ): ReadonlyMap<string, Readonly<IrType>> {
   const candidates = new Map<string, Map<string, Readonly<IrType>>>();
   const eligible = new Set<string>();
+  const recordTarget = (expression: Readonly<IrExpression>, expectedType: Readonly<IrType> | undefined): void => {
+    if (
+      expression.kind !== 'identifier' ||
+      expression.reference.kind !== 'binding' ||
+      !eligible.has(expression.reference.binding.id)
+    ) {
+      return;
+    }
+    const bindingId = expression.reference.binding.id;
+    const sourceType = context.bindingTypes.get(bindingId);
+    const targetType = expectedType
+      ? (getCppNonNullableType(expectedType, context, new Set()) ?? expectedType)
+      : undefined;
+    if (
+      !sourceType ||
+      !targetType ||
+      !hasFlightReferenceRepresentationCpp(targetType, context) ||
+      hasFlightStructuralRowRepresentationCpp(targetType, context)
+    ) {
+      return;
+    }
+    const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceType, context.module);
+    const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetType, context.module);
+    if (
+      !sourceShape ||
+      !targetShape ||
+      !areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context)
+    ) {
+      return;
+    }
+    const targets = candidates.get(bindingId) ?? new Map<string, Readonly<IrType>>();
+    targets.set(normalizeCompilerStructuralValueCanonical(targetType), targetType);
+    candidates.set(bindingId, targets);
+  };
   analyzeIrModuleTraversal(module, {
     variable(variable) {
       const inferredType =
@@ -10086,8 +10229,26 @@ function collectCppContextualBindingStorageTargetTypesCpp(
     if (declaration.kind !== 'function') continue;
     const returnType = getCppNonNullableType(declaration.returns, context, new Set()) ?? declaration.returns;
     for (const statement of declaration.body) {
-      if (statement.kind !== 'return' || statement.expression?.kind !== 'object') continue;
-      collectCppObjectContextualStorageTargetsCpp(statement.expression, returnType, eligible, candidates, context);
+      analyzeIrStatementSubtreeTraversal(statement, {
+        expression(expression) {
+          if (expression.kind === 'function') return false;
+          return undefined;
+        },
+        statement(candidate) {
+          if (candidate.kind !== 'return' || !candidate.expression) return;
+          if (candidate.expression.kind === 'object') {
+            collectCppObjectContextualStorageTargetsCpp(
+              candidate.expression,
+              returnType,
+              eligible,
+              candidates,
+              context,
+            );
+          } else {
+            recordTarget(candidate.expression, returnType);
+          }
+        },
+      });
     }
   }
   analyzeIrModuleTraversal(module, {
@@ -10097,37 +10258,8 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       }
       if (expression.kind !== 'call') return;
       expression.arguments.forEach((argument, index) => {
-        if (
-          argument.kind !== 'identifier' ||
-          argument.reference.kind !== 'binding' ||
-          !eligible.has(argument.reference.binding.id)
-        ) {
-          return;
-        }
-        const bindingId = argument.reference.binding.id;
-        const sourceType = context.bindingTypes.get(bindingId);
         const expectedType = getIrCallArgumentExpectedTypeCpp(expression, index, context);
-        const targetType = expectedType ? getCppNonNullableType(expectedType, context, new Set()) : undefined;
-        if (
-          !sourceType ||
-          !targetType ||
-          !hasFlightReferenceRepresentationCpp(targetType, context) ||
-          hasFlightStructuralRowRepresentationCpp(targetType, context)
-        ) {
-          return;
-        }
-        const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceType, context.module);
-        const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetType, context.module);
-        if (
-          !sourceShape ||
-          !targetShape ||
-          !areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context)
-        ) {
-          return;
-        }
-        const targets = candidates.get(bindingId) ?? new Map<string, Readonly<IrType>>();
-        targets.set(normalizeCompilerStructuralValueCanonical(targetType), targetType);
-        candidates.set(bindingId, targets);
+        recordTarget(argument, expectedType);
       });
     },
   });
