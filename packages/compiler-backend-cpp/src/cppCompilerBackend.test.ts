@@ -1413,6 +1413,88 @@ describe('createCppCompilerBackend', () => {
     expect(consumerOutput).toContain('co_await');
   });
 
+  it('builds an optional imported alias union through its reexported declaring module', () => {
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(
+        `/flight/packages/${packageName.slice(packageName.lastIndexOf('/') + 1)}/src/${file}`,
+        text,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    });
+    const resolutionPlan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './outcome',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/outcome.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'outcome.ts',
+          `export type Outcome =
+             | { readonly mimeType: null; readonly reason: 'undetected' }
+             | { readonly mimeType: string; readonly reason: 'unregistered' };`,
+        ),
+        source('@flighthq/types', 'contract.ts', `export * from './outcome';`),
+        source(
+          '@flighthq/image-codec',
+          'explain.ts',
+          `import type { Outcome } from '@flighthq/types/contract';
+           export function explain(code: number, mimeType?: string): Outcome | null {
+             const type = mimeType ?? (code === 0 ? null : 'image/png');
+             if (type === null) return { mimeType: null, reason: 'undetected' };
+             if (code === 1) return { mimeType: type, reason: 'unregistered' };
+             return null;
+           }`,
+        ),
+      ],
+      resolutionPlan,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolutionPlan,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const owner = modules.find((module) => module.source.endsWith('/outcome.ts'))!;
+    const consumer = modules.find((module) => module.packageName === '@flighthq/image-codec')!;
+    const ownerOutput = session.emitModule(owner)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+    const ownerArms = [...ownerOutput.matchAll(/^struct (mime_type_reason_[0-9a-f]+) :/gmu)].map((match) => match[1]!);
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(ownerArms).toHaveLength(2);
+    expect(consumerOutput).not.toContain('struct mime_type_reason_');
+    for (const arm of ownerArms) expect(consumerOutput).toContain(`flighthq_types::${arm}`);
+    expect(consumerOutput).toContain('std::optional<flighthq_types::Outcome> explain');
+    expect(consumerOutput).toContain('const std::optional<flight::String> type');
+    expect(consumerOutput).toContain('return std::nullopt');
+    expect(consumerOutput).not.toContain('flight::Any');
+    expect(consumerOutput).not.toContain('static_cast<flighthq_types::Outcome>');
+
+    const localOutput = emitIrModuleCpp(
+      lower(
+        'local-optional-alias.ts',
+        `type Local = { reason: 'ok' } | { reason: 'failed'; detail: string };
+         export function local(): Local | null { return { reason: 'failed', detail: 'local' }; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(localOutput).toContain('struct reason_');
+    expect(localOutput).not.toContain('flighthq_types::reason_');
+  });
+
   // The other half of the ownership rule: a LOCAL alias keeps its own records. Rewriting these to any
   // other module's namespace would be the same mistake in the opposite direction.
   it('keeps a local union alias and its records in its own module', () => {

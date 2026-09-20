@@ -186,6 +186,10 @@ interface CppStructuralOpenRowConstructionPlan {
 
 type CppDirectBindingOwner = Readonly<{ declaration: IrDeclaration; module: IrModule }>;
 type CppImportBindingOwner = Readonly<{ imported: string; module: IrModule; specifier: string }>;
+type CppTypeDeclarationOwner = Readonly<{
+  declaration: Extract<IrDeclaration, { kind: 'class' | 'enum' | 'interface' | 'typeAlias' }>;
+  module: IrModule;
+}>;
 type CppValueBindingOwner = Readonly<{
   binding: IrBindingIdentity | IrTypeBindingIdentity;
   module: IrModule;
@@ -7357,8 +7361,14 @@ function isCppExpressionExactlyRepresentableAsTypeCpp(
 }
 
 function emitUnionTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, context: EmitContext): string {
-  const plan = getCppUnionRepresentationPlan(type, context);
   const importedValueAlias = getCppOptionalImportedUnionValueAliasCpp(type, context);
+  // The alias owns the anonymous alternatives. The shared plan still decides whether this is an
+  // optional variant, but asking it in the consumer's live context would register duplicate local
+  // structs even though the emitted storage keeps the imported alias intact.
+  const plan = getCppUnionRepresentationPlan(
+    type,
+    importedValueAlias ? { ...context, anonymousStructs: new Map(), includes: new Set() } : context,
+  );
   if (importedValueAlias && plan.kind === 'optionalVariant') {
     context.includes.add('optional');
     return `std::optional<${emitType(importedValueAlias, context)}>`;
@@ -8334,8 +8344,10 @@ function getCppUnionAliasDeclarationOwnerCpp(
   expectedType: Readonly<IrType>,
   context: EmitContext,
 ): Readonly<IrModule> | 'ambiguous' | undefined {
-  if (expectedType.kind !== 'named' || expectedType.reference.kind !== 'binding') return undefined;
-  const reference = expectedType.reference;
+  const alias =
+    expectedType.kind === 'union' ? getCppOptionalImportedUnionValueAliasCpp(expectedType, context) : expectedType;
+  if (!alias || alias.kind !== 'named' || alias.reference.kind !== 'binding') return undefined;
+  const reference = alias.reference;
   // Only an import crosses a module boundary. A local alias and an inline union keep their own
   // ownership, which is what they already had.
   if (reference.binding.kind !== 'import') return undefined;
@@ -8345,15 +8357,73 @@ function getCppUnionAliasDeclarationOwnerCpp(
   // not resolve to exactly one, so every answer would be a guess at which module's records these are.
   if (!owner) return undefined;
   const ownerContext: EmitContext = owner.module === context.module ? context : { ...context, module: owner.module };
-  const targets = getCppResolvedImportModules(owner.specifier, ownerContext).filter((candidate) =>
-    hasCppDirectExportName(candidate, owner.imported),
+  const resolved = getCppResolvedImportModules(owner.specifier, ownerContext);
+  const candidates = resolved.flatMap((candidate) =>
+    getCppExportedTypeDeclarationOwnersCpp(candidate, owner.imported, context, new Set()),
   );
+  const unique = new Map(
+    candidates.map((candidate) => [
+      `${getCppModuleIdentityKey(candidate.module)}\0${candidate.declaration.binding.id}`,
+      candidate,
+    ]),
+  );
+  if (unique.size > 1) return 'ambiguous';
+  const target = [...unique.values()][0];
+  if (target) return target.module === context.module ? undefined : target.module;
   // Only a UNIQUE other module can say whose records these are. Anything else keeps the local
   // behaviour it already had: an import that resolves to several modules is a shape the emitter
   // handles today by minting here, and refusing it would turn a working emission into a refusal --
   // a behaviour change this round did not ask for.
-  if (targets.length !== 1) return undefined;
-  return targets[0] === context.module ? undefined : targets[0];
+  const directTargets = resolved.filter((candidate) => hasCppDirectExportName(candidate, owner.imported));
+  if (directTargets.length !== 1) return undefined;
+  return directTargets[0] === context.module ? undefined : directTargets[0];
+}
+
+function getCppExportedTypeDeclarationOwnersCpp(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): readonly CppTypeDeclarationOwner[] {
+  const key = `${getCppModuleIdentityKey(module)}\0${exportedName}`;
+  if (visited.has(key)) return [];
+  const nextVisited = new Set(visited).add(key);
+  const bindingIds = new Set([
+    ...module.declarations.flatMap((declaration) =>
+      'binding' in declaration && declaration.exported && declaration.binding.name === exportedName
+        ? [declaration.binding.id]
+        : [],
+    ),
+    ...module.exports.flatMap((exported) =>
+      exported.kind === 'local' && exported.exported === exportedName ? [exported.binding.id] : [],
+    ),
+  ]);
+  const direct = module.declarations.flatMap((declaration): readonly CppTypeDeclarationOwner[] => {
+    if (
+      (declaration.kind !== 'class' &&
+        declaration.kind !== 'enum' &&
+        declaration.kind !== 'interface' &&
+        declaration.kind !== 'typeAlias') ||
+      !bindingIds.has(declaration.binding.id)
+    ) {
+      return [];
+    }
+    return [{ declaration, module }];
+  });
+  const forwarded = module.exports.flatMap((exported): readonly CppTypeDeclarationOwner[] => {
+    const importedName =
+      exported.kind === 'all'
+        ? exportedName
+        : exported.kind === 'reexport' && exported.exported === exportedName
+          ? exported.imported
+          : undefined;
+    if (!importedName || (exported.kind !== 'all' && exported.kind !== 'reexport')) return [];
+    const moduleContext = module === context.module ? context : { ...context, module };
+    return getCppResolvedImportModules(exported.specifier, moduleContext).flatMap((targetModule) =>
+      getCppExportedTypeDeclarationOwnersCpp(targetModule, importedName, context, nextVisited),
+    );
+  });
+  return [...direct, ...forwarded];
 }
 
 // Names the alternatives the declaring module minted, qualified by that module's namespace, so a
