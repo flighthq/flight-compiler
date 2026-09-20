@@ -70,8 +70,10 @@ Kept here so each round starts from the last one's answers rather than re-derivi
 | Mid Stage 1 (partial-row collapse only)        | `d12e08ca` | 1107 / 2851 | 650    | 1094       |
 | Fresh SDL-profile run (plan baseline)          | `9cc35da`  | 1106 / 2851 | 651    | 1094       |
 | Committed `.dependencies/flight-cpp/generated` | `9f6ce1c`  | 950 / 2851  | 1105   | 796        |
+| Fresh SDL run, `@flighthq/node` blocker moved  | `b7f4623f` | 1414 / 2904 | —      | —          |
+| After the variant-member proof                 | `616e0e8d` | 1415 / 2904 | —      | —          |
 
-The committed ledger was produced 153 commits behind this tree, so it is not attributable to current work and must not be read as a delta. Regenerate before reading any number as this repository's.
+The committed ledger was produced 153 commits behind this tree, so it is not attributable to current work and must not be read as a delta. Regenerate before reading any number as this repository's. The last two rows are the same 2904-module corpus as each other and are directly comparable: one module moved from refused to emitted, and the variant-member family went from 7 to 0 while four modules traded one refusal for another.
 
 Inputs: Flight SDK `1274ec5c923947dc64d5ffedcbd8169fc758cd9f` (@flighthq/sdk 0.5.0), 154 packages, 2851 modules, the seven SDL binding profiles.
 
@@ -151,6 +153,28 @@ Three refusals, each with its own rule, because each is a different question: a 
 **The last one is the root that remains, and it is a runtime gap.** `explainHost` enumerates the host and then enumerates each capability group it _found_, and the value it found is the erased `Any` the first enumeration produced. `named_properties` takes a `shared_ptr<Object>` or a `StructuralRef`, and `flight::Any` recovers an object only through `object_if<T>()`, which needs the type. So the second-level read has no runtime operation: what is missing is a way to reach the view from a stored erased object, for example an overload taking the `AnyObject` the value already carries. Until then the compiler refuses rather than emitting a cast that cannot compile.
 
 `typeof` over the erased value was the other root on the way and is closed: `Any::type_of` is ECMAScript `typeof`, including the `null` that reports `object`, so the emitter asks the value instead of folding a shape the source did not state.
+
+## A variant member needs its C++ binding proven, not just its type
+
+`out: number[] | Float32Array` reading `out.length` refused everywhere it appeared, and `Float32Array | Uint8Array` did something worse: it emitted the bare `out.size()`. The second is the more instructive failure, because the emitter was not _guessing_ — it resolved `length` against one alternative's receiver kind and applied that spelling to `std::variant` storage, where no such member exists. A correct rule in one place became a miscompile the moment the storage became a variant.
+
+The proof is now two-part and all-or-nothing. A member is visitable only when every reachable alternative agrees on **both** the member **value type** and the member's resolved **C++ binding** — kind and target name, read from the same ambient table that spells a lone access. The receiver kind per alternative comes from the planner's own name-to-category mapping, exported for this purpose as `getCppRuntimeReferenceCategory`, so there is no second list to fall out of step. The access then takes the binding's shape: `sizeMethod` is called, a property is read. Some alternatives naming a binding while others do not is itself a refusal; none naming one keeps the source spelling, which record-like members rely on.
+
+`number[] | Float32Array` reading `length` answers `sizeMethod size` on both alternatives, so the emitter visits and calls `size()`, and the header compiles under `g++ -std=c++20`. `byteLength` over the same union still refuses with `cpp-union-member-access-unguarded` — the alternatives do not agree, and nothing here widens that. The bypass that let a resolved member reach variant storage is closed: a variant receiver with a resolved member now goes to the proof or refuses.
+
+**Measured on the real harness at `616e0e8d`:** the family is **zero repository-wide** — `property length on a C++ variant requires proven union member access` appears nowhere in the ledger, from 7 occurrences. The animation package is where it was concentrated: of the five modules blocked by it, `animationBlend.ts` now emits, three (`animationBlendTree`, `animationRootMotion`, `animationStateMachine`) move to cascade refusals behind `animationPlayer`/`animationTrack`, and `animationLayerStack` moves to a genuinely different direct blocker. Emitted moved 1414 → 1415 and refusals 1490 → 1489, which is the expected shape: a fix that moves a module from one refusal to another does not move the emitted count, and four of the five did exactly that.
+
+### The five animation modules' next refusal, at `616e0e8d`
+
+| Module | What it is now |
+| --- | --- |
+| `animationBlend.ts` | **emits** |
+| `animationBlendTree.ts` | cascade → `animationPlayer.ts:212` `present access requires optional C++ storage with one value domain` |
+| `animationRootMotion.ts` | cascade → `animationTrack.ts:42` `dual-sentinel nullish coalescing requires presence projection lowering` |
+| `animationStateMachine.ts` | cascade → `animationBlendTree.ts` → `animationPlayer.ts:212` |
+| `animationLayerStack.ts` | **direct, new**: `union has distinct runtime domains erased by C++ target type flight::Array<double>` at `52:1` |
+
+The concentration is `animationPlayer.ts:212`: it is one direct refusal blocking four of the five, plus `animationAdvance` and `animationCrossfade`. The `animationLayerStack` refusal is inside `initializeAnimationLayerStack`, whose only two-candidate union is `layer.channelIndices ?? sourceChannels.map(...)` — both array-shaped, both erasing to `flight::Array<double>`. That reading is **not yet verified**; the next attempt should reproduce the shape rather than assume this expression is the site.
 
 ## Reproducing the ledger locally
 
