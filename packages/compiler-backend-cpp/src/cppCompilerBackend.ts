@@ -3687,6 +3687,21 @@ function emitCppStructuralReferenceValueConversionCpp(
     ) {
       return undefined;
     }
+    if (
+      normalizeCompilerStructuralValueCanonical(sourceObject) ===
+      normalizeCompilerStructuralValueCanonical(targetObject)
+    ) {
+      if (isCppStructuralRowReadonlyCpp(sourceRow) && !isCppStructuralRowReadonlyCpp(targetRow)) {
+        emissionError(
+          context,
+          'a readonly structural row cannot be converted to a writable structural row',
+          'cpp-structural-row-widening-unproven',
+        );
+      }
+      return undefined;
+    }
+    const wideningProof = getCppStructuralRowObjectWideningProofCpp(sourceObject, targetObject, context);
+    if (!wideningProof) return undefined;
     if (isCppStructuralRowReadonlyCpp(sourceRow) && !isCppStructuralRowReadonlyCpp(targetRow)) {
       emissionError(
         context,
@@ -3694,13 +3709,7 @@ function emitCppStructuralReferenceValueConversionCpp(
         'cpp-structural-row-widening-unproven',
       );
     }
-    if (
-      normalizeCompilerStructuralValueCanonical(sourceObject) ===
-      normalizeCompilerStructuralValueCanonical(targetObject)
-    ) {
-      return undefined;
-    }
-    if (!isCppStructuralRowObjectWideningProvenCpp(sourceObject, targetObject, context)) {
+    if (wideningProof === 'unproven') {
       emissionError(
         context,
         'structural row conversion requires a resolved source shape that contains every target member',
@@ -3747,21 +3756,23 @@ function isCppStructuralRowReadonlyCpp(row: Readonly<CompilerCppStructuralRowPla
 // That is safe only when the compiler can resolve both subjects and every target field is represented
 // by the same C++ storage in the source. The shared structural analyzer supplies the source-language
 // direction check; the exact field check mirrors the runtime member-table proof used by StructuralRef.
-function isCppStructuralRowObjectWideningProvenCpp(
+// An absent result leaves an incompatible, indeterminate, or empty pair to its established emission
+// lane. Unproven is reserved for a compatible row conversion whose C++ storage cannot implement it.
+function getCppStructuralRowObjectWideningProofCpp(
   source: Readonly<IrType>,
   target: Readonly<IrType>,
   context: EmitContext,
-): boolean {
+): 'proven' | 'unproven' | undefined {
   const sourceProperties = context.referenceRepresentationPlanner.resolveObjectShape(source, context.module);
   const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(target, context.module);
-  if (!sourceProperties || !targetProperties) return false;
+  if (!sourceProperties || !targetProperties) return undefined;
   if (
     analyzeIrTypeStructuralAssignability(
       { kind: 'object', properties: sourceProperties },
       { kind: 'object', properties: targetProperties },
     ).status !== 'compatible'
   ) {
-    return false;
+    return undefined;
   }
   const sourceFields = new Map(
     sourceProperties
@@ -3769,17 +3780,17 @@ function isCppStructuralRowObjectWideningProvenCpp(
       .map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
   );
   const targetFields = targetProperties.filter((property) => !property.phantom);
-  return (
-    targetFields.length > 0 &&
-    targetFields.every((property) => {
-      const sourceProperty = sourceFields.get(getCppStructuralRowPropertyIdentityCpp(property, context));
-      return (
-        sourceProperty !== undefined &&
-        sourceProperty.optional === property.optional &&
-        emitType(sourceProperty.type, context) === emitType(property.type, context)
-      );
-    })
-  );
+  if (targetFields.length === 0) return undefined;
+  return targetFields.every((property) => {
+    const sourceProperty = sourceFields.get(getCppStructuralRowPropertyIdentityCpp(property, context));
+    return (
+      sourceProperty !== undefined &&
+      sourceProperty.optional === property.optional &&
+      emitType(sourceProperty.type, context) === emitType(property.type, context)
+    );
+  })
+    ? 'proven'
+    : 'unproven';
 }
 
 function getCppStructuralRowPropertyIdentityCpp(

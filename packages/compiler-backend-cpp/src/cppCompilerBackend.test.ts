@@ -11011,14 +11011,13 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(casts).toHaveLength(3);
   });
 
-  it('does not widen readonly rows to writable rows and refuses narrowing or unrelated rows', () => {
+  it('refuses unsafe structural row widening without claiming unrelated conversions', () => {
     const readonlyToWritable = lower(
       'readonly-row-to-writable.ts',
       `interface Entity { id: number }
        interface MeshGeometry extends Entity { vertices: number[] }
-       type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
-       function mutate<Type extends Entity>(entity: EntityConstruction<Type>): void { entity.id = 1; }
-       export function reject(geometry: Readonly<MeshGeometry>): void { mutate<MeshGeometry>(geometry); }`,
+       function mutate(entity: Required<MeshGeometry>): void { entity.id = 1; }
+       export function reject(geometry: Readonly<MeshGeometry>): void { mutate(geometry); }`,
     );
     const narrowing = lower(
       'structural-row-narrowing.ts',
@@ -11034,19 +11033,33 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
        function target(value: Readonly<Target>): void { value.target; }
        export function reject(value: Readonly<Source>): void { target(value); }`,
     );
+    const storageMismatch = lower(
+      'structural-row-storage-mismatch.ts',
+      `interface Source { readonly value: number }
+       interface Target { readonly value?: number }
+       function target(value: Readonly<Target>): void { value.value; }
+       export function reject(value: Readonly<Source>): void { target(value); }`,
+    );
 
-    const readonlyOutput = emitIrModuleCpp(readonlyToWritable.module, { runtimeProfile: 'flight-cpp' }).contents;
-    expect(readonlyOutput).not.toContain('flight::structural_ref_cast<flight::StructuralRef<flight::RowWritable');
+    const readonlyFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(readonlyToWritable.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(readonlyFailure.rule).toBe('cpp-structural-row-widening-unproven');
+    expect(readonlyFailure.message).toContain('readonly structural row');
 
     for (const result of [narrowing, unrelated]) {
-      const failure = captureBackendEmissionFailure(() =>
-        emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
-      );
-      expect(failure.rule).toBe('cpp-structural-row-widening-unproven');
+      const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+      expect(output).not.toContain('flight::structural_ref_cast');
     }
+
+    const storageFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(storageMismatch.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(storageFailure.rule).toBe('cpp-structural-row-widening-unproven');
+    expect(storageFailure.message).toContain('contains every target member');
   });
 
-  it('refuses structural row widening through indeterminate imported heritage', () => {
+  it('declines structural row widening through indeterminate imported heritage', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -11128,16 +11141,14 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       moduleResolution,
     );
     const modules = results.map((result) => result.module);
-    const failure = captureBackendEmissionFailure(
-      () =>
-        createCppCompilerBackend().createEmissionSession!({
-          moduleResolution,
-          modules,
-          options: { runtimeProfile: 'flight-cpp' },
-        }).emitModule(modules[4]!)[0],
-    );
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[4]!)[0]!.contents;
 
-    expect(failure.rule).toBe('cpp-structural-row-widening-unproven');
+    expect(output).toContain('return entity_id(geometry);');
+    expect(output).not.toContain('flight::structural_ref_cast');
   });
 
   it('materializes spread push arguments before mutating the receiver', () => {
