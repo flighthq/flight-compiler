@@ -539,6 +539,67 @@ describe('createCppCompilerBackend', () => {
     ).toBe('cpp-object-index-without-closed-key-set');
   });
 
+  // A written return type that names a type parameter belongs to the declaration that wrote it, not to
+  // the call site that reached it, so writing it verbatim carries a reference the caller cannot
+  // resolve. The detector that decides this walked only type nodes, and `forEachChild` hands a function
+  // type's parameters over as `ParameterDeclaration`s -- not type nodes -- so the walk stopped at the
+  // parameter list and never reached the type a parameter is declared with.
+  // `getSignal(): Signal<(event: Readonly<Event>) => void> | null` is exactly that shape: the parameter
+  // reference is the only mention of the type parameter, so the interface's own `Event` was written
+  // into the caller's IR. The lowering pass validator reported `out-of-scope-binding-reference` against
+  // a neighboring declaration and the module died as `malformed-ir`, an internal error rather than an
+  // emission or a refusal.
+  it('keeps a type parameter scoped to the declaration that introduced it when a member result names it', () => {
+    const resolutionPlan: CompilerModuleResolutionPlan = {
+      edges: [],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    // Through `lowerTypeScriptSources`, which builds the package-graph program. The single-file
+    // `lowerTypeScriptSource` path does NOT reproduce the defect, and neither does the single-module
+    // `emitIrModuleCpp` entry point -- both were tried and both emitted happily while this one died, so
+    // the harness that witnesses a fix has to be the harness that failed.
+    const [tagged] = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/tray',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/tray/src/tray.ts',
+            `interface Signal<T> { readonly emit: T }
+             interface EventProvider<Event extends object> {
+               getSignal(): Signal<(event: Readonly<Event>) => void> | null;
+             }
+             export function attachTrayEvent<Event extends object>(
+               provider: Readonly<EventProvider<Event>>,
+             ): void {
+               const signal = provider.getSignal();
+               void signal;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolutionPlan,
+    );
+    const module = tagged!.module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolutionPlan,
+      modules: [module],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    // The session runs the lowering passes and validates their output, so reaching emitted text at all
+    // is what says the IR became valid scoped IR instead of a `malformed-ir` internal error.
+    const emitted = session.emitModule(module)[0]?.contents ?? '';
+    // The caller is a template over its own Event and the provider a template over its own, so each
+    // declaration keeps the parameter it introduced.
+    expect(emitted).toContain('template <typename Event>\nstruct EventProvider');
+    expect(emitted).toContain('template <typename Event>\ninline void attach_tray_event');
+    expect(emitted).toContain(
+      'flight::Ref<Signal<std::function<void(flight::StructuralRef<flight::RowReadonly<flight::RowOf<Event>>>)>>>',
+    );
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',

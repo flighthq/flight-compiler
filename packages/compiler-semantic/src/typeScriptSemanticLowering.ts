@@ -2201,7 +2201,18 @@ function getTypeScriptWrittenCallResultTypeEvidence(
   return lowerType(result, context);
 }
 
-function hasTypeScriptContextualResultReference(node: ts.TypeNode, checker: ts.TypeChecker): boolean {
+// Whether a written return type names a type parameter of the declaration that wrote it, which makes
+// the type contextual: it belongs to the interface or function it was declared on, not to the call
+// site that reached it, so writing it verbatim would carry a reference the caller cannot resolve.
+//
+// The walk descends through EVERY child rather than only through type nodes. `forEachChild` visits a
+// function type's parameters as `ParameterDeclaration`s, which are not type nodes, so a filter on the
+// child stops the walk at the parameter list and never reaches the type a parameter is declared with.
+// `getSignal(): Signal<(event: Readonly<Event>) => void> | null` is exactly that shape: the parameter
+// reference is the only mention of the type parameter, and missing it wrote the interface's own `Event`
+// into the caller's IR, where the validator correctly reported it as introduced on a neighboring
+// declaration.
+function hasTypeScriptContextualResultReference(node: ts.Node, checker: ts.TypeChecker): boolean {
   if (ts.isThisTypeNode(node)) return true;
   if (ts.isTypeReferenceNode(node)) {
     const unresolved = checker.getSymbolAtLocation(node.typeName);
@@ -2210,8 +2221,8 @@ function hasTypeScriptContextualResultReference(node: ts.TypeNode, checker: ts.T
     if (symbol?.flags && symbol.flags & ts.SymbolFlags.TypeParameter) return true;
   }
   let found = false;
-  ts.forEachChild(node, (child) => {
-    if (!found && ts.isTypeNode(child) && hasTypeScriptContextualResultReference(child, checker)) found = true;
+  node.forEachChild((child) => {
+    if (!found && hasTypeScriptContextualResultReference(child, checker)) found = true;
   });
   return found;
 }
