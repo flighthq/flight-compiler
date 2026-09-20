@@ -600,6 +600,83 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  // A generic object alias is emitted as a template definition, and the early declaration the same
+  // header publishes for it has to be a template too. It was not: the declaration was read from the
+  // emitted lines one at a time, and the parameter list sits on its own line above the definition, so
+  // the walk that produced the declaration never saw it and fixed the name as a non-template. The
+  // definition then failed with `is not a template`, in the alias's own header and in every consumer --
+  // which is how seven generated capability headers broke at once.
+  it('declares a generic object alias as a template in every header that publishes it', () => {
+    const resolutionPlan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['Common', 'Android'],
+          specifier: './Entity',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          importedNames: ['CapabilitiesFor'],
+          specifier: './CapabilitiesFor',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/CapabilitiesFor.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(`/flight/packages/types/src/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          'Entity.ts',
+          `export interface Common { readonly id: number; readonly activate: () => void }
+           export interface Android { readonly id: number; readonly activate: () => void; readonly hide: () => void }`,
+        ),
+        source(
+          'CapabilitiesFor.ts',
+          `import type { Android, Common } from './Entity';
+           export type CapabilitiesFor<Profile extends 'android' | 'ios'> =
+             Profile extends 'android' ? Android : Common;`,
+        ),
+        source(
+          'Host.ts',
+          `import type { CapabilitiesFor } from './CapabilitiesFor';
+           export interface Host<Profile extends 'android' | 'ios'> { readonly app: CapabilitiesFor<Profile> }`,
+        ),
+      ],
+      resolutionPlan,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolutionPlan,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const byName = new Map(results.map((result, index) => [result.module.source, modules[index]!] as const));
+    const aliasOutput = session.emitModule(byName.get('packages/types/src/CapabilitiesFor.ts')!)[0]?.contents ?? '';
+    const hostOutput = session.emitModule(byName.get('packages/types/src/Host.ts')!)[0]?.contents ?? '';
+
+    // The declaration carries the parameter list, and carries it once: a second one would declare a
+    // different template rather than the same one.
+    expect(aliasOutput).toContain('template <typename Profile> struct CapabilitiesFor;');
+    expect(aliasOutput.match(/struct CapabilitiesFor;/gu)).toHaveLength(1);
+    expect(aliasOutput).toContain('template <typename Profile>\nstruct CapabilitiesFor :');
+    // A consumer of `Alias<Profile>` publishes the same declaration.
+    expect(hostOutput).toContain('template <typename Profile>\nstruct Host;');
+    expect(hostOutput.match(/struct Host;/gu)).toHaveLength(1);
+
+    // The negative the parameter list must survive: a generic INTERFACE is declared by its own path, and
+    // that path must neither drop the list nor gain a second declaration beside it.
+    const recursiveOutput = emitIrModuleCpp(
+      lower('recursive.ts', `export interface Node<T> { readonly value: T; readonly next: Node<T> | null }`).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(recursiveOutput).toContain('template <typename T>\nstruct Node;');
+    expect(recursiveOutput.match(/struct Node;/gu)).toHaveLength(1);
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',

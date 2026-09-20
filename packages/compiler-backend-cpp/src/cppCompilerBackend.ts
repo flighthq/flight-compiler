@@ -843,11 +843,15 @@ function collectCppMaterializedTypeForwardDeclarationsCpp(
   const found = new Map<string, string>();
   for (const entry of declarations) {
     if (entry.declaration.kind !== 'typeAlias') continue;
-    for (const line of entry.lines) {
+    for (const [index, line] of entry.lines.entries()) {
       const match = /^\s*(?:template <([^>]*)>\s*)?struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::|\{)/u.exec(line);
       if (!match) continue;
-      const parameters = match[1];
       const name = match[2]!;
+      // The template parameter list is emitted on the line ABOVE the definition, so a walk that reads
+      // one line at a time loses it and declares the name as a non-template -- contradicting the
+      // templated definition in the same header, which the declaration then makes unnameable. Take it
+      // from the line above when the definition line does not carry it itself.
+      const parameters = match[1] ?? /^\s*template <([^>]*)>\s*$/u.exec(entry.lines[index - 1] ?? '')?.[1];
       found.set(name, `${parameters ? `template <${parameters}> ` : ''}struct ${name};`);
       break;
     }
