@@ -689,6 +689,51 @@ describe('createCppCompilerBackend', () => {
     expect(recursiveOutput.match(/struct Node;/gu)).toHaveLength(1);
   });
 
+  // An async return position types what is returned CONTEXTUALLY: `return { reason: 'x' }` in an
+  // `async` function is recorded as the `Promise` the function returns, while the literal is an object
+  // and not a promise. Reading only the type put `co_await` in front of a braced initialiser, which the
+  // target has no syntax for -- `expected primary-expression before '{'` in four generated headers.
+  //
+  // The boundary now asks whether the expression can denote a task at all, which is a different
+  // question from what its type says, and reads the shape rather than only the object-literal case: an
+  // array literal, a scalar, an optional and a reference all answer no, and a call answers yes.
+  it('awaits only what can be a task at an async return boundary', () => {
+    const emitted = (source: string): string =>
+      emitIrModuleCpp(lower('async-return.ts', source).module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // A plain contextual object return is constructed and returned, in the body and in a catch.
+    const outcome = emitted(
+      `interface Outcome { readonly reason: string }
+       interface Host { prompt(): Promise<Outcome> }
+       export async function f(host: Readonly<Host>, flag: boolean): Promise<Outcome> {
+         if (flag) { try { return await host.prompt(); } catch { return { reason: 'operation-failed' }; } }
+         return { reason: 'runtime-unavailable' };
+       }`,
+    );
+    expect(outcome).toContain(
+      'co_return flight::make_ref<Outcome>(Outcome{.reason = flight::String("runtime-unavailable")})',
+    );
+    expect(outcome).toContain(
+      'co_return flight::make_ref<Outcome>(Outcome{.reason = flight::String("operation-failed")})',
+    );
+    // A real task still awaits, both through an explicit `await` and when the call IS the task.
+    expect(outcome).toContain('co_return co_await flight::row_get<flight::RowKey<"prompt">>(host)()');
+    expect(outcome).not.toContain('co_await {');
+
+    // Scalar, array and optional returns are constructed, not awaited.
+    expect(
+      emitted(`export async function s(flag: boolean): Promise<number> { if (flag) return 1; return 2; }`),
+    ).toContain('co_return 1.0;');
+    expect(
+      emitted(
+        `export async function a(flag: boolean): Promise<readonly string[]> { if (flag) return ['a']; return []; }`,
+      ),
+    ).toContain('co_return flight::Array<flight::String>{flight::String("a")};');
+    expect(
+      emitted(`export async function o(v: string | undefined): Promise<string | undefined> { return v; }`),
+    ).toContain('co_return v;');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',

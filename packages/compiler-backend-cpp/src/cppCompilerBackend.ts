@@ -8314,13 +8314,50 @@ function emitCppUnionValueConstruction(
   return `${unionType}{std::in_place_type<${targetType}>, ${emitted}}`;
 }
 
+// Whether an expression can denote a task at all, which is a different question from what its recorded
+// type says. A return position types what is returned CONTEXTUALLY: `return { reason: 'x' }` in an
+// `async` function is recorded as `Promise<Outcome>` because that is what the function returns, while the
+// literal is an object and not a promise. `co_await` on it is not a syntax the target has, and it is what
+// `expected primary-expression before '{'` was.
+//
+// What can denote a task is a value the program obtained -- a call, a reference, a conditional over
+// those -- rather than a construction the emitter performs here. Reading the shape rather than only the
+// type is what keeps this off object literals without keying it to object literals: an array literal, a
+// scalar, an optional and a reference all answer the same way, and each for its own reason.
+function canCppExpressionDenoteTaskCpp(expression: Readonly<IrExpression>): boolean {
+  switch (expression.kind) {
+    case 'array':
+    case 'await':
+    case 'function':
+    case 'literal':
+    case 'object':
+    case 'objectRest':
+    case 'spread':
+    case 'template':
+    case 'tuple':
+    case 'tupleRest':
+    case 'tupleSpread':
+    case 'tupleSuffix':
+    case 'undefinedDefault':
+    case 'undefinedValue':
+      return false;
+    case 'cast':
+      return canCppExpressionDenoteTaskCpp(expression.expression);
+    case 'conditional':
+      return canCppExpressionDenoteTaskCpp(expression.whenTrue) || canCppExpressionDenoteTaskCpp(expression.whenFalse);
+    default:
+      return true;
+  }
+}
+
 function emitAsyncTaskAdoptionCpp(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
   if (!context.async) return undefined;
   const expressionType = getIrExpressionTypeEvidenceCpp(expression, context);
   if (
     expressionType?.kind !== 'named' ||
     expressionType.reference.kind !== 'ambient' ||
-    expressionType.reference.name !== 'Promise'
+    expressionType.reference.name !== 'Promise' ||
+    !canCppExpressionDenoteTaskCpp(expression)
   ) {
     return undefined;
   }
