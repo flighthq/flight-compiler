@@ -10507,11 +10507,22 @@ function getIrInvocationArgumentExpectedTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' | 'new' }>>,
   index: number,
 ): Readonly<IrType> | undefined {
+  const optionalParameters = expression.semantics.optionalParameters;
   const provided = [
     ...(expression.semantics.defaultParameters?.provided ?? []),
-    ...(expression.semantics.optionalParameters?.provided ?? []),
+    ...(optionalParameters?.provided ?? []),
   ].find((argument) => argument.position === index);
-  return provided?.parameterType;
+  const parameterType = provided?.parameterType;
+  const argument = expression.arguments[index];
+  if (!parameterType || !optionalParameters?.optional.includes(index) || argument?.kind !== 'conditional') {
+    return parameterType;
+  }
+  // The semantic invocation records an optional parameter's declared value type separately from its
+  // optional bit. C++ can implicitly lift an ordinary supplied value into that parameter's
+  // std::optional, but a conditional has to choose one type for BOTH arms first. Restore the absent
+  // alternative only there, so both arms are constructed through the same union plan instead of
+  // spelling `std::nullopt` beside a bare present value.
+  return createIrTypeEvidenceUnionCpp([parameterType, { kind: 'undefined' }]);
 }
 
 function getIrObjectPropertyTypeCpp(

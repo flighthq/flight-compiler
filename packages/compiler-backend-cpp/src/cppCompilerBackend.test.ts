@@ -13082,6 +13082,24 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('constructs both arms of a supplied optional structural-row parameter through one carrier', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'optional-structural-parameter-conditional.ts',
+        `interface ConnectOptions { priority?: number }
+         function connect(options?: Readonly<ConnectOptions>): void {}
+         export function tracked(priority: number | undefined): void {
+           connect(priority === undefined ? undefined : { priority });
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain(
+      '!priority.has_value() ? std::nullopt : std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<ConnectOptions>>>>>{flight::make_structural_ref',
+    );
+  });
+
   it('uses a captureless lambda for reordered namespace object initialization', () => {
     const output = emitIrModuleCpp(
       lower(
