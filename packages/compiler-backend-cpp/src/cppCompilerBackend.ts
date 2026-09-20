@@ -9529,6 +9529,14 @@ function getIrObjectPropertyTypeCpp(
   if (objectShape) {
     return getIrObjectPropertyReadTypeCpp(objectShape.find((property) => property.name === propertyName));
   }
+  // `length` is the one member every array and string has, and it is a number however the element or
+  // character type varies -- so the answer is a property of the BASE, which is already resolved here,
+  // rather than a selection among alternatives. That is the whole reason it can be answered where an
+  // unresolved member cannot: there is nothing to choose and nothing to look up. A base that is
+  // neither (an erased value, a type parameter, an unresolved reference) falls through unchanged.
+  if (propertyName === 'length' && (type.kind === 'array' || (type.kind === 'primitive' && type.name === 'string'))) {
+    return { kind: 'primitive', name: 'number' };
+  }
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const bindingId = type.reference.binding.id;
   const declaration = context.module.declarations.find(

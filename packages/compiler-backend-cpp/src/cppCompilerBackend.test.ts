@@ -84,6 +84,18 @@ function emitRecordShapeConversion(consumerSource: string): string {
   }).emitModule(consumer!)[0]!.contents;
 }
 
+function emitCppModuleCppSession(
+  results: readonly Readonly<{ module: IrModule }>[],
+  moduleResolution: CompilerModuleResolutionPlan,
+  index: number,
+): string {
+  return createCppCompilerBackend().createEmissionSession!({
+    moduleResolution,
+    modules: results.map((result) => result.module),
+    options: { runtimeProfile: 'flight-cpp' },
+  }).emitModule(results[index]!.module)[0]!.contents;
+}
+
 function lower(file: string, source: string) {
   return lowerPackage('@flighthq/math', file, source);
 }
@@ -14785,6 +14797,104 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // Two tuple alternatives that erase to one C++ array type are two alternatives the target cannot
     // tell apart, so the slot is not exactly one and nothing is chosen.
     expect(failure.message).toContain('union has distinct runtime domains erased');
+  });
+
+  it('reads length from the array and string bases that have it', () => {
+    const [result] = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/length.ts',
+          `interface Result { count: number | null }
+           export function run(roots: readonly number[], text: string): Result {
+             return { count: roots.length + text.length };
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    const emitted = emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' });
+
+    // `length` is a number however the element or character type varies, so the answer is a property of
+    // the base rather than a selection among alternatives -- which is why it can be read where an
+    // unresolved member cannot. The member spellings are the projection table's, not this rule's.
+    expect(emitted.contents).toContain('static_cast<double>(roots.size())');
+    expect(emitted.contents).toContain('static_cast<double>(text.length())');
+  });
+
+  it('refuses a member read whose base never resolved', () => {
+    const [result] = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/erased-member.ts',
+          `interface Failure { name: string | null }
+           export function run(cause: unknown): Failure { return { name: cause.name }; }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // An erased base has no members to read: `unknown` names no shape, so `name` on it is a member the
+    // source never proved and the emitter has nothing to look it up on. The rule above answers for a
+    // base whose member set is known, and this base has none.
+    expect(failure.message).toContain('optionalSingle construction requires expression type evidence');
+  });
+
+  it('reads a member the base declares in another module', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: undefined as never,
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface RichTextData { multiline: boolean; textColor: string | null }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/imported-member.ts',
+            `import type { RichTextData } from '@flighthq/types/contract';
+             interface Result { multiline: boolean | null; color: string | null }
+             export function run(data: Readonly<RichTextData>): Result {
+               return { multiline: data.multiline, color: data.textColor };
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    );
+    const emitted = emitCppModuleCppSession(results, resolution, 1);
+
+    // The member is declared in another module, so the base's shape is resolved through that module
+    // rather than from anything the reading module wrote. Both members are read as their own types, so
+    // the two-slot construction is settled per slot instead of by one answer for the object.
+    expect(emitted).toContain('std::optional<bool>');
+    expect(emitted).toContain('std::optional<flight::String>');
   });
 
   it('refuses an Extract that reached emission unresolved', () => {
