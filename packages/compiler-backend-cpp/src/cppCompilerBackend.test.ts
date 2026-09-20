@@ -12709,6 +12709,38 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('recovers only the exact RowOf owner at a closed callable property boundary', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'exact-structural-call-argument.ts',
+        `interface TextFormat { size?: number }
+         type Measure = (text: string, format: TextFormat) => number;
+         interface Host { measureText: Measure }
+         export function measure(host: Readonly<Host>, text: string, format: Readonly<TextFormat>): number {
+           return host.measureText(text, format);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('flight::structural_ref_cast<flight::Ref<TextFormat>>(format)');
+    expect(output).not.toContain('flight::make_ref<TextFormat>');
+
+    const sibling = lower(
+      'sibling-structural-call-argument.ts',
+      `interface TextFormat { size?: number }
+       interface SiblingFormat { size?: number }
+       type Measure = (text: string, format: TextFormat) => number;
+       interface Host { measureText: Measure }
+       export function measure(host: Readonly<Host>, text: string, format: Readonly<SiblingFormat>): number {
+         return host.measureText(text, format);
+       }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(sibling, { runtimeProfile: 'flight-cpp' }));
+
+    expect(failure.rule).toBe('cpp-structural-row-nominal-recovery-unproven');
+  });
+
   it('widens readonly derived structural rows at argument, assignment, and return boundaries', () => {
     const output = emitIrModuleCpp(
       lower(

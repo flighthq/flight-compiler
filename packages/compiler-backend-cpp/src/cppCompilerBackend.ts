@@ -3932,7 +3932,12 @@ function emitCppStructuralReferenceValueConversionCpp(
   if (!sourceRow) return undefined;
   if (expectedType.kind === 'unknown' && expectedType.source === 'object') return `${source}.shared_object()`;
   const sourceObject = getCppStructuralRowObjectTypeCpp(sourceRow);
-  const targetPlan = context.referenceRepresentationPlanner.plan(expectedType, context.module);
+  // The callable may be declared in another package. Plan its parameter against the declaration
+  // owner so an imported nominal reference retains the exact native identity carried by RowOf.
+  const targetOwner =
+    getCppDirectBindingOwner(expectedType, context) ??
+    (expectedType.kind === 'named' ? getCppImportedBindingDeclarationCpp(expectedType, context) : undefined);
+  const targetPlan = context.referenceRepresentationPlanner.plan(expectedType, targetOwner?.module ?? context.module);
   const projectsTarget =
     (sourceObject !== undefined && emitType(sourceObject, context) === emitType(expectedType, context)) ||
     hasCppStructuralRowObjectProjectionCpp(sourceRow, expectedType, context);
@@ -10575,7 +10580,36 @@ function getIrCallArgumentExpectedTypeCpp(
   }
   const semanticType = getIrInvocationArgumentExpectedTypeCpp(expression, index);
   if (expression.callee.kind === 'function') return expression.callee.parameters[index]?.type;
-  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') return semanticType;
+  if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') {
+    if (semanticType) return semanticType;
+    // Required parameters do not need optional/default invocation metadata, but a property whose
+    // written type is a closed callable still supplies an exact ABI for each argument. Carry that
+    // declaration evidence into contextual emission so a readonly structural view can recover its
+    // own retained native reference at the call boundary. Unknown and open callables stay unset.
+    const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
+    const parameterType = calleeType
+      ? getCppClosedCallableType(calleeType, context, new Set())?.parameters[index]?.type
+      : undefined;
+    if (!parameterType) return undefined;
+    const argument = expression.arguments[index];
+    const argumentType = argument ? getIrExpressionTypeEvidenceCpp(argument, context) : undefined;
+    if (!argument || !argumentType) return parameterType;
+    const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+    if (emitType(argumentType, isolatedContext) === emitType(parameterType, isolatedContext)) return undefined;
+    const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(argumentType, context.module);
+    if (
+      sourceRow &&
+      hasFlightReferenceRepresentationCpp(parameterType, context) &&
+      !emitCppStructuralReferenceValueConversionCpp('source', argumentType, parameterType, isolatedContext)
+    ) {
+      emissionError(
+        context,
+        'a structural row can recover only the exact concrete reference retained by its RowOf owner',
+        'cpp-structural-row-nominal-recovery-unproven',
+      );
+    }
+    return parameterType;
+  }
   const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
   const parameterType = semanticType ?? declaration?.parameters[index]?.type;
   if (!declaration || !parameterType || declaration.typeParameters.length === 0) return parameterType;
