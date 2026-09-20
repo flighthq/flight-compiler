@@ -1276,11 +1276,11 @@ describe('createCppCompilerBackend', () => {
     });
     const emitted = session.emitModule(consumer)[0]!.contents;
 
-    // The chain reads `curve` through the storage the surrounding `Partial` produces — the three-state
-    // variant — so both sentinels collapse into the chain's absent result rather than a `value_or` that a
+    // The chain returns `curve` through the storage the surrounding `Partial` produces — the three-state
+    // variant — so the member passes through as it is stored rather than being wrapped in a `value_or` a
     // variant has no member for. The alias itself is still named, which is what this case is about.
-    expect(emitted).toContain('const auto& optional_chain_member = optional_chain_receiver.value()->curve;');
-    expect(emitted).toContain('std::holds_alternative<flight::Null>(optional_chain_member)');
+    expect(emitted).toContain('return optional_chain_receiver.value()->curve;');
+    expect(emitted).toContain('std::in_place_type<flight::Undefined>, flight::undefined');
     expect(emitted).toMatch(
       /flight::Ref<kind_size_[0-9a-f]+>, flight::Ref<kind_width_[0-9a-f]+>, flight::Null, flight::Undefined> texture;/u,
     );
@@ -7729,9 +7729,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
        }`,
     );
 
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'contextual union value type Data is not a represented runtime domain',
-    );
+    // The refusal is asserted by its rule: the message names the type the emitter resolved
+    // (`flight::Ref<SiblingData>`), not the parameter the source wrote, and message text is for people.
+    const refusal = (): string | undefined => {
+      try {
+        emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+        return undefined;
+      } catch (error) {
+        return isBackendEmissionFailure(error) ? error.rule : undefined;
+      }
+    };
+    expect(refusal()).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
   it('constructs a constrained entity generic into its base optional slot', () => {
@@ -15472,14 +15480,41 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    // Both sentinels collapse into the chain's absent result, which is what `?.` yields when the member is
-    // null or absent. The read is taken through the member's own storage rather than a `value_or` the
-    // three-state variant has no member for, and the read is still flattened rather than returned raw.
-    expect(emitted.contents).toContain('optional_chain_member = optional_chain_receiver.value()->texture;');
-    expect(emitted.contents).toContain('std::holds_alternative<flight::Null>(optional_chain_member)');
-    expect(emitted.contents).toContain('std::holds_alternative<flight::Undefined>(optional_chain_member)');
-    expect(emitted.contents).not.toContain('value_or(std::nullopt); }())');
-    expect(emitted.contents).not.toContain('return optional_chain_receiver.value()->texture;');
+    // The chain's result keeps all three of the member's states, so the member passes through as it is
+    // stored and only the receiver's own absence produces the undefined sentinel. Nothing is collapsed and
+    // nothing is wrapped twice: the result type IS the member's three-state storage, which is what lets the
+    // expression convert into a declared dual-sentinel local.
+    expect(emitted.contents).toContain('([&]() -> std::variant<flight::Ref<Texture>, flight::Null, flight::Undefined>');
+    expect(emitted.contents).toContain('std::in_place_type<flight::Undefined>, flight::undefined');
+    expect(emitted.contents).toContain('return optional_chain_receiver.value()->texture;');
+    expect(emitted.contents).not.toContain('value_or(std::nullopt)');
+  });
+
+  it('keeps a null member distinct from an absent one in an optional-chain result', () => {
+    // JavaScript asks four things of `receiver?.member` and they are not three: an absent receiver is
+    // `undefined`, an absent member is `undefined`, a null member is `null`, and a present member is itself.
+    // The result is therefore the member's own three-state storage, passed through UNREAD — no sentinel test
+    // appears at all, which is what keeps null from collapsing into the same state as an absent member — and
+    // only the receiver's absence produces the undefined sentinel.
+    const result = lower(
+      'optional-nullable-preserved.ts',
+      `export interface Texture { width: number }
+       export interface Options { texture?: Texture | null }
+       export function read(options: Options | undefined): Texture | null | undefined {
+         const value = options?.texture;
+         return value;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const chain = emitted.slice(emitted.indexOf('inline std::variant'), emitted.indexOf('inline std::variant') + 700);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(chain).toContain('-> std::variant<flight::Ref<Texture>, flight::Null, flight::Undefined>');
+    expect(chain).toContain('std::in_place_type<flight::Undefined>, flight::undefined');
+    expect(chain).toContain('return optional_chain_receiver.value()->texture;');
+    // The member is not inspected, so neither sentinel is folded into the other.
+    expect(chain).not.toContain('holds_alternative');
+    expect(chain).not.toContain('std::get<');
   });
 
   it('emits optional call with non-nullish receiver as direct call', () => {

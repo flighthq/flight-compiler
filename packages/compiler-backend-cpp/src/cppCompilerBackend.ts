@@ -13421,9 +13421,16 @@ function emitOptionalPropertyExpressionCpp(
   // What the projection READS is the member's storage, and for a `?`-marked property that also admits a
   // sentinel the storage is the same three-state variant every other crossing uses — a variant has no
   // `value_or`. The declared type alone cannot see that, because the `?` marker is the second absence, so
-  // the plan is taken from the property's effective type. Both sentinels collapse into the chain's absent
-  // result, which is what `?.` yields when the member is null or absent, and the read is only taken while
-  // one value domain is proven: two domains leave nothing for `get` to name and keep the existing path.
+  // the plan is taken from the property's effective type, and the read is only taken while one value domain
+  // is proven: two domains leave nothing for the member's alternative to be, and keep the existing path.
+  //
+  // The RESULT keeps all three of the source's states. `receiver?.member` is `undefined` when the receiver
+  // is absent and `undefined` when the member is, but it is `null` when the member is null — collapsing the
+  // two sentinels into an absent result would lose exactly the distinction the three-state storage exists to
+  // carry, and would not convert into a declared dual-sentinel local. So the member passes through as it is
+  // stored, and only the receiver's own absence produces the undefined sentinel. A later chain segment reads
+  // this result as its own receiver evidence and may collapse nullish input there, which is that segment's
+  // question rather than this one's.
   const projectedStorageUnion = declaredProperty
     ? getIrUnionTypeCpp(getIrObjectPropertyReadTypeCpp(declaredProperty) ?? declaredProperty.type, context, new Set())
     : undefined;
@@ -13436,11 +13443,16 @@ function emitOptionalPropertyExpressionCpp(
     projectedStoragePlan.valueSlots.length === 1
       ? projectedStoragePlan.valueSlots[0]
       : undefined;
-  const sentinels = projectedDualSentinel ? getCppDualSentinelTargetTypes(context) : undefined;
+  const chainedResultType =
+    projectedDualSentinel && projectedStorageUnion ? emitUnionTypeCpp(projectedStorageUnion, context) : resultType;
+  const chainedAbsent =
+    projectedDualSentinel && projectedStorageUnion
+      ? emitCppUnionSentinelConstruction('undefined', projectedStorageUnion, 'dualSentinelVariant', context)
+      : 'std::nullopt';
   let returned: string;
-  if (projectedDualSentinel && sentinels) {
+  if (projectedDualSentinel) {
     context.includes.add('variant');
-    returned = `([&]() -> ${resultType} { const auto& optional_chain_member = ${projected}; if (std::holds_alternative<${sentinels.null}>(optional_chain_member) || std::holds_alternative<${sentinels.undefined}>(optional_chain_member)) return std::nullopt; return std::get<${projectedDualSentinel.targetType}>(optional_chain_member); }())`;
+    returned = projected;
   } else if (
     !structuralReceiver &&
     (nestedOptionalStorage || projectedStorageType === `std::optional<${resultType}>`)
@@ -13450,7 +13462,7 @@ function emitOptionalPropertyExpressionCpp(
     returned = projected;
   }
   context.includes.add('optional');
-  return `([&]() -> ${resultType} { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${returned}; }())`;
+  return `([&]() -> ${chainedResultType} { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return ${chainedAbsent}; return ${returned}; }())`;
 }
 
 function emitOptionalChainReceiverCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
