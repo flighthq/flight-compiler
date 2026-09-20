@@ -201,6 +201,7 @@ interface EmitContext {
   // whole declarations and a refusal names one of them; without this a refused module is a message
   // with no position at all, and 649 of them are otherwise indistinguishable.
   currentOrigin?: Readonly<{ column: number; line: number }> | undefined;
+  capturedReferentOnlyBindingIds: ReadonlySet<string>;
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
@@ -374,6 +375,7 @@ function emitIrModuleCppWithContext(
   );
   const typeParameterConstraints = collectCppTypeParameterConstraintsCpp(module);
   const closureCapturePlan = createIrModuleClosureCapturePlanCpp(module);
+  const capturedReferentOnlyBindingIds = new Set<string>();
   const recursiveTypeAliasBindingIds = collectCppRecursiveTypeAliasBindingIds(module);
   const sharedCaptureTargetNames = new Map<string, string>();
   const contextualBindingStorageTargetTypes = new Map<string, Readonly<IrType>>();
@@ -393,6 +395,7 @@ function emitIrModuleCppWithContext(
     bindingClasses: collectIrModuleBindingClassesCpp(module, bindingTypes),
     bindingInitializers: collectIrModuleBindingInitializersCpp(module),
     bindingTypes,
+    capturedReferentOnlyBindingIds,
     contextualBindingStorageTargetTypes,
     defaultedParameterIds: new Set(),
     denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
@@ -473,6 +476,16 @@ function emitIrModuleCppWithContext(
         context,
         `captured referent mutation of ${bindingPlan.binding.name} requires a shared C++ reference representation`,
       );
+    }
+    if (
+      bindingType &&
+      bindingPlan.reasons.includes('capturedReferentMutation') &&
+      !bindingPlan.reasons.some((reason) =>
+        ['capturedBindingMutation', 'capturedMutableBinding', 'outsideMutation'].includes(reason),
+      ) &&
+      hasSharedReferentRepresentationCpp(bindingType, context)
+    ) {
+      capturedReferentOnlyBindingIds.add(bindingPlan.binding.id);
     }
     if (bindingPlan.representation !== 'sharedMutableCell') continue;
     if (!bindingType) {
@@ -2144,6 +2157,12 @@ function emitExpression(
       const right =
         foreignAnonymousObject ??
         emitExpression(expression.right, context, exactCallableFieldAssignment ? rightType : assignmentType);
+      const capturedRuntimeReferentAssignment = emitCppCapturedRuntimeReferentPropertyAssignmentCpp(
+        expression,
+        right,
+        context,
+      );
+      if (capturedRuntimeReferentAssignment) return capturedRuntimeReferentAssignment;
       const structuralRowAssignment =
         expression.operator === '=' && getCppRuntimeProfile(context.options) === 'flight-cpp'
           ? emitCppStructuralRowAssignment(expression.left, right, context)
@@ -3058,8 +3077,10 @@ function emitExpression(
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
       }
       if (
-        expression.presence === 'narrowedPresent' &&
         expression.reference.kind === 'binding' &&
+        (expression.presence === 'narrowedPresent' ||
+          (context.capturedReferentOnlyBindingIds.has(expression.reference.binding.id) &&
+            context.narrowedBindingTypes.has(expression.reference.binding.id))) &&
         (context.nullableBindingIds.has(expression.reference.binding.id) ||
           context.arrayElementBindingIds.has(expression.reference.binding.id))
       ) {
@@ -5066,15 +5087,68 @@ function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContex
 
 function emitStatements(statements: readonly IrStatement[], context: EmitContext): string[] {
   const emitted: string[] = [];
+  let statementContext = context;
   for (const [index, statement] of statements.entries()) {
     // The nullable source local changes representation across its guard: before the guard it denotes
     // absence or erased backing storage, and afterwards it denotes a typed view. Recognize that whole
     // prologue before emitting its first declaration so the view can never bind to the fresh typed map.
-    const nullableWeakMapView = getCppNullableErasedRefWeakMapViewPlan(statement, statements[index + 1], context);
-    if (nullableWeakMapView) refuseCppErasedRefWeakMapView(context, true);
-    emitted.push(...emitStatement(statement, context));
+    const nullableWeakMapView = getCppNullableErasedRefWeakMapViewPlan(
+      statement,
+      statements[index + 1],
+      statementContext,
+    );
+    if (nullableWeakMapView) refuseCppErasedRefWeakMapView(statementContext, true);
+    emitted.push(...emitStatement(statement, statementContext));
+    const narrowing = getCppCapturedReferentPresentGuardNarrowingCpp(statement, statementContext);
+    if (narrowing) {
+      statementContext = {
+        ...statementContext,
+        narrowedBindingTypes: new Map(statementContext.narrowedBindingTypes).set(narrowing.bindingId, narrowing.type),
+      };
+    }
   }
   return emitted;
+}
+
+// TypeScript preserves a `const` binding's narrowing in a closure created after a terminating null
+// guard. Closure evidence deliberately records capture and mutation rather than target-specific flow,
+// so retain that proven outer narrowing while choosing the optional C++ capture representation.
+function getCppCapturedReferentPresentGuardNarrowingCpp(
+  statement: Readonly<IrStatement>,
+  context: EmitContext,
+): Readonly<{ bindingId: string; type: Readonly<IrType> }> | undefined {
+  if (
+    statement.kind !== 'if' ||
+    statement.otherwise ||
+    !isCppAbruptCompletionStatement(statement.consequent) ||
+    statement.condition.kind !== 'binary' ||
+    !['==', '==='].includes(statement.condition.operator) ||
+    !statement.condition.semantics.nullishComparison
+  ) {
+    return undefined;
+  }
+  const leftSentinel = getCppNullishLiteralKind(statement.condition.left);
+  const rightSentinel = getCppNullishLiteralKind(statement.condition.right);
+  if ((leftSentinel ? 1 : 0) + (rightSentinel ? 1 : 0) !== 1) return undefined;
+  const operand = leftSentinel ? statement.condition.right : statement.condition.left;
+  if (operand.kind !== 'identifier' || operand.reference.kind !== 'binding') return undefined;
+  const bindingId = operand.reference.binding.id;
+  if (!context.capturedReferentOnlyBindingIds.has(bindingId)) return undefined;
+  const evidence = statement.condition.semantics.nullishComparison;
+  const testsEveryAbsentMember =
+    statement.condition.operator === '==' ||
+    (evidence.literal === 'null' ? !evidence.admitsUndefined : !evidence.admitsNull);
+  if (!testsEveryAbsentMember) return undefined;
+  const bindingType = getCppBindingTypeCpp(bindingId, context);
+  const present = bindingType ? getCppNonNullableType(bindingType, context, new Set()) : undefined;
+  return present ? { bindingId, type: present } : undefined;
+}
+
+function isCppAbruptCompletionStatement(statement: Readonly<IrStatement>): boolean {
+  if (statement.kind === 'return' || statement.kind === 'throw') return true;
+  return statement.kind === 'block' && Boolean(statement.statements.at(-1))
+    ? isCppAbruptCompletionStatement(statement.statements.at(-1)!)
+    : false;
 }
 
 function containsAwaitExpressionCpp(statement: Readonly<IrStatement>): boolean {
@@ -12006,6 +12080,38 @@ function emitCppStructuralRowDeleteCpp(
   return `([&]() { flight::row_set(${target}, ${key}, ${absent}); return true; }())`;
 }
 
+function emitCppCapturedRuntimeReferentPropertyAssignmentCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  right: string,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.operator !== '=' ||
+    expression.left.kind !== 'property' ||
+    expression.left.object.kind !== 'identifier' ||
+    expression.left.object.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const bindingId = expression.left.object.reference.binding.id;
+  const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(bindingId);
+  const bindingType = getCppBindingTypeCpp(bindingId, context);
+  if (
+    !sharedCaptureTargetName ||
+    !bindingType ||
+    !context.capturedReferentOnlyBindingIds.has(bindingId) ||
+    !hasCppExternalRuntimeReferenceRepresentationCpp(bindingType, context)
+  ) {
+    return undefined;
+  }
+  const memberBinding = expression.left.member
+    ? getCompilerCppAmbientMemberBinding(expression.left.member, getCppRuntimeProfile(context.options))
+    : undefined;
+  const memberName = memberBinding?.kind === 'property' ? memberBinding.targetName : safeCppName(expression.left.name);
+  const bindingValue = hasIrTypeAbsentMember(bindingType) ? 'binding_value.value()' : 'binding_value';
+  return `${sharedCaptureTargetName}.update_binding([&](auto& binding_value) { return (${bindingValue}.${memberName} = ${right}); })`;
+}
+
 function getSharedCaptureTargetNameCpp(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
   return expression.kind === 'identifier' && expression.reference.kind === 'binding'
     ? context.sharedCaptureTargetNames.get(expression.reference.binding.id)
@@ -12703,6 +12809,10 @@ function hasSharedReferentRepresentationCpp(type: Readonly<IrType>, context: Emi
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
   const identityPreserving = getCppIdentityPreservingUtilityArgument(type);
   if (identityPreserving) return hasSharedReferentRepresentationCpp(identityPreserving, context);
+  if (type.kind === 'union' && type.types.some((member) => member.kind === 'null' || member.kind === 'undefined')) {
+    const present = getCppNonNullableType(type, context, new Set());
+    if (present) return hasSharedReferentRepresentationCpp(present, context);
+  }
   // The direct index is import-blind, so an imported subject would plan against this module instead
   // of the one that owns it and report no representation for a type that plainly has one.
   const owner =
@@ -12710,6 +12820,21 @@ function hasSharedReferentRepresentationCpp(type: Readonly<IrType>, context: Emi
     (type.kind === 'named' ? getCppImportedBindingDeclarationCpp(type, context) : undefined);
   const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   return plan.kind === 'represented' && plan.valueRepresentation !== 'inlineValue';
+}
+
+function hasCppExternalRuntimeReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  const identityPreserving = getCppIdentityPreservingUtilityArgument(type);
+  if (identityPreserving) return hasCppExternalRuntimeReferenceRepresentationCpp(identityPreserving, context);
+  if (hasIrTypeAbsentMember(type)) {
+    const present = getCppNonNullableType(type, context, new Set());
+    if (present) return hasCppExternalRuntimeReferenceRepresentationCpp(present, context);
+  }
+  const owner =
+    getCppDirectBindingOwner(type, context) ??
+    (type.kind === 'named' ? getCppImportedBindingDeclarationCpp(type, context) : undefined);
+  const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
+  return plan.kind === 'represented' && plan.category === 'external' && plan.valueRepresentation === 'runtimeReference';
 }
 
 function hasFlightReferenceRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {

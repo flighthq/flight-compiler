@@ -3618,6 +3618,55 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('return alias->value');
   });
 
+  it('preserves narrowed captured native referent mutation only for shared external ownership', () => {
+    const result = lower(
+      'canvas-text-measure.ts',
+      `function getMeasureContext(): CanvasRenderingContext2D | null { return null; }
+       export function measureOnce(): number {
+         const ctx = getMeasureContext();
+         if (ctx === null) return -1;
+         const measure = (format: string): number => {
+           ctx.font = format;
+           return ctx.measureText('H').width;
+         };
+         return measure('12px');
+       }`,
+    );
+    const sharedBinding = {
+      headers: ['flight/canvas_2d.hpp'],
+      nullability: 'non-null',
+      ownership: 'shared',
+      sourceName: 'CanvasRenderingContext2D',
+      space: 'type',
+      targetName: 'flight::CanvasRenderingContext2D',
+    } as const;
+    const externalBindings = {
+      bindings: [sharedBinding],
+      identity: 'flight-cpp/test-canvas/1',
+      profile: 'test-canvas',
+      schema: 'flight-cpp-external-bindings/1',
+    } as const;
+    const emitted = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain(
+      'flight::make_binding_cell(std::optional<flight::CanvasRenderingContext2D>{get_measure_context()})',
+    );
+    expect(emitted.contents).toContain(
+      'ctx_capture.update_binding([&](auto& binding_value) { return (binding_value.value().font = format); })',
+    );
+    expect(emitted.contents).toContain('ctx_capture.read_binding().value().measure_text');
+
+    expect(() =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          ...externalBindings,
+          bindings: [{ ...sharedBinding, ownership: 'value' }],
+        },
+        runtimeProfile: 'flight-cpp',
+      }),
+    ).toThrow('captured referent mutation of ctx requires a shared C++ reference representation');
+  });
+
   it('preserves captured homogeneous tuple referent mutation through the shared array runtime', () => {
     const result = lower(
       'tuple-referent.ts',
