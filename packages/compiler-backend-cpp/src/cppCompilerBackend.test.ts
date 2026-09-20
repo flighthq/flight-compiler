@@ -11499,6 +11499,108 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(casts).toHaveLength(3);
   });
 
+  it('constructs an imported nullable base row in a callback-bearing render call', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/renderTarget.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface Entity { [EntityRuntimeKey]: object | undefined }
+       export interface GlContext {
+         readonly ONE: number;
+         readonly ZERO: number;
+         blendFunc(source: number, destination: number): void;
+       }
+       export interface GlFramebuffer {}
+       export interface GlProgram {}
+       export interface GlTexture {}
+       export interface GlRenderTarget extends Entity {
+         readonly gl: GlContext;
+         framebuffer: GlFramebuffer | null;
+         width: number;
+         height: number;
+         colorAttachments: number;
+       }
+       export interface GlTextureRenderTarget extends GlRenderTarget {
+         framebuffer: GlFramebuffer;
+         texture: GlTexture;
+         textures: GlTexture[];
+       }
+       export interface GlRenderState { readonly gl: GlContext }
+       export interface GlFullscreenProgram { readonly program: GlProgram }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export * from './renderTarget';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const render = ts.createSourceFile(
+      '/flight/packages/render/src/pass.ts',
+      `import type { GlContext, GlFullscreenProgram, GlRenderState, GlRenderTarget, GlTexture } from '@flight/types/contract';
+       export function drawGlFullscreenPass(
+         state: GlRenderState,
+         program: Readonly<GlFullscreenProgram>,
+         inputs: ReadonlyArray<GlTexture>,
+         dest: Readonly<GlRenderTarget> | null,
+         setUniforms: (gl: GlContext, program: Readonly<GlFullscreenProgram>) => void,
+       ): void {
+         void state; void program; void inputs; void dest; void setUniforms;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const effects = ts.createSourceFile(
+      '/flight/packages/effects/src/clip.ts',
+      `import type { GlFullscreenProgram, GlRenderState, GlTextureRenderTarget } from '@flight/types/contract';
+       import { drawGlFullscreenPass } from '@flight/render';
+       export function applyGlInnerClipPass(
+         state: GlRenderState,
+         glow: GlTextureRenderTarget,
+         source: GlTextureRenderTarget,
+         dest: GlTextureRenderTarget,
+         loc: GlFullscreenProgram,
+       ): void {
+         drawGlFullscreenPass(state, loc, [glow.texture, source.texture], dest, (gl) => {
+           gl.blendFunc(gl.ONE, gl.ZERO);
+         });
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './renderTarget',
+          target: { packageName: '@flight/types', source: 'packages/types/src/renderTarget.ts' },
+        },
+        {
+          specifier: '@flight/types/contract',
+          target: { packageName: '@flight/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flight/render',
+          target: { packageName: '@flight/render', source: 'packages/render/src/pass.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flight/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flight/render', sourceFile: render, upstreamDirectory: '/flight' },
+        { packageName: '@flight/effects', sourceFile: effects, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const output = emitCppModuleCppSession(results, moduleResolution, 3);
+
+    expect(output).toContain(
+      'std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::GlRenderTarget>>>>>{flight::structural_ref_cast',
+    );
+  });
+
   it('refuses unsafe structural row widening without claiming unrelated conversions', () => {
     const readonlyToWritable = lower(
       'readonly-row-to-writable.ts',
