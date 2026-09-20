@@ -3963,10 +3963,6 @@ function getIrIterableElementTypeCpp(
   }
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
-    // `std::optional` erases which single sentinel caused absence, while the source plan retains it.
-    // When widening into a dual-sentinel variant, branch before extracting the value and reconstruct
-    // that exact sentinel. An explicit assertion may change the present structural view, but its
-    // underlying optional remains the expression whose presence must be tested.
     if (
       ['Iterable', 'IterableIterator', 'ReadonlySet', 'Set'].includes(type.reference.name) &&
       type.typeArguments.length === 1
@@ -6721,6 +6717,10 @@ function emitContextualUnionExpressionCpp(
         );
       }
     }
+    // `std::optional` erases which single sentinel caused absence, while the source plan retains it.
+    // When widening into a dual-sentinel variant, branch before extracting the value and reconstruct
+    // that exact sentinel. An explicit assertion may change the present structural view, but its
+    // underlying optional remains the expression whose presence must be tested.
     if (
       expressionPlan.kind === 'optionalSingle' &&
       plan.kind === 'dualSentinelVariant' &&
