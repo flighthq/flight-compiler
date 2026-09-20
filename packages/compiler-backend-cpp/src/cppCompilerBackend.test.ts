@@ -14957,6 +14957,33 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(failure.message).toContain('optionalSingle construction requires expression type evidence');
   });
 
+  it('refuses a member read on an open parameter that only extends the array base', () => {
+    const [result] = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/open-length.ts',
+          `interface Result { count: number | null }
+           export function run<Type extends readonly number[]>(roots: Type): Result {
+             return { count: roots.length };
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The base is a parameter, not an array: it is only KNOWN to extend one, so its representation
+    // belongs to whoever instantiates it and may be narrower than any array. `length` would be a number
+    // either way, and the rule still refuses it, because what is proven about a parameter is its
+    // constraint and the constraint is not the value.
+    expect(failure.message).toContain('optionalSingle construction requires expression type evidence');
+  });
+
   it('reads a member the base declares in another module', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
