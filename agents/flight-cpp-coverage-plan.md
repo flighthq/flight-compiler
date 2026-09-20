@@ -32,7 +32,20 @@ Kept here so each round starts from the last one's answers rather than re-derivi
 
    Nor is the cited source line in the SDK. `[ctx.globalAlpha, ctx.lineWidth]` appears nowhere; the real Canvas usage is a **write**, `state.context.globalAlpha = alpha;` in `scene2d-canvas/src/canvasRenderState.ts`. The array was this document's reconstruction of a save/restore shape, so the next attempt should start from the actual failing header rather than from this paragraph. Do not generalize from a manifest reconstruction, and do not special-case array literals: neither has produced the symptom, and the profile that would is the one already measured.
 
-5. **Intersections, re-measured from the ledger and with the payload corrected.** The current ledger (`.dependencies/flight-cpp/generated/refusals.json`, `flight-generated-sdk-refusals/2`, 1766 entries) carries **five direct refusals with one identical message**:
+5. **The `@flighthq/node` family, re-measured on the folded base — and the blocker has MOVED.** A fresh SDL generation against this checkout (`b7f4623f`, the real harness and the real profiles, 1414/2904 emitted, 1490 refusals) no longer shows `hierarchy.ts`'s own `NoInfer` refusal as its first failure. The chain is:
+
+   ```
+   packages/node/src/hierarchy.ts
+     -> @flighthq/types/contract (barrel)      dependency-refused
+     -> ./AppRenderView                         dependency-refused
+     -> ./GlRenderState                         DIRECT: flight-cpp WeakMap value requires a proven C++ representation  (GlRenderState.ts:134)
+   ```
+
+   `traversal.ts` follows the same path, and **5 further modules** are dependency-blocked behind it. So the `NoInfer` payload recorded above is now _hidden_ behind a dependency, not fixed — `GlRenderState.ts` never emits, so nothing that imports the types barrel ever reaches its own refusal.
+
+   **The current root is a binding-profile gap, and the probe separates it from a compiler defect.** The whole family is WeakMap value and key representation, 12 refusals in two shapes: 7 `WeakMap key requires a proven Flight reference or external weak-key policy`, 5 `WeakMap value requires a proven C++ representation`, at `types/CanvasRenderState.ts:46`, `types/DomRenderState.ts:30`, `types/GlRenderState.ts:134`, `types/WgpuRenderState.ts:133`, `collision/triangleMesh3D.ts:1156`, `effects-gl/glEffectProgramCache.ts:49`, `media/videoChannel.ts:167`, `movieclip/spritesheetTimelineSource.ts:50`, `scene2d-formats/riveAssetBinding.ts:48`, `scene3d-gl/glLitProgram.ts:37`. The shapes are `WeakMap<CanvasImageSource, WebGLTexture>` and `WeakMap<TextureSource, { texture: WebGLTexture; version: number }>` (`GlContextRuntime.ts:36-37`), `WeakMap<Renderable, RenderProxyAdapter>` (`RenderState.ts:101`), `WeakMap<RenderProxy2D, HTMLElement>` (`DomRenderState.ts:42`).
+
+   Three measurements settle which side owns it. With the pinned `web-types.json`, the same source refuses **earlier** as `runtime external symbol binding plan is incomplete (missing: CanvasImageSource[type])` — the platform type is not bound at all. Adding a type binding for it and for `WebGLTexture` moves the refusal to `WeakMap key requires a proven Flight reference or external weak-key policy` — a **different part of the contract**, which the current binding schema has no shape for. And a locally declared value type emits fine, so the rule itself is sound and it is the _unbound platform type_ it is refusing. The profile binds 39 types, all Canvas/GPU enum-ish values and `ImageData`; it binds none of `WebGLTexture`, `WebGLProgram`, `CanvasImageSource`, `HTMLElement`, `Renderable` or `RenderProxyAdapter`.
 
    ```
    unsupported-ir  intersection types require C++ multiple-inheritance lowering:
