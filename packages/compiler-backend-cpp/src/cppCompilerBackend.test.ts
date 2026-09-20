@@ -9695,6 +9695,50 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toBe('cpp-contextual-union-inequivalent');
   });
 
+  it('casts the present owner a structural assertion is about, not the optional carrier that stores it', () => {
+    // The shape from @flighthq/textureatlas: a null guard narrows the read, the local's storage is
+    // nevertheless elected as an optional, and a `Readonly<...>` assertion over it lowers to a structural
+    // row. Every other use of the binding in the same block reads through `.value()`; the assertion's
+    // subject has to be that same value, or the cast is handed a carrier no structural ref can be built
+    // from and it asserts about the carrier rather than the owner.
+    const result = lower(
+      'assertion-subject.ts',
+      `export interface TextureSource { readonly kind: string; readonly id: number }
+       export interface Bitmap extends TextureSource { readonly kind: 'bitmap'; readonly data: number[] }
+       export interface Texture { readonly dimension: string; readonly source: TextureSource | null }
+       export function byteSize(texture: Texture | null): number {
+         if (texture === null || texture.dimension !== '2d' || texture.source === null) return 0;
+         const image = texture.source;
+         if (image.kind === 'bitmap') return (image as Readonly<Bitmap>).data.byteLength;
+         return 0;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain(
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Bitmap>>>>>(image.value())',
+    );
+    // The carrier itself is never the subject of the cast.
+    expect(emitted).not.toContain('>>>(image))');
+
+    // The negative side: a subject whose storage carries no absence is left exactly as it was, so a cast
+    // over a plain reference does not grow a `.value()` it has nothing to read.
+    const direct = emitIrModuleCpp(
+      lower(
+        'assertion-subject-direct.ts',
+        `export interface TextureSource { readonly kind: string; readonly id: number }
+         export interface Bitmap extends TextureSource { readonly kind: 'bitmap'; readonly data: number[] }
+         export function byteSize(image: TextureSource): number {
+           return (image as Readonly<Bitmap>).data.byteLength;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(direct).toContain('flight::structural_ref_cast<');
+    expect(direct).not.toContain('.value()');
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',

@@ -2886,12 +2886,12 @@ function emitExpression(
           structuralSourceObject &&
           emitType(structuralSourceObject, context) === emitType(expression.type, context)
         ) {
-          return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
+          return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitCppAssertionSubjectCpp(expression.expression, context)})`;
         }
         const target = structuralProjectionTarget
           ? emitCppStructuralRowReferenceTypeCpp(structuralProjectionTarget, context)
           : emitType(expression.type, context);
-        return `flight::structural_ref_cast<${target}>(${emitExpression(expression.expression, context)})`;
+        return `flight::structural_ref_cast<${target}>(${emitCppAssertionSubjectCpp(expression.expression, context)})`;
       }
       if (structuralSource && getCppRuntimeProfile(context.options) === 'flight-cpp' && structuralSourceType) {
         const targetPlan = context.referenceRepresentationPlanner.plan(expression.type, context.module);
@@ -2903,7 +2903,7 @@ function emitExpression(
           emissionError(context, 'structural-row projection requires a represented object-reference target');
         }
         context.includes.add('flight/structural_ref.hpp');
-        return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
+        return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitCppAssertionSubjectCpp(expression.expression, context)})`;
       }
       const conditionalFacet = context.referenceRepresentationPlanner.resolveConditionalFacetReference(
         expression.type,
@@ -4180,6 +4180,27 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
   const sentinels = getCppDualSentinelTargetTypes(context);
   context.includes.add('variant');
   return `([&]() -> ${resultType} { auto ${propertyName} = ${propertyValue}; if (std::holds_alternative<${sentinels.undefined}>(${propertyName})) return ${omitted}; if (std::holds_alternative<${sentinels.null}>(${propertyName})) return ${declaredAbsence}; return ${present}; }())`;
+}
+
+// An assertion is about the value its own type describes, so the subject it casts is that value. When a
+// local's storage over-allocated absence — the source's guard narrowed the initializer, so the binding's
+// evidence carries no absent member while the elected storage is an optional — the emitted binding IS the
+// optional, and casting it hands `structural_ref_cast` a carrier no structural ref can be built from. The
+// present value is the subject, and the evidence is what proves it is present: an evidence type with no
+// absent member is the source saying this is not nullish here. A subject that genuinely admits absence is
+// left alone, so an unproven access still refuses or reports rather than reading through `.value()`.
+function emitCppAssertionSubjectCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
+  const emitted = emitExpression(expression, context);
+  if (!hasCppAbsenceStorageCpp(expression, context)) return emitted;
+  const storageType =
+    expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? getCppBindingTypeCpp(expression.reference.binding.id, context)
+      : undefined;
+  const union = storageType ? getIrUnionTypeCpp(storageType, context, new Set()) : undefined;
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (plan?.kind !== 'optionalSingle') return emitted;
+  context.includes.add('optional');
+  return `${emitted}.value()`;
 }
 
 function getCppStructuralRowObjectTypeCpp(row: Readonly<CompilerCppStructuralRowPlan>): Readonly<IrType> | undefined {
