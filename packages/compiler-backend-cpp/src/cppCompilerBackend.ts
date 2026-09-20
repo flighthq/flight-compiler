@@ -1933,6 +1933,8 @@ function emitExpression(
     if (optionalPropertyConversion) return optionalPropertyConversion;
     const structuralConversion = emitCppContextualStructuralReferenceCpp(expression, expectedType, context);
     if (structuralConversion) return structuralConversion;
+    const recordConversion = emitCppContextualStructuralRecordConversionCpp(expression, expectedType, context);
+    if (recordConversion) return recordConversion;
   }
   if (expectedType && constructExpectedUnion) {
     const constructed = emitContextualUnionExpressionCpp(expression, expectedType, context);
@@ -3367,6 +3369,93 @@ function emitCppStructuralReferenceValueConversionCpp(
   }
   context.includes.add('flight/structural_ref.hpp');
   return `flight::structural_ref_cast<${emitType(expectedType, context)}>(${source})`;
+}
+
+// A record written into a slot that declares a DIFFERENT record of the same shape. TypeScript records
+// are structural, so `readBitmap` returning one interface where another is declared is an ordinary
+// assignment there; C++ makes those two structs distinct types and rejects it, however identical their
+// members are. The conversion is member-wise and only where the members agree exactly: same names, same
+// optionality, and the same emitted member type. That is the condition under which the source program
+// was well typed, so nothing is bridged that the source would have refused.
+//
+// The source is materialized once rather than read per member, because the expression is arbitrary --
+// a call, in every case this was written for -- and naming its members would evaluate it once per field.
+function emitCppContextualStructuralRecordConversionCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (!sourceType) return undefined;
+  // The probe emits into a context that keeps neither includes nor generated names, so a case this
+  // function ends up declining leaves no trace of having been considered.
+  const members = getCppStructuralRecordConversionMembersCpp(sourceType, expectedType, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set<string>(),
+  });
+  if (!members) return undefined;
+  const source = emitExpression(expression, context, undefined, false);
+  return createCppStructuralRecordConversionCpp(source, expectedType, members, context);
+}
+
+// The member names a conversion copies, in the order the TARGET declares them, or undefined when the two
+// shapes are not the same record. Order is the target's because the initializer that consumes this list
+// is a designated initializer, which C++ requires in declaration order.
+function getCppStructuralRecordConversionMembersCpp(
+  sourceType: Readonly<IrType>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): readonly string[] | undefined {
+  if (!isCppRecordReferenceTypeCpp(sourceType) || !isCppRecordReferenceTypeCpp(expectedType)) return undefined;
+  // Identity here is the TYPE each side is emitted as, not the binding each side was reached through. An
+  // imported binding is a distinct binding from the declaring module's, so the same interface named in
+  // two modules has two binding ids and one C++ type; comparing bindings would convert a value into the
+  // type it already has. What is being bridged is precisely the case where the two spellings differ.
+  const sourceTarget = emitType(sourceType, context);
+  const expectedTarget = emitType(expectedType, context);
+  if (sourceTarget === expectedTarget) return undefined;
+  if (!getCppReferenceElementTypeNameCpp(expectedTarget)) return undefined;
+  const sourceProperties = context.referenceRepresentationPlanner.resolveObjectShape(sourceType, context.module);
+  const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(expectedType, context.module);
+  if (!sourceProperties || !targetProperties || targetProperties.length === 0) return undefined;
+  if (sourceProperties.length !== targetProperties.length) return undefined;
+  const sourceByName = new Map(sourceProperties.map((property) => [property.name, property]));
+  if (targetProperties.some((property) => !sourceByName.has(property.name))) return undefined;
+  const equivalent = targetProperties.every((property) => {
+    const source = sourceByName.get(property.name)!;
+    return source.optional === property.optional && emitType(source.type, context) === emitType(property.type, context);
+  });
+  return equivalent ? targetProperties.map((property) => property.name) : undefined;
+}
+
+// A named reference to a declaration a module wrote -- an interface, a class, an alias, or an import of
+// one -- with nothing applied to it. This is the narrowest spelling that admits a record and it is stated
+// first because emitting is not total over IrType: an ambient name like `WeakMap` reaches a type the
+// emitter can only spell with arguments it does not carry here, and the question being asked of the type
+// is one the emitter would never ask of that slot.
+function isCppRecordReferenceTypeCpp(type: Readonly<IrType>): boolean {
+  return (
+    type.kind === 'named' &&
+    type.reference.kind === 'binding' &&
+    type.reference.binding.kind !== 'typeParameter' &&
+    type.reference.path.length === 0 &&
+    type.typeArguments.length === 0
+  );
+}
+
+function createCppStructuralRecordConversionCpp(
+  source: string,
+  expectedType: Readonly<IrType>,
+  members: readonly string[],
+  context: EmitContext,
+): string | undefined {
+  const target = emitType(expectedType, context);
+  const element = getCppReferenceElementTypeNameCpp(target);
+  if (!element) return undefined;
+  const sourceName = getGeneratedTargetName('structural_record_source', context);
+  const initializers = members.map((member) => `.${member} = ${sourceName}->${member}`).join(', ');
+  return `([&]() -> ${target} { const auto ${sourceName} = ${source}; return flight::make_ref<${element}>(${element}{${initializers}}); }())`;
 }
 
 function emitCppOptionalPropertyDualSentinelConversionCpp(

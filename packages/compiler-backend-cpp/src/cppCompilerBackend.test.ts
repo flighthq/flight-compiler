@@ -26,6 +26,63 @@ function captureBackendEmissionFailure(run: () => unknown) {
   throw new Error('expected C++ emission to refuse and it did not');
 }
 
+// A consumer module that returns something read from a provider package, which is the shape of every
+// record whose declared type is not the one the value arrives as.
+function emitRecordShapeConversion(consumerSource: string): string {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        // The edge is the fallback for every importer rather than one module's, which is what a plan
+        // written before the modules exist can say about a specifier only one module uses.
+        importer: undefined as never,
+        specifier: '@flighthq/types/readback',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/readback.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  // Lowered together and with the resolution plan, because a provider function the consumer calls is an
+  // external symbol until the plan binds it, and an unbound one refuses the module before any of this
+  // reaches the emitter.
+  const [provider, consumer] = lowerTypeScriptSources(
+    [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/readback.ts',
+          `export interface BitmapReadbackOutcome { readonly bitmap: string | null; readonly reason: 'ok' | 'blocked'; }
+           export function readBitmap(): BitmapReadbackOutcome { return { bitmap: null, reason: 'ok' }; }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/bitmap',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/bitmap/src/resolve.ts',
+          consumerSource,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ],
+    moduleResolution,
+  ).map((result) => result.module);
+  return createCppCompilerBackend().createEmissionSession!({
+    moduleResolution,
+    modules: [consumer!, provider!],
+    options: {
+      packageTargets: {
+        '@flighthq/bitmap': { includePrefix: 'flight/bitmap', namespace: 'flight::bitmap' },
+        '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+      },
+      runtimeProfile: 'flight-cpp',
+    },
+  }).emitModule(consumer!)[0]!.contents;
+}
+
 function lower(file: string, source: string) {
   return lowerPackage('@flighthq/math', file, source);
 }
@@ -1878,6 +1935,53 @@ describe('createCppCompilerBackend', () => {
 
     expect(emitted).toContain('flight::Ref<flight::types::ColorLut> lut = flight::adjustments::bake_color_lut()');
     expect(emitted).toContain('std::optional<flight::Ref<flight::types::ColorLut>>{lut}');
+  });
+
+  it('converts between two declarations of one record shape', () => {
+    const emitted = emitRecordShapeConversion(
+      `import { readBitmap } from '@flighthq/types/readback';
+       interface BitmapReadbackResolution { readonly bitmap: string | null; readonly reason: 'ok' | 'blocked' | 'empty-size'; }
+       export function resolve(): BitmapReadbackResolution { return readBitmap(); }`,
+    );
+
+    // The shapes agree member for member and the reason unions differ, which is a widening TypeScript
+    // accepts and C++ does not: `Ref<BitmapReadbackOutcome>` is not a `Ref<BitmapReadbackResolution>`
+    // however identical the two structs are. The conversion is written out, and the source is read once
+    // because the expression is a call.
+    expect(emitted).toContain('const auto structural_record_source = flight::types::read_bitmap();');
+    expect(emitted).toContain(
+      'return flight::make_ref<BitmapReadbackResolution>(BitmapReadbackResolution{.bitmap = structural_record_source->bitmap, .reason = structural_record_source->reason});',
+    );
+  });
+
+  it('leaves a slot that declares the same interface alone', () => {
+    const emitted = emitRecordShapeConversion(
+      `import type { BitmapReadbackOutcome } from '@flighthq/types/readback';
+       import { readBitmap } from '@flighthq/types/readback';
+       export function passthrough(): BitmapReadbackOutcome { return readBitmap(); }`,
+    );
+
+    // An imported binding is a different binding from the declaring module's, so the two references
+    // carry different ids while naming one interface. Converting here would rebuild a value into the
+    // type it already has, and the emitted C++ is what says whether that happened: the call is returned
+    // directly, with no struct constructed around it.
+    expect(emitted).toContain('return flight::types::read_bitmap();');
+    expect(emitted).not.toContain(
+      'make_ref<flight::types::BitmapReadbackOutcome>(flight::types::BitmapReadbackOutcome{',
+    );
+  });
+
+  it('leaves a near-neighbour record shape alone', () => {
+    const emitted = emitRecordShapeConversion(
+      `import { readBitmap } from '@flighthq/types/readback';
+       interface BitmapReadbackResolution { readonly bitmap: string | null; readonly reason: string; readonly width: number; }
+       export function resolve(): BitmapReadbackResolution { return readBitmap(); }`,
+    );
+
+    // One member too many. Emitting a conversion here would leave `width` uninitialized, and the value
+    // the source refused to call a `BitmapReadbackResolution` is not one this emitter may invent. The
+    // shapes must agree exactly for the conversion to be the source program's own meaning.
+    expect(emitted).not.toContain('make_ref<BitmapReadbackResolution>(BitmapReadbackResolution{');
   });
 
   it('applies explicit package namespace and installed include identity across a module graph', () => {
