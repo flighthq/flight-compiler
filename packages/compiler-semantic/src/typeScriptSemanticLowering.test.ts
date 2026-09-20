@@ -22,6 +22,53 @@ function lower(file: string, source: string) {
   });
 }
 
+// `CreateTextureOptions` end to end, from the SDK, because it is one conditional distribution, one
+// intersection, and one extraction composed -- and each of the three is only observable through the
+// other two. The fixture is the exact source; the shape names are the SDK's.
+const createTextureOptionsSource = `interface Texture2D { dimension: '2d'; width: number; }
+   interface Texture3D { dimension: '3d'; depth: number; }
+   interface TextureCube { dimension: 'cube'; sources: readonly string[]; }
+   type TextureLike = Texture2D | Texture3D | TextureCube;
+   type CreateTextureVariantOptions<Type extends TextureLike> = Type extends TextureLike
+     ? Omit<Partial<Type>, 'dimension'> &
+         (Type['dimension'] extends '2d' ? { readonly dimension?: '2d' } : { readonly dimension: Type['dimension'] })
+     : never;
+   export type CreateTextureOptions = CreateTextureVariantOptions<TextureLike> & {
+     readonly resource?: string | null;
+   };
+   export type CreateTexture2DOptions = Extract<CreateTextureOptions, { dimension?: '2d' }>;`;
+
+// A single module, lowered through the package-graph entry the pipeline uses. The one-file entry
+// resolves the same source to `any` here, which is a difference in that entry and not in the source:
+// the reference below is only as good as the checker that answers for it.
+// The property a composed type carries, found through the intersections it is written as: the arms of a
+// distributed conditional nest one level, and the field the projection adds sits beside them.
+function collectIrObjectProperty(type: Readonly<IrType>, name: string): Readonly<IrObjectTypeProperty> | undefined {
+  if (type.kind === 'object') return type.properties.find((property) => property.name === name);
+  if (type.kind === 'intersection' || type.kind === 'union') {
+    return type.types.map((member) => collectIrObjectProperty(member, name)).find((property) => property);
+  }
+  return undefined;
+}
+
+function lowerPackageTypeAlias(
+  alias: string,
+  text: string,
+): Readonly<{ diagnostics: readonly string[]; type: Readonly<IrType> }> {
+  const [result] = lowerTypeScriptSources([
+    {
+      packageName: '@flighthq/math',
+      sourceFile: ts.createSourceFile(`/flight/packages/math/src/${alias}.ts`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    },
+  ]);
+  const declaration = result!.module.declarations.find(
+    (candidate) => candidate.kind === 'typeAlias' && candidate.binding.name === alias,
+  );
+  if (declaration?.kind !== 'typeAlias') throw new TypeError(`expected ${alias} type alias`);
+  return { diagnostics: result!.diagnostics.map((diagnostic) => diagnostic.message), type: declaration.type };
+}
+
 describe('createCompilerTypeScriptAnalysisIdentity', () => {
   it('publishes the exact deterministic checker identity used by package-graph lowering', () => {
     const first = createCompilerTypeScriptAnalysisIdentity();
@@ -2006,6 +2053,79 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(unresolved.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
       'unsupported type ConditionalType',
     ]);
+  });
+
+  it('composes a closed conditional distribution into the arms of the intersection it is written in', () => {
+    const { diagnostics, type: options } = lowerPackageTypeAlias('CreateTextureOptions', createTextureOptionsSource);
+
+    // The generic DECLARATION stays erased, which is the documented contract for a conditional the
+    // source writes over a parameter; the diagnostic is that contract and not a failure. Resolving it is
+    // the instantiated REFERENCE's job, and that is the half this fixture is about.
+    expect(diagnostics).toEqual(['unsupported type ConditionalType']);
+    // Three arms, one per Texture variant the conditional distributes over, each composed with the
+    // shared field rather than left as a union with the field added to it. A target has no value that is
+    // a union AND has members; it has one of the arms, and the resource is on that arm.
+    expect(options.kind).toBe('union');
+    const arms = options.kind === 'union' ? options.types : [];
+    expect(arms).toHaveLength(3);
+    for (const arm of arms) {
+      expect(arm.kind).toBe('intersection');
+      const members = arm.kind === 'intersection' ? arm.types : [];
+      expect(members.map((member) => member.kind)).toEqual(['intersection', 'object']);
+      expect(members[1]?.kind === 'object' && members[1].properties.map((property) => property.name)).toEqual([
+        'resource',
+      ]);
+    }
+    // Only the 2d arm marks its dimension optional; the other two write it without the `?`.
+    expect(arms.map((arm) => collectIrObjectProperty(arm, 'dimension')?.optional ?? false)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  it('extracts the matching arm of a distributed options union', () => {
+    const { type: projection } = lowerPackageTypeAlias('CreateTexture2DOptions', createTextureOptionsSource);
+
+    // `Extract<T, U>` is `T extends U ? T : never`, and with a union `T` the answer is the arm that
+    // matches rather than the first arm's verdict. A `never` here is the evaluator reporting a subject
+    // it could not decide, not a union with no matching arm, so it is asked about rather than taken.
+    expect(projection.kind).toBe('intersection');
+    expect(collectIrObjectProperty(projection, 'dimension')?.optional).toBe(true);
+    expect(collectIrObjectProperty(projection, 'resource')).toBeDefined();
+  });
+
+  it('leaves an intersection whose member is not a closed shape to refuse', () => {
+    // An open parameter is not a set of shapes to compose. Distributing `T | { ... }` is arithmetically
+    // sound and useless: the arm it produces names the parameter, so the reader is one step further from
+    // the source and still holding a type the target cannot represent.
+    const { type: openOptions } = lowerPackageTypeAlias(
+      'OpenOptions',
+      `interface Texture2D { dimension: '2d'; width: number; }
+       type VariantOptions<Type extends Texture2D> = Type extends Texture2D ? Omit<Partial<Type>, 'dimension'> : never;
+       export type OpenOptions<Type extends Texture2D> = VariantOptions<Type> & { readonly resource?: string };`,
+    );
+    expect(openOptions.kind).toBe('intersection');
+    expect(openOptions.kind === 'intersection' ? openOptions.types[0]?.kind : undefined).toBe('named');
+
+    // A member that is not an object is not a branch to compose either: `Entity & (string | { ... })` has
+    // one arm that is a string, and intersecting a string with a record is not a shape.
+    const { type: stringOrObject } = lowerPackageTypeAlias(
+      'StringOrObject',
+      `interface Entity { readonly entityId: number; }
+       export type StringOrObject = Entity & (string | { readonly reason: 'ok' });`,
+    );
+    expect(stringOrObject.kind).toBe('intersection');
+
+    // Two declarations whose shared member has incompatible types are a nominal conflict rather than a
+    // distribution, and it stays the intersection it was written as.
+    const { type: incompatible } = lowerPackageTypeAlias(
+      'Incompatible',
+      `interface Left { readonly value: number; }
+       interface Right { readonly value: string; }
+       export type Incompatible = Left & Right;`,
+    );
+    expect(incompatible.kind).toBe('intersection');
   });
 
   it('preserves the common object surface of generic Host capability conditionals', () => {

@@ -3658,7 +3658,7 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
     const represented = types.filter((type) => type.kind !== 'unknown' || type.source !== 'unknown');
     if (represented.length === 0) return { kind: 'unknown', source: 'unknown' };
     if (represented.length === 1) return represented[0]!;
-    return { kind: 'intersection', types: [represented[0]!, represented[1]!, ...represented.slice(2)] };
+    return createIrIntersectionType(represented);
   }
   if (ts.isFunctionTypeNode(node) || ts.isConstructorTypeNode(node)) return lowerFunctionType(node, context);
   if (ts.isTypeLiteralNode(node)) return { kind: 'object', properties: lowerTypeProperties(node.members, context) };
@@ -3820,6 +3820,14 @@ function lowerConcreteTypeScriptConditionalAliasReference(
     new Map(),
   );
   if (!substitutions) return undefined;
+  // A conditional whose check is the bare parameter DISTRIBUTES over a union, and `never` is the one
+  // answer the syntactic evaluator cannot be trusted to reach on its own: it is what the evaluator
+  // reports for a subject it cannot decide, and also the honest answer when no branch matches.
+  // `Extract<CreateTextureOptions, { dimension?: '2d' }>` is the first -- the arm that matches exists,
+  // and the evaluator, which answers for a single instance and cannot see the union, loses it. So a
+  // `never` from a distributive conditional is asked about rather than taken, and every other answer
+  // stands exactly as it did.
+  const distributes = isTypeScriptDistributiveConditionalReference(declaration.type, substitutions, context);
   try {
     const evidence = lowerConcreteTypeScriptConditionalTypeEvidence(
       declaration.type,
@@ -3827,7 +3835,7 @@ function lowerConcreteTypeScriptConditionalAliasReference(
       new Set([symbol]),
       substitutions,
     );
-    if (evidence) return evidence;
+    if (evidence && !(distributes && evidence.kind === 'never')) return evidence;
   } catch (error) {
     if (!isUnsupportedSyntaxFailure(error)) throw error;
   }
@@ -3842,7 +3850,101 @@ function lowerConcreteTypeScriptConditionalAliasReference(
   // evaluator would have reached, obtained from the compiler rather than reconstructed, and it needs no
   // new IR form and no representation change. References that still name an external parameter returned
   // above, so this is reached only for a reference whose arguments are concrete.
-  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+  return getTypeScriptConditionalReferenceEvidence(node, context);
+}
+
+// Whether a conditional alias distributes over a union here: its check is the bare parameter and the
+// argument that parameter received is a union. `Extract<T, U>` is `T extends U ? T : never`, so with a
+// union `T` the answer is the matching arms and not the first instance's verdict.
+function isTypeScriptDistributiveConditionalReference(
+  conditional: ts.ConditionalTypeNode,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+  context: LoweringContext,
+): boolean {
+  const check = conditional.checkType;
+  if (!ts.isTypeReferenceNode(check) || !ts.isIdentifier(check.typeName)) return false;
+  const symbol = context.checker.getSymbolAtLocation(check.typeName);
+  const argument = symbol ? substitutions.get(symbol) : undefined;
+  return argument !== undefined && context.checker.getTypeFromTypeNode(argument).isUnion();
+}
+
+// The checker's answer for a conditional reference whose arguments are concrete, lowered arm by arm.
+//
+// The descent budget bounds ONE type, not the width of a union, so a union is not lowered as a single
+// nested type whose members share the budget of the union above them: each member is an independent
+// type and starts from the top, exactly as it would if the source had named it alone.
+// `CreateTextureVariantOptions<TextureLike>` is what sharing costs otherwise -- four conditional arms,
+// where the two carrying `sources` need one level more than the two carrying `source`, so the deeper
+// members fell off the end of a budget their shallower siblings had already spent and the reference
+// stayed unresolved.
+//
+// Arm order is the checker's, and a member that cannot be lowered refuses the reference rather than
+// dropping out of it: a union missing one of its branches is a different type, not a smaller one.
+function getTypeScriptConditionalReferenceEvidence(
+  node: ts.TypeReferenceNode,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const resolved = context.checker.getTypeFromTypeNode(node);
+  const members = resolved.isUnion() ? resolved.types : [resolved];
+  const lowered = members.flatMap((member): readonly IrType[] => {
+    const evidence = getTypeScriptCheckerTypeEvidence(member, context, 0, true);
+    return evidence ? [evidence] : [];
+  });
+  if (lowered.length !== members.length || lowered.length === 0) return undefined;
+  return commonType([lowered[0]!, ...lowered.slice(1)]);
+}
+
+// `(A | B) & R` is `(A & R) | (B & R)`, and the second form is the one a target can represent: a value
+// is one of the arms WITH the shared fields, never a union with fields added to it. The source writes
+// the first form because it is the shorter way to say it -- `CreateTextureOptions` is
+// `CreateTextureVariantOptions<TextureLike> & { readonly resource?: ... }` -- so the composition the
+// author left implicit is written out here rather than left for a reader of the IR to infer.
+//
+// Only a union whose members are all closed shapes distributes. An arm that is a primitive, a sentinel,
+// or an unresolved parameter is not a set of object shapes to compose, and distributing it would assert
+// a decomposition the source did not make.
+//
+// The product is bounded by the members' widths and preserves the order the members were written in, so
+// a type has one lowering rather than one per traversal.
+function createIrIntersectionType(types: readonly Readonly<IrType>[]): Readonly<IrType> {
+  const first = types[0];
+  const second = types[1];
+  if (!first) return { kind: 'never' };
+  if (!second) return first;
+  if (!types.some(isIrDistributableIntersectionMember)) {
+    return { kind: 'intersection', types: [first, second, ...types.slice(2).flatMap((type) => (type ? [type] : []))] };
+  }
+  const distributable = types.map((type) => (isIrDistributableIntersectionMember(type) ? type.types : [type]));
+  let combinations: readonly (readonly Readonly<IrType>[])[] = [[]];
+  for (const members of distributable) {
+    combinations = combinations.flatMap((prefix) => members.map((member) => [...prefix, member]));
+  }
+  const arms = combinations.map((members) => {
+    const head = members[0];
+    return head && members.length > 1 ? createIrIntersectionType(members) : head;
+  });
+  const armHead = arms[0];
+  const armSecond = arms[1];
+  if (!armHead) return { kind: 'never' };
+  if (!armSecond) return armHead;
+  return { kind: 'union', types: [armHead, armSecond, ...arms.slice(2).flatMap((arm) => (arm ? [arm] : []))] };
+}
+
+// A union an intersection may be composed through: one whose every member is a closed shape rather than
+// a primitive, a sentinel, or a parameter that is still open. `T | { ... }` is the case the last clause
+// is for -- distributing it is arithmetically sound and useless, because the arm it produces names a
+// parameter and the reader is left with an intersection that still refuses, one step further from the
+// source that wrote it.
+function isIrDistributableIntersectionMember(
+  type: Readonly<IrType>,
+): type is Readonly<Extract<IrType, { kind: 'union' }>> {
+  return type.kind === 'union' && type.types.length > 0 && type.types.every(isIrClosedIntersectionShape);
+}
+
+function isIrClosedIntersectionShape(type: Readonly<IrType>): boolean {
+  if (type.kind === 'object' || type.kind === 'intersection') return true;
+  if (type.kind !== 'named') return false;
+  return type.reference.kind === 'ambient' || type.reference.binding.kind !== 'typeParameter';
 }
 
 function lowerOpenTypeScriptConditionalFacetAliasReference(

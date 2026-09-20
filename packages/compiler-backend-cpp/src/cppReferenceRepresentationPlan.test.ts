@@ -99,27 +99,29 @@ describe('C++ reference planner object shapes', () => {
   });
 
   it('distributes one closed object union through a represented intersection', () => {
+    // Each union arrives through a named alias rather than written inline, because the two stages split
+    // the work: an intersection written over a union is composed during lowering, and an intersection
+    // whose member RESOLVES to a union is composed here. The planner is the one that sees a union it
+    // only learns about after resolving an alias.
     const module = lower(
       'WgpuRenderState.ts',
       `
         interface Entity { readonly entityId: number; }
         interface DeviceLostInfo { readonly message: string; }
         interface WgpuRenderState { readonly frame: number; }
-        export type WgpuOffscreenRenderStateResult = Entity &
-          (
-            | { readonly reason: 'device-lost'; readonly info: DeviceLostInfo }
-            | { readonly reason: 'ok'; readonly state: WgpuRenderState }
-          );
+        type OffscreenAlternative =
+          | { readonly reason: 'device-lost'; readonly info: DeviceLostInfo }
+          | { readonly reason: 'ok'; readonly state: WgpuRenderState };
+        type ConflictingAlternative =
+          | { readonly entityId: string; readonly reason: 'device-lost' }
+          | { readonly reason: 'ok'; readonly state: WgpuRenderState };
+        type LeftOrRight = { readonly left: number } | { readonly right: number };
+        type TopOrBottom = { readonly top: number } | { readonly bottom: number };
+        export type WgpuOffscreenRenderStateResult = Entity & OffscreenAlternative;
         export type OpenResult<T extends object> = Entity &
           (T | { readonly reason: 'ok'; readonly state: WgpuRenderState });
-        export type ConflictingResult = Entity &
-          (
-            | { readonly entityId: string; readonly reason: 'device-lost' }
-            | { readonly reason: 'ok'; readonly state: WgpuRenderState }
-          );
-        export type MultipleUnions = Entity &
-          ({ readonly left: number } | { readonly right: number }) &
-          ({ readonly top: number } | { readonly bottom: number });
+        export type ConflictingResult = Entity & ConflictingAlternative;
+        export type MultipleUnions = Entity & LeftOrRight & TopOrBottom;
       `,
     );
     const resolver = createIrTypeReferenceRepresentationPlannerCpp([module]);
