@@ -2398,6 +2398,96 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     ]);
   });
 
+  it('preserves imported Extract identity over a discriminated intersection union', () => {
+    const [texture, cubeTexture] = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Texture.ts',
+            `interface Entity { readonly entity: symbol }
+             interface TextureUvTransform { readonly uv: number }
+             interface Sampler { readonly sampler: number }
+             interface TextureSource extends Entity { readonly source: number }
+             interface VoxelGrid extends Entity { readonly voxel: number }
+             type TextureColorSpace = 'linear' | 'srgb';
+             type TextureSourceCubeFaces = readonly [
+               TextureSource | null, TextureSource | null, TextureSource | null,
+               TextureSource | null, TextureSource | null, TextureSource | null,
+             ];
+             interface TextureCommon extends Entity, TextureUvTransform {
+               colorSpace: TextureColorSpace;
+               sampler: Sampler;
+               version: number;
+             }
+             export interface Texture2D extends TextureCommon {
+               readonly dimension: '2d';
+               source: TextureSource | null;
+             }
+             export type Texture =
+               | Texture2D
+               | (TextureCommon & {
+                   readonly dimension: '2d-array';
+                   sources: readonly (TextureSource | null)[];
+                 })
+               | (TextureCommon & {
+                   readonly dimension: '3d';
+                   source: VoxelGrid | null;
+                 })
+               | (TextureCommon & {
+                   readonly dimension: 'cube';
+                   sources: TextureSourceCubeFaces;
+                 });`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/CubeTexture.ts',
+            `import type { Texture } from './Texture';
+             export type CubeTexture = Extract<Texture, { dimension: 'cube' }>;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      {
+        edges: [
+          {
+            specifier: './Texture',
+            target: { packageName: '@flighthq/types', source: 'packages/types/src/Texture.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const textureAlias = texture?.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Texture',
+    );
+    const cubeAlias = cubeTexture?.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'CubeTexture',
+    );
+
+    expect(texture?.diagnostics).toEqual([]);
+    expect(cubeTexture?.diagnostics).toEqual([]);
+    expect(textureAlias?.kind === 'typeAlias' ? textureAlias.type : undefined).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'named' }, { kind: 'intersection' }, { kind: 'intersection' }, { kind: 'intersection' }],
+    });
+    expect(cubeAlias?.kind === 'typeAlias' ? cubeAlias.type : undefined).toMatchObject({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Extract' },
+      typeArguments: [
+        { kind: 'named', reference: { binding: { kind: 'import', name: 'Texture' }, kind: 'binding', path: [] } },
+        { kind: 'object', properties: [{ name: 'dimension', type: { kind: 'literal', value: 'cube' } }] },
+      ],
+    });
+  });
+
   it('separates executable defaults from function types', () => {
     const result = lower('contracts.ts', 'export const callback = (value: number = 1): number => value;');
     const [callback] = result.module.declarations;
