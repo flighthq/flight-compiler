@@ -9120,6 +9120,55 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('return value.value()');
   });
 
+  // The boundary the absence-storage decision runs on, pinned from both sides.
+  //
+  // The receiver the semantic layer records for `Readonly<Record<string, string>>` reads `unknown`, and
+  // correctly so: a mapped `Record` type is not an array. Absence storage is the backend's decision
+  // about its own output, so it is taken from the representation the element emitter will use -- a
+  // `Record` index reads through `get`, which answers `std::optional` -- and not from a receiver name.
+  //
+  // The other side of the same boundary: the decision is still `nullish`-tested reads only. A read that
+  // is never tested against a sentinel keeps the storage its type states, so widening the evidence did
+  // not quietly make every indexed read optional.
+  it('takes absence storage from the read representation and only for a nullish-tested read', () => {
+    const untested = emitIrModuleCpp(
+      lower(
+        'record-element-untested.ts',
+        `export function lookup(values: Readonly<Record<string, string>>, key: string): string {
+           return values[key];
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(untested).toContain('return values.get(key).value();');
+    expect(untested).not.toContain('std::optional<flight::String>');
+    expect(untested).not.toContain('.has_value()');
+  });
+
+  // The refusal this round must not trade away. `const x: any = 3` is stored as the `double` its
+  // initializer proves, while every type query still reports the annotation, so the presence test has no
+  // absence channel to read and declines rather than choosing between two sources that disagree. A
+  // mutable `any` is a different answer and is covered above: its storage is the erased value, which
+  // carries the predicate.
+  it('keeps refusing a presence test whose storage and annotation disagree', () => {
+    const refusal = (source: string): string | undefined => {
+      try {
+        emitIrModuleCpp(lower('erased-annotated-const.ts', source).module, { runtimeProfile: 'flight-cpp' });
+        return undefined;
+      } catch (error) {
+        return isBackendEmissionFailure(error) ? error.rule : undefined;
+      }
+    };
+
+    expect(refusal(`export function f(): boolean { const x: any = 3; return x !== undefined; }`)).toBe(
+      'cpp-presence-test-without-absence-storage',
+    );
+    expect(refusal(`export function f(): boolean { const x: any = 3; return x === undefined; }`)).toBe(
+      'cpp-presence-test-without-absence-storage',
+    );
+  });
+
   it('materializes a template argument inferred only from a contextual return type', () => {
     const result = lower(
       'contextual-generic-result.ts',

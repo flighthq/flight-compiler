@@ -381,11 +381,12 @@ function emitIrModuleCppWithContext(
   const structuralCloneRecordBindingIds = new Set<string>();
   const erasedDynamicStorageBindingIds = new Set<string>();
   const erasedObjectParameterBindingIds = new Set<string>();
+  const arrayElementBindingIds = new Set<string>();
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
     anonymousStructs: new Map(),
     anonymousStructTypeParameters: [],
-    arrayElementBindingIds: collectIrModuleArrayElementBindingIdsCpp(module),
+    arrayElementBindingIds,
     bindingClasses: collectIrModuleBindingClassesCpp(module, bindingTypes),
     bindingInitializers: collectIrModuleBindingInitializersCpp(module),
     bindingTypes,
@@ -426,6 +427,9 @@ function emitIrModuleCppWithContext(
     generatedNames: new Set(targetNames.values()),
     anonymousStructNaming: anonymousStructNaming ?? createCppAnonymousStructNaming(resolvedTargetNameMaps),
   };
+  for (const bindingId of collectIrModuleArrayElementBindingIdsCpp(module, context)) {
+    arrayElementBindingIds.add(bindingId);
+  }
   for (const [bindingId, targetType] of collectCppContextualBindingStorageTargetTypesCpp(module, context)) {
     contextualBindingStorageTargetTypes.set(bindingId, targetType);
   }
@@ -10897,7 +10901,10 @@ function isCppTypePreservingErasedObjectStorageCpp(type: Readonly<IrType>, conte
   return plan.valueSlots.some((slot) => slot.targetType === 'flight::ErasedRef');
 }
 
-function collectIrModuleArrayElementBindingIdsCpp(module: Readonly<IrModule>): ReadonlySet<string> {
+function collectIrModuleArrayElementBindingIdsCpp(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): ReadonlySet<string> {
   const candidates = new Set<string>();
   const nullishUsed = new Set<string>();
   analyzeIrModuleTraversal(module, {
@@ -10917,13 +10924,21 @@ function collectIrModuleArrayElementBindingIdsCpp(module: Readonly<IrModule>): R
       return undefined;
     },
     variable(variable) {
-      if (
-        !('binding' in variable) ||
-        variable.initializer?.kind !== 'element' ||
-        !variable.initializer.semantics.receivers.includes('array')
-      ) {
-        return;
-      }
+      if (!('binding' in variable) || variable.initializer?.kind !== 'element') return;
+      const initializer = variable.initializer;
+      // An element read holds absence when the read the emitter will spell answers an optional. For an
+      // array that is the runtime's indexed access; for a `Record` it is `get`, which answers
+      // `std::optional`. The receiver the semantic layer records for a `Record` reads `unknown`, and
+      // correctly so -- a mapped `Record` type is not an array -- so the decision is taken here, from
+      // the representation the element emitter will use, rather than from a receiver's name. Absence
+      // storage is the backend's own decision about its own output; the layer above reports what the
+      // source is, not how it is stored.
+      const carriesAbsence =
+        initializer.semantics.receivers.includes('array') ||
+        Boolean(
+          getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(initializer.object, context), context, new Set()),
+        );
+      if (!carriesAbsence) return;
       candidates.add(variable.binding.id);
     },
   });
