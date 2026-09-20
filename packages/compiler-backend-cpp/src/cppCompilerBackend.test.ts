@@ -14592,6 +14592,51 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(failure.message).toContain('needs a literal key');
   });
 
+  it('resolves a closed Extract to the arm it selects', () => {
+    // Through the package-graph entry, which is the one the pipeline uses: the single-file entry does
+    // not resolve the reference and so reaches emission holding the utility, which is the refusal the
+    // test below pins. Both entries go through the same guard, and only this one has an arm to find.
+    const [result] = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/cube-texture.ts',
+          `interface Texture2D { readonly dimension: '2d'; width: number; }
+           interface TextureCube { readonly dimension: 'cube'; sources: readonly string[]; }
+           type Texture = Texture2D | TextureCube;
+           export type CubeTexture = Extract<Texture, { dimension: 'cube' }>;`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    const emitted = emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' });
+
+    // `Extract<Texture, { dimension: 'cube' }>` is the cube arm, so the alias names that struct: the
+    // utility is computed here rather than written out, and what reaches the target is a type it has.
+    expect(emitted.contents).toContain('using CubeTexture = flight::Ref<TextureCube>;');
+    expect(emitted.contents).not.toContain('Extract');
+  });
+
+  it('refuses an Extract that reached emission unresolved', () => {
+    const result = lower(
+      'cube-texture-open.ts',
+      `interface Texture2D { readonly dimension: '2d'; width: number; }
+       export type CubeTexture<Type extends Texture2D> = Extract<Type, { dimension: 'cube' }>;`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // An open `Extract` cannot be computed, and writing the name out would produce a header that fails
+    // wherever it is included -- `Extract` is not a C++ type and the target reports it far from the
+    // declaration that used it. The refusal names the utility instead, which is the whole difference
+    // between a diagnostic a reader can act on and a name that escapes.
+    expect(failure.rule).toBe('cpp-typescript-utility-unexpanded:Extract');
+    expect(failure.message).toContain('Extract was not resolved before emission and has no C++ lowering');
+  });
+
   it('resolves a conditional alias reference whose check names a parameter inside an indexed access', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/types/src/createTextureOptions.ts',

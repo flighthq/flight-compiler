@@ -13155,6 +13155,21 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
       context.options.externalBindings,
     );
     if (target) return target;
+    // A lib.d.ts type utility that reached emission was never expanded, and its name is not a C++ type.
+    // `Extract<...>` names a template the target has never seen, so writing it out produces a header
+    // that fails wherever it is included, naming nothing the compiler can point at. Refusing says which
+    // utility went unresolved, at the declaration that reached emission holding it.
+    //
+    // Only the utilities with no C++ lowering are listed. The ones this emitter does lower -- `Omit`,
+    // `Partial`, `Readonly`, `Required`, `Pick`, `Record`, `Exclude`, `NonNullable`, `NoInfer`,
+    // `Parameters`, `ReturnType`, `PropertyKey` -- were handled above and never reach this line.
+    if (cppUnexpandedTypeScriptUtilityAliases.has(type.reference.name)) {
+      emissionError(
+        context,
+        `${type.reference.name} was not resolved before emission and has no C++ lowering`,
+        `cpp-typescript-utility-unexpanded:${type.reference.name}`,
+      );
+    }
     return type.reference.name;
   }
   const imported = getCppImportedBindingTargetName(type.reference.binding.id, type.reference.path, 'type', context);
@@ -13715,6 +13730,23 @@ function emissionError(context: EmitContext, message: string, rule?: string): ne
 // a proof about one of them is a proof about its argument. `Pick`, `Omit`, and `Exclude` are absent on
 // purpose: they decide membership, so they are resolved through the shape planner rather than assumed.
 const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial', 'Readonly', 'Required']);
+
+// The lib.d.ts type utilities this emitter has no lowering for. Each names a type-level operation --
+// `Extract` filters a union, `Uppercase` transforms a string literal -- that a target must COMPUTE, and
+// writing the name out would ask the target's compiler to compute it with a template it does not have.
+const cppUnexpandedTypeScriptUtilityAliases = new Set([
+  'Awaited',
+  'Capitalize',
+  'ConstructorParameters',
+  'Extract',
+  'InstanceType',
+  'Lowercase',
+  'OmitThisParameter',
+  'ThisParameterType',
+  'ThisType',
+  'Uncapitalize',
+  'Uppercase',
+]);
 
 const cppOptionalArrayMethods = new Set(['find', 'shift', 'pop']);
 
