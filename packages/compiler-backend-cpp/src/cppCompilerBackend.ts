@@ -8111,6 +8111,12 @@ function getIrExpressionTypeForUnionConstructionCpp(
       return getIrNewExpressionTypeEvidenceCpp(expression, context);
     case 'object':
       return getCppContextualObjectUnionRuntimeTypeCpp(expression, valueSlots, context) ?? expression.type;
+    case 'template':
+      // A template expression's value is a string, and it is one whatever its parts are: each part is
+      // stringified and concatenated, so no part can make the result anything else. What the parts
+      // decide is the SPELLING, which the emitter builds; the type is not in doubt here, which is what
+      // makes this evidence rather than a guess about an expression whose type was never recorded.
+      return { kind: 'primitive', name: 'string' };
     case 'tuple':
       return getSingleIrTypeKindCpp(valueSlots, 'tuple');
     case 'unary':

@@ -14619,6 +14619,27 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('Extract');
   });
 
+  it('constructs a template expression into the optional union it is returned as', () => {
+    const [result] = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/template-return.ts',
+          `export function label(value: number): string | null { return \`n=\${String(value)}\`; }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    const emitted = emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' });
+
+    // A template's value is a string whatever its parts are, so the construction into `string | null`
+    // has an unambiguous answer. Without it the module refused a return that names its own type in the
+    // source, which is the shape the corpus reports most often.
+    expect(emitted.contents).toContain('std::optional<flight::String>{flight::String("n=")');
+  });
+
   it('refuses an Extract that reached emission unresolved', () => {
     const result = lower(
       'cube-texture-open.ts',
