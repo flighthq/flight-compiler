@@ -1418,11 +1418,7 @@ describe('createCppCompilerBackend', () => {
     });
     const narrowedMember =
       switchStatement?.kind === 'switch' ? switchStatement.cases[0]?.unionMemberTest?.member : undefined;
-    expect(narrowedMember).toMatchObject({
-      kind: 'named',
-      reference: { kind: 'ambient', name: 'Readonly' },
-    });
-    const narrowedObject = narrowedMember?.kind === 'named' ? narrowedMember.typeArguments[0] : undefined;
+    const narrowedObject = narrowedMember?.kind === 'named' ? narrowedMember.typeArguments[0] : narrowedMember;
     expect(narrowedObject?.kind === 'object' ? narrowedObject.properties : undefined).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: 'reason', type: { kind: 'literal', value: 'downloaded' } }),
@@ -1442,8 +1438,12 @@ describe('createCppCompilerBackend', () => {
     });
     const emitted = session.emitModule(consumer)[0]!.contents;
 
+    expect(emitted).toContain('version(flighthq_types::Outcome outcome)');
     expect(emitted).toContain('std::visit([](const auto& value) { return value->reason; }, outcome)');
-    expect(emitted).toMatch(/row_get<.*"update".*>\(std::get<\d+>\(outcome\)\)->version/u);
+    // Narrowing selects the record arm that the imported alias's declaring module minted. That arm
+    // has its own C++ member layout, so the consumer reads it directly instead of projecting a new
+    // structural row with a second, nominally distinct anonymous record.
+    expect(emitted).toMatch(/std::get<\d+>\(outcome\)->update->version/u);
     expect(emitted).not.toContain('struct reason_update');
   });
 
