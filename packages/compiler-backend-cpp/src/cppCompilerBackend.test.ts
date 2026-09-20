@@ -820,6 +820,49 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::variant');
   });
 
+  // A common member across a variant's alternatives is only provable when the alternatives agree on the
+  // C++ member ITSELF, not merely on the TypeScript name. `[value.length]` over `number[] | Float32Array`
+  // is the shape that says why: both alternatives do have `length` and both answer a `number`, so the
+  // type evidence is complete -- and a visitor built from it spells `value.length`, while the target
+  // spells the same member `size()` on both. Proving the type without proving the spelling would turn a
+  // refusal into a miscompile, so the refusal stands until the binding is proven too.
+  //
+  // The contrast is what makes it evidence rather than a limit: a member the alternatives DO agree on,
+  // spelling and type, is proven and visited.
+  it('refuses a variant member whose C++ spelling the alternatives do not prove', () => {
+    const refusal = (source: string): string | undefined => {
+      try {
+        emitIrModuleCpp(lower('variant-member.ts', source).module, { runtimeProfile: 'flight-cpp' });
+        return undefined;
+      } catch (error) {
+        return isBackendEmissionFailure(error) ? error.rule : undefined;
+      }
+    };
+
+    // The cluster's shape: the real `finishAnimationSample` signature.
+    expect(refusal(`export function readLength(out: number[] | Float32Array): number { return out.length; }`)).toBe(
+      'cpp-union-member-access-unguarded',
+    );
+    // The counterexample inside the same shape: a member only one alternative has is not common, so
+    // nothing about the other makes it provable.
+    expect(
+      refusal(`export function readByteLength(out: number[] | Float32Array): number { return out.byteLength; }`),
+    ).toBe('cpp-union-member-access-unguarded');
+
+    // The other side: alternatives that agree on the member's own C++ binding are visited.
+    const agreed = emitIrModuleCpp(
+      lower(
+        'variant-member-agreed.ts',
+        `interface Left { readonly value: number }
+         interface Right { readonly value: number }
+         export function readValue(input: Left | Right): number { return input.value; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(agreed).toContain('std::visit([](const auto& value) { return value');
+    expect(agreed).toContain('value->value;');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
