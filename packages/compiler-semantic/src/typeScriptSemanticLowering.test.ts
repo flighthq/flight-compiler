@@ -6312,6 +6312,66 @@ describe('lowerTypeScriptSources', () => {
     expect(result!.diagnostics).toEqual([]);
   });
 
+  it('separates a void-bearing ambient result from a genuinely degraded one', () => {
+    // The two sides of the degraded guard, side by side.
+    //
+    // `allSettled` instantiates to a result that embeds `void` — a primitive, not a degraded `unknown` — so
+    // the checker's answer is usable and must be the one returned. Reading the written spelling first
+    // refused instead: an ambient mapped result has no written form this lowering can read, so its refusal
+    // replaced an answer that was already in hand.
+    //
+    // `Promise.all` over `unknown[]` is the other side. Its instantiation genuinely embeds `unknown` with
+    // source `unknown`, so the guard still holds and the written form is consulted.
+    const sourceFile = ts.createSourceFile(
+      '/flight/packages/runtime/src/settle.ts',
+      `export function settle(items: Promise<void>[]): void {
+         const settled = Promise.allSettled(items);
+         void settled;
+       }
+       export function gather(values: unknown[]): void {
+         const gathered = Promise.all(values);
+         void gathered;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [result] = lowerTypeScriptSources([
+      { packageName: '@flighthq/runtime', sourceFile, upstreamDirectory: '/flight' },
+    ]);
+    const inferredType = (name: string): Readonly<IrType> | undefined => {
+      const declaration = result!.module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === name,
+      );
+      const variable = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      return variable?.kind === 'variable' ? variable.declarations[0]?.type : undefined;
+    };
+
+    expect(result!.diagnostics).toEqual([]);
+    // The void-bearing result is the checker's own shape, which the written spelling cannot produce at all.
+    expect(inferredType('settle')).toMatchObject({
+      kind: 'named',
+      reference: { name: 'Promise' },
+      typeArguments: [
+        {
+          element: {
+            kind: 'union',
+            types: [
+              { kind: 'named', reference: { name: 'PromiseRejectedResult' } },
+              { kind: 'named', reference: { name: 'PromiseFulfilledResult' } },
+            ],
+          },
+          kind: 'array',
+        },
+      ],
+    });
+    // The genuinely degraded result still resolves, through the written form the guard sends it to.
+    expect(inferredType('gather')).toMatchObject({
+      kind: 'named',
+      reference: { name: 'Promise' },
+      typeArguments: [{ element: { kind: 'unknown', source: 'unknown' }, kind: 'array' }],
+    });
+  });
+
   it('materializes closed ambient Pick heritage with checker-resolved project aliases', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/types/src/GlContext.ts',

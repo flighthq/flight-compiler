@@ -1857,8 +1857,13 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
       true,
       node,
     );
-    const written = getTypeScriptDegradedCallResultTypeEvidence(node, signature, context);
+    // The written form is asked for only once the checker's answer is known to be unusable. Reading it
+    // eagerly made a settled result unable to answer for itself: lowering the written spelling of an
+    // ambient mapped result such as `allSettled`'s refuses, and that refusal replaced the instantiated
+    // evidence that would have been returned on the next line. A genuinely degraded result still falls
+    // through to the written form exactly as before.
     if (instantiated && !hasTypeScriptDegradedCallResultEvidence(instantiated)) return instantiated;
+    const written = getTypeScriptDegradedCallResultTypeEvidence(node, signature, context);
     if (written) return written;
     if (instantiated) return instantiated;
     throw error;
@@ -1876,8 +1881,8 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
     true,
     node,
   );
-  const written = getTypeScriptDegradedCallResultTypeEvidence(node, signature, context);
   if (instantiated && !hasTypeScriptDegradedCallResultEvidence(instantiated)) return instantiated;
+  const written = getTypeScriptDegradedCallResultTypeEvidence(node, signature, context);
   return written ?? instantiated;
 }
 
