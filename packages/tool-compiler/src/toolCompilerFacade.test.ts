@@ -80,4 +80,78 @@ describe('@flighthq/tool-compiler', () => {
     expect(header?.contents).toContain('TrayEventProvider');
     expect(header?.contents).not.toContain('Exclude<');
   });
+
+  it('resolves CubeTexture Extract across the imported union module boundary', () => {
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './Texture',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Texture.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const result = compileTypeScriptModules({
+      backend: createCppCompilerBackend(),
+      backendOptions: { runtimeProfile: 'flight-cpp' },
+      moduleResolution,
+      sources: [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: parseTypeScriptSource(
+            '/flight/packages/types/src/Texture.ts',
+            `interface Entity { readonly entity: symbol }
+             interface TextureUvTransform { readonly uv: number }
+             interface Sampler { readonly sampler: number }
+             interface TextureSource extends Entity { readonly source: number }
+             interface VoxelGrid extends Entity { readonly voxel: number }
+             type TextureColorSpace = 'linear' | 'srgb';
+             type TextureSourceCubeFaces = readonly [
+               TextureSource | null, TextureSource | null, TextureSource | null,
+               TextureSource | null, TextureSource | null, TextureSource | null,
+             ];
+             interface TextureCommon extends Entity, TextureUvTransform {
+               colorSpace: TextureColorSpace;
+               sampler: Sampler;
+               version: number;
+             }
+             export interface Texture2D extends TextureCommon {
+               readonly dimension: '2d';
+               source: TextureSource | null;
+             }
+             export type Texture =
+               | Texture2D
+               | (TextureCommon & {
+                   readonly dimension: '2d-array';
+                   sources: readonly (TextureSource | null)[];
+                 })
+               | (TextureCommon & {
+                   readonly dimension: '3d';
+                   source: VoxelGrid | null;
+                 })
+               | (TextureCommon & {
+                   readonly dimension: 'cube';
+                   sources: TextureSourceCubeFaces;
+                 });`,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: parseTypeScriptSource(
+            '/flight/packages/types/src/CubeTexture.ts',
+            `import type { Texture } from './Texture';
+             export type CubeTexture = Extract<Texture, { dimension: 'cube' }>;`,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+    });
+    const cubeTexture = result.compilation.files.find((file) => file.path === 'cube_texture.hpp');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(cubeTexture?.contents).toMatch(/using CubeTexture = flight::Ref<[^;]+>;/u);
+    expect(cubeTexture?.contents).not.toContain('using CubeTexture = void;');
+    expect(cubeTexture?.contents).not.toContain('Extract');
+  });
 });
