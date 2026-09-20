@@ -171,6 +171,10 @@ interface EmitContext {
   bindingInitializers: ReadonlyMap<string, Readonly<IrExpression>>;
   contextualBindingStorageTargetTypes: ReadonlyMap<string, Readonly<IrType>>;
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
+  // Every type parameter the module declares, by binding identity, wherever it is declared. An index
+  // rather than a lookup at the use site because the constraint is what proves a dependent member read,
+  // and the parameter being read belongs to a declaration that may be nowhere near the read.
+  typeParameterConstraints: ReadonlyMap<string, Readonly<IrType>>;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   // The declaration being emitted, so a refusal can name where in the module it is. A backend emits
   // whole declarations and a refusal names one of them; without this a refused module is a message
@@ -318,6 +322,7 @@ function emitIrModuleCppWithContext(
     bindingTypes,
     options,
   );
+  const typeParameterConstraints = collectCppTypeParameterConstraintsCpp(module);
   const closureCapturePlan = createIrModuleClosureCapturePlanCpp(module);
   const recursiveTypeAliasBindingIds = collectCppRecursiveTypeAliasBindingIds(module);
   const sharedCaptureTargetNames = new Map<string, string>();
@@ -366,6 +371,7 @@ function emitIrModuleCppWithContext(
     structuralCloneRecordBindingIds,
     targetNameMaps: targetNameMaps ?? createCppTargetNameMaps(sourceModules),
     targetNames,
+    typeParameterConstraints,
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
   };
@@ -1760,6 +1766,23 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(sharedType, sharedInitializer, context, runtimeArrayInitializer)};`;
   }
   return `${constness}${emittedType} ${name}${initializer};`;
+}
+
+// Every type parameter the module declares, by binding identity. The traversal observer is used rather
+// than a list of declaration kinds, because the parameter being read belongs to whichever declaration
+// owns it -- a function, a method, a function type, an interface, a class, an alias, or an anonymous
+// struct -- and an index built from a hand-written list would answer for the cases someone remembered.
+// Identity is the binding, never the spelling: two declarations may both name a parameter `T`.
+function collectCppTypeParameterConstraintsCpp(module: Readonly<IrModule>): Map<string, Readonly<IrType>> {
+  const constraints = new Map<string, Readonly<IrType>>();
+  analyzeIrModuleTraversal(module, {
+    typeParameter(parameter) {
+      if (parameter.constraint && !constraints.has(parameter.binding.id)) {
+        constraints.set(parameter.binding.id, parameter.constraint);
+      }
+    },
+  });
+  return constraints;
 }
 
 function collectCppExplicitCollectionConstructionBindingTypesCpp(
@@ -4466,17 +4489,113 @@ function emitCppStructuralRowReferenceTypeCpp(
 // The member type of a dependent parameter, spelled the way the runtime already spells it. `remove_cvref_t`
 // makes an optional member and a plain one agree, because an optional member's C++ storage is the target's
 // spelling of `U | undefined` rather than `U`.
+//
+// The dependent form is emitted only where the member is PROVEN on every inhabited branch of the
+// parameter's constraint, because the instantiation is not visible here. An unproven key does not fail
+// while emitting -- it produces a template that fails inside whichever module first instantiates it,
+// naming no declaration and pointing at no source, so the refusal has to happen while the declaration is
+// still in hand. The gate keeps the dependent spelling rather than rewriting it to the constraint's
+// member type: a constraint says the member exists, not what it is, and an instantiation may narrow it
+// to a literal or to a subtype that the constraint's own spelling would have widened away.
 function emitCppDependentIndexedAccessCpp(
   type: Readonly<Extract<IrType, { kind: 'indexedAccess' }>>,
   context: EmitContext,
 ): string | undefined {
   const reference = type.object.kind === 'named' ? type.object.reference : undefined;
   if (reference?.kind !== 'binding' || reference.binding.kind !== 'typeParameter') return undefined;
-  if (type.index.kind !== 'literal' || typeof type.index.value !== 'string') return undefined;
+  const index = type.index;
+  if (index.kind !== 'literal' || typeof index.value !== 'string') {
+    emissionError(
+      context,
+      `indexedAccess types require C++ type computation lowering: a member read on ${describeIrTypeForDiagnosticCpp(type.object)} needs a literal key, and the index is ${describeIrTypeForDiagnosticCpp(index)}`,
+      'cpp-dependent-indexed-access-unproven',
+    );
+  }
+  const key = index.value;
+  const constraint = getCppDependentTypeParameterConstraintCpp(reference.binding.id, context);
+  if (!constraint || !isCppDependentMemberProvenCpp(constraint, key, context, new Set([reference.binding.id]))) {
+    emissionError(
+      context,
+      `indexedAccess types require C++ type computation lowering: '${key}' is not a member of every inhabited constraint branch of ${describeIrTypeForDiagnosticCpp(type.object)}, whose constraint is ${constraint ? describeIrTypeForDiagnosticCpp(constraint) : 'absent'}`,
+      'cpp-dependent-indexed-access-unproven',
+    );
+  }
   const objectType = emitType(type.object, context);
   context.includes.add('type_traits');
   context.includes.add('utility');
-  return `std::remove_cvref_t<decltype(std::declval<${objectType}&>().${safeCppName(type.index.value)})>`;
+  return `std::remove_cvref_t<decltype(std::declval<${objectType}&>().${safeCppName(key)})>`;
+}
+
+// Whether every value the constraint admits has the literal member `key`, so that a dependent member read
+// is a thing C++ can spell for every instantiation rather than for the ones that happen to be present.
+//
+// `never` is uninhabited and so contradicts nothing. A union is inhabited through each member it lists,
+// which is why `every` is the rule there; an intersection is inhabited through all of them at once, and
+// has the member when ANY side supplies it, which is why the two arms differ rather than sharing a merge.
+//
+// The proof resolves aliases, interfaces, classes, and inherited members through the planner, so what it
+// answers for is the declaration a reader would name rather than the spelling of the constraint. An alias
+// is expanded BEFORE the kind is dispatched on, because `type TextureLike = Texture2D | Texture3D` makes
+// the constraint a union of two members while the constraint itself is a single name -- the union rule is
+// the answer, and it is only reachable once the name is gone.
+//
+// Type parameters are followed to their own constraints, because `Type extends Other` is a question about
+// `Other`. The visited set is what stops a cycle, and it is copied rather than extended in place so that
+// two branches of one union cannot answer for each other.
+function isCppDependentMemberProvenCpp(
+  type: Readonly<IrType>,
+  key: string,
+  context: EmitContext,
+  visitedBindingIds: ReadonlySet<string>,
+): boolean {
+  switch (type.kind) {
+    case 'never':
+      return true;
+    case 'object':
+      return type.properties.some((property) => property.name === key);
+    case 'union':
+      return type.types.every((member) => isCppDependentMemberProvenCpp(member, key, context, visitedBindingIds));
+    case 'intersection':
+      return type.types.some((member) => isCppDependentMemberProvenCpp(member, key, context, visitedBindingIds));
+    case 'named': {
+      if (type.reference.kind === 'binding') {
+        const bindingId = type.reference.binding.id;
+        if (visitedBindingIds.has(bindingId)) return false;
+        const nextVisited = new Set(visitedBindingIds).add(bindingId);
+        if (type.reference.binding.kind === 'typeParameter') {
+          const constraint = getCppDependentTypeParameterConstraintCpp(bindingId, context);
+          return constraint !== undefined && isCppDependentMemberProvenCpp(constraint, key, context, nextVisited);
+        }
+        const expanded = context.referenceRepresentationPlanner.resolveAlias(type, context.module);
+        if (expanded !== undefined) return isCppDependentMemberProvenCpp(expanded, key, context, nextVisited);
+      }
+      if (
+        type.reference.kind === 'ambient' &&
+        cppDependentMemberPreservingAmbientWrappers.has(type.reference.name) &&
+        type.typeArguments.length === 1 &&
+        type.typeArguments[0]
+      ) {
+        return isCppDependentMemberProvenCpp(type.typeArguments[0], key, context, visitedBindingIds);
+      }
+      const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
+      return properties !== undefined && properties.some((property) => property.name === key);
+    }
+    default:
+      return false;
+  }
+}
+
+// The module-wide constraint of a type parameter, in the innermost declaration that names it. A parameter
+// declared inside an anonymous struct shadows the module's index because that is the nearest binding, and
+// a constraint that cannot be found is not the same answer as a constraint that permits nothing.
+function getCppDependentTypeParameterConstraintCpp(
+  bindingId: string,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  return (
+    context.anonymousStructTypeParameters.find((parameter) => parameter.binding.id === bindingId)?.constraint ??
+    context.typeParameterConstraints.get(bindingId)
+  );
 }
 
 function emitCppStructuralRowSchemaTypeCpp(
@@ -12692,6 +12811,11 @@ function isSuperCallStatement(statement: Readonly<IrStatement>): boolean {
 function emissionError(context: EmitContext, message: string, rule?: string): never {
   throw createBackendEmissionFailure('cpp', context.module, message, rule, context.currentOrigin);
 }
+
+// The ambient wrappers that change a member's optionality or mutability but never WHICH members exist, so
+// a proof about one of them is a proof about its argument. `Pick`, `Omit`, and `Exclude` are absent on
+// purpose: they decide membership, so they are resolved through the shape planner rather than assumed.
+const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial', 'Readonly', 'Required']);
 
 const cppOptionalArrayMethods = new Set(['find', 'shift', 'pop']);
 

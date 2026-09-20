@@ -14028,6 +14028,152 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).toContain('std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>');
   });
 
+  it('proves a dependent member read on every inhabited constraint branch', () => {
+    const result = lower(
+      'dependent-member-proven.ts',
+      `interface Base { label: string; padding: number; }
+       interface Plain extends Base { dimension: '2d'; width: number; }
+       interface Depth extends Base { dimension: '3d'; depth: number; }
+       type Like = Plain | Depth;
+       export type RequiredMember<Type extends { dimension: string }> = Type['dimension'];
+       export type OptionalMember<Type extends { dimension?: string }> = Type['dimension'];
+       export type ReadonlyMember<Type extends { readonly dimension: string }> = Type['dimension'];
+       export type InheritedMember<Type extends Base> = Type['label'];
+       export type CommonMember<Type extends Like> = Type['dimension'];`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // Each of these is proven by a different route: a required member directly, an optional one through
+    // the storage the runtime gives it, a readonly one through which members exist rather than how they
+    // may be written, an inherited one through the base an interface extends, and a union member through
+    // every branch the alias expands to. All five spell the same construct, because the proof decides
+    // whether the construct may be written and never what it says.
+    expect(emitted.contents.match(/std::remove_cvref_t<decltype\(std::declval<Type&>\(\)\./gu)).toHaveLength(5);
+    expect(emitted.contents).toContain(
+      'using RequiredMember = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+    );
+    expect(emitted.contents).toContain(
+      'using OptionalMember = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+    );
+    expect(emitted.contents).toContain(
+      'using ReadonlyMember = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+    );
+    expect(emitted.contents).toContain(
+      'using InheritedMember = std::remove_cvref_t<decltype(std::declval<Type&>().label)>;',
+    );
+    expect(emitted.contents).toContain(
+      'using CommonMember = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+    );
+  });
+
+  it('keeps a dependent member read dependent, so two instantiations narrow it differently', () => {
+    const result = lower(
+      'dependent-narrowing.ts',
+      `export type MemberOf<Type extends { dimension: unknown }> = Type['dimension'];
+       export type NumericDimension = MemberOf<{ dimension: number }>;
+       export type TextualDimension = MemberOf<{ dimension: '2d' }>;`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(result.diagnostics).toEqual([]);
+    // The constraint's member is `unknown`, and the declaration keeps the read dependent rather than being
+    // rewritten to the constraint's own member type -- that rewrite is the shape this gate exists to
+    // refuse, because `T extends { k: string }` says the member exists and not what it is. Both
+    // instantiations reach the one template below, each carrying its own member.
+    expect(emitted.contents).toContain(
+      'using MemberOf = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+    );
+    expect(emitted.contents.match(/using (Numeric|Textual)Dimension = MemberOf</gu)).toHaveLength(2);
+    expect(emitted.contents).toContain('double dimension;');
+    expect(emitted.contents).toContain('flight::String dimension;');
+  });
+
+  // The four refusals below are one rule because they are one question: is there a member read here that
+  // every instantiation can spell? No answer of "probably" is usable, because the cost of being wrong is
+  // not a diagnostic here -- it is a header that fails inside whichever module first instantiates it.
+  it('refuses a dependent member read a constraint branch does not carry', () => {
+    const result = lower(
+      'dependent-member-missing.ts',
+      `interface Plain { dimension: '2d'; width: number; }
+       interface Depth { depth: number; }
+       type Mixed = Plain | Depth;
+       export type Narrowed<Type extends Mixed> = Type['dimension'];`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-dependent-indexed-access-unproven');
+    expect(failure.message).toContain("'dimension' is not a member of every inhabited constraint branch");
+  });
+
+  it('refuses a dependent member read an instantiation would have carried', () => {
+    const result = lower(
+      'dependent-member-partly-instantiated.ts',
+      `interface Plain { dimension: '2d'; width: number; }
+       interface Depth { depth: number; }
+       type Mixed = Plain | Depth;
+       export type Narrowed<Type extends Mixed> = Type['dimension'];
+       export type Instantiated = Narrowed<Plain>;`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The instantiation names a branch that HAS the member, so nothing about it is wrong and C++ would
+    // have accepted this header. The declaration is still what decides: the sibling branch is what a
+    // consumer could reach next, and refusing here is the only point at which the module can be told. A
+    // gate that ran per instantiation would have emitted a header valid for `Plain` and invalid for
+    // `Depth`, which is exactly the escape this refusal closes.
+    expect(failure.rule).toBe('cpp-dependent-indexed-access-unproven');
+    expect(failure.message).toContain("'dimension' is not a member of every inhabited constraint branch");
+  });
+
+  it('refuses a dependent member read whose constraint never reaches an object', () => {
+    const unconstrained = lower('dependent-member-unconstrained.ts', `export type Bare<Type> = Type['dimension'];`);
+    const bareFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(unconstrained.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    // A parameter with no constraint permits every type, so no member is provable about it at all. The
+    // message separates "absent" from "found and refuting" because the first is a missing annotation and
+    // the second is a real union branch.
+    expect(bareFailure.rule).toBe('cpp-dependent-indexed-access-unproven');
+    expect(bareFailure.message).toContain('whose constraint is absent');
+
+    const unresolved = lowerPackage(
+      '@flighthq/math',
+      'dependent-member-unresolved.ts',
+      `import type { External } from '@flighthq/external';
+       export type FromExternal<Type extends External> = Type['dimension'];`,
+    );
+    const unresolvedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(unresolved.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    // The constraint names a declaration this module set cannot resolve, so nothing is known about its
+    // members. It is refused rather than assumed to carry them: an unresolved import is a module the
+    // emitter cannot see, not one it has read and found empty.
+    expect(unresolvedFailure.rule).toBe('cpp-dependent-indexed-access-unproven');
+    expect(unresolvedFailure.message).toContain('whose constraint is External');
+  });
+
+  it('refuses a dependent member read whose key is not a literal', () => {
+    const result = lower(
+      'dependent-member-dynamic-key.ts',
+      `interface Plain { dimension: '2d'; width: number; }
+       export type Dynamic<Type extends Plain, Key extends 'dimension' | 'width'> = Type[Key];`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // A key that is itself a parameter cannot be spelled as a member name, so there is no dependent
+    // construct to emit -- the read is unlowered for a different reason than an unproven member, and the
+    // message names the index so the two are not confused.
+    expect(failure.rule).toBe('cpp-dependent-indexed-access-unproven');
+    expect(failure.message).toContain('needs a literal key');
+  });
+
   it('resolves a conditional alias reference whose check names a parameter inside an indexed access', () => {
     const sourceFile = ts.createSourceFile(
       '/flight/packages/types/src/createTextureOptions.ts',
