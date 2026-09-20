@@ -8726,8 +8726,17 @@ function getIrExpressionTypeForUnionConstructionCpp(
           : typeof expression.value === 'string'
             ? { kind: 'primitive', name: 'string' }
             : { kind: 'null' };
-    case 'new':
-      return getIrNewExpressionTypeEvidenceCpp(expression, context);
+    case 'new': {
+      // An empty generic constructor carries no arguments from which to recover its type arguments.
+      // Ask the same exact contextual-representability proof used by object members which single
+      // union slot supplies them, so the slot and constructor both reach emitType through one type.
+      const contextual = valueSlots.filter((slot) =>
+        isCppExpressionRepresentableAsRuntimeTypeCpp(expression, slot.runtimeType, context),
+      );
+      return contextual.length === 1
+        ? contextual[0]!.runtimeType
+        : getIrNewExpressionTypeEvidenceCpp(expression, context);
+    }
     case 'object':
       return getCppContextualObjectUnionRuntimeTypeCpp(expression, valueSlots, context) ?? expression.type;
     case 'template':

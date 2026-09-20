@@ -11722,6 +11722,40 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('.seen = flight::Set<flight::String>()');
   });
 
+  it('uses the represented optional Map slot for an empty constructor', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-optional-map.ts',
+        `interface World { suppressions: Map<number, Map<number, number>> }
+         export function rebuild(world: World): void {
+           const suppressions = world.suppressions;
+           let seconds = suppressions.get(1);
+           if (seconds === undefined) {
+             seconds = new Map();
+             suppressions.set(1, seconds);
+           }
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('std::optional<flight::Map<double, double>>{flight::Map<double, double>()}');
+  });
+
+  it('keeps an empty Map constructor unrepresented when two union slots match', () => {
+    const module = lower(
+      'ambiguous-contextual-map.ts',
+      `export function reset(value: Map<string, number> | Map<number, string>): void {
+         value = new Map();
+         void value;
+       }`,
+    ).module;
+
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }));
+
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
   it('preserves explicit collection constructor identity through structurally normalized bindings', () => {
     const output = emitIrModuleCpp(
       lower(
