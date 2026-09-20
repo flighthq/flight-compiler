@@ -2128,6 +2128,27 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(incompatible.kind).toBe('intersection');
   });
 
+  it('leaves an intersection nesting more unions than the bound to refuse', () => {
+    // Nine unions of two arms are 512 arms composed, which is past the bound. The intersection is kept
+    // as it was written rather than expanded, and it refuses downstream with the message it already had.
+    // Truncating to the first 256 arms would be worse than refusing: a union missing arms is a different
+    // type, and the compiler would have no way to say so.
+    const unions = Array.from(
+      { length: 9 },
+      (_, index) =>
+        `type U${String(index)} = { readonly a${String(index)}: 'x' } | { readonly a${String(index)}: 'y' };`,
+    ).join('\n       ');
+    const conjuncts = Array.from({ length: 9 }, (_, index) => `U${String(index)}`).join(' & ');
+    const { type: tooWide } = lowerPackageTypeAlias(
+      'TooWide',
+      `interface Entity { readonly entityId: number; }
+       ${unions}
+       export type TooWide = Entity & ${conjuncts};`,
+    );
+
+    expect(tooWide.kind).toBe('intersection');
+  });
+
   it('preserves the common object surface of generic Host capability conditionals', () => {
     const result = lower(
       'conditional-host-capabilities.ts',

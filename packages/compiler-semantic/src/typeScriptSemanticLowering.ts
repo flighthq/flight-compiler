@@ -3904,17 +3904,24 @@ function getTypeScriptConditionalReferenceEvidence(
 // or an unresolved parameter is not a set of object shapes to compose, and distributing it would assert
 // a decomposition the source did not make.
 //
-// The product is bounded by the members' widths and preserves the order the members were written in, so
-// a type has one lowering rather than one per traversal.
+// The order the members were written in is preserved, so a type has one lowering rather than one per
+// traversal, and the product is bounded: an intersection nesting more unions than the limit composes
+// none of them and keeps the shape it was written as.
 function createIrIntersectionType(types: readonly Readonly<IrType>[]): Readonly<IrType> {
   const first = types[0];
   const second = types[1];
   if (!first) return { kind: 'never' };
   if (!second) return first;
-  if (!types.some(isIrDistributableIntersectionMember)) {
+  const distributable = types.map((type) => (isIrDistributableIntersectionMember(type) ? type.types : [type]));
+  // The product is the multiply of the members' widths, so an intersection of unions grows faster than
+  // it looks: `A & (B|C) & (D|E) & ...` doubles with each conjunct. Past the bound the intersection is
+  // left as written and refuses downstream with the message it already had rather than being expanded
+  // into thousands of arms. Refusing is deliberate where truncating would not be: a union missing one of
+  // its arms is a different type, so there is no partial answer to give.
+  const armCount = distributable.reduce((size, members) => size * members.length, 1);
+  if (armCount === 1 || armCount > compilerIntersectionDistributionArmLimit) {
     return { kind: 'intersection', types: [first, second, ...types.slice(2).flatMap((type) => (type ? [type] : []))] };
   }
-  const distributable = types.map((type) => (isIrDistributableIntersectionMember(type) ? type.types : [type]));
   let combinations: readonly (readonly Readonly<IrType>[])[] = [[]];
   for (const members of distributable) {
     combinations = combinations.flatMap((prefix) => members.map((member) => [...prefix, member]));
@@ -3946,6 +3953,11 @@ function isIrClosedIntersectionShape(type: Readonly<IrType>): boolean {
   if (type.kind !== 'named') return false;
   return type.reference.kind === 'ambient' || type.reference.binding.kind !== 'typeParameter';
 }
+
+// Well above what any type in the SDK composes -- `CreateTextureOptions` is four, and the widest
+// intersection the corpus writes is in the tens -- and low enough that a source which accidentally
+// composes two unions per conjunct is refused rather than expanded.
+const compilerIntersectionDistributionArmLimit = 256;
 
 function lowerOpenTypeScriptConditionalFacetAliasReference(
   node: ts.TypeReferenceNode,
