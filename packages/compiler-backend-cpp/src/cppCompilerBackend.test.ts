@@ -1276,7 +1276,11 @@ describe('createCppCompilerBackend', () => {
     });
     const emitted = session.emitModule(consumer)[0]!.contents;
 
-    expect(emitted).toContain('optional_chain_receiver.value()->curve.value_or(std::nullopt)');
+    // The chain reads `curve` through the storage the surrounding `Partial` produces — the three-state
+    // variant — so both sentinels collapse into the chain's absent result rather than a `value_or` that a
+    // variant has no member for. The alias itself is still named, which is what this case is about.
+    expect(emitted).toContain('const auto& optional_chain_member = optional_chain_receiver.value()->curve;');
+    expect(emitted).toContain('std::holds_alternative<flight::Null>(optional_chain_member)');
     expect(emitted).toMatch(
       /flight::Ref<kind_size_[0-9a-f]+>, flight::Ref<kind_width_[0-9a-f]+>, flight::Null, flight::Undefined> texture;/u,
     );
@@ -15468,7 +15472,13 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('texture.value_or(std::nullopt)');
+    // Both sentinels collapse into the chain's absent result, which is what `?.` yields when the member is
+    // null or absent. The read is taken through the member's own storage rather than a `value_or` the
+    // three-state variant has no member for, and the read is still flattened rather than returned raw.
+    expect(emitted.contents).toContain('optional_chain_member = optional_chain_receiver.value()->texture;');
+    expect(emitted.contents).toContain('std::holds_alternative<flight::Null>(optional_chain_member)');
+    expect(emitted.contents).toContain('std::holds_alternative<flight::Undefined>(optional_chain_member)');
+    expect(emitted.contents).not.toContain('value_or(std::nullopt); }())');
     expect(emitted.contents).not.toContain('return optional_chain_receiver.value()->texture;');
   });
 
