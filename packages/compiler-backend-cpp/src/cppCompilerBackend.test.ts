@@ -5261,6 +5261,115 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('pins the exact host explanation on its missing dynamic named-row runtime ABI', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime { binding: object | null }
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export interface HostAudioCapabilities { readonly device?: object; readonly mixer?: object }
+       export interface HostImageCapabilities { readonly loader?: object }
+       export interface Host extends Entity {
+         readonly audio: HostAudioCapabilities;
+         readonly image: HostImageCapabilities;
+       }
+       export interface HostCapabilityGroupExplanation {
+         readonly group: string;
+         readonly slots: readonly string[];
+       }
+       export interface HostCapabilityCoverage {
+         readonly capability: string;
+         readonly group: string;
+         readonly isPresent: boolean;
+         readonly slot: string;
+       }
+       export interface HostExplanation {
+         readonly groups: readonly HostCapabilityGroupExplanation[];
+         readonly capabilities: readonly HostCapabilityCoverage[];
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const hostExplain = ts.createSourceFile(
+      '/flight/packages/host/src/hostExplain.ts',
+      `import type {
+         Host,
+         HostCapabilityGroupExplanation,
+         HostExplanation,
+         HostCapabilityCoverage,
+       } from '@flighthq/types/contract';
+
+       export function explainHost(host: Readonly<Host>): HostExplanation {
+         const groups: HostCapabilityGroupExplanation[] = [];
+         for (const [group, value] of Object.entries(host)) {
+           if (typeof value !== 'object' || value === null) continue;
+           const slots = Object.entries(value as Record<string, unknown>)
+             .filter((entry) => entry[1] !== undefined && entry[1] !== null)
+             .map((entry) => entry[0]);
+           groups.push({ group, slots });
+         }
+         const capabilities: HostCapabilityCoverage[] = _COVERAGE.map((entry) => ({
+           capability: entry.capability,
+           group: entry.group,
+           isPresent: _isSlotPresent(host, entry.group, entry.slot),
+           slot: entry.slot,
+         }));
+         return { capabilities, groups };
+       }
+
+       function _isSlotPresent(host: Readonly<Host>, group: string, slot: string): boolean {
+         const capabilities = (host as unknown as Record<string, unknown>)[group];
+         if (typeof capabilities !== 'object' || capabilities === null) return false;
+         return (capabilities as Record<string, unknown>)[slot] != null;
+       }
+
+       const _COVERAGE: readonly { readonly capability: string; readonly group: string; readonly slot: string }[] = [
+         { capability: 'HostAudioDeviceCapability', group: 'audio', slot: 'device' },
+         { capability: 'HostImageCapability', group: 'image', slot: 'loader' },
+       ];`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/host', sourceFile: hostExplain, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    expect(failure.rule).toBe('cpp-structural-row-dynamic-string-view-runtime-unsupported');
+    expect(failure.message).toContain(
+      'dynamic string Record view over a structural row requires runtime named-property enumeration and erased lookup',
+    );
+
+    const record = lower(
+      'dynamic-record-lookup.ts',
+      `export function isPresent(values: Readonly<Record<string, unknown>>, key: string): boolean {
+         return values[key] != null;
+       }`,
+    );
+    const recordOutput = emitIrModuleCpp(record.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(recordOutput).toContain('values.get(key)');
+  });
+
   it('does not nest references around structural aliases instantiated with intersections', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/Entity.ts',

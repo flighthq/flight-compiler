@@ -2424,6 +2424,13 @@ function emitExpression(
         }
         emissionError(context, 'erased WeakMap assertion target requires an approved typed WeakMap view');
       }
+      if (isCppStructuralDynamicStringRecordViewCpp(expression, context)) {
+        emissionError(
+          context,
+          'dynamic string Record view over a structural row requires runtime named-property enumeration and erased lookup',
+          'cpp-structural-row-dynamic-string-view-runtime-unsupported',
+        );
+      }
       const structuralCloneRecordView = getCppStructuralCloneRecordViewPlanCpp(expression, context);
       if (structuralCloneRecordView) {
         const typeParameter = emitType(structuralCloneRecordView.typeParameter, context);
@@ -3465,6 +3472,21 @@ function getCppStructuralCloneRecordViewPlanCpp(
     sourceType,
     typeParameter,
   };
+}
+
+function isCppStructuralDynamicStringRecordViewCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): boolean {
+  // StructuralRef exposes dynamic Symbol attachments, but not dynamic reads or enumeration of its
+  // generated named string cells. Keep the two key domains distinct until flight-cpp provides that ABI.
+  if (!isCppUnknownRecordTypeCpp(expression.type, 'string')) return false;
+  const unknownView = expression.expression;
+  if (unknownView.kind !== 'cast' || unknownView.type.kind !== 'unknown' || unknownView.type.source !== 'unknown') {
+    return false;
+  }
+  const sourceType = getIrExpressionTypeEvidenceCpp(unknownView.expression, context);
+  return Boolean(sourceType && context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module));
 }
 
 function emitCppStructuralCloneRecordRecoveryCpp(
