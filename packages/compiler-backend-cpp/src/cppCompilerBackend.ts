@@ -2660,6 +2660,32 @@ function emitExpression(
       if (record && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         return `${object}.get(${emitCppRequiredRecordKeyCpp(expression.index, record.key, context)}).value()`;
       }
+      const closedKeys = getCppClosedElementKeyNamesCpp(expression.index, context);
+      if (closedKeys) return emitCppClosedKeyElementSelectionCpp(expression, closedKeys, context);
+      // An object held by reference as a set of named members has no subscript at all, and the row
+      // mechanism has no string-keyed form, so an index the compiler cannot resolve to a member would
+      // reach the target as an operator it does not define. A closed union of string literals is the
+      // only shape that establishes which members the index can name, so anything else here is refused
+      // rather than emitted as a subscript that cannot compile.
+      //
+      // The member requirement is what keeps this off an index-signature carrier: `{ [index: number]:
+      // number }` is also reference-represented, but it is erased to a generic parameter precisely so
+      // it can stand for any carrier that does subscript, and `out[offset]` is the whole point of it.
+      const referenceReceiver = objectType ? getIrTypeRuntimeDomainCpp(objectType, context, new Set()) : undefined;
+      const referenceMembers = referenceReceiver
+        ? context.referenceRepresentationPlanner.resolveObjectShape(referenceReceiver, context.module)
+        : undefined;
+      if (
+        referenceReceiver &&
+        referenceMembers?.some((property) => !isCppValuelessStructMemberCpp(property.type)) &&
+        hasFlightReferenceRepresentationCpp(referenceReceiver, context)
+      ) {
+        emissionError(
+          context,
+          'indexed access on a reference-represented object requires a closed set of string-literal keys',
+          'cpp-object-index-without-closed-key-set',
+        );
+      }
       return record || expression.semantics.receivers.every((receiver) => receiver === 'object')
         ? `${object}[${index}]`
         : `${object}[static_cast<size_t>(${index})]`;
@@ -6431,6 +6457,93 @@ function admitsCppNullishSentinelCpp(
   const union = getIrUnionTypeCpp(type, context, new Set());
   const members = union ? union.types : [type];
   return members.some((member) => (sentinel === 'null' ? member.kind === 'null' : member.kind === 'undefined'));
+}
+
+// The finite key set of an index whose static type is a closed union of string literals -- `signals[name]`
+// with `name` declared `'onComplete' | 'onLoop' | 'onPause' | 'onPlay' | 'onStop'`. A key widened to
+// `string` has no such set, and that difference is the whole reason this can be attempted here and
+// refused there: the union says which members the access can reach, and a `string` says nothing.
+function getCppClosedElementKeyNamesCpp(
+  index: Readonly<IrExpression>,
+  context: EmitContext,
+): readonly string[] | undefined {
+  const type = getIrExpressionTypeEvidenceCpp(index, context);
+  if (!type) return undefined;
+  if (type.kind === 'literal') return typeof type.value === 'string' ? [type.value] : undefined;
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  if (!union || union.types.length === 0) return undefined;
+  const keys: string[] = [];
+  for (const member of union.types) {
+    if (member.kind !== 'literal' || typeof member.value !== 'string') return undefined;
+    if (!keys.includes(member.value)) keys.push(member.value);
+  }
+  return keys;
+}
+
+// Selects the member a finite key names. This is still a dispatch at runtime, because the key's value
+// chooses the member, but it is a dispatch over a set the compiler enumerated rather than a subscript
+// the target has no operator for.
+//
+// Every key must name a member the object actually emits, and the members must lower to one C++ type:
+// a key the object does not have would select nothing, and members of different types would need a
+// result representation that can hold several, which is a question for the union planner rather than
+// for this access.
+function emitCppClosedKeyElementSelectionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  keys: readonly string[],
+  context: EmitContext,
+): string {
+  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const runtime = objectType ? getIrTypeRuntimeDomainCpp(objectType, context, new Set()) : undefined;
+  const properties = runtime
+    ? context.referenceRepresentationPlanner.resolveObjectShape(runtime, context.module)
+    : undefined;
+  if (!runtime || !properties) {
+    emissionError(
+      context,
+      'closed-key element access requires represented object storage',
+      'cpp-closed-key-access-without-object-storage',
+    );
+  }
+  const members = new Map<string, Readonly<IrObjectTypeProperty>>();
+  for (const property of properties) {
+    if (isCppValuelessStructMemberCpp(property.type)) continue;
+    if (!members.has(property.name)) members.set(property.name, property);
+  }
+  const memberTypes: string[] = [];
+  for (const key of keys) {
+    const property = members.get(key);
+    if (!property) {
+      emissionError(
+        context,
+        `closed key ${key} is not a member of ${emitType(runtime, context)}`,
+        'cpp-closed-key-absent-member',
+      );
+    }
+    if (property.optional) {
+      emissionError(
+        context,
+        `closed key ${key} names an optional member, which requires presence projection`,
+        'cpp-closed-key-optional-member',
+      );
+    }
+    memberTypes.push(emitType(property.type, context));
+  }
+  const distinct = [...new Set(memberTypes)];
+  if (distinct.length !== 1) {
+    emissionError(
+      context,
+      `closed-key selection over ${String(distinct.length)} member types requires a represented result union`,
+      'cpp-closed-key-multiple-member-types',
+    );
+  }
+  const select = (member: string): string => `selection_receiver->${safeCppName(member)}`;
+  const branches = keys.map((key) => {
+    const property = members.get(key)!;
+    return `if (${emitExpression(expression.index, context)} == ${emitLiteral(key, context)}) return ${select(property.name)};`;
+  });
+  context.includes.add('stdexcept');
+  return `([&]() -> ${distinct[0]!} { const auto& selection_receiver = ${emitExpression(expression.object, context)}; ${branches.join(' ')} throw std::logic_error("Flight finite-key selection reached no member"); }())`;
 }
 
 function getCppNullishLiteralKind(expression: Readonly<IrExpression>): 'null' | 'undefined' | undefined {

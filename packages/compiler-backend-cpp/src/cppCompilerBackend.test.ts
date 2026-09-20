@@ -485,6 +485,60 @@ describe('createCppCompilerBackend', () => {
     expect([...reversed].reverse()).toEqual([...forward]);
   });
 
+  // A closed key set is an index whose static type is a finite union of string literals. The value
+  // still decides the member at runtime, so this is a dispatch -- but a dispatch over a set the
+  // compiler enumerated, which is what makes it possible at all: a reference has no subscript, and the
+  // row mechanism has no string-keyed form.
+  it('selects the member a closed key names and refuses a key the object does not have', () => {
+    const emitOnly = (source: string): string =>
+      emitIrModuleCpp(lower('closed-keys.ts', source).module, { runtimeProfile: 'flight-cpp' }).contents;
+    const refusalOf = (source: string): string | undefined => {
+      try {
+        emitOnly(source);
+        return undefined;
+      } catch (error) {
+        return isBackendEmissionFailure(error) ? error.rule : undefined;
+      }
+    };
+
+    const closed = emitOnly(
+      `export interface Signals { onLoop: () => void; onStop: () => void }
+       function use(s: () => void): void { s(); }
+       export function closed(signals: Signals | null, name: 'onLoop' | 'onStop'): void {
+         if (signals !== null) use(signals[name]);
+       }`,
+    );
+    // Every key in the union is a branch, the receiver is bound once, and the fall-through is
+    // unreachable by type but still present.
+    expect(closed).toContain('if (name == flight::String("onLoop")) return selection_receiver->on_loop;');
+    expect(closed).toContain('if (name == flight::String("onStop")) return selection_receiver->on_stop;');
+    expect(closed).toContain('const auto& selection_receiver = signals.value();');
+    expect(closed).toContain('throw std::logic_error(');
+    // Nothing subscripts the reference, which has no subscript to offer.
+    expect(closed).not.toContain('signals.value()[');
+
+    // A key the object does not have selects nothing and is refused.
+    expect(
+      refusalOf(
+        `export interface Signals { onLoop: () => void }
+         function use(s: () => void): void { s(); }
+         export function absent(signals: Signals | null, name: 'onLoop' | 'onMissing'): void {
+           if (signals !== null) use(signals[name]);
+         }`,
+      ),
+    ).toBe('cpp-closed-key-absent-member');
+    // A key widened to `string` names no set of members at all, so the access cannot be lowered.
+    expect(
+      refusalOf(
+        `export interface Signals { onLoop: () => void }
+         function use(s: () => void): void { s(); }
+         export function widened(signals: Signals | null, name: string): void {
+           if (signals !== null) use(signals[name]);
+         }`,
+      ),
+    ).toBe('cpp-object-index-without-closed-key-set');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
