@@ -1014,7 +1014,12 @@ function lowerExpression(
     };
   }
   if (ts.isPropertyAccessExpression(node)) {
-    const optional = node.questionDotToken !== undefined;
+    // TypeScript marks every continuation of an optional chain, not only the access that owns the
+    // `?.` token. Each continuation still short-circuits to undefined: in `host?.text.shaper`, the
+    // final `.shaper` has no question-dot token but is as optional as the preceding `.text` access.
+    // Keep that checker-proven chain identity so the backend retains the exact selected field type
+    // together with the contextual absence instead of trying to project through `undefined`.
+    const optional = ts.isOptionalChain(node);
     const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression, context);
     const receiverShape = getIrTypeConstructionTargetShape(receiver, context);
     const memberSymbol = context.checker.getSymbolAtLocation(node.name);

@@ -1984,6 +1984,80 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
+  it('preserves the pinned text-shaper chain continuation as exact optional result evidence', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export interface TextFormat { size?: number }
+       export type TextMeasureFunction = (text: string, format: TextFormat) => number;
+       export interface TextShaperBackend { measureText: TextMeasureFunction }
+       export interface HasTextShaper { readonly text: { readonly shaper: TextShaperBackend } }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const textShaper = ts.createSourceFile(
+      '/flight/packages/textshaper/src/textShaper.ts',
+      `import type { HasTextShaper, TextShaperBackend } from '@flighthq/types/contract';
+       export function getTextShaperBackend(host?: HasTextShaper): TextShaperBackend | null {
+         return host?.text.shaper ?? _backend;
+       }
+       let _backend: TextShaperBackend | null = null;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/textshaper', sourceFile: textShaper, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const getter = modules[1]!.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'getTextShaperBackend',
+    );
+    const returned = getter?.kind === 'function' ? getter.body[0] : undefined;
+    const chain =
+      returned?.kind === 'return' && returned.expression?.kind === 'binary' ? returned.expression.left : undefined;
+
+    // This is the exact expression and contextual slot from the pinned Flight module. The `?.` token
+    // belongs to `.text`, but TypeScript marks the following `.shaper` as part of the same chain. Its
+    // selected type and its inherited undefined short circuit are both source evidence.
+    expect(getter?.kind === 'function' ? getter.returns : undefined).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'named', reference: { binding: { name: 'TextShaperBackend' } } }, { kind: 'null' }],
+    });
+    expect(chain).toMatchObject({
+      kind: 'property',
+      name: 'shaper',
+      optional: true,
+      optionalChain: {
+        receiverNullish: 'possible',
+        valueType: { kind: 'named', reference: { binding: { name: 'TextShaperBackend' } } },
+      },
+      type: { kind: 'named', reference: { binding: { name: 'TextShaperBackend' } } },
+    });
+
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(emitted).toContain('std::optional<flight::Ref<flighthq_types::TextShaperBackend>>');
+    expect(emitted).toContain('auto nullish_coalesce_left =');
+    expect(emitted).toContain('optional_chain_receiver.value()->shaper');
+    expect(emitted).toContain('return backend;');
+  });
+
   it('constructs a buffered-log interval handle from exact ambient call-result evidence', () => {
     const module = lowerPackage(
       '@flighthq/log',
