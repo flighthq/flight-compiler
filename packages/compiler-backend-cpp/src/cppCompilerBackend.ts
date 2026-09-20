@@ -50,6 +50,7 @@ import type {
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
   CppCompilerBackendOptions,
+  CppCompilerExternalBindingManifest,
   CppCompilerRuntimeProfile,
   EmittedFile,
   IrBinaryOperator,
@@ -98,7 +99,9 @@ import {
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingHeadersCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
+  getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
+  getCompilerRuntimeExternalSymbolCallResultTypeCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
 } from './cppRuntimeExternalSymbolBinding.js';
 import { getIrHomogeneousTupleElementTypeCpp } from './cppTupleRepresentation.js';
@@ -9396,19 +9399,37 @@ function getCppExternalCallResultTargetCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): string | undefined {
+  return getCppRuntimeExternalCallResultTargetCpp(
+    expression,
+    getCppRuntimeProfile(context.options),
+    context.options.externalBindings,
+  );
+}
+
+function getCppRuntimeExternalCallResultTargetCpp(
+  expression: Readonly<IrExpression>,
+  runtimeProfile: CppCompilerRuntimeProfile,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
   if (
-    expression.kind !== 'call' ||
-    expression.optional ||
-    expression.semantics.optionalChain ||
-    expression.callee.kind !== 'identifier' ||
-    expression.callee.reference.kind !== 'ambient'
+    (expression.kind !== 'call' && expression.kind !== 'new') ||
+    (expression.kind === 'call' && (expression.optional || expression.semantics.optionalChain))
   ) {
     return undefined;
   }
-  return getCompilerExternalBindingCallResultTypeCpp(
-    expression.callee.reference.name,
-    context.options.externalBindings,
-  );
+  const callee = expression.callee;
+  if (callee.kind === 'identifier' && callee.reference.kind === 'ambient') {
+    return getCompilerRuntimeExternalSymbolCallResultTypeCpp(callee.reference.name, runtimeProfile, externalBindings);
+  }
+  if (callee.kind === 'property' && callee.object.kind === 'identifier' && callee.object.reference.kind === 'ambient') {
+    return getCompilerRuntimeExternalMemberCallResultTypeCpp(
+      callee.object.reference.name,
+      callee.name,
+      runtimeProfile,
+      externalBindings,
+    );
+  }
+  return undefined;
 }
 
 function collectCppExternalBindingStorageTargetTypesCpp(
@@ -9417,32 +9438,35 @@ function collectCppExternalBindingStorageTargetTypesCpp(
   options: Readonly<CppCompilerBackendOptions>,
 ): ReadonlyMap<string, string> {
   const candidates = new Map<string, Set<string>>();
+  const recordCandidate = (bindingId: string, expression: Readonly<IrExpression>): void => {
+    const declaredType = bindingTypes.get(bindingId);
+    if (!declaredType || !isCppUnresolvedExternalStorageTypeCpp(declaredType)) return;
+    const targetType = getCppRuntimeExternalCallResultTargetCpp(
+      expression,
+      getCppRuntimeProfile(options),
+      options.externalBindings,
+    );
+    if (!targetType) return;
+    const targets = candidates.get(bindingId) ?? new Set<string>();
+    targets.add(targetType);
+    candidates.set(bindingId, targets);
+  };
   analyzeIrModuleTraversal(module, {
     expression(expression) {
       if (
         expression.kind !== 'assignment' ||
         expression.operator !== '=' ||
         expression.left.kind !== 'identifier' ||
-        expression.left.reference.kind !== 'binding' ||
-        expression.right.kind !== 'call' ||
-        expression.right.optional ||
-        expression.right.semantics.optionalChain ||
-        expression.right.callee.kind !== 'identifier' ||
-        expression.right.callee.reference.kind !== 'ambient'
+        expression.left.reference.kind !== 'binding'
       ) {
         return;
       }
-      const bindingId = expression.left.reference.binding.id;
-      const declaredType = bindingTypes.get(bindingId);
-      if (!declaredType || !isCppUnresolvedExternalStorageTypeCpp(declaredType)) return;
-      const targetType = getCompilerExternalBindingCallResultTypeCpp(
-        expression.right.callee.reference.name,
-        options.externalBindings,
-      );
-      if (!targetType) return;
-      const targets = candidates.get(bindingId) ?? new Set<string>();
-      targets.add(targetType);
-      candidates.set(bindingId, targets);
+      recordCandidate(expression.left.reference.binding.id, expression.right);
+    },
+    variable(variable) {
+      if ('binding' in variable && variable.initializer) {
+        recordCandidate(variable.binding.id, variable.initializer);
+      }
     },
   });
   return new Map(

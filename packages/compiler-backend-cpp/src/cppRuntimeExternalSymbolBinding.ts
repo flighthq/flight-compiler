@@ -12,6 +12,7 @@ import type {
 
 type CppRuntimeExternalSymbolBinding =
   | Readonly<{
+      callResultType?: string | undefined;
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'native' }>['kind'];
       members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
       sourceName: string;
@@ -21,6 +22,7 @@ type CppRuntimeExternalSymbolBinding =
       construction?: CppCompilerExternalBindingConstruction | undefined;
     }>
   | Readonly<{
+      callResultType?: string | undefined;
       capability: CompilerRuntimeCapabilityName;
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'runtime' }>['kind'];
       members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
@@ -113,6 +115,20 @@ export function getCompilerExternalBindingWeakKeyPolicyTargetCpp(
   )?.weakKeyPolicyTargetName;
 }
 
+export function getCompilerRuntimeExternalMemberCallResultTypeCpp(
+  sourceName: string,
+  member: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
+    runtimeProfile,
+    externalBindings,
+  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'value');
+  return binding?.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.callResultType;
+}
+
 export function getCompilerRuntimeExternalMemberTargetCpp(
   sourceName: string,
   member: string,
@@ -126,6 +142,17 @@ export function getCompilerRuntimeExternalMemberTargetCpp(
   ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'value');
   if (!binding) return undefined;
   return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
+}
+
+export function getCompilerRuntimeExternalSymbolCallResultTypeCpp(
+  sourceName: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
+  const normalized = sourceName.normalize('NFC');
+  return getCppRuntimeExternalSymbolBindings(runtimeProfile, externalBindings).find(
+    (candidate) => candidate.sourceName === normalized && candidate.space === 'value',
+  )?.callResultType;
 }
 
 export function getCompilerRuntimeExternalSymbolTargetCpp(
@@ -191,12 +218,14 @@ function getCppCompilerExternalBindings(
     }
     if (
       binding.members?.some(
-        (member: Readonly<{ sourceMember: string; targetName: string }>) =>
+        (member: Readonly<CompilerRuntimeExternalMemberBinding>) =>
           !member ||
           typeof member.sourceMember !== 'string' ||
           member.sourceMember.length === 0 ||
           typeof member.targetName !== 'string' ||
-          member.targetName.length === 0,
+          member.targetName.length === 0 ||
+          (member.callResultType !== undefined &&
+            (typeof member.callResultType !== 'string' || member.callResultType.length === 0)),
       )
     ) {
       throw new TypeError(`${subject} has malformed static-member mappings`);
@@ -232,7 +261,7 @@ function getCppCompilerExternalBindings(
       headers: [...binding.headers],
       ...(binding.members
         ? {
-            members: binding.members.map((member: Readonly<{ sourceMember: string; targetName: string }>) => ({
+            members: binding.members.map((member: Readonly<CompilerRuntimeExternalMemberBinding>) => ({
               ...member,
             })),
           }
@@ -654,10 +683,11 @@ const cppFlightRuntimeExternalSymbolBindings = [
     targetName: 'flight::String',
   },
   {
+    callResultType: 'flight::Symbol',
     capability: 'symbol',
     headers: ['flight/symbol.hpp'],
     kind: 'runtime',
-    members: [{ sourceMember: 'for', targetName: 'flight::Symbol::for_key' }],
+    members: [{ callResultType: 'flight::Symbol', sourceMember: 'for', targetName: 'flight::Symbol::for_key' }],
     sourceName: 'Symbol',
     space: 'value',
     targetName: 'flight::Symbol',

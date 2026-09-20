@@ -100,7 +100,10 @@ export type CompilerRuntimeExternalConstructorAbiCompleteness =
 // How each member of an ambient symbol is spelled by a target. A binding maps one symbol to one
 // target name, which fits `Array` to `Vec`. It does not fit a namespace-like symbol: `Math.max` is
 // `f64::max` and `Math.PI` is a constant path, so the mapping is per member rather than per symbol.
+// A callable member may also carry exact target result evidence; omitting it never licenses a backend
+// to infer the result from `targetName`.
 export interface CompilerRuntimeExternalMemberBinding {
+  readonly callResultType?: string | undefined;
   readonly sourceMember: string;
   readonly targetName: string;
 }

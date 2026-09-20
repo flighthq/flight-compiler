@@ -2081,6 +2081,12 @@ describe('createCppCompilerBackend', () => {
        }
        export function bytes(length: number): Uint8Array | null {
          return new Uint8Array(length);
+       }
+       export function internedSymbol(): symbol | null {
+         return Symbol.for('key');
+       }
+       export function constructedSymbol(): symbol | null {
+         return new Symbol('key');
        }`,
     ).module;
 
@@ -2089,6 +2095,8 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::optional<double>{flight::maximum(');
     expect(emitted).toContain('std::optional<flight::String>{value.slice(1.0)}');
     expect(emitted).toContain('std::optional<flight::Uint8Array>{flight::Uint8Array(length)}');
+    expect(emitted).toContain('std::optional<flight::Symbol>{flight::Symbol::for_key(flight::String("key"))}');
+    expect(emitted).toContain('std::optional<flight::Symbol>{flight::Symbol(flight::String("key"))}');
   });
 
   it('recovers common property evidence from every variant alternative', () => {
@@ -2555,6 +2563,49 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('host::Surface same(host::Surface surface)');
     expect(emitted.contents).toContain('return host::create_surface()');
     expect(emitted.contents).toContain('return host::preferred_format');
+  });
+
+  it('uses downstream member and constructor result evidence for unresolved mutable storage', () => {
+    const result = lower(
+      'native-call-results.ts',
+      `export function retainNativeResults(): void {
+         let format = NativeSurface.preferredFormat();
+         format = NativeSurface.preferredFormat();
+         let surface = new NativeSurface();
+         surface = new NativeSurface();
+         void format;
+         void surface;
+       }`,
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          callResultType: 'host::Surface',
+          construction: { kind: 'factory' as const, targetName: 'host::create_surface' },
+          headers: ['host/surface.hpp'],
+          members: [
+            {
+              callResultType: 'host::PixelFormat',
+              sourceMember: 'preferredFormat',
+              targetName: 'host::preferred_format',
+            },
+          ],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'NativeSurface',
+          space: 'value' as const,
+          targetName: 'host::Surface',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    const emitted = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('host::PixelFormat format = host::preferred_format()');
+    expect(emitted).toContain('host::Surface surface = host::create_surface()');
+    expect(emitted).not.toContain('flight::Any format');
+    expect(emitted).not.toContain('flight::Any surface');
   });
 
   it('lowers PropertyKey intrinsically while preserving an unrelated Proxy refusal', () => {
@@ -3095,6 +3146,26 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(emitted.contents).toContain('auto key = flight::Symbol(flight::String("key"))');
     expect(emitted.contents).not.toContain('flight::Symbol(std::variant');
+  });
+
+  it('retains exact mutable storage for Symbol member calls and construction', () => {
+    const result = lower(
+      'symbol-call-results.ts',
+      `export function retainSymbols(): void {
+         let interned = Symbol.for('first');
+         interned = Symbol.for('second');
+         let constructed = new Symbol('first');
+         constructed = new Symbol('second');
+         void interned;
+         void constructed;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('flight::Symbol interned = flight::Symbol::for_key(flight::String("first"))');
+    expect(emitted).toContain('flight::Symbol constructed = flight::Symbol(flight::String("first"))');
+    expect(emitted).not.toContain('flight::Any interned');
+    expect(emitted).not.toContain('flight::Any constructed');
   });
 
   it('uses source numeric and error semantics in the runtime profile', () => {

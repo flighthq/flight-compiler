@@ -1,6 +1,6 @@
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
-import type { CompilerRuntimeAbiManifest } from './compilerRuntimeContract.js';
+import type { CompilerRuntimeAbiManifest, CompilerRuntimeExternalMemberBinding } from './compilerRuntimeContract.js';
 import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 export interface EmittedFileIdentity {
@@ -95,7 +95,7 @@ export interface CppCompilerExternalBinding {
   readonly callResultType?: string | undefined;
   readonly construction?: CppCompilerExternalBindingConstruction | undefined;
   readonly headers: readonly string[];
-  readonly members?: readonly Readonly<{ sourceMember: string; targetName: string }>[] | undefined;
+  readonly members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
   readonly nullability: 'non-null' | 'nullable';
   readonly ownership: 'borrowed' | 'owned' | 'shared' | 'value';
   readonly sourceName: string;

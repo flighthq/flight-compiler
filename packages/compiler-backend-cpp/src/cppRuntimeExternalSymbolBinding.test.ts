@@ -5,7 +5,9 @@ import {
   getCompilerExternalBindingEvidenceCpp,
   getCompilerExternalBindingHeadersCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
+  getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
+  getCompilerRuntimeExternalSymbolCallResultTypeCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
   isCompilerRuntimeExternalSymbolProvidedCpp,
 } from './cppRuntimeExternalSymbolBinding.js';
@@ -15,7 +17,13 @@ const externalBindings = {
     {
       construction: { kind: 'factory' as const, targetName: 'host::create_surface' },
       headers: ['host/surface.hpp'],
-      members: [{ sourceMember: 'preferredFormat', targetName: 'host::preferred_format' }],
+      members: [
+        {
+          callResultType: 'host::PixelFormat',
+          sourceMember: 'preferredFormat',
+          targetName: 'host::preferred_format',
+        },
+      ],
       nullability: 'non-null' as const,
       ownership: 'shared' as const,
       sourceName: 'NativeSurface',
@@ -162,6 +170,17 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
         schema: 'flight-cpp-external-bindings/1',
       }),
     ).toThrow('malformed');
+    expect(() =>
+      createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp', {
+        bindings: [
+          {
+            ...externalBindings.bindings[0]!,
+            members: [{ callResultType: '', sourceMember: 'preferredFormat', targetName: 'host::preferred_format' }],
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed static-member mappings');
   });
 });
 
@@ -216,6 +235,40 @@ describe('getCompilerExternalBindingCallResultTypeCpp', () => {
         schema: 'flight-cpp-external-bindings/1',
       }),
     ).toThrow('ambiguous for setTimeout[value]');
+  });
+});
+
+describe('runtime/external call-result evidence', () => {
+  it('returns exact evidence for runtime values and their static members', () => {
+    expect(getCompilerRuntimeExternalSymbolCallResultTypeCpp('Symbol')).toBeUndefined();
+    expect(getCompilerRuntimeExternalSymbolCallResultTypeCpp('Symbol', 'flight-cpp')).toBe('flight::Symbol');
+    expect(getCompilerRuntimeExternalMemberCallResultTypeCpp('Symbol', 'for')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberCallResultTypeCpp('Symbol', 'for', 'flight-cpp')).toBe('flight::Symbol');
+  });
+
+  it('returns exact member evidence from a downstream value binding', () => {
+    expect(
+      getCompilerRuntimeExternalMemberCallResultTypeCpp(
+        'NativeSurface',
+        'preferredFormat',
+        'flight-cpp',
+        externalBindings,
+      ),
+    ).toBe('host::PixelFormat');
+    expect(
+      getCompilerRuntimeExternalMemberCallResultTypeCpp('NativeSurface', 'missing', 'flight-cpp', externalBindings),
+    ).toBeUndefined();
+    expect(
+      getCompilerRuntimeExternalMemberCallResultTypeCpp('NativeSurface', 'preferredFormat', 'flight-cpp', {
+        ...externalBindings,
+        bindings: [
+          {
+            ...externalBindings.bindings[0]!,
+            members: [{ sourceMember: 'preferredFormat', targetName: 'host::preferred_format' }],
+          },
+        ],
+      }),
+    ).toBeUndefined();
   });
 });
 
