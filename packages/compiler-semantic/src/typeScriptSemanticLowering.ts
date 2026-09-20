@@ -1815,7 +1815,7 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
     !result ||
     source?.fileName === getCompilerAmbientSurfaceFileName() ||
     (source === context.moduleSourceFile &&
-      (!ts.isTypeNode(result) || !hasExternalTypeScriptTypeParameter(result, context)))
+      (!ts.isTypeNode(result) || !hasTypeScriptContextualResultReference(result, context.checker)))
   ) {
     return undefined;
   }
@@ -1831,9 +1831,10 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
       true,
       node,
     );
-    if (instantiated && instantiated.kind !== 'unknown') return instantiated;
     const written = getTypeScriptDegradedCallResultTypeEvidence(node, signature, context);
+    if (instantiated && !hasTypeScriptDegradedCallResultEvidence(instantiated)) return instantiated;
     if (written) return written;
+    if (instantiated) return instantiated;
     throw error;
   }
   if (callee?.kind === 'function' && callee.typeParameters.length === 0) {
@@ -1849,9 +1850,9 @@ function getTypeScriptInstantiatedCallResultTypeEvidence(
     true,
     node,
   );
-  return instantiated && instantiated.kind !== 'unknown'
-    ? instantiated
-    : getTypeScriptDegradedCallResultTypeEvidence(node, signature, context);
+  const written = getTypeScriptDegradedCallResultTypeEvidence(node, signature, context);
+  if (instantiated && !hasTypeScriptDegradedCallResultEvidence(instantiated)) return instantiated;
+  return written ?? instantiated;
 }
 
 function getTypeScriptDegradedCallResultTypeEvidence(
@@ -1865,16 +1866,50 @@ function getTypeScriptDegradedCallResultTypeEvidence(
   );
 }
 
+function hasTypeScriptDegradedCallResultEvidence(type: Readonly<IrType>): boolean {
+  switch (type.kind) {
+    case 'array':
+      return hasTypeScriptDegradedCallResultEvidence(type.element);
+    case 'conditionalFacet':
+      return hasTypeScriptDegradedCallResultEvidence(type.check) || hasTypeScriptDegradedCallResultEvidence(type.facet);
+    case 'function':
+      return (
+        type.parameters.some((parameter) => hasTypeScriptDegradedCallResultEvidence(parameter.type)) ||
+        hasTypeScriptDegradedCallResultEvidence(type.returns)
+      );
+    case 'indexedAccess':
+      return (
+        hasTypeScriptDegradedCallResultEvidence(type.object) || hasTypeScriptDegradedCallResultEvidence(type.index)
+      );
+    case 'intersection':
+    case 'union':
+      return type.types.some(hasTypeScriptDegradedCallResultEvidence);
+    case 'keyof':
+      return hasTypeScriptDegradedCallResultEvidence(type.type);
+    case 'named':
+      return type.typeArguments.some(hasTypeScriptDegradedCallResultEvidence);
+    case 'object':
+      return type.properties.some((property) => hasTypeScriptDegradedCallResultEvidence(property.type));
+    case 'tuple':
+      return type.elements.some((element) => hasTypeScriptDegradedCallResultEvidence(element.type));
+    case 'unknown':
+      return type.source !== 'this';
+    default:
+      return false;
+  }
+}
+
 // The checker may retain the instantiated parameter types of an ordinary generic call while
 // degrading a result alias that contains NoInfer. Substitute the written result only when every
-// declaration parameter is proved from those instantiated inputs. Overload calls use their own
-// implementation rule below, so a defaulted overload cannot silently replace a caller-owned type.
+// declaration parameter is proved from those instantiated inputs. A selected overload qualifies by
+// the same proof: a return-only type-guard result cannot be substituted because no argument proves
+// it, while an ordinary overload whose complete result parameters come from its arguments can be.
 function getTypeScriptGenericWrittenCallResultTypeEvidence(
   node: ts.CallExpression,
   signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
   context: LoweringContext,
 ): Readonly<IrType> | undefined {
-  const declaration = signature?.overloadIndex === undefined ? signature?.resolved : undefined;
+  const declaration = signature?.resolved;
   const declarationTypeParameters = declaration?.typeParameters?.filter(ts.isTypeParameterDeclaration);
   if (!declaration?.type || !ts.isTypeNode(declaration.type) || !declarationTypeParameters?.length) return undefined;
   const typeParameters = lowerTypeParameters(declarationTypeParameters, context);
@@ -1886,16 +1921,20 @@ function getTypeScriptGenericWrittenCallResultTypeEvidence(
     if (!parameter) return;
     const written = lowerFunctionTypeParameter(parameter, context).type;
     const argumentCandidates = [
+      getTypeScriptExpressionBindingTypeEvidence(argument, context),
       getTypeScriptInstantiatedInvocationParameterType(node, index, argument, context),
       lowerTypeScriptExpressionTypeEvidence(argument, context),
       inferInitializerType(argument, context),
-    ].flatMap((candidate): readonly Readonly<IrType>[] => {
-      if (!candidate) return [];
-      if (candidate.kind !== 'union') return [candidate];
-      const present = candidate.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
-      return present.length === 1 ? present : [candidate];
-    });
+    ]
+      .flatMap((candidate): readonly Readonly<IrType>[] => {
+        if (!candidate) return [];
+        if (candidate.kind !== 'union') return [candidate];
+        const present = candidate.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+        return present.length === 1 ? present : [candidate];
+      })
+      .flatMap((candidate) => [candidate, ...getTypeScriptCallResultAliasMembers(candidate, context)]);
     for (const candidate of argumentCandidates) {
+      if (hasTypeScriptDegradedCallResultEvidence(candidate)) continue;
       const candidates = new Map(substitutions);
       if (collectTypeScriptCallResultSubstitutions(written, candidate, parameterIds, candidates)) {
         substitutions.clear();
@@ -1910,6 +1949,53 @@ function getTypeScriptGenericWrittenCallResultTypeEvidence(
     lowerType(declaration.type, context),
     createIrTypeParameterSubstitutionPlan(typeParameters, arguments_),
   );
+}
+
+// A recorded local can retain an authored alias after TypeScript has expanded the same value to an
+// unusable `unknown` instantiation. Expose only the alias's own intersection members as additional
+// inference evidence: each member is a source-proved supertype of the value, while an unrelated
+// structural row still supplies no matching nominal parameter path.
+function getTypeScriptCallResultAliasMembers(
+  type: Readonly<IrType>,
+  context: LoweringContext,
+  seen: ReadonlySet<string> = new Set(),
+): readonly Readonly<IrType>[] {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    seen.has(type.reference.binding.id)
+  ) {
+    return [];
+  }
+  const bindingId = type.reference.binding.id;
+  const symbol = [...context.typeBindings].find(([, binding]) => binding.id === bindingId)?.[0];
+  const declarationSymbol =
+    symbol?.flags && symbol.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(symbol) : symbol;
+  const declaration = declarationSymbol?.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!declaration) return [];
+  const declarationSourceFile = declaration.getSourceFile();
+  const declarationOptions = context.analysisModuleOptions.get(declarationSourceFile.fileName);
+  if (!declarationOptions) return [];
+  const declarationContext = { ...context, options: declarationOptions, sourceFile: declarationSourceFile };
+  const typeParameters = lowerTypeParameters(declaration.typeParameters, declarationContext);
+  if (
+    type.typeArguments.length > typeParameters.length ||
+    typeParameters.slice(type.typeArguments.length).some((parameter) => !parameter.default)
+  ) {
+    return [];
+  }
+  const resolved = resolveIrTypeStructuralSubstitution(
+    lowerType(declaration.type, declarationContext),
+    createIrTypeParameterSubstitutionPlan(typeParameters, type.typeArguments),
+  );
+  if (resolved.kind !== 'intersection') return [];
+  const nextSeen = new Set(seen);
+  nextSeen.add(bindingId);
+  return resolved.types.flatMap((member) => [
+    member,
+    ...getTypeScriptCallResultAliasMembers(member, context, nextSeen),
+  ]);
 }
 
 // TypeScript exposes overloads at a call site but executes the implementation ABI. On a recursive

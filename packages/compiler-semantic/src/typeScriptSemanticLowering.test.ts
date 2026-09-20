@@ -10989,6 +10989,249 @@ it('keeps caller-owned NodeOf evidence across an imported generic and a recursiv
   ]);
 });
 
+it('keeps caller-owned generic results for same-module calls and selected overloads', () => {
+  const moduleResolution = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+      {
+        specifier: './node',
+        target: { packageName: '@flighthq/node', source: 'packages/node/src/node.ts' },
+      },
+      {
+        specifier: './hierarchy',
+        target: { packageName: '@flighthq/node', source: 'packages/node/src/hierarchy.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  } as const;
+  const results = lowerTypeScriptSources(
+    [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          `export interface Node<Traits extends object> { readonly name: string | null }
+           export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+           export interface NodeRuntime<Traits extends object> { children: NodeOf<Traits>[] | null }
+           export interface NodeTraits { readonly name: string | null }
+           export interface HasBoundsRectangle { readonly width: number }
+           export interface HasTransform2D { readonly x: number }
+           export type Spatial2DNode<Traits extends object> =
+             NodeOf<Traits> & HasBoundsRectangle & HasTransform2D;`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/node',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/node/src/node.ts',
+          `import type { Node, NodeRuntime } from '@flighthq/types/contract';
+           export function getNodeRuntime<Traits extends object>(
+             source: Readonly<Node<Traits>>,
+           ): Readonly<NodeRuntime<Traits>> {
+             return source as unknown as NodeRuntime<Traits>;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/node',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/node/src/hierarchy.ts',
+          `import type { Node, NodeOf } from '@flighthq/types/contract';
+           export function getNodeParent<Traits extends object>(
+             source: Readonly<Node<Traits>>,
+           ): NodeOf<Traits> | null {
+             return source.name === null ? null : source as NodeOf<Traits>;
+           }
+           export function getNodeAncestors<Traits extends object>(
+             source: Readonly<Node<Traits>>,
+           ): readonly NodeOf<Traits>[] {
+             const result: NodeOf<Traits>[] = [];
+             let current = getNodeParent(source as Node<Traits>);
+             while (current !== null) {
+               result.push(current);
+               current = getNodeParent(current);
+             }
+             return result;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/node',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/node/src/traversal.ts',
+          `import type { Node, NodeOf, NodeTraits } from '@flighthq/types/contract';
+           import { getNodeRuntime } from './node';
+           export function findNode<Traits extends object, Result extends Node<Traits>>(
+             source: Readonly<Node<Traits>>,
+             predicate: (node: Node<Traits>) => node is Result,
+           ): Result | null;
+           export function findNode<Traits extends object = NodeTraits>(
+             source: Readonly<Node<Traits>>,
+             predicate: (node: Node<Traits>) => boolean,
+           ): NodeOf<Traits> | null;
+           export function findNode<Traits extends object = NodeTraits>(
+             source: Readonly<Node<Traits>>,
+             predicate: (node: Node<Traits>) => boolean,
+           ): NodeOf<Traits> | null {
+             const children = getNodeRuntime(source).children;
+             if (children === null) return null;
+             for (let i = 0; i < children.length; i++) {
+               const child = children[i];
+               if (predicate(child)) return child;
+               const found = findNode(child, predicate);
+               if (found !== null) return found;
+             }
+             return null;
+           }
+           export function findNodeByName<Traits extends object = NodeTraits>(
+             source: Readonly<Node<Traits>>,
+             name: string,
+           ): NodeOf<Traits> | null {
+             return findNode(source, (node) => node.name === name);
+           }
+           export function findTyped<Traits extends object, Result extends Node<Traits>>(
+             source: Readonly<Node<Traits>>,
+             predicate: (node: Node<Traits>) => node is Result,
+           ): Result | null {
+             return findNode(source, predicate);
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/node',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/node/src/boundsRectangle.ts',
+          `import type { Spatial2DNode } from '@flighthq/types/contract';
+           import { getNodeParent } from './hierarchy';
+           export function computeNodeBoundsRectangle<Traits extends object>(
+             source: Spatial2DNode<Traits>,
+             targetCoordinateSpace: Spatial2DNode<Traits> | null | undefined,
+           ): void { source; targetCoordinateSpace; }
+           export function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): number {
+             computeNodeBoundsRectangle(
+               source,
+               getNodeParent(source) as unknown as Spatial2DNode<Traits> | null,
+             );
+             return source.width;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ],
+    moduleResolution,
+  );
+  const ancestors = results[2]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'getNodeAncestors',
+  );
+  const getParent = results[2]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'getNodeParent',
+  );
+  const find = results[3]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'findNode',
+  );
+  const findByName = results[3]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'findNodeByName',
+  );
+  const findTyped = results[3]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'findTyped',
+  );
+  const getNodeHeight = results[4]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'getNodeHeight',
+  );
+  if (
+    ancestors?.kind !== 'function' ||
+    getParent?.kind !== 'function' ||
+    find?.kind !== 'function' ||
+    findByName?.kind !== 'function' ||
+    findTyped?.kind !== 'function' ||
+    getNodeHeight?.kind !== 'function'
+  ) {
+    throw new Error('Expected same-module Node functions');
+  }
+  const parentResults: IrType[] = [];
+  const boundsParentResults: IrType[] = [];
+  const findResults: IrType[] = [];
+  analyzeIrModuleTraversal(results[2]!.module, {
+    expression(expression) {
+      if (
+        expression.kind === 'call' &&
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'binding' &&
+        expression.callee.reference.binding.name === 'getNodeParent'
+      ) {
+        parentResults.push(expression.semantics.resultType);
+      }
+    },
+  });
+  analyzeIrModuleTraversal(results[3]!.module, {
+    expression(expression) {
+      if (
+        expression.kind === 'call' &&
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'binding' &&
+        expression.callee.reference.binding.id === find.binding.id
+      ) {
+        findResults.push(expression.semantics.resultType);
+      }
+    },
+  });
+  analyzeIrModuleTraversal(results[4]!.module, {
+    expression(expression) {
+      if (
+        expression.kind === 'call' &&
+        expression.callee.kind === 'identifier' &&
+        expression.callee.reference.kind === 'binding' &&
+        expression.callee.reference.binding.name === 'getNodeParent'
+      ) {
+        boundsParentResults.push(expression.semantics.resultType);
+      }
+    },
+  });
+
+  expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+  expect(parentResults).toHaveLength(2);
+  parentResults.forEach((result) => {
+    expect(result.kind).toBe('union');
+    expect(JSON.stringify(result)).toContain(JSON.stringify(ancestors.typeParameters[0]!.binding.id).slice(1, -1));
+    expect(JSON.stringify(result)).not.toContain(JSON.stringify(getParent.typeParameters[0]!.binding.id).slice(1, -1));
+    expect(JSON.stringify(result)).toContain('"kind":"null"');
+  });
+  expect(findResults).toHaveLength(3);
+  expect(JSON.stringify(findResults[1])).toContain(
+    JSON.stringify(findByName.typeParameters[0]!.binding.id).slice(1, -1),
+  );
+  expect(JSON.stringify(findResults[1])).not.toContain(JSON.stringify(find.typeParameters[0]!.binding.id).slice(1, -1));
+  expect(JSON.stringify(findResults[1])).toContain('"kind":"null"');
+  expect(JSON.stringify(findResults[2])).toContain(
+    JSON.stringify(findTyped.typeParameters[1]!.binding.id).slice(1, -1),
+  );
+  expect(JSON.stringify(findResults[2])).toContain('"kind":"null"');
+  expect(JSON.stringify(findResults[2])).not.toMatch(/"source":"(?:any|unknown)"/u);
+  expect(boundsParentResults).toHaveLength(1);
+  expect(JSON.stringify(boundsParentResults[0])).toContain(
+    JSON.stringify(getNodeHeight.typeParameters[0]!.binding.id).slice(1, -1),
+  );
+  expect(JSON.stringify(boundsParentResults[0])).toContain('"kind":"null"');
+  expect(JSON.stringify(boundsParentResults[0])).not.toMatch(/"source":"(?:any|unknown)"/u);
+});
+
 it('instantiates optional Map and WeakMap lookup results from their receivers', () => {
   const result = lower(
     'optional-map-lookup.ts',

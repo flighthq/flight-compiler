@@ -2631,6 +2631,10 @@ function emitExpression(
             )
           : expression.parameters;
       const returns = expectedCallable?.returns ?? expression.returns;
+      // Contextual parameter recovery changes the lambda ABI, so member access inside the body must
+      // consult those same recovered types rather than the original unresolved parameter bindings.
+      const bindingTypes = new Map(context.bindingTypes);
+      parameters.forEach((parameter) => bindingTypes.set(parameter.binding.id, parameter.type));
       const functionContext: EmitContext = {
         ...context,
         activeDependentCallablePackIds: mergeCppDependentCallablePackIds(
@@ -2642,6 +2646,7 @@ function emitExpression(
           expression.typeParameters,
         ),
         async: false,
+        bindingTypes,
         defaultedParameterIds: new Set([
           ...context.defaultedParameterIds,
           ...collectDefaultedParameterIdsCpp(parameters),
@@ -3958,6 +3963,10 @@ function getIrIterableElementTypeCpp(
   }
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
+    // `std::optional` erases which single sentinel caused absence, while the source plan retains it.
+    // When widening into a dual-sentinel variant, branch before extracting the value and reconstruct
+    // that exact sentinel. An explicit assertion may change the present structural view, but its
+    // underlying optional remains the expression whose presence must be tested.
     if (
       ['Iterable', 'IterableIterator', 'ReadonlySet', 'Set'].includes(type.reference.name) &&
       type.typeArguments.length === 1
@@ -6714,6 +6723,90 @@ function emitContextualUnionExpressionCpp(
     }
     if (
       expressionPlan.kind === 'optionalSingle' &&
+      plan.kind === 'dualSentinelVariant' &&
+      expressionPlan.valueSlots.length === 1 &&
+      plan.valueSlots.length === 1
+    ) {
+      let sourceExpression: Readonly<IrExpression> = expression;
+      let sourceType = expressionType;
+      let sourcePlan = expressionPlan;
+      let conversionTargetSlot = plan.valueSlots[0]!;
+      if (expression.kind === 'cast') {
+        const assertedSource =
+          expression.expression.kind === 'cast' && expression.expression.type.kind === 'unknown'
+            ? expression.expression.expression
+            : expression.expression;
+        const assertedSourceType = getIrExpressionTypeEvidenceCpp(assertedSource, context);
+        const assertedSourceUnion = assertedSourceType
+          ? getIrUnionTypeCpp(assertedSourceType, context, new Set())
+          : undefined;
+        const assertedSourcePlan = assertedSourceUnion
+          ? getCppUnionRepresentationPlan(assertedSourceUnion, context)
+          : undefined;
+        if (assertedSourceType && assertedSourcePlan?.kind === 'optionalSingle') {
+          sourceExpression = assertedSource;
+          sourceType = assertedSourceType;
+          sourcePlan = assertedSourcePlan;
+          conversionTargetSlot = expressionPlan.valueSlots[0]!;
+        }
+      }
+      const sourceSlot = sourcePlan.valueSlots[0]!;
+      const targetSlot = plan.valueSlots[0]!;
+      const sourceSentinel =
+        sourcePlan.sentinels.null === 'optionalAbsence'
+          ? 'null'
+          : sourcePlan.sentinels.undefined === 'optionalAbsence'
+            ? 'undefined'
+            : undefined;
+      const source = getGeneratedTargetName('contextualUnionSource', context);
+      let converted =
+        conversionTargetSlot.targetType === targetSlot.targetType &&
+        sourceSlot.targetType === conversionTargetSlot.targetType
+          ? `${source}.value()`
+          : undefined;
+      if (
+        !converted &&
+        conversionTargetSlot.targetType === targetSlot.targetType &&
+        isCppExplicitStructuralRowExtensionCpp(sourceSlot.runtimeType, conversionTargetSlot.runtimeType, context)
+      ) {
+        context.includes.add('flight/structural_ref.hpp');
+        converted = `flight::structural_ref_cast<${conversionTargetSlot.targetType}>(${source}.value())`;
+      }
+      if (!converted && conversionTargetSlot.targetType === targetSlot.targetType) {
+        const conversions = (
+          sourceSlot.sourceAlternatives.length > 0 ? sourceSlot.sourceAlternatives : [sourceSlot.runtimeType]
+        ).flatMap((sourceType) =>
+          (conversionTargetSlot.sourceAlternatives.length > 0
+            ? conversionTargetSlot.sourceAlternatives
+            : [conversionTargetSlot.runtimeType]
+          ).flatMap((targetType) => {
+            const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+            return emitCppStructuralReferenceValueConversionCpp('source', sourceType, targetType, isolatedContext)
+              ? [{ sourceType, targetType }]
+              : [];
+          }),
+        );
+        if (conversions.length === 1) {
+          const conversion = conversions[0]!;
+          converted = emitCppStructuralReferenceValueConversionCpp(
+            `${source}.value()`,
+            conversion.sourceType,
+            conversion.targetType,
+            context,
+          );
+        }
+      }
+      if (sourceSentinel && converted && sourceSlot.targetType !== 'flight::Any') {
+        context.includes.add('optional');
+        const resultType = emitUnionTypeCpp(union, context);
+        const absent = emitCppUnionSentinelConstruction(sourceSentinel, union, plan.kind, context);
+        const present = emitCppUnionValueConstruction(converted, targetSlot.targetType, union, plan.kind, context);
+        const value = emitExpression(sourceExpression, context, sourceType, false);
+        return `([&]() -> ${resultType} { auto ${source} = ${value}; if (!${source}.has_value()) return ${absent}; return ${present}; }())`;
+      }
+    }
+    if (
+      expressionPlan.kind === 'optionalSingle' &&
       plan.kind === 'optionalSingle' &&
       expressionPlan.valueSlots.length === 1 &&
       plan.valueSlots.length === 1
@@ -7490,6 +7583,11 @@ function collectCppResultTypeSubstitutionsCpp(
     candidate.kind === 'intersection' &&
     pattern.types.length === candidate.types.length
   ) {
+    return pattern.types.every((type, index) =>
+      collectCppResultTypeSubstitutionsCpp(type, candidate.types[index]!, parameterIds, substitutions, context),
+    );
+  }
+  if (pattern.kind === 'union' && candidate.kind === 'union' && pattern.types.length === candidate.types.length) {
     return pattern.types.every((type, index) =>
       collectCppResultTypeSubstitutionsCpp(type, candidate.types[index]!, parameterIds, substitutions, context),
     );
