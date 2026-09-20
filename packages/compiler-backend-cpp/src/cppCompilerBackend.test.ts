@@ -3966,7 +3966,69 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
-  it('refuses a nullable typed view over an object-valued WeakMap before its write-back cast', () => {
+  it('plans an ErasedRef WeakMap view with get, set, has, and delete up to its exact runtime overload', () => {
+    const result = lower(
+      'erased-ref-weak-map-view.ts',
+      `interface Key { id: number }
+       interface Value { version: number }
+       export function exercise(values: WeakMap<object, object>, key: Key, value: Value): Value | undefined {
+         const typed = values as WeakMap<Key, Value>;
+         typed.set(key, value);
+         typed.has(key);
+         typed.delete(key);
+         return typed.get(key);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.message).toContain(
+      'flight::checked_weak_map_view<Key, Value>(flight::WeakMap<flight::Ref<void>, flight::ErasedRef>&)',
+    );
+    expect(failure.rule).toBe('cpp-weak-map-erased-ref-view-unsupported');
+  });
+
+  it('refuses invalid ErasedRef WeakMap view keys, values, and open generic values before runtime acquisition', () => {
+    const wrongKey = lower(
+      'erased-ref-weak-map-wrong-key.ts',
+      `interface Value { version: number }
+       export function invalid(values: WeakMap<object, object>): void {
+         const typed = values as WeakMap<string, Value>;
+         typed.has('key');
+       }`,
+    );
+    expect(() => emitIrModuleCpp(wrongKey.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'erased-reference WeakMap typed view requires a proven Flight reference key',
+    );
+
+    const wrongValue = lower(
+      'erased-ref-weak-map-wrong-value.ts',
+      `interface Key { id: number }
+       export function invalid(values: WeakMap<object, object>, key: Key): void {
+         const typed = values as WeakMap<Key, number>;
+         typed.set(key, 1);
+       }`,
+    );
+    expect(() => emitIrModuleCpp(wrongValue.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'erased-reference WeakMap typed view requires a proven Flight reference value',
+    );
+
+    const openValue = lower(
+      'erased-ref-weak-map-open-value.ts',
+      `interface Key { id: number }
+       export function invalid<Value extends object>(values: WeakMap<object, object>): void {
+         const typed = values as WeakMap<Key, Value>;
+         void typed;
+       }`,
+    );
+    expect(() => emitIrModuleCpp(openValue.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'erased-reference WeakMap typed view requires a closed Flight reference value',
+    );
+  });
+
+  it('plans nullable ErasedRef backing initialization before typed view acquisition', () => {
     const result = lower(
       'scene-runtime.ts',
       `interface Key { id: number }
@@ -3987,76 +4049,95 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(result.diagnostics).toEqual([]);
     expect(failure.message).toContain(
-      'flight-cpp WeakMap<object, object> typed views require an ErasedRef runtime view primitive; nullable mutable views also require initialization lowering',
+      'flight::checked_weak_map_view<Key, Value>(flight::WeakMap<flight::Ref<void>, flight::ErasedRef>&) after initializing and retaining the erased backing field',
     );
     expect(failure.rule).toBe('cpp-weak-map-erased-ref-view-unsupported');
   });
 
-  it('reports the same ErasedRef view boundary for imported GL and WGPU scene cache types', () => {
+  it('plans non-null and nullable imported GL and WGPU ErasedRef cache views', () => {
     for (const packageName of ['@flighthq/scene3d-gl', '@flighthq/scene3d-wgpu']) {
-      const moduleResolution: CompilerModuleResolutionPlan = {
-        edges: [
-          {
-            importedNames: ['ContextRuntime', 'MeshGeometry', 'MeshUpload'],
-            specifier: '@flighthq/types/contract',
-            target: { packageName: '@flighthq/types', source: 'packages/types/src/SceneRuntime.ts' },
-          },
-        ],
-        schema: 'flight-compiler-module-resolution/1',
-      };
-      const results = lowerTypeScriptSources(
-        [
-          {
-            packageName: '@flighthq/types',
-            sourceFile: ts.createSourceFile(
-              '/flight/packages/types/src/SceneRuntime.ts',
-              `export interface ContextRuntime { sceneMeshUploadCache?: WeakMap<object, object> | null }
-               export interface MeshGeometry { readonly id: number }
-               export interface MeshUpload { version: number }`,
-              ts.ScriptTarget.Latest,
-              true,
-            ),
-            upstreamDirectory: '/flight',
-          },
-          {
-            packageName,
-            sourceFile: ts.createSourceFile(
-              `/flight/packages/${packageName.slice(packageName.lastIndexOf('/') + 1)}/src/sceneRuntime.ts`,
-              `import type { ContextRuntime, MeshGeometry, MeshUpload } from '@flighthq/types/contract';
-               export function getUploadCache(context: ContextRuntime): WeakMap<MeshGeometry, MeshUpload> {
-                 let cache = context.sceneMeshUploadCache as
-                   | WeakMap<MeshGeometry, MeshUpload>
-                   | null
-                   | undefined;
-                 if (cache == null) {
-                   cache = new WeakMap();
-                   context.sceneMeshUploadCache = cache as unknown as WeakMap<object, object>;
+      for (const nullable of [false, true]) {
+        const moduleResolution: CompilerModuleResolutionPlan = {
+          edges: [
+            {
+              importedNames: ['ContextRuntime', 'MeshGeometry', 'MeshUpload'],
+              specifier: '@flighthq/types/contract',
+              target: { packageName: '@flighthq/types', source: 'packages/types/src/SceneRuntime.ts' },
+            },
+          ],
+          schema: 'flight-compiler-module-resolution/1',
+        };
+        const results = lowerTypeScriptSources(
+          [
+            {
+              packageName: '@flighthq/types',
+              sourceFile: ts.createSourceFile(
+                '/flight/packages/types/src/SceneRuntime.ts',
+                `export interface ContextRuntime {
+                   sceneMeshUploadCache${nullable ? '?' : ''}: WeakMap<object, object>${nullable ? ' | null' : ''}
                  }
-                 return cache;
-               }`,
-              ts.ScriptTarget.Latest,
-              true,
-            ),
-            upstreamDirectory: '/flight',
-          },
-        ],
-        moduleResolution,
-      );
-      const modules = results.map((result) => result.module);
-      const failure = captureBackendEmissionFailure(() =>
-        createCppCompilerBackend().createEmissionSession!({
+                 export interface MeshGeometry { readonly id: number }
+                 export interface MeshUpload { version: number }`,
+                ts.ScriptTarget.Latest,
+                true,
+              ),
+              upstreamDirectory: '/flight',
+            },
+            {
+              packageName,
+              sourceFile: ts.createSourceFile(
+                `/flight/packages/${packageName.slice(packageName.lastIndexOf('/') + 1)}/src/sceneRuntime.ts`,
+                nullable
+                  ? `import type { ContextRuntime, MeshGeometry, MeshUpload } from '@flighthq/types/contract';
+                     export function getUploadCache(context: ContextRuntime): WeakMap<MeshGeometry, MeshUpload> {
+                       let cache = context.sceneMeshUploadCache as
+                         | WeakMap<MeshGeometry, MeshUpload>
+                         | null
+                         | undefined;
+                       if (cache == null) {
+                         cache = new WeakMap();
+                         context.sceneMeshUploadCache = cache as unknown as WeakMap<object, object>;
+                       }
+                       return cache;
+                     }`
+                  : `import type { ContextRuntime, MeshGeometry, MeshUpload } from '@flighthq/types/contract';
+                     export function exercise(
+                       context: ContextRuntime,
+                       geometry: MeshGeometry,
+                       upload: MeshUpload,
+                     ): MeshUpload | undefined {
+                       const cache = context.sceneMeshUploadCache as WeakMap<MeshGeometry, MeshUpload>;
+                       cache.set(geometry, upload);
+                       cache.has(geometry);
+                       cache.delete(geometry);
+                       return cache.get(geometry);
+                     }`,
+                ts.ScriptTarget.Latest,
+                true,
+              ),
+              upstreamDirectory: '/flight',
+            },
+          ],
           moduleResolution,
-          modules,
-          options: { runtimeProfile: 'flight-cpp' },
-        }).emitModule(modules[1]!),
-      );
+        );
+        const modules = results.map((result) => result.module);
+        const failure = captureBackendEmissionFailure(() =>
+          createCppCompilerBackend().createEmissionSession!({
+            moduleResolution,
+            modules,
+            options: { runtimeProfile: 'flight-cpp' },
+          }).emitModule(modules[1]!),
+        );
 
-      expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-      expect(failure.rule).toBe('cpp-weak-map-erased-ref-view-unsupported');
+        expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+        expect(failure.message).toContain('checked_weak_map_view<Key, Value>');
+        expect(failure.message.includes('after initializing and retaining the erased backing field')).toBe(nullable);
+        expect(failure.rule).toBe('cpp-weak-map-erased-ref-view-unsupported');
+      }
     }
   });
 
-  it('emits opaque scene caches and acquires two checked local typed views', () => {
+  it('emits opaque scene caches and acquires two checked local ErasedValue WeakMap views', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -4103,6 +4184,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
                const stateBindings = runtime.shadedMaterialBindingCache as WeakMap<ShadedMaterial, ShadedBinding>;
                const plans = runtime.shadedMaterialPlanCache as WeakMap<ShadedMaterial, CachedShadedPlan>;
                stateBindings.set(material, { version: 1 });
+               stateBindings.get(material);
+               stateBindings.has(material);
+               stateBindings.delete(material);
                plans.set(material, { version: 2 });
              }`,
             ts.ScriptTarget.Latest,
@@ -4140,6 +4224,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(shaded).toContain(
       'auto plans = flight::checked_weak_map_view<flight::Ref<flight::types::ShadedMaterial>, flight::Ref<CachedShadedPlan>>(runtime->shaded_material_plan_cache);',
     );
+    expect(shaded).toContain('state_bindings.get(material);');
+    expect(shaded).toContain('state_bindings.has(material);');
+    expect(shaded).toContain('state_bindings.erase(material);');
     expect(shaded).not.toContain('static_cast<flight::WeakMap');
 
     const mutable = lower(

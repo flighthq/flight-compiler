@@ -147,9 +147,18 @@ interface CppWeakMapTypeArgumentPlan {
 }
 
 interface CppWeakMapViewPlan {
+  readonly erasedValue: 'reference' | 'value';
   readonly key: Readonly<IrType>;
   readonly value: Readonly<IrType>;
 }
+
+interface CppNullableErasedRefWeakMapViewPlan {
+  readonly backing: Readonly<Extract<IrExpression, { kind: 'property' }>>;
+  readonly view: Readonly<CppWeakMapViewPlan>;
+}
+
+const cppErasedRefWeakMapViewRuntimeDependency =
+  'flight::checked_weak_map_view<Key, Value>(flight::WeakMap<flight::Ref<void>, flight::ErasedRef>&)';
 
 interface CppStructuralCloneRecordViewPlan {
   readonly row: Readonly<CompilerCppStructuralRowPlan>;
@@ -1745,9 +1754,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const arrayElement = context.arrayElementBindingIds.has(variable.binding.id);
   const weakMapViewInitializer =
     !variable.mutable && variable.initializer?.kind === 'cast' ? variable.initializer : undefined;
-  const weakMapViewPlan = weakMapViewInitializer
-    ? getCppErasedWeakMapViewPlan(weakMapViewInitializer, context)
-    : undefined;
+  const weakMapViewPlan = weakMapViewInitializer ? getCppWeakMapViewPlan(weakMapViewInitializer, context) : undefined;
   const inferredInitializerType =
     !arrayElement &&
     !variable.mutable &&
@@ -4941,7 +4948,16 @@ function emitStatementBody(statement: Readonly<IrStatement>, context: EmitContex
 }
 
 function emitStatements(statements: readonly IrStatement[], context: EmitContext): string[] {
-  return statements.flatMap((statement) => emitStatement(statement, context));
+  const emitted: string[] = [];
+  for (const [index, statement] of statements.entries()) {
+    // The nullable source local changes representation across its guard: before the guard it denotes
+    // absence or erased backing storage, and afterwards it denotes a typed view. Recognize that whole
+    // prologue before emitting its first declaration so the view can never bind to the fresh typed map.
+    const nullableWeakMapView = getCppNullableErasedRefWeakMapViewPlan(statement, statements[index + 1], context);
+    if (nullableWeakMapView) refuseCppErasedRefWeakMapView(context, true);
+    emitted.push(...emitStatement(statement, context));
+  }
+  return emitted;
 }
 
 function containsAwaitExpressionCpp(statement: Readonly<IrStatement>): boolean {
@@ -6264,7 +6280,14 @@ function getCppErasedWeakMapViewPlan(
   if (value.kind !== 'represented') {
     emissionError(context, 'erased WeakMap typed view requires a represented value type');
   }
-  return { key: target.typeArguments[0], value: target.typeArguments[1] };
+  return { erasedValue: 'value', key: target.typeArguments[0], value: target.typeArguments[1] };
+}
+
+function getCppWeakMapViewPlan(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): Readonly<CppWeakMapViewPlan> | undefined {
+  return getCppErasedWeakMapViewPlan(expression, context) ?? getCppErasedRefWeakMapViewPlan(expression, context);
 }
 
 function getCppErasedRefWeakMapViewPlan(
@@ -6274,17 +6297,7 @@ function getCppErasedRefWeakMapViewPlan(
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
   const sourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
   const source = sourceType ? getCppNonNullableType(sourceType, context, new Set()) : undefined;
-  const erased = getIrWeakMapTypeCpp(source, context, new Set());
-  if (
-    !erased ||
-    erased.typeArguments.length !== 2 ||
-    erased.typeArguments[0]?.kind !== 'unknown' ||
-    erased.typeArguments[0].source !== 'object' ||
-    erased.typeArguments[1]?.kind !== 'unknown' ||
-    erased.typeArguments[1].source !== 'object'
-  ) {
-    return undefined;
-  }
+  if (!isCppErasedRefWeakMapType(source, context)) return undefined;
   const targetType = getCppNonNullableType(expression.type, context, new Set());
   const target = getIrWeakMapTypeCpp(targetType, context, new Set());
   if (!target || target.typeArguments.length !== 2 || !target.typeArguments[0] || !target.typeArguments[1]) {
@@ -6298,21 +6311,132 @@ function getCppErasedRefWeakMapViewPlan(
   ) {
     return undefined;
   }
+  if (getCppOpenTypeParameterName(target.typeArguments[0])) {
+    emissionError(context, 'erased-reference WeakMap typed view requires a closed Flight reference key');
+  }
   const key = context.referenceRepresentationPlanner.plan(target.typeArguments[0], context.module);
   if (key.kind !== 'represented' || key.valueRepresentation !== 'flightReference') {
-    emissionError(context, 'erased WeakMap typed view requires a proven Flight reference key');
+    emissionError(context, 'erased-reference WeakMap typed view requires a proven Flight reference key');
   }
-  if (!hasProvenWeakMapValueRepresentationCpp(target.typeArguments[1], context)) {
-    emissionError(context, 'erased WeakMap typed view requires a represented value type');
+  if (getCppOpenTypeParameterName(target.typeArguments[1])) {
+    emissionError(context, 'erased-reference WeakMap typed view requires a closed Flight reference value');
   }
-  return { key: target.typeArguments[0], value: target.typeArguments[1] };
+  const valueType = target.typeArguments[1];
+  const owner =
+    getCppDirectBindingOwner(valueType, context) ??
+    (valueType.kind === 'named' ? getCppImportedBindingDeclarationCpp(valueType, context) : undefined);
+  const value = context.referenceRepresentationPlanner.plan(valueType, owner?.module ?? context.module);
+  if (
+    value.kind !== 'represented' ||
+    value.identity.identity === 'indeterminate' ||
+    value.valueRepresentation !== 'flightReference'
+  ) {
+    emissionError(context, 'erased-reference WeakMap typed view requires a proven Flight reference value');
+  }
+  return { erasedValue: 'reference', key: target.typeArguments[0], value: target.typeArguments[1] };
 }
 
-function refuseCppErasedRefWeakMapView(context: EmitContext): never {
+function refuseCppErasedRefWeakMapView(context: EmitContext, nullableBackingPlanned = false): never {
   emissionError(
     context,
-    'flight-cpp WeakMap<object, object> typed views require an ErasedRef runtime view primitive; nullable mutable views also require initialization lowering',
+    `flight-cpp WeakMap<object, object> typed views require the runtime overload ${cppErasedRefWeakMapViewRuntimeDependency}${nullableBackingPlanned ? ' after initializing and retaining the erased backing field' : ''}`,
     'cpp-weak-map-erased-ref-view-unsupported',
+  );
+}
+
+function getCppNullableErasedRefWeakMapViewPlan(
+  declarationStatement: Readonly<IrStatement> | undefined,
+  guardStatement: Readonly<IrStatement> | undefined,
+  context: EmitContext,
+): Readonly<CppNullableErasedRefWeakMapViewPlan> | undefined {
+  if (
+    declarationStatement?.kind !== 'variable' ||
+    declarationStatement.declarations.length !== 1 ||
+    guardStatement?.kind !== 'if' ||
+    guardStatement.otherwise
+  ) {
+    return undefined;
+  }
+  const variable = declarationStatement.declarations[0];
+  if (
+    !variable ||
+    !('binding' in variable) ||
+    !variable.mutable ||
+    variable.initializer?.kind !== 'cast' ||
+    variable.initializer.expression.kind !== 'property' ||
+    variable.initializer.expression.object.kind !== 'identifier' ||
+    variable.initializer.expression.object.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const view = getCppErasedRefWeakMapViewPlan(variable.initializer, context);
+  if (!view || view.erasedValue !== 'reference') return undefined;
+  if (!isCppNullishWeakMapViewGuardCpp(guardStatement.condition, variable.binding.id)) return undefined;
+  const body = guardStatement.consequent.kind === 'block' ? guardStatement.consequent.statements : [];
+  if (body.length !== 2) return undefined;
+  const initialize = getCppStatementAssignmentCpp(body[0]);
+  const writeBack = getCppStatementAssignmentCpp(body[1]);
+  if (
+    !initialize ||
+    initialize.operator !== '=' ||
+    !isCppBindingIdentifierCpp(initialize.left, variable.binding.id) ||
+    initialize.right.kind !== 'new' ||
+    getIrAmbientConstructorNameCpp(initialize.right.callee) !== 'WeakMap' ||
+    initialize.right.arguments.length !== 0 ||
+    !writeBack ||
+    writeBack.operator !== '=' ||
+    !isDeepStrictEqual(writeBack.left, variable.initializer.expression) ||
+    !isCppErasedRefWeakMapWriteBackCpp(writeBack.right, variable.binding.id, context)
+  ) {
+    return undefined;
+  }
+  return { backing: variable.initializer.expression, view };
+}
+
+function getCppStatementAssignmentCpp(
+  statement: Readonly<IrStatement> | undefined,
+): Readonly<Extract<IrExpression, { kind: 'assignment' }>> | undefined {
+  return statement?.kind === 'expression' && statement.expression.kind === 'assignment'
+    ? statement.expression
+    : undefined;
+}
+
+function isCppBindingIdentifierCpp(expression: Readonly<IrExpression>, bindingId: string): boolean {
+  return (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    expression.reference.binding.id === bindingId
+  );
+}
+
+function isCppErasedRefWeakMapWriteBackCpp(
+  expression: Readonly<IrExpression>,
+  bindingId: string,
+  context: EmitContext,
+): boolean {
+  return (
+    expression.kind === 'cast' &&
+    isCppErasedRefWeakMapType(expression.type, context) &&
+    expression.expression.kind === 'cast' &&
+    expression.expression.type.kind === 'unknown' &&
+    expression.expression.type.source === 'unknown' &&
+    isCppBindingIdentifierCpp(expression.expression.expression, bindingId)
+  );
+}
+
+function isCppNullishWeakMapViewGuardCpp(expression: Readonly<IrExpression>, bindingId: string): boolean {
+  if (expression.kind !== 'binary' || expression.operator !== '==' || !expression.semantics.nullishComparison) {
+    return false;
+  }
+  const nullish = (candidate: Readonly<IrExpression>): boolean =>
+    (candidate.kind === 'literal' && candidate.value === null) ||
+    candidate.kind === 'undefinedValue' ||
+    (candidate.kind === 'identifier' &&
+      candidate.reference.kind === 'ambient' &&
+      candidate.reference.name === 'undefined');
+  return (
+    (isCppBindingIdentifierCpp(expression.left, bindingId) && nullish(expression.right)) ||
+    (isCppBindingIdentifierCpp(expression.right, bindingId) && nullish(expression.left))
   );
 }
 
@@ -6327,11 +6451,23 @@ function isCppErasedWeakMapType(type: Readonly<IrType> | undefined, context: Emi
   );
 }
 
+function isCppErasedRefWeakMapType(type: Readonly<IrType> | undefined, context: EmitContext): boolean {
+  const resolved = type ? getIrWeakMapTypeCpp(type, context, new Set()) : undefined;
+  return (
+    resolved?.typeArguments.length === 2 &&
+    resolved.typeArguments[0]?.kind === 'unknown' &&
+    resolved.typeArguments[0].source === 'object' &&
+    resolved.typeArguments[1]?.kind === 'unknown' &&
+    resolved.typeArguments[1].source === 'object'
+  );
+}
+
 function emitCppErasedWeakMapViewAcquisition(
   expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
   plan: Readonly<CppWeakMapViewPlan>,
   context: EmitContext,
 ): string {
+  if (plan.erasedValue === 'reference') refuseCppErasedRefWeakMapView(context);
   context.includes.add('flight/weak_map.hpp');
   return `flight::checked_weak_map_view<${emitType(plan.key, context)}, ${emitType(plan.value, context)}>(${emitExpression(expression.expression, context)})`;
 }
