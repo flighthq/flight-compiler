@@ -32,20 +32,45 @@ export function createCompilerTargetNameAllocation(
   }
 
   const preferredNames = new Map<string, Set<string>>();
+  // Which source names each enclosing preferred name came from, so a nested binding can tell a deliberate
+  // reuse of an enclosing name (`fallback` inside `fallback`) from two different source names that
+  // sanitization made coincide (`_resolver` and `resolver`, both spelling `resolver`).
+  const preferredNameSources = new Map<string, Map<string, Set<string>>>();
   for (const candidate of normalized) {
     const names = preferredNames.get(candidate.scope) ?? new Set<string>();
     names.add(candidate.preferredName);
     preferredNames.set(candidate.scope, names);
+    const sources = preferredNameSources.get(candidate.scope) ?? new Map<string, Set<string>>();
+    const sourceNames = sources.get(candidate.preferredName) ?? new Set<string>();
+    sourceNames.add(candidate.sourceName);
+    sources.set(candidate.preferredName, sourceNames);
+    preferredNameSources.set(candidate.scope, sources);
   }
 
   const allocatedNames = new Map<string, Set<string>>();
   const allocations = normalized.map((candidate): CompilerTargetNameAllocation => {
     const allocated = allocatedNames.get(candidate.scope) ?? new Set<string>();
     const preferred = preferredNames.get(candidate.scope)!;
+    // A binding is visible throughout the scope that introduces it, so a nested scope must not take a name
+    // an enclosing scope already uses. Sanitization can make two source names coincide — `_resolver` and
+    // `resolver` both spell `resolver` — and the inner one then shadows the outer wherever both are visible,
+    // which silently retargets a reference to the nearer binding. Enclosing scopes are reserved by their
+    // PREFERRED names rather than their allocated ones because scopes are ordered by text, not by nesting:
+    // `function:…` sorts before `module`, so a nested scope is visited before the scope that encloses it.
+    const reserved = new Set<string>();
+    for (const enclosing of getEnclosingTargetNameScopes(candidate.scope)) {
+      const sources = preferredNameSources.get(enclosing);
+      for (const name of preferredNames.get(enclosing) ?? []) {
+        // The enclosing name is reserved unless the SAME source name introduced it, in which case this
+        // binding is the source's own deliberate reuse and keeps its identity.
+        if (!(sources?.get(name)?.has(candidate.sourceName) ?? false)) reserved.add(name);
+      }
+      for (const name of allocatedNames.get(enclosing) ?? []) reserved.add(name);
+    }
     let name = candidate.preferredName;
-    for (let suffix = 2; allocated.has(name); suffix += 1) {
+    for (let suffix = 2; allocated.has(name) || reserved.has(name); suffix += 1) {
       name = `${candidate.preferredName}_${String(suffix)}`;
-      while (preferred.has(name) || allocated.has(name)) {
+      while (preferred.has(name) || allocated.has(name) || reserved.has(name)) {
         suffix += 1;
         name = `${candidate.preferredName}_${String(suffix)}`;
       }
@@ -56,6 +81,22 @@ export function createCompilerTargetNameAllocation(
   });
 
   return allocations.sort((left, right) => compareTextCodeUnits(left.identity, right.identity));
+}
+
+// The scopes a target scope is nested inside. A candidate scope is a namespace, a `\0`, and a
+// colon-separated path (`module`, `class:ID:method:N`, `function:ID`), and every nesting is written as
+// `${parent}:${child}`, so a scope's ancestors are the module scope plus each proper prefix that ends at a
+// colon boundary. Identities may themselves contain colons, which only adds prefixes that match no scope.
+function getEnclosingTargetNameScopes(scope: string): readonly string[] {
+  const separator = scope.indexOf('\0');
+  if (separator < 0) return [];
+  const namespace = scope.slice(0, separator);
+  const path = scope.slice(separator + 1);
+  const enclosing = [`${namespace}\0module`];
+  for (let index = path.indexOf(':'); index >= 0; index = path.indexOf(':', index + 1)) {
+    enclosing.push(`${namespace}\0${path.slice(0, index)}`);
+  }
+  return enclosing.filter((candidate) => candidate !== scope);
 }
 
 export function createIrModuleTargetNameAllocation(
@@ -70,6 +111,7 @@ export function createIrModuleTargetNameAllocation(
         identity: introduction.binding.id,
         preferredName: preference.preferredName,
         scope: `${preference.namespace}\0${introduction.scope}`,
+        sourceName: introduction.binding.name,
       };
     }),
   );
@@ -118,11 +160,13 @@ function normalizeCandidate(candidate: Readonly<CompilerTargetNameCandidate>): C
   const identity = candidate.identity.normalize('NFC');
   const preferredName = candidate.preferredName.normalize('NFC');
   const scope = candidate.scope.normalize('NFC');
+  const sourceName = candidate.sourceName.normalize('NFC');
   if (
     (disposition !== 'fixed' && disposition !== 'renamable') ||
     identity.length === 0 ||
     preferredName.length === 0 ||
-    scope.length === 0
+    scope.length === 0 ||
+    sourceName.length === 0
   ) {
     const subject = identity || preferredName || scope || '<empty>';
     throw createCompilerInvariantFailure(
@@ -131,7 +175,7 @@ function normalizeCandidate(candidate: Readonly<CompilerTargetNameCandidate>): C
       'Target name candidates require a fixed or renamable disposition and nonempty identity, preferredName, and scope values',
     );
   }
-  return { disposition, identity, preferredName, scope };
+  return { disposition, identity, preferredName, scope, sourceName };
 }
 
 interface IrBindingIntroduction {

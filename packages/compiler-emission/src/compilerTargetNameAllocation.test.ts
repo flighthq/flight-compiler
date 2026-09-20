@@ -17,9 +17,27 @@ import {
 describe('createCompilerTargetNameAllocation', () => {
   it('allocates collisions deterministically without consuming another preferred name', () => {
     const candidates = [
-      { disposition: 'renamable' as const, identity: 'third', preferredName: 'value_2', scope: 'module' },
-      { disposition: 'renamable' as const, identity: 'second', preferredName: 'value', scope: 'module' },
-      { disposition: 'renamable' as const, identity: 'first', preferredName: 'value', scope: 'module' },
+      {
+        disposition: 'renamable' as const,
+        identity: 'third',
+        preferredName: 'value_2',
+        sourceName: 'value_2',
+        scope: 'module',
+      },
+      {
+        disposition: 'renamable' as const,
+        identity: 'second',
+        preferredName: 'value',
+        sourceName: 'value',
+        scope: 'module',
+      },
+      {
+        disposition: 'renamable' as const,
+        identity: 'first',
+        preferredName: 'value',
+        sourceName: 'value',
+        scope: 'module',
+      },
     ];
 
     expect(createCompilerTargetNameAllocation(candidates)).toEqual([
@@ -31,16 +49,28 @@ describe('createCompilerTargetNameAllocation', () => {
       createCompilerTargetNameAllocation(candidates),
     );
     expect(candidates).toEqual([
-      { disposition: 'renamable', identity: 'third', preferredName: 'value_2', scope: 'module' },
-      { disposition: 'renamable', identity: 'second', preferredName: 'value', scope: 'module' },
-      { disposition: 'renamable', identity: 'first', preferredName: 'value', scope: 'module' },
+      { disposition: 'renamable', identity: 'third', preferredName: 'value_2', sourceName: 'value_2', scope: 'module' },
+      { disposition: 'renamable', identity: 'second', preferredName: 'value', sourceName: 'value', scope: 'module' },
+      { disposition: 'renamable', identity: 'first', preferredName: 'value', sourceName: 'value', scope: 'module' },
     ]);
   });
 
   it('preserves a fixed target name and renames an internal collision independently of input order', () => {
     const candidates = [
-      { disposition: 'renamable' as const, identity: 'internal', preferredName: 'value', scope: 'module' },
-      { disposition: 'fixed' as const, identity: 'public', preferredName: 'value', scope: 'module' },
+      {
+        disposition: 'renamable' as const,
+        identity: 'internal',
+        preferredName: 'value',
+        sourceName: 'value',
+        scope: 'module',
+      },
+      {
+        disposition: 'fixed' as const,
+        identity: 'public',
+        preferredName: 'value',
+        sourceName: 'value',
+        scope: 'module',
+      },
     ];
     const expected = [
       { identity: 'internal', name: 'value_2', scope: 'module' },
@@ -53,8 +83,20 @@ describe('createCompilerTargetNameAllocation', () => {
 
   it('disambiguates canonically equivalent fixed target names deterministically', () => {
     const candidates = [
-      { disposition: 'fixed' as const, identity: 'second', preferredName: 'cafe\u0301', scope: 'module' },
-      { disposition: 'fixed' as const, identity: 'first', preferredName: 'caf\u00e9', scope: 'module' },
+      {
+        disposition: 'fixed' as const,
+        identity: 'second',
+        preferredName: 'cafe\u0301',
+        sourceName: 'cafe\u0301',
+        scope: 'module',
+      },
+      {
+        disposition: 'fixed' as const,
+        identity: 'first',
+        preferredName: 'caf\u00e9',
+        sourceName: 'caf\u00e9',
+        scope: 'module',
+      },
     ];
 
     expect(createCompilerTargetNameAllocation(candidates)).toEqual([
@@ -70,8 +112,8 @@ describe('createCompilerTargetNameAllocation', () => {
   it('keeps the same preferred spelling independent across target scopes', () => {
     expect(
       createCompilerTargetNameAllocation([
-        { disposition: 'renamable', identity: 'local', preferredName: 'value', scope: 'function' },
-        { disposition: 'renamable', identity: 'module', preferredName: 'value', scope: 'module' },
+        { disposition: 'renamable', identity: 'local', preferredName: 'value', sourceName: 'value', scope: 'function' },
+        { disposition: 'renamable', identity: 'module', preferredName: 'value', sourceName: 'value', scope: 'module' },
       ]),
     ).toEqual([
       { identity: 'local', name: 'value', scope: 'function' },
@@ -82,8 +124,20 @@ describe('createCompilerTargetNameAllocation', () => {
   it('normalizes canonically equivalent target spellings before collision allocation', () => {
     expect(
       createCompilerTargetNameAllocation([
-        { disposition: 'renamable', identity: 'decomposed', preferredName: 'cafe\u0301', scope: 'module' },
-        { disposition: 'renamable', identity: 'composed', preferredName: 'caf\u00e9', scope: 'module' },
+        {
+          disposition: 'renamable',
+          identity: 'decomposed',
+          preferredName: 'cafe\u0301',
+          sourceName: 'cafe\u0301',
+          scope: 'module',
+        },
+        {
+          disposition: 'renamable',
+          identity: 'composed',
+          preferredName: 'caf\u00e9',
+          sourceName: 'caf\u00e9',
+          scope: 'module',
+        },
       ]),
     ).toEqual([
       { identity: 'composed', name: 'caf\u00e9', scope: 'module' },
@@ -95,39 +149,91 @@ describe('createCompilerTargetNameAllocation', () => {
     {
       code: 'duplicate-target-name-identity',
       input: [
-        { disposition: 'renamable' as const, identity: 'same', preferredName: 'first', scope: 'module' },
-        { disposition: 'renamable' as const, identity: 'same', preferredName: 'second', scope: 'module' },
+        {
+          disposition: 'renamable' as const,
+          identity: 'same',
+          preferredName: 'first',
+          sourceName: 'first',
+          scope: 'module',
+        },
+        {
+          disposition: 'renamable' as const,
+          identity: 'same',
+          preferredName: 'second',
+          sourceName: 'second',
+          scope: 'module',
+        },
       ],
       subject: 'same',
     },
     {
       code: 'invalid-target-name-candidate',
-      input: [{ disposition: 'renamable' as const, identity: '', preferredName: 'value', scope: 'module' }],
+      input: [
+        {
+          disposition: 'renamable' as const,
+          identity: '',
+          preferredName: 'value',
+          sourceName: 'value',
+          scope: 'module',
+        },
+      ],
       subject: 'value',
     },
     {
       code: 'invalid-target-name-candidate',
-      input: [{ disposition: 'invalid' as never, identity: 'value', preferredName: 'value', scope: 'module' }],
+      input: [
+        {
+          disposition: 'invalid' as never,
+          identity: 'value',
+          preferredName: 'value',
+          sourceName: 'value',
+          scope: 'module',
+        },
+      ],
       subject: 'value',
     },
     {
       code: 'invalid-target-name-candidate',
-      input: [{ disposition: 'invalid' as never, identity: 'candidate', preferredName: 'value', scope: 'module' }],
+      input: [
+        {
+          disposition: 'invalid' as never,
+          identity: 'candidate',
+          preferredName: 'value',
+          sourceName: 'value',
+          scope: 'module',
+        },
+      ],
       subject: 'candidate',
     },
     {
       code: 'invalid-target-name-candidate',
-      input: [{ disposition: 'renamable' as const, identity: 'candidate', preferredName: '', scope: 'module' }],
+      input: [
+        {
+          disposition: 'renamable' as const,
+          identity: 'candidate',
+          preferredName: '',
+          sourceName: '',
+          scope: 'module',
+        },
+      ],
       subject: 'candidate',
     },
     {
       code: 'invalid-target-name-candidate',
-      input: [{ disposition: 'renamable' as const, identity: 'candidate', preferredName: 'value', scope: '' }],
+      input: [
+        {
+          disposition: 'renamable' as const,
+          identity: 'candidate',
+          preferredName: 'value',
+          sourceName: 'value',
+          scope: '',
+        },
+      ],
       subject: 'candidate',
     },
     {
       code: 'invalid-target-name-candidate',
-      input: [{ disposition: 'renamable' as const, identity: '', preferredName: '', scope: '' }],
+      input: [{ disposition: 'renamable' as const, identity: '', preferredName: '', sourceName: '', scope: '' }],
       subject: '<empty>',
     },
   ])('fails invalid candidates with stable $code identity', ({ code, input, subject }) => {
@@ -234,9 +340,101 @@ describe('createIrModuleTargetNameAllocation', () => {
         preferredName: candidate.name,
       })),
     ).toEqual([
+      // Both bindings are written `value`, so the local is the source's own deliberate reuse of a name
+      // it already scopes — legitimate source identity, kept. Only a DIFFERENT source name sanitizing to
+      // the same target name is a collision, which the next case covers.
       { identity: 'local', name: 'value', scope: expect.stringContaining('function:') },
       { identity: 'module', name: 'value', scope: 'value\0module' },
     ]);
+  });
+
+  it('suffixes a nested binding whose sanitized name would shadow the enclosing one', () => {
+    const binding = (id: string, name: string): IrBindingIdentity => ({
+      column: 1,
+      fingerprint: `sha256:${'0'.repeat(64)}`,
+      id,
+      kind: 'variable' as const,
+      line: 1,
+      name,
+      packageName: '@flighthq/image',
+      scope: 'function' as const,
+      space: 'value' as const,
+      source: 'imageSourceDimensions.ts',
+    });
+    // Two spellings of one rule. The sanitization that makes the two names coincide is the backend's:
+    // C++ trims a leading underscore, so `_resolver` and `resolver` both spell `resolver`. What keeps them
+    // distinct is the allocation, not the spelling.
+    const moduleFor = (moduleName: string, parameterName: string) => {
+      const moduleBinding = { ...binding('module', moduleName), scope: 'module' as const };
+      const localBinding = binding('parameter', parameterName);
+      return {
+        declarations: [
+          {
+            binding: moduleBinding,
+            declarationKind: 'const' as const,
+            exported: true,
+            initializer: {
+              async: false,
+              body: [
+                {
+                  declarations: [
+                    {
+                      binding: localBinding,
+                      initializer: {
+                        kind: 'identifier' as const,
+                        reference: { binding: moduleBinding, kind: 'binding' as const },
+                      },
+                      mutable: false,
+                    },
+                  ],
+                  kind: 'variable' as const,
+                },
+              ],
+              kind: 'function' as const,
+              parameters: [],
+              returns: { kind: 'primitive' as const, name: 'void' as const },
+              thisMode: 'lexical' as const,
+              typeParameters: [],
+            },
+            kind: 'variable' as const,
+            mutable: false,
+            origin: moduleBinding,
+          },
+        ],
+        exports: [],
+        imports: [],
+        name: 'ImageSourceDimensions',
+        packageName: '@flighthq/image',
+        source: 'imageSourceDimensions.ts',
+      };
+    };
+    const allocationsFor = (moduleName: string, sanitize: (name: string) => string) =>
+      createIrModuleTargetNameAllocation(moduleFor(moduleName, 'resolver'), (candidate) => ({
+        namespace: 'identifier',
+        preferredName: sanitize(candidate.name),
+      }));
+
+    // The module-level optional resolver keeps its name and the nested one takes a suffix, so a store to
+    // the outer binding cannot resolve to the inner one.
+    const leading = allocationsFor('_resolver', (name) => name.replace(/^_+/u, ''));
+    expect(leading).toContainEqual({ identity: 'module', name: 'resolver', scope: 'identifier\0module' });
+    expect(leading).toContainEqual({
+      identity: 'parameter',
+      name: 'resolver_2',
+      scope: expect.stringContaining('identifier\0function:'),
+    });
+
+    // The same collision under an analogous non-C++ spelling, and the same outcome.
+    const trailing = allocationsFor('resolver_', (name) => name.replace(/_+$/u, ''));
+    expect(new Set(trailing.map((allocation) => allocation.name)).size).toBe(trailing.length);
+    expect(trailing.find((allocation) => allocation.identity === 'module')?.name).toBe('resolver');
+    expect(trailing.find((allocation) => allocation.identity === 'parameter')?.name).toBe('resolver_2');
+
+    // The property that prevents the shadowing: each binding has a name of its own, so a reference to
+    // either resolves to the binding it was written for.
+    expect(leading.find((allocation) => allocation.identity === 'module')?.name).not.toBe(
+      leading.find((allocation) => allocation.identity === 'parameter')?.name,
+    );
   });
 
   it('collects bindings introduced in computed keys, spread members, and template parts', () => {
@@ -300,6 +498,8 @@ describe('createIrModuleTargetNameAllocation', () => {
         preferredName: candidate.name,
       })),
     ).toEqual([
+      // Every one of these is written `value`, so each keeps it: a nested binding reusing an enclosing
+      // name is the source's own scoping, not a sanitization collision.
       { identity: 'computedKey', name: 'value', scope: 'value\0function:computedKey' },
       { identity: 'computedValue', name: 'value', scope: 'value\0function:computedValue' },
       { identity: 'module', name: 'value', scope: 'value\0module' },
