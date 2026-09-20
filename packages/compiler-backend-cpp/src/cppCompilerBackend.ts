@@ -10797,10 +10797,17 @@ function emitCppStructuralWriteProxyConstructionCpp(
   context.includes.add('flight/structural_ref.hpp');
   const schema = emitCppStructuralRowSchemaTypeCpp(plan.row, context);
   const target = emitExpression(plan.target, context, plan.type);
-  const key = emitExpression(plan.key, context);
+  const key =
+    plan.key.kind === 'named'
+      ? (() => {
+          context.includes.add('string');
+          return `std::string(${JSON.stringify(plan.key.name)})`;
+        })()
+      : emitExpression(plan.key.expression, context);
   const enabled = emitExpression(plan.enabled, context);
   const report = emitExpression(plan.report, context);
-  return `flight::make_structural_write_proxy<${schema}>(${target}, ${key}, [=]() { if (${enabled}) { ${report}; } })`;
+  const proxy = `flight::make_structural_write_proxy<${schema}>(${target}, ${key}, [=]() { if (${enabled}) { ${report}; } })`;
+  return plan.resultType ? `flight::structural_ref_cast<${emitType(plan.resultType, context)}>(${proxy})` : proxy;
 }
 
 function getCppStructuralWriteProxyConstructionPlanCpp(
@@ -10810,8 +10817,9 @@ function getCppStructuralWriteProxyConstructionPlanCpp(
 ):
   | Readonly<{
       enabled: IrExpression;
-      key: IrExpression;
+      key: Readonly<{ expression: IrExpression; kind: 'computed' }> | Readonly<{ kind: 'named'; name: string }>;
       report: Extract<IrExpression, { kind: 'call' }>;
+      resultType?: IrType;
       row: CompilerCppStructuralRowPlan;
       target: IrExpression;
       type: IrType;
@@ -10822,15 +10830,7 @@ function getCppStructuralWriteProxyConstructionPlanCpp(
   const handler = expression.arguments[1]!;
   const type = getIrExpressionTypeEvidenceCpp(target, context);
   if (!type) return undefined;
-  const row = context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module);
-  const resultRow = context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module);
-  if (
-    !row ||
-    !resultRow ||
-    normalizeCompilerStructuralValueCanonical(row) !== normalizeCompilerStructuralValueCanonical(resultRow) ||
-    handler.kind !== 'object' ||
-    handler.members.length !== 1
-  ) {
+  if (handler.kind !== 'object' || handler.members.length !== 1) {
     return undefined;
   }
   const setMember = handler.members[0];
@@ -10871,10 +10871,20 @@ function getCppStructuralWriteProxyConstructionPlanCpp(
   ) {
     return undefined;
   }
-  const key = guardStatement.condition.left.right;
+  const keyExpression = guardStatement.condition.left.right;
+  const namedKey = keyExpression.kind === 'literal' && typeof keyExpression.value === 'string';
+  const row =
+    context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module) ??
+    (namedKey ? getCppStructuralProjectionRowCpp(type, context) : undefined);
+  const directResultRow = context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module);
+  const resultRow = directResultRow ?? (namedKey ? getCppStructuralProjectionRowCpp(expectedType, context) : undefined);
+  const key = getCppStructuralWriteProxyKeyCpp(type, keyExpression, context);
   const reportStatement = guardStatement.consequent.statements[0];
   if (
-    !isCppStructuralWriteProxyComputedKeyCpp(type, key, context) ||
+    !row ||
+    !resultRow ||
+    normalizeCompilerStructuralValueCanonical(row) !== normalizeCompilerStructuralValueCanonical(resultRow) ||
+    !key ||
     reportStatement?.kind !== 'expression' ||
     reportStatement.expression.kind !== 'call' ||
     !reportStatement.expression.optional ||
@@ -10885,7 +10895,8 @@ function getCppStructuralWriteProxyConstructionPlanCpp(
     reportStatement.expression.typeArguments.length !== 0 ||
     reportStatement.expression.arguments.length !== 1 ||
     reportStatement.expression.arguments[0]?.kind !== 'literal' ||
-    reportStatement.expression.arguments[0].value !== 'runtime-slot' ||
+    typeof reportStatement.expression.arguments[0].value !== 'string' ||
+    (key.kind === 'computed' && reportStatement.expression.arguments[0].value !== 'runtime-slot') ||
     forwardStatement?.kind !== 'expression' ||
     forwardStatement.expression.kind !== 'assignment' ||
     forwardStatement.expression.operator !== '=' ||
@@ -10904,6 +10915,7 @@ function getCppStructuralWriteProxyConstructionPlanCpp(
     enabled: guardStatement.condition.right,
     key,
     report: reportStatement.expression,
+    ...(directResultRow ? {} : { resultType: expectedType }),
     row,
     target,
     type,
@@ -10928,15 +10940,24 @@ function emitCppTruthinessExpression(expression: Readonly<IrExpression>, context
   return `flight::to_boolean(${emitted})`;
 }
 
-function isCppStructuralWriteProxyComputedKeyCpp(
+function getCppStructuralWriteProxyKeyCpp(
   type: Readonly<IrType>,
   key: Readonly<IrExpression>,
   context: EmitContext,
-): boolean {
-  const keyReference = getIrExpressionValueNameReferenceCpp(key);
-  if (!keyReference) return false;
-  const keyName = getCppComputedPropertySourceName(keyReference, context);
+): Readonly<{ expression: IrExpression; kind: 'computed' }> | Readonly<{ kind: 'named'; name: string }> | undefined {
   const members = type.kind === 'intersection' ? type.types : [type];
+  if (key.kind === 'literal' && typeof key.value === 'string') {
+    const matches = members.flatMap(
+      (member) =>
+        context.referenceRepresentationPlanner
+          .resolveObjectShape(member, context.module)
+          ?.filter((property) => !property.computedKey && property.name === key.value) ?? [],
+    );
+    return matches.length === 1 ? { kind: 'named', name: key.value } : undefined;
+  }
+  const keyReference = getIrExpressionValueNameReferenceCpp(key);
+  if (!keyReference) return undefined;
+  const keyName = getCppComputedPropertySourceName(keyReference, context);
   const matches = members.flatMap(
     (member) =>
       context.referenceRepresentationPlanner
@@ -10946,7 +10967,7 @@ function isCppStructuralWriteProxyComputedKeyCpp(
             property.computedKey && getCppComputedPropertySourceName(property.computedKey, context) === keyName,
         ) ?? [],
   );
-  return matches.length === 1;
+  return matches.length === 1 ? { expression: key, kind: 'computed' } : undefined;
 }
 
 function isCppStructuralWriteProxyForwardTargetCpp(

@@ -5941,12 +5941,12 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('std::optional<flight::Ref<NodeData>>{create_data.value()()}');
   });
 
-  it('emits the exact structural Entity write proxy and refuses a handler with another trap', () => {
+  it('emits exact computed and named structural write proxies and refuses wider handlers', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',
       `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined; }
        export interface EntityRuntime { binding: object | null; }
-       export type EntityRuntimeWriteGuard = (slot: 'runtime-slot') => void;
+       export type EntityRuntimeWriteGuard = (slot: 'binding-slot' | 'runtime-slot') => void;
        export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
       ts.ScriptTarget.Latest,
       true,
@@ -5954,7 +5954,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const source = (extraTrap: string) =>
       ts.createSourceFile(
         '/flight/packages/entity/src/guards.ts',
-        `import type { Entity, EntityRuntimeWriteGuard } from '@flighthq/types/contract';
+        `import type { Entity, EntityRuntime, EntityRuntimeWriteGuard } from '@flighthq/types/contract';
          import { EntityRuntimeKey } from '@flighthq/types/contract';
          export function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
            if (!_guardsEnabled || typeof Proxy === 'undefined') return entity;
@@ -5963,6 +5963,18 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
              set(target, prop, value) {
                if (prop === EntityRuntimeKey && _guardsEnabled) {
                  _writeGuard?.('runtime-slot');
+               }
+               (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+               return true;
+             },
+           });
+         }
+         export function createGuardedEntityRuntime(runtime: EntityRuntime): EntityRuntime {
+           if (!_guardsEnabled || typeof Proxy === 'undefined') return runtime;
+           return new Proxy(runtime, {
+             set(target, prop, value) {
+               if (prop === 'binding' && _guardsEnabled) {
+                 _writeGuard?.('binding-slot');
                }
                (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
                return true;
@@ -5983,6 +5995,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       ],
       schema: 'flight-compiler-module-resolution/1',
     };
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['flight/structural_ref.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'ProxyHandler',
+          space: 'type' as const,
+          targetName: 'flight::ProxyHandler',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
     const lowerGuards = (extraTrap: string) =>
       lowerTypeScriptSources(
         [
@@ -5995,7 +6020,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = createCppCompilerBackend().createEmissionSession!({
       moduleResolution,
       modules,
-      options: { runtimeProfile: 'flight-cpp' },
+      options: { externalBindings, runtimeProfile: 'flight-cpp' },
     }).emitModule(modules[1]!)[0]!.contents;
 
     expect(emitted).toContain(
@@ -6004,6 +6029,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain(
       'flight::make_structural_write_proxy<flight::RowMerge<flight::RowOf<Type>, flight::RowOf<flight::Ref<flighthq_types::Entity>>>>(entity, flighthq_types::entity_runtime_key, [=]()',
     );
+    expect(emitted).toContain(
+      'flight::structural_ref_cast<flight::Ref<flighthq_types::EntityRuntime>>(flight::make_structural_write_proxy<flight::RowWritable<flight::RowOf<flight::Ref<flighthq_types::EntityRuntime>>>>(runtime, std::string("binding"), [=]()',
+    );
+    expect(emitted).toContain('flight::String("binding-slot")');
     expect(emitted).toContain('return entity;');
 
     const nonmatching = lowerGuards(
@@ -6013,9 +6042,29 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       createCppCompilerBackend().createEmissionSession!({
         moduleResolution,
         modules: nonmatching,
-        options: { runtimeProfile: 'flight-cpp' },
+        options: { externalBindings, runtimeProfile: 'flight-cpp' },
       }).emitModule(nonmatching[1]!),
     ).toThrow('Proxy construction requires an exact structural write-forwarding handler');
+
+    const dynamicKey = lower(
+      'dynamic-key-proxy.ts',
+      `interface Runtime { binding: object | null }
+       const bindingKey = 'binding';
+       let enabled = false;
+       let report: ((slot: 'binding-slot') => void) | null = null;
+       export function guard(runtime: Runtime): Runtime {
+         return new Proxy(runtime, {
+           set(target, prop, value) {
+             if (prop === bindingKey && enabled) report?.('binding-slot');
+             (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+             return true;
+           },
+         });
+       }`,
+    ).module;
+    expect(() => emitIrModuleCpp(dynamicKey, { externalBindings, runtimeProfile: 'flight-cpp' })).toThrow(
+      'Proxy construction requires an exact structural write-forwarding handler',
+    );
   });
 
   it('uses ambient undefined as contextual evidence when clearing a computed optional slot', () => {
