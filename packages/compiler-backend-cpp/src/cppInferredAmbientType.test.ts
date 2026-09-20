@@ -31,10 +31,16 @@ describe('C++ inferred ambient types', () => {
     expect(output).not.toContain('std::function<auto');
   });
 
-  it('refuses an anonymous object data member without concrete type evidence', () => {
+  it('stores an anonymous object any member in the elected erased dynamic runtime type', () => {
     const result = lower('export function wrap(value: any) { return { value }; }');
     expect(result.diagnostics).toEqual([]);
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('#include <flight/any.hpp>');
+    expect(output).toContain('flight::Any value;');
+    expect(output).toContain('wrap(flight::Any value)');
+    expect(output).not.toMatch(/\bauto\s+value\b/u);
+    expect(() => emitIrModuleCpp(result.module)).toThrow(
       'anonymous object property value requires concrete C++ type evidence',
     );
   });
