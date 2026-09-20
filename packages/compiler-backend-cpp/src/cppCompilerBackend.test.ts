@@ -15326,6 +15326,146 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
   });
 
+  it('preserves an imported Texture alias through its nullable readonly view', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface Entity { readonly id: string }
+             export interface TextureUvTransform { offsetX: number; offsetY: number }
+             export interface Sampler extends Entity { readonly filter: string }
+             export interface TextureSource extends Entity { readonly width: number }
+             export interface VoxelGrid extends Entity { readonly depth: number }
+             export type TextureSourceCubeFaces = readonly [
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+             ];
+             interface TextureCommon extends Entity, TextureUvTransform {
+               colorSpace: 'linear' | 'srgb';
+               sampler: Sampler;
+               version: number;
+             }
+             export interface Texture2D extends TextureCommon {
+               readonly dimension: '2d';
+               source: TextureSource | null;
+             }
+             export type Texture =
+               | Texture2D
+               | (TextureCommon & {
+                   readonly dimension: '2d-array';
+                   sources: readonly (TextureSource | null)[];
+                 })
+               | (TextureCommon & {
+                   readonly dimension: '3d';
+                   source: VoxelGrid | null;
+                 })
+               | (TextureCommon & {
+                   readonly dimension: 'cube';
+                   sources: TextureSourceCubeFaces;
+                 });
+             export interface ClearcoatPbrExtension extends Entity {
+               clearcoatMap: Texture | null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/scene3d-gl',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/scene3d-gl/src/clearcoatPbrGlExtension.ts',
+            `import type { ClearcoatPbrExtension, Texture } from '@flighthq/types/contract';
+             export function bindClearcoat(extension: Readonly<ClearcoatPbrExtension>): void {
+               bindMap(extension.clearcoatMap);
+             }
+             function bindMap(texture: Readonly<Texture> | null): void { texture; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const texture = modules[0]!.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'Texture',
+    );
+    const bindMap = modules[1]!.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'bindMap',
+    );
+    let sourceArgument: IrType | undefined;
+    modules[1]!.declarations.forEach((declaration) => {
+      if (declaration.kind !== 'function' || declaration.binding.name !== 'bindClearcoat') return;
+      declaration.body.forEach((statement) =>
+        analyzeIrStatementSubtreeTraversal(statement, {
+          expression(expression) {
+            if (
+              expression.kind === 'call' &&
+              expression.callee.kind === 'identifier' &&
+              expression.callee.reference.kind === 'binding' &&
+              expression.callee.reference.binding.name === 'bindMap' &&
+              expression.arguments[0]?.kind === 'property'
+            ) {
+              sourceArgument = expression.arguments[0].type;
+            }
+          },
+        }),
+      );
+    });
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(texture).toMatchObject({ kind: 'typeAlias', type: { kind: 'union', types: [{}, {}, {}, {}] } });
+    expect(sourceArgument).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'named', reference: { binding: { name: 'Texture' } } }, { kind: 'null' }],
+    });
+    expect(bindMap).toMatchObject({
+      kind: 'function',
+      parameters: [
+        {
+          type: {
+            kind: 'union',
+            types: [
+              {
+                kind: 'named',
+                reference: { kind: 'ambient', name: 'Readonly' },
+                typeArguments: [{ kind: 'named', reference: { binding: { name: 'Texture' } } }],
+              },
+              { kind: 'null' },
+            ],
+          },
+        },
+      ],
+    });
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(emitted).toContain('inline void bind_map(std::optional<flighthq_types::Texture> texture)');
+    expect(emitted).toContain('bind_map(flight::row_get<flight::RowKey<"clearcoatMap">>(extension));');
+    expect(emitted).not.toContain('contextual_union_source');
+    expect(emitted).not.toContain('std::visit');
+  });
+
   it('emits overloaded recursive NodeOf search without erasing the implementation result', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [

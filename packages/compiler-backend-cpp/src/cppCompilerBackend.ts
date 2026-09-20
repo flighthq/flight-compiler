@@ -7210,6 +7210,11 @@ function isCppExpressionExactlyRepresentableAsTypeCpp(
 
 function emitUnionTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, context: EmitContext): string {
   const plan = getCppUnionRepresentationPlan(type, context);
+  const importedValueAlias = getCppOptionalImportedUnionValueAliasCpp(type, context);
+  if (importedValueAlias && (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant')) {
+    context.includes.add('optional');
+    return `std::optional<${emitType(importedValueAlias, context)}>`;
+  }
   const valueTypes = plan.valueSlots.map((slot) => slot.targetType);
   switch (plan.kind) {
     case 'singleValue':
@@ -8932,6 +8937,13 @@ function getIrTypeRuntimeDomainCpp(
   context: EmitContext,
   resolvingAliases: ReadonlySet<string>,
 ): Readonly<IrType> | undefined {
+  const identityPreserving = getCppIdentityPreservingUtilityArgument(type);
+  // A homomorphic identity utility over a union retains every runtime alternative. Without opening
+  // the alias here, `Readonly<Texture>` appears to be one runtime domain while `Texture` is four,
+  // even though the C++ type emitter erases the wrapper and both values use the same variant.
+  if (identityPreserving && getIrUnionTypeCpp(identityPreserving, context, new Set())) {
+    return getIrTypeRuntimeDomainCpp(identityPreserving, context, resolvingAliases);
+  }
   if (type.kind === 'literal') {
     return {
       kind: 'primitive',
@@ -12768,26 +12780,36 @@ function emitOptionalTypeCpp(type: string, optional: boolean, context: EmitConte
   return `std::optional<${type}>`;
 }
 
-// Partial<T> and other structural utilities materialize a new anonymous object. If one of its
-// properties adds a nullish sentinel around an imported union alias, retain the defining alias as
-// the payload. Re-expanding that alias here creates package-local anonymous alternatives with a
-// distinct C++ identity even though the source property still names the upstream ABI type.
+// Retain an imported union alias when one nullish sentinel wraps it, including through an
+// identity-preserving utility. Re-expanding that alias creates package-local anonymous alternatives
+// with a distinct C++ identity even though the source still names the upstream ABI type.
 function emitCppMaterializedObjectPropertyTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
   if (type.kind !== 'union') return emitType(type, context);
-  const sentinels = type.types.filter((member) => member.kind === 'null' || member.kind === 'undefined');
-  const values = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
-  const value = values.length === 1 ? values[0] : undefined;
-  if (
-    sentinels.length === 1 &&
-    value?.kind === 'named' &&
-    value.reference.kind === 'binding' &&
-    value.reference.binding.kind === 'import' &&
-    resolveCppTypeAliasTarget(value, context)?.kind === 'union'
-  ) {
+  const importedValueAlias = getCppOptionalImportedUnionValueAliasCpp(type, context);
+  if (importedValueAlias) {
     context.includes.add('optional');
-    return `std::optional<${emitType(value, context)}>`;
+    return `std::optional<${emitType(importedValueAlias, context)}>`;
   }
   return emitType(type, context);
+}
+
+function getCppOptionalImportedUnionValueAliasCpp(
+  type: Readonly<Extract<IrType, { kind: 'union' }>>,
+  context: EmitContext,
+): Readonly<Extract<IrType, { kind: 'named' }>> | undefined {
+  const sentinels = type.types.filter((member) => member.kind === 'null' || member.kind === 'undefined');
+  const values = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (sentinels.length !== 1 || values.length !== 1) return undefined;
+  const value = getCppIdentityPreservingUtilityArgument(values[0]!) ?? values[0];
+  if (
+    value?.kind !== 'named' ||
+    value.reference.kind !== 'binding' ||
+    value.reference.binding.kind !== 'import' ||
+    resolveCppTypeAliasTarget(value, context)?.kind !== 'union'
+  ) {
+    return undefined;
+  }
+  return value;
 }
 
 function hasIndexedRuntimeReceiverCpp(
