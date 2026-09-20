@@ -3592,6 +3592,9 @@ function emitExpression(
           const receiver = emitExpression(expression.object, context);
           return `static_cast<double>(${receiver}${memberOp(expression.object, context)}${binding.targetName}())`;
         }
+        if (binding && binding.kind === 'sizeProperty') {
+          return `static_cast<double>(${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${binding.targetName})`;
+        }
         if (binding && binding.kind === 'property') {
           return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${binding.targetName}`;
         }
@@ -8243,7 +8246,8 @@ function emitCppVariantCommonPropertyExpression(
         : memberName;
   context.includes.add('variant');
   const operator = referenceModes.has('reference') ? '->' : '.';
-  return `std::visit([](const auto& value) { return value${operator}${memberAccess}; }, ${emitExpression(expression.object, context)})`;
+  const projected = `value${operator}${memberAccess}`;
+  return `std::visit([](const auto& value) { return ${namedBindings[0]?.kind === 'sizeProperty' ? `static_cast<double>(${projected})` : projected}; }, ${emitExpression(expression.object, context)})`;
 }
 
 // The ambient member binding the emitter would use for a LONE access on one alternative, or undefined
@@ -13668,6 +13672,8 @@ function emitOptionalPropertyExpressionCpp(
     const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
     if (binding?.kind === 'sizeMethod') {
       projected = `static_cast<double>(optional_chain_receiver.value()${memberOperator}size())`;
+    } else if (binding?.kind === 'sizeProperty') {
+      projected = `static_cast<double>(optional_chain_receiver.value()${memberOperator}${binding.targetName})`;
     } else if (binding?.kind === 'property') {
       projected = `optional_chain_receiver.value()${memberOperator}${binding.targetName}`;
     } else {

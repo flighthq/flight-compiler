@@ -12,6 +12,10 @@ import type { IrResolvedMemberReceiver } from './compilerExecutableIntermediateR
 export type CompilerCppAmbientMemberBinding =
   | Readonly<{ kind: 'method'; targetName: string }>
   | Readonly<{ kind: 'property'; targetName: string }>
+  // A source-language number stored as the runtime's native size type. Reading it is the boundary
+  // where the target value returns to the source numeric representation; runtime indexing and
+  // length bookkeeping remain native-sized behind the member.
+  | Readonly<{ kind: 'sizeProperty'; targetName: string }>
   | Readonly<{ algorithm: string; kind: 'algorithm'; targetName: string }>
   | Readonly<{ kind: 'sizeMethod'; targetName: string }>;
 

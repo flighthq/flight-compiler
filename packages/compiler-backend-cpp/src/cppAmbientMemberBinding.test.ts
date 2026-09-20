@@ -146,7 +146,7 @@ describe('getCompilerCppAmbientMemberBinding', () => {
       ['byteOffset', 'byte_offset'],
     ] as const) {
       expect(getCompilerCppAmbientMemberBinding({ name, receiver: 'dataView' }, 'flight-cpp')).toEqual({
-        kind: 'property',
+        kind: name === 'buffer' ? 'property' : 'sizeProperty',
         targetName,
       });
     }
@@ -163,11 +163,11 @@ describe('getCompilerCppAmbientMemberBinding', () => {
       targetName: 'protocol',
     });
     expect(getCompilerCppAmbientMemberBinding({ name: 'byteOffset', receiver: 'typedArray' }, 'flight-cpp')).toEqual({
-      kind: 'property',
+      kind: 'sizeProperty',
       targetName: 'byte_offset',
     });
     expect(getCompilerCppAmbientMemberBinding({ name: 'byteLength', receiver: 'typedArray' }, 'flight-cpp')).toEqual({
-      kind: 'property',
+      kind: 'sizeProperty',
       targetName: 'byte_length',
     });
   });

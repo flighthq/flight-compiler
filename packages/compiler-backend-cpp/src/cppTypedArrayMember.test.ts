@@ -25,6 +25,31 @@ describe('C++ typed-array member emission', () => {
     expect(output).toContain('static_cast<double>(values.size())');
   });
 
+  it('returns mapped native byte sizes in the source numeric representation', () => {
+    const output = emit(
+      `export function lengths(values: Uint8Array[]): number[] {
+         return values.map((value) => value.byteLength);
+       }`,
+      'flight-cpp',
+    );
+
+    expect(output).toContain(
+      'values.map([=](flight::Uint8Array value) { return static_cast<double>(value.byte_length); })',
+    );
+    expect(output).not.toContain('return value.byte_length;');
+  });
+
+  it('keeps length mapped through its native size method and converts at the same number boundary', () => {
+    const output = emit(
+      `export function lengths(values: Uint8Array[]): number[] {
+         return values.map((value) => value.length);
+       }`,
+      'flight-cpp',
+    );
+
+    expect(output).toContain('values.map([=](flight::Uint8Array value) { return static_cast<double>(value.size()); })');
+  });
+
   it('emits the common flight-cpp typed-array methods against the runtime API', () => {
     const output = emit(
       'export function update(values: Uint8Array, source: Uint8Array): Uint8Array { values.fill(1); values.set(source); values.slice(0, 1); return values.subarray(0, 1); }',
