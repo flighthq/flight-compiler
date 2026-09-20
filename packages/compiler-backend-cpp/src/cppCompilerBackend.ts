@@ -3034,7 +3034,7 @@ function emitExpression(
         (expectedType ? getCppClosedCallableType(expectedType, context, new Set()) : undefined) ??
         (expectedType ? getCppCallableObjectIrTypeCpp(expectedType, context, new Set())?.callable : undefined);
       const parameters =
-        expectedCallable?.parameters.length === expression.parameters.length
+        expectedCallable && expectedCallable.parameters.length >= expression.parameters.length
           ? expression.parameters.map((parameter, index) =>
               parameter.type.kind === 'unknown' && parameter.type.source === 'any'
                 ? { ...parameter, type: expectedCallable.parameters[index]!.type }
@@ -3075,7 +3075,26 @@ function emitExpression(
       }
       functionContext.includes.add('functional');
       const template = emitCppFunctionTemplate(expression.typeParameters, parameters, functionContext);
-      const params = parameters.map((parameter) => emitParameter(parameter, functionContext));
+      const ignoredContextualParameters =
+        expectedCallable &&
+        expectedCallable.parameters.length > parameters.length &&
+        !parameters.some((parameter) => parameter.rest) &&
+        expectedCallable.parameters.slice(parameters.length).every((parameter) => !parameter.rest)
+          ? expectedCallable.parameters.slice(parameters.length).map((parameter) => {
+              const name = getGeneratedTargetName('ignoredCallbackArgument', functionContext);
+              const type = emitOptionalTypeCpp(
+                emitCppParameterTypeCpp(parameter.type, parameter.rest, functionContext),
+                parameter.optional,
+                functionContext,
+              );
+              return { declaration: `${type} ${name}`, discard: `(void)${name};` };
+            })
+          : [];
+      const params = [
+        ...parameters.map((parameter) => emitParameter(parameter, functionContext)),
+        ...ignoredContextualParameters.map((parameter) => parameter.declaration),
+      ];
+      const ignoredContextualParameterDiscards = ignoredContextualParameters.map((parameter) => parameter.discard);
       const capture = usesThis
         ? context.namespaceScope
           ? '[this]'
@@ -3090,9 +3109,10 @@ function emitExpression(
         functionContext.defaultedParameterIds.size === 0 &&
         !hasSharedCaptureParameterCpp(parameters, functionContext)
       ) {
-        return `${capture}${lambdaTemplate}(${params.join(', ')})${lambdaRequirement} { return ${emitExpression(expression.expression, functionContext, returns)}; }`;
+        return `${capture}${lambdaTemplate}(${params.join(', ')})${lambdaRequirement} { ${ignoredContextualParameterDiscards.join(' ')}${ignoredContextualParameterDiscards.length > 0 ? ' ' : ''}return ${emitExpression(expression.expression, functionContext, returns)}; }`;
       }
       return `${capture}${lambdaTemplate}(${params.join(', ')})${lambdaRequirement} {\n${indentSourceLines([
+        ...ignoredContextualParameterDiscards,
         ...emitParameterInitializersCpp(parameters, functionContext),
         ...(expression.expression
           ? [`return ${emitExpression(expression.expression, functionContext, returns)};`]
@@ -10105,6 +10125,25 @@ function getIrCallArgumentExpectedTypeCpp(
     const argument = expression.arguments[index];
     if (argument?.kind === 'function') {
       const callable = getIrExpressionTypeEvidenceCpp(argument, context);
+      const contextualType = getIrInvocationArgumentExpectedTypeCpp(expression, index);
+      const contextualCallable =
+        (contextualType ? getCppClosedCallableType(contextualType, context, new Set()) : undefined) ??
+        getCppTaskFulfillmentCallbackTypeCpp(expression, index, callable, context);
+      // TypeScript callbacks may intentionally omit trailing arguments. Preserve every source-declared
+      // parameter and its inferred type, then carry only the missing invocation ABI into the emitted
+      // lambda so a C++ caller can still supply the values that the callback ignores.
+      if (
+        callable?.kind === 'function' &&
+        contextualCallable &&
+        callable.parameters.length < contextualCallable.parameters.length &&
+        !callable.parameters.some((parameter) => parameter.rest) &&
+        contextualCallable.parameters.slice(callable.parameters.length).every((parameter) => !parameter.rest)
+      ) {
+        return {
+          ...callable,
+          parameters: [...callable.parameters, ...contextualCallable.parameters.slice(callable.parameters.length)],
+        };
+      }
       if (callable) return callable;
     }
     const provided = getIrInvocationProvidedArgumentTypeCpp(expression, index);
@@ -10129,6 +10168,41 @@ function getIrCallArgumentExpectedTypeCpp(
         createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
       )
     : parameterType;
+}
+
+function getCppTaskFulfillmentCallbackTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  index: number,
+  callable: Readonly<IrType> | undefined,
+  context: EmitContext,
+): Readonly<Extract<IrType, { kind: 'function' }>> | undefined {
+  if (
+    index !== 0 ||
+    callable?.kind !== 'function' ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.member?.receiver !== 'task' ||
+    expression.callee.member.name !== 'then'
+  ) {
+    return undefined;
+  }
+  // Promise.then's resolved invocation metadata does not retain the first callback's optional
+  // parameter type when the source lambda omits it. The receiver still carries the fulfillment
+  // domain, which is the value Task<Value>::then passes to its callable.
+  const receiver = getIrExpressionTypeEvidenceCpp(expression.callee.object, context);
+  if (
+    receiver?.kind !== 'named' ||
+    receiver.reference.kind !== 'ambient' ||
+    receiver.reference.name !== 'Promise' ||
+    receiver.typeArguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const fulfilled = receiver.typeArguments[0];
+  if (!fulfilled || (fulfilled.kind === 'primitive' && fulfilled.name === 'void')) return undefined;
+  return {
+    ...callable,
+    parameters: [{ name: 'value', optional: false, rest: false, type: fulfilled }],
+  };
 }
 
 function getCppContextualArrayMapCallbackTypeCpp(

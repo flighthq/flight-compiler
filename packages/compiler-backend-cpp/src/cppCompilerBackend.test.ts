@@ -17788,6 +17788,30 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('resolve_task<flight::Ref<reason_');
   });
 
+  it('accepts task callbacks that intentionally ignore the fulfillment value', () => {
+    const result = lower(
+      'task-callback-variance.ts',
+      `export function observe(task: Promise<string | null>, close: () => void): Promise<string | null> {
+         task.then(() => close());
+         task.then((value) => { if (value !== null) close(); });
+         return task;
+       }
+       export function observeVoid(task: Promise<void>, close: () => void): Promise<void> {
+         task.then(() => close());
+         return task;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain(
+      '.then([=](std::optional<flight::String> ignored_callback_argument) { (void)ignored_callback_argument;',
+    );
+    expect(emitted.contents).toContain('.then([=](std::optional<flight::String> value)');
+    expect(emitted.contents.match(/ignored_callback_argument/gu)).toHaveLength(2);
+    expect(emitted.contents).toContain('task.then([=]() { return close(); });');
+    expect(emitted.contents).not.toContain('catch_error');
+  });
+
   it('constructs the fixed Node row before a generic Traits row is initialized', () => {
     const result = lowerPackage(
       '@flighthq/node',
