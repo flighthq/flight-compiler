@@ -391,6 +391,7 @@ interface Int8Array {
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
+  fill(value: number, start?: number, end?: number): Int8Array;
   slice(begin?: number, end?: number): Int8Array;
   subarray(begin?: number, end?: number): Int8Array;
 }
@@ -409,6 +410,7 @@ interface Uint8Array {
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
+  fill(value: number, start?: number, end?: number): Uint8Array;
   slice(begin?: number, end?: number): Uint8Array;
   subarray(begin?: number, end?: number): Uint8Array;
 }
@@ -427,6 +429,7 @@ interface Uint8ClampedArray {
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
+  fill(value: number, start?: number, end?: number): Uint8ClampedArray;
   slice(begin?: number, end?: number): Uint8ClampedArray;
   subarray(begin?: number, end?: number): Uint8ClampedArray;
 }
@@ -445,6 +448,7 @@ interface Int16Array {
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
+  fill(value: number, start?: number, end?: number): Int16Array;
   slice(begin?: number, end?: number): Int16Array;
   subarray(begin?: number, end?: number): Int16Array;
 }
@@ -463,6 +467,7 @@ interface Uint16Array {
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
+  fill(value: number, start?: number, end?: number): Uint16Array;
   slice(begin?: number, end?: number): Uint16Array;
   subarray(begin?: number, end?: number): Uint16Array;
 }
@@ -481,6 +486,7 @@ interface Int32Array {
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
+  fill(value: number, start?: number, end?: number): Int32Array;
   slice(begin?: number, end?: number): Int32Array;
   subarray(begin?: number, end?: number): Int32Array;
 }
@@ -499,6 +505,7 @@ interface Uint32Array {
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
+  fill(value: number, start?: number, end?: number): Uint32Array;
   slice(begin?: number, end?: number): Uint32Array;
   subarray(begin?: number, end?: number): Uint32Array;
 }
@@ -517,6 +524,7 @@ interface Float32Array {
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
+  fill(value: number, start?: number, end?: number): Float32Array;
   slice(begin?: number, end?: number): Float32Array;
   subarray(begin?: number, end?: number): Float32Array;
 }
@@ -535,6 +543,7 @@ interface Float64Array {
   readonly byteOffset: number;
   readonly length: number;
   [index: number]: number;
+  fill(value: number, start?: number, end?: number): Float64Array;
   slice(begin?: number, end?: number): Float64Array;
   subarray(begin?: number, end?: number): Float64Array;
 }

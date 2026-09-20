@@ -438,6 +438,42 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('const double rows = static_cast<double>(grid.size());\n  return true;');
   });
 
+  it('retains exact mutable storage for a numeric runtime-member call result', () => {
+    const module = lower(
+      'mutable-runtime-call-result.ts',
+      `export function nextCodePoint(text: string, index: number): number {
+         let codePoint = text.charCodeAt(index);
+         return codePoint + 1;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('double code_point = text.char_code_at(index);');
+    expect(emitted).toContain('return (code_point + 1.0);');
+    expect(emitted).not.toContain('flight::Any code_point');
+  });
+
+  it('retains exact mutable storage for a typed-array runtime-member call result', () => {
+    const module = lower(
+      'mutable-typed-array-call-result.ts',
+      `export function refill(values: Uint8Array): Uint8Array {
+         let filled = values.fill(0);
+         return filled;
+       }
+       export function eraseRefill(values: Uint8Array): any {
+         let erased: any = values.fill(0);
+         return erased;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('flight::Uint8Array filled = values.fill(0.0);');
+    expect(emitted).not.toContain('flight::Any filled');
+    expect(emitted).toContain('flight::Any erased = values.fill(0.0);');
+  });
+
   // One structural shape is one C++ type, so every module of a package that writes it has to spell it
   // the same way -- and the guard around its definition has to follow the name it actually got.
   //

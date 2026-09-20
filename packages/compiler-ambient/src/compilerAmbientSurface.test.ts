@@ -67,6 +67,8 @@ describe('createCompilerAmbientSurfaceSource', () => {
     expect(source).toContain('interface Float32Array');
     expect(source).toContain('interface Uint8ClampedArray');
     expect(source).toContain('[index: number]: number;');
+    expect(source).toContain('fill(value: number, start?: number, end?: number): Uint8Array;');
+    expect(source).toContain('fill(value: number, start?: number, end?: number): Float64Array;');
     expect(source).toContain('subarray(begin?: number, end?: number): Uint8Array;');
     expect(source).toContain('slice(begin?: number, end?: number): Float32Array;');
     expect(source).toContain('readonly buffer: ArrayBuffer;');

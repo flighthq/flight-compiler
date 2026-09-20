@@ -12591,6 +12591,36 @@ it('resolves call expression return type evidence from checker', () => {
   expect(result.diagnostics).toEqual([]);
 });
 
+it('records a typed-array fill result on mutable binding storage', () => {
+  const result = lower(
+    'typed-array-fill-result.ts',
+    `export function refill(values: Uint8Array): Uint8Array {
+       let filled = values.fill(0);
+       return filled;
+     }`,
+  );
+  const refill = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'refill',
+  );
+  const declaration =
+    refill?.kind === 'function' ? refill.body.find((statement) => statement.kind === 'variable') : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(declaration).toMatchObject({
+    declarations: [
+      {
+        binding: { name: 'filled' },
+        initializer: { kind: 'call' },
+        mutable: true,
+        type: {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Uint8Array' },
+        },
+      },
+    ],
+  });
+});
+
 // --- Deeper evidence and binding pattern paths (batch 3) ---
 
 it('lowers exported variable destructuring pattern for binding collection', () => {
