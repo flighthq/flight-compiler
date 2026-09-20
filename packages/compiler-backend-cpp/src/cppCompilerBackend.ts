@@ -1274,7 +1274,11 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
       }
       continue;
     }
-    const fieldType = emitOptionalTypeCpp(emitType(field.type, context), field.optional, context);
+    const fieldType = emitCppObjectPropertyStorageCpp(
+      field,
+      emitOptionalTypeCpp(emitType(field.type, context), field.optional, context),
+      context,
+    ).type;
     const initializer = field.initializer ? ` = ${emitExpression(field.initializer, context, field.type)}` : '';
     const staticPrefix = field.static ? 'inline static ' : '';
     const constPrefix = field.static && field.readonly ? 'const ' : '';
@@ -1584,7 +1588,11 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   const emittedMemberNames = new Set<string>();
   for (const property of declaration.properties) {
     if (isCppValuelessStructMemberCpp(property.type)) continue;
-    const propType = emitOptionalTypeCpp(emitType(property.type, context), property.optional, context);
+    const propType = emitCppObjectPropertyStorageCpp(
+      property,
+      emitOptionalTypeCpp(emitType(property.type, context), property.optional, context),
+      context,
+    ).type;
     if (isCppDuplicateStructMemberCpp(emittedMemberNames, property.name)) continue;
     lines.push(`  ${propType} ${safeCppName(property.name)};`);
   }
@@ -1691,7 +1699,11 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
     const emittedMemberNames = new Set<string>();
     for (const property of objectProperties) {
       if (isCppValuelessStructMemberCpp(property.type)) continue;
-      const propertyType = emitOptionalTypeCpp(emitType(property.type, context), property.optional, context);
+      const propertyType = emitCppObjectPropertyStorageCpp(
+        property,
+        emitOptionalTypeCpp(emitType(property.type, context), property.optional, context),
+        context,
+      ).type;
       if (isCppDuplicateStructMemberCpp(emittedMemberNames, property.name)) continue;
       lines.push(`  ${propertyType} ${safeCppName(property.name)};`);
     }
@@ -5856,8 +5868,15 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       if (type.properties.some((property) => property.optional)) context.includes.add('optional');
       const emittedProperties = type.properties.map((property) => ({
         name: safeCppName(property.name),
-        optional: property.optional,
-        type: emitCppMaterializedObjectPropertyTypeCpp(property.type, context),
+        ...emitCppObjectPropertyStorageCpp(
+          property,
+          emitOptionalTypeCpp(
+            emitCppMaterializedObjectPropertyTypeCpp(property.type, context),
+            property.optional,
+            context,
+          ),
+          context,
+        ),
       }));
       const unresolved = emittedProperties.find((property) => /\bauto\b/u.test(property.type));
       if (unresolved) {
@@ -6036,8 +6055,11 @@ function emitCppNominalIntersectionImplementationTypeCpp(
   if (remaining.some((property) => property.optional)) context.includes.add('optional');
   const emittedProperties = remaining.map((property) => ({
     name: safeCppName(property.name),
-    optional: property.optional,
-    type: emitCppMaterializedObjectPropertyTypeCpp(property.type, context),
+    ...emitCppObjectPropertyStorageCpp(
+      property,
+      emitOptionalTypeCpp(emitCppMaterializedObjectPropertyTypeCpp(property.type, context), property.optional, context),
+      context,
+    ),
   }));
   if (emittedProperties.some((property) => /\bauto\b/u.test(property.type))) return undefined;
 
@@ -13005,11 +13027,30 @@ function emitCppNarrowedPresentAccessCpp(
   }
   const union = getIrUnionTypeCpp(sourceType, context, new Set());
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
-  if (plan?.kind !== 'optionalSingle') {
+  // Which storage holds the present value is the union plan's answer, not a spelling. The narrowed
+  // guard has already excluded every sentinel, so an optional keeps the value behind `value()` and a
+  // variant that preserves null and undefined as distinct alternatives holds it as the one value
+  // alternative. A plan with no single value domain still refuses rather than choosing an alternative
+  // the guard did not prove.
+  const paysForAbsenceWithOptional = plan !== undefined && plan.kind === 'optionalSingle';
+  const soleValueAlternative =
+    plan !== undefined &&
+    (plan.kind === 'dualSentinelVariant' || plan.kind === 'multiVariant' || plan.kind === 'optionalVariant') &&
+    plan.valueSlots.length === 1
+      ? plan.valueSlots[0]
+      : undefined;
+  if (!paysForAbsenceWithOptional && !soleValueAlternative) {
     emissionError(context, 'present access requires optional C++ storage with one value domain');
   }
-  context.includes.add('optional');
-  const unwrapped = `${emitExpression(unnarrowed, context, presentType)}.value()`;
+  const unnarrowedExpression = emitExpression(unnarrowed, context, presentType);
+  let unwrapped: string;
+  if (paysForAbsenceWithOptional) {
+    context.includes.add('optional');
+    unwrapped = `${unnarrowedExpression}.value()`;
+  } else {
+    context.includes.add('variant');
+    unwrapped = `std::get<${soleValueAlternative!.targetType}>(${unnarrowedExpression})`;
+  }
   if (expectedType && context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module)) {
     const sourcePlan = context.referenceRepresentationPlanner.plan(presentType, context.module);
     if (
@@ -13046,6 +13087,30 @@ function emitOptionalTypeCpp(type: string, optional: boolean, context: EmitConte
 // Retain an imported union alias when one nullish sentinel wraps it, including through an
 // identity-preserving utility. Re-expanding that alias creates package-local anonymous alternatives
 // with a distinct C++ identity even though the source still names the upstream ABI type.
+// A property marked `?` whose own type already carries an absent member has THREE observably distinct
+// states: absent, null, and present. The union planner is the single authority that answers how those
+// three are stored, and every assignment and presence test already asks it — which is why the two
+// spellings must not be wrapped a second time. Wrapping the already-emitted type in another optional
+// answers a different question, and the two answers do not compile together: the null write builds a
+// variant, the null test asks `holds_alternative`, and neither has a conversion into a nested optional.
+//
+// The case is deliberately narrow. A property that is not `?`-marked, or whose type carries no absent
+// member, has no double absence and keeps whatever this declaration site already emitted — already
+// optional-wrapped, so the returned `optional` is false for it too.
+function emitCppObjectPropertyStorageCpp(
+  property: Readonly<{ optional: boolean; type: IrType }>,
+  emitted: string,
+  context: EmitContext,
+): Readonly<{ optional: boolean; type: string }> {
+  if (!property.optional || !hasIrTypeAbsentMember(property.type)) {
+    return { optional: false, type: emitted };
+  }
+  return {
+    optional: false,
+    type: emitCppMaterializedObjectPropertyTypeCpp(getIrObjectPropertyReadTypeCpp(property) ?? property.type, context),
+  };
+}
+
 function emitCppMaterializedObjectPropertyTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
   if (type.kind !== 'union') return emitType(type, context);
   const importedValueAlias = getCppOptionalImportedUnionValueAliasCpp(type, context);

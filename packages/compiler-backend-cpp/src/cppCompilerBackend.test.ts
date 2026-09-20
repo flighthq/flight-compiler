@@ -873,6 +873,97 @@ describe('createCppCompilerBackend', () => {
     expect(agreed).toContain('std::visit([](const auto& value) { return value->value; }, input);');
   });
 
+  it('stores an optional property that also admits null through one plan, and refuses two value domains', () => {
+    // The real shape: `onFinished?: Signal<() => void> | null` from @flighthq/types. A `?` marker and a
+    // `null` in the same type are two spellings of one three-state question, so the declaration and every
+    // crossing that reads or writes it must ask the same authority.
+    //
+    // Lowered together and with the resolution plan, because the property's declared type lives in the
+    // provider package: without the edge the consumer cannot see that `onFinished` admits absence at all.
+    const fields = (onFinished: string): string =>
+      `export interface Signal<T> { readonly id: number }
+       export interface AnimationPlayer { readonly id: number; ${onFinished} }`;
+    const consumerSource = (): string =>
+      `import type { AnimationPlayer, Signal } from '@flighthq/types';
+       function emitSignal<T>(signal: Signal<T>): void { void signal.id; }
+       export function stop(player: AnimationPlayer): void { player.onFinished = null; }
+       export function enable(player: AnimationPlayer): void { if (player.onFinished == null) player.onFinished = null; }
+       export function finish(player: AnimationPlayer): void {
+         if (player.onFinished != null) emitSignal(player.onFinished);
+       }`;
+    const emit = (onFinished: string): string => {
+      const [types, consumer] = lowerTypeScriptSources(
+        [
+          {
+            packageName: '@flighthq/types',
+            sourceFile: ts.createSourceFile(
+              '/flight/packages/types/src/animationPlayer.ts',
+              fields(onFinished),
+              ts.ScriptTarget.Latest,
+              true,
+            ),
+            upstreamDirectory: '/flight',
+          },
+          {
+            packageName: '@flighthq/animation',
+            sourceFile: ts.createSourceFile(
+              '/flight/packages/animation/src/animationPlayer.ts',
+              consumerSource(),
+              ts.ScriptTarget.Latest,
+              true,
+            ),
+            upstreamDirectory: '/flight',
+          },
+        ],
+        {
+          edges: [
+            {
+              importer: undefined as never,
+              specifier: '@flighthq/types',
+              target: { packageName: '@flighthq/types', source: 'packages/types/src/animationPlayer.ts' },
+            },
+          ],
+          schema: 'flight-compiler-module-resolution/1',
+        },
+      );
+      const session = createCppCompilerBackend().createEmissionSession!({
+        moduleResolution: {
+          edges: [
+            {
+              importer: undefined as never,
+              specifier: '@flighthq/types',
+              target: { packageName: '@flighthq/types', source: 'packages/types/src/animationPlayer.ts' },
+            },
+          ],
+          schema: 'flight-compiler-module-resolution/1',
+        },
+        modules: [consumer!.module, types!.module],
+        options: { runtimeProfile: 'flight-cpp' },
+      });
+      return session.emitModule(types!.module)[0]!.contents + session.emitModule(consumer!.module)[0]!.contents;
+    };
+
+    // One storage across all four crossings. The nested `std::optional<std::optional<...>>` this replaced
+    // could not accept the write nor answer the test — g++ rejects the assignment outright.
+    const both = emit('onFinished?: Signal<() => void> | null;');
+    expect(both).toContain(
+      'std::variant<flight::Ref<Signal<std::function<void()>>>, flight::Null, flight::Undefined> on_finished;',
+    );
+    expect(both).not.toContain('std::optional<std::optional');
+    expect(both).toContain('std::holds_alternative<flight::Null>(player->on_finished)');
+    // The access unwraps through the plan rather than reading the property bare, which is what the
+    // previous storage forced and what no `Ref<Signal<T>>` parameter can accept.
+    expect(both).toContain(
+      'emit_signal<std::function<void()>>(std::get<flight::Ref<flighthq_types::Signal<std::function<void()>>>>(player->on_finished))',
+    );
+
+    // The storage-mismatch counterexample: two value domains leaves no single alternative a null-guard
+    // proves, so the access still refuses rather than picking one of them.
+    expect(() => emit('onFinished?: Signal<() => void> | number | null;')).toThrow(
+      'present access requires optional C++ storage with one value domain',
+    );
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
@@ -1176,7 +1267,9 @@ describe('createCppCompilerBackend', () => {
     const emitted = session.emitModule(consumer)[0]!.contents;
 
     expect(emitted).toContain('optional_chain_receiver.value()->curve.value_or(std::nullopt)');
-    expect(emitted).toContain('std::optional<std::optional<flighthq_types::Texture>> texture;');
+    expect(emitted).toMatch(
+      /flight::Ref<kind_size_[0-9a-f]+>, flight::Ref<kind_width_[0-9a-f]+>, flight::Null, flight::Undefined> texture;/u,
+    );
   });
 
   it('includes and qualifies every source in a split named-import request', () => {
@@ -4344,7 +4437,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'flight::WeakMap<flight::Ref<flighthq_types::RenderTexture>, flight::Ref<flighthq_types::GlRenderTextureEntry>>',
     );
     expect(emitted).toContain(
-      'std::optional<std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>>> scene_mesh_upload_cache;',
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache;',
     );
     expect(emitted).toContain('#include <flight/erased_ref.hpp>');
   });
@@ -4423,7 +4516,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'flight::WeakMap<flight::Ref<flighthq_types::TextureSource>, flight::Ref<flighthq_types::WgpuTextureSourceTextureEntry>> texture_source_premultiplied_texture_cache;',
     );
     expect(emitted).toContain(
-      'std::optional<std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>>> scene_mesh_upload_cache;',
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache;',
     );
   });
 
@@ -4477,7 +4570,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'flight::WeakMap<flight::Ref<TextureSource>, flight::Ref<WgpuTextureSourceTextureEntry>> texture_source_premultiplied_texture_cache;',
     );
     expect(emitted).toContain(
-      'std::optional<std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>>> scene_mesh_upload_cache;',
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache;',
     );
   });
 
