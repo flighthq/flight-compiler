@@ -2050,23 +2050,35 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
   if (!initializerType) return undefined;
   const variableUnion = getIrUnionTypeCpp(variable.type, context, new Set());
   const initializerUnion = getIrUnionTypeCpp(initializerType, context, new Set());
-  if (!variableUnion || !initializerUnion) return undefined;
-  const variableAbsence = variableUnion.types
-    .filter((member) => member.kind === 'null' || member.kind === 'undefined')
-    .map((member) => member.kind)
-    .sort();
-  const initializerAbsence = initializerUnion.types
-    .filter((member) => member.kind === 'null' || member.kind === 'undefined')
-    .map((member) => member.kind)
-    .sort();
-  if (!isDeepStrictEqual(variableAbsence, initializerAbsence) || variableAbsence.length === 0) return undefined;
-  const variableValues = variableUnion.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
-  const initializerValues = initializerUnion.types.filter(
-    (member) => member.kind !== 'null' && member.kind !== 'undefined',
-  );
-  if (variableValues.length !== 1 || initializerValues.length !== 1) return undefined;
-  const variablePlan = context.referenceRepresentationPlanner.plan(variableValues[0]!, context.module);
-  const initializerPlan = context.referenceRepresentationPlanner.plan(initializerValues[0]!, context.module);
+  // TypeScript may expand an inferred local to an anonymous object even when its initializer still
+  // retains the named declaration returned by a call. Preserve that source identity only after the
+  // two complete object layouts prove representation-equivalent; the same proof also covers the
+  // existing nullable lane below without granting a conversion between unrelated rows.
+  let variableValue = variable.type;
+  let initializerValue = initializerType;
+  if (variableUnion || initializerUnion) {
+    if (!variableUnion || !initializerUnion) return undefined;
+    const variableAbsence = variableUnion.types
+      .filter((member) => member.kind === 'null' || member.kind === 'undefined')
+      .map((member) => member.kind)
+      .sort();
+    const initializerAbsence = initializerUnion.types
+      .filter((member) => member.kind === 'null' || member.kind === 'undefined')
+      .map((member) => member.kind)
+      .sort();
+    if (!isDeepStrictEqual(variableAbsence, initializerAbsence) || variableAbsence.length === 0) return undefined;
+    const variableValues = variableUnion.types.filter(
+      (member) => member.kind !== 'null' && member.kind !== 'undefined',
+    );
+    const initializerValues = initializerUnion.types.filter(
+      (member) => member.kind !== 'null' && member.kind !== 'undefined',
+    );
+    if (variableValues.length !== 1 || initializerValues.length !== 1) return undefined;
+    variableValue = variableValues[0]!;
+    initializerValue = initializerValues[0]!;
+  }
+  const variablePlan = context.referenceRepresentationPlanner.plan(variableValue, context.module);
+  const initializerPlan = context.referenceRepresentationPlanner.plan(initializerValue, context.module);
   if (
     variablePlan.kind !== 'represented' ||
     variablePlan.valueRepresentation !== 'flightReference' ||
@@ -2075,11 +2087,8 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
   ) {
     return undefined;
   }
-  const variableShape = context.referenceRepresentationPlanner.resolveObjectShape(variableValues[0]!, context.module);
-  const initializerShape = context.referenceRepresentationPlanner.resolveObjectShape(
-    initializerValues[0]!,
-    context.module,
-  );
+  const variableShape = context.referenceRepresentationPlanner.resolveObjectShape(variableValue, context.module);
+  const initializerShape = context.referenceRepresentationPlanner.resolveObjectShape(initializerValue, context.module);
   return variableShape &&
     initializerShape &&
     areCppObjectShapesRepresentationEquivalent(variableShape, initializerShape, context)
@@ -2105,7 +2114,17 @@ function areCppObjectShapesRepresentationEquivalent(
       return false;
     }
     const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
-    return emitType(property.type, isolatedContext) === emitType(other.type, isolatedContext);
+    if (emitType(property.type, isolatedContext) === emitType(other.type, isolatedContext)) return true;
+    const propertyUnion = getIrUnionTypeCpp(property.type, context, new Set());
+    const otherUnion = getIrUnionTypeCpp(other.type, context, new Set());
+    return Boolean(
+      propertyUnion &&
+      otherUnion &&
+      hasEquivalentCppUnionRepresentation(
+        getCppUnionRepresentationPlan(propertyUnion, isolatedContext),
+        getCppUnionRepresentationPlan(otherUnion, isolatedContext),
+      ),
+    );
   });
 }
 

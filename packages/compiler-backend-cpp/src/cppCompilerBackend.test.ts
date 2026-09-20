@@ -5253,6 +5253,71 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('.reason = object_member_reason, .message = object_member_message');
   });
 
+  it('preserves an imported named result for an inferred awaited method local', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/keyboard.ts',
+      `export type SoftKeyboardAttachResult = 'ok' | 'acquisition-failed';
+       export interface SoftKeyboardChangeSubscription {
+         readonly result: SoftKeyboardAttachResult;
+         readonly unsubscribe: (() => void) | null;
+       }
+       export interface HostSoftKeyboardChangeCapability {
+         subscribe(listener: () => void): Promise<SoftKeyboardChangeSubscription>;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const keyboard = ts.createSourceFile(
+      '/flight/packages/keyboard/src/keyboard.ts',
+      `import type {
+         HostSoftKeyboardChangeCapability,
+         SoftKeyboardAttachResult,
+       } from '@flighthq/types/keyboard';
+       export async function attachSoftKeyboard(
+         change: Readonly<HostSoftKeyboardChangeCapability>,
+       ): Promise<SoftKeyboardAttachResult> {
+         const subscription = await change.subscribe(() => {});
+         if (subscription.result !== 'ok') return subscription.result;
+         subscription.unsubscribe!();
+         return 'ok';
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/keyboard',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/keyboard.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/keyboard', sourceFile: keyboard, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: {
+        packageTargets: {
+          '@flighthq/keyboard': { includePrefix: 'flight/keyboard', namespace: 'flight::keyboard' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(results[1]!.module)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(output).toContain('auto subscription = co_await');
+    expect(output).toContain('namespace flight::types { struct SoftKeyboardChangeSubscription; }');
+    expect(output).not.toContain('struct result_unsubscribe_');
+  });
+
   it('hoists co_await out of catch handlers into a deferred block', () => {
     const result = lower(
       'catch-await.ts',
