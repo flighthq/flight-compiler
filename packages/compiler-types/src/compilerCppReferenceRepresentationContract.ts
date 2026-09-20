@@ -95,6 +95,10 @@ export interface CompilerCppReferenceRepresentationPlanner {
     type: Readonly<IrType>,
     module: Readonly<IrModule>,
   ) => Readonly<CompilerCppFacetReferencePlan> | undefined;
+  readonly resolveExternalProjection: (
+    type: Readonly<IrType>,
+    module: Readonly<IrModule>,
+  ) => Readonly<IrType> | undefined;
   // The result is a union when more than one branch survives, and the single surviving branch when
   // every other branch contradicts a member and is therefore `never`: `CollisionBuiltInShape3D &
   // { kind: 'capsule' }` is the capsule branch alone, not a one-member union.

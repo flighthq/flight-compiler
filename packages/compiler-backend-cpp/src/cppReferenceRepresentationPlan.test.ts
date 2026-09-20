@@ -505,6 +505,52 @@ describe('createIrTypeReferenceRepresentationPlanCpp', () => {
     });
   });
 
+  it('represents an exact closed host Pick through its externally bound target', () => {
+    const projected = lower(
+      'gl-context.ts',
+      `type GlContextMember = 'COMPILE_STATUS' | 'compileShader';
+       export interface GlContext extends Pick<WebGL2RenderingContext, GlContextMember> {}`,
+    );
+    const extended = lower(
+      'extended-gl-context.ts',
+      `type GlContextMember = 'COMPILE_STATUS' | 'compileShader';
+       export interface ExtendedGlContext extends Pick<WebGL2RenderingContext, GlContextMember> {
+         generation: number;
+       }`,
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/webgl.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'WebGL2RenderingContext',
+          space: 'type' as const,
+          targetName: 'host::WebGl2Context',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const planner = createIrTypeReferenceRepresentationPlannerCpp([projected], undefined, externalBindings);
+    const type = declarationType(projected, 'GlContext');
+
+    expect(planner.resolveExternalProjection(type, projected)).toEqual(ambientType('WebGL2RenderingContext'));
+    expect(planner.plan(type, projected)).toMatchObject({
+      category: 'external',
+      kind: 'represented',
+      valueRepresentation: 'runtimeReference',
+    });
+    expect(
+      createIrTypeReferenceRepresentationPlannerCpp([extended], undefined, externalBindings).resolveExternalProjection(
+        declarationType(extended, 'ExtendedGlContext'),
+        extended,
+      ),
+    ).toBeUndefined();
+    expect(
+      createIrTypeReferenceRepresentationPlannerCpp([projected]).resolveExternalProjection(type, projected),
+    ).toBeUndefined();
+  });
+
   it('preserves reference representation through generic aliases and ambient object utilities', () => {
     const module = lower('generic.ts', 'export type Box<T> = { value: T };');
     const box = declarationType(module, 'Box');

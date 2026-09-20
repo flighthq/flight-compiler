@@ -7167,6 +7167,102 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('emits an imported closed host Pick as the profile-bound external type', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/GlContext.ts',
+      `type GlContextMember = 'COMPILE_STATUS' | 'compileShader' | 'texImage2D';
+       export interface GlContext extends Pick<WebGL2RenderingContext, GlContextMember> {}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const render = ts.createSourceFile(
+      '/flight/packages/render-gl/src/upload.ts',
+      `import type { GlContext } from '@flighthq/types/contract';
+       export function upload(
+         gl: GlContext,
+         shader: WebGLShader,
+         bytes: Uint8Array,
+         image: TexImageSource,
+       ): void {
+         gl.compileShader(shader);
+         gl.texImage2D(1, 0, 2, 3, 4, 0, 5, 6, bytes);
+         gl.texImage2D(1, 0, 2, 5, 6, image);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/GlContext.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/render-gl', sourceFile: render, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/webgl.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'WebGL2RenderingContext',
+          space: 'type' as const,
+          targetName: 'host::WebGl2Context',
+        },
+        {
+          headers: ['host/webgl.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'WebGLShader',
+          space: 'type' as const,
+          targetName: 'host::WebGlShader',
+        },
+        {
+          headers: ['host/image.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'TexImageSource',
+          space: 'type' as const,
+          targetName: 'host::ImageSource',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        externalBindings,
+        packageTargets: {
+          '@flighthq/render-gl': { includePrefix: 'flight/render_gl', namespace: 'flight::render_gl' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emittedTypes = session.emitModule(modules[0]!)[0]!.contents;
+    const emittedRender = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emittedTypes).toContain('using GlContext = host::WebGl2Context;');
+    expect(emittedTypes).not.toContain('struct GlContext;');
+    expect(emittedRender).toContain('void upload(host::WebGl2Context gl');
+    expect(emittedRender).toContain('gl.compile_shader(shader);');
+    expect(emittedRender).toContain('gl.tex_image2_d(1.0, 0.0, 2.0, 3.0, 4.0, 0.0, 5.0, 6.0, bytes);');
+    expect(emittedRender).toContain('gl.tex_image2_d(1.0, 0.0, 2.0, 5.0, 6.0, image);');
+    expect(emittedRender).not.toContain('struct GlContext;');
+    expect(emittedRender).not.toContain('gl->');
+  });
+
   it('erases Omit<T, K> only when the semantic runtime proves a reference-preserving representation', () => {
     const result = lower(
       'omit-reference.ts',

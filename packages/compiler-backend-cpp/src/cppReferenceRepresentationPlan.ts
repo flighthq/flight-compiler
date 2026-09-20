@@ -124,6 +124,11 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
       if (!subject) throw new TypeError('C++ facet subject must belong to the explicit module set');
       return resolveIrFacetReferenceCpp(type, subject, moduleSet, resolutionCache);
     },
+    resolveExternalProjection(type: Readonly<IrType>, module: Readonly<IrModule>) {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ external projection subject must belong to the explicit module set');
+      return resolveIrExternalProjectionCpp(type, subject, context);
+    },
     resolveClosedIntersectionDistribution(
       type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
       module: Readonly<IrModule>,
@@ -1256,6 +1261,10 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
   module: Readonly<ReferenceModuleRecord>,
   context: Readonly<ReferencePlanningContext>,
 ): CompilerCppReferenceRepresentationPlan {
+  const externalProjection = resolveIrExternalProjectionCpp(type, module, context);
+  if (externalProjection) {
+    return createIrTypeReferenceRepresentationPlanInternalCpp(externalProjection, module, context);
+  }
   const structuralRow = resolveIrTypeStructuralRowCpp(
     type,
     module,
@@ -1395,6 +1404,67 @@ function createIrTypeReferenceRepresentationPlanInternalCpp(
       : createCompilerCppReferenceRepresentationRefusalCpp(identity, 'compoundReference');
   }
   return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedReferenceForm');
+}
+
+// A closed Pick of one externally represented host interface is a source-level view of that host
+// value. The checker materializes the selected slots on the derived interface, but those slots do not
+// become a second runtime object: WebGL2RenderingContext itself satisfies GlContext. Preserve that
+// exact representation only when the declaration adds no members outside the closed key set and the
+// target profile owns the projected host type.
+function resolveIrExternalProjectionCpp(
+  type: Readonly<IrType>,
+  module: Readonly<ReferenceModuleRecord>,
+  context: Readonly<ReferencePlanningContext>,
+): Readonly<IrType> | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.reference.path.length > 0 ||
+    type.typeArguments.length > 0
+  ) {
+    return undefined;
+  }
+  const resolution = getReferenceDeclarationResolutionCpp(
+    type.reference,
+    module,
+    context.moduleSet,
+    context.resolutionCache,
+  );
+  if (resolution.kind !== 'location' || resolution.location.declaration.kind !== 'interface') return undefined;
+  const declaration = resolution.location.declaration;
+  if (declaration.typeParameters.length > 0 || declaration.extends.length !== 1) return undefined;
+  const projection = declaration.extends[0]!;
+  if (
+    projection.reference.kind !== 'ambient' ||
+    projection.reference.name !== 'Pick' ||
+    projection.typeArguments.length !== 2
+  ) {
+    return undefined;
+  }
+  const target = projection.typeArguments[0];
+  const keyType = projection.typeArguments[1]!;
+  const resolvedKeyType =
+    resolveIrTypeAliasCpp(
+      keyType,
+      resolution.location.module.module,
+      context.moduleSet,
+      context.resolutionCache,
+      new Map(),
+    ) ?? keyType;
+  const keys = getIrObjectProjectionKeysCpp(resolvedKeyType);
+  if (
+    target?.kind !== 'named' ||
+    target.reference.kind !== 'ambient' ||
+    target.typeArguments.length > 0 ||
+    !keys ||
+    !getCompilerExternalBindingEvidenceCpp(target.reference.name, 'type', context.externalBindings)
+  ) {
+    return undefined;
+  }
+  const materialized = new Set(declaration.properties.map((property) => property.name));
+  if (materialized.size !== keys.size || [...keys].some((key) => !materialized.has(key))) return undefined;
+  return target;
 }
 
 function isIrCallableOverloadIntersectionRepresentableCpp(

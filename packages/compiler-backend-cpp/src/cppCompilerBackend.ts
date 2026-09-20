@@ -919,24 +919,37 @@ function collectCppMaterializedTypeForwardDeclarationsCpp(
   return [...found.values()];
 }
 
+function getCppInterfaceDeclarationTypeCpp(declaration: Readonly<IrInterfaceDeclaration>): IrType {
+  return {
+    kind: 'named',
+    reference: { binding: declaration.binding, kind: 'binding', path: [] },
+    typeArguments: declaration.typeParameters.map((parameter) => ({
+      kind: 'named',
+      reference: { binding: parameter.binding, kind: 'binding', path: [] },
+      typeArguments: [],
+    })),
+  };
+}
+
+function isCppInterfaceRepresentationAliasCpp(
+  declaration: Readonly<IrInterfaceDeclaration>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): boolean {
+  const type = getCppInterfaceDeclarationTypeCpp(declaration);
+  return Boolean(
+    context.referenceRepresentationPlanner.resolveFacetReference(type, module) ??
+    context.referenceRepresentationPlanner.resolveExternalProjection(type, module),
+  );
+}
+
 function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitContext): string[] {
   return module.declarations.flatMap((declaration): string[] => {
     if (declaration.kind !== 'class' && declaration.kind !== 'interface') return [];
     if (
       declaration.kind === 'interface' &&
       getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-      context.referenceRepresentationPlanner.resolveFacetReference(
-        {
-          kind: 'named',
-          reference: { binding: declaration.binding, kind: 'binding', path: [] },
-          typeArguments: declaration.typeParameters.map((parameter) => ({
-            kind: 'named',
-            reference: { binding: parameter.binding, kind: 'binding', path: [] },
-            typeArguments: [],
-          })),
-        },
-        context.module,
-      )
+      isCppInterfaceRepresentationAliasCpp(declaration, context.module, context)
     ) {
       return [];
     }
@@ -1021,18 +1034,7 @@ function collectCppEarlyForwardDeclarationCpp(
       !(
         owner.declaration.kind === 'interface' &&
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        context.referenceRepresentationPlanner.resolveFacetReference(
-          {
-            kind: 'named',
-            reference: { binding: owner.declaration.binding, kind: 'binding', path: [] },
-            typeArguments: owner.declaration.typeParameters.map((parameter) => ({
-              kind: 'named',
-              reference: { binding: parameter.binding, kind: 'binding', path: [] },
-              typeArguments: [],
-            })),
-          },
-          owner.module,
-        )
+        isCppInterfaceRepresentationAliasCpp(owner.declaration, owner.module, context)
       )
     ) {
       const namespace = getCppCompilerPackageNamespace(owner.module.packageName, context.options.packageTargets);
@@ -1077,18 +1079,7 @@ function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
       if (
         match.declaration.kind === 'interface' &&
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
-        context.referenceRepresentationPlanner.resolveFacetReference(
-          {
-            kind: 'named',
-            reference: { binding: match.declaration.binding, kind: 'binding', path: [] },
-            typeArguments: match.declaration.typeParameters.map((parameter) => ({
-              kind: 'named',
-              reference: { binding: parameter.binding, kind: 'binding', path: [] },
-              typeArguments: [],
-            })),
-          },
-          match.targetModule,
-        )
+        isCppInterfaceRepresentationAliasCpp(match.declaration, match.targetModule, context)
       ) {
         continue;
       }
@@ -1576,18 +1567,15 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
     ),
   };
   const name = getBindingTargetName(declaration.binding, context);
-  const facet = context.referenceRepresentationPlanner.resolveFacetReference(
-    {
-      kind: 'named',
-      reference: { binding: declaration.binding, kind: 'binding', path: [] },
-      typeArguments: declaration.typeParameters.map((parameter) => ({
-        kind: 'named',
-        reference: { binding: parameter.binding, kind: 'binding', path: [] },
-        typeArguments: [],
-      })),
-    },
+  const interfaceType = getCppInterfaceDeclarationTypeCpp(declaration);
+  const externalProjection = context.referenceRepresentationPlanner.resolveExternalProjection(
+    interfaceType,
     context.module,
   );
+  if (externalProjection && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    return [`using ${name} = ${emitType(externalProjection, context)};`];
+  }
+  const facet = context.referenceRepresentationPlanner.resolveFacetReference(interfaceType, context.module);
   if (facet && getCppRuntimeProfile(context.options) === 'flight-cpp') {
     if (declaration.typeParameters.length > 0) {
       emissionError(
@@ -5654,6 +5642,8 @@ function describeShapelessIntersectionMemberCpp(member: Readonly<IrType>, contex
 
 function emitType(type: Readonly<IrType>, context: EmitContext, representation: 'storage' | 'value' = 'value'): string {
   if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const externalProjection = context.referenceRepresentationPlanner.resolveExternalProjection(type, context.module);
+    if (externalProjection) return emitType(externalProjection, context, representation);
     if (
       type.kind === 'named' &&
       type.reference.kind === 'binding' &&
