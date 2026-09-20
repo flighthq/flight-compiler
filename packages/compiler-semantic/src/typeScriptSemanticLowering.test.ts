@@ -1879,6 +1879,135 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type ConditionalType']);
   });
 
+  it('distributes a nested payload conditional over its closed literal-key domain', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export interface KeyboardData { key: string; kind: 'keyboard' }
+       export interface FocusData { kind: 'focus'; target: string }
+       export interface PointerData { kind: 'pointer'; x: number }
+       export interface Signals {
+         onFocusIn: () => void;
+         onFocusOut: () => void;
+         onKeyDown: () => void;
+         onKeyUp: () => void;
+         onPointerDown: () => void;
+       }
+       export type SignalName = keyof Signals;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const interaction = ts.createSourceFile(
+      '/flight/packages/interaction/src/closed-key-payload.ts',
+      `import type { FocusData, KeyboardData, PointerData, SignalName } from '@flighthq/types/contract';
+       type KeyboardName = 'onKeyDown' | 'onKeyUp';
+       type FocusName = 'onFocusIn' | 'onFocusOut';
+       export type Payload<Name extends SignalName> = Name extends KeyboardName
+         ? Readonly<KeyboardData>
+         : Name extends FocusName
+           ? Readonly<FocusData>
+           : Readonly<PointerData>;
+       export type Slot<Name extends SignalName> = (value: Payload<Name>) => void;
+       export type KeyboardPayload = Payload<'onKeyDown'>;
+       export type FocusPayload = Payload<'onFocusIn'>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/interaction', sourceFile: interaction, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flighthq/types/contract',
+            target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    if (!result) throw new Error('Expected interaction lowering result');
+    const declarations = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        'binding' in declaration ? [[declaration.binding.name, declaration] as const] : [],
+      ),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(declarations.get('Payload')).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'union',
+        types: [
+          { kind: 'named', reference: { kind: 'ambient', name: 'Readonly' } },
+          { kind: 'named', reference: { kind: 'ambient', name: 'Readonly' } },
+          { kind: 'named', reference: { kind: 'ambient', name: 'Readonly' } },
+        ],
+      },
+    });
+    expect(declarations.get('Slot')).toMatchObject({
+      kind: 'typeAlias',
+      type: {
+        kind: 'function',
+        parameters: [
+          {
+            type: {
+              kind: 'named',
+              reference: { binding: { name: 'Payload' }, kind: 'binding' },
+              typeArguments: [{ kind: 'named', reference: { binding: { name: 'Name' } } }],
+            },
+          },
+        ],
+      },
+    });
+    expect(declarations.get('KeyboardPayload')).toMatchObject({
+      type: {
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'Readonly' },
+        typeArguments: [
+          {
+            kind: 'named',
+            reference: { binding: { kind: 'import', name: 'KeyboardData' }, kind: 'binding' },
+          },
+        ],
+      },
+    });
+    expect(declarations.get('FocusPayload')).toMatchObject({
+      type: {
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'Readonly' },
+        typeArguments: [
+          {
+            kind: 'named',
+            reference: { binding: { kind: 'import', name: 'FocusData' }, kind: 'binding' },
+          },
+        ],
+      },
+    });
+  });
+
+  it('refuses conditional payload aliases whose key domain is open or unresolved', () => {
+    const open = lower(
+      'open-key-payload.ts',
+      `interface KeyboardData { key: string }
+       interface PointerData { x: number }
+       export type Payload<Name extends string> = Name extends 'onKeyDown'
+         ? Readonly<KeyboardData>
+         : Readonly<PointerData>;`,
+    );
+    const unresolved = lower(
+      'unresolved-key-payload.ts',
+      `import type { ExternalSignalName } from '@flighthq/external';
+       export type Payload<Name extends ExternalSignalName> = Name extends 'onKeyDown' ? number : string;`,
+    );
+
+    expect(open.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(['unsupported type ConditionalType']);
+    expect(unresolved.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      'unsupported type ConditionalType',
+    ]);
+  });
+
   it('preserves the common object surface of generic Host capability conditionals', () => {
     const result = lower(
       'conditional-host-capabilities.ts',

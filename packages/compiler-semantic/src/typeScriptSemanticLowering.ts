@@ -3976,9 +3976,59 @@ function lowerConcreteConditionalType(node: ts.ConditionalTypeNode, context: Low
   const readonlyIdentity = lowerTypeScriptDeepReadonlyConditionalRepresentation(node, context);
   if (readonlyIdentity) return readonlyIdentity;
   if (hasExternalTypeScriptTypeParameter(node, context)) {
-    return lowerTypeScriptConditionalRuntimeRepresentation(node, context);
+    return (
+      lowerTypeScriptConditionalRuntimeRepresentation(node, context) ??
+      lowerTypeScriptClosedKeyConditionalRepresentation(node, context)
+    );
   }
   return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+}
+
+// A conditional alias checked directly against its own finite string-literal parameter has a closed
+// set of possible instantiations even at the declaration site. Materialize each key's selected branch
+// and retain their union as the generic carrier; concrete references still select exactly one branch
+// through lowerConcreteTypeScriptConditionalAliasReference. A `string` or unresolved constraint never
+// enters this path, because enumerating a guessed domain would silently lose the key/payload contract.
+function lowerTypeScriptClosedKeyConditionalRepresentation(
+  node: ts.ConditionalTypeNode,
+  context: LoweringContext,
+): IrType | undefined {
+  const declaration = node.parent;
+  if (!ts.isTypeAliasDeclaration(declaration) || declaration.type !== node) return undefined;
+  const check = ts.isParenthesizedTypeNode(node.checkType) ? node.checkType.type : node.checkType;
+  if (!ts.isTypeReferenceNode(check) || check.typeArguments) return undefined;
+  const checkSymbol = context.checker.getSymbolAtLocation(check.typeName);
+  const parameter = declaration.typeParameters?.find(
+    (candidate) => context.checker.getSymbolAtLocation(candidate.name) === checkSymbol,
+  );
+  if (!checkSymbol || !parameter?.constraint) return undefined;
+  const keys =
+    getTypeScriptStringLiteralTypeValues(parameter.constraint, context, new Set()) ??
+    getTypeScriptCheckerStringLiteralTypeValues(parameter.constraint, context);
+  if (!keys || keys.length === 0) return undefined;
+  const branches = keys.map((key) => lowerTypeScriptClosedKeyConditionalBranch(node, checkSymbol, key, context));
+  const resolved = branches.filter((branch): branch is IrType => branch !== undefined);
+  const [first, ...rest] = resolved;
+  return first && resolved.length === branches.length ? commonType([first, ...rest]) : undefined;
+}
+
+function lowerTypeScriptClosedKeyConditionalBranch(
+  node: ts.ConditionalTypeNode,
+  parameterSymbol: ts.Symbol,
+  key: string,
+  context: LoweringContext,
+): IrType | undefined {
+  const check = ts.isParenthesizedTypeNode(node.checkType) ? node.checkType.type : node.checkType;
+  if (!isTypeScriptBareTypeReferenceToSymbol(check, parameterSymbol, context)) return undefined;
+  const accepted =
+    getTypeScriptStringLiteralTypeValues(node.extendsType, context, new Set()) ??
+    getTypeScriptCheckerStringLiteralTypeValues(node.extendsType, context);
+  if (!accepted) return undefined;
+  const selected = accepted.includes(key) ? node.trueType : node.falseType;
+  const branch = ts.isParenthesizedTypeNode(selected) ? selected.type : selected;
+  return ts.isConditionalTypeNode(branch)
+    ? lowerTypeScriptClosedKeyConditionalBranch(branch, parameterSymbol, key, context)
+    : lowerType(branch, context);
 }
 
 function lowerTypeScriptDeepReadonlyConditionalRepresentation(
