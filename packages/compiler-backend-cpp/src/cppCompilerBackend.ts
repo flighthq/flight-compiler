@@ -7932,7 +7932,90 @@ function getCppUnionRepresentationPlan(
   return plan;
 }
 
+// The module that declares the alias an expected union is reached through, when that module is not
+// this one.
+//
+// A union's alternatives are anonymous records, and an anonymous record is minted where it is
+// emitted. The declaring module mints its own in its own namespace, so a consumer that mints an
+// equivalent struct here produces a structurally identical but nominally different type -- and the
+// declared result, which names the declaring module's, will not accept it. The alternatives have to be
+// built in the declaring module's context and named there.
+//
+// `'ambiguous'` is a real answer rather than a fallback: an import that resolves to no single module
+// cannot say whose records these are, and guessing would pick one of several equally wrong answers.
+function getCppUnionAliasDeclarationOwnerCpp(
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<IrModule> | 'ambiguous' | undefined {
+  if (expectedType.kind !== 'named' || expectedType.reference.kind !== 'binding') return undefined;
+  const reference = expectedType.reference;
+  // Only an import crosses a module boundary. A local alias and an inline union keep their own
+  // ownership, which is what they already had.
+  if (reference.binding.kind !== 'import') return undefined;
+  const owner = context.importBindingOwners.get(reference.binding.id);
+  // No import owner means the binding is not one this emission can follow, and the local path already
+  // answers for it. Ambiguity is a different case: the alias IS imported and its declaring module does
+  // not resolve to exactly one, so every answer would be a guess at which module's records these are.
+  if (!owner) return undefined;
+  const ownerContext: EmitContext = owner.module === context.module ? context : { ...context, module: owner.module };
+  const targets = getCppResolvedImportModules(owner.specifier, ownerContext).filter((candidate) =>
+    hasCppDirectExportName(candidate, owner.imported),
+  );
+  // Only a UNIQUE other module can say whose records these are. Anything else keeps the local
+  // behaviour it already had: an import that resolves to several modules is a shape the emitter
+  // handles today by minting here, and refusing it would turn a working emission into a refusal --
+  // a behaviour change this round did not ask for.
+  if (targets.length !== 1) return undefined;
+  return targets[0] === context.module ? undefined : targets[0];
+}
+
+// Names the alternatives the declaring module minted, qualified by that module's namespace, so a
+// construction here names the declared type rather than a local twin. Only the names this emission
+// minted are rewritten, so a runtime type that happens to sit beside them is untouched.
+function qualifyCppDeclaringModuleAlternativesCpp(
+  emitted: string,
+  ownerContext: EmitContext,
+  owner: Readonly<IrModule>,
+  options: Readonly<CppCompilerBackendOptions>,
+): string {
+  let result = emitted;
+  const namespace = getCppCompilerPackageNamespace(owner.packageName, options.packageTargets);
+  for (const structure of ownerContext.anonymousStructs.values()) {
+    const name = structure.name;
+    result = result.replace(new RegExp(`(?<![A-Za-z0-9_:])${name}(?![A-Za-z0-9_])`, 'gu'), `${namespace}::${name}`);
+  }
+  return result;
+}
+
 function emitContextualUnionExpressionCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const owner = getCppUnionAliasDeclarationOwnerCpp(expectedType, context);
+  if (owner === 'ambiguous') {
+    emissionError(
+      context,
+      'a contextual union value reached through an alias whose declaring module is unresolved cannot choose canonical alternatives',
+      'cpp-contextual-union-alias-owner-unresolved',
+    );
+  }
+  if (owner) {
+    // The alternatives are built in the declaring module's context, with a scratch struct map so its
+    // definitions are NOT emitted here -- the declaring module's own header defines them, and this
+    // module already includes it through the ordinary import path. The two halves are one change: a
+    // qualified name without the suppression would leave a duplicate, and the suppression without the
+    // qualification would name a type this module does not have.
+    const ownerContext: EmitContext = { ...context, anonymousStructs: new Map(), module: owner };
+    const emitted = emitContextualUnionExpressionInContextCpp(expression, expectedType, ownerContext);
+    return emitted === undefined
+      ? undefined
+      : qualifyCppDeclaringModuleAlternativesCpp(emitted, ownerContext, owner, context.options);
+  }
+  return emitContextualUnionExpressionInContextCpp(expression, expectedType, context);
+}
+
+function emitContextualUnionExpressionInContextCpp(
   expression: Readonly<IrExpression>,
   expectedType: Readonly<IrType>,
   context: EmitContext,

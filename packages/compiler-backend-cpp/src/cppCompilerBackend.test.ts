@@ -1143,7 +1143,103 @@ describe('createCppCompilerBackend', () => {
     expect(emitted.indexOf('struct value')).toBeLessThan(emitted.indexOf('using Outcome'));
   });
 
-  it('qualifies nested references while expanding imported union aliases', () => {
+  // A union's alternatives are anonymous records, and an anonymous record is a type of the module that
+  // declared it. A consumer that mints an equivalent struct is naming a different type: structurally
+  // identical, nominally distinct, and not what the declared result accepts. Both entry points into
+  // context, the synchronous one and the coroutine one, have to reach the declaring module's records.
+  it('builds an imported alias union in its declaring module for a sync and an async consumer', () => {
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(
+        `/flight/packages/${packageName.slice(packageName.lastIndexOf('/') + 1)}/src/${file}`,
+        text,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    });
+    const resolutionPlan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['Host', 'Outcome'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'contract.ts',
+          `export interface State { readonly id: number }
+           export type Outcome =
+             | { readonly reason: 'ok'; readonly state: State }
+             | { readonly reason: 'failed' };
+           export interface Host { run(): Promise<Outcome> }`,
+        ),
+        source(
+          '@flighthq/consumer',
+          'consumers.ts',
+          `import type { Host, Outcome } from '@flighthq/types/contract';
+           export function syncOutcome(): Outcome { return { reason: 'failed' }; }
+           export async function asyncOutcome(host: Readonly<Host>): Promise<Outcome> {
+             try { return await host.run(); } catch { return { reason: 'failed' }; }
+           }`,
+        ),
+      ],
+      resolutionPlan,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolutionPlan,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const owner = modules.find((module) => module.packageName === '@flighthq/types')!;
+    const consumer = modules.find((module) => module.packageName === '@flighthq/consumer')!;
+    const ownerOutput = session.emitModule(owner)[0]?.contents ?? '';
+    const consumerOutput = session.emitModule(consumer)[0]?.contents ?? '';
+
+    // The declaring module defines each alternative exactly once, and the consumer defines none.
+    const ownerArms = [...ownerOutput.matchAll(/^struct (reason_[0-9a-f]+|reason_state_[0-9a-f]+) :/gmu)].map(
+      (match) => match[1]!,
+    );
+    expect(new Set(ownerArms).size).toBe(ownerArms.length);
+    expect(ownerArms.length).toBeGreaterThan(0);
+    expect(consumerOutput).not.toContain('struct reason_');
+
+    // Both entry points name the declaring module's alternatives, in the synchronous body and inside
+    // the coroutine.
+    for (const arm of ownerArms) {
+      expect(consumerOutput).toContain(`flighthq_types::${arm}`);
+    }
+    expect(consumerOutput).toContain('return std::variant<');
+    expect(consumerOutput).toContain('co_return std::variant<');
+    // The real task is still awaited and the literal beside it is not.
+    expect(consumerOutput).toContain('co_await');
+  });
+
+  // The other half of the ownership rule: a LOCAL alias keeps its own records. Rewriting these to any
+  // other module's namespace would be the same mistake in the opposite direction.
+  it('keeps a local union alias and its records in its own module', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'local-alias.ts',
+        `interface State { readonly id: number }
+         export type Local = { readonly reason: 'ok'; readonly state: State } | { readonly reason: 'failed' };
+         export function make(): Local { return { reason: 'failed' }; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('using Local = std::variant<');
+    expect(emitted).not.toContain('flighthq_types::reason_');
+    expect(emitted).not.toContain('flighthq_math::reason_');
+  });
+
+  it('expands an imported union alias where it is declared and not in its consumer', () => {
     const types = lowerPackage(
       '@flighthq/types',
       'update.ts',
@@ -1166,9 +1262,16 @@ describe('createCppCompilerBackend', () => {
     const aliases = session.emitModule(types)[0]!.contents;
     const emitted = session.emitModule(consumer)[0]!.contents;
 
+    // The alias is expanded where it is DECLARED, in declaration order: its record is minted beside
+    // the type it names, before the alias that refers to them.
     expect(aliases.indexOf('struct DownloadedUpdate :')).toBeLessThan(aliases.indexOf('struct reason_update'));
     expect(aliases.indexOf('struct reason_update')).toBeLessThan(aliases.indexOf('using Outcome'));
-    expect(emitted).toContain('flight::Ref<flighthq_types::DownloadedUpdate> update;');
+    // The consumer reads that expansion instead of minting a second one. Anonymous records are host
+    // types: a copy here would be structurally identical and nominally different, which is exactly the
+    // mismatch a declared result cannot accept.
+    expect(emitted).toContain('#include "update.hpp"');
+    expect(emitted).not.toContain('struct reason_');
+    expect(emitted).not.toContain('using Outcome =');
   });
 
   it('projects common variant properties and narrows structural switch cases', () => {
