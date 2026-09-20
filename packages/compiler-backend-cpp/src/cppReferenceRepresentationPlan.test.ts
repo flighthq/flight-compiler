@@ -1213,6 +1213,25 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     expect(planner.resolveStructuralRow(declarationType(module, 'Incompatible'), module)).toBeUndefined();
   });
 
+  it('keeps compatible concrete symbol-bearing node intersections structural and refuses conflicts', () => {
+    const module = lower(
+      'concrete-node-row.ts',
+      `export const RuntimeKey = Symbol.for('Runtime');
+       interface Node<Traits extends object> { enabled: boolean; [RuntimeKey]: object | undefined }
+       interface VisualTraits { enabled: boolean; opacity: number }
+       interface IncompatibleTraits { enabled: string }
+       export type VisualNode = Node<VisualTraits> & VisualTraits;
+       export type IncompatibleNode = Node<IncompatibleTraits> & IncompatibleTraits;`,
+    );
+    const planner = createIrTypeReferenceRepresentationPlannerCpp([module]);
+
+    expect(planner.resolveStructuralRow(declarationType(module, 'VisualNode'), module)).toMatchObject({
+      kind: 'merge',
+      rows: [{ kind: 'rowOf' }, { kind: 'rowOf' }],
+    });
+    expect(planner.resolveStructuralRow(declarationType(module, 'IncompatibleNode'), module)).toBeUndefined();
+  });
+
   it('snapshots its graph and rejects subjects outside that explicit graph', () => {
     const module = lower('snapshot.ts', 'export interface Shape { value: number } export type Alias = Shape;');
     const planner = createIrTypeReferenceRepresentationPlannerCpp([module]);

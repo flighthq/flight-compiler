@@ -14564,4 +14564,121 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // The value is the declared outcome, not a fresh record of the shape the literal spelled.
     expect(emitted.contents).not.toContain('resolve_task<flight::Ref<reason_');
   });
+
+  it('constructs the fixed Node row before a generic Traits row is initialized', () => {
+    const result = lowerPackage(
+      '@flighthq/node',
+      'node.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       interface Runtime { token: number }
+       interface NodeTraits { data: object | null; enabled: boolean; kind: string; name: string | null }
+       interface Node<Traits extends object = NodeTraits> extends NodeTraits {
+         [EntityRuntimeKey]: Runtime | undefined;
+       }
+       function createRuntime(): Runtime { return { token: 1 }; }
+       export function createNode<Traits extends object = NodeTraits>(
+         runtimeFactory: () => Runtime = createRuntime,
+       ): Node<Traits> & Traits {
+         const out = {
+           data: null,
+           name: null,
+           kind: 'Node',
+           [EntityRuntimeKey]: runtimeFactory(),
+         } as Node<Traits> & Traits;
+         out.enabled = true;
+         return out;
+       }
+       interface VisualTraits extends NodeTraits { opacity: number }
+       export function createVisual(): Node<VisualTraits> & VisualTraits {
+         const out = createNode<VisualTraits>();
+         out.opacity = 0.5;
+         return out;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('template <typename Traits = flight::Ref<NodeTraits>>');
+    expect(emitted).toContain('flight::make_structural_ref<');
+    expect(emitted).toContain('flight::row_field<flight::RowKey<"data">>');
+    expect(emitted).toContain('flight::row_field(entity_runtime_key');
+    expect(emitted).toContain('flight::row_set<flight::RowKey<"enabled">>(out, true)');
+    expect(emitted).toContain('create_node<flight::Ref<VisualTraits>>(std::nullopt)');
+    expect(emitted).toContain('flight::row_set<flight::RowKey<"opacity">>(out, 0.5)');
+  });
+
+  it('refuses an open Node row whose required fixed field is never initialized', () => {
+    const result = lower(
+      'missing-node-field.ts',
+      `const RuntimeKey = Symbol.for('Runtime');
+       interface Runtime { token: number }
+       interface Fixed { enabled: boolean; kind: string; [RuntimeKey]: Runtime | undefined }
+       interface Node<Traits extends object> extends Fixed {}
+       export function create<Traits extends object>(): Node<Traits> & Traits {
+         const out = { [RuntimeKey]: { token: 1 } } as Node<Traits> & Traits;
+         out.enabled = true;
+         return out;
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-structural-open-row-construction-unproven');
+  });
+
+  it('refuses an open Node row whose computed key does not prove the declared runtime slot', () => {
+    const result = lower(
+      'unproven-node-key.ts',
+      `const RuntimeKey = Symbol.for('Runtime');
+       const OtherKey = Symbol.for('Other');
+       interface Runtime { token: number }
+       interface Fixed { enabled: boolean; kind: string; [RuntimeKey]: Runtime | undefined }
+       interface Node<Traits extends object> extends Fixed {}
+       export function create<Traits extends object>(): Node<Traits> & Traits {
+         const out = { kind: 'Node', [OtherKey]: { token: 1 } } as Node<Traits> & Traits;
+         out.enabled = true;
+         return out;
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-structural-open-row-construction-unproven');
+  });
+
+  it('refuses a plain fixed object assertion with an arbitrary open row', () => {
+    const result = lower(
+      'arbitrary-open-row.ts',
+      `interface Fixed { value: number }
+       export function create<Row extends object>(): Fixed & Row {
+         return { value: 1 } as Fixed & Row;
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-structural-open-row-construction-unproven');
+  });
+
+  it('refuses a concrete trait whose fixed field conflicts with the Node row', () => {
+    const result = lower(
+      'incompatible-node-trait.ts',
+      `const RuntimeKey = Symbol.for('Runtime');
+       interface Runtime { token: number }
+       interface Fixed { enabled: boolean; [RuntimeKey]: Runtime | undefined }
+       interface Node<Traits extends object> extends Fixed {}
+       interface IncompatibleTraits { enabled: string }
+       export function create(): Node<IncompatibleTraits> & IncompatibleTraits {
+         return { enabled: true, [RuntimeKey]: { token: 1 } } as Node<IncompatibleTraits> & IncompatibleTraits;
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-intersection-member-shapeless');
+  });
 });

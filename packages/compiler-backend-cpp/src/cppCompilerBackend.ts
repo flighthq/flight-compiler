@@ -158,6 +158,15 @@ interface CppStructuralCloneRecordViewPlan {
   readonly typeParameter: Readonly<IrType>;
 }
 
+interface CppStructuralOpenRowConstructionField {
+  readonly member: Readonly<Extract<IrObjectMember, { kind: 'computedProperty' | 'property' }>>;
+  readonly property: Readonly<IrObjectTypeProperty>;
+}
+
+interface CppStructuralOpenRowConstructionPlan {
+  readonly fields: readonly CppStructuralOpenRowConstructionField[];
+}
+
 type CppDirectBindingOwner = Readonly<{ declaration: IrDeclaration; module: IrModule }>;
 type CppImportBindingOwner = Readonly<{ imported: string; module: IrModule; specifier: string }>;
 
@@ -209,6 +218,10 @@ interface EmitContext {
   sourceModules: readonly Readonly<IrModule>[];
   structuralCastBindingRows: ReadonlyMap<string, Readonly<CompilerCppStructuralRowPlan>>;
   structuralCloneRecordBindingIds: ReadonlySet<string>;
+  structuralOpenRowConstructionAssignments: ReadonlyMap<
+    Readonly<Extract<IrExpression, { kind: 'object' }>>,
+    ReadonlySet<string>
+  >;
   targetNameMaps: ReadonlyMap<string, ReadonlyMap<string, string>>;
   targetNames: ReadonlyMap<string, string>;
   uninitializedCaptureStorageBindingIds: ReadonlySet<string>;
@@ -390,6 +403,7 @@ function emitIrModuleCppWithContext(
     sourceModules,
     structuralCastBindingRows,
     structuralCloneRecordBindingIds,
+    structuralOpenRowConstructionAssignments: collectCppStructuralOpenRowConstructionAssignmentsCpp(module),
     targetNameMaps: resolvedTargetNameMaps,
     targetNames,
     typeParameterConstraints,
@@ -1863,6 +1877,99 @@ function collectCppStructuralCastBindingRowsCpp(
   return rows;
 }
 
+function collectCppStructuralOpenRowConstructionAssignmentsCpp(
+  module: Readonly<IrModule>,
+): ReadonlyMap<Readonly<Extract<IrExpression, { kind: 'object' }>>, ReadonlySet<string>> {
+  const assignments = new Map<Readonly<Extract<IrExpression, { kind: 'object' }>>, ReadonlySet<string>>();
+  const collectStatements = (statements: readonly IrStatement[]): void => {
+    for (const [index, statement] of statements.entries()) {
+      if (statement.kind === 'variable') {
+        for (const variable of statement.declarations) {
+          if (
+            !('binding' in variable) ||
+            variable.initializer?.kind !== 'cast' ||
+            variable.initializer.expression.kind !== 'object'
+          ) {
+            continue;
+          }
+          const initialized = new Set<string>();
+          for (const following of statements.slice(index + 1)) {
+            const property = getCppStraightLineBindingPropertyAssignmentCpp(following, variable.binding.id);
+            if (!property) break;
+            initialized.add(property);
+          }
+          assignments.set(variable.initializer.expression, initialized);
+        }
+      }
+      collectCppNestedStatementListsCpp(statement, collectStatements);
+    }
+  };
+  for (const declaration of module.declarations) {
+    if (declaration.kind === 'function') collectStatements(declaration.body);
+    if (declaration.kind !== 'class') continue;
+    if (declaration.classConstructor) collectStatements(declaration.classConstructor.body);
+    for (const method of declaration.methods) collectStatements(method.body);
+  }
+  return assignments;
+}
+
+function collectCppNestedStatementListsCpp(
+  statement: Readonly<IrStatement>,
+  collect: (statements: readonly IrStatement[]) => void,
+): void {
+  switch (statement.kind) {
+    case 'block':
+      collect(statement.statements);
+      return;
+    case 'do':
+    case 'for':
+    case 'forIn':
+    case 'forOf':
+    case 'while':
+      collect(statement.body.kind === 'block' ? statement.body.statements : [statement.body]);
+      return;
+    case 'if':
+      collect(statement.consequent.kind === 'block' ? statement.consequent.statements : [statement.consequent]);
+      if (statement.otherwise) {
+        collect(statement.otherwise.kind === 'block' ? statement.otherwise.statements : [statement.otherwise]);
+      }
+      return;
+    case 'switch':
+      for (const switchCase of statement.cases) collect(switchCase.statements);
+      return;
+    case 'try':
+      collect(statement.tryBody.kind === 'block' ? statement.tryBody.statements : [statement.tryBody]);
+      if (statement.catchClause) {
+        const body = statement.catchClause.body;
+        collect(body.kind === 'block' ? body.statements : [body]);
+      }
+      if (statement.finallyBody) {
+        collect(statement.finallyBody.kind === 'block' ? statement.finallyBody.statements : [statement.finallyBody]);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
+function getCppStraightLineBindingPropertyAssignmentCpp(
+  statement: Readonly<IrStatement>,
+  bindingId: string,
+): string | undefined {
+  if (
+    statement.kind !== 'expression' ||
+    statement.expression.kind !== 'assignment' ||
+    statement.expression.operator !== '=' ||
+    statement.expression.left.kind !== 'property' ||
+    statement.expression.left.object.kind !== 'identifier' ||
+    statement.expression.left.object.reference.kind !== 'binding' ||
+    statement.expression.left.object.reference.binding.id !== bindingId
+  ) {
+    return undefined;
+  }
+  return statement.expression.left.name;
+}
+
 function getCppStructurallyEquivalentInitializerTypeCpp(
   variable: Readonly<IrVariable>,
   context: EmitContext,
@@ -2498,6 +2605,17 @@ function emitExpression(
         expression.type,
         context.module,
       );
+      if (
+        expression.expression.kind === 'object' &&
+        hasCppOpenStructuralRowTypeParameterCpp(expression.type, context) &&
+        !getCppStructuralOpenRowConstructionPlanCpp(expression.expression, expression.type, context)
+      ) {
+        emissionError(
+          context,
+          'open structural-row construction requires a complete fixed row and one proven computed symbol member',
+          'cpp-structural-open-row-construction-unproven',
+        );
+      }
       const structuralSourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
       const structuralSource =
         getCppStructuralRowExpressionPlanCpp(expression.expression, context) ??
@@ -3052,6 +3170,24 @@ function emitExpression(
           context.includes.add('flight/structural_ref.hpp');
           return `([&]() { auto&& ${sourceName} = ${source}; return flight::make_structural_ref<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>(${fields.join(', ')}); }())`;
         }
+        const openRowConstruction = getCppStructuralOpenRowConstructionPlanCpp(expression, constructionType, context);
+        if (openRowConstruction) {
+          const fields = openRowConstruction.fields.map(({ member, property }) => {
+            const value = emitExpression(member.value, context, property.type);
+            return member.kind === 'computedProperty'
+              ? `flight::row_field(${emitExpression(member.key, context)}, ${value})`
+              : `flight::row_field<flight::RowKey<${JSON.stringify(member.name)}>>(${value})`;
+          });
+          context.includes.add('flight/structural_ref.hpp');
+          return `flight::make_structural_ref<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>(${fields.join(', ')})`;
+        }
+        if (hasCppOpenStructuralRowTypeParameterCpp(constructionType, context)) {
+          emissionError(
+            context,
+            'open structural-row construction requires a complete fixed row and one proven computed symbol member',
+            'cpp-structural-open-row-construction-unproven',
+          );
+        }
         if (expression.members.some((member) => member.kind !== 'property')) {
           emissionError(context, 'structural-row construction requires explicit named properties');
         }
@@ -3587,6 +3723,71 @@ function getCppStructuralRowObjectTypeCpp(row: Readonly<CompilerCppStructuralRow
   return sources.every((source) => normalizeCompilerStructuralValueCanonical(source!) === canonical)
     ? sources[0]
     : undefined;
+}
+
+function getCppStructuralOpenRowConstructionPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppStructuralOpenRowConstructionPlan> | undefined {
+  if (expression.copySemantics || type.kind !== 'intersection') return undefined;
+  const openRows = type.types.filter((member) => isCppOpenStructuralRowTypeParameterCpp(member, context));
+  if (openRows.length !== 1) return undefined;
+  const fixedRows = type.types.filter((member) => member !== openRows[0]);
+  const fixedShapes = fixedRows.map((member) =>
+    context.referenceRepresentationPlanner.resolveObjectShape(member, context.module),
+  );
+  if (fixedShapes.length === 0 || fixedShapes.some((shape) => !shape)) return undefined;
+  const fixedProperties = fixedShapes.flatMap((shape) => shape!);
+  const propertiesByName = new Map<string, Readonly<IrObjectTypeProperty>>();
+  const computedProperties = new Map<string, Readonly<IrObjectTypeProperty>>();
+  for (const property of fixedProperties) {
+    if (property.phantom) continue;
+    if (property.computedKey) {
+      const key = getCppComputedPropertySourceName(property.computedKey, context);
+      if (computedProperties.has(key)) return undefined;
+      computedProperties.set(key, property);
+      continue;
+    }
+    if (propertiesByName.has(property.name)) return undefined;
+    propertiesByName.set(property.name, property);
+  }
+  // The runtime symbol slot is the evidence that this is the entity-style allocation boundary. A
+  // plain `{ fixed } as Fixed & T` assertion says nothing about how the unknown row would be stored.
+  if (computedProperties.size === 0) return undefined;
+  const fields: CppStructuralOpenRowConstructionField[] = [];
+  const constructedProperties = new Set<Readonly<IrObjectTypeProperty>>();
+  for (const member of expression.members) {
+    if (member.kind !== 'property' && member.kind !== 'computedProperty') return undefined;
+    let property: Readonly<IrObjectTypeProperty> | undefined;
+    if (member.kind === 'property') {
+      property = propertiesByName.get(member.name);
+    } else if (member.kind === 'computedProperty') {
+      const key = getIrExpressionValueNameReferenceCpp(member.key);
+      property = key ? computedProperties.get(getCppComputedPropertySourceName(key, context)) : undefined;
+    }
+    if (!property || constructedProperties.has(property)) return undefined;
+    constructedProperties.add(property);
+    fields.push({ member, property });
+  }
+  const straightLineAssignments = context.structuralOpenRowConstructionAssignments.get(expression) ?? new Set();
+  for (const property of [...propertiesByName.values(), ...computedProperties.values()]) {
+    if (property.optional || constructedProperties.has(property)) continue;
+    if (!property.computedKey && straightLineAssignments.has(property.name)) continue;
+    return undefined;
+  }
+  return { fields };
+}
+
+function hasCppOpenStructuralRowTypeParameterCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  return (
+    type.kind === 'intersection' && type.types.some((member) => isCppOpenStructuralRowTypeParameterCpp(member, context))
+  );
+}
+
+function isCppOpenStructuralRowTypeParameterCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  const declaration = getCppTypeParameterDeclarationCpp(type, context);
+  return declaration?.constraint?.kind === 'unknown' && declaration.constraint.source === 'object';
 }
 
 function getCppStructuralCloneRecordViewPlanCpp(
@@ -11803,14 +12004,20 @@ function emitCppFunctionTemplate(
   parameters: readonly Readonly<IrParameter>[],
   context: EmitContext,
 ): CppFunctionTemplate {
-  const declared = typeParameters.map(
-    (parameter) => `typename ${context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name)}`,
-  );
+  const declared = typeParameters.map((parameter) => {
+    const name = context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name);
+    const defaultType = parameter.default
+      ? ` = ${emitCppTemplateDefaultTypeArgumentCpp(parameter.default, context)}`
+      : '';
+    return `typename ${name}${defaultType}`;
+  });
   const packs = parameters.flatMap((parameter) =>
     parameter.dependentCallablePack ? [getCppDependentCallablePack(parameter, context)] : [],
   );
   const names = [
-    ...declared.map((parameter) => parameter.replace(/^typename /u, '')),
+    ...typeParameters.map(
+      (parameter) => context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name),
+    ),
     ...packs.map((pack) => pack.typeName),
   ];
   if (new Set(names).size !== names.length) {

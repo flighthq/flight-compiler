@@ -277,14 +277,38 @@ function resolveIrTypeStructuralRowCpp(
       : undefined;
   }
   if (type.kind === 'intersection') {
-    if (resolveIrTypeObjectShapeCpp(type, module, moduleSet, cache, new Set())) return undefined;
+    const shape = resolveIrTypeObjectShapeCpp(type, module, moduleSet, cache, new Set());
+    const memberShapes = type.types.map((member) =>
+      resolveIrTypeObjectShapeCpp(member, module, moduleSet, cache, new Set()),
+    );
+    const carriesRuntimeSymbol = memberShapes.some((memberShape) =>
+      memberShape?.some((property) => property.computedKey && !property.phantom),
+    );
+    const pairsGenericSubjectWithConcreteRow = type.types.some(
+      (member, memberIndex) =>
+        member.kind === 'named' &&
+        member.typeArguments.some((argument) =>
+          type.types.some(
+            (candidate, candidateIndex) =>
+              candidateIndex !== memberIndex &&
+              normalizeCompilerStructuralValueCanonical(candidate) ===
+                normalizeCompilerStructuralValueCanonical(argument),
+          ),
+        ),
+    );
+    const concreteRuntimeRow = carriesRuntimeSymbol && pairsGenericSubjectWithConcreteRow;
+    if (shape && !concreteRuntimeRow) return undefined;
+    // When every closed member resolves but their merge does not, the missing shape is a conflict,
+    // not an open row. A symbol-bearing entity intersection cannot turn that conflict into storage.
+    if (!shape && concreteRuntimeRow && memberShapes.every((memberShape) => memberShape)) return undefined;
     const rows = type.types.map((member) =>
       resolveIrTypeStructuralRowCpp(member, module, moduleSet, cache, aliases, true),
     );
     if (
       rows.some((row) => !row) ||
       !type.types.some(
-        (member, index) => isIrBareStructuralRowTypeParameterCpp(member) || rows[index]?.kind !== 'rowOf',
+        (member, index) =>
+          isIrBareStructuralRowTypeParameterCpp(member) || rows[index]?.kind !== 'rowOf' || concreteRuntimeRow,
       )
     ) {
       return undefined;
