@@ -6138,9 +6138,14 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     const condition = initializer?.kind === 'conditional' ? initializer.condition : undefined;
 
     expect(result.diagnostics).toEqual([]);
+    // The member names the type the guard selects, and that is the ambient `Uint8Array` rather than the
+    // `Readonly<Uint8Array>` spelling of the alternative: `Readonly` and `Required` are unwrapped for
+    // narrowing, and the syntactic resolution is preferred. The two spellings are representationally
+    // equal here — lowering `Readonly<Uint8Array> | ArrayBuffer` and `Uint8Array | ArrayBuffer` produces
+    // an identical member and byte-identical C++, `flight::Uint8Array bytes = (value.index() == 1 ? ...`.
     expect(condition?.kind === 'binary' ? condition.semantics.unionMemberTest : undefined).toMatchObject({
       binding: { name: 'value' },
-      member: { kind: 'named', reference: { name: 'Readonly' } },
+      member: { kind: 'named', reference: { kind: 'ambient', name: 'Uint8Array' } },
       whenResult: true,
     });
     expect(initializer?.kind === 'conditional' ? initializer.whenTrue : undefined).toMatchObject({
