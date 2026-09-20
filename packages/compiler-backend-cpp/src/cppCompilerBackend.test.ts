@@ -3592,6 +3592,380 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('proves every GlContextRuntime WeakMap value shape and keeps object values as erased references', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['ExternalTexture', 'GlRenderTextureEntry', 'ImageResource', 'RenderTexture', 'TextureSource'],
+          specifier: './entries',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/entries.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/entries.ts',
+            `export interface ExternalTexture { readonly id: number }
+             export interface GlRenderTextureEntry { readonly status: string; readonly target: object }
+             export interface ImageResource { readonly id: number }
+             export interface RenderTexture { readonly id: number }
+             export interface TextureSource { readonly id: number }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/GlContextRuntime.ts',
+            `import type {
+               ExternalTexture, GlRenderTextureEntry, ImageResource, RenderTexture, TextureSource,
+             } from './entries';
+             export interface GlContextRuntime {
+               textureCache: WeakMap<CanvasImageSource, WebGLTexture>;
+               textureSourceCache: WeakMap<TextureSource, { texture: WebGLTexture; version: number }>;
+               glExternalTextureCache?: WeakMap<ExternalTexture, WebGLTexture>;
+               glRenderTextureCache?: WeakMap<RenderTexture, GlRenderTextureEntry>;
+               videoTextureCache?: WeakMap<ImageResource, { texture: WebGLTexture; uploadedVersion: number }>;
+               sceneMeshUploadCache?: WeakMap<object, object> | null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        externalBindings: {
+          bindings: [
+            {
+              headers: ['host/canvas.hpp'],
+              nullability: 'non-null',
+              ownership: 'shared',
+              sourceName: 'CanvasImageSource',
+              space: 'type',
+              targetName: 'host::CanvasImageSource',
+              weakKeyPolicyTargetName: 'host::CanvasImageSourceWeakKeyPolicy',
+            },
+            {
+              headers: ['host/gl.hpp'],
+              nullability: 'non-null',
+              ownership: 'shared',
+              sourceName: 'WebGLTexture',
+              space: 'type',
+              targetName: 'host::WebGLTexture',
+            },
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain(
+      'flight::WeakMap<host::CanvasImageSource, host::WebGLTexture, host::CanvasImageSourceWeakKeyPolicy> texture_cache;',
+    );
+    expect(emitted).toMatch(
+      /flight::WeakMap<flight::Ref<flighthq_types::TextureSource>, flight::Ref<[^>]+>> texture_source_cache;/u,
+    );
+    expect(emitted).toContain(
+      'flight::WeakMap<flight::Ref<flighthq_types::RenderTexture>, flight::Ref<flighthq_types::GlRenderTextureEntry>>',
+    );
+    expect(emitted).toContain(
+      'std::optional<std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>>> scene_mesh_upload_cache;',
+    );
+    expect(emitted).toContain('#include <flight/erased_ref.hpp>');
+  });
+
+  it('proves WgpuDeviceRuntime imported named WeakMap values and its opaque object cache', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['TextureSource', 'WgpuTextureEntry', 'WgpuTextureSourceTextureEntry'],
+          specifier: './WgpuRenderState',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/WgpuRenderState.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/WgpuRenderState.ts',
+            `export interface TextureSource { readonly id: number }
+             export interface WgpuTextureEntry { readonly texture: GPUTexture }
+             export interface WgpuTextureSourceTextureEntry extends WgpuTextureEntry { version: number }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/WgpuDeviceRuntime.ts',
+            `import type { TextureSource, WgpuTextureEntry, WgpuTextureSourceTextureEntry } from './WgpuRenderState';
+             export interface WgpuDeviceRuntime {
+               textureCache: WeakMap<CanvasImageSource, WgpuTextureEntry>;
+               textureSourcePremultipliedTextureCache: WeakMap<TextureSource, WgpuTextureSourceTextureEntry>;
+               sceneMeshUploadCache?: WeakMap<object, object> | null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        externalBindings: {
+          bindings: [
+            {
+              headers: ['host/canvas.hpp'],
+              nullability: 'non-null',
+              ownership: 'shared',
+              sourceName: 'CanvasImageSource',
+              space: 'type',
+              targetName: 'host::CanvasImageSource',
+              weakKeyPolicyTargetName: 'host::CanvasImageSourceWeakKeyPolicy',
+            },
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain(
+      'flight::WeakMap<host::CanvasImageSource, flight::Ref<flighthq_types::WgpuTextureEntry>, host::CanvasImageSourceWeakKeyPolicy> texture_cache;',
+    );
+    expect(emitted).toContain(
+      'flight::WeakMap<flight::Ref<flighthq_types::TextureSource>, flight::Ref<flighthq_types::WgpuTextureSourceTextureEntry>> texture_source_premultiplied_texture_cache;',
+    );
+    expect(emitted).toContain(
+      'std::optional<std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>>> scene_mesh_upload_cache;',
+    );
+  });
+
+  it('proves WgpuRenderState local named WeakMap values and its opaque object cache', () => {
+    const result = lowerPackage(
+      '@flighthq/types',
+      'WgpuRenderState.ts',
+      `interface TextureSource { readonly id: number }
+       interface WgpuTextureResource { texture: GPUTexture; view: GPUTextureView }
+       type WgpuTextureBindings = Map<GPUSampler, GPUBindGroup>;
+       interface WgpuTextureEntry extends WgpuTextureResource { bindings: WgpuTextureBindings }
+       interface WgpuTextureSourceTextureEntry extends WgpuTextureEntry { version: number }
+       export interface WgpuRenderStateRuntime {
+         textureCache: WeakMap<CanvasImageSource, WgpuTextureEntry>;
+         textureSourcePremultipliedTextureCache: WeakMap<TextureSource, WgpuTextureSourceTextureEntry>;
+         sceneMeshUploadCache?: WeakMap<object, object> | null;
+       }`,
+    );
+    const externalNames = ['GPUBindGroup', 'GPUSampler', 'GPUTexture', 'GPUTextureView'] as const;
+    const emitted = emitIrModuleCpp(result.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/canvas.hpp'],
+            nullability: 'non-null',
+            ownership: 'shared',
+            sourceName: 'CanvasImageSource',
+            space: 'type',
+            targetName: 'host::CanvasImageSource',
+            weakKeyPolicyTargetName: 'host::CanvasImageSourceWeakKeyPolicy',
+          },
+          ...externalNames.map((sourceName) => ({
+            headers: ['host/wgpu.hpp'],
+            nullability: 'non-null' as const,
+            ownership: 'shared' as const,
+            sourceName,
+            space: 'type' as const,
+            targetName: `host::${sourceName}`,
+          })),
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain(
+      'flight::WeakMap<host::CanvasImageSource, flight::Ref<WgpuTextureEntry>, host::CanvasImageSourceWeakKeyPolicy> texture_cache;',
+    );
+    expect(emitted).toContain(
+      'flight::WeakMap<flight::Ref<TextureSource>, flight::Ref<WgpuTextureSourceTextureEntry>> texture_source_premultiplied_texture_cache;',
+    );
+    expect(emitted).toContain(
+      'std::optional<std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>>> scene_mesh_upload_cache;',
+    );
+  });
+
+  it('proves closed inline object and intersection WeakMap values', () => {
+    const result = lower(
+      'closed-weak-map-values.ts',
+      `interface Key { readonly id: number }
+       interface Texture { readonly width: number }
+       export interface Caches {
+         inline: WeakMap<Key, { readonly texture: Texture; readonly version: number }>;
+         intersection: WeakMap<Key, Texture & { readonly version: number }>;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toMatch(/flight::WeakMap<flight::Ref<Key>, flight::Ref<[^>]+>> inline_;/u);
+    expect(emitted).toMatch(/flight::WeakMap<flight::Ref<Key>, flight::Ref<[^>]+>> intersection;/u);
+  });
+
+  it('recovers bare WeakMap constructor values through an imported runtime contract facade', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['Entry', 'Runtime'],
+          specifier: './WgpuDeviceRuntime',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/WgpuDeviceRuntime.ts' },
+        },
+        {
+          importedNames: ['Runtime'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/WgpuDeviceRuntime.ts',
+            `export interface Entry { readonly texture: GPUTexture }
+             export interface Runtime { cache: WeakMap<CanvasImageSource, Entry> }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            "export type { Entry, Runtime } from './WgpuDeviceRuntime';",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/render-wgpu',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/render-wgpu/src/wgpuRenderState.ts',
+            `import type { Runtime } from '@flighthq/types/contract';
+             export function createMinimalDeviceRuntime(): Runtime {
+               return { cache: new WeakMap() };
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        externalBindings: {
+          bindings: [
+            {
+              headers: ['host/canvas.hpp'],
+              nullability: 'non-null',
+              ownership: 'shared',
+              sourceName: 'CanvasImageSource',
+              space: 'type',
+              targetName: 'host::CanvasImageSource',
+              weakKeyPolicyTargetName: 'host::CanvasImageSourceWeakKeyPolicy',
+            },
+            {
+              headers: ['host/wgpu.hpp'],
+              nullability: 'non-null',
+              ownership: 'shared',
+              sourceName: 'GPUTexture',
+              space: 'type',
+              targetName: 'host::GPUTexture',
+            },
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain(
+      '.cache = flight::WeakMap<host::CanvasImageSource, flight::Ref<flighthq_types::Entry>, host::CanvasImageSourceWeakKeyPolicy>()',
+    );
+  });
+
+  it('refuses open, unresolved, unknown, and unbound ambient WeakMap values', () => {
+    const open = lower(
+      'open-weak-map.ts',
+      `interface Key { readonly id: number }
+       export interface Open<Value extends object> { values: WeakMap<Key, Value> }`,
+    );
+    expect(() => emitIrModuleCpp(open.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'flight-cpp WeakMap value requires a proven C++ representation',
+    );
+
+    const unresolved = lower(
+      'unresolved-weak-map.ts',
+      `import type { Missing } from './missing';
+       interface Key { readonly id: number }
+       export interface Invalid { values: WeakMap<Key, Missing> }`,
+    );
+    expect(() => emitIrModuleCpp(unresolved.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'flight-cpp WeakMap value requires a proven C++ representation',
+    );
+
+    const unknown = lower(
+      'unknown-weak-map.ts',
+      'interface Key { readonly id: number } export interface Invalid { values: WeakMap<Key, unknown> }',
+    );
+    expect(() => emitIrModuleCpp(unknown.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'flight-cpp erased WeakMap value requires the exact object key type',
+    );
+
+    const unboundAmbient = lower(
+      'ambient-weak-map.ts',
+      'interface Key { readonly id: number } export interface Invalid { values: WeakMap<Key, GPUTexture> }',
+    );
+    expect(() => emitIrModuleCpp(unboundAmbient.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'runtime external symbol binding plan is incomplete (missing: GPUTexture[type])',
+    );
+  });
+
   it('emits opaque scene caches and acquires two checked local typed views', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [

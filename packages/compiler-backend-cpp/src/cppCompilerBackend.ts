@@ -6194,14 +6194,31 @@ function assertWeakMapTypeArgumentsCpp(
     }
     return { valueRepresentation: 'erased' };
   }
-  const value = context.referenceRepresentationPlanner.plan(typeArguments[1], context.module);
-  if (value.kind !== 'represented') {
+  if (!hasProvenWeakMapValueRepresentationCpp(typeArguments[1], context)) {
     emissionError(context, 'flight-cpp WeakMap value requires a proven C++ representation');
   }
   return {
     valueRepresentation: 'direct',
     ...(key.weakKeyPolicyTargetName ? { weakKeyPolicyTargetName: key.weakKeyPolicyTargetName } : {}),
   };
+}
+
+function hasProvenWeakMapValueRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  // `object` is not the same erasure as `unknown`: it excludes scalar values and is emitted as the
+  // tagged `ErasedRef` carrier. That carrier is the concrete value representation needed by Flight's
+  // scene-mesh caches, while preserving enough type identity for a later checked object assertion.
+  if (type.kind === 'unknown' && type.source === 'object') return true;
+
+  // The reference planner intentionally gives an open type parameter and an unresolved import a
+  // provisional reference shape so other generic/imported declarations can still be written. A
+  // WeakMap instantiation is storage, however, and must have one closed value ABI now rather than
+  // inheriting that optimistic fallback.
+  if (getCppOpenTypeParameterName(type)) return false;
+  const owner =
+    getCppDirectBindingOwner(type, context) ??
+    (type.kind === 'named' ? getCppImportedBindingDeclarationCpp(type, context) : undefined);
+  const value = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
+  return value.kind === 'represented' && value.identity.identity !== 'indeterminate';
 }
 
 function getIrWeakMapTypeCpp(
