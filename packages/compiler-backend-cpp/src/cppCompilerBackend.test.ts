@@ -14640,6 +14640,76 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).toContain('std::optional<flight::String>{flight::String("n=")');
   });
 
+  it('constructs an array literal into the tuple the slot declares', () => {
+    const [result] = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/tuple-clear.ts',
+          `interface Clear { color: readonly [number, number, number, number] | null }
+           export function run(clear: Readonly<Clear>): void {}
+           export function go(): void { run({ color: [0, 0, 0, 0] }); }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    const emitted = emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' });
+
+    // An array literal is also how a tuple is written at the value: `[0, 0, 0, 0]` is what a
+    // `readonly [number, number, number, number]` holds, and the source says the same thing either way.
+    expect(emitted.contents).toContain('flight::Array{0.0, 0.0, 0.0, 0.0}');
+  });
+
+  it('refuses an array literal that is not the length of the tuple it would fill', () => {
+    const [result] = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/tuple-short.ts',
+          `interface Clear { color: readonly [number, number, number, number] | null }
+           export function run(clear: Readonly<Clear>): void {}
+           export function go(): void { run({ color: [0, 0] }); }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // An array's length is open and a tuple's is not, so a literal of another length is a value of a
+    // different type rather than a shorter one. The slot is identified by its arity, which the literal
+    // itself has to match.
+    expect(failure.message).toContain('optionalSingle construction requires expression type evidence');
+  });
+
+  it('refuses an array literal whose tuple alternatives were erased together', () => {
+    const [result] = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/tuple-ambiguous.ts',
+          `type Color = readonly [number, number] | readonly [number, number, number, number] | null;
+           export function make(): Color { return [0, 0]; }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // Two tuple alternatives that erase to one C++ array type are two alternatives the target cannot
+    // tell apart, so the slot is not exactly one and nothing is chosen.
+    expect(failure.message).toContain('union has distinct runtime domains erased');
+  });
+
   it('refuses an Extract that reached emission unresolved', () => {
     const result = lower(
       'cube-texture-open.ts',

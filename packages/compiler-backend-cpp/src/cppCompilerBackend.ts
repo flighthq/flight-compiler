@@ -8055,8 +8055,19 @@ function getIrExpressionTypeForUnionConstructionCpp(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   switch (expression.kind) {
-    case 'array':
-      return getSingleIrTypeKindCpp(valueSlots, 'array');
+    case 'array': {
+      const arraySlot = getSingleIrTypeKindCpp(valueSlots, 'array');
+      if (arraySlot) return arraySlot;
+      // An array literal is also how a tuple is written at the value: `[0, 0, 0, 0]` is what a
+      // `readonly [number, number, number, number]` holds, and the source says the same thing either
+      // way. The slot is still identified exactly -- one slot, and one whose arity the literal itself
+      // decides -- because an array's length is open and a tuple's is not, so a literal of another
+      // length is a value of a different type rather than a shorter one.
+      const tupleSlot = getSingleIrTypeKindCpp(valueSlots, 'tuple');
+      return tupleSlot?.kind === 'tuple' && tupleSlot.elements.length === expression.elements.length
+        ? tupleSlot
+        : undefined;
+    }
     case 'assignment':
       return getIrAssignmentTargetTypeCpp(expression.left, context);
     case 'await':
