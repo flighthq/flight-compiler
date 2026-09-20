@@ -2617,6 +2617,9 @@ function emitExpression(
         : invocation;
     }
     case 'cast': {
+      if (getCppErasedRefWeakMapViewPlan(expression, context)) {
+        refuseCppErasedRefWeakMapView(context);
+      }
       if (isCppErasedWeakMapType(getIrExpressionTypeEvidenceCpp(expression.expression, context), context)) {
         if (getCppErasedWeakMapViewPlan(expression, context)) {
           emissionError(context, 'erased WeakMap assertion requires a local typed-view binding');
@@ -6262,6 +6265,55 @@ function getCppErasedWeakMapViewPlan(
     emissionError(context, 'erased WeakMap typed view requires a represented value type');
   }
   return { key: target.typeArguments[0], value: target.typeArguments[1] };
+}
+
+function getCppErasedRefWeakMapViewPlan(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): Readonly<CppWeakMapViewPlan> | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+  const source = sourceType ? getCppNonNullableType(sourceType, context, new Set()) : undefined;
+  const erased = getIrWeakMapTypeCpp(source, context, new Set());
+  if (
+    !erased ||
+    erased.typeArguments.length !== 2 ||
+    erased.typeArguments[0]?.kind !== 'unknown' ||
+    erased.typeArguments[0].source !== 'object' ||
+    erased.typeArguments[1]?.kind !== 'unknown' ||
+    erased.typeArguments[1].source !== 'object'
+  ) {
+    return undefined;
+  }
+  const targetType = getCppNonNullableType(expression.type, context, new Set());
+  const target = getIrWeakMapTypeCpp(targetType, context, new Set());
+  if (!target || target.typeArguments.length !== 2 || !target.typeArguments[0] || !target.typeArguments[1]) {
+    return undefined;
+  }
+  if (
+    target.typeArguments[0].kind === 'unknown' &&
+    target.typeArguments[0].source === 'object' &&
+    target.typeArguments[1].kind === 'unknown' &&
+    target.typeArguments[1].source === 'object'
+  ) {
+    return undefined;
+  }
+  const key = context.referenceRepresentationPlanner.plan(target.typeArguments[0], context.module);
+  if (key.kind !== 'represented' || key.valueRepresentation !== 'flightReference') {
+    emissionError(context, 'erased WeakMap typed view requires a proven Flight reference key');
+  }
+  if (!hasProvenWeakMapValueRepresentationCpp(target.typeArguments[1], context)) {
+    emissionError(context, 'erased WeakMap typed view requires a represented value type');
+  }
+  return { key: target.typeArguments[0], value: target.typeArguments[1] };
+}
+
+function refuseCppErasedRefWeakMapView(context: EmitContext): never {
+  emissionError(
+    context,
+    'flight-cpp WeakMap<object, object> typed views require an ErasedRef runtime view primitive; nullable mutable views also require initialization lowering',
+    'cpp-weak-map-erased-ref-view-unsupported',
+  );
 }
 
 function isCppErasedWeakMapType(type: Readonly<IrType> | undefined, context: EmitContext): boolean {

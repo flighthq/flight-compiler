@@ -3966,6 +3966,96 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('refuses a nullable typed view over an object-valued WeakMap before its write-back cast', () => {
+    const result = lower(
+      'scene-runtime.ts',
+      `interface Key { id: number }
+       interface Value { version: number }
+       interface Context { cache?: WeakMap<object, object> | null }
+       export function get(ctx: Context): WeakMap<Key, Value> {
+         let cache = ctx.cache as WeakMap<Key, Value> | null | undefined;
+         if (cache == null) {
+           cache = new WeakMap();
+           ctx.cache = cache as unknown as WeakMap<object, object>;
+         }
+         return cache;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.message).toContain(
+      'flight-cpp WeakMap<object, object> typed views require an ErasedRef runtime view primitive; nullable mutable views also require initialization lowering',
+    );
+    expect(failure.rule).toBe('cpp-weak-map-erased-ref-view-unsupported');
+  });
+
+  it('reports the same ErasedRef view boundary for imported GL and WGPU scene cache types', () => {
+    for (const packageName of ['@flighthq/scene3d-gl', '@flighthq/scene3d-wgpu']) {
+      const moduleResolution: CompilerModuleResolutionPlan = {
+        edges: [
+          {
+            importedNames: ['ContextRuntime', 'MeshGeometry', 'MeshUpload'],
+            specifier: '@flighthq/types/contract',
+            target: { packageName: '@flighthq/types', source: 'packages/types/src/SceneRuntime.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      };
+      const results = lowerTypeScriptSources(
+        [
+          {
+            packageName: '@flighthq/types',
+            sourceFile: ts.createSourceFile(
+              '/flight/packages/types/src/SceneRuntime.ts',
+              `export interface ContextRuntime { sceneMeshUploadCache?: WeakMap<object, object> | null }
+               export interface MeshGeometry { readonly id: number }
+               export interface MeshUpload { version: number }`,
+              ts.ScriptTarget.Latest,
+              true,
+            ),
+            upstreamDirectory: '/flight',
+          },
+          {
+            packageName,
+            sourceFile: ts.createSourceFile(
+              `/flight/packages/${packageName.slice(packageName.lastIndexOf('/') + 1)}/src/sceneRuntime.ts`,
+              `import type { ContextRuntime, MeshGeometry, MeshUpload } from '@flighthq/types/contract';
+               export function getUploadCache(context: ContextRuntime): WeakMap<MeshGeometry, MeshUpload> {
+                 let cache = context.sceneMeshUploadCache as
+                   | WeakMap<MeshGeometry, MeshUpload>
+                   | null
+                   | undefined;
+                 if (cache == null) {
+                   cache = new WeakMap();
+                   context.sceneMeshUploadCache = cache as unknown as WeakMap<object, object>;
+                 }
+                 return cache;
+               }`,
+              ts.ScriptTarget.Latest,
+              true,
+            ),
+            upstreamDirectory: '/flight',
+          },
+        ],
+        moduleResolution,
+      );
+      const modules = results.map((result) => result.module);
+      const failure = captureBackendEmissionFailure(() =>
+        createCppCompilerBackend().createEmissionSession!({
+          moduleResolution,
+          modules,
+          options: { runtimeProfile: 'flight-cpp' },
+        }).emitModule(modules[1]!),
+      );
+
+      expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+      expect(failure.rule).toBe('cpp-weak-map-erased-ref-view-unsupported');
+    }
+  });
+
   it('emits opaque scene caches and acquires two checked local typed views', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
