@@ -6731,9 +6731,7 @@ function getTypeScriptReferencePresence(
   );
   const recordedType = context.bindingTypes.get(symbol);
   if (!checkerDeclaredAbsent) {
-    return recordedType &&
-      hasIrTypeAbsentMemberSemantic(recordedType) &&
-      hasTypeScriptSyntacticReferencePresence(node, symbol, recordedType, context)
+    return recordedType && hasTypeScriptSyntacticReferencePresence(node, symbol, recordedType, context)
       ? { presence: 'narrowedPresent' }
       : {};
   }
@@ -6784,8 +6782,22 @@ function hasTypeScriptSyntacticReferencePresence(
   context: LoweringContext,
 ): boolean {
   const absentKinds = getIrTypeAbsentKindsSemantic(recordedType);
-  if (absentKinds.size === 0) return false;
   for (let child: ts.Node = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (
+      ts.isBinaryExpression(parent) &&
+      isTypeScriptNodeWithin(child, parent.right) &&
+      (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+    ) {
+      const branch = getTypeScriptNullishComparisonPresence(parent.left, symbol, absentKinds, context);
+      if (
+        branch &&
+        ((parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken && branch.whenTrue) ||
+          (parent.operatorToken.kind === ts.SyntaxKind.BarBarToken && branch.whenFalse))
+      ) {
+        return true;
+      }
+    }
     if (
       ts.isBinaryExpression(parent) &&
       parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
@@ -6952,7 +6964,12 @@ function getTypeScriptNullishComparisonPresence(
   const loose =
     expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
     expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
-  const excludesAll = loose || (absentKinds.size === 1 && absentKinds.has(compared));
+  // A target may elect undefined storage for a JavaScript operation whose TypeScript annotation
+  // excludes absence -- indexed Record reads are the motivating case. An explicit undefined (or
+  // loose nullish) comparison still proves that implicit sentinel absent on the short-circuit
+  // continuation. A strict null comparison does not: a missing indexed value is undefined.
+  const excludesAll =
+    loose || (absentKinds.size === 0 ? compared === 'undefined' : absentKinds.size === 1 && absentKinds.has(compared));
   const equality =
     expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
     expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken;

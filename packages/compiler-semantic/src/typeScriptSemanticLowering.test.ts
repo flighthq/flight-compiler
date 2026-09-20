@@ -5836,6 +5836,33 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
       kind: 'return',
     });
   });
+  it('retains explicit short-circuit presence when an indexed annotation excludes its runtime sentinel', () => {
+    const result = lower(
+      'indexed-short-circuit-presence.ts',
+      `export function empty(values: Readonly<Record<string, string>>, key: string): boolean {
+         const value = values[key];
+         return value === undefined || value.trim() === '';
+       }
+       export function strictNull(values: Readonly<Record<string, string>>, key: string): boolean {
+         const value = values[key];
+         return value === null || value.trim() === '';
+       }`,
+    );
+    const receivers = result.module.declarations.map((declaration) => {
+      const returned = declaration.kind === 'function' ? declaration.body[1] : undefined;
+      const condition = returned?.kind === 'return' ? returned.expression : undefined;
+      const trim = condition?.kind === 'binary' && condition.right.kind === 'binary' ? condition.right.left : undefined;
+      return trim?.kind === 'call' && trim.callee.kind === 'property' ? trim.callee.object : undefined;
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(receivers[0]).toMatchObject({
+      kind: 'identifier',
+      presence: 'narrowedPresent',
+      reference: { binding: { name: 'value' } },
+    });
+    expect(receivers[1]).not.toMatchObject({ presence: 'narrowedPresent' });
+  });
   it('retains source guards when unresolved nominal types make checker flow indeterminate', () => {
     const result = lower(
       'ambient-narrowing.ts',

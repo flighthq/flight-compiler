@@ -2484,10 +2484,12 @@ function emitExpression(
           getCppRuntimeProfile(context.options),
         );
         if (binding && binding.kind === 'sizeMethod') {
+          assertCppPresentOptionalStorageMemberReceiverCpp(expression.callee, context);
           const receiver = emitExpression(expression.callee.object, context);
           return `static_cast<double>(${receiver}${memberOp(expression.callee.object, context)}${binding.targetName}())`;
         }
         if (binding && binding.kind === 'method') {
+          assertCppPresentOptionalStorageMemberReceiverCpp(expression.callee, context);
           // These mutating Array methods return the receiver itself. Carry the result context into
           // the receiver so a spread and its inferred local do not acquire distinct anonymous C++
           // element carriers for the same structural TypeScript row.
@@ -3438,6 +3440,7 @@ function emitExpression(
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
       if (narrowedPresent) return narrowedPresent;
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context, expectedType);
+      if (expression.member) assertCppPresentOptionalStorageMemberReceiverCpp(expression, context);
       if (getCppStructuralRowExpressionPlanCpp(expression.object, context)) {
         context.includes.add('flight/structural_ref.hpp');
         return `flight::row_get<flight::RowKey<${JSON.stringify(expression.name)}>>(${emitExpression(expression.object, context)})`;
@@ -7356,6 +7359,45 @@ function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: Em
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
     hasIndexedRuntimeReceiverCpp(expression.object, context)
   );
+}
+
+// A source member is projected from the payload, never from `std::optional` itself. The storage fact
+// and the source type are deliberately separate: Record and indexed Array reads may elect optional
+// storage even when their TypeScript annotation names only the payload. Require control-flow evidence
+// before crossing that boundary, and require one present runtime domain so a resolved member cannot be
+// applied to a heterogeneous carrier merely because one alternative happens to provide it.
+function assertCppPresentOptionalStorageMemberReceiverCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): void {
+  const receiver = expression.object;
+  if (receiver.kind !== 'identifier' || receiver.reference.kind !== 'binding') return;
+  const bindingId = receiver.reference.binding.id;
+  if (!context.nullableBindingIds.has(bindingId) && !context.arrayElementBindingIds.has(bindingId)) return;
+  if (receiver.presence !== 'narrowedPresent') {
+    emissionError(
+      context,
+      `member ${expression.name} on optional C++ storage requires proven present payload`,
+      'cpp-member-projection-without-present-storage',
+    );
+  }
+  const storageType = getCppBindingTypeCpp(bindingId, context);
+  const payload = storageType ? getCppNonNullableType(storageType, context, new Set()) : undefined;
+  if (!payload) {
+    emissionError(
+      context,
+      `member ${expression.name} on optional C++ storage requires one present payload domain`,
+      'cpp-member-projection-multiple-present-domains',
+    );
+  }
+  const union = getIrUnionTypeCpp(payload, context, new Set());
+  if (union && getCppUnionRepresentationPlan(union, context).valueSlots.length !== 1) {
+    emissionError(
+      context,
+      `member ${expression.name} on optional C++ storage requires one present payload domain`,
+      'cpp-member-projection-multiple-present-domains',
+    );
+  }
 }
 
 // Emits a presence test on `operand` -- `operand === sentinel`, `operand !== sentinel`, and their loose

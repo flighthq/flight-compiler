@@ -9763,6 +9763,130 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('return value.value()');
   });
 
+  it('projects the pinned XML trim call from its short-circuit-proven String payload', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export interface XmlElement {
+         attributes: Record<string, string>;
+         children: XmlElement[];
+         content: Array<string | XmlElement>;
+         name: string;
+         text: string;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const xmlQuery = ts.createSourceFile(
+      '/flight/packages/xml/src/xmlQuery.ts',
+      `import type { XmlElement } from '@flighthq/types/contract';
+       export function getXmlElementAttribute(element: Readonly<XmlElement>, name: string): string | null {
+         const value = element.attributes[name];
+         return value !== undefined ? value : null;
+       }
+       export function getXmlElementAttributeNumber(
+         element: Readonly<XmlElement>,
+         name: string,
+       ): number | null {
+         const value = element.attributes[name];
+         if (value === undefined || value.trim() === '') return null;
+         const parsed = Number(value);
+         return Number.isFinite(parsed) ? parsed : null;
+       }
+       export function getXmlElementChildByName(
+         element: Readonly<XmlElement>,
+         name: string,
+       ): XmlElement | null {
+         for (const child of element.children) {
+           if (child.name === name) return child;
+         }
+         return null;
+       }
+       export function getXmlElementChildrenByName(
+         element: Readonly<XmlElement>,
+         name: string,
+       ): XmlElement[] {
+         return element.children.filter((child) => child.name === name);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/xml', sourceFile: xmlQuery, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const query = modules[1]!.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'getXmlElementAttributeNumber',
+    );
+    const guard = query?.kind === 'function' ? query.body[1] : undefined;
+    const trim =
+      guard?.kind === 'if' && guard.condition.kind === 'binary' && guard.condition.right.kind === 'binary'
+        ? guard.condition.right.left
+        : undefined;
+    const receiver = trim?.kind === 'call' && trim.callee.kind === 'property' ? trim.callee.object : undefined;
+
+    expect(receiver).toMatchObject({
+      kind: 'identifier',
+      presence: 'narrowedPresent',
+      reference: { binding: { name: 'value' } },
+    });
+
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+          '@flighthq/xml': { includePrefix: 'flight/xml', namespace: 'flight::xml' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(emitted).toContain(
+      'const std::optional<flight::String> value = flight::row_get<flight::RowKey<"attributes">>(element).get(name);',
+    );
+    expect(emitted).toContain('value.value().trim()');
+    expect(emitted).not.toContain('value.trim()');
+  });
+
+  it('refuses member projection from absent or heterogeneous indexed storage', () => {
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('optional-member-projection.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    expect(
+      refusal(
+        `export function read(values: Readonly<Record<string, string>>, key: string): string {
+           const value = values[key];
+           const missing = value === undefined;
+           return value.trim();
+         }`,
+      ).rule,
+    ).toBe('cpp-member-projection-without-present-storage');
+    expect(
+      refusal(
+        `export function read(values: Readonly<Record<string, string[] | number[]>>, key: string): number {
+           const value = values[key];
+           if (value === undefined || value.length === 0) return 0;
+           return value.length;
+         }`,
+      ).rule,
+    ).toBe('cpp-member-projection-multiple-present-domains');
+  });
+
   // The boundary the absence-storage decision runs on, pinned from both sides.
   //
   // The receiver the semantic layer records for `Readonly<Record<string, string>>` reads `unknown`, and
