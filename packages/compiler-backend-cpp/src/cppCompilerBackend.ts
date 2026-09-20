@@ -2126,7 +2126,12 @@ function areCppObjectShapesRepresentationEquivalent(
       return false;
     }
     const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
-    if (emitType(property.type, isolatedContext) === emitType(other.type, isolatedContext)) return true;
+    if (
+      emitCppAliasResolvedValueTypeCpp(property.type, isolatedContext) ===
+      emitCppAliasResolvedValueTypeCpp(other.type, isolatedContext)
+    ) {
+      return true;
+    }
     const propertyUnion = getIrUnionTypeCpp(property.type, context, new Set());
     const otherUnion = getIrUnionTypeCpp(other.type, context, new Set());
     return Boolean(
@@ -2138,6 +2143,27 @@ function areCppObjectShapesRepresentationEquivalent(
       ),
     );
   });
+}
+
+// A TypeScript alias does not introduce a distinct value representation. The generated C++ keeps
+// aliases as names for readability, however, so comparing the surface spelling would call
+// `using BackendReason = String` and `using BlockReason = String` different field types. Open only
+// compiler-known aliases and compare the type their values actually use. Interfaces and classes do
+// not resolve through this path, and a recursive alias is left at its last stable spelling.
+function emitCppAliasResolvedValueTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string> = new Set(),
+): string {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind === 'typeParameter') {
+    return emitType(type, context);
+  }
+  const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+  if (resolvingAliases.has(key)) return emitType(type, context);
+  const target = resolveCppTypeAliasTarget(type, context);
+  return target
+    ? emitCppAliasResolvedValueTypeCpp(target, context, new Set(resolvingAliases).add(key))
+    : emitType(type, context);
 }
 
 function emitExpression(
@@ -3935,7 +3961,11 @@ function getCppStructuralRecordConversionMembersCpp(
   if (targetProperties.some((property) => !sourceByName.has(property.name))) return undefined;
   const equivalent = targetProperties.every((property) => {
     const source = sourceByName.get(property.name)!;
-    return source.optional === property.optional && emitType(source.type, context) === emitType(property.type, context);
+    return (
+      source.optional === property.optional &&
+      emitCppAliasResolvedValueTypeCpp(source.type, context) ===
+        emitCppAliasResolvedValueTypeCpp(property.type, context)
+    );
   });
   return equivalent ? targetProperties.map((property) => property.name) : undefined;
 }

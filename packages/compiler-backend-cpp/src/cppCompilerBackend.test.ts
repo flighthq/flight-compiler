@@ -51,7 +51,17 @@ function emitRecordShapeConversion(consumerSource: string): string {
         packageName: '@flighthq/types',
         sourceFile: ts.createSourceFile(
           '/flight/packages/types/src/readback.ts',
-          `export interface BitmapReadbackOutcome { readonly bitmap: string | null; readonly reason: 'ok' | 'blocked'; }
+          `export type BitmapReadbackBlockReason =
+             'backend-not-installed' | 'empty-size' | 'no-canvas' | 'ok' | 'tainted-source';
+           export type BitmapReadbackBackendReason =
+             Exclude<BitmapReadbackBlockReason, 'backend-not-installed' | 'empty-size'>;
+           export interface BitmapReadbackOutcome {
+             readonly bitmap: string | null;
+             readonly reason: BitmapReadbackBackendReason;
+           }
+           export interface HostBitmapReadbackCapability {
+             readBitmap(source: string, width: number, height: number, mode: 'bitmap' | 'probe'): BitmapReadbackOutcome;
+           }
            export function readBitmap(): BitmapReadbackOutcome { return { bitmap: null, reason: 'ok' }; }`,
           ts.ScriptTarget.Latest,
           true,
@@ -2858,6 +2868,32 @@ describe('createCppCompilerBackend', () => {
     // however identical the two structs are. The conversion is written out, and the source is read once
     // because the expression is a call.
     expect(emitted).toContain('const auto structural_record_source = flight::types::read_bitmap();');
+    expect(emitted).toContain(
+      'return flight::make_ref<BitmapReadbackResolution>(BitmapReadbackResolution{.bitmap = structural_record_source->bitmap, .reason = structural_record_source->reason});',
+    );
+  });
+
+  it('converts a capability method result to a wider record declaration', () => {
+    const emitted = emitRecordShapeConversion(
+      `import type { BitmapReadbackBlockReason, HostBitmapReadbackCapability } from '@flighthq/types/readback';
+       interface BitmapReadbackResolution {
+         readonly bitmap: string | null;
+         readonly reason: BitmapReadbackBlockReason;
+       }
+       export function resolve(
+         host: Readonly<HostBitmapReadbackCapability>,
+         source: string,
+         width: number,
+         height: number,
+         mode: 'bitmap' | 'probe',
+       ): BitmapReadbackResolution {
+         return host.readBitmap(source, width, height, mode);
+       }`,
+    );
+
+    expect(emitted).toContain(
+      'const auto structural_record_source = flight::row_get<flight::RowKey<"readBitmap">>(host)(source, width, height, mode);',
+    );
     expect(emitted).toContain(
       'return flight::make_ref<BitmapReadbackResolution>(BitmapReadbackResolution{.bitmap = structural_record_source->bitmap, .reason = structural_record_source->reason});',
     );
