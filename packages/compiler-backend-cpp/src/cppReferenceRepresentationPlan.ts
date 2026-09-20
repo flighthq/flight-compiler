@@ -1609,7 +1609,7 @@ function createCompilerCppReferenceRepresentationSuccessCpp(
   });
 }
 
-function getCppRuntimeReferenceCategory(
+export function getCppRuntimeReferenceCategory(
   sourceName: string,
 ): Extract<CompilerCppReferenceRepresentationPlan, { kind: 'represented' }>['category'] | undefined {
   if (cppArrayReferenceTypes.has(sourceName)) return 'array';

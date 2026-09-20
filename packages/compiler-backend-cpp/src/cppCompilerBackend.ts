@@ -44,11 +44,13 @@ import {
 } from '../../compiler-structural/src/index.js';
 import type {
   CompilerBackend,
+  CompilerCppAmbientMemberBinding,
   CompilerCppConditionalFacetReferencePlan,
   CompilerCppReferenceRepresentationPlanner,
   CompilerCppStructuralRowPlan,
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
+  IrResolvedMemberReceiver,
   CppCompilerBackendOptions,
   CppCompilerExternalBindingManifest,
   CppCompilerRuntimeProfile,
@@ -92,7 +94,10 @@ import {
   getCppCompilerPackageNamespace,
   isCppCompilerKeyword,
 } from './cppCompilerIdentity.js';
-import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
+import {
+  createIrTypeReferenceRepresentationPlannerCpp,
+  getCppRuntimeReferenceCategory,
+} from './cppReferenceRepresentationPlan.js';
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
   getCompilerExternalBindingCallResultTypeCpp,
@@ -3433,7 +3438,14 @@ function emitExpression(
         context.includes.add('flight/structural_ref.hpp');
         return `flight::row_get<flight::RowKey<${JSON.stringify(expression.name)}>>(${emitExpression(expression.object, context)})`;
       }
-      if (expression.member) {
+      // A resolved member names ONE receiver kind, and the analysis will resolve one across a union
+      // whose alternatives agree on it -- `Float32Array | Uint8Array` both answer `length` as a typed
+      // array's size method. Applying that spelling to the variant itself is what emitted
+      // `out.size()` on a `std::variant`, which no variant has: the resolved member is evidence about
+      // the alternatives, not about the storage they share. A variant receiver therefore goes to the
+      // variant proof below, which is the only path that can spell an access reaching every
+      // alternative -- or refuse when it cannot.
+      if (expression.member && !isCppExpressionVariantUnionCpp(expression.object, context)) {
         const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
         if (binding && binding.kind === 'sizeMethod') {
           const receiver = emitExpression(expression.object, context);
@@ -7887,6 +7899,12 @@ function doesCppVariantAlternativeMatchType(
   );
 }
 
+// Whether an expression's emitted storage is a variant, which no member access can reach directly.
+function isCppExpressionVariantUnionCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  return Boolean(type && getIrVariantUnionTypeCpp(type, context, new Set()));
+}
+
 function emitCppVariantCommonPropertyExpression(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
@@ -7917,9 +7935,71 @@ function emitCppVariantCommonPropertyExpression(
     ),
   );
   if (referenceModes.size !== 1) return undefined;
+  // The member's own C++ binding, which is the second half of the proof and is not the same question as
+  // the member's name. One visitor body stands for every alternative, so a spelling is only provable
+  // when the alternatives agree on it: `length` over `number[] | Float32Array` is spelled `size()` on
+  // BOTH, because both answer a size method, while the source name is `length`. Asking only for the type
+  // would emit `value.length` -- a member neither alternative has.
+  //
+  // All or nothing, and agreed: some alternatives naming a binding while others do not would put one
+  // spelling in a body that reaches both, and two contrasting bindings would put one alternative's
+  // spelling on the other. A shape where no alternative names one keeps the source spelling, which is
+  // what a record-like member already relies on.
+  const memberBindings = representation.alternatives.map((alternative) =>
+    getCppVariantAmbientMemberBindingCpp(alternative.runtimeType, expression.name, context),
+  );
+  const namedBindings = memberBindings.filter((binding) => binding !== undefined);
+  if (namedBindings.length > 0 && namedBindings.length !== memberBindings.length) return undefined;
+  if (new Set(namedBindings.map((binding) => `${binding!.kind}\u0000${binding!.targetName}`)).size > 1) {
+    return undefined;
+  }
+  const memberName = namedBindings[0]?.targetName ?? safeCppName(expression.name);
+  // The binding's KIND decides the shape of the access, not only its name: a size method is called,
+  // while a property is read. Both alternatives answer `length` as a size method here, so the body is a
+  // call -- reading `value.size` would name a member function and hand back a pointer to it.
+  const memberAccess =
+    namedBindings[0]?.kind === 'sizeMethod'
+      ? `${memberName}()`
+      : namedBindings[0]?.kind === 'method'
+        ? `${memberName}()`
+        : memberName;
   context.includes.add('variant');
   const operator = referenceModes.has('reference') ? '->' : '.';
-  return `std::visit([](const auto& value) { return value${operator}${safeCppName(expression.name)}; }, ${emitExpression(expression.object, context)})`;
+  return `std::visit([](const auto& value) { return value${operator}${memberAccess}; }, ${emitExpression(expression.object, context)})`;
+}
+
+// The ambient member binding the emitter would use for a LONE access on one alternative, or undefined
+// when the alternative names none. The receiver kind comes from the representation planner rather than
+// from the member expression: a union has no resolved member of its own -- the analysis declines to
+// resolve one across alternatives -- so the per-alternative kind is the only evidence available, and the
+// planner is what decides it.
+function getCppVariantAmbientMemberBindingCpp(
+  type: Readonly<IrType>,
+  memberName: string,
+  context: EmitContext,
+): CompilerCppAmbientMemberBinding | undefined {
+  const receiver = getCppVariantMemberReceiverCpp(type);
+  if (!receiver) return undefined;
+  return getCompilerCppAmbientMemberBinding({ name: memberName, receiver }, getCppRuntimeProfile(context.options));
+}
+
+// The runtime receiver a lone member access on this type would be resolved against. An array is a kind
+// of the type itself; the rest are named runtime domains, and the name-to-category mapping is asked of
+// the planner rather than repeated here, so the two cannot drift.
+function getCppVariantMemberReceiverCpp(type: Readonly<IrType>): IrResolvedMemberReceiver | undefined {
+  if (type.kind === 'array') return 'array';
+  if (type.kind !== 'named' || type.reference.kind !== 'ambient') return undefined;
+  const category = getCppRuntimeReferenceCategory(type.reference.name);
+  if (
+    category === 'map' ||
+    category === 'set' ||
+    category === 'task' ||
+    category === 'typedArray' ||
+    category === 'date'
+  ) {
+    return category;
+  }
+  return undefined;
 }
 
 function emitNarrowedUnionMemberCpp(
@@ -10208,6 +10288,17 @@ function getIrObjectPropertyTypeCpp(
   // neither (an erased value, a type parameter, an unresolved reference) falls through unchanged.
   if (propertyName === 'length' && (type.kind === 'array' || (type.kind === 'primitive' && type.name === 'string'))) {
     return { kind: 'primitive', name: 'number' };
+  }
+  // A typed array is the same fact reached through a representation instead of a syntax: its `length`
+  // is its element count, a number, whatever the element width is. The category is asked of the
+  // representation planner because the planner is what decides that a type IS a typed array -- a name
+  // list here would be a second owner of that answer, and it would have to be kept in step with the one
+  // that decides the C++ spelling.
+  if (propertyName === 'length' && type.kind === 'named') {
+    const lengthPlan = context.referenceRepresentationPlanner.plan(type, context.module);
+    if (lengthPlan.kind === 'represented' && lengthPlan.category === 'typedArray') {
+      return { kind: 'primitive', name: 'number' };
+    }
   }
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const bindingId = type.reference.binding.id;

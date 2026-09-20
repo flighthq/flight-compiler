@@ -820,16 +820,32 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::variant');
   });
 
-  // A common member across a variant's alternatives is only provable when the alternatives agree on the
-  // C++ member ITSELF, not merely on the TypeScript name. `[value.length]` over `number[] | Float32Array`
-  // is the shape that says why: both alternatives do have `length` and both answer a `number`, so the
-  // type evidence is complete -- and a visitor built from it spells `value.length`, while the target
-  // spells the same member `size()` on both. Proving the type without proving the spelling would turn a
-  // refusal into a miscompile, so the refusal stands until the binding is proven too.
-  //
-  // The contrast is what makes it evidence rather than a limit: a member the alternatives DO agree on,
-  // spelling and type, is proven and visited.
-  it('refuses a variant member whose C++ spelling the alternatives do not prove', () => {
+  // A common member across a variant's alternatives is provable only when the alternatives agree on the
+  // C++ member ITSELF, not merely on the TypeScript name. `out.length` over `number[] | Float32Array` is
+  // the shape that says why: both alternatives have `length` and both answer a `number`, so the type
+  // evidence alone is complete -- and the member is spelled `size()` on both, not `length`. A visitor
+  // built from the type alone would emit `value.length`, a member neither alternative has; g++ rejects
+  // it. So the proof asks for the resolved binding too: its kind and target name, from the same table
+  // that spells a lone access, and the access takes the binding's shape (`sizeMethod` is called).
+  it('proves a variant member only where its resolved C++ binding agrees too', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'variant-member.ts',
+        `export function readLength(out: number[] | Float32Array): number { return out.length; }
+         export function readTypedLength(out: Float32Array | Uint8Array): number { return out.length; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // Both shapes are visited, and the body spells the binding the alternatives agree on.
+    expect(emitted.split('std::visit([](const auto& value) { return value.size(); }').length - 1).toBe(2);
+    expect(emitted).not.toContain('value.length');
+    // The bypass this replaced: a resolved member names ONE receiver kind, and applying it to the
+    // variant storage emitted `out.size()` on a `std::variant`, which no variant has.
+    expect(emitted).not.toContain('out.size()');
+
+    // The counterexamples. A member only one alternative has is not common, so nothing about the other
+    // makes it provable -- `number[]` has no `byteLength`.
     const refusal = (source: string): string | undefined => {
       try {
         emitIrModuleCpp(lower('variant-member.ts', source).module, { runtimeProfile: 'flight-cpp' });
@@ -838,18 +854,13 @@ describe('createCppCompilerBackend', () => {
         return isBackendEmissionFailure(error) ? error.rule : undefined;
       }
     };
-
-    // The cluster's shape: the real `finishAnimationSample` signature.
-    expect(refusal(`export function readLength(out: number[] | Float32Array): number { return out.length; }`)).toBe(
+    expect(refusal(`export function f(out: number[] | Float32Array): number { return out.byteLength; }`)).toBe(
       'cpp-union-member-access-unguarded',
     );
-    // The counterexample inside the same shape: a member only one alternative has is not common, so
-    // nothing about the other makes it provable.
-    expect(
-      refusal(`export function readByteLength(out: number[] | Float32Array): number { return out.byteLength; }`),
-    ).toBe('cpp-union-member-access-unguarded');
 
-    // The other side: alternatives that agree on the member's own C++ binding are visited.
+    // The other side: alternatives that agree on the member's binding are visited -- and a member no
+    // alternative names a binding for keeps the source spelling, which is what a record-like member
+    // already relies on.
     const agreed = emitIrModuleCpp(
       lower(
         'variant-member-agreed.ts',
@@ -859,8 +870,7 @@ describe('createCppCompilerBackend', () => {
       ).module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
-    expect(agreed).toContain('std::visit([](const auto& value) { return value');
-    expect(agreed).toContain('value->value;');
+    expect(agreed).toContain('std::visit([](const auto& value) { return value->value; }, input);');
   });
 
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
