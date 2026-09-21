@@ -4414,6 +4414,31 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(helper).toBeGreaterThan(constant);
     expect(holder).toBeGreaterThan(constant);
     expect(read).toBeGreaterThan(helper);
+    expect(emitted.contents).not.toContain('inline double helper();');
+  });
+
+  it('forward declares mutually recursive module functions before earlier callers', () => {
+    const result = lower(
+      'mutual-recursion.ts',
+      `export function run(): number { return left(); }
+       function left(value: number = 1): number { return value <= 0 ? 0 : right(value - 1); }
+       function right(value?: number): number { return value === undefined ? left() : left(value); }
+       export function factorial(value: number): number { return value <= 1 ? 1 : value * factorial(value - 1); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    const leftForward = emitted.contents.indexOf('inline double left(std::optional<double> value = std::nullopt);');
+    const rightForward = emitted.contents.indexOf('inline double right(std::optional<double> value = std::nullopt);');
+    const leftDefinition = emitted.contents.indexOf('inline double left(std::optional<double> value) {');
+    const rightDefinition = emitted.contents.indexOf('inline double right(std::optional<double> value) {');
+    const run = emitted.contents.indexOf('inline double run() {');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(leftForward).toBeGreaterThan(-1);
+    expect(rightForward).toBeGreaterThan(leftForward);
+    expect(leftDefinition).toBeGreaterThan(rightForward);
+    expect(rightDefinition).toBeGreaterThan(leftDefinition);
+    expect(run).toBeGreaterThan(rightDefinition);
+    expect(emitted.contents).not.toContain('inline double factorial(double value);');
   });
 
   it('forward declares reference types used by earlier callable aliases', () => {

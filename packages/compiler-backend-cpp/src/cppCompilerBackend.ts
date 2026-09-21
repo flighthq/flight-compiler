@@ -144,6 +144,10 @@ interface CppCallableObjectIndexedProjection {
   representation: Readonly<CppCallableObject>;
 }
 
+interface CppMutuallyRecursiveFunctionGroup {
+  readonly declarations: readonly Readonly<IrFunctionDeclaration>[];
+}
+
 interface CppVariantRepresentation {
   alternatives: readonly Readonly<{ members: readonly IrType[]; runtimeType: IrType; targetType: string }>[];
   direct: boolean;
@@ -229,6 +233,8 @@ interface EmitContext {
   // recovers their concrete type, so they must retain the type tag carried by `ErasedRef`.
   erasedObjectParameterBindingIds: ReadonlySet<string>;
   externalBindingStorageTargetTypes: ReadonlyMap<string, string>;
+  // C++ default arguments belong on the prototype or the definition, never both.
+  forwardDeclaredFunctionBindingIds: ReadonlySet<string>;
   importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
   importedBindingTypes: Map<string, Readonly<IrType> | null>;
   indexedObjectParameterBindingIds: ReadonlySet<string>;
@@ -395,7 +401,12 @@ function emitIrModuleCppWithContext(
   const typeParameterConstraints = collectCppTypeParameterConstraintsCpp(module);
   const closureCapturePlan = createIrModuleClosureCapturePlanCpp(module);
   const capturedReferentOnlyBindingIds = new Set<string>();
-  const recursiveTypeAliasBindingIds = collectCppRecursiveTypeAliasBindingIds(module);
+  const declarationDependencies = collectIrModuleDeclarationDependenciesCpp(module);
+  const recursiveTypeAliasBindingIds = collectCppRecursiveTypeAliasBindingIds(module, declarationDependencies);
+  const mutuallyRecursiveFunctionGroups = collectCppMutuallyRecursiveFunctionGroups(module, declarationDependencies);
+  const forwardDeclaredFunctionBindingIds = new Set(
+    mutuallyRecursiveFunctionGroups.flatMap((group) => group.declarations.map((declaration) => declaration.binding.id)),
+  );
   const sharedCaptureTargetNames = new Map<string, string>();
   const contextualBindingStorageTargetTypes = new Map<string, Readonly<IrType>>();
   const nullableBindingIds = new Set(collectIrModuleNullableBindingIds(module));
@@ -424,6 +435,7 @@ function emitIrModuleCppWithContext(
     erasedObjectParameterBindingIds,
     exceptionPointerBindingIds: collectCppExceptionPointerBindingIdsCpp(module, bindingTypes),
     externalBindingStorageTargetTypes,
+    forwardDeclaredFunctionBindingIds,
     facetTagNames: new Map(),
     importBindingOwners: importBindingOwners ?? createCppImportBindingOwners(sourceModules),
     importedBindingTypes: new Map(),
@@ -519,7 +531,12 @@ function emitIrModuleCppWithContext(
     const targetName = targetNames.get(bindingPlan.binding.id) ?? safeCppName(bindingPlan.binding.name);
     sharedCaptureTargetNames.set(bindingPlan.binding.id, generateUniqueName(`${targetName}_capture`, context));
   }
-  const declarations = orderIrModuleDeclarationsCpp(module, recursiveTypeAliasBindingIds)
+  const declarations = orderIrModuleDeclarationsCpp(
+    module,
+    recursiveTypeAliasBindingIds,
+    mutuallyRecursiveFunctionGroups,
+    declarationDependencies,
+  )
     .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
     .map((declaration) => {
       const existingAnonymousStructs = new Set(context.anonymousStructs.keys());
@@ -536,6 +553,11 @@ function emitIrModuleCppWithContext(
       ]);
       return { anonymousStructLines, declaration, lines };
     });
+  const mutuallyRecursiveFunctionForwardDeclarations = emitCppMutuallyRecursiveFunctionForwardDeclarations(
+    mutuallyRecursiveFunctionGroups,
+    declarations,
+    context,
+  );
   // Emitted before the include list is read: a forward declaration spells a default type argument
   // out, and that names a type whose module has to be included. Collected any later and the include
   // is dropped on the floor while the declaration that needed it is still emitted.
@@ -598,7 +620,17 @@ function emitIrModuleCppWithContext(
     ) {
       return;
     }
-    lines.push(...declaration.anonymousStructLines);
+    const recursiveForwardDeclarations =
+      declaration.declaration.kind === 'function'
+        ? mutuallyRecursiveFunctionForwardDeclarations.get(declaration.declaration.binding.id)
+        : undefined;
+    if (recursiveForwardDeclarations) lines.push(...recursiveForwardDeclarations);
+    if (
+      declaration.declaration.kind !== 'function' ||
+      !forwardDeclaredFunctionBindingIds.has(declaration.declaration.binding.id)
+    ) {
+      lines.push(...declaration.anonymousStructLines);
+    }
     lines.push('', ...declaration.lines);
   });
   lines.push('', `} // namespace ${namespaceName}`);
@@ -1169,6 +1201,68 @@ function emitCppImportedFunctionForwardDeclarations(context: EmitContext): strin
     .map(({ declaration, namespace }) => `namespace ${namespace} { ${declaration} }`);
 }
 
+function emitCppMutuallyRecursiveFunctionForwardDeclaration(
+  declaration: Readonly<IrFunctionDeclaration>,
+  outer: EmitContext,
+): string[] {
+  const context: EmitContext = {
+    ...outer,
+    activeDependentCallablePackIds: mergeCppDependentCallablePackIds(
+      outer.activeDependentCallablePackIds,
+      declaration.parameters,
+    ),
+    anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+      outer.anonymousStructTypeParameters,
+      declaration.typeParameters,
+    ),
+    async: declaration.async,
+    currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+    defaultedParameterIds: collectDefaultedParameterIdsCpp(declaration.parameters),
+    enclosingReturnType: declaration.returns,
+    namespaceScope: false,
+    returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
+  };
+  const template = emitCppFunctionTemplate(declaration.typeParameters, declaration.parameters, context);
+  const parameters = declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ');
+  const lines: string[] = [];
+  if (template.parameters) lines.push(`template ${template.parameters}`);
+  if (template.requirement) lines.push(`  requires ${template.requirement}`);
+  lines.push(
+    `inline ${emitType(declaration.returns, context)} ${getBindingTargetName(declaration.binding, context)}(${parameters});`,
+  );
+  return lines;
+}
+
+function emitCppMutuallyRecursiveFunctionForwardDeclarations(
+  groups: readonly Readonly<CppMutuallyRecursiveFunctionGroup>[],
+  declarations: readonly Readonly<{
+    anonymousStructLines: readonly string[];
+    declaration: Readonly<IrDeclaration>;
+    lines: readonly string[];
+  }>[],
+  context: EmitContext,
+): ReadonlyMap<string, readonly string[]> {
+  const result = new Map<string, readonly string[]>();
+  for (const group of groups) {
+    const bindingIds = new Set(group.declarations.map((declaration) => declaration.binding.id));
+    const entries = declarations.filter(
+      (entry) => entry.declaration.kind === 'function' && bindingIds.has(entry.declaration.binding.id),
+    );
+    const first = entries[0];
+    if (!first || first.declaration.kind !== 'function') continue;
+    result.set(first.declaration.binding.id, [
+      ...entries.flatMap((entry) => entry.anonymousStructLines),
+      '',
+      ...entries.flatMap((entry) =>
+        entry.declaration.kind === 'function'
+          ? [...emitCppMutuallyRecursiveFunctionForwardDeclaration(entry.declaration, context), '']
+          : [],
+      ),
+    ]);
+  }
+  return result;
+}
+
 function emitCppForwardParameterCpp(parameter: Readonly<IrParameter>, context: EmitContext): string {
   const name = getBindingTargetName(parameter.binding, context);
   if (
@@ -1539,9 +1633,19 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
     returnsAbsent: hasIrTypeAbsentMember(declaration.returns),
   };
   if (declaration.async) context.includes.add('coroutine');
+  // A mutually recursive group publishes its defaults on the prototypes that make the cycle
+  // callable. Repeating either parameter or template defaults on the definitions is ill-formed C++.
+  const includeDefaults = !context.forwardDeclaredFunctionBindingIds.has(declaration.binding.id);
   const returnType = emitType(declaration.returns, context);
-  const template = emitCppFunctionTemplate(declaration.typeParameters, declaration.parameters, context);
-  const params = declaration.parameters.map((parameter) => emitParameter(parameter, context)).join(', ');
+  const template = emitCppFunctionTemplate(
+    declaration.typeParameters,
+    declaration.parameters,
+    context,
+    includeDefaults,
+  );
+  const params = declaration.parameters
+    .map((parameter) => emitParameter(parameter, context, includeDefaults))
+    .join(', ');
   const name = getBindingTargetName(declaration.binding, context);
   const lines: string[] = [];
   if (template.parameters) lines.push(`template ${template.parameters}`);
@@ -12146,8 +12250,63 @@ function collectIrModuleDeclarationDependenciesCpp(
   return dependencies;
 }
 
-function collectCppRecursiveTypeAliasBindingIds(module: Readonly<IrModule>): ReadonlySet<string> {
-  const dependencies = collectIrModuleDeclarationDependenciesCpp(module);
+function collectCppMutuallyRecursiveFunctionGroups(
+  module: Readonly<IrModule>,
+  dependencies: ReadonlyMap<Readonly<IrDeclaration>, ReadonlySet<Readonly<IrDeclaration>>>,
+): readonly Readonly<CppMutuallyRecursiveFunctionGroup>[] {
+  const functions = module.declarations.filter(
+    (declaration): declaration is IrFunctionDeclaration =>
+      declaration.kind === 'function' && !declaration.namespaceMember,
+  );
+  const functionSet = new Set<Readonly<IrFunctionDeclaration>>(functions);
+  const functionOrder = new Map(functions.map((declaration, index) => [declaration, index] as const));
+  const indices = new Map<Readonly<IrFunctionDeclaration>, number>();
+  const lowLinks = new Map<Readonly<IrFunctionDeclaration>, number>();
+  const stack: Readonly<IrFunctionDeclaration>[] = [];
+  const onStack = new Set<Readonly<IrFunctionDeclaration>>();
+  const groups: CppMutuallyRecursiveFunctionGroup[] = [];
+  let nextIndex = 0;
+  const visit = (declaration: Readonly<IrFunctionDeclaration>): void => {
+    const index = nextIndex++;
+    indices.set(declaration, index);
+    lowLinks.set(declaration, index);
+    stack.push(declaration);
+    onStack.add(declaration);
+    for (const dependency of dependencies.get(declaration) ?? []) {
+      if (dependency.kind !== 'function' || !functionSet.has(dependency)) continue;
+      if (!indices.has(dependency)) {
+        visit(dependency);
+        lowLinks.set(declaration, Math.min(lowLinks.get(declaration)!, lowLinks.get(dependency)!));
+      } else if (onStack.has(dependency)) {
+        lowLinks.set(declaration, Math.min(lowLinks.get(declaration)!, indices.get(dependency)!));
+      }
+    }
+    if (lowLinks.get(declaration) !== indices.get(declaration)) return;
+    const component: Readonly<IrFunctionDeclaration>[] = [];
+    let member: Readonly<IrFunctionDeclaration>;
+    do {
+      member = stack.pop()!;
+      onStack.delete(member);
+      component.push(member);
+    } while (member !== declaration);
+    if (component.length > 1) {
+      groups.push({
+        declarations: component.sort((left, right) => functionOrder.get(left)! - functionOrder.get(right)!),
+      });
+    }
+  };
+  for (const declaration of functions) {
+    if (!indices.has(declaration)) visit(declaration);
+  }
+  return groups.sort(
+    (left, right) => functionOrder.get(left.declarations[0]!)! - functionOrder.get(right.declarations[0]!)!,
+  );
+}
+
+function collectCppRecursiveTypeAliasBindingIds(
+  module: Readonly<IrModule>,
+  dependencies: ReadonlyMap<Readonly<IrDeclaration>, ReadonlySet<Readonly<IrDeclaration>>>,
+): ReadonlySet<string> {
   const recursive = new Set<string>();
   for (const declaration of module.declarations) {
     if (declaration.kind !== 'typeAlias' || declaration.type.kind !== 'union') continue;
@@ -12169,23 +12328,31 @@ function collectCppRecursiveTypeAliasBindingIds(module: Readonly<IrModule>): Rea
 function orderIrModuleDeclarationsCpp(
   module: Readonly<IrModule>,
   recursiveTypeAliasBindingIds: ReadonlySet<string>,
+  mutuallyRecursiveFunctionGroups: readonly Readonly<CppMutuallyRecursiveFunctionGroup>[],
+  dependencies: ReadonlyMap<Readonly<IrDeclaration>, ReadonlySet<Readonly<IrDeclaration>>>,
 ): readonly Readonly<IrDeclaration>[] {
   // Source order is the module-evaluation order for variables, classes, enums, and side-effect
   // carriers. Move a later declaration only when an earlier declaration actually depends on it.
   const ranked = [...module.declarations];
-  const dependencies = collectIrModuleDeclarationDependenciesCpp(module);
+  const recursiveGroupByDeclaration = new Map<Readonly<IrDeclaration>, CppMutuallyRecursiveFunctionGroup>();
+  for (const group of mutuallyRecursiveFunctionGroups) {
+    for (const declaration of group.declarations) recursiveGroupByDeclaration.set(declaration, group);
+  }
 
   const pending = new Set(ranked);
   const ordered: Readonly<IrDeclaration>[] = [];
   while (pending.size > 0) {
+    const isReady = (declaration: Readonly<IrDeclaration>): boolean => {
+      const group = recursiveGroupByDeclaration.get(declaration);
+      const groupDeclarations = new Set<Readonly<IrDeclaration>>(group?.declarations ?? [declaration]);
+      return [...groupDeclarations].every((member) =>
+        [...(dependencies.get(member) ?? [])].every(
+          (dependency) => groupDeclarations.has(dependency) || !pending.has(dependency),
+        ),
+      );
+    };
     const next =
-      ranked.find(
-        (declaration) =>
-          pending.has(declaration) &&
-          [...(dependencies.get(declaration) ?? [])].every(
-            (dependency) => dependency === declaration || !pending.has(dependency),
-          ),
-      ) ??
+      ranked.find((declaration) => pending.has(declaration) && isReady(declaration)) ??
       ranked.find(
         (declaration) =>
           pending.has(declaration) &&
@@ -12194,8 +12361,19 @@ function orderIrModuleDeclarationsCpp(
       ) ??
       ranked.find((declaration) => pending.has(declaration));
     if (!next) break;
-    pending.delete(next);
-    ordered.push(next);
+    const group = recursiveGroupByDeclaration.get(next);
+    // Definitions in one strongly connected component stay adjacent, with their shared prototype
+    // block immediately before them. Waiting for every outside dependency keeps those signatures
+    // from naming a type or value that has not been introduced yet.
+    const scheduled = group
+      ? ranked.filter(
+          (declaration) => pending.has(declaration) && recursiveGroupByDeclaration.get(declaration) === group,
+        )
+      : [next];
+    for (const declaration of scheduled) {
+      pending.delete(declaration);
+      ordered.push(declaration);
+    }
   }
   return ordered;
 }
@@ -14514,7 +14692,7 @@ function statementDefinitelyCompletesCpp(statement: Readonly<IrStatement>): bool
   }
 }
 
-function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): string {
+function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext, includeDefault = true): string {
   const name = getBindingTargetName(parameter.binding, context);
   if (
     context.indexedObjectParameterBindingIds.has(parameter.binding.id) ||
@@ -14544,7 +14722,7 @@ function emitParameter(parameter: Readonly<IrParameter>, context: EmitContext): 
       : 'auto';
   if (parameter.optional) {
     context.includes.add('optional');
-    return `std::optional<${type}> ${name} = std::nullopt`;
+    return `std::optional<${type}> ${name}${includeDefault ? ' = std::nullopt' : ''}`;
   }
   if (parameter.rest) {
     return `${type} ${name}`;
@@ -14713,12 +14891,14 @@ function emitCppFunctionTemplate(
   typeParameters: readonly IrTypeParameter[],
   parameters: readonly Readonly<IrParameter>[],
   context: EmitContext,
+  includeDefaults = true,
 ): CppFunctionTemplate {
   const declared = typeParameters.map((parameter) => {
     const name = context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name);
-    const defaultType = parameter.default
-      ? ` = ${emitCppTemplateDefaultTypeArgumentCpp(parameter.default, context)}`
-      : '';
+    const defaultType =
+      includeDefaults && parameter.default
+        ? ` = ${emitCppTemplateDefaultTypeArgumentCpp(parameter.default, context)}`
+        : '';
     return `typename ${name}${defaultType}`;
   });
   const packs = parameters.flatMap((parameter) =>
