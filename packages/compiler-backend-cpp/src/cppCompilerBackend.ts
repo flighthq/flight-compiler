@@ -2530,6 +2530,8 @@ function emitExpression(
       return `(${left} ${op} ${right})`;
     }
     case 'call': {
+      const mathHypot = emitCppMathHypotCallCpp(expression, context);
+      if (mathHypot) return mathHypot;
       if (expression.optional) return emitOptionalCallExpressionCpp(expression, context);
       const optionalPropertyCall = emitOptionalPropertyCallExpressionCpp(expression, context);
       if (optionalPropertyCall) return optionalPropertyCall;
@@ -4257,6 +4259,37 @@ function emitCppAssertionSubjectCpp(expression: Readonly<IrExpression>, context:
   if (plan?.kind !== 'optionalSingle') return emitted;
   context.includes.add('optional');
   return `${emitted}.value()`;
+}
+
+// `Math.hypot` is variadic in JavaScript: the square root of the sum of the squares of every argument, with
+// no arguments the source's own zero and one argument the absolute value. `std::hypot` answers only the two-
+// and three-argument forms, so every other arity needs composing rather than passing through — four arguments
+// emitted as `std::hypot(x, y, z, w)` is a call to no overload at all. A left fold over the supported forms is
+// exact: `hypot(hypot(a, b), c)` is `sqrt(hypot(a, b)^2 + c^2)`, which is `sqrt(a^2 + b^2 + c^2)`, and hypot's
+// internal scaling keeps each intermediate finite for the same inputs the direct form would, so an infinity
+// or a NaN propagates exactly as the source language does.
+function emitCppMathHypotCallCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  const callee = expression.callee;
+  if (
+    callee.kind !== 'property' ||
+    callee.object.kind !== 'identifier' ||
+    callee.object.reference.kind !== 'ambient' ||
+    callee.object.reference.name !== 'Math' ||
+    callee.name !== 'hypot' ||
+    expression.arguments.some((argument) => argument.kind === 'spread')
+  ) {
+    return undefined;
+  }
+  context.includes.add('cmath');
+  const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context));
+  if (arguments_.length === 0) return '0.0';
+  if (arguments_.length === 1) return `std::abs(${arguments_[0]!})`;
+  let folded = `std::hypot(${arguments_.slice(0, 3).join(', ')})`;
+  for (const argument of arguments_.slice(3)) folded = `std::hypot(${folded}, ${argument})`;
+  return folded;
 }
 
 function getCppStructuralRowObjectTypeCpp(row: Readonly<CompilerCppStructuralRowPlan>): Readonly<IrType> | undefined {

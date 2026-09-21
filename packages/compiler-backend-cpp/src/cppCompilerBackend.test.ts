@@ -10179,6 +10179,36 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(oneArity).not.toContain('flight::Any');
   });
 
+  it('folds a variadic Math.hypot onto the arities the C++ overloads answer', () => {
+    // `Math.hypot` takes any number of arguments; `std::hypot` answers two and three. Four arguments used to
+    // be passed straight through as `std::hypot(x, y, z, w)`, which names no overload — the animation blend
+    // header's own failure. A left fold over the supported forms is exact, and the arities the overloads do
+    // answer must keep their direct spelling rather than growing a fold they do not need.
+    const emitted = emitIrModuleCpp(
+      lower(
+        'hypot-arities.ts',
+        `export function four(x: number, y: number, z: number, w: number): number { return Math.hypot(x, y, z, w); }
+         export function five(x: number, y: number, z: number, w: number, v: number): number { return Math.hypot(x, y, z, w, v); }
+         export function three(x: number, y: number, z: number): number { return Math.hypot(x, y, z); }
+         export function two(x: number, y: number): number { return Math.hypot(x, y); }
+         export function one(x: number): number { return Math.hypot(x); }
+         export function none(): number { return Math.hypot(); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // Four and five fold onto the three-argument form; no call is left with an arity no overload answers.
+    expect(emitted).toContain('std::hypot(std::hypot(x, y, z), w)');
+    expect(emitted).toContain('std::hypot(std::hypot(std::hypot(x, y, z), w), v)');
+    expect(emitted).not.toMatch(/std::hypot\([^()]*,[^()]*,[^()]*,[^()]*\)/u);
+    // Two and three are the overloads themselves.
+    expect(emitted).toContain('return std::hypot(x, y);');
+    expect(emitted).toContain('return std::hypot(x, y, z);');
+    // One is the absolute value and none is the source's own zero, which no std::hypot overload answers.
+    expect(emitted).toContain('return std::abs(x);');
+    expect(emitted).toContain('return 0.0;');
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',
