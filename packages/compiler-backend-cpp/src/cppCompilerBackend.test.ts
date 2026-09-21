@@ -6574,9 +6574,79 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(emitted).toContain('struct GeneratedSymbolBindings<flight::types::Scene3DResourceResolverWithRuntime>');
     expect(emitted).toContain('flight::types::scene3_dresource_resolver_runtime_key,');
-    expect(emitted).toContain('flight::types::entity_runtime_key,');
+    expect(emitted).not.toContain('flight::types::entity_runtime_key,');
     expect(emitted).toContain(
       '[object]() -> decltype(auto) { return (object->scene3_dresource_resolver_runtime_key); }',
+    );
+  });
+
+  it('leaves the exact generic Node EntityRuntime member to the flight-cpp runtime', () => {
+    const result = lowerPackage(
+      '@flighthq/types',
+      'Node.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime { binding: object | null }
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export interface NodeTraits { enabled: boolean; name: string | null }
+       export interface NodeRuntime<Traits extends object = NodeTraits> extends EntityRuntime {
+         traits?: Traits;
+       }
+       export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {
+         [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('template <typename Traits = flight::Ref<NodeTraits>>');
+    expect(emitted).toContain('struct Node : public flight::ReferenceEnabled');
+    expect(emitted).toContain('std::optional<flight::Ref<NodeRuntime<Traits>>> entity_runtime_key;');
+    expect(emitted).not.toContain('GeneratedSymbolBindings<flighthq_types::Node<');
+  });
+
+  it.each([
+    [
+      'another registered description',
+      `const EntityRuntimeKey: unique symbol = Symbol.for('Runtime');
+       interface NodeTraits { enabled: boolean }
+       interface Node<Traits extends object = NodeTraits> extends NodeTraits {
+         [EntityRuntimeKey]: Traits | undefined;
+       }
+       export function runtimeKey(): symbol { return EntityRuntimeKey; }`,
+    ],
+    [
+      'a unique symbol with the runtime description',
+      `const EntityRuntimeKey: unique symbol = Symbol('EntityRuntime');
+       interface NodeTraits { enabled: boolean }
+       interface Node<Traits extends object = NodeTraits> extends NodeTraits {
+         [EntityRuntimeKey]: Traits | undefined;
+       }
+       export function runtimeKey(): symbol { return EntityRuntimeKey; }`,
+    ],
+    [
+      'the runtime description under different storage',
+      `const CustomKey: unique symbol = Symbol.for('EntityRuntime');
+       interface NodeTraits { enabled: boolean }
+       interface Node<Traits extends object = NodeTraits> extends NodeTraits {
+         [CustomKey]: Traits | undefined;
+       }`,
+    ],
+    [
+      'an additional custom computed member',
+      `const EntityRuntimeKey: unique symbol = Symbol.for('EntityRuntime');
+       const CustomKey: unique symbol = Symbol('Custom');
+       interface NodeTraits { enabled: boolean }
+       interface Node<Traits extends object = NodeTraits> extends NodeTraits {
+         [EntityRuntimeKey]: Traits | undefined;
+         [CustomKey]: Traits | undefined;
+       }
+       export function customKey(): symbol { return CustomKey; }`,
+    ],
+  ])('keeps generic computed-symbol refusal for %s', (_name, source) => {
+    const result = lower('generic-custom-symbol.ts', source);
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      expect.objectContaining({ rule: 'cpp-generated-symbol-binding-generic-object' }),
     );
   });
 
@@ -24583,8 +24653,8 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
         source(
           '@flighthq/types',
           'packages/types/src/types.ts',
-          `export const RuntimeKey = Symbol.for('Runtime');
-           export interface Node<Traits> { [RuntimeKey]: Traits; traits: Traits }
+          `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           export interface Node<Traits> { [EntityRuntimeKey]: Traits; traits: Traits }
            export interface Traits { trait: number }
            export type Node2D = Node<Traits> & Traits;
            export interface Display extends Node2D {}
@@ -24606,8 +24676,8 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
         source(
           '@flighthq/local',
           'packages/local/src/local.ts',
-          `const RuntimeKey = Symbol.for('Runtime');
-           interface Node<Traits> { [RuntimeKey]: Traits; traits: Traits }
+          `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           interface Node<Traits> { [EntityRuntimeKey]: Traits; traits: Traits }
            interface Traits { trait: number }
            type Node2D = Node<Traits> & Traits;
            interface Display extends Node2D {}

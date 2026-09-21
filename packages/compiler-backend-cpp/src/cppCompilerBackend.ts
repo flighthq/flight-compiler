@@ -1893,6 +1893,12 @@ function emitCppGeneratedSymbolBindingsCpp(module: Readonly<IrModule>, context: 
       currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
     };
     if (isCppInterfaceRepresentationAliasCpp(declaration, module, declarationContext)) return [];
+    const runtimeOwnedProperties = new Set(
+      computedProperties.filter((property) => isCppRuntimeOwnedGeneratedSymbolMemberCpp(property, declarationContext)),
+    );
+    assertCppGeneratedSymbolMemberTargetsUnambiguousCpp(declaration, declarationContext);
+    const generatedProperties = computedProperties.filter((property) => !runtimeOwnedProperties.has(property));
+    if (generatedProperties.length === 0) return [];
     if (declaration.typeParameters.length > 0) {
       emissionError(
         declarationContext,
@@ -1900,27 +1906,13 @@ function emitCppGeneratedSymbolBindingsCpp(module: Readonly<IrModule>, context: 
         'cpp-generated-symbol-binding-generic-object',
       );
     }
-    const membersByTarget = new Map<string, string | undefined>();
     const targetsByKey = new Map<string, string>();
     const members: CppGeneratedSymbolBindingMember[] = [];
     for (const property of declaration.properties) {
       if (isCppValuelessStructMemberCpp(property.type)) continue;
       const target = safeCppName(property.name);
-      const keyIdentity = property.computedKey
-        ? getCppGeneratedSymbolReferenceIdentityCpp(property.computedKey)
-        : undefined;
-      const existingKey = membersByTarget.get(target);
-      if (membersByTarget.has(target)) {
-        if (keyIdentity === undefined && existingKey === undefined) continue;
-        if (keyIdentity === existingKey) continue;
-        emissionError(
-          declarationContext,
-          `computed-symbol member ${property.name} shares C++ storage ${target} with a different property`,
-          'cpp-generated-symbol-binding-member-ambiguous',
-        );
-      }
-      membersByTarget.set(target, keyIdentity);
       if (!property.computedKey) continue;
+      if (runtimeOwnedProperties.has(property)) continue;
       const key = getCppGeneratedSymbolReferenceCpp(property.computedKey, declarationContext);
       const existingTarget = targetsByKey.get(key.identity);
       if (existingTarget && existingTarget !== target) {
@@ -1963,10 +1955,35 @@ function emitCppGeneratedSymbolBindingsCpp(module: Readonly<IrModule>, context: 
   ]);
 }
 
+function assertCppGeneratedSymbolMemberTargetsUnambiguousCpp(
+  declaration: Readonly<IrInterfaceDeclaration>,
+  context: EmitContext,
+): void {
+  const membersByTarget = new Map<string, string | undefined>();
+  for (const property of declaration.properties) {
+    if (isCppValuelessStructMemberCpp(property.type)) continue;
+    const target = safeCppName(property.name);
+    const keyIdentity = property.computedKey
+      ? getCppGeneratedSymbolReferenceIdentityCpp(property.computedKey)
+      : undefined;
+    const existingKey = membersByTarget.get(target);
+    if (membersByTarget.has(target)) {
+      if (keyIdentity === undefined && existingKey === undefined) continue;
+      if (keyIdentity === existingKey) continue;
+      emissionError(
+        context,
+        `computed-symbol member ${property.name} shares C++ storage ${target} with a different property`,
+        'cpp-generated-symbol-binding-member-ambiguous',
+      );
+    }
+    membersByTarget.set(target, keyIdentity);
+  }
+}
+
 function getCppGeneratedSymbolReferenceCpp(
   reference: Readonly<IrValueNameReference>,
   context: EmitContext,
-): Readonly<{ identity: string; target: string }> {
+): Readonly<{ declaration: Readonly<IrVariableDeclaration>; identity: string; target: string }> {
   if (reference.kind === 'ambient' || reference.path.length > 0) {
     emissionError(
       context,
@@ -2047,6 +2064,7 @@ function getCppGeneratedSymbolReferenceCpp(
     );
   }
   return {
+    declaration,
     identity: `${getCppModuleIdentityKey(owner.module)}\0${owner.binding.id}`,
     target,
   };
@@ -2079,6 +2097,26 @@ function isCppCanonicalGeneratedSymbolDeclarationCpp(declaration: Readonly<IrVar
       callee.object.kind === 'identifier' &&
       callee.object.reference.kind === 'ambient' &&
       callee.object.reference.name === 'Symbol')
+  );
+}
+
+function isCppRuntimeOwnedGeneratedSymbolMemberCpp(
+  property: Readonly<IrObjectTypeProperty>,
+  context: EmitContext,
+): boolean {
+  if (!property.computedKey || safeCppName(property.name) !== 'entity_runtime_key') return false;
+  const declaration = getCppGeneratedSymbolReferenceCpp(property.computedKey, context).declaration;
+  if (declaration.initializer?.kind !== 'call' || declaration.initializer.arguments.length !== 1) return false;
+  const [description] = declaration.initializer.arguments;
+  const callee = declaration.initializer.callee;
+  return (
+    description?.kind === 'literal' &&
+    description.value === 'EntityRuntime' &&
+    callee.kind === 'property' &&
+    callee.name === 'for' &&
+    callee.object.kind === 'identifier' &&
+    callee.object.reference.kind === 'ambient' &&
+    callee.object.reference.name === 'Symbol'
   );
 }
 
