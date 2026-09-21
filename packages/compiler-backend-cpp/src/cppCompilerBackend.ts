@@ -8117,7 +8117,15 @@ function emitUnionMemberAssertionCpp(
       'cpp-type-assertion-unidentified',
     );
   }
-  const value = emitExpression(expression, context);
+  // This path owns projection out of the binding's declared union carrier. An identifier can also
+  // carry checker flow evidence that makes ordinary reads project the present value. Rendering that
+  // narrowed read here and then applying the assertion's projection consumes the same carrier twice.
+  // Keep the raw binding storage for an identifier; the selected plan below performs exactly the
+  // optional or variant access proved by the assertion target.
+  const value =
+    expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? emitIdentifierReference(expression.reference, context)
+      : emitExpression(expression, context);
   if (plan.kind === 'singleValue') return value;
   context.includes.add(plan.kind === 'optionalSingle' ? 'optional' : 'variant');
   // The cast names the asserted type whenever the slot's stored spelling is not already it: a narrowing

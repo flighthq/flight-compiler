@@ -4118,6 +4118,61 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         emitIrModuleCpp(ambiguous.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
       ).rule,
     ).toBe('cpp-collection-argument-multiple-present-domains');
+  it('projects a guarded optional array into an asserted tuple exactly once', () => {
+    const result = lower(
+      'guarded-asserted-tuple.ts',
+      `export function sum(value: number[] | undefined): number {
+         if (value === undefined || value.length < 2) return 0;
+         const [left, right] = value as [number, number];
+         return left + right;
+       }`,
+    );
+    const sum = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'sum',
+    );
+    const statement = sum?.kind === 'function' ? sum.body[1] : undefined;
+    const initializer = statement?.kind === 'variable' ? statement.declarations[0]?.initializer : undefined;
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The checker has already proved the assertion subject present. The assertion still sees the
+    // declared union carrier so it can identify its array slot, but it must consume that carrier once.
+    expect(initializer).toMatchObject({
+      expression: { kind: 'identifier', presence: 'narrowedPresent', reference: { binding: { name: 'value' } } },
+      kind: 'cast',
+      type: { kind: 'tuple' },
+    });
+    expect(output).toContain('flight::Array<double> array_pattern_value = value.value();');
+    expect(output).not.toContain('value.value().value()');
+    expect(output).not.toContain('value.values');
+  });
+
+  it('retains union selection for unguarded optional and heterogeneous asserted tuples', () => {
+    const unguarded = emitIrModuleCpp(
+      lower(
+        'unguarded-asserted-tuple.ts',
+        `export function sum(value: number[] | undefined): number {
+           const [left, right] = value as [number, number];
+           return left + right;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const heterogeneous = emitIrModuleCpp(
+      lower(
+        'heterogeneous-asserted-tuple.ts',
+        `export function first(value: number[] | string): number {
+           const [first] = value as [number];
+           return first;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(unguarded).toContain('flight::Array<double> array_pattern_value = value.value();');
+    expect(heterogeneous).toContain(
+      'flight::Array<double> array_pattern_value = std::get<flight::Array<double>>(value);',
+    );
+    expect(heterogeneous).not.toContain('value.value()');
   });
 
   it('emits unsigned shifts through the runtime when operand flow is unresolved', () => {
