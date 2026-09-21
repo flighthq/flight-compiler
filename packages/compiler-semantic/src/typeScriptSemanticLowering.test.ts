@@ -15860,6 +15860,233 @@ it('materializes scalar type queries from type-only imports without guessing obj
   expect(declarations.get('Console')).toMatchObject({ type: { kind: 'typeOf', reference: { kind: 'ambient' } } });
 });
 
+// The `guardedProgress` shape from @flighthq/net: a member query on a carrier that carries the member
+// only because a guard narrowed it. `Signal | undefined` names no member, so the deferred `typeOf` node
+// has no declaration to resolve and the answer has to come from the query's own checker type -- the
+// member signature the narrowed carrier has, with the imported parameter type intact.
+it('answers a member type query over a narrowed carrier with the member the carrier carries', () => {
+  const moduleResolution = {
+    edges: [
+      {
+        importer: { name: 'NetProgress', packageName: '@flighthq/net', source: 'packages/net/src/net.ts' },
+        importedNames: ['NetProgress', 'NetRequestOptions', 'Signal'],
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/net.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1' as const,
+  };
+  const [, result] = lowerTypeScriptSources(
+    [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/net.ts',
+          `export interface NetProgress { phase: 'upload' | 'download'; loaded: number; total: number; }
+           export interface Signal<T extends (...args: any[]) => void> { data: T | null; emit: T; }
+           export interface NetRequestOptions { progress?: Signal<(progress: Readonly<NetProgress>) => void>; }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/net',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/net/src/net.ts',
+          `import type { NetProgress, NetRequestOptions, Signal } from '@flighthq/types/contract';
+           export function guardNetProgress(options?: Readonly<NetRequestOptions>): void {
+             const progress = options?.progress;
+             if (progress === undefined) return;
+             const guardedProgress: Signal<typeof progress.emit> = {
+               ...progress,
+               emit(value) {
+                 progress.emit(value);
+               },
+             };
+             void guardedProgress;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ],
+    moduleResolution,
+  );
+  if (!result) throw new Error('Expected net lowering result');
+  const guard = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'guardNetProgress',
+  );
+  if (guard?.kind !== 'function') throw new TypeError('expected guardNetProgress');
+  const guarded = guard.body.find(
+    (statement) =>
+      statement.kind === 'variable' &&
+      statement.declarations.some((entry) => 'binding' in entry && entry.binding.name === 'guardedProgress'),
+  );
+  if (guarded?.kind !== 'variable') throw new TypeError('expected guardedProgress');
+  const declaration = guarded.declarations[0]!;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(declaration.type).toMatchObject({
+    kind: 'named',
+    reference: { binding: { name: 'Signal' } },
+    typeArguments: [
+      {
+        kind: 'function',
+        parameters: [
+          {
+            name: 'progress',
+            optional: false,
+            rest: false,
+            type: {
+              kind: 'named',
+              typeArguments: [{ kind: 'named', reference: { binding: { name: 'NetProgress' } } }],
+            },
+          },
+        ],
+        returns: { kind: 'primitive', name: 'void' },
+      },
+    ],
+  });
+  // The annotation is what changed here. The value it annotates is the same object spread of the
+  // narrowed carrier with the forwarding `emit` method the source wrote.
+  expect(declaration.initializer).toMatchObject({
+    kind: 'object',
+    members: [
+      {
+        kind: 'spread',
+        expression: { kind: 'identifier', presence: 'narrowedPresent', reference: { binding: { name: 'progress' } } },
+      },
+      { kind: 'property', name: 'emit' },
+    ],
+  });
+});
+
+// The boundary is narrowing, not locality. A member the declaration itself carries keeps the deferred
+// node even when the carrier is a parameter -- `signal.emit` is that parameter's own declared member,
+// resolved by the target from the parameter's type -- while a member read from a value this module did
+// not declare has only a scalar answer written out for it, since resolving that declaration is the
+// target's business. Neither is the narrowed case above.
+it('keeps a member query on the declaration when no narrowing stands between them', () => {
+  const moduleResolution = {
+    edges: [
+      {
+        importer: { name: 'Progress', packageName: '@flighthq/net', source: 'packages/net/src/progress.ts' },
+        importedNames: ['NetProgress', 'Signal'],
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/net.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1' as const,
+  };
+  const [, result] = lowerTypeScriptSources(
+    [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/net.ts',
+          `export interface NetProgress { loaded: number; total: number; }
+           export interface Signal<T extends (...args: any[]) => void> { emit: T; }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/net',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/net/src/progress.ts',
+          `import type { NetProgress, Signal } from '@flighthq/types/contract';
+           import type { progress } from './shared';
+           export function observe(signal: Signal<(progress: Readonly<NetProgress>) => void>): void {
+             const emit: typeof signal.emit = signal.emit;
+             const ticks: typeof progress.ticks = progress.ticks;
+             void emit;
+             void ticks;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/net',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/net/src/shared.ts',
+          `export const progress = { ticks: 3 };`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ],
+    moduleResolution,
+  );
+  if (!result) throw new Error('Expected progress lowering result');
+  const observe = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'observe',
+  );
+  if (observe?.kind !== 'function') throw new TypeError('expected observe');
+  const declared = (name: string) => {
+    const statement = observe.body.find(
+      (candidate) =>
+        candidate.kind === 'variable' &&
+        candidate.declarations.some((entry) => 'binding' in entry && entry.binding.name === name),
+    );
+    if (statement?.kind !== 'variable') throw new TypeError(`expected ${name}`);
+    return statement.declarations[0]!.type;
+  };
+
+  expect(result.diagnostics).toEqual([]);
+  expect(declared('emit')).toMatchObject({
+    kind: 'typeOf',
+    reference: { binding: { name: 'signal' }, kind: 'binding', path: ['emit'] },
+  });
+  expect(declared('ticks')).toMatchObject({ kind: 'primitive', name: 'number' });
+});
+
+// Both halves of the boundary that keeps this from becoming an erased carrier: a member whose answer is
+// a declaration shape stays deferred (the target resolves the member through the declaration it names),
+// and a member whose answer is no domain this lowering represents stays deferred too, so an unsupported
+// query is refused downstream rather than written out as `Any`.
+it('defers member type queries whose answer is a declaration shape or an unsupported domain', () => {
+  const result = lower(
+    'member-query.ts',
+    `export const config = { retries: 3, backend: { provider: 'local' } };
+     export interface Emitter { emit: unknown }
+     export function readFrom<T extends Emitter>(emitter: T): void {
+       const backend: typeof config.backend = config.backend;
+       const erased: typeof emitter.emit = emitter.emit;
+       void backend;
+       void erased;
+     }`,
+  );
+  const readFrom = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'readFrom',
+  );
+  if (readFrom?.kind !== 'function') throw new TypeError('expected readFrom');
+  const declared = (name: string) => {
+    const statement = readFrom.body.find(
+      (candidate) =>
+        candidate.kind === 'variable' &&
+        candidate.declarations.some((entry) => 'binding' in entry && entry.binding.name === name),
+    );
+    if (statement?.kind !== 'variable') throw new TypeError(`expected ${name}`);
+    return statement.declarations[0]!.type;
+  };
+
+  expect(result.diagnostics).toEqual([]);
+  expect(declared('backend')).toMatchObject({
+    kind: 'typeOf',
+    reference: { kind: 'binding', path: ['backend'] },
+  });
+  expect(declared('erased')).toMatchObject({
+    kind: 'typeOf',
+    reference: { kind: 'binding', path: ['emit'] },
+  });
+});
+
 it('lowers unique symbol syntax through the ordinary symbol representation', () => {
   const result = lower('unique-symbol.ts', 'export const s: unique symbol = Symbol();');
   expect(result.diagnostics).toEqual([]);

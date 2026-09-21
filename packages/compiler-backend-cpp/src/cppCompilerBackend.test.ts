@@ -3111,6 +3111,101 @@ describe('createCppCompilerBackend', () => {
     expect(() => emit('string')).toThrow('typeof requires closed runtime type evidence');
   });
 
+  // The `guardedProgress` shape from @flighthq/net, where the annotation asks for a member of a carrier
+  // that only carries it because a guard narrowed it. The annotation is the member's own signature --
+  // the forwarding call it wraps keeps the narrowed carrier, and the emitted `std::function` takes the
+  // imported progress type the signal declares.
+  it('answers a member type query over a narrowed carrier with the member signature', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: { name: 'Net', packageName: '@flighthq/net', source: 'packages/net/src/net.ts' },
+          importedNames: ['NetProgress', 'NetRequestOptions', 'Signal'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/net.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/net.ts',
+            `export interface NetProgress { loaded: number; total: number; }
+             export interface Signal<T extends (...args: any[]) => void> { emit: T; }
+             export interface NetRequestOptions { progress?: Signal<(progress: Readonly<NetProgress>) => void>; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/net',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/net/src/net.ts',
+            `import type { NetProgress, NetRequestOptions, Signal } from '@flighthq/types/contract';
+             export function guardNetProgress(options?: Readonly<NetRequestOptions>): void {
+               const progress = options?.progress;
+               if (progress === undefined) return;
+               const guardedProgress: Signal<typeof progress.emit> = {
+                 ...progress,
+                 emit(value) {
+                   progress.emit(value);
+                 },
+               };
+               void guardedProgress;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+
+    const emitted = emitCppModuleCppSession(results, moduleResolution, 1);
+
+    expect(emitted).toContain(
+      'flight::Ref<flighthq_types::Signal<std::function<void(flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::NetProgress>>>>)>>>',
+    );
+    expect(emitted).toContain('progress.value()->emit(value);');
+  });
+
+  // Both member queries keep the deferred node, because no narrowing stands between the declaration and
+  // the query: the target resolves each member through `config` itself rather than through an anonymous
+  // shape minted from the checker's answer.
+  it('resolves member type queries the declaration carries through that declaration', () => {
+    const module = lower(
+      'member-query-declarations.ts',
+      `export const config = { retries: 3, backend: { provider: 'local' } };
+       export const retries: typeof config.retries = config.retries;
+       export const backend: typeof config.backend = config.backend;`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('inline double retries = config->retries;');
+    expect(emitted).toContain('backend = config->backend;');
+  });
+
+  it('refuses a member type query whose answer is no represented domain', () => {
+    const module = lower(
+      'member-query-erased.ts',
+      `export interface Emitter { emit: unknown }
+       export function readErased<T extends Emitter>(emitter: T): void {
+         const erased: typeof emitter.emit = emitter.emit;
+         void erased;
+       }`,
+    ).module;
+
+    expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'typeOf types require C++ type computation lowering',
+    );
+  });
+
   it('constructs a buffered-log interval handle from exact ambient call-result evidence', () => {
     const module = lowerPackage(
       '@flighthq/log',

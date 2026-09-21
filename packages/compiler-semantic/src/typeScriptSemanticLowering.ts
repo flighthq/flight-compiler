@@ -3797,9 +3797,31 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   }
   if (ts.isTypeQueryNode(node)) {
     const reference = lowerValueNameReference(node.exprName, context);
-    if (reference.kind === 'ambient' || !isTypeScriptBindingIntroducedInModule(reference.binding, context)) {
+    // A member query a guard narrowed is answered where it was written, because the declaration has no
+    // spelling for the member the narrowed carrier carries -- see `isTypeScriptTypeQueryCarrierNarrowed`.
+    // Every other query keeps the deferred `typeOf` node the target resolves from the declaration, except
+    // for an ambient symbol or an imported binding, whose declaration is not this module's to resolve, and
+    // only a scalar answer is written for those.
+    const narrowedReference = getTypeNameNodeParts(node.exprName);
+    const narrowedMemberQuery =
+      reference.kind === 'binding' &&
+      reference.path.length > 0 &&
+      narrowedReference !== undefined &&
+      isTypeScriptTypeQueryCarrierNarrowed(narrowedReference.root, context);
+    if (
+      narrowedMemberQuery ||
+      reference.kind === 'ambient' ||
+      !isTypeScriptBindingIntroducedInModule(reference.binding, context)
+    ) {
       const checkerType = getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
-      if (checkerType && isIrTypeScalarTypeQueryEvidence(checkerType)) return checkerType;
+      if (
+        checkerType &&
+        (narrowedMemberQuery
+          ? isIrTypeRepresentableTypeQueryEvidence(checkerType)
+          : isIrTypeScalarTypeQueryEvidence(checkerType))
+      ) {
+        return checkerType;
+      }
     }
     return { kind: 'typeOf', reference };
   }
@@ -3815,12 +3837,75 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   unsupported(node, `unsupported type ${ts.SyntaxKind[node.kind]}`);
 }
 
+// Whether control flow narrowed the carrier a member query names between its declaration and the query.
+//
+// `typeOf` defers by following the declaration's own type along the path, which answers every query that
+// declaration carries -- `typeof RegistryEntryState.Bound` is the literal the const holds. The query a
+// declaration cannot answer is one the checker resolves only because a guard narrowed the carrier:
+// `const progress = options?.progress` has the type `Signal | undefined`, and `typeof progress.emit` is
+// well-typed only below the guard that removes the undefined. The checker's answer at the query differs
+// from the value's own declared type exactly when that happened, and then the answer has to be written
+// here -- the deferred node has no spelling to resolve.
+//
+// A narrowing that leaves the binding's own type alone -- a guard on a property read, `if (config.backend)`
+// followed by `typeof config.backend.provider` -- is not detected, and such a query keeps the deferred
+// node and refuses downstream rather than resolving. That is the conservative direction: the refusal is
+// visible, and nothing is written that the declaration does not carry.
+function isTypeScriptTypeQueryCarrierNarrowed(root: ts.Identifier, context: LoweringContext): boolean {
+  const symbol = context.checker.getSymbolAtLocation(root);
+  const declaration = symbol?.valueDeclaration;
+  if (!symbol || !declaration) return false;
+  return context.checker.getTypeAtLocation(root) !== context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
+}
+
+// Whether a `typeof <value>` value query's checker result is a domain that is exactly itself.
+//
+// A query naming the value (`typeof EntityKind`) keeps the deferred `typeOf` node, because the target
+// resolves the declaration the reference names; only an answer with no declaration identity to preserve
+// is written out in its place. Scalar answers are those: the literal an enum-like const holds, the
+// primitive a `Symbol.for` result has. A declaration-shaped answer -- an interface, an object, the
+// ambient `console` -- stays deferred, since writing it out would put the declaration's spelling in the
+// IR where the target's own resolution of that name belongs.
 function isIrTypeScalarTypeQueryEvidence(type: Readonly<IrType>): boolean {
   return (
     type.kind === 'literal' ||
     type.kind === 'primitive' ||
     (type.kind === 'union' && type.types.every(isIrTypeScalarTypeQueryEvidence))
   );
+}
+
+// Whether a narrowed member query's checker result is a domain whose representation the answer itself
+// determines. The value lane accepts only scalars, because a declaration-shaped answer is what the
+// deferred node is for; a query with no declaration to defer to has to accept the shape the answer has.
+//
+// A type query is a type-level question, so the answer has to be a type the lowering can write in place
+// of the query. That is true of a primitive or literal, of `null` and `undefined`, of a callable (whose
+// C++ representation follows from its signature alone), of a named declaration (whose identity travels
+// with the reference), and of a union or intersection of those. It is not true of an object shape: the
+// checker would answer with the members of whatever value the binding holds, and writing that out would
+// mint a new C++ type standing in for a value that already has one -- the guess the deferred `typeOf`
+// node exists to avoid, and the reason the value lane accepts only scalars. Everything else -- an array
+// or tuple, an erased result, a query the checker cannot decide -- also keeps the refusal, so an
+// unsupported query never silently becomes `Any`.
+function isIrTypeRepresentableTypeQueryEvidence(type: Readonly<IrType>): boolean {
+  switch (type.kind) {
+    case 'function':
+      return (
+        type.parameters.every((parameter) => isIrTypeRepresentableTypeQueryEvidence(parameter.type)) &&
+        isIrTypeRepresentableTypeQueryEvidence(type.returns)
+      );
+    case 'intersection':
+    case 'union':
+      return type.types.every(isIrTypeRepresentableTypeQueryEvidence);
+    case 'literal':
+    case 'named':
+    case 'null':
+    case 'primitive':
+    case 'undefined':
+      return true;
+    default:
+      return false;
+  }
 }
 
 function lowerTypeScriptFunctionLocalTypeReference(
