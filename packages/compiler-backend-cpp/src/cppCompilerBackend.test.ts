@@ -11777,6 +11777,46 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.match(/meta->scale/gu)?.length).toBeGreaterThan(0);
   });
 
+  it('extracts a typeof-proven erased string only from the same stable carrier and tag', () => {
+    const emitCase = (body: string) =>
+      emitIrModuleCpp(lower('erasedString.ts', body).module, { runtimeProfile: 'flight-cpp' }).contents;
+    const output = emitCase(
+      `export type Body = string | unknown | ArrayBuffer | null;
+       export interface Response { readonly body: Body; readonly ok: boolean }
+       export function read(response: Readonly<Response>): string | null {
+         return response.ok && typeof response.body === 'string' ? response.body : null;
+       }`,
+    );
+
+    expect(output).toContain('std::get_if<flight::String>');
+    expect(output).toMatch(/typeof_erased->type_of\(\) == flight::String\("string"\)/u);
+    expect(output).toContain('typeof_erased->as_string()');
+    expect(output.match(/RowKey<"body">/gu)).toHaveLength(1);
+
+    expect(() =>
+      emitCase(
+        `export function read(left: unknown, right: unknown): string | null {
+           return typeof left === 'string' ? right : null;
+         }`,
+      ),
+    ).toThrow();
+    expect(() =>
+      emitCase(
+        `class Response { get body(): unknown { return 'text'; } }
+         export function read(response: Response): string | null {
+           return typeof response.body === 'string' ? response.body : null;
+         }`,
+      ),
+    ).toThrow();
+    const number = emitCase(
+      `export function read(value: unknown): number | null {
+         return typeof value === 'number' ? value as number : null;
+       }`,
+    );
+    expect(number).toContain('.as_number()');
+    expect(number).not.toContain('erased_typeof_carrier');
+  });
+
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
     // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
     // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the

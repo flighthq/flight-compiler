@@ -3346,6 +3346,8 @@ function emitExpression(
       return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
     }
     case 'conditional': {
+      const erasedTypeof = emitCppErasedTypeofConditionalCpp(expression, context, expectedType);
+      if (erasedTypeof) return erasedTypeof;
       const evidence =
         expression.condition.kind === 'binary' ? expression.condition.semantics.unionMemberTest : undefined;
       const branchContext = (result: boolean): EmitContext => {
@@ -8826,6 +8828,105 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
   return present ? test : `!(${test})`;
 }
 
+function emitCppErasedTypeofConditionalCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'conditional' }>>,
+  context: EmitContext,
+  expectedType: Readonly<IrType> | undefined,
+): string | undefined {
+  // A repeated plain binding or field is one stable carrier; an accessor is not. Capture that carrier
+  // once so the `typeof` tag and checked extraction ask the same Any, and require the branch to read it.
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || !expectedType) return undefined;
+  const guard =
+    expression.condition.kind === 'binary' && expression.condition.operator === '&&'
+      ? expression.condition.left
+      : undefined;
+  const test = guard && expression.condition.kind === 'binary' ? expression.condition.right : expression.condition;
+  if (
+    test.kind !== 'binary' ||
+    (test.operator !== '==' && test.operator !== '===') ||
+    expression.whenFalse.kind !== 'literal' ||
+    expression.whenFalse.value !== null
+  ) {
+    return undefined;
+  }
+  const comparison = getCppTypeofTagComparisonCpp(test.left, test.right);
+  const operandType = comparison ? getCppNullishComparisonOperandTypeCpp(comparison.operand, context) : undefined;
+  const operandUnion = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
+  const operandPlan = operandUnion ? getCppUnionRepresentationPlan(operandUnion, context) : undefined;
+  const erasedSlot = operandPlan?.valueSlots.find((slot) => slot.targetType === 'flight::Any');
+  if (
+    comparison?.tag !== 'string' ||
+    !isCppStableErasedTypeofCarrierCpp(comparison.operand, expression.whenTrue, context) ||
+    (!erasedSlot && !isCppAliasResolvedErasedDynamicValueTypeCpp(operandType, context))
+  ) {
+    return undefined;
+  }
+  const union = getIrUnionTypeCpp(expectedType, context, new Set());
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  const slot = plan?.kind === 'optionalSingle' ? plan.valueSlots[0] : undefined;
+  if (!union || !plan || !slot || !isCppStringValueTypeCpp(slot.runtimeType, context, new Set())) return undefined;
+
+  const carrier = getGeneratedTargetName('erasedTypeofCarrier', context);
+  const absent = emitCppUnionSentinelConstruction('null', union, plan.kind, context);
+  const guarded = guard ? `if (!(${emitCppTruthinessExpression(guard, context)})) return ${absent}; ` : '';
+  context.includes.add('flight/any.hpp');
+  const source = emitExpression(comparison.operand, context);
+  if (!operandPlan || operandPlan.kind === 'singleValue') {
+    const present = emitCppUnionValueConstruction(`${carrier}.as_string()`, slot.targetType, union, plan.kind, context);
+    return `([&]() -> ${emitUnionTypeCpp(union, context)} { ${guarded}const auto& ${carrier} = ${source}; if (${carrier}.type_of() == flight::String("string")) return ${present}; return ${absent}; }())`;
+  }
+  if (operandPlan.kind !== 'multiVariant' && operandPlan.kind !== 'optionalVariant') return undefined;
+  const stringSlot = operandPlan.valueSlots.find((candidate) =>
+    isCppStringValueTypeCpp(candidate.runtimeType, context, new Set()),
+  );
+  if (!erasedSlot || !stringSlot) return undefined;
+  const direct = getGeneratedTargetName('typeofString', context);
+  const erased = getGeneratedTargetName('typeofErased', context);
+  const variant = operandPlan.kind === 'optionalVariant' ? `${carrier}.value()` : carrier;
+  const presentDirect = emitCppUnionValueConstruction(`*${direct}`, slot.targetType, union, plan.kind, context);
+  const presentErased = emitCppUnionValueConstruction(
+    `${erased}->as_string()`,
+    slot.targetType,
+    union,
+    plan.kind,
+    context,
+  );
+  const hasValue = operandPlan.kind === 'optionalVariant' ? `if (${carrier}.has_value()) { ` : '';
+  const closeValue = operandPlan.kind === 'optionalVariant' ? ' }' : '';
+  context.includes.add('variant');
+  return `([&]() -> ${emitUnionTypeCpp(union, context)} { ${guarded}const auto& ${carrier} = ${source}; ${hasValue}if (const auto* ${direct} = std::get_if<${stringSlot.targetType}>(&${variant})) return ${presentDirect}; if (const auto* ${erased} = std::get_if<${erasedSlot.targetType}>(&${variant}); ${erased} && ${erased}->type_of() == flight::String("string")) return ${presentErased};${closeValue} return ${absent}; }())`;
+}
+
+function isCppStableErasedTypeofCarrierCpp(
+  tested: Readonly<IrExpression>,
+  narrowed: Readonly<IrExpression>,
+  context: EmitContext,
+): boolean {
+  if (
+    tested.kind === 'identifier' &&
+    tested.reference.kind === 'binding' &&
+    narrowed.kind === 'identifier' &&
+    narrowed.reference.kind === 'binding'
+  ) {
+    return tested.reference.binding.id === narrowed.reference.binding.id;
+  }
+  return (
+    tested.kind === 'property' &&
+    !tested.optional &&
+    tested.absent === undefined &&
+    tested.object.kind === 'identifier' &&
+    tested.object.reference.kind === 'binding' &&
+    narrowed.kind === 'property' &&
+    !narrowed.optional &&
+    narrowed.absent === undefined &&
+    narrowed.object.kind === 'identifier' &&
+    narrowed.object.reference.kind === 'binding' &&
+    tested.name === narrowed.name &&
+    tested.object.reference.binding.id === narrowed.object.reference.binding.id &&
+    !getIrExpressionClassAccessorCpp(tested.object, tested.name, 'get', context)
+  );
+}
+
 // Every leaf an alternative can hold, with the JavaScript `typeof` tag that leaf reports, following the
 // alternative's aliases and descending into any union it names. Undefined means the domain is incomplete
 // -- a member behind an alias cycle, or a type whose tag the emitter cannot determine -- and the caller
@@ -9077,10 +9178,28 @@ function hasCppErasedDynamicTestOperandCpp(
   operandType: Readonly<IrType> | undefined,
   context: EmitContext,
 ): boolean {
-  if (!isCppErasedDynamicValueTypeCpp(operandType)) return false;
+  if (!isCppAliasResolvedErasedDynamicValueTypeCpp(operandType, context)) return false;
   return operand.kind === 'identifier' && operand.reference.kind === 'binding'
     ? context.erasedDynamicStorageBindingIds.has(operand.reference.binding.id)
     : true;
+}
+
+function isCppAliasResolvedErasedDynamicValueTypeCpp(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+  seen: ReadonlySet<string> = new Set(),
+): boolean {
+  if (isCppErasedDynamicValueTypeCpp(type)) return true;
+  const union = type ? getIrUnionTypeCpp(type, context, new Set()) : undefined;
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (plan?.kind === 'singleValue' && plan.valueSlots[0]?.targetType === 'flight::Any') return true;
+  if (type?.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind === 'typeParameter') {
+    return false;
+  }
+  const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+  if (seen.has(key)) return false;
+  const target = resolveCppTypeAliasTarget(type, context);
+  return target ? isCppAliasResolvedErasedDynamicValueTypeCpp(target, context, new Set(seen).add(key)) : false;
 }
 
 // Whether a declaration's storage decision elected the erased dynamic value.

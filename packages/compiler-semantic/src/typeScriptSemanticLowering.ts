@@ -5467,7 +5467,42 @@ function lowerTypeScriptExpressionTypeEvidence(
   ) {
     return undefined;
   }
+  const absorbingAlias = lowerTypeScriptAbsorbingAliasTypeEvidence(type, context);
+  if (absorbingAlias) return absorbingAlias;
   return lowerTypeScriptTypeNodeEvidence(type, context);
+}
+
+function lowerTypeScriptAbsorbingAliasTypeEvidence(
+  type: ts.TypeNode,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol> = new Set(),
+): Readonly<Extract<IrType, { kind: 'unknown' }>> | undefined {
+  // This lane answers only whether an alias chain reaches authored absorbing syntax. Ordinary aliases
+  // keep their named expression evidence, while the symbol set makes local and imported cycles finite.
+  if (ts.isParenthesizedTypeNode(type)) {
+    return lowerTypeScriptAbsorbingAliasTypeEvidence(type.type, context, seen);
+  }
+  if (!ts.isTypeReferenceNode(type)) return undefined;
+  const unresolved = context.checker.getSymbolAtLocation(type.typeName);
+  const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
+  if (!symbol || seen.has(symbol)) return undefined;
+  const declaration = symbol.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!declaration) return undefined;
+  const nextSeen = new Set(seen);
+  nextSeen.add(symbol);
+  if (ts.isTypeReferenceNode(declaration.type) || ts.isParenthesizedTypeNode(declaration.type)) {
+    return lowerTypeScriptAbsorbingAliasTypeEvidence(declaration.type, context, nextSeen);
+  }
+  const explicitlyAbsorbing =
+    declaration.type.kind === ts.SyntaxKind.AnyKeyword ||
+    declaration.type.kind === ts.SyntaxKind.UnknownKeyword ||
+    (ts.isUnionTypeNode(declaration.type) &&
+      declaration.type.types.some(
+        (member) => member.kind === ts.SyntaxKind.AnyKeyword || member.kind === ts.SyntaxKind.UnknownKeyword,
+      ));
+  if (!explicitlyAbsorbing) return undefined;
+  const lowered = lowerTypeScriptTypeNodeEvidence(declaration.type, context, nextSeen);
+  return lowered.kind === 'unknown' && (lowered.source === 'any' || lowered.source === 'unknown') ? lowered : undefined;
 }
 
 function removeIrTypeAbsentMembersSemantic(type: Readonly<IrType>): Readonly<IrType> | undefined {
@@ -5691,12 +5726,13 @@ function lowerTypeScriptTypeNodeEvidence(
       readonly: false,
     };
   }
-  if (ts.isUnionTypeNode(type) || ts.isIntersectionTypeNode(type)) {
+  if (ts.isUnionTypeNode(type)) {
+    return createWrittenUnionTypeEvidence(type, context, seen, substitutions);
+  }
+  if (ts.isIntersectionTypeNode(type)) {
     const types = type.types.map((member) => lowerTypeScriptTypeNodeEvidence(member, context, seen, substitutions));
     if (types.length < 2) return lowerType(type, context);
-    return type.kind === ts.SyntaxKind.UnionType
-      ? { kind: 'union', types: [types[0]!, types[1]!, ...types.slice(2)] }
-      : { kind: 'intersection', types: [types[0]!, types[1]!, ...types.slice(2)] };
+    return { kind: 'intersection', types: [types[0]!, types[1]!, ...types.slice(2)] };
   }
   if (ts.isTypeLiteralNode(type)) {
     return {
@@ -5705,6 +5741,27 @@ function lowerTypeScriptTypeNodeEvidence(
     };
   }
   return lowerType(type, context);
+}
+
+function createWrittenUnionTypeEvidence(
+  type: ts.UnionTypeNode,
+  context: LoweringContext,
+  seen: ReadonlySet<ts.Symbol>,
+  substitutions: ReadonlyMap<ts.Symbol, ts.TypeNode>,
+): Readonly<IrType> {
+  // Inspect syntax rather than lowered members: the IR's unknown also marks missing call, optional-chain,
+  // overload, destructuring, and assignment evidence. None of those fallbacks is an authored absorbing type.
+  if (type.types.some((member) => member.kind === ts.SyntaxKind.AnyKeyword)) {
+    return { kind: 'unknown', source: 'any' };
+  }
+  if (type.types.some((member) => member.kind === ts.SyntaxKind.UnknownKeyword)) {
+    return { kind: 'unknown', source: 'unknown' };
+  }
+  const written = type.types.filter((member) => member.kind !== ts.SyntaxKind.NeverKeyword);
+  if (written.length === 0) return { kind: 'never' };
+  const types = written.map((member) => lowerTypeScriptTypeNodeEvidence(member, context, seen, substitutions));
+  if (types.length === 1) return types[0]!;
+  return { kind: 'union', types: [types[0]!, types[1]!, ...types.slice(2)] };
 }
 
 // Checker evidence frequently reaches an imported mapped helper through a contextual object type.

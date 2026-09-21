@@ -912,6 +912,145 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('uses syntax-only written union precedence and follows bounded local expression aliases', () => {
+    const result = lower(
+      'written-union-evidence.ts',
+      `type UnknownValue = string | unknown | never;
+       type UnknownChain = UnknownValue;
+       type AnyValue = unknown | any | never;
+       type StringValue = string | never;
+       type Generic<Value> = string | Value | never;
+       type ClosedGeneric = Generic<unknown>;
+       type CycleLeft = CycleRight;
+       type CycleRight = CycleLeft;
+       function receive(value: unknown = undefined): void { void value; }
+       export function inspect(
+         unknownValue: UnknownChain,
+         anyValue: AnyValue,
+         stringValue: StringValue,
+         closed: ClosedGeneric,
+         concrete: Generic<number>,
+         cycle: CycleLeft,
+       ): void {
+         receive(unknownValue);
+         receive(anyValue);
+         receive(stringValue);
+         receive(closed);
+         receive(concrete);
+         receive(cycle);
+       }`,
+    );
+    const aliases = result.module.declarations.filter((declaration) => declaration.kind === 'typeAlias');
+    const inspect = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'inspect',
+    );
+    if (inspect?.kind !== 'function') throw new TypeError('expected inspect function');
+    const argumentTypes = inspect.body.flatMap((statement) => {
+      if (statement.kind !== 'expression' || statement.expression.kind !== 'call') return [];
+      return statement.expression.semantics.defaultParameters?.provided.map((entry) => entry.argumentType) ?? [];
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    // Shared declarations and every parameter retain the authored alias spelling and ABI. Only the
+    // syntax-evidence lane applies the absorbing keyword precedence observed by the call arguments.
+    expect(aliases.find((alias) => alias.binding.name === 'UnknownValue')).toMatchObject({
+      type: {
+        kind: 'union',
+        types: [{ kind: 'primitive', name: 'string' }, { kind: 'unknown', source: 'unknown' }, { kind: 'never' }],
+      },
+    });
+    expect(aliases.find((alias) => alias.binding.name === 'AnyValue')).toMatchObject({
+      type: {
+        kind: 'union',
+        types: [{ kind: 'unknown', source: 'unknown' }, { kind: 'unknown', source: 'any' }, { kind: 'never' }],
+      },
+    });
+    expect(aliases.find((alias) => alias.binding.name === 'StringValue')).toMatchObject({
+      type: {
+        kind: 'union',
+        types: [{ kind: 'primitive', name: 'string' }, { kind: 'never' }],
+      },
+    });
+    expect(inspect.parameters.map((parameter) => parameter.type)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'named', reference: expect.objectContaining({ path: [] }) }),
+      ]),
+    );
+    expect(argumentTypes).toEqual([
+      { kind: 'unknown', source: 'unknown' },
+      { kind: 'unknown', source: 'any' },
+      { kind: 'primitive', name: 'string' },
+      {
+        kind: 'union',
+        types: [
+          { kind: 'primitive', name: 'string' },
+          { kind: 'unknown', source: 'unknown' },
+        ],
+      },
+      {
+        kind: 'union',
+        types: [
+          { kind: 'primitive', name: 'string' },
+          { kind: 'primitive', name: 'number' },
+        ],
+      },
+      expect.objectContaining({ kind: 'named' }),
+    ]);
+  });
+
+  it('follows imported absorbing alias evidence without rewriting its imported ABI identity', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/body.ts',
+      `export type Body = string | unknown | never;
+       export type BodyChain = Body;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/net/src/read.ts',
+      `import type { BodyChain } from '@flight/types';
+       function receive(value: unknown = undefined): void { void value; }
+       export function inspect(value: BodyChain): void { receive(value); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flight/net', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            importer: { name: 'read', packageName: '@flight/net', source: 'packages/net/src/read.ts' },
+            importedNames: ['BodyChain'],
+            specifier: '@flight/types',
+            target: { packageName: '@flight/types', source: 'packages/types/src/body.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const inspect = result!.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'inspect',
+    );
+    if (inspect?.kind !== 'function') throw new TypeError('expected inspect function');
+    const call = inspect.body.find(
+      (statement) => statement.kind === 'expression' && statement.expression.kind === 'call',
+    );
+    if (call?.kind !== 'expression' || call.expression.kind !== 'call') throw new TypeError('expected call');
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(inspect.parameters[0]?.type).toMatchObject({
+      kind: 'named',
+      reference: { binding: { kind: 'import', name: 'BodyChain' }, kind: 'binding', path: [] },
+    });
+    expect(call.expression.semantics.defaultParameters?.provided[0]?.argumentType).toEqual({
+      kind: 'unknown',
+      source: 'unknown',
+    });
+  });
+
   it('preserves composite type cardinality, readonly state, and function structure', () => {
     const result = lower(
       'composite-types.ts',
