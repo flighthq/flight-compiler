@@ -9878,6 +9878,104 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(a.indexOf(forward)).toBeLessThan(a.indexOf(include));
   });
 
+  it('publishes a cyclic alias after opening an imported alias chain', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './interaction.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/interaction.ts' },
+        },
+        {
+          specifier: './node.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/node.ts' },
+        },
+        {
+          specifier: './state.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/state.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/node.ts',
+            `import type { NodeInteractionState } from './state.js';
+             export interface Node<Traits = any> { state: NodeInteractionState | null; traits: Traits }
+             export type NodeAny = Node<any>;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/interaction.ts',
+            `import type { NodeAny } from './node.js';
+             export type LocalHitTarget = Readonly<NodeAny>;
+             export type HitArea = LocalHitTarget | 'bounds';`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/state.ts',
+            `import type { HitArea } from './interaction.js';
+             export interface NodeInteractionState { hitArea: HitArea | null }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: { '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' } },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const interaction = session.emitModule(modules[1]!)[0]!.contents;
+    const include = '#include <flight/types/node.hpp>';
+    const importedAlias =
+      'using LocalHitTarget = flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Node<flight::Any>>>>>;';
+    const localAlias =
+      'using HitArea = std::variant<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Node<flight::Any>>>>>, flight::String>;';
+    const early = interaction.slice(0, interaction.indexOf(include));
+
+    expect(interaction).toContain('#include <flight/any.hpp>');
+    expect(interaction).toContain('namespace flight::types { template <typename Traits> struct Node; }');
+    expect(interaction).toContain(importedAlias);
+    expect(interaction).toContain(localAlias);
+    expect(interaction.indexOf(importedAlias)).toBeLessThan(interaction.indexOf(include));
+    expect(interaction.indexOf(localAlias)).toBeLessThan(interaction.indexOf(include));
+    expect(interaction.match(/using LocalHitTarget =/gu)).toHaveLength(1);
+    expect(interaction.match(/using HitArea =/gu)).toHaveLength(1);
+    expect(early).not.toContain('NodeAny');
+    expect(early).not.toMatch(/\bReadonly</u);
+
+    const defaultNamespaceInteraction = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+    expect(defaultNamespaceInteraction.indexOf('using LocalHitTarget =')).toBeLessThan(
+      defaultNamespaceInteraction.indexOf('#include "node.hpp"'),
+    );
+    expect(
+      defaultNamespaceInteraction.slice(0, defaultNamespaceInteraction.indexOf('#include "node.hpp"')),
+    ).not.toContain('NodeAny');
+  });
+
   it('forward declares imported functions across a module cycle', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [

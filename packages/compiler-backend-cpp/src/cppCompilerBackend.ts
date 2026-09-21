@@ -218,6 +218,8 @@ interface EmitContext {
   // whole declarations and a refusal names one of them; without this a refused module is a message
   // with no position at all, and 649 of them are otherwise indistinguishable.
   currentOrigin?: Readonly<{ column: number; line: number }> | undefined;
+  expandAliasesForEarlyPublication?: boolean | undefined;
+  earlyPublicationResolvingAliases?: ReadonlySet<string> | undefined;
   capturedReferentOnlyBindingIds: ReadonlySet<string>;
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
@@ -565,6 +567,20 @@ function emitIrModuleCppWithContext(
   const imports = emitImports(module, context);
   const importedFunctionForwardDeclarations = emitCppImportedFunctionForwardDeclarations(context);
   const reexports = emitReexportsCpp(module, context);
+  const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
+  const importedForwardDeclarations = emitCppImportedForwardDeclarations(context);
+  const earlyPublication =
+    imports.length > 0
+      ? planCppEarlyPublicationCpp(declarations, forwardDeclarations, importedForwardDeclarations, context)
+      : { bindingIds: new Set<string>(), lines: [] };
+  const earlyLines =
+    imports.length > 0
+      ? [
+          ...forwardDeclarations,
+          ...collectCppMaterializedTypeForwardDeclarationsCpp(declarations),
+          ...earlyPublication.lines,
+        ]
+      : [];
   const lines = [createCompilerGeneratedFileHeader(module, '//', options.upstreamCommit)];
   lines.push('#pragma once');
   const sortedIncludes = [...context.includes].sort();
@@ -583,25 +599,11 @@ function emitIrModuleCppWithContext(
       'static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mismatch");',
     );
   }
-  const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
   // Only a module include can close a cycle, so a module that includes none keeps its usual layout
   // and publishes nothing early.
   // The early region declares what a cyclic consumer may name, so it precedes this module's
   // includes. It follows the imported forward declarations because a published alias may name
   // another module's type, and only those declarations make it nameable this early.
-  const importedForwardDeclarations = emitCppImportedForwardDeclarations(context);
-  const earlyPublication =
-    imports.length > 0
-      ? planCppEarlyPublicationCpp(declarations, forwardDeclarations, importedForwardDeclarations, context)
-      : { bindingIds: new Set<string>(), lines: [] };
-  const earlyLines =
-    imports.length > 0
-      ? [
-          ...forwardDeclarations,
-          ...collectCppMaterializedTypeForwardDeclarationsCpp(declarations),
-          ...earlyPublication.lines,
-        ]
-      : [];
   if (importedForwardDeclarations.length > 0) lines.push('', ...importedForwardDeclarations);
   if (earlyLines.length > 0) {
     lines.push('', `namespace ${namespaceName} {`, ...earlyLines, `} // namespace ${namespaceName}`);
@@ -808,6 +810,21 @@ function planCppEarlyPublicationCpp(
   for (const line of [...forwardDeclarations, ...importedForwardDeclarations]) {
     for (const match of line.matchAll(/struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gu)) forwardDeclaredNames.add(match[1]!);
   }
+  const importedAliasNames = new Set<string>();
+  for (const importItem of context.module.imports) {
+    for (const binding of importItem.bindings) {
+      if (binding.imported === '*') continue;
+      const reference: Extract<IrType, { kind: 'named' }> = {
+        kind: 'named',
+        reference: { binding: binding.binding, kind: 'binding', path: [] },
+        typeArguments: [],
+      };
+      if (getCppImportedBindingDeclarationCpp(reference, context)?.declaration.kind !== 'typeAlias') continue;
+      const target = getCppImportedBindingTargetName(binding.binding.id, [], 'type', context);
+      const name = target?.split('::').at(-1);
+      if (name) importedAliasNames.add(name);
+    }
+  }
   const candidates = declarations.filter(
     (entry) => entry.declaration.kind === 'typeAlias' && entry.declaration.exported,
   );
@@ -843,25 +860,34 @@ function planCppEarlyPublicationCpp(
         if (unordered) continue;
       }
       const ownName = getBindingTargetName(entry.declaration.binding, context);
-      const text = entry.lines.join('\n');
-      const unschedulable = [...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)].some((match) => {
-        const name = match[1]!;
-        if (name === ownName) return false;
-        // Another module's type is nameable this early only when it is forward-declared here. A
-        // foreign alias is not: it cannot be forward-declared at all, so it becomes nameable only
-        // after this module's includes. Only names this header schedules are judged; runtime and
-        // standard names come from includes that precede the early region.
-        const foreign = /flight::[A-Za-z_][A-Za-z0-9_]*::$/u.test(text.slice(0, match.index));
-        if (!declaredNames.has(name) && !foreign) return false;
-        if (!forwardDeclaredNames.has(name) && !publishedNames.has(name)) return true;
-        // A forward declaration makes a name usable, not complete. Only a reference-like wrapper
-        // stays complete for an incomplete argument, so a scheduled type reached any other way —
-        // bare, or under a value container such as optional, variant, tuple, or array — would be
-        // used where its definition is required, and cannot be published.
-        return !isCppReferenceLikeTypeArgumentCpp(text, match.index);
-      });
-      if (unschedulable) continue;
-      published.set(bindingId, entry.lines);
+      const isUnschedulable = (lines: readonly string[]): boolean => {
+        const text = lines.join('\n');
+        return [...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)].some((match) => {
+          const name = match[1]!;
+          if (name === ownName) return false;
+          // Another module's nominal type is nameable here only through this header's forward
+          // declaration. An imported alias has no such declaration in C++, so it remains blocked
+          // until the alias-expansion retry below. Names outside these planned sets belong to the
+          // standard/runtime headers that already precede the early region.
+          if (!declaredNames.has(name) && !forwardDeclaredNames.has(name) && !importedAliasNames.has(name)) {
+            return false;
+          }
+          if (importedAliasNames.has(name)) return true;
+          if (!forwardDeclaredNames.has(name) && !publishedNames.has(name)) return true;
+          // A forward declaration makes a name usable, not complete. Only a reference-like wrapper
+          // stays complete for an incomplete argument, so a scheduled type reached any other way —
+          // bare, or under a value container such as optional, variant, tuple, or array — would be
+          // used where its definition is required, and cannot be published.
+          return !isCppReferenceLikeTypeArgumentCpp(text, match.index);
+        });
+      };
+      let publicationLines = entry.lines;
+      if (isUnschedulable(publicationLines)) {
+        const expanded = emitCppExpandedEarlyPublicationAliasCpp(entry.declaration, entry.lines, context);
+        if (!expanded || isUnschedulable(expanded)) continue;
+        publicationLines = expanded;
+      }
+      published.set(bindingId, publicationLines);
       publishedNames.add(ownName);
       progressed = true;
     }
@@ -872,6 +898,36 @@ function planCppEarlyPublicationCpp(
       entry.declaration.kind === 'typeAlias' ? (published.get(entry.declaration.binding.id) ?? []) : [],
     ),
   };
+}
+
+// An imported alias cannot be forward-declared. If an exported alias's emitted representation reaches
+// one, open the alias chain and try the early declaration again. This includes a local alias which the
+// ordinary type emitter already opens on the way to that imported dependency; ambient utilities keep
+// their normal target lowering because they have no declaration to open. This turns
+// `Readonly<NodeAny>` into its reference row over a forward-declared `Node`, which is safe to publish,
+// without flattening every named type in the module.
+function emitCppExpandedEarlyPublicationAliasCpp(
+  declaration: Readonly<IrTypeAliasDeclaration>,
+  emittedLines: readonly string[],
+  outer: EmitContext,
+): readonly string[] | undefined {
+  const name = getBindingTargetName(declaration.binding, outer);
+  if (!emittedLines.some((line) => line.startsWith(`using ${name} = `))) return undefined;
+  const anonymousStructs = new Map(outer.anonymousStructs);
+  const context: EmitContext = {
+    ...outer,
+    anonymousStructs,
+    anonymousStructTypeParameters: mergeIrTypeParametersCpp(
+      outer.anonymousStructTypeParameters,
+      declaration.typeParameters,
+    ),
+    earlyPublicationResolvingAliases: new Set(),
+    expandAliasesForEarlyPublication: true,
+  };
+  const type = emitType(declaration.type, context);
+  if (anonymousStructs.size !== outer.anonymousStructs.size) return undefined;
+  const typeParameters = emitTypeParameters(declaration.typeParameters, context, true);
+  return [...(typeParameters ? [`template ${typeParameters}`] : []), `using ${name} = ${type};`];
 }
 
 // A reference-like wrapper stays complete for an incomplete argument, so a type reached through one
@@ -6014,6 +6070,25 @@ function describeShapelessIntersectionMemberCpp(member: Readonly<IrType>, contex
 }
 
 function emitType(type: Readonly<IrType>, context: EmitContext, representation: 'storage' | 'value' = 'value'): string {
+  if (
+    context.expandAliasesForEarlyPublication &&
+    type.kind === 'named' &&
+    type.reference.kind === 'binding' &&
+    type.reference.binding.kind !== 'typeParameter'
+  ) {
+    const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+    const resolving = context.earlyPublicationResolvingAliases ?? new Set<string>();
+    if (!resolving.has(key)) {
+      const target = resolveCppTypeAliasTarget(type, context);
+      if (target) {
+        return emitType(
+          target,
+          { ...context, earlyPublicationResolvingAliases: new Set(resolving).add(key) },
+          representation,
+        );
+      }
+    }
+  }
   if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
     const externalProjection = context.referenceRepresentationPlanner.resolveExternalProjection(type, context.module);
     if (externalProjection) return emitType(externalProjection, context, representation);
