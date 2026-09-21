@@ -10058,6 +10058,49 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(numberRecord).not.toContain('flight::to_string(value)');
   });
 
+  it('stamps a signal call through a closed-key selection with the callable it selected', () => {
+    // `media/audioChannel.ts` selects a signal by name and emits it. The selection's element type is the
+    // union of the members the keys name, and that evidence is what lets the callee's type parameter be
+    // deduced — so the emitted call carries the explicit template argument. It has to, because the runtime's
+    // `flight::Ref` is a `std::conditional_t` alias and therefore a non-deduced context: a call that leans on
+    // deduction cannot name `T` at all, whatever its arity. Arity is taken from the selected callable, and
+    // nothing is passed that the source did not pass.
+    const zeroArity = emitIrModuleCpp(
+      lower(
+        'signal-selection-zero.ts',
+        `export interface Signal<T> { readonly id: number }
+         export interface ChannelSignals { readonly onComplete: Signal<() => void>; readonly onLoop: Signal<() => void> }
+         export function emitSignal<T>(signal: Signal<T>): void { void signal.id; }
+         export function emitChannelSignal(signals: ChannelSignals, name: 'onComplete' | 'onLoop'): void {
+           emitSignal(signals[name]);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(zeroArity).toContain(
+      'emit_signal<std::function<void()>>(([&]() -> flight::Ref<Signal<std::function<void()>>>',
+    );
+
+    // The arity-negative side: a callable that takes a parameter keeps that parameter, and the call gains no
+    // argument the source did not write.
+    const oneArity = emitIrModuleCpp(
+      lower(
+        'signal-selection-one.ts',
+        `export interface Signal<T> { readonly id: number }
+         export interface ChannelSignals { readonly onProgress: Signal<(value: number) => void>; readonly onDone: Signal<(value: number) => void> }
+         export function emitSignal<T>(signal: Signal<T>, value: number): void { void signal.id; void value; }
+         export function emitProgress(signals: ChannelSignals, name: 'onProgress' | 'onDone', value: number): void {
+           emitSignal(signals[name], value);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(oneArity).toContain(
+      'emit_signal<std::function<void(double)>>(([&]() -> flight::Ref<Signal<std::function<void(double)>>>',
+    );
+    expect(oneArity).not.toContain('flight::Any');
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',

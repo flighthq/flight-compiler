@@ -11813,6 +11813,24 @@ function getIrIndexedElementTypeCpp(
     return type.elements[expression.index.value]?.type;
   }
   if (type.kind !== 'named') return undefined;
+  // A named object indexed by a FINITE set of string keys is the closed-key selection this emitter already
+  // lowers, so the element type is the union of the members those keys name. Without this the source of the
+  // element is unknown and everything keyed on it goes without: a call argument with no evidence cannot have
+  // the callee's type parameters deduced, so no explicit template arguments are stamped and the call relies
+  // on deduction that `flight::Ref` -- a `std::conditional_t` alias, and so a non-deduced context -- can never
+  // satisfy. An open, computed, or absent key names no finite set and still falls through to the refusals.
+  const closedElementKeys = getCppClosedElementKeyNamesCpp(expression, context);
+  const closedElementShape = closedElementKeys
+    ? context.referenceRepresentationPlanner.resolveObjectShape(type, context.module)
+    : undefined;
+  if (closedElementKeys && closedElementShape) {
+    const closedMembers = closedElementKeys.map(
+      (key) => closedElementShape.find((property) => property.name === key)?.type,
+    );
+    if (closedMembers.every((member): member is Readonly<IrType> => member !== undefined)) {
+      return createIrTypeEvidenceUnionCpp(closedMembers);
+    }
+  }
   if (type.reference.kind === 'ambient') {
     if (/^(?:Float32|Float64|Int16|Int32|Int8|Uint16|Uint32|Uint8|Uint8Clamped)Array$/u.test(type.reference.name)) {
       return { kind: 'primitive', name: 'number' };
