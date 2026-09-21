@@ -2960,17 +2960,29 @@ function emitExpression(
         const callableFieldName = getCppCallableObjectFieldNameCpp(callableObject.properties);
         return `flight::make_ref<${storageType}>(${storageType}{.${callableFieldName} = ${emitExpression(expression.expression, context, callableObject.callable)}})`;
       }
-      return (
+      const sourceEvidence = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+      const assertedExpression =
         asserted ??
         assertedGenericFactory ??
-        getCppErasedValueAssertionCpp(
-          expression.type,
-          getIrExpressionTypeEvidenceCpp(expression.expression, context),
-          expression.expression,
+        getCppErasedValueAssertionCpp(expression.type, sourceEvidence, expression.expression, context);
+      if (assertedExpression) return assertedExpression;
+      // An erased value answers only what the runtime can read out of it honestly: the primitives, a
+      // reference it can identify, and a callable. `flight::Array` is not one of them, by the runtime's own
+      // contract — an array cannot be handed to `flight::Any` without inventing an identity or reinterpreting
+      // storage, and an element read back out of one is the same value. Emitting a `static_cast` there is a
+      // call to a conversion that does not exist, so the assertion is refused and named instead.
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        expression.type.kind === 'array' &&
+        isCppErasedDynamicValueTypeCpp(sourceEvidence)
+      ) {
+        emissionError(
           context,
-        ) ??
-        `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`
-      );
+          `an erased C++ value has no honest reading of ${emitType(expression.type, context)}; the runtime reports what it cannot carry rather than reinterpreting storage`,
+          'cpp-erased-value-assertion-unrepresented',
+        );
+      }
+      return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
     }
     case 'conditional': {
       const evidence =
@@ -3586,6 +3598,8 @@ function emitExpression(
       return construction(initializer);
     }
     case 'property': {
+      const enumMember = emitCppEnumMemberReferenceCpp(expression, context);
+      if (enumMember) return enumMember;
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
       if (narrowedPresent) return narrowedPresent;
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context, expectedType);
@@ -14875,6 +14889,44 @@ function isSuperAccess(expression: Readonly<IrExpression>): boolean {
 
 function isThisAccess(expression: Readonly<IrExpression>): boolean {
   return expression.kind === 'identifier' && expression.reference.kind === 'this';
+}
+
+// An enum's members are scoped names, not members of an instance: the source writes `Rotation.member` and C++
+// needs `Rotation::member`. A LOCAL enum already reaches the right spelling, but an imported one arrives as a
+// value-space binding, takes the ordinary member operator, and emits `flighthq_types::Rotation.member` — a dot
+// on a type, which is not an expression. The declaration decides, wherever it lives, so this resolves it the
+// same way the function-declaration lookup resolves an import, and refuses anything that is not an enum so a
+// plain object with a same-spelled property keeps its member access.
+function emitCppEnumMemberReferenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const object = expression.object;
+  if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return undefined;
+  const bindingId = object.reference.binding.id;
+  const declaration =
+    context.module.declarations.find(
+      (candidate): candidate is Extract<IrDeclaration, { kind: 'enum' }> =>
+        candidate.kind === 'enum' && candidate.binding.id === bindingId,
+    ) ??
+    context.module.imports
+      .flatMap((importItem) =>
+        importItem.bindings.flatMap((binding) =>
+          binding.binding.id === bindingId && binding.imported !== '*'
+            ? getCppResolvedImportModules(importItem.specifier, context).flatMap((module) =>
+                module.declarations.filter(
+                  (candidate): candidate is Extract<IrDeclaration, { kind: 'enum' }> =>
+                    candidate.kind === 'enum' && candidate.binding.name === binding.imported,
+                ),
+              )
+            : [],
+        ),
+      )
+      .at(0);
+  // A NAME the enum declares. `Flags.any(…)` is a namespace function merged onto the enum, not a member, and
+  // it keeps whatever lane already emits it.
+  if (!declaration?.members.some((member) => member.name === expression.name)) return undefined;
+  return `${emitExpression(object, context)}::${pascalCase(expression.name)}`;
 }
 
 function memberOp(object: Readonly<IrExpression>, context: EmitContext): string {

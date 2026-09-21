@@ -4314,6 +4314,57 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('return Lane::Fast');
   });
 
+  it('scopes an imported enum member and refuses an array read out of an erased value', () => {
+    // Two scene2d-canvas failures, one compiler-side and one at the runtime's boundary.
+    //
+    // An enum member is a scoped name: the source writes `Rotation.member` and C++ needs `Rotation::member`.
+    // A local enum already reaches that spelling, but an imported one arrives as a value-space binding and
+    // took the ordinary member operator, emitting a dot on a type — which is not an expression.
+    const types = lowerPackage(
+      '@flighthq/types',
+      'rotation.ts',
+      "export enum TextureAtlasRotation { clockwise90 = 'cw', counterclockwise90 = 'ccw' }",
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/scene2d-canvas',
+      'canvasAtlasRegion.ts',
+      `import { TextureAtlasRotation } from '@flighthq/types';
+       export function pick(): string { return TextureAtlasRotation.counterclockwise90; }`,
+    ).module;
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [consumer, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+    expect(emitted).toContain('flighthq_types::TextureAtlasRotation::Counterclockwise90');
+    expect(emitted).not.toContain('TextureAtlasRotation.counterclockwise90');
+
+    // The second failure is the runtime's boundary, and the compiler's part of it is to say so instead of
+    // emitting a cast to a conversion that does not exist: an element read out of an `any[]` is the erased
+    // value, and `flight::Array` is not something `Any` can carry. The primitives it CAN carry still read
+    // out through their own accessors.
+    const refusal = (source: string): string | undefined => {
+      try {
+        emitIrModuleCpp(lower('erased-array.ts', source).module, { runtimeProfile: 'flight-cpp' });
+        return undefined;
+      } catch (error) {
+        return isBackendEmissionFailure(error) ? error.rule : undefined;
+      }
+    };
+    expect(
+      refusal(`export function path(commands: any[], i: number): number[] { return commands[i + 2] as number[]; }`),
+    ).toBe('cpp-erased-value-assertion-unrepresented');
+    expect(
+      emitIrModuleCpp(
+        lower('erased-number.ts', `export function size(value: unknown): number { return value as number; }`).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('.as_number()');
+  });
+
   it('emits merged enum value namespace functions as static wrapper members', () => {
     const result = lower(
       'enum-namespace.ts',
