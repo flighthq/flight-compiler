@@ -3166,6 +3166,30 @@ describe('createCppCompilerBackend', () => {
     ).toThrow('external call result type host::TimeoutHandle is not one represented contextual runtime domain');
   });
 
+  it('constructs an optional from an agreed ambient callable result and refuses an incompatible destination', () => {
+    const exact = lower(
+      'ambient-callable-result.ts',
+      `export function read(view: DataView): number | null {
+         return view.getUint16(0, true);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(exact.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(exact.diagnostics).toEqual([]);
+    expect(emitted.contents).toContain('return std::optional<double>{view.get_uint16(0.0, true)};');
+
+    const incompatible = lower(
+      'ambient-callable-result-incompatible.ts',
+      `export function read(view: DataView): string | null {
+         return view.getUint16(0, true);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(incompatible.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
   it('recovers exact runtime result evidence for standard calls and constructors', () => {
     const module = lower(
       'runtime-result-evidence.ts',

@@ -1814,6 +1814,7 @@ function lowerCallSemantics(
     resultType:
       getTypeScriptKnownAmbientCallResultTypeEvidence(node, context) ??
       getTypeScriptCollectionCallResultTypeEvidence(node, context) ??
+      getTypeScriptAmbientCallableResultTypeEvidence(node, signature, context) ??
       getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
       getTypeScriptWrittenCallResultTypeEvidence(signature, context) ??
       getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0) ??
@@ -2167,6 +2168,53 @@ function getTypeScriptCollectionCallResultTypeEvidence(
   if (!value || value.kind === 'unknown') return undefined;
   const values = value.kind === 'union' ? value.types : [value];
   return commonType([{ kind: 'undefined' }, values[0]!, ...values.slice(1)]);
+}
+
+// An ambient callable has no source declaration for a backend to rediscover, but its checker binding
+// still owns the complete callable surface. Keep a result only when every callable signature on that
+// binding agrees. Trusting only the signature selected for this call would let an overloaded ambient
+// member choose one runtime domain while a sibling overload returns another; an unresolved callable
+// likewise provides no result evidence merely because TypeScript represents it as `any`.
+function getTypeScriptAmbientCallableResultTypeEvidence(
+  node: ts.CallExpression,
+  signature: Readonly<TypeScriptInvocationSignatureResolution> | undefined,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  if (!signature) return undefined;
+  if (
+    node.questionDotToken ||
+    (ts.isPropertyAccessExpression(node.expression) && node.expression.questionDotToken) ||
+    (ts.isElementAccessExpression(node.expression) && node.expression.questionDotToken)
+  ) {
+    return undefined;
+  }
+  const symbolNode = ts.isPropertyAccessExpression(node.expression)
+    ? node.expression.name
+    : ts.isElementAccessExpression(node.expression)
+      ? node.expression.argumentExpression
+      : node.expression;
+  if (!symbolNode) return undefined;
+  const symbol = context.checker.getSymbolAtLocation(symbolNode);
+  if (!isTypeScriptAmbientSymbol(symbol, context)) return undefined;
+  const signatures = context.checker.getSignaturesOfType(
+    context.checker.getTypeAtLocation(node.expression),
+    ts.SignatureKind.Call,
+  );
+  if (signatures.length === 0) return undefined;
+  // A generic signature's checker return is a call-site instantiation, not a result fact owned by
+  // the ambient binding itself. Leave it to the existing substitution path, which proves each type
+  // parameter from authored arguments instead of treating one inferred structural result as global.
+  if (signatures.some((candidate) => candidate.typeParameters?.length)) return undefined;
+  const results = signatures.map((candidate) =>
+    getTypeScriptCheckerTypeEvidence(context.checker.getReturnTypeOfSignature(candidate), context, 0, true, node),
+  );
+  if (results.some((result) => !result || hasTypeScriptDegradedCallResultEvidence(result))) {
+    return { kind: 'unknown', source: 'unknown' };
+  }
+  const distinct = new Map(
+    results.map((result) => [normalizeCompilerStructuralValueCanonical(result!), result!] as const),
+  );
+  return distinct.size === 1 ? [...distinct.values()][0] : { kind: 'unknown', source: 'unknown' };
 }
 
 function getTypeScriptKnownAmbientCallResultTypeEvidence(
@@ -6246,6 +6294,7 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
     const authored =
       getTypeScriptKnownAmbientCallResultTypeEvidence(node, context) ??
       getTypeScriptCollectionCallResultTypeEvidence(node, context) ??
+      getTypeScriptAmbientCallableResultTypeEvidence(node, signature, context) ??
       getTypeScriptInstantiatedCallResultTypeEvidence(node, signature, context) ??
       getTypeScriptWrittenCallResultTypeEvidence(signature, context);
     if (authored && authored.kind !== 'unknown') return authored;

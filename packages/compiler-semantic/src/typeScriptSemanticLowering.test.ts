@@ -4239,7 +4239,11 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
           provided: [],
           providedArgumentCount: 0,
         },
-        resultType: { kind: 'unknown', source: 'any' },
+        resultType: {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Uint8Array' },
+          typeArguments: [],
+        },
         signature: { parameterCount: 2, providedArgumentCount: 0 },
       },
     ]);
@@ -11301,6 +11305,53 @@ it('records checker-instantiated and ambient optional call result types', () => 
     kind: 'union',
     types: [{ kind: 'undefined' }, { kind: 'primitive', name: 'number' }],
   });
+});
+
+it('records ambient callable results only when every resolved overload agrees', () => {
+  const result = lower(
+    'ambient-callable-results.ts',
+    `declare interface ConflictingAmbient {
+       choose(value: number): number;
+       choose(value: string): string;
+     }
+     declare interface UnresolvedAmbient { read: any }
+     export function read(
+       view: DataView,
+       regexp: RegExp,
+       conflict: ConflictingAmbient,
+       unresolved: UnresolvedAmbient,
+     ): void {
+       view.getUint16(0, true);
+       regexp.exec('value');
+       'value'.replace('value', 'next');
+       conflict.choose(1);
+       unresolved.read();
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+  );
+  if (declaration?.kind !== 'function') throw new Error('Expected read function');
+  const results = declaration.body.flatMap((statement) =>
+    statement.kind === 'expression' && statement.expression.kind === 'call'
+      ? [statement.expression.semantics.resultType]
+      : [],
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  expect(results).toEqual([
+    { kind: 'primitive', name: 'number' },
+    {
+      kind: 'union',
+      types: [
+        { kind: 'null' },
+        { kind: 'named', reference: { kind: 'ambient', name: 'RegExpExecArray' }, typeArguments: [] },
+      ],
+    },
+    { kind: 'primitive', name: 'string' },
+    { kind: 'unknown', source: 'unknown' },
+    { kind: 'unknown', source: 'any' },
+  ]);
 });
 
 it('infers primitive results from ambient calls for unannotated locals', () => {
