@@ -75,6 +75,21 @@ describe('compiler backend contracts', () => {
           },
           {
             headers: ['host/gl.hpp'],
+            members: [
+              {
+                callResultType: 'std::optional<host::GlExtension>',
+                recordConversion: {
+                  invocation: 'carrier-function',
+                  keyType: 'string',
+                  resultNullability: 'nullable',
+                  resultOwnership: 'value',
+                  targetName: 'host::gl_extension_record',
+                  valueType: 'number',
+                },
+                sourceMember: 'getExtension',
+                targetName: 'get_extension',
+              },
+            ],
             nullability: 'non-null',
             ownership: 'shared',
             sourceName: 'WebGL2RenderingContext',
@@ -106,6 +121,21 @@ describe('compiler backend contracts', () => {
           },
           {
             headers: ['host/gl.hpp'],
+            members: [
+              {
+                callResultType: 'std::optional<host::GlExtension>',
+                recordConversion: {
+                  invocation: 'carrier-function',
+                  keyType: 'string',
+                  resultNullability: 'nullable',
+                  resultOwnership: 'value',
+                  targetName: 'host::gl_extension_record',
+                  valueType: 'number',
+                },
+                sourceMember: 'getExtension',
+                targetName: 'get_extension',
+              },
+            ],
             nullability: 'non-null',
             ownership: 'shared',
             sourceName: 'WebGL2RenderingContext',

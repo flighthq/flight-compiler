@@ -12,6 +12,7 @@ import {
   getCompilerRuntimeExternalInstanceMemberCpp,
   getCompilerRuntimeExternalInstanceMemberTargetCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
+  getCompilerRuntimeExternalMemberRecordConversionCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolCallResultTypeCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
@@ -278,6 +279,169 @@ describe('getCompilerExternalBindingNumericPropertyViewCpp', () => {
         schema: 'flight-cpp-external-bindings/1',
       }),
     ).toThrow('malformed numeric-property view');
+  });
+});
+
+describe('getCompilerRuntimeExternalMemberRecordConversionCpp', () => {
+  const recordConversion = {
+    invocation: 'member' as const,
+    keyType: 'string' as const,
+    resultNullability: 'non-null' as const,
+    resultOwnership: 'value' as const,
+    targetName: 'to_record',
+    valueType: 'number' as const,
+  };
+  const binding = {
+    headers: ['host/extension.hpp'],
+    members: [
+      {
+        callResultType: 'host::Extension',
+        recordConversion,
+        sourceMember: 'getExtension',
+        targetName: 'get_extension',
+      },
+    ],
+    nullability: 'nullable' as const,
+    ownership: 'value' as const,
+    sourceName: 'HostContext',
+    space: 'type' as const,
+    targetName: 'host::Context',
+  };
+
+  it('returns a frozen conversion only for the exact type-space member result', () => {
+    const resolution = getCompilerRuntimeExternalMemberRecordConversionCpp(
+      'HostContext',
+      'getExtension',
+      'flight-cpp',
+      {
+        bindings: [binding],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+    );
+
+    expect(resolution).toEqual({ conversion: recordConversion, kind: 'resolved', resultType: 'host::Extension' });
+    expect(Object.isFrozen(resolution)).toBe(true);
+    expect(resolution.kind === 'resolved' && Object.isFrozen(resolution.conversion)).toBe(true);
+  });
+
+  it('distinguishes missing, incomplete, wrong-space, and ambiguous evidence', () => {
+    expect(getCompilerRuntimeExternalMemberRecordConversionCpp('Missing', 'getExtension', 'flight-cpp')).toEqual({
+      kind: 'missing',
+    });
+    expect(
+      getCompilerRuntimeExternalMemberRecordConversionCpp('HostContext', 'getExtension', 'flight-cpp', {
+        bindings: [
+          {
+            ...binding,
+            members: [{ sourceMember: 'getExtension', targetName: 'get_extension' }],
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toEqual({ kind: 'incomplete' });
+    expect(
+      getCompilerRuntimeExternalMemberRecordConversionCpp('HostContext', 'getExtension', 'flight-cpp', {
+        bindings: [
+          {
+            ...binding,
+            members: [{ recordConversion, sourceMember: 'getExtension', targetName: 'get_extension' }],
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toEqual({ kind: 'incomplete' });
+    expect(
+      getCompilerRuntimeExternalMemberRecordConversionCpp('HostContext', 'getExtension', 'flight-cpp', {
+        bindings: [{ ...binding, space: 'value' }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toEqual({ kind: 'wrongSpace' });
+    expect(
+      getCompilerRuntimeExternalMemberRecordConversionCpp('Array', 'getExtension', 'flight-cpp', {
+        bindings: [{ ...binding, sourceName: 'Array' }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toEqual({ kind: 'ambiguous' });
+  });
+
+  it.each([
+    ['missing invocation', { invocation: undefined }],
+    ['unknown invocation', { invocation: 'constructor' }],
+    ['missing key type', { keyType: undefined }],
+    ['wrong key type', { keyType: 'number' }],
+    ['missing value type', { valueType: undefined }],
+    ['wrong value type', { valueType: 'string' }],
+    ['empty target', { targetName: '' }],
+    ['non-member target', { targetName: 'to_record()' }],
+    ['missing result ownership', { resultOwnership: undefined }],
+    ['unknown result ownership', { resultOwnership: 'unique' }],
+    ['missing result nullability', { resultNullability: undefined }],
+    ['unknown result nullability', { resultNullability: 'optional' }],
+  ])('rejects malformed conversion with %s', (_label, replacement) => {
+    expect(() =>
+      getCompilerRuntimeExternalMemberRecordConversionCpp('HostContext', 'getExtension', 'flight-cpp', {
+        bindings: [
+          {
+            ...binding,
+            members: [
+              {
+                recordConversion: {
+                  ...recordConversion,
+                  ...replacement,
+                } as unknown as typeof recordConversion,
+                sourceMember: 'getExtension',
+                targetName: 'get_extension',
+              },
+            ],
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed record conversion');
+  });
+
+  it('accepts a qualified carrier function but not a qualified member target', () => {
+    expect(
+      getCompilerRuntimeExternalMemberRecordConversionCpp('HostContext', 'getExtension', 'flight-cpp', {
+        bindings: [
+          {
+            ...binding,
+            members: [
+              {
+                callResultType: 'std::optional<host::Extension>',
+                recordConversion: {
+                  ...recordConversion,
+                  invocation: 'carrier-function',
+                  resultNullability: 'nullable',
+                  targetName: 'host::extension_record',
+                },
+                sourceMember: 'getExtension',
+                targetName: 'get_extension',
+              },
+            ],
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toMatchObject({ kind: 'resolved', resultType: 'std::optional<host::Extension>' });
+    expect(() =>
+      getCompilerRuntimeExternalMemberRecordConversionCpp('HostContext', 'getExtension', 'flight-cpp', {
+        bindings: [
+          {
+            ...binding,
+            members: [
+              {
+                callResultType: 'host::Extension',
+                recordConversion: { ...recordConversion, targetName: 'host::to_record' },
+                sourceMember: 'getExtension',
+                targetName: 'get_extension',
+              },
+            ],
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed record conversion');
   });
 });
 

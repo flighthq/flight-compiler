@@ -9,6 +9,7 @@ import type {
   CppCompilerExternalObjectConstruction,
   CppCompilerExternalBindingManifest,
   CppCompilerExternalBindingNumericPropertyView,
+  CppCompilerExternalBindingRecordConversion,
   CppCompilerRuntimeProfile,
 } from '../../compiler-types/src/index.js';
 
@@ -255,6 +256,42 @@ export function getCompilerRuntimeExternalMemberCallResultTypeCpp(
   return binding?.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.callResultType;
 }
 
+type CppCompilerExternalBindingRecordConversionResolution =
+  | Readonly<{ conversion: CppCompilerExternalBindingRecordConversion; kind: 'resolved'; resultType: string }>
+  | Readonly<{ kind: 'ambiguous' | 'incomplete' | 'missing' | 'wrongSpace' }>;
+
+export function getCompilerRuntimeExternalMemberRecordConversionCpp(
+  receiverSourceName: string,
+  member: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): CppCompilerExternalBindingRecordConversionResolution {
+  const normalized = receiverSourceName.normalize('NFC');
+  const memberName = member.normalize('NFC');
+  const bindings = getCppRuntimeExternalSymbolBindings(runtimeProfile, externalBindings).filter(
+    (candidate) => candidate.sourceName === normalized,
+  );
+  const typeBindings = bindings.filter((candidate) => candidate.space === 'type');
+  const declarations = bindings.flatMap((binding) =>
+    (binding.members ?? [])
+      .filter((candidate) => candidate.sourceMember === memberName)
+      .map((candidate) => ({ binding, member: candidate })),
+  );
+  if (typeBindings.length > 1 || declarations.length > 1) return { kind: 'ambiguous' };
+  if (declarations[0]?.binding.space === 'value') return { kind: 'wrongSpace' };
+  const binding = typeBindings[0];
+  if (!binding) return { kind: 'missing' };
+  const declaration = binding.members?.find((candidate) => candidate.sourceMember === memberName);
+  if (binding.kind !== 'native' || !declaration?.callResultType || !declaration.recordConversion) {
+    return { kind: 'incomplete' };
+  }
+  return Object.freeze({
+    conversion: Object.freeze({ ...declaration.recordConversion }),
+    kind: 'resolved',
+    resultType: declaration.callResultType,
+  });
+}
+
 export function getCompilerRuntimeExternalMemberTargetCpp(
   sourceName: string,
   member: string,
@@ -367,6 +404,26 @@ function getCppCompilerExternalBindings(
       throw new TypeError(`${subject} has malformed static-member mappings`);
     }
     if (
+      binding.members?.some(
+        (member) =>
+          member.recordConversion !== undefined &&
+          (!member.recordConversion ||
+            (member.recordConversion.invocation !== 'carrier-function' &&
+              member.recordConversion.invocation !== 'member') ||
+            member.recordConversion.keyType !== 'string' ||
+            member.recordConversion.valueType !== 'number' ||
+            typeof member.recordConversion.targetName !== 'string' ||
+            (member.recordConversion.invocation === 'member'
+              ? !isCppExternalBindingFieldTarget(member.recordConversion.targetName)
+              : !isCppExternalBindingQualifiedTarget(member.recordConversion.targetName)) ||
+            !cppExternalBindingOwnerships.has(member.recordConversion.resultOwnership) ||
+            (member.recordConversion.resultNullability !== 'non-null' &&
+              member.recordConversion.resultNullability !== 'nullable')),
+      )
+    ) {
+      throw new TypeError(`${subject} has a malformed record conversion`);
+    }
+    if (
       binding.construction &&
       (binding.space !== 'value' ||
         (binding.construction.kind !== 'constructor' && binding.construction.kind !== 'factory') ||
@@ -437,6 +494,7 @@ function getCppCompilerExternalBindings(
                     })),
                   }
                 : {}),
+              ...(member.recordConversion ? { recordConversion: { ...member.recordConversion } } : {}),
             })),
           }
         : {}),
@@ -500,6 +558,10 @@ function isCppExternalBindingHeader(value: unknown): value is string {
 
 function isCppExternalBindingFieldTarget(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
+}
+
+function isCppExternalBindingQualifiedTarget(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*$/u.test(value);
 }
 
 const cppExternalBindingOwnerships = new Set(['borrowed', 'owned', 'shared', 'value']);

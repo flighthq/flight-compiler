@@ -109,10 +109,27 @@ export interface CppCompilerExternalMemberParameterBinding {
 export interface CppCompilerExternalMemberBinding extends CompilerRuntimeExternalMemberBinding {
   /** Exact ambient source object types for parameters whose erased call-site IR cannot retain them. */
   readonly parameters?: readonly CppCompilerExternalMemberParameterBinding[] | undefined;
+  /** Exact Record conversion capability of this member's external result; requires `callResultType`. */
+  readonly recordConversion?: CppCompilerExternalBindingRecordConversion | undefined;
 }
 
 export interface CppCompilerExternalBindingNumericPropertyView {
   /** A readonly `String -> optional<double>` member on the represented target value. */
+  readonly targetName: string;
+}
+
+export interface CppCompilerExternalBindingRecordConversion {
+  /** `member` consumes a present result; `carrier-function` consumes and returns the whole nullable carrier. */
+  readonly invocation: 'carrier-function' | 'member';
+  /** The exact key domain produced by the conversion. */
+  readonly keyType: 'string';
+  /** The exact value domain produced by the conversion. */
+  readonly valueType: 'number';
+  /** Ownership of the external member result on which the conversion is invoked. */
+  readonly resultOwnership: 'borrowed' | 'owned' | 'shared' | 'value';
+  /** Whether the external member result can be null. */
+  readonly resultNullability: 'non-null' | 'nullable';
+  /** A zero-argument member, or a qualified free function accepting the whole result carrier. */
   readonly targetName: string;
 }
 

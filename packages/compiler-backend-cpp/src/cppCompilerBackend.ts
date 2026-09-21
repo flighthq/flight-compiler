@@ -111,6 +111,7 @@ import {
   getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
   getCompilerRuntimeExternalInstanceMemberParameterTypeCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
+  getCompilerRuntimeExternalMemberRecordConversionCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolCallResultTypeCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
@@ -3123,6 +3124,8 @@ function emitExpression(
         }
         emissionError(context, 'erased WeakMap assertion target requires an approved typed WeakMap view');
       }
+      const externalRecordConversion = emitCppExternalRecordConversionAssertionCpp(expression, context);
+      if (externalRecordConversion) return externalRecordConversion;
       const erasedDynamicConversion = emitCppContextualErasedDynamicValueCpp(
         expression.expression,
         expression.type,
@@ -9955,6 +9958,129 @@ function emitCppErasedRefAssertionCpp(
   return `([&]() -> ${emitType(assertedType, context)} { auto ${recovered} = flight::erased_ref_as<${objectType}>(${emitExpression(expression, context)}); if (!${recovered}) return std::nullopt; return ${recovered}; }())`;
 }
 
+interface CppSingleValueTypePlan {
+  readonly hasNull: boolean;
+  readonly hasUndefined: boolean;
+  readonly presentType: Readonly<IrType>;
+  readonly targetType: string;
+  readonly union?: Extract<IrType, { kind: 'union' }> | undefined;
+  readonly unionPlan?: ReturnType<typeof getCppUnionRepresentationPlan> | undefined;
+}
+
+function getCppSingleValueTypePlanCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppSingleValueTypePlan> | undefined {
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  if (!union) {
+    const presentType = getCppNonNullableType(type, context, new Set());
+    return presentType
+      ? {
+          hasNull: false,
+          hasUndefined: false,
+          presentType,
+          targetType: emitType(presentType, context),
+        }
+      : undefined;
+  }
+  const unionPlan = getCppUnionRepresentationPlan(union, context);
+  const slot = unionPlan.valueSlots.length === 1 ? unionPlan.valueSlots[0] : undefined;
+  return slot
+    ? {
+        hasNull: unionPlan.sentinels.null !== 'absent',
+        hasUndefined: unionPlan.sentinels.undefined !== 'absent',
+        presentType: slot.runtimeType,
+        targetType: slot.targetType,
+        union,
+        unionPlan,
+      }
+    : undefined;
+}
+
+// An erased external member result can be asserted to Record only when that exact member's profile entry
+// declares the conversion. A numeric property view authorizes reads, not materialization; a matching
+// structural shape authorizes neither; and a conveniently named target member is still just a guess.
+// The result contract supplies the ownership/nullability the call IR erased, so the conversion is applied
+// to exactly that one evaluated result without inferring anything from the asserted Record itself.
+function emitCppExternalRecordConversionAssertionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  const call = expression.expression;
+  if (call.kind !== 'call' || call.optional || call.semantics.optionalChain || call.callee.kind !== 'property') {
+    return undefined;
+  }
+  const memberName = call.callee.name;
+  const receiverSourceName = getCppExternalInstanceReceiverSourceNameCpp(call.callee.object, context);
+  const target = getCppSingleValueTypePlanCpp(expression.type, context);
+  const record = target ? getCppRecordTypeArgumentsCpp(target.presentType, context, new Set()) : undefined;
+  if (!receiverSourceName || !target || !record) return undefined;
+
+  const resolution = getCompilerRuntimeExternalMemberRecordConversionCpp(
+    receiverSourceName,
+    memberName,
+    getCppRuntimeProfile(context.options),
+    context.options.externalBindings,
+  );
+  if (resolution.kind !== 'resolved') {
+    emissionError(
+      context,
+      `external ${receiverSourceName}.${memberName} result to Record assertion has ${resolution.kind} record-conversion metadata`,
+      `cpp-external-record-conversion-${resolution.kind === 'wrongSpace' ? 'wrong-space' : resolution.kind}`,
+    );
+  }
+  if (!isIrStringTypeEvidenceCpp(record.key) || !isIrNumberTypeEvidenceCpp(record.value)) {
+    emissionError(
+      context,
+      `external ${receiverSourceName}.${memberName} record conversion declares ${resolution.conversion.keyType} keys and ${resolution.conversion.valueType} values, which do not exactly match the asserted Record`,
+      'cpp-external-record-conversion-shape-mismatch',
+    );
+  }
+  const nullable = resolution.conversion.resultNullability === 'nullable';
+  if (target.hasNull !== nullable || target.hasUndefined) {
+    emissionError(
+      context,
+      `external ${receiverSourceName}.${memberName} result nullability does not exactly match the asserted Record union`,
+      'cpp-external-record-conversion-nullability-mismatch',
+    );
+  }
+
+  addCppExternalBindingHeaders(receiverSourceName, 'type', context);
+  const sourceValue = getGeneratedTargetName('externalRecordSource', context);
+  const sourceExpression = emitExpression(call, context, undefined, false);
+  const presentSource = nullable ? `${sourceValue}.value()` : sourceValue;
+  const memberOperator = resolution.conversion.resultOwnership === 'value' ? '.' : '->';
+  const invocation =
+    resolution.conversion.invocation === 'carrier-function'
+      ? `${resolution.conversion.targetName}(${sourceValue})`
+      : `${presentSource}${memberOperator}${resolution.conversion.targetName}()`;
+  const resultType = emitType(expression.type, context);
+  const presentResult = (value: string): string =>
+    target.union && target.unionPlan
+      ? emitCppUnionValueConstruction(value, target.targetType, target.union, target.unionPlan.kind, context)
+      : value;
+  const sentinelResult = (sentinel: 'null' | 'undefined'): string => {
+    if (!target.union || !target.unionPlan) {
+      emissionError(
+        context,
+        `external ${receiverSourceName}.${memberName} record conversion cannot represent ${sentinel} in its asserted target`,
+        'cpp-external-record-conversion-nullability-mismatch',
+      );
+    }
+    return emitCppUnionSentinelConstruction(sentinel, target.union, target.unionPlan.kind, context);
+  };
+  const lines = [`auto ${sourceValue} = ${sourceExpression};`];
+  if (nullable && resolution.conversion.invocation === 'member') {
+    lines.push(`if (!${sourceValue}.has_value()) return ${sentinelResult('null')};`);
+    context.includes.add('optional');
+  }
+  lines.push(
+    `return ${resolution.conversion.invocation === 'carrier-function' ? invocation : presentResult(invocation)};`,
+  );
+  return `([&]() -> ${resultType} { ${lines.join(' ')} }())`;
+}
+
 function emitUnionMemberAssertionCpp(
   expression: Readonly<IrExpression>,
   assertedType: Readonly<IrType>,
@@ -13280,7 +13406,8 @@ function getCppExternalInstanceReceiverSourceNameCpp(
   const type = getIrExpressionTypeEvidenceCpp(expression, context);
   if (!type || hasIrTypeAbsentMember(type)) return undefined;
   const present = getCppNonNullableType(type, context, new Set()) ?? type;
-  return present?.kind === 'named' && present.reference.kind === 'ambient' ? present.reference.name : undefined;
+  const external = context.referenceRepresentationPlanner.resolveExternalProjection(present, context.module) ?? present;
+  return external.kind === 'named' && external.reference.kind === 'ambient' ? external.reference.name : undefined;
 }
 
 function getCppExternalInstanceCallParameterExpectedTypeCpp(

@@ -4976,6 +4976,240 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(unstableReadFailure.rule).toBe('cpp-numeric-property-typeof-guard-unstable-read');
   });
 
+  it('converts one erased external member result to an exact Record only through explicit metadata', () => {
+    const result = lower(
+      'native-record-conversion.ts',
+      `export function convert(context: HostContext): Record<string, number> | null {
+         return context.getExtension('compressed') as Record<string, number> | null;
+       }`,
+    );
+    const recordConversion = {
+      invocation: 'member' as const,
+      keyType: 'string' as const,
+      resultNullability: 'nullable' as const,
+      resultOwnership: 'value' as const,
+      targetName: 'to_record',
+      valueType: 'number' as const,
+    };
+    const binding = {
+      headers: ['host/context.hpp'],
+      members: [
+        {
+          callResultType: 'std::optional<host::Extension>',
+          recordConversion,
+          sourceMember: 'getExtension',
+          targetName: 'get_extension',
+        },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'HostContext',
+      space: 'type' as const,
+      targetName: 'host::Context',
+    };
+    const emit = (externalBinding: Readonly<CppCompilerExternalBinding>) =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: { bindings: [externalBinding], schema: 'flight-cpp-external-bindings/1' },
+        runtimeProfile: 'flight-cpp',
+      });
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emit(binding).contents;
+    const convert = /convert[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(convert?.match(/context\.get_extension\(flight::String\("compressed"\)\)/gu)).toHaveLength(1);
+    expect(convert).toContain('if (!external_record_source.has_value()) return std::nullopt;');
+    expect(convert).toContain('external_record_source.value().to_record()');
+
+    const withoutConversion = [
+      {
+        callResultType: 'std::optional<host::Extension>',
+        sourceMember: 'getExtension',
+        targetName: 'get_extension',
+      },
+    ];
+    const incomplete = captureBackendEmissionFailure(() => emit({ ...binding, members: withoutConversion }));
+    expect(incomplete.rule).toBe('cpp-external-record-conversion-incomplete');
+    const numericViewOnly = captureBackendEmissionFailure(() =>
+      emit({ ...binding, members: withoutConversion, numericPropertyView: { targetName: 'get' } }),
+    );
+    expect(numericViewOnly.rule).toBe('cpp-external-record-conversion-incomplete');
+    const missingResultType = captureBackendEmissionFailure(() =>
+      emit({
+        ...binding,
+        members: [{ recordConversion, sourceMember: 'getExtension', targetName: 'get_extension' }],
+      }),
+    );
+    expect(missingResultType.rule).toBe('cpp-external-record-conversion-incomplete');
+    const wrongSpace = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [
+            { ...binding, members: [] },
+            { ...binding, space: 'value' },
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      }),
+    );
+    expect(wrongSpace.rule).toBe('cpp-external-record-conversion-wrong-space');
+
+    const wrongShape = lower(
+      'native-record-conversion-shape.ts',
+      `export function convert(context: HostContext): Record<string, string> | null {
+         return context.getExtension('compressed') as Record<string, string> | null;
+       }`,
+    );
+    const shapeMismatch = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(wrongShape.module, {
+        externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+        runtimeProfile: 'flight-cpp',
+      }),
+    );
+    expect(shapeMismatch.rule).toBe('cpp-external-record-conversion-shape-mismatch');
+
+    const wrongNullability = lower(
+      'native-record-conversion-nullability.ts',
+      `export function convert(context: HostContext): Record<string, number> {
+         return context.getExtension('compressed') as Record<string, number>;
+       }`,
+    );
+    const nullabilityMismatch = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(wrongNullability.module, {
+        externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+        runtimeProfile: 'flight-cpp',
+      }),
+    );
+    expect(nullabilityMismatch.rule).toBe('cpp-external-record-conversion-nullability-mismatch');
+  });
+
+  it('uses declared ownership for a non-null external member result conversion', () => {
+    const result = lower(
+      'native-shared-record-conversion.ts',
+      `export function convert(context: HostContext): Record<string, number> {
+         return context.getExtension('compressed') as Record<string, number>;
+       }`,
+    );
+    const binding = {
+      headers: ['host/context.hpp'],
+      members: [
+        {
+          callResultType: 'host::Extension',
+          recordConversion: {
+            invocation: 'member' as const,
+            keyType: 'string' as const,
+            resultNullability: 'non-null' as const,
+            resultOwnership: 'shared' as const,
+            targetName: 'to_record',
+            valueType: 'number' as const,
+          },
+          sourceMember: 'getExtension',
+          targetName: 'get_extension',
+        },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'HostContext',
+      space: 'type' as const,
+      targetName: 'host::Context',
+    };
+
+    const emitted = emitIrModuleCpp(result.module, {
+      externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('auto external_record_source = context.get_extension(');
+    expect(emitted).toContain('return external_record_source->to_record();');
+    expect(emitted).not.toContain('external_record_source.has_value()');
+  });
+
+  it('recovers an imported host Pick before resolving its member-result conversion', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/GlContext.ts',
+      `type GlContextMember = 'getExtension';
+       export interface GlContext extends Pick<WebGL2RenderingContext, GlContextMember> {}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const render = ts.createSourceFile(
+      '/flight/packages/render-gl/src/compressed.ts',
+      `import type { GlContext } from '@flighthq/types/contract';
+       export function compressed(gl: GlContext): Record<string, number> | null {
+         return gl.getExtension('WEBGL_compressed_texture_s3tc') as Record<string, number> | null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/GlContext.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/render-gl', sourceFile: render, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        externalBindings: {
+          bindings: [
+            {
+              headers: ['flight/host_sdl/webgl.hpp'],
+              members: [
+                {
+                  callResultType: 'std::optional<flight::host_sdl::GlExtension>',
+                  recordConversion: {
+                    invocation: 'carrier-function',
+                    keyType: 'string',
+                    resultNullability: 'nullable',
+                    resultOwnership: 'value',
+                    targetName: 'flight::host_sdl::gl_extension_record',
+                    valueType: 'number',
+                  },
+                  sourceMember: 'getExtension',
+                  targetName: 'get_extension',
+                },
+              ],
+              nullability: 'non-null',
+              ownership: 'shared',
+              sourceName: 'WebGL2RenderingContext',
+              space: 'type',
+              targetName: 'flight::host_sdl::WebGl2Context',
+            },
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        packageTargets: {
+          '@flighthq/render-gl': { includePrefix: 'flight/render_gl', namespace: 'flight::render_gl' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emittedTypes = session.emitModule(modules[0]!)[0]!.contents;
+    const emittedRender = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emittedTypes).toContain('using GlContext = flight::host_sdl::WebGl2Context;');
+    expect(
+      emittedRender.match(/gl\.get_extension\(flight::String\("WEBGL_compressed_texture_s3tc"\)\)/gu),
+    ).toHaveLength(1);
+    expect(emittedRender).toContain('return flight::host_sdl::gl_extension_record(external_record_source);');
+    expect(emittedRender).not.toContain('external_record_source.value()');
+  });
+
   it('keeps ordinary external fields and explicit instance mappings outside the numeric-property view', () => {
     const result = lower(
       'native-static-extension.ts',
