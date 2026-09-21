@@ -14682,6 +14682,13 @@ function assertIrExpressionHasNoDualSentinelOptionalChainCpp(
     if (expression.semantics.optionalChain) {
       assertIrOptionalChainReceiverIsSingleSentinelCpp(expression.semantics.optionalChain.receiverType, context);
     }
+    // A property READ can project one present alternative below. Calling through that property also has to
+    // prove a callable surface and return carrier against the projected alternative, which this lane does not
+    // yet represent, so it retains the original refusal.
+    if (expression.callee.kind === 'property' && expression.callee.optionalChain) {
+      assertIrOptionalChainReceiverIsSingleSentinelCpp(expression.callee.optionalChain.receiverType, context);
+      return;
+    }
     assertIrExpressionHasNoDualSentinelOptionalChainCpp(expression.callee, context);
     return;
   }
@@ -14690,7 +14697,11 @@ function assertIrExpressionHasNoDualSentinelOptionalChainCpp(
     return;
   }
   if (expression.kind === 'property' && expression.optionalChain) {
-    assertIrOptionalChainReceiverIsSingleSentinelCpp(expression.optionalChain.receiverType, context);
+    const union = getIrUnionTypeCpp(expression.optionalChain.receiverType, context, new Set());
+    const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+    if (plan?.kind === 'dualSentinelVariant' && plan.valueSlots.length !== 1) {
+      emissionError(context, 'dual-sentinel optional chaining requires one concrete receiver value domain');
+    }
   }
 }
 
@@ -14795,7 +14806,6 @@ function emitOptionalPropertyExpressionCpp(
 ): string {
   const semantics = expression.optionalChain;
   if (!semantics) emissionError(context, 'optional property access lacks neutral optional-chain evidence');
-  assertIrOptionalChainReceiverIsSingleSentinelCpp(semantics.receiverType, context);
   const indexesRuntimeCollection =
     expression.object.kind === 'element' &&
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
@@ -14816,27 +14826,28 @@ function emitOptionalPropertyExpressionCpp(
       : semantics.valueType;
   const payload = emitOptionalChainPayloadTypeCpp(valueType, context);
   const object = emitOptionalChainReceiverCpp(expression.object, context);
+  const receiverProjection = getCppOptionalChainReceiverProjectionCpp(semantics.receiverType, context);
   const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';
   let projected: string;
   const structuralReceiver = context.referenceRepresentationPlanner.resolveStructuralRow(receiverType, context.module);
   if (structuralReceiver) {
     context.includes.add('flight/structural_ref.hpp');
-    projected = `flight::row_get<flight::RowKey<${JSON.stringify(expression.name)}>>(optional_chain_receiver.value())`;
+    projected = `flight::row_get<flight::RowKey<${JSON.stringify(expression.name)}>>(${receiverProjection.value})`;
   } else if (expression.member) {
     const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
     if (binding?.kind === 'sizeMethod') {
-      projected = `static_cast<double>(optional_chain_receiver.value()${memberOperator}size())`;
+      projected = `static_cast<double>(${receiverProjection.value}${memberOperator}size())`;
     } else if (binding?.kind === 'sizeProperty') {
-      projected = `static_cast<double>(optional_chain_receiver.value()${memberOperator}${binding.targetName})`;
+      projected = `static_cast<double>(${receiverProjection.value}${memberOperator}${binding.targetName})`;
     } else if (binding?.kind === 'property') {
-      projected = `optional_chain_receiver.value()${memberOperator}${binding.targetName}`;
+      projected = `${receiverProjection.value}${memberOperator}${binding.targetName}`;
     } else {
-      projected = `optional_chain_receiver.value()${memberOperator}${safeCppName(expression.name)}`;
+      projected = `${receiverProjection.value}${memberOperator}${safeCppName(expression.name)}`;
     }
   } else if (getIrExpressionClassAccessorCpp(expression.object, expression.name, 'get', context)) {
-    projected = `optional_chain_receiver.value()${memberOperator}${safeCppName(expression.name)}()`;
+    projected = `${receiverProjection.value}${memberOperator}${safeCppName(expression.name)}()`;
   } else {
-    projected = `optional_chain_receiver.value()${memberOperator}${safeCppName(expression.name)}`;
+    projected = `${receiverProjection.value}${memberOperator}${safeCppName(expression.name)}`;
   }
   const declaredProperty = context.referenceRepresentationPlanner
     .resolveObjectShape(receiverType, context.module)
@@ -14873,22 +14884,61 @@ function emitOptionalPropertyExpressionCpp(
   const projectedStoragePlan = projectedStorageUnion
     ? getCppUnionRepresentationPlan(projectedStorageUnion, context)
     : undefined;
+  const chainResultEvidence = getIrExpressionTypeEvidenceCpp(expression, context);
+  const chainResultUnion = chainResultEvidence ? getIrUnionTypeCpp(chainResultEvidence, context, new Set()) : undefined;
+  const chainResultPlan = chainResultUnion ? getCppUnionRepresentationPlan(chainResultUnion, context) : undefined;
   const projectedDualSentinel =
-    !structuralReceiver &&
-    projectedStoragePlan?.kind === 'dualSentinelVariant' &&
-    projectedStoragePlan.valueSlots.length === 1
+    projectedStoragePlan?.kind === 'dualSentinelVariant' && projectedStoragePlan.valueSlots.length === 1
       ? projectedStoragePlan.valueSlots[0]
       : undefined;
+  const resultDualSentinel =
+    chainResultPlan?.kind === 'dualSentinelVariant' && chainResultPlan.valueSlots.length === 1
+      ? chainResultPlan.valueSlots[0]
+      : undefined;
   const chainedResultType =
-    projectedDualSentinel && projectedStorageUnion ? emitUnionTypeCpp(projectedStorageUnion, context) : resultType;
+    resultDualSentinel && chainResultUnion ? emitUnionTypeCpp(chainResultUnion, context) : resultType;
   const chainedAbsent =
-    projectedDualSentinel && projectedStorageUnion
-      ? emitCppUnionSentinelConstruction('undefined', projectedStorageUnion, 'dualSentinelVariant', context)
+    resultDualSentinel && chainResultUnion
+      ? emitCppUnionSentinelConstruction('undefined', chainResultUnion, 'dualSentinelVariant', context)
       : 'std::nullopt';
   let returned: string;
-  if (projectedDualSentinel) {
+  // The receiver's two sentinels both become undefined, but they do not authorize collapsing the projected
+  // member's own sentinel. Rebuild a nullable member's optional storage into the result variant, pass an
+  // already three-state member through unchanged, or construct the value alternative from an ordinary member.
+  if (
+    resultDualSentinel &&
+    chainResultUnion &&
+    projectedStoragePlan?.kind === 'optionalSingle' &&
+    projectedStoragePlan.valueSlots[0]?.targetType === resultDualSentinel.targetType
+  ) {
+    const projectedValue = getGeneratedTargetName('optionalChainProjected', context);
+    const sentinel = projectedStoragePlan.sentinels.null === 'optionalAbsence' ? 'null' : 'undefined';
+    const absent = emitCppUnionSentinelConstruction(sentinel, chainResultUnion, 'dualSentinelVariant', context);
+    const present = emitCppUnionValueConstruction(
+      `${projectedValue}.value()`,
+      resultDualSentinel.targetType,
+      chainResultUnion,
+      'dualSentinelVariant',
+      context,
+    );
+    returned = `([&]() -> ${chainedResultType} { auto ${projectedValue} = ${projected}; if (!${projectedValue}.has_value()) return ${absent}; return ${present}; }())`;
+  } else if (
+    resultDualSentinel &&
+    chainResultUnion &&
+    projectedDualSentinel?.targetType === resultDualSentinel.targetType
+  ) {
     context.includes.add('variant');
     returned = projected;
+  } else if (resultDualSentinel && chainResultUnion && emitType(valueType, context) === resultDualSentinel.targetType) {
+    returned = emitCppUnionValueConstruction(
+      projected,
+      resultDualSentinel.targetType,
+      chainResultUnion,
+      'dualSentinelVariant',
+      context,
+    );
+  } else if (resultDualSentinel) {
+    emissionError(context, 'dual-sentinel optional property result requires one represented member value domain');
   } else if (
     !structuralReceiver &&
     (nestedOptionalStorage || projectedStorageType === `std::optional<${resultType}>`)
@@ -14898,7 +14948,30 @@ function emitOptionalPropertyExpressionCpp(
     returned = projected;
   }
   context.includes.add('optional');
-  return `([&]() -> ${chainedResultType} { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return ${chainedAbsent}; return ${returned}; }())`;
+  return `([&]() -> ${chainedResultType} { auto optional_chain_receiver = ${object}; if (${receiverProjection.absent}) return ${chainedAbsent}; return ${returned}; }())`;
+}
+
+function getCppOptionalChainReceiverProjectionCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<{ absent: string; value: string }> {
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (plan?.kind !== 'dualSentinelVariant') {
+    return { absent: '!optional_chain_receiver.has_value()', value: 'optional_chain_receiver.value()' };
+  }
+  // Optional chaining asks only whether the receiver is present, so one positive alternative is the complete
+  // proof: either sentinel fails the test and the same exact alternative is read after it succeeds. Multiple
+  // value domains still need a visitor which proves that every domain supports the requested operation.
+  const value = plan.valueSlots.length === 1 ? plan.valueSlots[0] : undefined;
+  if (!value) {
+    emissionError(context, 'dual-sentinel optional chaining requires one concrete receiver value domain');
+  }
+  context.includes.add('variant');
+  return {
+    absent: `!std::holds_alternative<${value.targetType}>(optional_chain_receiver)`,
+    value: `std::get<${value.targetType}>(optional_chain_receiver)`,
+  };
 }
 
 function emitOptionalChainReceiverCpp(expression: Readonly<IrExpression>, context: EmitContext): string {

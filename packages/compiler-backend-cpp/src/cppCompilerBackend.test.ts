@@ -17803,6 +17803,75 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(chain).not.toContain('std::get<');
   });
 
+  it('projects one present value from dual-sentinel optional property receivers', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'dual-sentinel-optional-property.ts',
+        `interface Texture { width: number }
+         interface Options { optional?: Texture | null; required: Texture | null }
+         export function readOptional(options: Options | null | undefined): Texture | null | undefined {
+           return options?.optional;
+         }
+         export function readRequired(options: Options | null | undefined): Texture | null | undefined {
+           return options?.required;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // Both receiver sentinels fail the one positive value-alternative test and become undefined. The
+    // optional member's own three-state storage passes through untouched, preserving its null, undefined,
+    // and value alternatives. A required nullable member has optional storage, so its absence is rebuilt as
+    // null while its present value is rebuilt in the result variant; neither can be confused with receiver
+    // absence.
+    expect(emitted).toContain(
+      'if (!std::holds_alternative<flight::Ref<Options>>(optional_chain_receiver)) return std::variant<flight::Ref<Texture>, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined}',
+    );
+    expect(emitted).toContain('return std::get<flight::Ref<Options>>(optional_chain_receiver)->optional;');
+    expect(emitted).toContain(
+      'if (!optional_chain_projected.has_value()) return std::variant<flight::Ref<Texture>, flight::Null, flight::Undefined>{std::in_place_type<flight::Null>, flight::null}',
+    );
+    expect(emitted).toContain(
+      'std::variant<flight::Ref<Texture>, flight::Null, flight::Undefined>{std::in_place_type<flight::Ref<Texture>>, optional_chain_projected.value()}',
+    );
+
+    const differentReceiver = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'different-dual-sentinel-receiver.ts',
+          `interface First { value: number }
+           interface Second { value: number }
+           export function read(input: First | Second | null | undefined): number | undefined {
+             return input?.value;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(differentReceiver.message).toContain(
+      'dual-sentinel optional chaining requires one concrete receiver value domain',
+    );
+
+    const nestedReceiver = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'nested-dual-sentinel-receiver.ts',
+          `interface Texture { width: number }
+           interface FirstInner { texture: Texture }
+           interface SecondInner { texture: Texture }
+           interface Outer { inner: FirstInner | SecondInner | null }
+           export function read(outer: Outer | null | undefined): Texture | undefined {
+             return outer?.inner?.texture;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(nestedReceiver.message).toContain(
+      'dual-sentinel optional chaining requires one concrete receiver value domain',
+    );
+  });
+
   it('emits optional call with non-nullish receiver as direct call', () => {
     const result = lower(
       'optional-direct-call.ts',
