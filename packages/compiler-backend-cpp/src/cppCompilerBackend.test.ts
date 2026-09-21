@@ -10501,6 +10501,88 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('initializes an inherited base member by assignment rather than by designation', () => {
+    // The shape `@flighthq/collision` writes: a literal declared as `Extract<CollisionBuiltInShape2D, { kind: 'obb' }>`,
+    // whose alternative is `CollisionObb2D & { kind: 'obb' }`. A nominal-intersection implementation INHERITS an
+    // IMPORTED interface base and declares only what the base does not provide, so a designated initializer
+    // naming `x` names a member the struct does not have and g++ says so: "no non-static data member named
+    // 'x'". C++ will not let a base clause sit beside designated member clauses either — a list must be all
+    // designated or none — so the inherited members are assigned onto the constructed value instead.
+    const plan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: undefined as never,
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/collision.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    // Lowered together and with the resolution plan: the import is what makes the base an imported binding,
+    // and an unbound one refuses before any of this reaches the emitter.
+    const [types, consumer] = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/collision.ts',
+            `export interface CollisionObb2D { readonly x: number; readonly y: number; readonly halfW: number; readonly halfH: number; readonly rotation: number }
+             export interface CollisionCapsule2D { readonly ax: number; readonly ay: number }
+             export type CollisionBuiltInShape2D =
+               | (CollisionObb2D & { readonly kind: 'obb' })
+               | (CollisionCapsule2D & { readonly kind: 'capsule' });`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/collision',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/collision/src/raycastCollisionShape2D.ts',
+            `import type { CollisionBuiltInShape2D } from '@flighthq/types';
+             const probe: Extract<CollisionBuiltInShape2D, { kind: 'obb' }> = { kind: 'obb', x: 0, y: 0, halfW: 0, halfH: 0, rotation: 0 };
+             export function get(): number { return probe.x; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      plan,
+    );
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: plan,
+      modules: [consumer!.module, types!.module],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(consumer!.module)[0]!.contents;
+
+    // The base is inherited, which is what makes its members indirect.
+    expect(emitted).toMatch(/struct x_y_half_w_half_h_rotation_kind_\w* : public flighthq_types::CollisionObb2D/u);
+    // The initializer names only the struct's own member ...
+    expect(emitted).toMatch(/x_y_half_w_half_h_rotation_kind_\w*\{\.kind = object_member_kind\}/u);
+    expect(emitted).not.toMatch(/x_y_half_w_half_h_rotation_kind_\w*\{\.x = /u);
+    // ... and all five inherited members are assigned onto the constructed value.
+    for (const member of ['x', 'y', 'half_w', 'half_h', 'rotation']) {
+      expect(emitted).toContain(`->${member} = object_member_`);
+    }
+
+    // The negative side: a base declared in the SAME module is not an import, so the implementation does not
+    // inherit it and declares every member — and a designated initializer may name all of them.
+    const local = emitIrModuleCpp(
+      lower(
+        'local-base.ts',
+        `export interface CollisionObb2D { readonly x: number; readonly y: number }
+         const probe: CollisionObb2D & { readonly kind: 'obb' } = { kind: 'obb', x: 0, y: 0 };
+         export function get(): number { return probe.x; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(local).toMatch(/struct x_y_kind_\w* : public flight::ReferenceEnabled/u);
+    expect(local).toMatch(/x_y_kind_\w*\{\.x = object_member_x/u);
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',

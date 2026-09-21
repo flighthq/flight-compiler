@@ -3599,10 +3599,22 @@ function emitExpression(
         }
         return initializer;
       };
+      // A nominal-intersection implementation INHERITS the imported base's members rather than declaring them,
+      // and a C++ designated initializer may name only direct non-static data members — naming an inherited
+      // one is "no non-static data member named 'x'". The initializer therefore carries the struct's own
+      // members and the inherited ones are assigned onto the constructed value. A base initializer cannot be
+      // designated alongside the members either: C++ rejects a list that mixes an undesignated base clause
+      // with designated member clauses.
+      const nominalBase =
+        constructionType.kind === 'intersection'
+          ? getCppNominalIntersectionBaseCpp(constructionType, context)
+          : undefined;
+      const inheritedNames = new Set(nominalBase?.properties.map((property) => property.name) ?? []);
+      const inheritedProperties = properties.filter((property) => inheritedNames.has(property.name));
       const reordered =
         orderedProperties.length === properties.length &&
         orderedProperties.some((property, index) => property !== properties[index]);
-      if (reordered) {
+      if (reordered || inheritedProperties.length > 0) {
         const temporaries = new Map(
           properties.map(
             (property) => [property, getGeneratedTargetName(`object_member_${property.name}`, context)] as const,
@@ -3612,9 +3624,17 @@ function emitExpression(
           (property) => `auto ${temporaries.get(property)!} = ${emitPropertyValue(property)};`,
         );
         const initializer = `{${orderedProperties
+          .filter((property) => !inheritedNames.has(property.name))
           .map((property) => `.${safeCppName(property.name)} = ${temporaries.get(property)!}`)
           .join(', ')}}`;
-        return `(${context.namespaceScope ? '[]' : '[&]'}() { ${evaluations.join(' ')} return ${construction(initializer)}; }())`;
+        if (inheritedProperties.length === 0) {
+          return `(${context.namespaceScope ? '[]' : '[&]'}() { ${evaluations.join(' ')} return ${construction(initializer)}; }())`;
+        }
+        const constructed = getGeneratedTargetName('intersection_value', context);
+        const assigned = inheritedProperties.map(
+          (property) => `${constructed}->${safeCppName(property.name)} = ${temporaries.get(property)!};`,
+        );
+        return `(${context.namespaceScope ? '[]' : '[&]'}() { ${evaluations.join(' ')} auto ${constructed} = ${construction(initializer)}; ${assigned.join(' ')} return ${constructed}; }())`;
       }
       const initializer = `{${properties
         .map((property) => `.${safeCppName(property.name)} = ${emitPropertyValue(property)}`)
@@ -6326,11 +6346,19 @@ function getCppTypeParameterConstraintCpp(type: Readonly<IrType>, context: EmitC
   return context.anonymousStructTypeParameters.find((parameter) => parameter.binding.id === bindingId)?.constraint;
 }
 
-function emitCppNominalIntersectionImplementationTypeCpp(
+// The base a nominal-intersection implementation inherits rather than redeclares, with the members it
+// provides. The base is an IMPORTED interface reference, and the struct emitter declares only what the base
+// does not already provide — so anything initializing that struct has to know which members are its own. The
+// construction lane needs the same answer, because a designated initializer may name only direct members.
+function getCppNominalIntersectionBaseCpp(
   type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
-  properties: readonly Readonly<IrObjectTypeProperty>[],
   context: EmitContext,
-): string | undefined {
+):
+  | Readonly<{
+      properties: readonly Readonly<IrObjectTypeProperty>[];
+      type: Readonly<IrType>;
+    }>
+  | undefined {
   const baseType = type.types.find((member) => {
     if (
       member.kind !== 'named' ||
@@ -6346,9 +6374,19 @@ function emitCppNominalIntersectionImplementationTypeCpp(
     );
   });
   if (!baseType) return undefined;
-  const baseProperties = context.referenceRepresentationPlanner.resolveObjectShape(baseType, context.module);
-  if (!baseProperties) return undefined;
+  const properties = context.referenceRepresentationPlanner.resolveObjectShape(baseType, context.module);
+  return properties ? { properties, type: baseType } : undefined;
+}
 
+function emitCppNominalIntersectionImplementationTypeCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  properties: readonly Readonly<IrObjectTypeProperty>[],
+  context: EmitContext,
+): string | undefined {
+  const base = getCppNominalIntersectionBaseCpp(type, context);
+  if (!base) return undefined;
+  const baseProperties = base.properties;
+  const baseType = base.type;
   const typeParameters = context.anonymousStructTypeParameters.map(
     (parameter) => context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name),
   );
