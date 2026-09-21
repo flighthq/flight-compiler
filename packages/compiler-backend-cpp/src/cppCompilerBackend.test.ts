@@ -458,6 +458,7 @@ describe('createCppCompilerBackend', () => {
       `interface Backend { readonly provider: string }
        interface OptionalHolder { readonly backend?: Backend }
        interface RequiredHolder { readonly backend: Backend }
+       interface Holder { readonly backend?: { readonly provider: string } }
        export function optionalAbsent<Type extends OptionalHolder>(holder: Readonly<Type>): boolean {
          return holder.backend === undefined;
        }
@@ -469,6 +470,11 @@ describe('createCppCompilerBackend', () => {
        }
        export function requiredAbsent<Type extends RequiredHolder>(holder: Readonly<Type>): boolean {
          return holder.backend === undefined;
+       }
+       export function readHolder<Type extends Holder>(holder: Type): void {
+         if (holder.backend === undefined) return;
+         const provider: typeof holder.backend.provider = holder.backend.provider;
+         void provider;
        }
        export function concreteAbsent(holder: Readonly<OptionalHolder>): boolean {
          return holder.backend === undefined;
@@ -487,9 +493,13 @@ describe('createCppCompilerBackend', () => {
     expect(output).toContain(
       'const auto& presence_operand_4 = flight::row_get<flight::RowKey<"backend">>(holder); static_cast<void>(presence_operand_4); return false;',
     );
+    expect(output).toContain(
+      'const flight::String provider = ([&]() -> decltype(auto) { const auto& present_operand = holder->backend; if constexpr (flight::detail::optional_traits<std::remove_cvref_t<decltype(present_operand)>>::optional) return (present_operand.value()); else return (present_operand); }())->provider;',
+    );
+    expect(output).toContain('(void)provider;');
     expect(output).toContain('return !flight::row_get<flight::RowKey<"backend">>(holder).has_value();');
     expect(output.match(/flight::row_get<flight::RowKey<"backend">>\(holder\)/gu)).toHaveLength(4);
-    expect(output.match(/holder->backend/gu)).toHaveLength(1);
+    expect(output.match(/holder->backend/gu)).toHaveLength(3);
   });
 
   it('keeps open, ambiguous, nullable, and erased generic property presence unrepresented', () => {

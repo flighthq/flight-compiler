@@ -9187,6 +9187,7 @@ function hasCppNestedNullableOptionalPropertyStorageCpp(
 
 interface CppGenericCarrierPropertyPresencePlan {
   readonly kind: 'alwaysPresent' | 'optionalUndefined';
+  readonly valueType: Readonly<IrType>;
 }
 
 // A constrained generic carrier keeps its member storage dependent. `Readonly<T>` is emitted as a
@@ -9209,7 +9210,9 @@ function getCppGenericCarrierPropertyPresencePlanCpp(
   const receiverType = getIrExpressionTypeEvidenceCpp(expression.object, context);
   const typeParameter = getCppReadonlyBareTypeParameterCpp(receiverType) ?? receiverType;
   const declaration = typeParameter ? getCppTypeParameterDeclarationCpp(typeParameter, context) : undefined;
-  const constraint = declaration?.constraint;
+  const constraint = declaration
+    ? getCppDependentTypeParameterConstraintCpp(declaration.binding.id, context)
+    : undefined;
   if (!constraint || getIrUnionTypeCpp(constraint, context, new Set())) return undefined;
   const row = getCppStructuralRowExpressionPlanCpp(expression.object, context);
   if (row) {
@@ -9224,6 +9227,7 @@ function getCppGenericCarrierPropertyPresencePlanCpp(
     return undefined;
   }
   const properties = context.referenceRepresentationPlanner.resolveObjectShape(constraint, context.module);
+  if (!properties || properties.some((property) => property.computedKey)) return undefined;
   const matches = properties?.filter((property) => property.name === expression.name) ?? [];
   const property = matches.length === 1 ? matches[0] : undefined;
   if (
@@ -9238,7 +9242,7 @@ function getCppGenericCarrierPropertyPresencePlanCpp(
   const readType = getIrObjectPropertyReadTypeCpp(property);
   if (!readType) return undefined;
   const union = getIrUnionTypeCpp(readType, context, new Set());
-  if (!union) return { kind: 'alwaysPresent' };
+  if (!union) return { kind: 'alwaysPresent', valueType: readType };
   const plan = getCppUnionRepresentationPlan(union, context);
   if (
     plan.kind === 'singleValue' &&
@@ -9246,13 +9250,13 @@ function getCppGenericCarrierPropertyPresencePlanCpp(
     plan.sentinels.null === 'absent' &&
     plan.sentinels.undefined === 'absent'
   ) {
-    return { kind: 'alwaysPresent' };
+    return { kind: 'alwaysPresent', valueType: plan.valueSlots[0]!.runtimeType };
   }
   return plan.kind === 'optionalSingle' &&
     plan.valueSlots.length === 1 &&
     plan.sentinels.null === 'absent' &&
     plan.sentinels.undefined === 'optionalAbsence'
-    ? { kind: 'optionalUndefined' }
+    ? { kind: 'optionalUndefined', valueType: plan.valueSlots[0]!.runtimeType }
     : undefined;
 }
 
@@ -17315,6 +17319,15 @@ function emitCppNarrowedPresentAccessCpp(
 ): string | undefined {
   if (expression.presence !== 'narrowedPresent') return undefined;
   const unnarrowed = { ...expression, presence: undefined };
+  const genericCarrier = getCppGenericCarrierPropertyPresencePlanCpp(expression, context);
+  if (genericCarrier) {
+    const storage = emitExpression(unnarrowed, context);
+    if (genericCarrier.kind === 'alwaysPresent') return storage;
+    context.includes.add('flight/structural_ref.hpp');
+    context.includes.add('type_traits');
+    const valueName = getGeneratedTargetName('presentOperand', context);
+    return `([&]() -> decltype(auto) { const auto& ${valueName} = ${storage}; if constexpr (flight::detail::optional_traits<std::remove_cvref_t<decltype(${valueName})>>::optional) return (${valueName}.value()); else return (${valueName}); }())`;
+  }
   const sourceType = getIrExpressionTypeEvidenceCpp(unnarrowed, context);
   if (!sourceType || !hasIrTypeAbsentMember(sourceType)) return undefined;
   const presentType = getCppNonNullableType(sourceType, context, new Set());
@@ -18300,6 +18313,17 @@ function emitCppEnumMemberReferenceCpp(
 function memberOp(object: Readonly<IrExpression>, context: EmitContext): string {
   if (isSuperAccess(object)) return '::';
   if (isThisAccess(object)) return '->';
+  const genericCarrier =
+    object.kind === 'property' && object.presence === 'narrowedPresent'
+      ? getCppGenericCarrierPropertyPresencePlanCpp(object, context)
+      : undefined;
+  if (
+    genericCarrier &&
+    (hasFlightReferenceRepresentationCpp(genericCarrier.valueType, context) ||
+      hasFlightFacetReferenceRepresentationCpp(genericCarrier.valueType, context))
+  ) {
+    return '->';
+  }
   const type = getIrExpressionTypeEvidenceCpp(object, context);
   if (
     object.kind === 'identifier' &&
