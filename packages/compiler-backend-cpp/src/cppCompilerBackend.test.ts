@@ -9739,6 +9739,36 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(direct).not.toContain('.value()');
   });
 
+  it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
+    // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
+    // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the
+    // runtime's own two steps — a structural ref constructed from the native owner and a cast between
+    // structural refs — and no alias primitive is missing. Kept as a control because the emission is a
+    // two-step spelling a future change could collapse into a copy without any test noticing.
+    const result = lower(
+      'exact-owner-view.ts',
+      `export interface TextureAtlas { readonly name: string; readonly regions: readonly number[] }
+       export function atlasByteSize(atlas: Readonly<TextureAtlas>): number { return atlas.regions.length; }
+       export function summarize(pages: readonly TextureAtlas[]): number {
+         let total = 0;
+         for (const page of pages) total += atlasByteSize(page);
+         return total;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain(
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<TextureAtlas>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<TextureAtlas>>>>(page))',
+    );
+    // The owner is viewed, never copied: no `make_ref`, no `make_structural_ref`, no property by property
+    // rebuild of the page.
+    expect(emitted).not.toContain('flight::make_ref<TextureAtlas>');
+    expect(emitted).not.toContain(
+      'flight::make_structural_ref<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<TextureAtlas>>>>',
+    );
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',
