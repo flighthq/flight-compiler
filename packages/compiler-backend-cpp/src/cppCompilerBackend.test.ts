@@ -10356,6 +10356,45 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(signal).toContain('flight::make_ref<');
   });
 
+  it('forwards a rest parameter pack as a terminal call spread and refuses every other use of it', () => {
+    // `@flighthq/signals/src/emitter.ts` is `(signal.emit as (...a: any[]) => void)(...args)` — a rest
+    // parameter pack forwarded as the terminal argument of a call. That is the one shape the pack has a
+    // sound reading for, and it emits as a real pack expansion rather than an array.
+    const HEADER = `export interface Signal<T> { readonly id: number; readonly emit: (...arguments_: unknown[]) => void }
+`;
+    const emitted = (body: string): string =>
+      emitIrModuleCpp(lower('emitter.ts', `${HEADER}${body}`).module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(
+      emitted(
+        `export function emitSignal<T extends (...args: any[]) => void>(signal: Signal<T>, ...args: Parameters<T>): void {
+           (signal.emit as (...a: any[]) => void)(...args);
+         }`,
+      ),
+    ).toContain('signal->emit(std::forward<ArgsPack>(args)...)');
+
+    // The negative side. Every other use of the pack is refused rather than approximated into an array, and
+    // the two policies share one rule tag, so the message is what separates them.
+    const refusal = (body: string): string | undefined => {
+      try {
+        emitted(body);
+        return undefined;
+      } catch (error) {
+        return isBackendEmissionFailure(error) ? error.message : undefined;
+      }
+    };
+    expect(
+      refusal(
+        `export function use<T extends (...args: any[]) => void>(signal: Signal<T>, ...args: Parameters<T>): void { void args; }`,
+      ),
+    ).toContain('may only be used as a terminal call spread');
+    expect(
+      refusal(
+        `function pair(a: number, b: number): void { void a; void b; }
+         export function use<T extends (...args: any[]) => void>(signal: Signal<T>, ...args: Parameters<T>): void { pair(...args, 1); }`,
+      ),
+    ).toContain('require terminal call expansion');
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',
