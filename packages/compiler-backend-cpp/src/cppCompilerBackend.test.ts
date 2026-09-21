@@ -11039,97 +11039,94 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
   });
 
   it('answers typeof-a-function as presence for a closed callable-or-absent domain', () => {
-    // `typeof X === 'function'` where X's runtime type is a closed union of one callable and absence is
-    // the presence question, and it is the same answer whichever side the callable literal is written on.
+    // The shape @flighthq/textureatlas and @flighthq/adjustments both write: a callable-or-absent property,
+    // read through a cast. The only value the domain can hold is a callable, so `typeof ... === 'function'`
+    // is presence, and the comparison's polarity decides whether the test is negated. The broader tag rule
+    // -- every tag direction, the aliased form, and the refusals -- is pinned by the test below.
     const emitCase = (body: string) =>
       emitIrModuleCpp(
         lower(
           'typeofFunction.ts',
-          `export interface ColorLutAdjustment { readonly kind: 'colorLut'; readonly transform?: (out: number[], r: number) => void }
+          `export type ColorTransformFunction = (out: readonly number[], r: number) => void;
+           export interface ColorLutAdjustment { readonly kind: 'lut'; readonly transform?: ColorTransformFunction }
            ${body}`,
         ).module,
         { runtimeProfile: 'flight-cpp' },
       ).contents;
-    const shape = `typeof (operation as Readonly<Partial<ColorLutAdjustment>>).transform`;
+    const presenceLine = (emitted: string) => emitted.split('\n').find((line) => line.includes('has_value')) ?? '';
 
-    // The shape the SDK writes, on both an absent-member operand and a binding, and in both directions.
     const eq = emitCase(
-      `export function f(operation: Readonly<{ kind: string }>): number { return ${shape} === 'function' ? 1 : 0; }`,
+      `export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<ColorLutAdjustment>>).transform === 'function' ? 1 : 0; }`,
     );
-    expect(eq).toContain('row_get<flight::RowKey<"transform">>');
-    expect(eq).toMatch(/return \((?:flight::row_get|!flight::row_get)/u);
-    const eqLine = eq.split('\n').find((line) => line.includes('has_value'))!;
-    expect(eqLine).not.toContain('!');
-    const neqLine = emitCase(
-      `export function f(operation: Readonly<{ kind: string }>): number { return ${shape} !== 'function' ? 1 : 0; }`,
-    )
-      .split('\n')
-      .find((line) => line.includes('has_value'))!;
-    expect(neqLine).toContain('!');
-    expect(
-      emitCase(
-        `export function f(operation: Readonly<{ kind: string }>): number { const t = (operation as Readonly<Partial<ColorLutAdjustment>>).transform; return typeof t === 'function' ? 1 : 0; }`,
-      ),
-    ).toContain('t.has_value()');
-    // A callable beside null is the same question: neither null nor undefined is a function.
+    expect(presenceLine(eq)).not.toBe('');
+    expect(presenceLine(eq)).not.toContain('!');
+    const neq = emitCase(
+      `export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<ColorLutAdjustment>>).transform !== 'function' ? 1 : 0; }`,
+    );
+    expect(presenceLine(neq)).toContain('!');
+    // The binding form is the same question and the same answer.
     expect(
       emitCase(
         `export function f(operation: Readonly<Partial<ColorLutAdjustment>>): number { return typeof operation.transform === 'function' ? 1 : 0; }`,
       ),
     ).toContain('has_value');
+  });
 
-    // The callable the SDK writes is a type alias, not an arrow type: `transform: ColorTransformFunction`.
-    // The name denotes the same callable, so it reaches the same answer -- directly and through a chain --
-    // and the alias is what the module that refuses here actually carries.
-    const aliased = emitCase(
-      `export type ColorTransformFunction = (out: readonly number[], r: number, g: number, b: number) => void;
-       export interface LutAdjustment { readonly kind: 'lut'; transform: ColorTransformFunction }
-       export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<LutAdjustment>>).transform === 'function' ? 1 : 0; }`,
-    );
-    expect(aliased).toContain('row_get<flight::RowKey<"transform">>');
-    expect(aliased).toMatch(/return \(flight::row_get/u);
-    expect(
-      emitCase(
-        `export type Inner = (out: readonly number[], r: number) => void;
-         export type Outer = Inner;
-         export interface LutAdjustment { readonly kind: 'lut'; transform: Outer }
-         export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<LutAdjustment>>).transform === 'function' ? 1 : 0; }`,
-      ),
-    ).toContain('has_value');
+  it('answers typeof a tag over a closed multi-domain union as its alternative, and refuses the rest', () => {
+    // `RiveProperty.value` is `RiveValue = number | string | Uint8Array`, and the SDK reads it through an
+    // optional chain: `typeof property?.value === 'number'`. The union is closed and every leaf reports a
+    // known tag, so the tag selects exactly one leaf and the test is whether the value holds it. This is
+    // the shape six `scene2d-formats` readers share.
+    const emitCase = (body: string, preamble = '') =>
+      emitIrModuleCpp(
+        lower(
+          'typeofTag.ts',
+          `${preamble}
+           export function f(source: Readonly<RiveCoreObject>, key: number, fallback: number): number { ${body} }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+    const rive = `export type RiveValue = number | string | Uint8Array;
+       export interface RiveProperty { readonly key: number; readonly value: RiveValue }
+       export interface RiveCoreObject { readonly properties: readonly RiveProperty[] }
+       `;
+    const readTag = (tag: string, when: string, otherwise = '0') =>
+      `const property = source.properties.find((candidate) => candidate.key === key); return typeof property?.value ${tag} ? ${when} : ${otherwise};`;
 
-    // A primitive and a reference each answer statically: the operand's type is not a union of a
-    // callable and absence, so no presence test is emitted and no runtime question is asked.
-    const primitive = emitCase(
-      `export function f(count: number): number { return typeof count === 'function' ? 1 : 0; }`,
-    );
-    expect(primitive).not.toContain('has_value');
-    expect(primitive).toContain('flight::String("number")');
-    const reference = emitCase(
-      `export interface Box { readonly size: number }
-       export function f(box: Box): number { return typeof box === 'function' ? 1 : 0; }`,
-    );
-    expect(reference).not.toContain('has_value');
-    expect(reference).toContain('flight::String("object")');
+    // The three tag directions, over the same aliased union: number, string, and the object-tagged member.
+    const number = emitCase(readTag("==='number'", '1'), rive);
+    expect(number).toContain('has_value() && ');
+    expect(number).toContain('.value().index() ==');
+    const string = emitCase(readTag("==='string'", '1'), rive);
+    expect(string).toMatch(/typeof_value\.value\(\)\.index\(\) == \d/u);
+    expect(string).not.toBe(number);
+    // A reference member is object-tagged, and the object direction selects it the same way.
+    const object = emitCase(readTag("==='object'", '1'), rive);
+    expect(object).toContain('has_value() && ');
+    // The negation is the same test, negated.
+    const negated = emitCase(readTag("!=='number'", '1'), rive);
+    expect(negated).toContain('!((');
 
-    // A callable beside another value domain is ambiguous about which member the test selects: the
-    // domain has two non-absent members, so the presence answer is not the typeof answer and it is
-    // refused rather than guessed at.
+    // A tag no member reports is not this question: the union answers it, but not as a presence or an
+    // alternative, so it keeps the refusal rather than inventing an answer.
+    expect(() => emitCase(readTag("==='boolean'", '1'), rive)).toThrow();
+    // Two leaves reporting the tested tag is genuinely ambiguous.
     expect(() =>
       emitCase(
-        `export function f(operation: Readonly<{ a?: (() => void) | string }>): number { return typeof operation.a === 'function' ? 1 : 0; }`,
+        `return typeof source.a === 'object' ? 1 : 0;`,
+        `export interface Left { readonly l: number }
+         export interface Right { readonly r: number }
+         export interface Holder { readonly a: Left | Right | null }`,
       ),
     ).toThrow();
-    // An open generic has no closed domain to test against.
-    expect(() =>
-      emitCase(`export function f<T>(value: T | undefined): number { return typeof value === 'function' ? 1 : 0; }`),
-    ).toThrow();
-    // A callable OBJECT -- an interface with a call signature -- is not proven a callable here, and a
-    // bounded alias walk that does not reach an arrow type leaves the question to the lanes that know it.
+    // An open domain -- `unknown` -- has no leaves to test.
+    expect(() => emitCase(`return typeof source.anything === 'number' ? 1 : 0;`, rive)).toThrow();
+    // An alias cycle cannot be resolved, so the domain is incomplete.
     expect(() =>
       emitCase(
-        `export interface Callable { (out: readonly number[], r: number): void }
-         export interface LutAdjustment { readonly kind: 'lut'; transform: Callable }
-         export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<LutAdjustment>>).transform === 'function' ? 1 : 0; }`,
+        `return typeof source.value === 'number' ? 1 : 0;`,
+        `export type Loop = number | Loop;
+         export interface Source { readonly value: Loop | undefined }`,
       ),
     ).toThrow();
   });
@@ -17336,18 +17333,37 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('std::optional<flight::String>{options.value()}');
   });
 
-  it('refuses typeof discrimination when one alias spans matching and nonmatching variant alternatives', () => {
+  it('discriminates typeof when an alias spans matching and nonmatching variant alternatives', () => {
+    // An alias over `string | number` beside `boolean` is a variant of three alternatives, and the tag
+    // selects exactly one of them: `typeof value === 'string'` asks whether the value holds the string
+    // alternative, which is the question the target's own alternative test answers. This used to refuse
+    // because no member test was proven; the tag is the proof.
+    const emitted = emitIrModuleCpp(
+      lower(
+        'ambiguous-alias-variant.ts',
+        `type Mixed = string | number;
+         export function check(value: Mixed | boolean): boolean {
+           return typeof value === 'string';
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(emitted).toContain('std::holds_alternative<flight::String>(value)');
+
+    // The refusals that remain are the ones where the tag does NOT select one alternative: two members
+    // reporting the same tag is genuinely ambiguous and keeps the refusal.
     expect(() =>
       emitIrModuleCpp(
         lower(
-          'ambiguous-alias-variant.ts',
-          `type Mixed = string | number;
-           export function check(value: Mixed | boolean): boolean {
-             return typeof value === 'string';
+          'duplicate-tag-variant.ts',
+          `interface Left { readonly l: number }
+           interface Right { readonly r: number }
+           export function check(value: Left | Right | boolean): boolean {
+             return typeof value === 'object';
            }`,
         ).module,
       ),
-    ).toThrow('typeof on a C++ variant requires proven union member test evidence');
+    ).toThrow();
   });
 
   it('emits duplicate runtime external symbols as incompleteness failure', () => {

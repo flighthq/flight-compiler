@@ -2591,6 +2591,8 @@ function emitExpression(
       if (inferredNullishComparison) return inferredNullishComparison;
       const ambientTypeofComparison = emitAmbientTypeofUndefinedComparisonCpp(expression, context);
       if (ambientTypeofComparison) return ambientTypeofComparison;
+      const typeofTagComparison = emitCppInferredOptionalTypeofTagComparisonCpp(expression, context);
+      if (typeofTagComparison) return typeofTagComparison;
       const typeofFunctionComparison = emitCppInferredOptionalTypeofFunctionComparisonCpp(expression, context);
       if (typeofFunctionComparison) return typeofFunctionComparison;
       if (expression.operator === '??') {
@@ -8334,6 +8336,135 @@ function getCppTypeofFunctionComparisonOperandCpp(
     side.kind === 'literal' && side.value === 'function';
   if (isFunctionLiteral(right)) return typeofOperand(left);
   if (isFunctionLiteral(left)) return typeofOperand(right);
+  return undefined;
+}
+
+// `typeof X === tag` asks what X holds, and a closed union answers it even with several value domains:
+// the tag selects the leaf type that reports it, and the test is whether the value holds that leaf's
+// alternative. Leaves are reached through aliases and through any union a member names, because a
+// property typed with an alias to a union -- `value: RiveValue` where
+// `RiveValue = number | string | Uint8Array` -- is exactly the shape the SDK writes.
+//
+// Everything the rule cannot prove is refused rather than approximated: a leaf whose tag the emitter
+// cannot determine (an open generic, `unknown`, a callable object, a member behind an alias cycle)
+// makes the domain incomplete; two leaves reporting the tested tag is genuinely ambiguous; and a tag
+// whose leaf the union's representation does not name as an alternative has no question to ask. When the
+// domain is one value domain beside absence, the answer is presence and the presence machinery gives it
+// directly, with the loose test `typeof` actually is.
+function emitCppInferredOptionalTypeofTagComparisonCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.operator !== '==' &&
+    expression.operator !== '===' &&
+    expression.operator !== '!=' &&
+    expression.operator !== '!=='
+  ) {
+    return undefined;
+  }
+  const comparison = getCppTypeofTagComparisonCpp(expression.left, expression.right);
+  if (!comparison) return undefined;
+  // An element read is not the union's own storage: the key may name no cell at all, so the read can be
+  // absent where the element's type carries no absence, and an alternative test would ask a cell that
+  // need not exist. Element reads keep the lanes that already answer them -- the closed-key lane for a
+  // literal key, and a refusal for a dynamic one.
+  // An identifier binding is answered by the narrowing lane, which already reads a guarded local as the
+  // value its evidence proves; answering it here would displace that and change an emission that is not
+  // this rule's to change.
+  if (comparison.operand.kind === 'identifier') return undefined;
+  if (comparison.operand.kind === 'element') return undefined;
+  const operandType = getCppNullishComparisonOperandTypeCpp(comparison.operand, context);
+  const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const alternatives = union.types.map((member) => collectCppTypeofLeavesCpp(member, context, new Set()));
+  if (alternatives.some((leaves) => leaves === undefined)) return undefined;
+  const matching = alternatives.flatMap((entries) => entries!).filter((leaf) => leaf.tag === comparison.tag);
+  const leaf = matching[0];
+  if (matching.length !== 1 || !leaf) return undefined;
+  const present = expression.operator === '==' || expression.operator === '===';
+  // The domain is one value domain beside absence exactly when a single member carries every leaf, and
+  // the tested leaf is one of them: then "reports that tag" and "is present" are the same answer. The
+  // member is compared by its leaves rather than by identity because the leaf is what an alias resolves
+  // to -- `transform: ColorTransformFunction` is the function, not the name for it.
+  const valueIndexes = union.types
+    .map((member, index) => ({ member, index }))
+    .filter(({ member }) => member.kind !== 'undefined' && member.kind !== 'null');
+  if (valueIndexes.length === 1 && alternatives[valueIndexes[0]!.index]?.length === 1) {
+    return emitCppPresenceTestCpp(comparison.operand, 'undefined', present, false, context);
+  }
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (!plan || plan.kind === 'singleValue') return undefined;
+  const canonical = normalizeCompilerStructuralValueCanonical(leaf.type);
+  const slot = plan.valueSlots.find(
+    (candidate) =>
+      normalizeCompilerStructuralValueCanonical(candidate.runtimeType) === canonical ||
+      candidate.sourceAlternatives.some(
+        (alternative) => normalizeCompilerStructuralValueCanonical(alternative) === canonical,
+      ),
+  );
+  if (!slot) return undefined;
+  context.includes.add('variant');
+  const emitted = emitExpression(comparison.operand, context);
+  // Storage that carries absence beside the alternatives holds the variant indirectly, so the value has
+  // to be present before an alternative can be asked for. The read is bound once because it may be a call
+  // or an indexed read as easily as a name, and asking it twice would run it twice.
+  const test =
+    plan.kind === 'optionalVariant'
+      ? `([&]() { const auto& typeof_value = ${emitted}; return typeof_value.has_value() && typeof_value.value().index() == ${String(plan.valueSlots.indexOf(slot))}; }())`
+      : `std::holds_alternative<${slot.targetType}>(${emitted})`;
+  return present ? test : `!(${test})`;
+}
+
+// Every leaf an alternative can hold, with the JavaScript `typeof` tag that leaf reports, following the
+// alternative's aliases and descending into any union it names. Undefined means the domain is incomplete
+// -- a member behind an alias cycle, or a type whose tag the emitter cannot determine -- and the caller
+// refuses rather than answering from part of a domain.
+function collectCppTypeofLeavesCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+): readonly Readonly<{ tag: string; type: Readonly<IrType> }>[] | undefined {
+  if (type.kind === 'union') {
+    const collected: Readonly<{ tag: string; type: Readonly<IrType> }>[] = [];
+    for (const member of type.types) {
+      const leaves = collectCppTypeofLeavesCpp(member, context, resolving);
+      if (!leaves) return undefined;
+      collected.push(...leaves);
+    }
+    return collected;
+  }
+  if (type.kind === 'named' && type.reference.kind === 'binding') {
+    const bindingId = type.reference.binding.id;
+    if (resolving.has(bindingId)) return undefined;
+    const target = resolveCppTypeAliasTarget(type, context);
+    if (target) return collectCppTypeofLeavesCpp(target, context, new Set(resolving).add(bindingId));
+  }
+  const tag = getCppStaticTypeofTypeCpp(type, context, new Set(resolving));
+  return tag ? [{ tag, type }] : undefined;
+}
+
+// The operand of a `typeof X === tag` comparison, and the tag: one side a `typeof` of anything and the
+// other a string literal, in either order. Two `typeof`s, a literal on both sides, or a tag that is not
+// a literal are not this comparison.
+function getCppTypeofTagComparisonCpp(
+  left: Readonly<IrExpression>,
+  right: Readonly<IrExpression>,
+): Readonly<{ operand: Readonly<IrExpression>; tag: string }> | undefined {
+  const typeofOperand = (side: Readonly<IrExpression>): Readonly<IrExpression> | undefined =>
+    side.kind === 'unary' && side.operator === 'typeof' ? side.operand : undefined;
+  const tagLiteral = (side: Readonly<IrExpression>): string | undefined =>
+    side.kind === 'literal' && typeof side.value === 'string' ? side.value : undefined;
+  const rightTag = tagLiteral(right);
+  if (rightTag !== undefined) {
+    const operand = typeofOperand(left);
+    return operand ? { operand, tag: rightTag } : undefined;
+  }
+  const leftTag = tagLiteral(left);
+  if (leftTag !== undefined) {
+    const operand = typeofOperand(right);
+    return operand ? { operand, tag: leftTag } : undefined;
+  }
   return undefined;
 }
 
