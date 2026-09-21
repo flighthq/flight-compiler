@@ -54,10 +54,76 @@ describe('C++ imported value qualification', () => {
       },
     }).emitModule(consumer)[0]!.contents;
 
-    expect(output).toContain('epsilon = epsilon.value_or(flight::math::epsilon)');
+    // The parameter is renamed to `epsilon_2`, and that is the naming rule rather than a regression:
+    // the imported `EPSILON` and the parameter `epsilon` sanitize to the SAME C++ name, so one of them
+    // has to change and the renamable one does. Every reference stays consistent -- the default reads the
+    // imported value and the body adds the parameter -- and a parameter that does not collide keeps its
+    // spelling, which the control below pins.
+    expect(output).toContain('epsilon_2 = epsilon_2.value_or(flight::math::epsilon)');
     expect(output).toContain('flight::math::scale(input)');
-    expect(output).toContain('flight::math::epsilon + epsilon.value()');
+    expect(output).toContain('flight::math::epsilon + epsilon_2.value()');
     expect(output).not.toContain('constants.scale');
+  });
+
+  it('renames a colliding local and leaves a non-colliding one alone', () => {
+    // Collision-stable naming: a local whose C++ name would collide with an imported value's is renamed,
+    // and one whose name does not collide keeps the spelling the source gave it. Both are deterministic,
+    // and neither changes which value any reference reads.
+    const constants = 'export const EPSILON = 0.000001;';
+    const emitWithParameter = (parameter: string) => {
+      const sources = [
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/constants.ts',
+            constants,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/consumer.ts',
+            `import { EPSILON } from './constants.js'; export function close(value: number, ${parameter}): boolean { return value <= EPSILON + ${parameter.split(':')[0]}; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ];
+      const moduleResolution: CompilerModuleResolutionPlan = {
+        edges: [
+          {
+            specifier: './constants.js',
+            target: { packageName: '@flighthq/math', source: 'packages/math/src/constants.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      };
+      const modules = lowerTypeScriptSources(sources, moduleResolution).map((result) => result.module);
+      return createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules,
+        options: {
+          packageTargets: {
+            '@flighthq/math': { includePrefix: 'flight/math', namespace: 'flight::math' },
+          },
+          runtimeProfile: 'flight-cpp',
+        },
+      })
+        .emitModule(modules[1]!)
+        .map((file) => file.contents)
+        .join('\n');
+    };
+
+    // A defaulted parameter is stored optionally, so the spelling carries the optional wrapper too.
+    const colliding = emitWithParameter('epsilon: number = EPSILON');
+    expect(colliding).toContain('std::optional<double> epsilon_2');
+    const distinct = emitWithParameter('eps: number = EPSILON');
+    expect(distinct).toContain('std::optional<double> eps');
+    expect(distinct).not.toContain('eps_2');
   });
 
   it('qualifies values resolved through a barrel without capturing a shadow', () => {
