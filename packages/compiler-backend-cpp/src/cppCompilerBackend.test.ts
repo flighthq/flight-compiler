@@ -10456,6 +10456,51 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toContain('require terminal call expansion');
   });
 
+  it('declares an intersection alternative its own members rather than inheriting them', () => {
+    // `CollisionBuiltInShape2D` is a union of intersections — `CollisionObb2D & { kind: 'obb' }` and friends —
+    // and a literal for one alternative becomes an anonymous struct. C++ designated initializers may name only
+    // DIRECT non-static data members, so a struct that inherited `CollisionObb2D` and then designated `.x`
+    // would be rejected: "no non-static data member named 'x'". The alternative declares everything the
+    // literal writes, and the construction designates exactly those.
+    const types = lowerPackage(
+      '@flighthq/types',
+      'collision.ts',
+      `export interface CollisionObb2D { readonly x: number; readonly y: number; readonly halfW: number; readonly halfH: number; readonly rotation: number }
+       export interface CollisionCapsule2D { readonly ax: number; readonly ay: number }
+       export type CollisionBuiltInShape2D =
+         | (CollisionObb2D & { readonly kind: 'obb' })
+         | (CollisionCapsule2D & { readonly kind: 'capsule' });`,
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/collision',
+      'raycastCollisionShape2D.ts',
+      `import type { CollisionBuiltInShape2D } from '@flighthq/types';
+       const probe: CollisionBuiltInShape2D = { kind: 'obb', x: 0, y: 0, halfW: 0, halfH: 0, rotation: 0 };
+       export function get(): CollisionBuiltInShape2D { return probe; }`,
+    ).module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [{ specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } }],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [consumer, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    // The alternative is a standalone reference-enabled struct, not a subtype of the named interface.
+    const declared = session.emitModule(types)[0]!.contents;
+    expect(declared).toContain('struct x_y_half_w_half_h_rotation_kind_');
+    expect(declared).not.toMatch(/struct x_y_half_w_half_h_rotation_kind_\w* : public flighthq_types::CollisionObb2D/u);
+    expect(declared).toMatch(
+      /struct x_y_half_w_half_h_rotation_kind_\w* : public flight::ReferenceEnabled \{\s*double x;/u,
+    );
+
+    // And the construction designates those members, which is what the direct declaration makes legal.
+    expect(session.emitModule(consumer)[0]!.contents).toMatch(
+      /x_y_half_w_half_h_rotation_kind_\w*\{\.x = object_member_x, \.y = object_member_y/u,
+    );
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',
