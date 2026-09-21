@@ -3769,6 +3769,129 @@ describe('createCppCompilerBackend', () => {
     ).toBe('cpp-union-member-access-unguarded');
   });
 
+  it('reads one shared payload from optional variants produced by local and imported factories', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flight/types',
+          target: { packageName: '@flight/types', source: 'packages/types/src/types.ts' },
+        },
+        {
+          specifier: '@flight/factory',
+          target: { packageName: '@flight/factory', source: 'packages/factory/src/factory.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flight/types',
+          'packages/types/src/types.ts',
+          `export type Entry =
+             | { readonly state: 'bound'; readonly value: () => void }
+             | { readonly state: 'tombstoned' };
+           export interface Table { readonly entry: Entry | null; readonly registry: string }
+           export interface Entity { readonly entityRuntimeKey?: object }
+           export type CreatedTable = Table & Entity;
+           export interface Registries { table?: Table }
+           export interface Single { readonly state: string }`,
+        ),
+        source(
+          '@flight/factory',
+          'packages/factory/src/factory.ts',
+          `import type { Table } from '@flight/types';
+           export function createImportedTable(): Table { throw new Error('stub'); }`,
+        ),
+        source(
+          '@flight/consumer',
+          'packages/consumer/src/read.ts',
+          `import { createImportedTable } from '@flight/factory';
+           import type { CreatedTable, Entry, Registries, Single } from '@flight/types';
+           function createLocalTable(): CreatedTable { throw new Error('stub'); }
+           function readRegistries(registries: Registries): Registries { return registries; }
+           export function readLocal(registries: Registries): string | undefined {
+             const table = readRegistries(registries).table ?? createLocalTable();
+             return table.entry?.state;
+           }
+           export function readImported(registries: Registries): string | undefined {
+             const table = readRegistries(registries).table ?? createImportedTable();
+             return table.entry?.state;
+           }
+           export function readOptionalSingle(value: Single | null): string | undefined {
+             return value?.state;
+           }
+           export function readDualSentinel(value: Single | null | undefined): string | undefined {
+             return value?.state;
+           }
+           export function isExpected(entry: Entry | null | undefined, expected: () => void): boolean {
+             return entry?.state === 'bound' && entry.value === expected;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flight/consumer': { includePrefix: 'flight/consumer', namespace: 'flight::consumer' },
+          '@flight/factory': { includePrefix: 'flight/factory', namespace: 'flight::factory' },
+          '@flight/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted.match(/read_registries\(registries\)/gu)).toHaveLength(2);
+    expect(emitted.match(/create_local_table\(\)/gu)).toHaveLength(2);
+    expect(emitted.match(/flight::factory::create_imported_table\(\)/gu)).toHaveLength(1);
+    expect(
+      emitted.match(
+        /std::visit\(\[\]\(const auto& value\) \{ return value->state; \}, optional_chain_receiver\.value\(\)\)/gu,
+      ),
+    ).toHaveLength(2);
+    expect(emitted).toContain('optional_chain_receiver.value()->state');
+    expect(emitted).toContain('std::holds_alternative<flight::Ref<flight::types::Single>>');
+    expect(emitted).toMatch(
+      /return \(entry\.index\(\) == \d+ && \(std::get<flight::Ref<state_value_[0-9a-f]+>>\(entry\)->value == expected\)\);/u,
+    );
+  });
+
+  it('keeps incompatible optional-variant and dual-sentinel receiver refusals', () => {
+    const incompatible = lower(
+      'optional-variant-incompatible.ts',
+      `interface Left { readonly tag: string }
+       interface Right { readonly tag: number }
+       export function read(value: Left | Right | undefined): string | number | undefined {
+         return value?.tag;
+       }`,
+    ).module;
+    const dualSentinel = lower(
+      'dual-sentinel-variant.ts',
+      `interface Left { readonly tag: string }
+       interface Right { readonly tag: string; readonly other: number }
+       export function read(value: Left | Right | null | undefined): string | undefined {
+         return value?.tag;
+       }`,
+    ).module;
+
+    expect(() => emitIrModuleCpp(incompatible, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'optional chain receiver requires one concrete nullable union member',
+    );
+    expect(() => emitIrModuleCpp(dualSentinel, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'dual-sentinel optional chaining requires one concrete receiver value domain',
+    );
+  });
+
   // `value.toString()` on a primitive variant is the runtime's conversion, not a member either alternative
   // has: the conversion of the variant is one visit over the runtime's own helper, and it is the same body
   // the explicit `String(value)` operation emits.
@@ -14426,13 +14549,18 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       modules,
       options: { runtimeProfile: 'flight-cpp' },
     });
-    const nextFailure = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
-    const siblingFailure = captureBackendEmissionFailure(() => session.emitModule(modules[5]!));
+    const consumer = session.emitModule(modules[4]!)[0]!.contents;
+    const sibling = session.emitModule(modules[5]!)[0]!.contents;
 
-    expect(nextFailure.rule).toBe('cpp-contextual-union-missing-expression-type:optionalSingle');
-    expect(nextFailure.message).not.toContain('typeOf types require C++ type computation lowering');
-    expect(siblingFailure.message).toContain('optional chain receiver requires one concrete nullable union member');
-    expect(siblingFailure.message).not.toContain('typeOf types require C++ type computation lowering');
+    expect(consumer).toContain('entry.has_value()');
+    expect(consumer).toContain('entry.value().index()');
+    expect(consumer).toContain('std::get<');
+    expect(consumer).toContain('->value');
+    expect(consumer).not.toContain('flight::Any');
+    expect(sibling).toContain(
+      'std::visit([](const auto& value) { return value->state; }, optional_chain_receiver.value())',
+    );
+    expect(sibling).not.toContain('flight::Any');
   });
 
   it('emits generic function with template parameter', () => {

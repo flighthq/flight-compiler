@@ -6850,9 +6850,17 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
       // guard, `const value = object.value` stores the value domain rather than nullable storage.
       // The access-presence query is tied to this exact receiver and lexical site, so an unguarded
       // property or the same property on another receiver retains its full nullish type.
-      return getTypeScriptAccessPresence(node, context).presence === 'narrowedPresent'
-        ? (removeIrTypeAbsentMembersSemantic(bindingType) ?? { kind: 'never' })
-        : bindingType;
+      const presentType =
+        getTypeScriptAccessPresence(node, context).presence === 'narrowedPresent'
+          ? (removeIrTypeAbsentMembersSemantic(bindingType) ?? { kind: 'never' })
+          : bindingType;
+      const optionalChain =
+        ts.isPropertyAccessExpression(node) && ts.isOptionalChain(node)
+          ? createTypeScriptOptionalChainSemantics(node.expression, node, context)
+          : undefined;
+      return optionalChain?.receiverNullish === 'possible'
+        ? commonType([presentType, { kind: 'undefined' }])
+        : presentType;
     }
   }
   // Where no written type reaches the value — a call into the ambient surface returns the surface's
@@ -7073,23 +7081,61 @@ function getTypeScriptDiscriminantUnionMemberTestEvidence(
   whenResult: boolean,
   context: LoweringContext,
 ): IrUnionMemberTestEvidence | undefined {
-  const literal = getTypeScriptLiteralExpressionValue(expected);
-  if (literal === undefined || !ts.isPropertyAccessExpression(test) || test.questionDotToken) return undefined;
+  const expectedType = getTypeScriptCheckerTypeEvidence(
+    context.checker.getTypeAtLocation(expected),
+    context,
+    0,
+    true,
+    expected,
+  );
+  const literal =
+    getTypeScriptLiteralExpressionValue(expected) ??
+    (expectedType?.kind === 'literal' ? expectedType.value : undefined);
+  if (literal === undefined || !ts.isPropertyAccessExpression(test)) return undefined;
   const subject = unwrapTypeScriptParenthesizedExpression(test.expression);
   if (!ts.isIdentifier(subject)) return undefined;
   const source = getTypeScriptUnionBindingEvidence(subject, context);
   if (!source) return undefined;
-  const members: IrType[] = [];
-  for (const member of source.type.types) {
+  const sourceMembers = test.questionDotToken
+    ? source.type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined')
+    : source.type.types;
+  const memberEvidence = sourceMembers.map((member) => {
     const shape = getIrTypeConstructionTargetShape(member, context);
     const property =
       shape?.kind === 'object' ? shape.properties.find((candidate) => candidate.name === test.name.text) : undefined;
-    const propertyValue = property?.type.kind === 'literal' ? property.type.value : undefined;
-    if (propertyValue === undefined) return undefined;
-    if (Object.is(propertyValue, literal)) members.push(member);
+    return property ? getTypeScriptIrLiteralTypeValue(property.type, context) : undefined;
+  });
+  if (memberEvidence.some((property) => property === undefined)) return undefined;
+  const matches = sourceMembers.filter((_, index) => Object.is(memberEvidence[index], literal));
+  if (matches.length !== 1) return undefined;
+  return { binding: source.binding, member: matches[0]!, whenResult };
+}
+
+function getTypeScriptIrLiteralTypeValue(
+  type: Readonly<IrType>,
+  context: LoweringContext,
+): boolean | number | string | undefined {
+  if (type.kind === 'literal') return type.value;
+  if (type.kind !== 'typeOf' || type.reference.kind !== 'binding') return undefined;
+  const bindingId = type.reference.binding.id;
+  const referencedSymbol = [...context.bindings].find(([, binding]) => binding.id === bindingId)?.[0];
+  if (!referencedSymbol) return undefined;
+  let symbol =
+    referencedSymbol.flags & ts.SymbolFlags.Alias
+      ? context.checker.getAliasedSymbol(referencedSymbol)
+      : referencedSymbol;
+  let site = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  if (!site) return undefined;
+  let valueType = context.checker.getTypeOfSymbolAtLocation(symbol, site);
+  for (const path of type.reference.path) {
+    const property = context.checker.getPropertyOfType(valueType, path);
+    if (!property) return undefined;
+    symbol = property;
+    site = property.valueDeclaration ?? property.declarations?.[0] ?? site;
+    valueType = context.checker.getTypeOfSymbolAtLocation(property, site);
   }
-  if (members.length !== 1) return undefined;
-  return { binding: source.binding, member: members[0]!, whenResult };
+  const evidence = getTypeScriptCheckerTypeEvidence(valueType, context, 0, true, site);
+  return evidence?.kind === 'literal' ? evidence.value : undefined;
 }
 
 function getTypeScriptUnionBindingEvidence(

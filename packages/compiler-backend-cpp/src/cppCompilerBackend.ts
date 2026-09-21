@@ -159,6 +159,13 @@ interface CppVariantRepresentation {
   direct: boolean;
 }
 
+interface CppVariantCommonPropertyEvidence {
+  readonly castSizeProperty: boolean;
+  readonly memberAccess: string;
+  readonly operator: '->' | '.';
+  readonly payloadTargetType: string;
+}
+
 interface CppWeakMapTypeArgumentPlan {
   readonly valueRepresentation: 'direct' | 'erased';
   readonly weakKeyPolicyTargetName?: string | undefined;
@@ -2792,8 +2799,15 @@ function emitExpression(
         expression.operator === '===' ||
         expression.operator === '!=' ||
         expression.operator === '!==';
+      const shortCircuitEvidence =
+        (expression.operator === '&&' || expression.operator === '||') && expression.left.kind === 'binary'
+          ? expression.left.semantics.unionMemberTest
+          : undefined;
+      const rightContext = shortCircuitEvidence
+        ? getCppUnionMemberTestBranchContextCpp(shortCircuitEvidence, expression.operator === '&&', context)
+        : context;
       const leftType = equality ? getIrExpressionTypeEvidenceCpp(expression.left, context) : undefined;
-      const rightType = equality ? getIrExpressionTypeEvidenceCpp(expression.right, context) : undefined;
+      const rightType = equality ? getIrExpressionTypeEvidenceCpp(expression.right, rightContext) : undefined;
       const referenceIdentity = equality
         ? emitCppReferenceIdentityComparison(expression, leftType, rightType, context)
         : undefined;
@@ -2806,10 +2820,10 @@ function emitExpression(
       const rightExpected =
         (isThisAccess(expression.right) ? leftType : undefined) ??
         getIrOperatorValueDomainTypeCpp(expression.semantics.right.flow) ??
-        getIrExpressionTypeEvidenceCpp(expression.right, context) ??
-        getCppClampedArrayElementNumericTypeCpp(expression.right, context);
+        getIrExpressionTypeEvidenceCpp(expression.right, rightContext) ??
+        getCppClampedArrayElementNumericTypeCpp(expression.right, rightContext);
       const left = emitExpression(expression.left, context, leftExpected);
-      const right = emitExpression(expression.right, context, rightExpected);
+      const right = emitExpression(expression.right, rightContext, rightExpected);
       if (bitwise) {
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
           return emitBitwiseOperationCpp(expression.operator, left, right);
@@ -3656,12 +3670,27 @@ function emitExpression(
         const bindingType = getCppBindingTypeCpp(expression.reference.binding.id, context);
         const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
         const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+        const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
+        const nestedOptionalMember =
+          plan && narrowedType
+            ? emitCppNarrowedNestedUnionMemberCpp(
+                emitIdentifierReference(expression.reference, context),
+                plan,
+                narrowedType,
+                context,
+              )
+            : undefined;
+        if (nestedOptionalMember) return nestedOptionalMember;
         if (plan?.kind === 'dualSentinelVariant') {
-          if (plan.valueSlots.length !== 1) {
+          const narrowedSlot = narrowedType ? getCppSingleUnionMemberValueSlotCpp(narrowedType, context) : undefined;
+          const matchingSlots = narrowedSlot
+            ? plan.valueSlots.filter((slot) => slot.representationKey === narrowedSlot.representationKey)
+            : plan.valueSlots;
+          if (matchingSlots.length !== 1) {
             emissionError(context, 'dual-sentinel presence narrowing requires one remaining C++ value domain');
           }
           context.includes.add('variant');
-          return `std::get<${plan.valueSlots[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
+          return `std::get<${matchingSlots[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
         }
         if (plan?.kind === 'optionalVariant') {
           const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
@@ -10002,13 +10031,19 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
   if (!union) emissionError(context, 'union member test requires a C++ variant binding');
   const plan = getCppUnionRepresentationPlan(union, context);
+  const evidenceSlot = getCppSingleUnionMemberValueSlotCpp(evidence.member, context);
+  const nestedOptionalTest = emitCppNestedUnionMemberTestCpp(evidence, plan, context);
+  if (nestedOptionalTest) return nestedOptionalTest;
   if (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant') {
     const alternatives = plan.valueSlots.filter((slot) =>
       slot.sourceAlternatives.some(
         (member) =>
           isDeepStrictEqual(member, evidence.member) ||
+          slot.representationKey === evidenceSlot?.representationKey ||
           slot.targetType ===
-            emitType(evidence.member, { ...context, anonymousStructs: new Map(), includes: new Set() }),
+            emitType(evidence.member, { ...context, anonymousStructs: new Map(), includes: new Set() }) ||
+          areCppUnionMemberDiscriminantsEquivalent(slot.runtimeType, evidence.member, context) ||
+          areCppUnionMemberObjectRepresentationsEquivalent(slot.runtimeType, evidence.member, context),
       ),
     );
     if (alternatives.length !== 1) {
@@ -10044,6 +10079,43 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
     const test = discriminant ? `(${present} && ${discriminant})` : present;
     return evidence.whenResult ? test : `!(${test})`;
   }
+  if (plan.kind === 'dualSentinelVariant') {
+    const alternatives = plan.valueSlots.filter(
+      (slot) =>
+        slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, evidence.member)) ||
+        slot.representationKey === evidenceSlot?.representationKey ||
+        slot.targetType ===
+          emitType(evidence.member, { ...context, anonymousStructs: new Map(), includes: new Set() }) ||
+        areCppUnionMemberDiscriminantsEquivalent(slot.runtimeType, evidence.member, context) ||
+        areCppUnionMemberObjectRepresentationsEquivalent(slot.runtimeType, evidence.member, context),
+    );
+    if (alternatives.length !== 1) {
+      emissionError(context, 'union member test must identify exactly one C++ dual-sentinel value alternative');
+    }
+    const alternative = alternatives[0]!;
+    const alternativeIndex = plan.valueSlots.indexOf(alternative);
+    const binding = emitInitializedBindingValueCpp(evidence.binding, context);
+    const value = `std::get<${String(alternativeIndex)}>(${binding})`;
+    const discriminant = emitCppCoalescedUnionMemberDiscriminantTestCpp(
+      evidence.member,
+      {
+        members: alternative.sourceAlternatives,
+        runtimeType: alternative.runtimeType,
+        targetType: alternative.targetType,
+      },
+      value,
+      context,
+    );
+    if (alternative.sourceAlternatives.length > 1 && !discriminant) {
+      emissionError(
+        context,
+        'coalesced C++ dual-sentinel union storage requires one retained literal discriminant for a member test',
+      );
+    }
+    const present = `${binding}.index() == ${String(alternativeIndex)}`;
+    const test = discriminant ? `(${present} && ${discriminant})` : present;
+    return evidence.whenResult ? test : `!(${test})`;
+  }
   const representation = getCppVariantRepresentationForInspection(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
     doesCppVariantAlternativeMatchType(alternative, evidence.member, context),
@@ -10065,6 +10137,72 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
       ? `(${alternativeTest} && ${discriminant})`
       : (alternativeTest ?? discriminant ?? 'true');
   return evidence.whenResult ? test : `!(${test})`;
+}
+
+function emitCppNestedUnionMemberTestCpp(
+  evidence: Readonly<IrUnionMemberTestEvidence>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  const slot =
+    plan.kind === 'optionalSingle' || (plan.kind === 'dualSentinelVariant' && plan.valueSlots.length === 1)
+      ? plan.valueSlots[0]
+      : undefined;
+  const nestedUnion = slot ? getIrVariantUnionTypeCpp(slot.runtimeType, context, new Set()) : undefined;
+  if (!nestedUnion) return undefined;
+  const representation = getCppVariantRepresentationForInspection(nestedUnion, context);
+  const alternatives = representation.alternatives.filter((alternative) =>
+    doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(alternative, evidence.member, context),
+  );
+  if (alternatives.length !== 1) {
+    emissionError(context, 'union member test must identify exactly one nested C++ optional value alternative');
+  }
+  const alternative = alternatives[0]!;
+  const alternativeIndex = representation.alternatives.indexOf(alternative);
+  const binding = emitInitializedBindingValueCpp(evidence.binding, context);
+  const outerPresent =
+    plan.kind === 'optionalSingle'
+      ? `${binding}.has_value()`
+      : `${binding}.index() == ${String(plan.valueSlots.indexOf(slot!))}`;
+  const nested =
+    plan.kind === 'optionalSingle'
+      ? `${binding}.value()`
+      : `std::get<${String(plan.valueSlots.indexOf(slot!))}>(${binding})`;
+  const value = representation.direct ? nested : `std::get<${String(alternativeIndex)}>(${nested})`;
+  const discriminant = emitCppCoalescedUnionMemberDiscriminantTestCpp(evidence.member, alternative, value, context);
+  if (alternative.members.length > 1 && !discriminant) {
+    emissionError(
+      context,
+      'coalesced nested C++ optional union storage requires one retained literal discriminant for a member test',
+    );
+  }
+  const alternativeTest = representation.direct ? undefined : `${nested}.index() == ${String(alternativeIndex)}`;
+  const selected =
+    alternativeTest && discriminant
+      ? `(${alternativeTest} && ${discriminant})`
+      : (alternativeTest ?? discriminant ?? 'true');
+  const test = `(${outerPresent} && ${selected})`;
+  return evidence.whenResult ? test : `!(${test})`;
+}
+
+function getCppSingleUnionMemberValueSlotCpp(
+  member: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<{ representationKey: string; targetType: string }> | undefined {
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const plan = getCppUnionRepresentationPlan({ kind: 'union', types: [member, { kind: 'null' }] }, isolatedContext);
+  const slot = plan.valueSlots.length === 1 ? plan.valueSlots[0] : undefined;
+  return slot ? { representationKey: slot.representationKey, targetType: slot.targetType } : undefined;
+}
+
+function areCppUnionMemberObjectRepresentationsEquivalent(
+  left: Readonly<IrType>,
+  right: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const leftShape = context.referenceRepresentationPlanner.resolveObjectShape(left, context.module);
+  const rightShape = context.referenceRepresentationPlanner.resolveObjectShape(right, context.module);
+  return Boolean(leftShape && rightShape && areCppObjectShapesRepresentationEquivalent(leftShape, rightShape, context));
 }
 
 function emitCppCoalescedUnionMemberDiscriminantTestCpp(
@@ -10174,6 +10312,18 @@ function doesCppVariantAlternativeMatchType(
   );
 }
 
+function doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(
+  alternative: CppVariantRepresentation['alternatives'][number],
+  member: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  return (
+    doesCppVariantAlternativeMatchType(alternative, member, context) ||
+    areCppUnionMemberDiscriminantsEquivalent(alternative.runtimeType, member, context) ||
+    areCppUnionMemberObjectRepresentationsEquivalent(alternative.runtimeType, member, context)
+  );
+}
+
 // Whether an expression's emitted storage is a variant, which no member access can reach directly.
 function isCppExpressionVariantUnionCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
   const type = getIrExpressionTypeEvidenceCpp(expression, context);
@@ -10280,14 +10430,35 @@ function emitCppVariantCommonPropertyExpression(
   if (!union) return undefined;
   const representation = getCppVariantRepresentationForInspection(union, context);
   if (representation.direct) return undefined;
+  const evidence = getCppVariantCommonPropertyEvidenceCpp(representation, expression.name, context);
+  if (!evidence) return undefined;
+  context.includes.add('variant');
+  return `std::visit([](const auto& value) { return ${emitCppVariantCommonPropertyProjectionCpp(evidence, 'value')}; }, ${emitExpression(expression.object, context)})`;
+}
+
+function getCppVariantCommonPropertyEvidenceCpp(
+  representation: Readonly<CppVariantRepresentation>,
+  propertyName: string,
+  context: EmitContext,
+): Readonly<CppVariantCommonPropertyEvidence> | undefined {
   const propertyTypes = representation.alternatives.map((alternative) =>
-    getIrObjectPropertyTypeCpp(alternative.runtimeType, expression.name, context),
+    getIrObjectPropertyTypeCpp(alternative.runtimeType, propertyName, context),
   );
   if (propertyTypes.length === 0 || propertyTypes.some((type) => !type)) return undefined;
-  const emittedTypes = new Set(
-    propertyTypes.map((type) => emitType(getIrTypeRuntimeDomainCpp(type!, context, new Set()) ?? type!, context)),
-  );
-  if (emittedTypes.size !== 1) return undefined;
+  const mergedType = createIrTypeEvidenceUnionCpp(propertyTypes.map((type) => type!));
+  const mergedEvidence = mergedType ? getCppPayloadRepresentationEvidenceCpp(mergedType, context) : undefined;
+  if (!mergedEvidence) return undefined;
+  const branchEvidence = propertyTypes.map((type) => getCppPayloadRepresentationEvidenceCpp(type!, context));
+  if (
+    branchEvidence.some(
+      (evidence) =>
+        !evidence ||
+        evidence.representationKey !== mergedEvidence.representationKey ||
+        evidence.targetType !== mergedEvidence.targetType,
+    )
+  ) {
+    return undefined;
+  }
   const referenceModes = new Set(
     representation.alternatives.map((alternative) =>
       hasFlightReferenceRepresentationCpp(alternative.runtimeType, context) ? 'reference' : 'value',
@@ -10305,14 +10476,14 @@ function emitCppVariantCommonPropertyExpression(
   // spelling on the other. A shape where no alternative names one keeps the source spelling, which is
   // what a record-like member already relies on.
   const memberBindings = representation.alternatives.map((alternative) =>
-    getCppVariantAmbientMemberBindingCpp(alternative.runtimeType, expression.name, context),
+    getCppVariantAmbientMemberBindingCpp(alternative.runtimeType, propertyName, context),
   );
   const namedBindings = memberBindings.filter((binding) => binding !== undefined);
   if (namedBindings.length > 0 && namedBindings.length !== memberBindings.length) return undefined;
   if (new Set(namedBindings.map((binding) => `${binding!.kind}\u0000${binding!.targetName}`)).size > 1) {
     return undefined;
   }
-  const memberName = namedBindings[0]?.targetName ?? safeCppName(expression.name);
+  const memberName = namedBindings[0]?.targetName ?? safeCppName(propertyName);
   // The binding's KIND decides the shape of the access, not only its name: a size method is called,
   // while a property is read. Both alternatives answer `length` as a size method here, so the body is a
   // call -- reading `value.size` would name a member function and hand back a pointer to it.
@@ -10322,10 +10493,61 @@ function emitCppVariantCommonPropertyExpression(
       : namedBindings[0]?.kind === 'method'
         ? `${memberName}()`
         : memberName;
-  context.includes.add('variant');
-  const operator = referenceModes.has('reference') ? '->' : '.';
-  const projected = `value${operator}${memberAccess}`;
-  return `std::visit([](const auto& value) { return ${namedBindings[0]?.kind === 'sizeProperty' ? `static_cast<double>(${projected})` : projected}; }, ${emitExpression(expression.object, context)})`;
+  return {
+    castSizeProperty: namedBindings[0]?.kind === 'sizeProperty',
+    memberAccess,
+    operator: referenceModes.has('reference') ? '->' : '.',
+    payloadTargetType: mergedEvidence.targetType,
+  };
+}
+
+// A shared member can cross a visitor only when every branch and their merged result name the same
+// complete payload representation. The key includes the plan kind, both sentinel mappings, and every
+// value slot, so equal target spellings cannot erase a null/undefined distinction or merge different
+// runtime domains. A union collapsed to one value slot has the same evidence as that value itself.
+function getCppPayloadRepresentationEvidenceCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<{ representationKey: string; targetType: string }> | undefined {
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  if (union) {
+    const plan = getCppUnionRepresentationPlan(union, isolatedContext);
+    if (
+      plan.kind === 'singleValue' &&
+      plan.valueSlots.length === 1 &&
+      plan.sentinels.null === 'absent' &&
+      plan.sentinels.undefined === 'absent'
+    ) {
+      const slot = plan.valueSlots[0]!;
+      return { representationKey: slot.representationKey, targetType: slot.targetType };
+    }
+    return {
+      representationKey: JSON.stringify({
+        kind: plan.kind,
+        sentinels: plan.sentinels,
+        valueSlots: plan.valueSlots.map((slot) => ({
+          representationKey: slot.representationKey,
+          targetType: slot.targetType,
+        })),
+      }),
+      targetType: emitUnionTypeCpp(union, isolatedContext),
+    };
+  }
+  const runtimeType = getIrTypeRuntimeDomainCpp(type, context, new Set()) ?? type;
+  if (runtimeType.kind === 'null' || runtimeType.kind === 'undefined') return undefined;
+  return {
+    representationKey: normalizeCompilerStructuralValueCanonical(runtimeType),
+    targetType: emitType(runtimeType, isolatedContext),
+  };
+}
+
+function emitCppVariantCommonPropertyProjectionCpp(
+  evidence: Readonly<CppVariantCommonPropertyEvidence>,
+  value: string,
+): string {
+  const projected = `${value}${evidence.operator}${evidence.memberAccess}`;
+  return evidence.castSizeProperty ? `static_cast<double>(${projected})` : projected;
 }
 
 // The ambient member binding the emitter would use for a LONE access on one alternative, or undefined
@@ -10404,10 +10626,47 @@ function emitNarrowedUnionMemberCpp(
   if (expression.reference.kind !== 'binding') return undefined;
   const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
   if (!expression.narrowedMember && !narrowedType) return undefined;
-  const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
+  const bindingType = getCppBindingTypeCpp(expression.reference.binding.id, context);
+  const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
   if (!union) return undefined;
-  const representation = getCppVariantRepresentationForInspection(union, context);
+  const plan = getCppUnionRepresentationPlan(union, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set<string>(),
+  });
   const binding = emitInitializedBindingValueCpp(expression.reference.binding, context);
+  const nestedOptionalMember = narrowedType
+    ? emitCppNarrowedNestedUnionMemberCpp(binding, plan, narrowedType, context)
+    : undefined;
+  if (nestedOptionalMember) return nestedOptionalMember;
+  if (
+    narrowedType &&
+    (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant' || plan.kind === 'dualSentinelVariant')
+  ) {
+    const narrowedSlot = getCppSingleUnionMemberValueSlotCpp(narrowedType, context);
+    const narrowedTargetType = emitType(narrowedType, {
+      ...context,
+      anonymousStructs: new Map(),
+      includes: new Set(),
+    });
+    const matches = plan.valueSlots.filter(
+      (slot) =>
+        slot.representationKey === narrowedSlot?.representationKey ||
+        slot.targetType === narrowedTargetType ||
+        slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, narrowedType)) ||
+        areCppUnionMemberDiscriminantsEquivalent(slot.runtimeType, narrowedType, context) ||
+        areCppUnionMemberObjectRepresentationsEquivalent(slot.runtimeType, narrowedType, context),
+    );
+    if (matches.length === 1) {
+      if (plan.kind === 'optionalSingle') return `${binding}.value()`;
+      context.includes.add('variant');
+      const variant = plan.kind === 'optionalVariant' ? `${binding}.value()` : binding;
+      return `std::get<${matches[0]!.targetType}>(${variant})`;
+    }
+  }
+  const variantUnion = getIrVariantUnionTypeCpp(union, context, new Set());
+  if (!variantUnion) return undefined;
+  const representation = getCppVariantRepresentationForInspection(variantUnion, context);
   const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
   if (narrowedUnion) {
     const narrowedPlan = getCppUnionRepresentationPlan(narrowedUnion, context);
@@ -10475,6 +10734,32 @@ function emitNarrowedUnionMemberCpp(
   return `std::get<${String(representation.alternatives.indexOf(matches[0]!.alternative))}>(${binding})`;
 }
 
+function emitCppNarrowedNestedUnionMemberCpp(
+  binding: string,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  narrowedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const slot =
+    plan.kind === 'optionalSingle' || (plan.kind === 'dualSentinelVariant' && plan.valueSlots.length === 1)
+      ? plan.valueSlots[0]
+      : undefined;
+  const nestedUnion = slot ? getIrVariantUnionTypeCpp(slot.runtimeType, context, new Set()) : undefined;
+  if (!nestedUnion) return undefined;
+  const representation = getCppVariantRepresentationForInspection(nestedUnion, context);
+  const matches = representation.alternatives.filter((alternative) =>
+    doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(alternative, narrowedType, context),
+  );
+  if (matches.length !== 1) return undefined;
+  const nested =
+    plan.kind === 'optionalSingle'
+      ? `${binding}.value()`
+      : `std::get<${String(plan.valueSlots.indexOf(slot!))}>(${binding})`;
+  if (representation.direct) return nested;
+  context.includes.add('variant');
+  return `std::get<${String(representation.alternatives.indexOf(matches[0]!))}>(${nested})`;
+}
+
 function areCppUnionMemberDiscriminantsEquivalent(
   left: Readonly<IrType>,
   right: Readonly<IrType>,
@@ -10484,10 +10769,33 @@ function areCppUnionMemberDiscriminantsEquivalent(
   const rightProperties = context.referenceRepresentationPlanner.resolveObjectShape(right, context.module);
   if (!leftProperties || !rightProperties) return false;
   return leftProperties.some((property) => {
-    if (property.type.kind !== 'literal') return false;
+    const propertyValue = getCppLiteralDiscriminantValueCpp(property.type, context, new Set());
+    if (propertyValue === undefined) return false;
     const candidate = rightProperties.find((rightProperty) => rightProperty.name === property.name);
-    return candidate?.type.kind === 'literal' && candidate.type.value === property.type.value;
+    const candidateValue = candidate
+      ? getCppLiteralDiscriminantValueCpp(candidate.type, context, new Set())
+      : undefined;
+    return candidateValue !== undefined && Object.is(candidateValue, propertyValue);
   });
+}
+
+function getCppLiteralDiscriminantValueCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): boolean | number | string | undefined {
+  if (type.kind === 'literal') return type.value;
+  if (type.kind === 'typeOf') {
+    const valueType = getCppTypeOfValueType(type, context);
+    return valueType ? getCppLiteralDiscriminantValueCpp(valueType, context, resolvingAliases) : undefined;
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  return alias
+    ? getCppLiteralDiscriminantValueCpp(alias, context, new Set(resolvingAliases).add(bindingId))
+    : undefined;
 }
 
 function getCppVariantRepresentation(
@@ -11560,8 +11868,25 @@ function emitCppOptionalSingleNullishCoalesceCpp(
   const value = plan?.kind === 'optionalSingle' && plan.valueSlots.length === 1 ? plan.valueSlots[0] : undefined;
   if (!value) return undefined;
   const left = emitOptionalExpressionCpp(expression.left, context, leftType);
-  const right = emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized);
   context.includes.add('optional');
+  const expectedUnion = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
+  const expectedPlan = expectedUnion ? getCppUnionRepresentationPlan(expectedUnion, context) : undefined;
+  const expectedSlots = expectedPlan?.valueSlots.filter(
+    (slot) => slot.representationKey === value.representationKey || slot.targetType === value.targetType,
+  );
+  if (expectedUnion && expectedPlan && expectedSlots?.length === 1) {
+    const source = getGeneratedTargetName('nullishCoalesceLeft', context);
+    const present = emitCppUnionValueConstruction(
+      `${source}.value()`,
+      expectedSlots[0]!.targetType,
+      expectedUnion,
+      expectedPlan.kind,
+      context,
+    );
+    const right = emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized);
+    return `([&]() -> ${emitUnionTypeCpp(expectedUnion, context)} { auto ${source} = ${left}; if (${source}.has_value()) return ${present}; return ${right}; }())`;
+  }
+  const right = emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized);
   if (isCppStableOptionalBindingIdentifierCpp(expression.left, context)) {
     return `(${left}.has_value() ? ${left}.value() : ${right})`;
   }
@@ -15046,7 +15371,8 @@ function getIrPropertyExpressionTypeEvidenceCpp(
       ? context.bindingInitializers.get(expression.object.reference.binding.id)
       : undefined;
   const recordedAliasedMemberType = receiverInitializer?.kind === 'property' ? recordedType : undefined;
-  const valueType = reconstructedType ?? recordedLiteralType ?? recordedAliasedMemberType;
+  const recordedNarrowedType = expression.presence === 'narrowedPresent' ? recordedType : undefined;
+  const valueType = recordedNarrowedType ?? reconstructedType ?? recordedLiteralType ?? recordedAliasedMemberType;
   if (!valueType || !expression.optional || expression.optionalChain?.receiverNullish !== 'possible') return valueType;
   return createIrTypeEvidenceUnionCpp([valueType, { kind: 'undefined' }]);
 }
@@ -17559,6 +17885,33 @@ function getCppOptionalElementReceiverPlanCpp(
     : undefined;
 }
 
+function emitCppOptionalVariantCommonPropertyExpressionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const semantics = expression.optionalChain;
+  if (!semantics) return undefined;
+  const receiverUnion = getIrUnionTypeCpp(semantics.receiverType, context, new Set());
+  if (!receiverUnion) return undefined;
+  const receiverPlan = getCppUnionRepresentationPlan(receiverUnion, context);
+  if (receiverPlan.kind !== 'optionalVariant') return undefined;
+  const representation: CppVariantRepresentation = {
+    alternatives: receiverPlan.valueSlots.map((slot) => ({
+      members: slot.sourceAlternatives,
+      runtimeType: slot.runtimeType,
+      targetType: slot.targetType,
+    })),
+    direct: false,
+  };
+  const evidence = getCppVariantCommonPropertyEvidenceCpp(representation, expression.name, context);
+  if (!evidence) return undefined;
+  const receiver = emitOptionalChainReceiverCpp(expression.object, context);
+  const projected = emitCppVariantCommonPropertyProjectionCpp(evidence, 'value');
+  context.includes.add('optional');
+  context.includes.add('variant');
+  return `([&]() -> std::optional<${evidence.payloadTargetType}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return std::visit([](const auto& value) { return ${projected}; }, optional_chain_receiver.value()); }())`;
+}
+
 function emitOptionalPropertyExpressionCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
@@ -17573,6 +17926,8 @@ function emitOptionalPropertyExpressionCpp(
   if (semantics.receiverNullish === 'excluded' && !indexesRuntimeCollection) {
     return emitExpression({ ...expression, optional: false }, context);
   }
+  const commonVariantProperty = emitCppOptionalVariantCommonPropertyExpressionCpp(expression, context);
+  if (commonVariantProperty) return commonVariantProperty;
   const receiverEvidence = getIrExpressionTypeEvidenceCpp(expression.object, context);
   const receiverType = emitOptionalChainPayloadIrTypeCpp(
     semantics.receiverType.kind === 'unknown' ? (receiverEvidence ?? semantics.receiverType) : semantics.receiverType,
@@ -17812,6 +18167,18 @@ function emitCppNarrowedPresentAccessCpp(
   } else {
     context.includes.add('variant');
     unwrapped = `std::get<${soleValueAlternative!.targetType}>(${unnarrowedExpression})`;
+  }
+  const recordedNarrowedType = expression.kind === 'property' ? expression.type : undefined;
+  const presentUnion = recordedNarrowedType ? getIrVariantUnionTypeCpp(presentType, context, new Set()) : undefined;
+  if (recordedNarrowedType && presentUnion) {
+    const representation = getCppVariantRepresentationForInspection(presentUnion, context);
+    const matches = representation.alternatives.filter((alternative) =>
+      doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(alternative, recordedNarrowedType, context),
+    );
+    if (matches.length === 1 && !representation.direct) {
+      context.includes.add('variant');
+      unwrapped = `std::get<${String(representation.alternatives.indexOf(matches[0]!))}>(${unwrapped})`;
+    }
   }
   if (expectedType && context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module)) {
     const sourcePlan = context.referenceRepresentationPlanner.plan(presentType, context.module);

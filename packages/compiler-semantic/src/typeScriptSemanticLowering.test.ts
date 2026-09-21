@@ -6981,6 +6981,32 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(tests[2]).toBeUndefined();
   });
 
+  it('retains union member evidence from an optional discriminant read', () => {
+    const result = lower(
+      'optional-union-test.ts',
+      `export const EntryState = { Bound: 'bound', Tombstoned: 'tombstoned' } as const;
+       interface Bound { readonly state: typeof EntryState.Bound; readonly value: number; }
+       interface Tombstoned { readonly state: typeof EntryState.Tombstoned; }
+       type Entry = Bound | Tombstoned;
+       export function isBound(entry: Entry | null | undefined): boolean {
+         return entry?.state === EntryState.Bound && entry.value > 0;
+       }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'isBound',
+    );
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = returned?.kind === 'return' ? returned.expression : undefined;
+    const test = expression?.kind === 'binary' && expression.left.kind === 'binary' ? expression.left : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(test?.semantics.unionMemberTest).toMatchObject({
+      binding: { name: 'entry' },
+      member: { kind: 'named', reference: { binding: { name: 'Bound' } } },
+      whenResult: true,
+    });
+  });
+
   it('records numeric and boolean literal discriminants, including negative numbers', () => {
     const result = lower(
       'literal-discriminants.ts',
