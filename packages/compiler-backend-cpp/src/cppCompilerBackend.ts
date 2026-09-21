@@ -5373,6 +5373,61 @@ function getIrIterableElementTypeCpp(
   return getIrIterableElementTypeCpp(alias, context, nextResolvingAliases);
 }
 
+// A for-of binding is stored as the collection's element type, but TypeScript can report a flow-expanded
+// anonymous object for the binding while retaining the named declaration on the iterable. Keep that
+// source identity only when the two complete, non-nullable unions have a one-to-one runtime-shape
+// mapping. The later narrowing rule still has to identify one source alternative by name; this proof
+// only prevents the loop boundary from discarding the names that the collection actually stores.
+function hasUniqueCppForOfSourceAlternativeMapping(
+  bindingType: Readonly<IrType>,
+  sourceType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const bindingUnion = getIrUnionTypeCpp(bindingType, context, new Set());
+  const sourceUnion = getIrUnionTypeCpp(sourceType, context, new Set());
+  if (!bindingUnion || !sourceUnion) return false;
+  if (
+    bindingUnion.types.some((member) => member.kind === 'null' || member.kind === 'undefined') ||
+    sourceUnion.types.some((member) => member.kind === 'null' || member.kind === 'undefined')
+  ) {
+    return false;
+  }
+  const inspectionContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const bindingPlan = getCppUnionRepresentationPlan(bindingUnion, inspectionContext);
+  const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, inspectionContext);
+  if (
+    bindingPlan.kind !== 'multiVariant' ||
+    sourcePlan.kind !== 'multiVariant' ||
+    bindingPlan.valueSlots.length !== sourcePlan.valueSlots.length
+  ) {
+    return false;
+  }
+  const unmatchedBindingSlots = new Set(bindingPlan.valueSlots.keys());
+  for (const sourceSlot of sourcePlan.valueSlots) {
+    const matches = [...unmatchedBindingSlots].filter((index) =>
+      areCppForOfSourceAlternativeShapesEquivalent(
+        sourceSlot.runtimeType,
+        bindingPlan.valueSlots[index]!.runtimeType,
+        context,
+      ),
+    );
+    if (matches.length !== 1) return false;
+    unmatchedBindingSlots.delete(matches[0]!);
+  }
+  return unmatchedBindingSlots.size === 0;
+}
+
+function areCppForOfSourceAlternativeShapesEquivalent(
+  left: Readonly<IrType>,
+  right: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (isDeepStrictEqual(left, right)) return true;
+  const leftShape = context.referenceRepresentationPlanner.resolveObjectShape(left, context.module);
+  const rightShape = context.referenceRepresentationPlanner.resolveObjectShape(right, context.module);
+  return Boolean(leftShape && rightShape && areCppObjectShapesRepresentationEquivalent(leftShape, rightShape, context));
+}
+
 function isCppStringValueTypeCpp(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -5469,7 +5524,8 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         (!statement.variable.type ||
           statement.variable.type.kind === 'unknown' ||
           (statement.variable.type.kind === 'tuple' &&
-            statement.variable.type.elements.some((element) => element.type.kind === 'unknown')))
+            statement.variable.type.elements.some((element) => element.type.kind === 'unknown')) ||
+          hasUniqueCppForOfSourceAlternativeMapping(statement.variable.type, iterableElementType, context))
       ) {
         context.preservedInitializerTypes.set(statement.variable.binding.id, iterableElementType);
       }

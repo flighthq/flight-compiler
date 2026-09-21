@@ -1944,6 +1944,127 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toMatch(/resolve_sphere\(std::get<\d+>\(collider\)\)/u);
   });
 
+  it('retains a uniquely mapped named for-of alternative for complement narrowing', () => {
+    const result = lower(
+      'xml-content.ts',
+      `interface XmlElement { name: string; content: Array<string | XmlElement> }
+       export function firstName(elements: Array<string | XmlElement>): string {
+         for (const element of elements) {
+           if (typeof element === 'string') continue;
+           return element.name;
+         }
+         return '';
+       }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'firstName',
+    );
+    const forOf = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    if (forOf?.kind !== 'forOf' || 'pattern' in forOf.variable) throw new Error('Expected for-of binding');
+    const bindingMember =
+      forOf.variable.type?.kind === 'union'
+        ? forOf.variable.type.types.find((member) => member.kind !== 'primitive')
+        : undefined;
+    const sourceMember =
+      forOf.iterableType?.kind === 'array' && forOf.iterableType.element.kind === 'union'
+        ? forOf.iterableType.element.types.find((member) => member.kind !== 'primitive')
+        : undefined;
+
+    expect(bindingMember?.kind).toBe('object');
+    expect(sourceMember).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'XmlElement' }, kind: 'binding' },
+    });
+    expect(result.diagnostics).toEqual([]);
+    expect(emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents).toMatch(
+      /return std::get<\d+>\(element\)->name;/u,
+    );
+  });
+
+  it('refuses a for-of source alias that names multiple runtime alternatives', () => {
+    const result = lower(
+      'ambiguous-xml-content.ts',
+      `interface TextElement { text: string }
+       interface NamedElement { name: string }
+       type XmlElement = TextElement | NamedElement;
+       export function inspect(elements: Array<string | XmlElement>): void {
+         for (const element of elements) {
+           if (typeof element === 'string') continue;
+           element;
+         }
+       }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'inspect',
+    );
+    const forOf = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const observed = forOf?.kind === 'forOf' && forOf.body.kind === 'block' ? forOf.body.statements[1] : undefined;
+    if (observed?.kind !== 'expression' || observed.expression.kind !== 'identifier') {
+      throw new Error('Expected observed for-of binding');
+    }
+    Object.assign(observed.expression, { narrowedMember: 'XmlElement' });
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'narrowed member XmlElement must identify one C++ variant alternative',
+    );
+  });
+
+  it('does not retain named for-of identity through a nullable source union', () => {
+    const result = lower(
+      'nullable-xml-content.ts',
+      `interface XmlElement { name: string }
+       export function firstName(elements: Array<string | XmlElement>): string {
+         for (const element of elements) {
+           if (typeof element === 'string') continue;
+           return element.name;
+         }
+         return '';
+       }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'firstName',
+    );
+    const parameter = declaration?.kind === 'function' ? declaration.parameters[0] : undefined;
+    if (parameter?.type.kind !== 'array' || parameter.type.element.kind !== 'union') {
+      throw new Error('Expected union array parameter');
+    }
+    Object.assign(parameter.type, {
+      element: { kind: 'union', types: [...parameter.type.element.types, { kind: 'null' }] },
+    });
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'narrowed member XmlElement must identify one C++ variant alternative',
+    );
+  });
+
+  it('does not grant a named for-of alternative to a structural lookalike', () => {
+    const result = lower(
+      'lookalike-xml-content.ts',
+      `interface XmlElement { name: string }
+       interface Lookalike { name: string }
+       export function firstName(elements: Array<string | Lookalike>): string {
+         for (const element of elements) {
+           if (typeof element === 'string') continue;
+           return element.name;
+         }
+         return '';
+       }`,
+    );
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'firstName',
+    );
+    const forOf = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const returned = forOf?.kind === 'forOf' && forOf.body.kind === 'block' ? forOf.body.statements[1] : undefined;
+    const object =
+      returned?.kind === 'return' && returned.expression?.kind === 'property' ? returned.expression.object : undefined;
+    if (object?.kind !== 'identifier') throw new Error('Expected returned property binding');
+    Object.assign(object, { narrowedMember: 'XmlElement' });
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'narrowed member XmlElement must identify one C++ variant alternative',
+    );
+  });
+
   it('refuses a narrowed variant reference without matching source-alternative evidence', () => {
     const result = lower(
       'unproven-variant-member.ts',
