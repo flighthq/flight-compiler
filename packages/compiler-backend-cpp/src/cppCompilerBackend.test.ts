@@ -2694,7 +2694,7 @@ describe('createCppCompilerBackend', () => {
        export interface Entity { [EntityRuntimeKey]: object | undefined; }
        export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
        export interface Frame extends Entity { pivotX: number | null; frameDurations: number[] | null; }
-       export interface MixedFrame extends Entity { pivotX: number | string | null; }`,
+       export interface MixedFrame extends Entity { pivotX: boolean | string | null; }`,
       ts.ScriptTarget.Latest,
       true,
     );
@@ -4628,6 +4628,58 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         emitIrModuleCpp(ambiguous.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
       ).rule,
     ).toBe('cpp-collection-argument-multiple-present-domains');
+  });
+
+  it('widens an optional value into a nullable collection union', () => {
+    const texture = lowerPackage(
+      '@flighthq/types',
+      'texture.ts',
+      `export interface Texture2D { source: string }
+       export interface TextureCube { faces: number }
+       export type Texture = Texture2D | TextureCube;`,
+    ).module;
+    const types = lowerPackage(
+      '@flighthq/types',
+      'commands.ts',
+      `import type { Texture } from './texture';
+       interface Matrix { value: number }
+       export type Command = Matrix | Texture | boolean | number | readonly number[] | string | null;
+       export type { Matrix };`,
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/shape',
+      'append.ts',
+      `import type { Command, Matrix } from '@flighthq/types';
+       import type { Texture } from '@flighthq/types/texture';
+       export function append(commands: Command[], matrix: Matrix | null, texture: Texture): void {
+         commands.push(matrix);
+         commands.push(texture);
+       }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        { specifier: './texture', target: { packageName: texture.packageName, source: texture.source } },
+        { specifier: '@flighthq/types', target: { packageName: types.packageName, source: types.source } },
+        {
+          specifier: '@flighthq/types/texture',
+          target: { packageName: texture.packageName, source: texture.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, texture, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(emitted).toContain('if (!contextual_union_source.has_value()) return std::nullopt');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flighthq_types::Matrix>>');
+    expect(emitted).toContain('contextual_union_source.value()');
+    expect(emitted).toContain('std::visit');
+    expect(emitted).toContain('std::is_same_v<contextual_union_value_type');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flighthq_types::Texture2D>>');
+    expect(emitted).not.toContain('std::in_place_type<flight::Ref<Texture2D>>');
   });
 
   it('projects a guarded optional array into an asserted tuple exactly once', () => {

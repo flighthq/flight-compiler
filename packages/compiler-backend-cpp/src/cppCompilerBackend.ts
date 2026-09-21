@@ -10147,6 +10147,27 @@ function qualifyCppDeclaringModuleAlternativesCpp(
   return result;
 }
 
+function qualifyCppDeclaringModuleTypeCpp(emitted: string, context: EmitContext): string {
+  let result = qualifyCppDeclaringModuleAlternativesCpp(emitted, context, context.module, context.options);
+  const namespace = getCppCompilerPackageNamespace(context.module.packageName, context.options.packageTargets);
+  for (const module of context.sourceModules) {
+    if (getCppCompilerPackageNamespace(module.packageName, context.options.packageTargets) !== namespace) continue;
+    for (const declaration of module.declarations) {
+      if (
+        declaration.kind !== 'class' &&
+        declaration.kind !== 'enum' &&
+        declaration.kind !== 'interface' &&
+        declaration.kind !== 'typeAlias'
+      ) {
+        continue;
+      }
+      const name = context.targetNames.get(declaration.binding.id) ?? pascalCase(declaration.binding.name);
+      result = result.replace(new RegExp(`(?<![A-Za-z0-9_:])${name}(?![A-Za-z0-9_])`, 'gu'), `${namespace}::${name}`);
+    }
+  }
+  return result;
+}
+
 function emitContextualUnionExpressionCpp(
   expression: Readonly<IrExpression>,
   expectedType: Readonly<IrType>,
@@ -10354,6 +10375,15 @@ function emitContextualUnionExpressionInContextCpp(
         );
       }
     }
+    const widenedOptional = emitCppOptionalUnionWideningCpp(
+      expression,
+      expressionType,
+      expressionPlan,
+      union,
+      plan,
+      context,
+    );
+    if (widenedOptional) return widenedOptional;
     // `std::optional` erases which single sentinel caused absence, while the source plan retains it.
     // When widening into a dual-sentinel variant, branch before extracting the value and reconstruct
     // that exact sentinel. An explicit assertion may change the present structural view, but its
@@ -10564,6 +10594,98 @@ function emitContextualUnionExpressionInContextCpp(
     union,
     plan.kind,
     context,
+  );
+}
+
+// Widen a represented source union into a nullable destination only when every present source slot
+// selects exactly one destination slot. An optional source must also encode the same sentinel: passing
+// optional<T> directly to optional<variant<T, U>> has no converting constructor, while extracting
+// without the check would turn source absence into a throw.
+function emitCppOptionalUnionWideningCpp(
+  expression: Readonly<IrExpression>,
+  expressionType: Readonly<IrType>,
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  targetUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (targetPlan.kind !== 'optionalVariant') {
+    return undefined;
+  }
+  const slotMappings = sourcePlan.valueSlots.map((sourceSlot) => {
+    if (sourceSlot.targetType === 'flight::Any') return undefined;
+    const targets = targetPlan.valueSlots.filter(
+      (slot) =>
+        slot.targetType === sourceSlot.targetType ||
+        hasCppSameDeclaredUnionRuntimeTypeCpp(sourceSlot.runtimeType, slot.runtimeType, context),
+    );
+    return targets.length === 1 ? { source: sourceSlot, target: targets[0]! } : undefined;
+  });
+  if (slotMappings.some((mapping) => mapping === undefined)) return undefined;
+  const mappings = slotMappings.filter((mapping) => mapping !== undefined);
+  const resultType = qualifyCppDeclaringModuleTypeCpp(emitUnionTypeCpp(targetUnion, context), context);
+  if (sourcePlan.kind === 'multiVariant' && mappings.length > 1) {
+    const value = getGeneratedTargetName('contextualUnionValue', context);
+    const valueType = getGeneratedTargetName('contextualUnionValueType', context);
+    const branches = mappings.map((mapping, index) => {
+      const sourceType = mapping.source.targetType;
+      const targetType = qualifyCppDeclaringModuleTypeCpp(mapping.target.targetType, context);
+      const result = `${resultType}{std::in_place, std::in_place_type<${targetType}>, ${value}}`;
+      if (index === mappings.length - 1) return `else return ${result};`;
+      return `${index === 0 ? 'if' : 'else if'} constexpr (std::is_same_v<${valueType}, ${sourceType}>) return ${result};`;
+    });
+    context.includes.add('type_traits');
+    context.includes.add('variant');
+    return `std::visit([&](const auto& ${value}) -> ${resultType} { using ${valueType} = std::decay_t<decltype(${value})>; ${branches.join(' ')} }, ${emitExpression(expression, context, expressionType, false)})`;
+  }
+  if (sourcePlan.kind !== 'optionalSingle' || mappings.length !== 1) return undefined;
+  const sourceSentinel =
+    sourcePlan.sentinels.null === 'optionalAbsence'
+      ? 'null'
+      : sourcePlan.sentinels.undefined === 'optionalAbsence'
+        ? 'undefined'
+        : undefined;
+  if (!sourceSentinel || targetPlan.sentinels[sourceSentinel] !== 'optionalAbsence') return undefined;
+  const source = getGeneratedTargetName('contextualUnionSource', context);
+  const absent = emitCppUnionSentinelConstruction(sourceSentinel, targetUnion, targetPlan.kind, context);
+  const targetType = qualifyCppDeclaringModuleTypeCpp(mappings[0]!.target.targetType, context);
+  const present = `${resultType}{std::in_place, std::in_place_type<${targetType}>, ${source}.value()}`;
+  const value = emitExpression(expression, context, expressionType, false);
+  context.includes.add('optional');
+  return `([&]() -> ${resultType} { auto ${source} = ${value}; if (!${source}.has_value()) return ${absent}; return ${present}; }())`;
+}
+
+function hasCppSameDeclaredUnionRuntimeTypeCpp(
+  left: Readonly<IrType>,
+  right: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (
+    left.kind !== 'named' ||
+    right.kind !== 'named' ||
+    left.reference.kind !== 'binding' ||
+    right.reference.kind !== 'binding' ||
+    !isDeepStrictEqual(left.typeArguments, right.typeArguments)
+  ) {
+    return false;
+  }
+  const getOwner = (type: Readonly<Extract<IrType, { kind: 'named' }>>) => {
+    const direct = getCppDirectBindingOwner(type, context);
+    if (direct) return direct;
+    if (type.reference.kind !== 'binding') return undefined;
+    const importOwner = context.importBindingOwners.get(type.reference.binding.id);
+    const resolutionContext = importOwner ? { ...context, module: importOwner.module } : context;
+    return getCppImportedBindingDeclarationCpp(type, resolutionContext);
+  };
+  const leftOwner = getOwner(left);
+  const rightOwner = getOwner(right);
+  return Boolean(
+    leftOwner &&
+    rightOwner &&
+    'binding' in leftOwner.declaration &&
+    'binding' in rightOwner.declaration &&
+    leftOwner.declaration.binding.id === rightOwner.declaration.binding.id &&
+    getCppModuleIdentityKey(leftOwner.module) === getCppModuleIdentityKey(rightOwner.module),
   );
 }
 
@@ -13072,11 +13194,11 @@ function getCppCollectionCallArgumentExpectedTypeCpp(
   return undefined;
 }
 
-// A collection method receives its element/key/value domain, never the optional carrier used by a
-// lookup such as Array.pop. Crossing that boundary is valid only after source control flow proves the
-// lookup present, and only while the carrier has one remaining runtime value domain. Otherwise
-// passing the identifier through produces a call such as `set.delete_(std::optional<Ref<T>>)` that
-// cannot preserve the source operation and does not compile.
+// A collection method whose element/key/value domain excludes absence cannot receive the optional
+// carrier used by a lookup such as Array.pop. Crossing that boundary is valid only after source
+// control flow proves the lookup present, and only while the carrier has one remaining runtime value
+// domain. Otherwise passing the identifier through produces a call such as
+// `set.delete_(std::optional<Ref<T>>)` that cannot preserve the source operation and does not compile.
 function assertCppPresentOptionalCollectionArgumentCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   argument: Readonly<IrExpression>,
@@ -13085,10 +13207,13 @@ function assertCppPresentOptionalCollectionArgumentCpp(
   context: EmitContext,
 ): void {
   const collectionType = getCppCollectionCallArgumentExpectedTypeCpp(expression, index, context);
+  const expectedUnion = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
   if (
     !collectionType ||
     !expectedType ||
-    hasIrTypeAbsentMember(expectedType) ||
+    (expectedUnion
+      ? expectedUnion.types.some((member) => member.kind === 'null' || member.kind === 'undefined')
+      : hasIrTypeAbsentMember(expectedType)) ||
     argument.kind !== 'identifier' ||
     argument.reference.kind !== 'binding' ||
     !hasCppAbsenceStorageCpp(argument, context)
