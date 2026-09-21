@@ -13665,6 +13665,17 @@ function emitOptionalExpressionCpp(
   context: EmitContext,
   expectedType: Readonly<IrType> | undefined,
 ): string {
+  // An indexed optional-chain continuation carries two independent sources of absence: its receiver
+  // may already be absent, and the runtime collection lookup may miss. The direct `.get` paths below
+  // preserve only the latter. Keep them for a receiver the checker proved present, but let the existing
+  // optional-chain emitter guard a receiver whose neutral evidence still says it may be nullish.
+  if (
+    expression.kind === 'element' &&
+    expression.optional &&
+    expression.semantics.optionalChain?.receiverNullish === 'possible'
+  ) {
+    return emitOptionalElementExpressionCpp(expression, context);
+  }
   if (
     expression.kind === 'element' &&
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&

@@ -4118,6 +4118,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         emitIrModuleCpp(ambiguous.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
       ).rule,
     ).toBe('cpp-collection-argument-multiple-present-domains');
+  });
+
   it('projects a guarded optional array into an asserted tuple exactly once', () => {
     const result = lower(
       'guarded-asserted-tuple.ts',
@@ -16005,6 +16007,127 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
     expect(emitted.contents).toContain('optional_chain_receiver');
     expect(emitted.contents).toContain('.get(');
+  });
+
+  it('guards an optional element after an optional collection lookup', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './lookup',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/lookup.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/lookup.ts',
+            `export function lookup(
+               bytes: Readonly<Uint8Array>,
+               start: number,
+               end: number,
+             ): Map<number, number[]> | null { void bytes; void start; void end; return null; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/math',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/math/src/nested-optional-collection-element.ts',
+            `import { lookup } from './lookup';
+             export function first(
+               bytes: Readonly<Uint8Array>,
+               top: ReadonlyMap<number, number[]>,
+               tableOffset: number,
+               tableEnd: number,
+             ): number | undefined {
+               const privateEntry = top.get(18);
+               if (privateEntry === undefined || privateEntry.length < 2) return undefined;
+               const [privateSize, privateOffset] = privateEntry as [number, number];
+               const privateAt = tableOffset + privateOffset;
+               if (privateAt < tableOffset || privateAt + privateSize > tableEnd) return undefined;
+               const items = lookup(bytes, privateAt, privateAt + privateSize);
+               const selected = items?.get(19)?.[0];
+               if (selected === undefined) return 0;
+               return selected;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const result = results[1]!;
+    const first = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'first',
+    );
+    const statement =
+      first?.kind === 'function'
+        ? first.body.find(
+            (candidate) =>
+              candidate.kind === 'variable' &&
+              candidate.declarations.some(
+                (declaration) => 'binding' in declaration && declaration.binding.name === 'selected',
+              ),
+          )
+        : undefined;
+    const expression = statement?.kind === 'variable' ? statement.declarations[0]?.initializer : undefined;
+    const emitted = emitCppModuleCppSession(results, moduleResolution, 1);
+
+    expect(statement?.kind === 'variable' ? statement.declarations[0]?.type : undefined).toEqual({
+      kind: 'primitive',
+      name: 'number',
+    });
+    expect(expression).toMatchObject({
+      kind: 'element',
+      optional: true,
+      semantics: {
+        optionalChain: { receiverNullish: 'possible', receiverType: { kind: 'union' } },
+      },
+    });
+    expect(emitted).toContain('return optional_chain_receiver.value().get(0.0);');
+    expect(emitted).not.toContain('}()).get(0.0)');
+  });
+
+  it('keeps direct checked indexing when an optional element receiver is present', () => {
+    const result = lower(
+      'present-optional-element.ts',
+      `export function first(items: number[]): number {
+         const selected = items?.[0];
+         if (selected === undefined) return 0;
+         return selected;
+       }`,
+    );
+    const first = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'first',
+    );
+    const statement =
+      first?.kind === 'function'
+        ? first.body.find(
+            (candidate) =>
+              candidate.kind === 'variable' &&
+              candidate.declarations.some(
+                (declaration) => 'binding' in declaration && declaration.binding.name === 'selected',
+              ),
+          )
+        : undefined;
+    const expression = statement?.kind === 'variable' ? statement.declarations[0]?.initializer : undefined;
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(expression).toMatchObject({
+      kind: 'element',
+      optional: true,
+      semantics: { optionalChain: { receiverNullish: 'excluded' } },
+    });
+    expect(emitted).toContain('const std::optional<double> selected = items.get(0.0);');
+    expect(emitted).not.toContain('auto optional_chain_receiver = items');
   });
 
   it('emits optional call with receiverNullish excluded', () => {
