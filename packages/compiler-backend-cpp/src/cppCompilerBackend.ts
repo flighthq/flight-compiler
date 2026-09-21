@@ -15998,7 +15998,12 @@ function emitCppNarrowedPresentAccessCpp(
   // variant that preserves null and undefined as distinct alternatives holds it as the one value
   // alternative. A plan with no single value domain still refuses rather than choosing an alternative
   // the guard did not prove.
-  const paysForAbsenceWithOptional = plan !== undefined && plan.kind === 'optionalSingle';
+  // Absence carried by an optional is one answer whatever the payload's width: `Texture | null` where
+  // `Texture` is itself a union keeps its absent state in the optional and its value state as the
+  // variant behind it, so the narrowed read is `value()` for both kinds. Only a plan that keeps the
+  // sentinels as alternatives of the variant needs the single value alternative named.
+  const paysForAbsenceWithOptional =
+    plan !== undefined && (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant');
   const soleValueAlternative =
     plan !== undefined &&
     (plan.kind === 'dualSentinelVariant' || plan.kind === 'multiVariant' || plan.kind === 'optionalVariant') &&
@@ -16008,7 +16013,11 @@ function emitCppNarrowedPresentAccessCpp(
   if (!paysForAbsenceWithOptional && !soleValueAlternative) {
     emissionError(context, 'present access requires optional C++ storage with one value domain');
   }
-  const unnarrowedExpression = emitExpression(unnarrowed, context, presentType);
+  // The carrier is re-emitted to be unwrapped, so the contextual union construction must not run on it:
+  // this expression is the STORAGE, and building a union out of it here is what the outer, narrowed
+  // expression already did before this lane was reached. `presentType` is still passed, because every
+  // other contextual rule is about the value this read produces and stays right.
+  const unnarrowedExpression = emitExpression(unnarrowed, context, presentType, false);
   let unwrapped: string;
   if (paysForAbsenceWithOptional) {
     context.includes.add('optional');

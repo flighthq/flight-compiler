@@ -11225,6 +11225,67 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toThrow();
   });
 
+  it('unwraps an optional-carried union once for a narrowed read, and refuses the rest', () => {
+    // `sceneMaterialTextureRegistry.ts:94`'s shape: `if (pbr.baseColorMap !== null) out.push(pbr.baseColorMap)`
+    // where `baseColorMap: Texture | null` and `Texture` is a union, reached through an import. The
+    // narrowed read is the storage's `value()` and what it yields is the union the array element wants,
+    // so the conversion that would build a union out of the carrier runs once, not twice.
+    const material = `export interface Texture2D { readonly id: number }
+       export interface TextureCube { readonly face: number }
+       export type Texture = Texture2D | TextureCube;
+       export interface Pbr { readonly baseColorMap: Texture | null; readonly scalar: number | undefined; readonly both: Texture | null | undefined }`;
+    const body = `export function listPbr(pbr: Readonly<Pbr>, out: Texture[]): void {
+        if (pbr.baseColorMap !== null) out.push(pbr.baseColorMap);
+      }`;
+    const types = ts.createSourceFile('/flight/packages/types/src/Material.ts', material, ts.ScriptTarget.Latest, true);
+    const consumer = ts.createSourceFile(
+      '/flight/packages/scene3d-resources/src/registry.ts',
+      `import type { Pbr, Texture } from '@flighthq/types/contract';\n${body}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const plan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: undefined as never,
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Material.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [typesModule, consumerModule] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/scene3d-resources', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      plan,
+    );
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: plan,
+      modules: [typesModule!.module, consumerModule!.module],
+      options: {
+        packageTargets: {
+          '@flighthq/scene3d-resources': {
+            includePrefix: 'flight/scene3d-resources',
+            namespace: 'flight::scene3d_resources',
+          },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    })
+      .emitModule(consumerModule!.module)
+      .map((file) => file.contents)
+      .join('\n');
+
+    // The unwrap happens once and yields the union the element wants; the read is evaluated once in the
+    // pushed expression, beside the source's own guard, which is a second read in the source too.
+    expect(emitted).toContain('out.push(flight::row_get<flight::RowKey<"baseColorMap">>(pbr).value());');
+    expect(emitted.match(/\.value\(\)/gu)?.length).toBe(1);
+    expect(emitted).not.toContain('std::get<flight::Ref<flight::types::Texture2D>>');
+  });
+
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
     // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
     // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the
