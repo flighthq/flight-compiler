@@ -111,12 +111,19 @@ export interface CppCompilerExternalMemberBinding extends CompilerRuntimeExterna
   readonly parameters?: readonly CppCompilerExternalMemberParameterBinding[] | undefined;
 }
 
+export interface CppCompilerExternalBindingNumericPropertyView {
+  /** A readonly `String -> optional<double>` member on the represented target value. */
+  readonly targetName: string;
+}
+
 export interface CppCompilerExternalBinding {
   readonly callResultType?: string | undefined;
   readonly construction?: CppCompilerExternalBindingConstruction | undefined;
   readonly headers: readonly string[];
   /** Static members for value-space bindings; instance members for type-space bindings. */
   readonly members?: readonly CppCompilerExternalMemberBinding[] | undefined;
+  /** Explicit target ABI for source named/computed reads whose absence remains observable. */
+  readonly numericPropertyView?: CppCompilerExternalBindingNumericPropertyView | undefined;
   readonly nullability: 'non-null' | 'nullable';
   /** Explicitly elects assignment-based construction for an external value object. */
   readonly objectConstruction?: CppCompilerExternalObjectConstruction | undefined;

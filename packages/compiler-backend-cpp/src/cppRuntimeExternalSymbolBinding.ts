@@ -8,6 +8,7 @@ import type {
   CppCompilerExternalMemberBinding,
   CppCompilerExternalObjectConstruction,
   CppCompilerExternalBindingManifest,
+  CppCompilerExternalBindingNumericPropertyView,
   CppCompilerRuntimeProfile,
 } from '../../compiler-types/src/index.js';
 
@@ -92,6 +93,16 @@ export function getCompilerExternalBindingEvidenceCpp(
         targetName: binding.targetName,
       })
     : undefined;
+}
+
+export function getCompilerExternalBindingNumericPropertyViewCpp(
+  sourceName: string,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): Readonly<CppCompilerExternalBindingNumericPropertyView> | undefined {
+  const binding = getCppCompilerExternalBindings(externalBindings).find(
+    (candidate) => candidate.sourceName === sourceName.normalize('NFC') && candidate.space === 'type',
+  );
+  return binding?.numericPropertyView ? Object.freeze({ ...binding.numericPropertyView }) : undefined;
 }
 
 export function getCompilerExternalBindingHeadersCpp(
@@ -337,6 +348,14 @@ function getCppCompilerExternalBindings(
       throw new TypeError(`${subject} has a malformed or ambiguous object-construction field contract`);
     }
     if (
+      binding.numericPropertyView !== undefined &&
+      (binding.space !== 'type' ||
+        typeof binding.numericPropertyView.targetName !== 'string' ||
+        binding.numericPropertyView.targetName.length === 0)
+    ) {
+      throw new TypeError(`${subject} has a malformed numeric-property view`);
+    }
+    if (
       binding.weakKeyPolicyTargetName !== undefined &&
       (binding.space !== 'type' ||
         binding.ownership !== 'shared' ||
@@ -364,6 +383,9 @@ function getCppCompilerExternalBindings(
                 : {}),
             })),
           }
+        : {}),
+      ...(binding.numericPropertyView
+        ? { numericPropertyView: { targetName: binding.numericPropertyView.targetName } }
         : {}),
       nullability: binding.nullability,
       ...(binding.objectConstruction

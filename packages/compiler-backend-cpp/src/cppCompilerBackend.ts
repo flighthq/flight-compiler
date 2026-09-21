@@ -104,6 +104,7 @@ import {
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingEvidenceCpp,
   getCompilerExternalBindingHeadersCpp,
+  getCompilerExternalBindingNumericPropertyViewCpp,
   getCompilerExternalBindingObjectConstructionCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
   getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
@@ -3393,6 +3394,8 @@ function emitExpression(
       }
       const computedProperty = emitComputedSymbolElementAccessCpp(expression, context);
       if (computedProperty) return computedProperty;
+      const externalNumericProperty = emitCppExternalNumericPropertyViewElementCpp(expression, context);
+      if (externalNumericProperty) return externalNumericProperty;
       const variantIndexedAccess = emitCppVariantIndexedElementAccessCpp(expression, context);
       if (variantIndexedAccess) return variantIndexedAccess;
       if (
@@ -4161,6 +4164,8 @@ function emitExpression(
         addCppExternalBindingHeaders(externalInstanceMember.sourceName, 'type', context);
         return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${externalInstanceMember.targetName}`;
       }
+      const externalNumericProperty = emitCppExternalNumericPropertyViewPropertyCpp(expression, context);
+      if (externalNumericProperty) return externalNumericProperty;
       if (expression.namespaceMember) {
         return `${emitExpression(expression.object, context)}::${safeCppName(expression.name)}`;
       }
@@ -12946,6 +12951,60 @@ function getCppExternalInstanceMemberBindingCpp(
   return targetName ? { sourceName, targetName } : undefined;
 }
 
+interface CppExternalNumericPropertyViewPlan {
+  readonly sourceName: string;
+  readonly targetName: string;
+}
+
+function getCppExternalNumericPropertyViewPlanCpp(
+  receiver: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<CppExternalNumericPropertyViewPlan> | undefined {
+  const sourceName = getCppExternalInstanceReceiverSourceNameCpp(receiver, context);
+  if (!sourceName) return undefined;
+  const view = getCompilerExternalBindingNumericPropertyViewCpp(sourceName, context.options.externalBindings);
+  return view ? { sourceName, targetName: view.targetName } : undefined;
+}
+
+function getCppExternalNumericPropertyViewTypeCpp(): Readonly<IrType> {
+  return {
+    kind: 'union',
+    types: [
+      { kind: 'primitive', name: 'number' },
+      { kind: 'undefined' },
+    ],
+  };
+}
+
+function emitCppExternalNumericPropertyViewPropertyCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const plan = getCppExternalNumericPropertyViewPlanCpp(expression.object, context);
+  if (!plan) return undefined;
+  addCppExternalBindingHeaders(plan.sourceName, 'type', context);
+  context.includes.add('flight/string.hpp');
+  return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${plan.targetName}(${emitLiteral(expression.name, context)})`;
+}
+
+function emitCppExternalNumericPropertyViewElementCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): string | undefined {
+  const plan = getCppExternalNumericPropertyViewPlanCpp(expression.object, context);
+  if (!plan) return undefined;
+  if (!isCppStringKeyIndexCpp(expression.index, context)) {
+    emissionError(
+      context,
+      'an external numeric-property view requires a proven string key',
+      'cpp-external-numeric-property-view-key-unrepresented',
+    );
+  }
+  addCppExternalBindingHeaders(plan.sourceName, 'type', context);
+  context.includes.add('flight/string.hpp');
+  return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${plan.targetName}(${emitExpression(expression.index, context)})`;
+}
+
 function getCppRuntimeExternalCallResultTargetCpp(
   expression: Readonly<IrExpression>,
   runtimeProfile: CppCompilerRuntimeProfile,
@@ -14662,6 +14721,9 @@ function getIrExpressionTypeEvidenceCpp(
       return expression.type;
     }
     case 'element': {
+      if (getCppExternalNumericPropertyViewPlanCpp(expression.object, context)) {
+        return getCppExternalNumericPropertyViewTypeCpp();
+      }
       const computedSymbol = getComputedSymbolElementPropertyCpp(expression, context);
       if (computedSymbol) {
         return expression.presence === 'narrowedPresent'
@@ -14677,6 +14739,12 @@ function getIrExpressionTypeEvidenceCpp(
         : elementType;
     }
     case 'property': {
+      if (
+        !getCppExternalInstanceMemberBindingCpp(expression, context) &&
+        getCppExternalNumericPropertyViewPlanCpp(expression.object, context)
+      ) {
+        return getCppExternalNumericPropertyViewTypeCpp();
+      }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'this') {
         const memberType =
           context.currentClass?.fields.find((field) => field.name === expression.name)?.type ??

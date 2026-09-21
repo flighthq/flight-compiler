@@ -4537,6 +4537,93 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted.contents).toContain('return host::preferred_format');
   });
 
+  it('reads an explicitly bound external numeric-property view without collapsing absence to zero', () => {
+    const result = lower(
+      'native-numeric-property-view.ts',
+      `function receiver(value: HostExtension): HostExtension { return value; }
+       function key(value: string): string { return value; }
+       export function named(extension: HostExtension): number | undefined { return extension.ZERO; }
+       export function dynamic(extension: HostExtension, name: string): number | undefined {
+         return receiver(extension)[key(name)];
+       }
+       export function guarded(extension: HostExtension | null): number {
+         if (extension === null) return -1;
+         return typeof extension.ZERO === 'number' ? extension.ZERO : -1;
+       }`,
+    );
+    const binding = {
+      headers: ['host/extension.hpp'],
+      nullability: 'nullable' as const,
+      numericPropertyView: { targetName: 'get' },
+      ownership: 'value' as const,
+      sourceName: 'HostExtension',
+      space: 'type' as const,
+      targetName: 'host::Extension',
+    };
+    const emit = (externalBinding: Readonly<CppCompilerExternalBinding>) =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [externalBinding],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      });
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emit(binding).contents;
+    expect(emitted).toContain('std::optional<double> named(host::Extension extension)');
+    expect(emitted).toContain('return extension.get(flight::String("ZERO"));');
+    const dynamic = /std::optional<double> dynamic[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(dynamic).toContain('receiver(extension).get(key(name))');
+    expect(dynamic?.match(/receiver\(extension\)/gu)).toHaveLength(1);
+    expect(dynamic?.match(/key\(name\)/gu)).toHaveLength(1);
+    expect(emitted).not.toContain('value_or(0.0)');
+    expect(emitted).toContain('std::optional<host::Extension> extension');
+    expect(emitted).toContain('extension.value().get(flight::String("ZERO")).has_value()');
+    expect(emitted).toContain('extension.value().get(flight::String("ZERO")).value()');
+
+    const failure = captureBackendEmissionFailure(() => emit({ ...binding, numericPropertyView: undefined }));
+    expect(failure.rule).toBe('cpp-contextual-union-missing-expression-type:optionalSingle');
+  });
+
+  it('keeps ordinary external fields and explicit instance mappings outside the numeric-property view', () => {
+    const result = lower(
+      'native-static-extension.ts',
+      `export function direct(extension: StaticExtension): number { return extension.VALUE; }
+       export function mapped(extension: ViewedExtension): number { return extension.VALUE; }`,
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/extension.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'StaticExtension',
+          space: 'type' as const,
+          targetName: 'host::StaticExtension',
+        },
+        {
+          headers: ['host/extension.hpp'],
+          members: [{ sourceMember: 'VALUE', targetName: 'fixed_value' }],
+          nullability: 'nullable' as const,
+          numericPropertyView: { targetName: 'get' },
+          ownership: 'value' as const,
+          sourceName: 'ViewedExtension',
+          space: 'type' as const,
+          targetName: 'host::ViewedExtension',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    const emitted = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('return extension.value;');
+    expect(emitted).toContain('return extension.fixed_value;');
+    expect(emitted).not.toContain('.get(');
+  });
+
   it('uses downstream member and constructor result evidence for unresolved mutable storage', () => {
     const result = lower(
       'native-call-results.ts',

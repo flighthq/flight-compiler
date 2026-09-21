@@ -4,6 +4,7 @@ import {
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingEvidenceCpp,
   getCompilerExternalBindingHeadersCpp,
+  getCompilerExternalBindingNumericPropertyViewCpp,
   getCompilerExternalBindingObjectConstructionCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
   getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
@@ -239,6 +240,42 @@ describe('getCompilerExternalBindingCallResultTypeCpp', () => {
         schema: 'flight-cpp-external-bindings/1',
       }),
     ).toThrow('ambiguous for setTimeout[value]');
+  });
+});
+
+describe('getCompilerExternalBindingNumericPropertyViewCpp', () => {
+  const binding = {
+    headers: ['host/extension.hpp'],
+    nullability: 'nullable' as const,
+    numericPropertyView: { targetName: 'get' },
+    ownership: 'value' as const,
+    sourceName: 'HostExtension',
+    space: 'type' as const,
+    targetName: 'host::Extension',
+  };
+  const manifest = {
+    bindings: [binding],
+    schema: 'flight-cpp-external-bindings/1' as const,
+  };
+
+  it('returns a defensive exact view only for its type binding', () => {
+    const view = getCompilerExternalBindingNumericPropertyViewCpp('HostExtension', manifest);
+
+    expect(view).toEqual({ targetName: 'get' });
+    expect(Object.isFrozen(view)).toBe(true);
+    expect(getCompilerExternalBindingNumericPropertyViewCpp('Missing', manifest)).toBeUndefined();
+  });
+
+  it.each([
+    ['an empty getter', { numericPropertyView: { targetName: '' } }],
+    ['value-space evidence', { space: 'value' as const }],
+  ])('rejects %s', (_label, replacement) => {
+    expect(() =>
+      getCompilerExternalBindingNumericPropertyViewCpp('HostExtension', {
+        bindings: [{ ...binding, ...replacement }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed numeric-property view');
   });
 });
 
