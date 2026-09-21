@@ -15166,6 +15166,79 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('values.set(flight::String("copy"), copy)');
   });
 
+  it('constructs a fresh superset literal in its sole named parameter representation', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-named-object-value.ts',
+        `interface ShapeRunOptions { direction?: string; script?: string }
+         interface TextShaperOptions {
+           readonly direction?: string;
+           readonly features?: readonly string[];
+           readonly language?: string;
+           readonly script?: string;
+         }
+         function consumeRequired(options: ShapeRunOptions): void { void options; }
+         function consumeOptional(options?: ShapeRunOptions): void { void options; }
+         export function shape(options: Readonly<TextShaperOptions> | undefined, direction: string): void {
+           const runOptions = { ...options, direction, script: 'Latn' };
+           consumeRequired(runOptions);
+           consumeOptional(runOptions);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain(
+      'flight::Ref<ShapeRunOptions> run_options = flight::make_ref<ShapeRunOptions>(ShapeRunOptions{',
+    );
+    expect(output).toContain('.direction = std::optional<flight::String>{direction}');
+    expect(output).toContain('.script = std::optional<flight::String>{flight::String("Latn")}');
+    expect(output).toContain('consume_required(run_options)');
+    expect(output).toContain('consume_optional(run_options)');
+  });
+
+  it('keeps an anonymous parameter target anonymous', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-anonymous-object-value.ts',
+        `interface TextShaperOptions { readonly direction?: string; readonly language?: string }
+         function consume(options?: { direction?: string; script?: string }): void { void options; }
+         export function shape(options: Readonly<TextShaperOptions> | undefined, direction: string): void {
+           const runOptions = { ...options, direction, script: 'Latn' };
+           consume(runOptions);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toMatch(/auto run_options = flight::make_ref<direction_language_script_[a-f0-9]+>/);
+    expect(output).not.toContain('flight::Ref<ShapeRunOptions> run_options');
+  });
+
+  it('does not discard source-only fields that remain observable', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-named-object-observed-extra.ts',
+        `interface ShapeRunOptions { direction?: string; script?: string }
+         interface TextShaperOptions { readonly direction?: string; readonly language?: string }
+         function consume(options?: ShapeRunOptions): void { void options; }
+         export function shape(
+           options: Readonly<TextShaperOptions> | undefined,
+           direction: string,
+         ): string | undefined {
+           const runOptions = { ...options, direction, script: 'Latn' };
+           consume(runOptions);
+           return runOptions.language;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toMatch(/auto run_options = flight::make_ref<direction_language_script_[a-f0-9]+>/);
+    expect(output).not.toContain('flight::Ref<ShapeRunOptions> run_options');
+    expect(output).toContain('return run_options->language');
+  });
+
   it('erases Object.freeze after preserving its single value evaluation', () => {
     const output = emitIrModuleCpp(
       lower(

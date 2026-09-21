@@ -2272,24 +2272,31 @@ function areCppObjectShapesRepresentationEquivalent(
     ) {
       return false;
     }
-    const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
-    if (
-      emitCppAliasResolvedValueTypeCpp(property.type, isolatedContext) ===
-      emitCppAliasResolvedValueTypeCpp(other.type, isolatedContext)
-    ) {
-      return true;
-    }
-    const propertyUnion = getIrUnionTypeCpp(property.type, context, new Set());
-    const otherUnion = getIrUnionTypeCpp(other.type, context, new Set());
-    return Boolean(
-      propertyUnion &&
-      otherUnion &&
-      hasEquivalentCppUnionRepresentation(
-        getCppUnionRepresentationPlan(propertyUnion, isolatedContext),
-        getCppUnionRepresentationPlan(otherUnion, isolatedContext),
-      ),
-    );
+    return areCppTypesRepresentationEquivalent(property.type, other.type, context);
   });
+}
+
+function areCppTypesRepresentationEquivalent(
+  left: Readonly<IrType>,
+  right: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  if (
+    emitCppAliasResolvedValueTypeCpp(left, isolatedContext) === emitCppAliasResolvedValueTypeCpp(right, isolatedContext)
+  ) {
+    return true;
+  }
+  const leftUnion = getIrUnionTypeCpp(left, context, new Set());
+  const rightUnion = getIrUnionTypeCpp(right, context, new Set());
+  return Boolean(
+    leftUnion &&
+    rightUnion &&
+    hasEquivalentCppUnionRepresentation(
+      getCppUnionRepresentationPlan(leftUnion, isolatedContext),
+      getCppUnionRepresentationPlan(rightUnion, isolatedContext),
+    ),
+  );
 }
 
 // A TypeScript alias does not introduce a distinct value representation. The generated C++ keeps
@@ -10840,8 +10847,11 @@ function collectCppContextualBindingStorageTargetTypesCpp(
   module: Readonly<IrModule>,
   context: EmitContext,
 ): ReadonlyMap<string, Readonly<IrType>> {
+  const acceptedReferenceCounts = new Map<string, number>();
   const candidates = new Map<string, Map<string, Readonly<IrType>>>();
   const eligible = new Set<string>();
+  const projected = new Set<string>();
+  const referenceCounts = new Map<string, number>();
   const recordTarget = (expression: Readonly<IrExpression>, expectedType: Readonly<IrType> | undefined): void => {
     if (
       expression.kind !== 'identifier' ||
@@ -10865,13 +10875,18 @@ function collectCppContextualBindingStorageTargetTypesCpp(
     }
     const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceType, context.module);
     const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetType, context.module);
+    if (!sourceShape || !targetShape) {
+      return;
+    }
+    const representationEquivalent = areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context);
     if (
-      !sourceShape ||
-      !targetShape ||
-      !areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context)
+      !representationEquivalent &&
+      !isCppContextualNamedObjectLiteralConstructionCpp(bindingId, targetType, context)
     ) {
       return;
     }
+    acceptedReferenceCounts.set(bindingId, (acceptedReferenceCounts.get(bindingId) ?? 0) + 1);
+    if (!representationEquivalent) projected.add(bindingId);
     const targets = candidates.get(bindingId) ?? new Map<string, Readonly<IrType>>();
     targets.set(normalizeCompilerStructuralValueCanonical(targetType), targetType);
     candidates.set(bindingId, targets);
@@ -10939,6 +10954,14 @@ function collectCppContextualBindingStorageTargetTypesCpp(
   }
   analyzeIrModuleTraversal(module, {
     expression(expression) {
+      if (
+        expression.kind === 'identifier' &&
+        expression.reference.kind === 'binding' &&
+        eligible.has(expression.reference.binding.id)
+      ) {
+        const bindingId = expression.reference.binding.id;
+        referenceCounts.set(bindingId, (referenceCounts.get(bindingId) ?? 0) + 1);
+      }
       if (expression.kind === 'object') {
         collectCppObjectContextualStorageTargetsCpp(expression, expression.type, eligible, candidates, context);
       }
@@ -10951,9 +10974,88 @@ function collectCppContextualBindingStorageTargetTypesCpp(
   });
   return new Map(
     [...candidates].flatMap(([bindingId, targets]) =>
-      targets.size === 1 ? ([[bindingId, [...targets.values()][0]!] as const] as const) : [],
+      targets.size === 1 &&
+      (!projected.has(bindingId) || referenceCounts.get(bindingId) === acceptedReferenceCounts.get(bindingId))
+        ? ([[bindingId, [...targets.values()][0]!] as const] as const)
+        : [],
     ),
   );
+}
+
+function isCppContextualNamedObjectLiteralConstructionCpp(
+  bindingId: string,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  // A fresh object may adopt a narrower nominal layout at its allocation site only when every
+  // observable use asks for that one identity. Requiring all destination fields after the last
+  // spread proves that omitted source-only fields never enter the allocation; restricting spreads
+  // to closed Flight data references makes their otherwise discarded reads inert in this runtime.
+  if (
+    targetType.kind !== 'named' ||
+    targetType.reference.kind !== 'binding' ||
+    targetType.reference.binding.kind === 'typeParameter'
+  ) {
+    return false;
+  }
+  const initializer = context.bindingInitializers.get(bindingId);
+  if (initializer?.kind !== 'object') return false;
+  const sourceProperties = context.referenceRepresentationPlanner.resolveObjectShape(initializer.type, context.module);
+  const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(targetType, context.module);
+  if (
+    !sourceProperties ||
+    !targetProperties ||
+    targetProperties.length === 0 ||
+    targetProperties.some((property) => property.computedKey || property.phantom)
+  ) {
+    return false;
+  }
+  let lastSpread = -1;
+  initializer.members.forEach((member, index) => {
+    if (member.kind === 'spread') lastSpread = index;
+  });
+  const spreads = initializer.members.slice(0, lastSpread + 1);
+  const properties = initializer.members.slice(lastSpread + 1);
+  if (
+    spreads.some((member) => {
+      if (member.kind !== 'spread' || member.expression.kind !== 'identifier') return true;
+      const sourceType = getIrExpressionTypeEvidenceCpp(member.expression, context);
+      const valueType = sourceType ? (getCppNonNullableType(sourceType, context, new Set()) ?? sourceType) : undefined;
+      return (
+        !valueType ||
+        !context.referenceRepresentationPlanner.resolveObjectShape(valueType, context.module) ||
+        (!hasFlightReferenceRepresentationCpp(valueType, context) &&
+          !hasFlightStructuralRowRepresentationCpp(valueType, context))
+      );
+    }) ||
+    properties.some((member) => member.kind !== 'property')
+  ) {
+    return false;
+  }
+  const propertiesByName = new Map<string, Extract<(typeof properties)[number], { kind: 'property' }>>();
+  for (const member of properties) {
+    if (member.kind !== 'property' || propertiesByName.has(member.name)) return false;
+    propertiesByName.set(member.name, member);
+  }
+  if (propertiesByName.size !== targetProperties.length) return false;
+  const sourcePropertiesByName = new Map(sourceProperties.map((property) => [property.name, property] as const));
+  return targetProperties.every((property) => {
+    const member = propertiesByName.get(property.name);
+    const sourceProperty = sourcePropertiesByName.get(property.name);
+    if (!member || !sourceProperty || (sourceProperty.optional && !property.optional)) return false;
+    const sourceReadType = sourceProperty.optional
+      ? (createIrTypeEvidenceUnionCpp([sourceProperty.type, { kind: 'undefined' }]) ?? sourceProperty.type)
+      : sourceProperty.type;
+    const targetReadType = property.optional
+      ? (createIrTypeEvidenceUnionCpp([property.type, { kind: 'undefined' }]) ?? property.type)
+      : property.type;
+    return (
+      areCppTypesRepresentationEquivalent(sourceReadType, targetReadType, context) ||
+      (!sourceProperty.optional &&
+        property.optional &&
+        areCppTypesRepresentationEquivalent(sourceProperty.type, property.type, context))
+    );
+  });
 }
 
 function collectCppObjectContextualStorageTargetsCpp(
