@@ -104,6 +104,8 @@ import {
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingHeadersCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
+  getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
+  getCompilerRuntimeExternalInstanceMemberTargetCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolCallResultTypeCpp,
@@ -434,11 +436,7 @@ function emitIrModuleCppWithContext(
     throw error;
   }
   const bindingTypes = collectIrModuleBindingTypesCpp(module);
-  const externalBindingStorageTargetTypes = collectCppExternalBindingStorageTargetTypesCpp(
-    module,
-    bindingTypes,
-    options,
-  );
+  const externalBindingStorageTargetTypes = new Map<string, string>();
   const typeParameterConstraints = collectCppTypeParameterConstraintsCpp(module);
   const closureCapturePlan = createIrModuleClosureCapturePlanCpp(module);
   const capturedReferentOnlyBindingIds = new Set<string>();
@@ -516,6 +514,9 @@ function emitIrModuleCppWithContext(
     anonymousStructNaming: anonymousStructNaming ?? createCppAnonymousStructNaming(resolvedTargetNameMaps),
     unionArmIdentities: unionArmIdentities ?? new Map(),
   };
+  for (const [bindingId, targetType] of collectCppExternalBindingStorageTargetTypesCpp(module, context)) {
+    externalBindingStorageTargetTypes.set(bindingId, targetType);
+  }
   for (const bindingId of collectIrModuleArrayElementBindingIdsCpp(module, context)) {
     arrayElementBindingIds.add(bindingId);
   }
@@ -4102,6 +4103,11 @@ function emitExpression(
           context,
           `ambient value ${expression.object.reference.name} member ${expression.name} has no C++ binding`,
         );
+      }
+      const externalInstanceMember = getCppExternalInstanceMemberBindingCpp(expression, context);
+      if (externalInstanceMember) {
+        addCppExternalBindingHeaders(externalInstanceMember.sourceName, 'type', context);
+        return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${externalInstanceMember.targetName}`;
       }
       if (expression.namespaceMember) {
         return `${emitExpression(expression.object, context)}::${safeCppName(expression.name)}`;
@@ -10446,9 +10452,16 @@ function emitContextualUnionExpressionInContextCpp(
   ) {
     return undefined;
   }
-  const externalCallResult = getCppExternalCallResultTargetCpp(expression, context);
-  if (externalCallResult) {
-    const targetSlots = plan.valueSlots.filter((slot) => slot.targetType === externalCallResult);
+  // An unresolved local initialized and assigned only from one manifest-stated result has the same
+  // target domain as the call itself. Reading the local must not discard that storage decision and
+  // fall back to the checker's `any`, but no destination type participates in making the decision.
+  const externalValueTarget =
+    getCppExternalCallResultTargetCpp(expression, context) ??
+    (expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? context.externalBindingStorageTargetTypes.get(expression.reference.binding.id)
+      : undefined);
+  if (externalValueTarget) {
+    const targetSlots = plan.valueSlots.filter((slot) => slot.targetType === externalValueTarget);
     const unresolvedTargetSlot =
       targetSlots.length === 0 &&
       plan.valueSlots.length === 1 &&
@@ -10456,12 +10469,12 @@ function emitContextualUnionExpressionInContextCpp(
     if (targetSlots.length !== 1 && !unresolvedTargetSlot) {
       emissionError(
         context,
-        `external call result type ${externalCallResult} is not one represented contextual runtime domain`,
+        `external call result type ${externalValueTarget} is not one represented contextual runtime domain`,
       );
     }
     return emitCppUnionValueConstruction(
       emitExpression(expression, context, undefined, false),
-      externalCallResult,
+      externalValueTarget,
       union,
       plan.kind,
       context,
@@ -12442,11 +12455,54 @@ function getCppExternalCallResultTargetCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): string | undefined {
-  return getCppRuntimeExternalCallResultTargetCpp(
+  const direct = getCppRuntimeExternalCallResultTargetCpp(
     expression,
     getCppRuntimeProfile(context.options),
     context.options.externalBindings,
   );
+  if (direct) return direct;
+  if (
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.semantics.optionalChain ||
+    expression.callee.kind !== 'property'
+  ) {
+    return undefined;
+  }
+  const receiver = getCppExternalInstanceReceiverSourceNameCpp(expression.callee.object, context);
+  return receiver
+    ? getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp(
+        receiver,
+        expression.callee.name,
+        getCppRuntimeProfile(context.options),
+        context.options.externalBindings,
+      )
+    : undefined;
+}
+
+function getCppExternalInstanceReceiverSourceNameCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (!type || hasIrTypeAbsentMember(type)) return undefined;
+  const present = getCppNonNullableType(type, context, new Set()) ?? type;
+  return present?.kind === 'named' && present.reference.kind === 'ambient' ? present.reference.name : undefined;
+}
+
+function getCppExternalInstanceMemberBindingCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): Readonly<{ sourceName: string; targetName: string }> | undefined {
+  const sourceName = getCppExternalInstanceReceiverSourceNameCpp(expression.object, context);
+  if (!sourceName) return undefined;
+  const targetName = getCompilerRuntimeExternalInstanceMemberTargetCpp(
+    sourceName,
+    expression.name,
+    getCppRuntimeProfile(context.options),
+    context.options.externalBindings,
+  );
+  return targetName ? { sourceName, targetName } : undefined;
 }
 
 function getCppRuntimeExternalCallResultTargetCpp(
@@ -12477,18 +12533,13 @@ function getCppRuntimeExternalCallResultTargetCpp(
 
 function collectCppExternalBindingStorageTargetTypesCpp(
   module: Readonly<IrModule>,
-  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
-  options: Readonly<CppCompilerBackendOptions>,
+  context: EmitContext,
 ): ReadonlyMap<string, string> {
   const candidates = new Map<string, Set<string>>();
   const recordCandidate = (bindingId: string, expression: Readonly<IrExpression>): void => {
-    const declaredType = bindingTypes.get(bindingId);
+    const declaredType = context.bindingTypes.get(bindingId);
     if (!declaredType || !isCppUnresolvedExternalStorageTypeCpp(declaredType)) return;
-    const targetType = getCppRuntimeExternalCallResultTargetCpp(
-      expression,
-      getCppRuntimeProfile(options),
-      options.externalBindings,
-    );
+    const targetType = getCppExternalCallResultTargetCpp(expression, context);
     if (!targetType) return;
     const targets = candidates.get(bindingId) ?? new Set<string>();
     targets.add(targetType);

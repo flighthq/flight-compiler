@@ -95,6 +95,7 @@ export interface CppCompilerExternalBinding {
   readonly callResultType?: string | undefined;
   readonly construction?: CppCompilerExternalBindingConstruction | undefined;
   readonly headers: readonly string[];
+  /** Static members for value-space bindings; instance members for type-space bindings. */
   readonly members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
   readonly nullability: 'non-null' | 'nullable';
   readonly ownership: 'borrowed' | 'owned' | 'shared' | 'value';

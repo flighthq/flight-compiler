@@ -5,6 +5,8 @@ import {
   getCompilerExternalBindingEvidenceCpp,
   getCompilerExternalBindingHeadersCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
+  getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
+  getCompilerRuntimeExternalInstanceMemberTargetCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolCallResultTypeCpp,
@@ -266,6 +268,93 @@ describe('getCompilerRuntimeExternalMemberCallResultTypeCpp', () => {
           },
         ],
       }),
+    ).toBeUndefined();
+  });
+});
+
+describe('getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp', () => {
+  const instanceBindings = {
+    bindings: [
+      {
+        headers: ['host/device.hpp'],
+        members: [
+          {
+            callResultType: 'host::Surface',
+            sourceMember: 'createSurface',
+            targetName: 'make_surface',
+          },
+        ],
+        nullability: 'non-null' as const,
+        ownership: 'shared' as const,
+        sourceName: 'NativeDevice',
+        space: 'type' as const,
+        targetName: 'host::Device',
+      },
+    ],
+    schema: 'flight-cpp-external-bindings/1' as const,
+  };
+
+  it('returns exact call-result evidence from a downstream type binding', () => {
+    expect(
+      getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp(
+        'NativeDevice',
+        'createSurface',
+        'flight-cpp',
+        instanceBindings,
+      ),
+    ).toBe('host::Surface');
+  });
+
+  it('does not use a static value binding or a member without result evidence as an instance result', () => {
+    expect(
+      getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp(
+        'NativeSurface',
+        'preferredFormat',
+        'flight-cpp',
+        externalBindings,
+      ),
+    ).toBeUndefined();
+    expect(
+      getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp('NativeDevice', 'createSurface', 'flight-cpp', {
+        ...instanceBindings,
+        bindings: [
+          {
+            ...instanceBindings.bindings[0]!,
+            members: [{ sourceMember: 'createSurface', targetName: 'make_surface' }],
+          },
+        ],
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe('getCompilerRuntimeExternalInstanceMemberTargetCpp', () => {
+  it('returns the instance target spelling from a downstream type binding', () => {
+    const instanceBindings = {
+      bindings: [
+        {
+          headers: ['host/device.hpp'],
+          members: [{ sourceMember: 'createSurface', targetName: 'make_surface' }],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'NativeDevice',
+          space: 'type' as const,
+          targetName: 'host::Device',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    expect(
+      getCompilerRuntimeExternalInstanceMemberTargetCpp(
+        'NativeDevice',
+        'createSurface',
+        'flight-cpp',
+        instanceBindings,
+      ),
+    ).toBe('make_surface');
+    expect(
+      getCompilerRuntimeExternalInstanceMemberTargetCpp('NativeDevice', 'missing', 'flight-cpp', instanceBindings),
     ).toBeUndefined();
   });
 });

@@ -115,6 +115,35 @@ export function getCompilerExternalBindingWeakKeyPolicyTargetCpp(
   )?.weakKeyPolicyTargetName;
 }
 
+export function getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp(
+  sourceName: string,
+  member: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
+    runtimeProfile,
+    externalBindings,
+  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'type');
+  return binding?.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.callResultType;
+}
+
+export function getCompilerRuntimeExternalInstanceMemberTargetCpp(
+  sourceName: string,
+  member: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
+    runtimeProfile,
+    externalBindings,
+  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'type');
+  if (!binding) return undefined;
+  return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
+}
+
 export function getCompilerRuntimeExternalMemberCallResultTypeCpp(
   sourceName: string,
   member: string,

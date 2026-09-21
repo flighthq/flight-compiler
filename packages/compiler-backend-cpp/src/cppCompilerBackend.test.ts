@@ -4126,6 +4126,60 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted).not.toContain('flight::Any surface');
   });
 
+  it('uses downstream instance-member result evidence for one evaluated unresolved local', () => {
+    const result = lower(
+      'native-instance-call-result.ts',
+      `interface HostState { readonly device: NativeDevice }
+       export function create(state: HostState): NativeSurface | null {
+         const surface = state.device.createSurface();
+         return surface;
+       }`,
+    );
+    const nativeDevice = {
+      headers: ['host/device.hpp'],
+      members: [
+        {
+          callResultType: 'host::Surface',
+          sourceMember: 'createSurface',
+          targetName: 'make_surface',
+        },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'NativeDevice',
+      space: 'type' as const,
+      targetName: 'host::Device',
+    };
+    const nativeSurface = {
+      headers: ['host/surface.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'NativeSurface',
+      space: 'type' as const,
+      targetName: 'host::Surface',
+    };
+    const emit = (members: NonNullable<CppCompilerExternalBinding['members']>) =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [{ ...nativeDevice, members }, nativeSurface],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      });
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emit(nativeDevice.members).contents;
+    expect(emitted).toContain('#include <host/device.hpp>');
+    expect(emitted).toContain('host::Surface surface = state->device.make_surface();');
+    expect(emitted).toContain('return std::optional<host::Surface>{surface};');
+    expect(emitted.match(/make_surface\(\)/gu)).toHaveLength(1);
+
+    const failure = captureBackendEmissionFailure(() =>
+      emit([{ sourceMember: 'createSurface', targetName: 'make_surface' }]),
+    );
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
   it('lowers PropertyKey intrinsically while preserving an unrelated Proxy refusal', () => {
     const propertyBag = lower(
       'property-key.ts',
