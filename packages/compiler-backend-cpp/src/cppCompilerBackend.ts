@@ -4167,6 +4167,22 @@ function emitExpression(
       if (getIrExpressionClassAccessorCpp(expression.object, expression.name, 'get', context)) {
         return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${safeCppName(expression.name)}()`;
       }
+      // Storage that can be absent holds the value, and the member belongs to the value rather than to the
+      // optional (or variant carrying absence) that stores it -- `texture.create_view()` names a member
+      // `std::optional<...>` does not have. Every lane above either proved the read present or spelled it,
+      // so reaching here means nothing did: the read refuses rather than being emitted against the
+      // storage. A narrowing, an optional chain, or a visit is what proves it, and each has its own lane.
+      if (
+        expression.object.kind === 'identifier' &&
+        expression.object.reference.kind === 'binding' &&
+        isCppAbsenceCarryingExpressionCpp(expression.object, context)
+      ) {
+        emissionError(
+          context,
+          `property ${expression.name} on C++ absence-carrying storage requires narrowed access`,
+          'cpp-optional-member-access-unproven',
+        );
+      }
       return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${safeCppName(expression.name)}`;
     }
     case 'regexp':
@@ -6137,8 +6153,41 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
         narrowedBindingTypes: new Map(statementContext.narrowedBindingTypes).set(narrowing.bindingId, narrowing.type),
       };
     }
+    statementContext = withdrawCppAssignedNarrowingsCpp(statement, statementContext);
   }
   return emitted;
+}
+
+// A statement that writes a narrowed binding withdraws the narrowing for the statements after it. The
+// proof the guard carried was about the value it tested, and a write is a value the guard said nothing
+// about: `if (texture === null) return; texture = null; texture.create_view()` reads a proof that is no
+// longer true, and the read after the write has to resolve without one -- which either finds its own
+// proof or refuses.
+function withdrawCppAssignedNarrowingsCpp(statement: Readonly<IrStatement>, context: EmitContext): EmitContext {
+  if (context.narrowedBindingTypes.size === 0) return context;
+  const withdrawn = collectCppAssignedBindingIdsCpp(statement).filter((bindingId) =>
+    context.narrowedBindingTypes.has(bindingId),
+  );
+  if (withdrawn.length === 0) return context;
+  const narrowedBindingTypes = new Map(context.narrowedBindingTypes);
+  for (const bindingId of withdrawn) narrowedBindingTypes.delete(bindingId);
+  return { ...context, narrowedBindingTypes };
+}
+
+function collectCppAssignedBindingIdsCpp(statement: Readonly<IrStatement>): readonly string[] {
+  const bindingIds = new Set<string>();
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(expression) {
+      if (
+        expression.kind === 'assignment' &&
+        expression.left.kind === 'identifier' &&
+        expression.left.reference.kind === 'binding'
+      ) {
+        bindingIds.add(expression.left.reference.binding.id);
+      }
+    },
+  });
+  return [...bindingIds];
 }
 
 // A terminating nullish guard proves subsequent statements see the present payload. Most such reads
@@ -10094,6 +10143,18 @@ function isCppExpressionVariantUnionCpp(expression: Readonly<IrExpression>, cont
 // one C++ type (`Segment` above, two object shapes whose discriminant is a `flight::String`) are one
 // reference, and reading a member of it is the direct spelling -- so the representation plan decides, and
 // a plan that coalesced the members into a single value is not a variant to refuse over.
+// Whether an expression's storage carries absence beside its value: a union with a null or undefined
+// member, which is the storage an optional holds. Unlike `isCppExpressionVariantStorageCpp` this is the
+// question the *unwrapped* read is about -- `texture.value()` answers the variant question and this one
+// answers whether there is a `value()` to call.
+function isCppAbsenceCarryingExpressionCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (!type) return false;
+  const domain = getIrTypeRuntimeDomainCpp(type, context, new Set()) ?? type;
+  const union = getIrUnionTypeCpp(domain, context, new Set());
+  return union !== undefined && union.types.some((member) => member.kind === 'null' || member.kind === 'undefined');
+}
+
 function isCppExpressionVariantStorageCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
   const type = getIrExpressionTypeEvidenceCpp(expression, context);
   if (!type) return false;

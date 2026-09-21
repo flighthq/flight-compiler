@@ -3485,6 +3485,125 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  // The optional-external-receiver gap: a guard clause (`if (texture === null) return;`) proves the
+  // receiver present for the statements after it, and the read that follows unwraps the storage once.
+  // The type is external -- erased to `any` in the lowering's program -- so the checker's own flow answer
+  // is unavailable and the guard is read from the source shape instead.
+  const guardedExternalReceiverBindings = {
+    bindings: [
+      {
+        headers: ['flight/wgpu.hpp'],
+        nullability: 'non-null' as const,
+        ownership: 'shared' as const,
+        sourceName: 'GPUTexture',
+        space: 'type' as const,
+        targetName: 'flight::wgpu::GpuTexture',
+      },
+      {
+        headers: ['flight/wgpu.hpp'],
+        nullability: 'non-null' as const,
+        ownership: 'shared' as const,
+        sourceName: 'GPUBuffer',
+        space: 'type' as const,
+        targetName: 'flight::wgpu::GpuBuffer',
+      },
+    ],
+    schema: 'flight-cpp-external-bindings/1' as const,
+  };
+
+  it('unwraps an optional external receiver a guard clause left present', () => {
+    const emit = (source: string): string =>
+      emitIrModuleCpp(lower('guarded-external-receiver.ts', source).module, {
+        externalBindings: guardedExternalReceiverBindings,
+        runtimeProfile: 'flight-cpp',
+      }).contents;
+
+    // null, undefined, and both at once are the same boundary: the branch that means absent leaves, and
+    // what follows reads the receiver present, unwrapping the optional exactly once.
+    expect(
+      emit(`export function f(texture: GPUTexture | null): void {
+         if (texture === null) return;
+         const view = texture.createView();
+         void view;
+       }`),
+    ).toContain('auto view = texture.value().create_view();');
+    expect(
+      emit(`export function f(texture: GPUTexture | undefined): void {
+         if (texture === undefined) return;
+         const view = texture.createView();
+         void view;
+       }`),
+    ).toContain('auto view = texture.value().create_view();');
+    // A bound local is a reference of its own, and its guard narrows it in the same way.
+    expect(
+      emit(`export function f(texture: GPUTexture | null): void {
+         const aliased = texture;
+         if (aliased === null) return;
+         const view = aliased.createView();
+         void view;
+       }`),
+    ).toContain('auto view = aliased.value().create_view();');
+  });
+
+  // The same boundary read as a property that can be either absent kind at once: the storage is the
+  // variant that keeps null and undefined distinct, and the guard proves one value alternative remains.
+  it('unwraps an optional property receiver a guard clause left present', () => {
+    const module = lower(
+      'guarded-external-property.ts',
+      `interface Holder { readonly texture?: GPUTexture | null }
+       export function f(holder: Holder): void {
+         const texture = holder.texture;
+         if (texture === null || texture === undefined) return;
+         const view = texture.createView();
+         void view;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, {
+      externalBindings: guardedExternalReceiverBindings,
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(emitted).toContain('auto view = std::get<flight::wgpu::GpuTexture>(texture).create_view();');
+  });
+
+  // What the unwrap must not do. A read with no guard at all, a guard whose proof a later write withdraws,
+  // a receiver whose alternatives disagree, and a guard on a call result that has no absence channel in
+  // its storage: each is refused rather than emitted against storage that may hold nothing.
+  it('refuses a member read on optional storage no narrowing proved', () => {
+    const refuse = (source: string): string | undefined => {
+      const module = lower('optional-receiver-unproven.ts', source).module;
+      return captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(module, {
+          externalBindings: guardedExternalReceiverBindings,
+          runtimeProfile: 'flight-cpp',
+        }),
+      ).rule;
+    };
+
+    expect(
+      refuse(`export function f(texture: GPUTexture | null): void {
+         const view = texture.createView();
+         void view;
+       }`),
+    ).toBe('cpp-optional-member-access-unproven');
+    expect(
+      refuse(`export function f(texture: GPUTexture | null): void {
+         if (texture === null) return;
+         texture = null;
+         const view = texture.createView();
+         void view;
+       }`),
+    ).toBe('cpp-optional-member-access-unproven');
+    expect(
+      refuse(`export function f(resource: GPUTexture | GPUBuffer | null): void {
+         if (resource === null) return;
+         const view = resource.createView();
+         void view;
+       }`),
+    ).toBe('cpp-union-member-access-unguarded');
+  });
+
   // `value.toString()` on a primitive variant is the runtime's conversion, not a member either alternative
   // has: the conversion of the variant is one visit over the runtime's own helper, and it is the same body
   // the explicit `String(value)` operation emits.

@@ -7476,13 +7476,11 @@ function hasTypeScriptSyntacticReferencePresence(
     if (ts.isBlock(parent)) {
       const statementIndex = parent.statements.findIndex((statement) => isTypeScriptNodeWithin(node, statement));
       if (statementIndex >= 0) {
-        const established = getTypeScriptPriorPresentAssignment(
-          parent.statements.slice(0, statementIndex),
-          symbol,
-          absentKinds,
-          context,
-        );
+        const preceding = parent.statements.slice(0, statementIndex);
+        const established = getTypeScriptPriorPresentAssignment(preceding, symbol, absentKinds, context);
         if (established !== undefined) return established;
+        const guarded = getTypeScriptPriorAbsentGuard(preceding, symbol, absentKinds, context);
+        if (guarded !== undefined) return guarded;
       }
     }
     if (ts.isFunctionLike(parent)) break;
@@ -7519,6 +7517,111 @@ function hasTypeScriptPositiveArrayPredicate(
   }
   const receiver = lowerIdentifierReference(expression.expression.expression, context);
   return receiver.kind === 'ambient' && receiver.name === 'Array';
+}
+
+// Whether a preceding sibling is a guard clause for this reference: `if (reference === null) return;`
+// leaves the block exactly when the reference is absent, so every statement after it reads the reference
+// present. Walked backwards and stopped by any statement that reassigns the reference, because an
+// assignment after the guard is the guard's proof withdrawn.
+//
+// This is the part of the checker's flow analysis the lowering cannot read: an external type is erased to
+// `any` in the program the lowering builds, so the declared/flow comparison above sees a type that has no
+// absence to remove. The proof here is closed and syntactic instead -- the comparison names this symbol,
+// its true branch is the absent case, and that branch leaves the block -- and anything else proves nothing.
+function getTypeScriptPriorAbsentGuard(
+  statements: readonly ts.Statement[],
+  symbol: ts.Symbol,
+  absentKinds: ReadonlySet<'null' | 'undefined'>,
+  context: LoweringContext,
+): boolean | undefined {
+  for (let index = statements.length - 1; index >= 0; index--) {
+    const statement = statements[index]!;
+    if (isTypeScriptAbsentGuardStatement(statement, symbol, absentKinds, context)) return true;
+    if (doesTypeScriptStatementAssignBinding(statement, symbol, context.checker)) return false;
+  }
+  return undefined;
+}
+
+function isTypeScriptAbsentGuardStatement(
+  statement: ts.Statement,
+  symbol: ts.Symbol,
+  absentKinds: ReadonlySet<'null' | 'undefined'>,
+  context: LoweringContext,
+): boolean {
+  if (!ts.isIfStatement(statement) || statement.elseStatement) return false;
+  return (
+    isTypeScriptAbsentCondition(statement.expression, symbol, absentKinds, context) &&
+    doesTypeScriptStatementExitBlock(statement.thenStatement)
+  );
+}
+
+// `reference === null`, `reference == null`, `reference === undefined`, and a `||` chain of those: true
+// exactly when the reference is absent. An inequality states the opposite condition, so it is not accepted
+// here -- the then-branch of an inequality is the branch where the reference is present.
+function isTypeScriptAbsentCondition(
+  expression: ts.Expression,
+  symbol: ts.Symbol,
+  absentKinds: ReadonlySet<'null' | 'undefined'>,
+  context: LoweringContext,
+): boolean {
+  // The recorded type has to carry absence for a guard to be about it at all. An indexed element read is
+  // the case where it does not: its source type already excludes absence and the missing value arrives
+  // through storage the backend elected, which is a question about that storage rather than about this
+  // reference, so no narrowing belongs on the reference.
+  if (absentKinds.size === 0) return false;
+  const excluded = getTypeScriptNullishExcludedKinds(expression, symbol, context);
+  return excluded !== undefined && [...absentKinds].every((kind) => excluded.has(kind));
+}
+
+// The absent kinds a nullish equality comparison excludes when it is false, or undefined when the
+// expression is not one. `reference === null` excludes null and nothing else; the loose `reference == null`
+// excludes both; and a `||` chain excludes what its operands together exclude, which is what makes
+// `reference === null || reference === undefined` a guard for a value whose absence can be either.
+//
+// The recorded absent kinds are what the comparison is checked against -- see `getIrTypeAbsentKindsSemantic`
+// -- because a value may carry one kind, both, or (for backend-elected storage) neither.
+function getTypeScriptNullishExcludedKinds(
+  expression: ts.Expression,
+  symbol: ts.Symbol,
+  context: LoweringContext,
+): ReadonlySet<'null' | 'undefined'> | undefined {
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+    const left = getTypeScriptNullishExcludedKinds(expression.left, symbol, context);
+    const right = getTypeScriptNullishExcludedKinds(expression.right, symbol, context);
+    return left && right ? new Set([...left, ...right]) : undefined;
+  }
+  if (!ts.isBinaryExpression(expression)) return undefined;
+  const equality =
+    expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+    expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken;
+  if (!equality) return undefined;
+  const left = getTypeScriptNullishComparisonOperand(expression.left, symbol, context);
+  const right = getTypeScriptNullishComparisonOperand(expression.right, symbol, context);
+  const compared = left.binding ? right.absent : right.binding ? left.absent : undefined;
+  if (!compared) return undefined;
+  return expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken
+    ? new Set(['null', 'undefined'])
+    : new Set([compared]);
+}
+
+// Whether reaching the end of this statement means leaving the block it is written in. A `break` or
+// `continue` leaves the statements after the guard as surely as a `return` does, and a block leaves when
+// its last statement does.
+function doesTypeScriptStatementExitBlock(statement: ts.Statement): boolean {
+  if (
+    ts.isBreakStatement(statement) ||
+    ts.isContinueStatement(statement) ||
+    ts.isReturnStatement(statement) ||
+    ts.isThrowStatement(statement)
+  ) {
+    return true;
+  }
+  if (ts.isBlock(statement)) {
+    const last = statement.statements[statement.statements.length - 1];
+    return last !== undefined && doesTypeScriptStatementExitBlock(last);
+  }
+  return false;
 }
 
 function getTypeScriptPriorPresentAssignment(
