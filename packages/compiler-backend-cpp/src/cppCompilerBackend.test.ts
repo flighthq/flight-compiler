@@ -3967,6 +3967,81 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('static_cast<flight::Ref<Item>>');
   });
 
+  it('unwraps a guarded pool result for WeakSet deletion and refuses unproven or ambiguous payloads', () => {
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['flight/weak_set.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'WeakSet',
+          space: 'type' as const,
+          targetName: 'flight::WeakSet',
+        },
+        {
+          construction: { kind: 'constructor' as const, targetName: 'flight::WeakSet' },
+          headers: ['flight/weak_set.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'WeakSet',
+          space: 'value' as const,
+          targetName: 'flight::WeakSet',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const guarded = lower(
+      'text-shaper-pool.ts',
+      `interface ShapedRun { value: number }
+       const pool: ShapedRun[] = [];
+       const pooled = new WeakSet<ShapedRun>();
+       export function acquire(): ShapedRun {
+         const run = pool.pop();
+         if (run === undefined) return { value: 0 };
+         pooled.delete(run);
+         return run;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(guarded.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('pooled.delete_(run.value())');
+    expect(emitted).not.toContain('pooled.delete_(run)');
+
+    const unguarded = lower(
+      'unguarded-pool.ts',
+      `interface ShapedRun { value: number }
+       const pool: ShapedRun[] = [];
+       const pooled = new WeakSet<ShapedRun>();
+       export function releaseNext(): void {
+         const run = pool.pop();
+         pooled.delete(run);
+       }`,
+    );
+    expect(
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(unguarded.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
+      ).rule,
+    ).toBe('cpp-collection-argument-without-present-storage');
+
+    const ambiguous = lower(
+      'ambiguous-pool.ts',
+      `interface ShapedRun { value: number }
+       interface OtherRun { other: number }
+       const pool: (ShapedRun | OtherRun)[] = [];
+       const pooled = new WeakSet<ShapedRun>();
+       export function releaseNext(): void {
+         const run = pool.pop();
+         if (run === undefined) return;
+         pooled.delete(run);
+       }`,
+    );
+    expect(
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(ambiguous.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
+      ).rule,
+    ).toBe('cpp-collection-argument-multiple-present-domains');
+  });
+
   it('emits unsigned shifts through the runtime when operand flow is unresolved', () => {
     const result = lower(
       'imported-shift.ts',

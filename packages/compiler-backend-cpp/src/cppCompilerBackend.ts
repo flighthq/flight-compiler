@@ -2619,14 +2619,13 @@ function emitExpression(
               expression.callee.member.receiver === 'array' &&
               expression.arguments.length === 1,
           );
-          const args = expression.arguments.map((argument, index) =>
-            emitExpression(
-              argument,
-              context,
+          const args = expression.arguments.map((argument, index) => {
+            const argumentExpectedType =
               getCppContextualArrayCallbackTypeCpp(expression, expectedType, index, context) ??
-                getIrCallArgumentExpectedTypeCpp(expression, index, context),
-            ),
-          );
+              getIrCallArgumentExpectedTypeCpp(expression, index, context);
+            assertCppPresentOptionalCollectionArgumentCpp(expression, argument, index, argumentExpectedType, context);
+            return emitExpression(argument, context, argumentExpectedType);
+          });
           const call = `${receiver}${memberOp(expression.callee.object, context)}${binding.targetName}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
           if (
             expression.presence === 'narrowedPresent' &&
@@ -2723,11 +2722,15 @@ function emitExpression(
             ) {
               return emitExpression(argument.expression, context);
             }
-            return emitExpression(
-              argument,
+            const argumentExpectedType = getIrCallArgumentExpectedTypeCpp(
+              expression,
+              index,
               context,
-              getIrCallArgumentExpectedTypeCpp(expression, index, context, expectedType, typeArguments),
+              expectedType,
+              typeArguments,
             );
+            assertCppPresentOptionalCollectionArgumentCpp(expression, argument, index, argumentExpectedType, context);
+            return emitExpression(argument, context, argumentExpectedType);
           }),
         context,
       );
@@ -10878,6 +10881,51 @@ function getCppCollectionCallArgumentExpectedTypeCpp(
     return collection.typeArguments[0];
   }
   return undefined;
+}
+
+// A collection method receives its element/key/value domain, never the optional carrier used by a
+// lookup such as Array.pop. Crossing that boundary is valid only after source control flow proves the
+// lookup present, and only while the carrier has one remaining runtime value domain. Otherwise
+// passing the identifier through produces a call such as `set.delete_(std::optional<Ref<T>>)` that
+// cannot preserve the source operation and does not compile.
+function assertCppPresentOptionalCollectionArgumentCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  argument: Readonly<IrExpression>,
+  index: number,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): void {
+  const collectionType = getCppCollectionCallArgumentExpectedTypeCpp(expression, index, context);
+  if (
+    !collectionType ||
+    !expectedType ||
+    hasIrTypeAbsentMember(expectedType) ||
+    argument.kind !== 'identifier' ||
+    argument.reference.kind !== 'binding' ||
+    !hasCppAbsenceStorageCpp(argument, context)
+  ) {
+    return;
+  }
+  if (argument.presence !== 'narrowedPresent') {
+    emissionError(
+      context,
+      `collection member ${expression.callee.kind === 'property' ? expression.callee.name : 'call'} argument from optional C++ storage requires proven present payload`,
+      'cpp-collection-argument-without-present-storage',
+    );
+  }
+  const storageType = getCppBindingTypeCpp(argument.reference.binding.id, context);
+  const union = storageType ? getIrUnionTypeCpp(storageType, context, new Set()) : undefined;
+  if (
+    !storageType ||
+    storageType.kind === 'unknown' ||
+    (union && getCppUnionRepresentationPlan(union, context).valueSlots.length !== 1)
+  ) {
+    emissionError(
+      context,
+      `collection member ${expression.callee.kind === 'property' ? expression.callee.name : 'call'} argument from optional C++ storage requires one present value domain`,
+      'cpp-collection-argument-multiple-present-domains',
+    );
+  }
 }
 
 function getIrInvocationProvidedArgumentTypeCpp(
