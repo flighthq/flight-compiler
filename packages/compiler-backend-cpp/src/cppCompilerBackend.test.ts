@@ -3296,6 +3296,122 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('return provider;');
   });
 
+  // A variant is storage, and a member belongs to the alternatives rather than to it. One visit reaches
+  // every alternative at once, so the carrier is evaluated once -- as the value, as the `value()` a guard
+  // leaves behind, or as a call whose result is read without calling it twice.
+  const variantMemberSources: Readonly<Record<string, string>> = {
+    'variant-common.ts': `interface Left { tag: string; weight: number }
+     interface Same { tag: string; weight: number }
+     export function readTag(value: Left | Same): void {
+       const t = value.tag;
+       void t;
+     }`,
+    'variant-optional.ts': `interface Left { tag: string; weight: number }
+     interface Same { tag: string; weight: number }
+     export function readTag(value: Left | Same | undefined): void {
+       if (value === undefined) return;
+       const t = value.tag;
+       void t;
+     }`,
+    'variant-call.ts': `interface Left { tag: string; weight: number }
+     interface Same { tag: string; weight: number }
+     export function passValue(value: Left | Same): Left | Same {
+       return value;
+     }
+     export function readTag(value: Left | Same): void {
+       const t = passValue(value).tag;
+       void t;
+     }`,
+  };
+
+  it('reads a variant member through one visit of the carrier', () => {
+    const emit = (file: string): string =>
+      emitIrModuleCpp(lower(file, variantMemberSources[file]!).module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The carrier is what differs: the value itself, the value a guard left present, and a call. Each
+    // appears once, and the member is read inside the visit rather than spelled on the variant.
+    expect(emit('variant-common.ts')).toContain('std::visit([](const auto& value) { return value->tag; }, value)');
+    expect(emit('variant-optional.ts')).toContain(
+      'std::visit([](const auto& value) { return value->tag; }, value.value())',
+    );
+    expect(emit('variant-call.ts')).toContain(
+      'std::visit([](const auto& value) { return value->tag; }, pass_value(value))',
+    );
+  });
+
+  // `value.toString()` on a primitive variant is the runtime's conversion, not a member either alternative
+  // has: the conversion of the variant is one visit over the runtime's own helper, and it is the same body
+  // the explicit `String(value)` operation emits.
+  it('converts a primitive variant member call through one visit', () => {
+    const module = lower(
+      'variant-to-string.ts',
+      `interface Box { value: string | number; }
+       export function describe(flag: boolean): string {
+         const box: Box = { value: flag ? "text" : 2 };
+         const text: string = box.value.toString();
+         return text;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('std::visit([](const auto& value) { return flight::to_string(value); }, box->value)');
+  });
+
+  // What no visit can reach keeps the refusal: a member the alternatives disagree on (`tag` is a string on
+  // one and a number on the other), a member one alternative does not have, a carrier whose domain is a
+  // union only through a type parameter's constraint, and a call whose result is such a union. Each used to
+  // fall through to a spelling on the `std::variant` itself, which no variant has.
+  it('refuses a variant member read the alternatives do not prove', () => {
+    const refuse = (source: string): string | undefined => {
+      const module = lower('variant-unproven.ts', source).module;
+      return captureBackendEmissionFailure(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).rule;
+    };
+    const types = `interface Left { tag: string; weight: number }
+       interface Right { tag: number; weight: number }
+       interface Missing { weight: number }`;
+
+    expect(
+      refuse(`${types}
+       export function readTag(value: Left | Right): void {
+         const t = value.tag;
+         void t;
+       }`),
+    ).toBe('cpp-union-member-access-unguarded');
+    expect(
+      refuse(`${types}
+       export function readTag(value: Left | Missing): void {
+         const t = value.tag;
+         void t;
+       }`),
+    ).toBe('cpp-union-member-access-unguarded');
+    expect(
+      refuse(`${types}
+       export function readTag(value: Left | Right | undefined): void {
+         if (value === undefined) return;
+         const t = value.tag;
+         void t;
+       }`),
+    ).toBe('cpp-union-member-access-unguarded');
+    expect(
+      refuse(`${types}
+       export function readTag<T extends Left | Right>(value: T): void {
+         const t = value.tag;
+         void t;
+       }`),
+    ).toBe('cpp-union-member-access-unguarded');
+    expect(
+      refuse(`${types}
+       export function passValue(value: Left | Right): Left | Right {
+         return value;
+       }
+       export function readTag(value: Left | Right): void {
+         const t = passValue(value).tag;
+         void t;
+       }`),
+    ).toBe('cpp-union-member-access-unguarded');
+  });
+
   // Three refusals the rule keeps: a carrier still absent where the query is written was never narrowed, a
   // carrier of two domains would answer with a member no single read names, and a member whose answer is a
   // declaration shape stays with the deferred node. Each is written out in the source and refused at

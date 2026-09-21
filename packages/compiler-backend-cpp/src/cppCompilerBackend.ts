@@ -2869,6 +2869,17 @@ function emitExpression(
           ...arguments_,
         ].join(', ')})`;
       }
+      // `value.toString()` on a primitive variant is the runtime's own string conversion rather than a
+      // member of the alternatives' C++ types, and the conversion of a variant is one visit over
+      // `flight::to_string` -- the same body the explicit `String(value)` operation emits. It is proven by
+      // the runtime defining the conversion for every alternative, which is the condition asked here. The
+      // call is the conversion, so the callee is not emitted as a member the runtime does not have.
+      if (
+        expression.callee.kind === 'property' &&
+        isCppVariantPrimitiveStringConversionCpp(expression.callee, context)
+      ) {
+        return emitCppExplicitStringConversionCpp(expression.callee.object, context);
+      }
       if (
         expression.callee.kind === 'property' &&
         expression.callee.name === 'toString' &&
@@ -4084,6 +4095,22 @@ function emitExpression(
       if (namespaceMember) return namespaceMember;
       const commonVariantProperty = emitCppVariantCommonPropertyExpression(expression, context);
       if (commonVariantProperty) return commonVariantProperty;
+      // The visitor above is the only spelling that reaches every alternative, so a read it could not
+      // prove has no spelling at all: the alternatives are what the value could be, and the member
+      // belongs to them rather than to the variant. Falling through here is what emitted `value.tag` on a
+      // `std::variant` -- through a property, a call, or a type parameter's constraint -- so the refusal
+      // is asked of the storage the read is taken from, not of how the receiver was written.
+      if (isCppExpressionVariantStorageCpp(expression.object, context)) {
+        // The receiver's own lanes answer first, in a context whose registrations are discarded: a
+        // narrowed union member that cannot identify one alternative refuses with that message, which
+        // names the narrowing the read depends on rather than the read itself.
+        emitExpression(expression.object, { ...context, anonymousStructs: new Map(), includes: new Set() });
+        emissionError(
+          context,
+          `property ${expression.name} on a C++ variant requires proven union member access`,
+          'cpp-union-member-access-unguarded',
+        );
+      }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
         addCppExternalBindingHeaders(expression.object.reference.name, 'value', context);
         const member = getCompilerRuntimeExternalMemberTargetCpp(
@@ -4111,19 +4138,6 @@ function emitExpression(
       }
       if (expression.namespaceMember) {
         return `${emitExpression(expression.object, context)}::${safeCppName(expression.name)}`;
-      }
-      if (
-        expression.object.kind === 'identifier' &&
-        expression.object.reference.kind === 'binding' &&
-        !expression.object.narrowedMember &&
-        !context.narrowedBindingTypes.has(expression.object.reference.binding.id) &&
-        getIrBindingVariantUnionTypeCpp(expression.object.reference.binding.id, context)
-      ) {
-        emissionError(
-          context,
-          `property ${expression.name} on a C++ variant requires proven union member access`,
-          'cpp-union-member-access-unguarded',
-        );
       }
       const classDeclaration = getIrExpressionClassDeclarationCpp(expression.object, context);
       if (classDeclaration) {
@@ -9912,19 +9926,65 @@ function isCppExpressionVariantUnionCpp(expression: Readonly<IrExpression>, cont
   return Boolean(type && getIrVariantUnionTypeCpp(type, context, new Set()));
 }
 
+// Whether the storage an expression is read from is a variant, which only a visit can read a member of.
+//
+// `isCppExpressionVariantUnionCpp` looks at the type as written, which misses the reader that reaches a
+// union through a type parameter -- `value.tag` under `T extends Left | Right` is a member read on a
+// variant just as `holder.value.tag` is, though the type in hand is the parameter. Resolving the domain
+// first answers for both, and it answers for the value being read rather than for the declaration: a
+// binding narrowed to one alternative resolves to that alternative, which is exactly when a direct
+// spelling is right.
+//
+// The domain being a union is not the same question as the storage being a variant. Two members that share
+// one C++ type (`Segment` above, two object shapes whose discriminant is a `flight::String`) are one
+// reference, and reading a member of it is the direct spelling -- so the representation plan decides, and
+// a plan that coalesced the members into a single value is not a variant to refuse over.
+function isCppExpressionVariantStorageCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (!type) return false;
+  const domain = getIrTypeRuntimeDomainCpp(type, context, new Set()) ?? type;
+  const union = getIrVariantUnionTypeCpp(domain, context, new Set());
+  return union !== undefined && !getCppVariantRepresentationForInspection(union, context).direct;
+}
+
+// Whether a member read is the runtime's own string conversion of a primitive variant: `value.toString()`
+// on `string | number`.
+//
+// This is not a member of either alternative's C++ type -- `double` has no `to_string` -- and it is not
+// asked of one, so the visitor over the alternatives' own members cannot prove it. What proves it is the
+// runtime defining one conversion per alternative, which makes the conversion of the variant a single
+// visit over `flight::to_string`, the same body the explicit `String(value)` operation emits. Every
+// alternative has to be a primitive the runtime converts; anything else keeps the refusal.
+function isCppVariantPrimitiveStringConversionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): boolean {
+  if (expression.name !== 'toString') return false;
+  const type = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  if (!type) return false;
+  const domain = getIrTypeRuntimeDomainCpp(type, context, new Set()) ?? type;
+  const union = getIrVariantUnionTypeCpp(domain, context, new Set());
+  return (
+    union !== undefined &&
+    union.types.every(
+      (member) =>
+        member.kind === 'primitive' &&
+        (member.name === 'boolean' || member.name === 'number' || member.name === 'string'),
+    )
+  );
+}
+
 function emitCppVariantCommonPropertyExpression(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
 ): string | undefined {
-  if (
-    expression.object.kind === 'identifier' &&
-    expression.object.reference.kind === 'binding' &&
-    (expression.object.narrowedMember || context.narrowedBindingTypes.has(expression.object.reference.binding.id))
-  ) {
-    return undefined;
-  }
   const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
-  const union = objectType ? getIrVariantUnionTypeCpp(objectType, context, new Set()) : undefined;
+  // The union is asked of the runtime domain, which is the same question the refusal below asks: a union
+  // reached through an intersection distribution (`BuiltIn & Entity` merges Entity into each alternative)
+  // or through a type parameter's constraint is a union the alternatives answer for, and looking only at
+  // the type as written would leave those to the direct spelling.
+  const domainType = objectType ? (getIrTypeRuntimeDomainCpp(objectType, context, new Set()) ?? objectType) : undefined;
+  const union = domainType ? getIrVariantUnionTypeCpp(domainType, context, new Set()) : undefined;
   if (!union) return undefined;
   const representation = getCppVariantRepresentationForInspection(union, context);
   if (representation.direct) return undefined;
