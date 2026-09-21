@@ -17275,6 +17275,74 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('.get(');
   });
 
+  it('plans optional element access from one concrete nullable collection', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'optional-element-plans.ts',
+        `export function capture(input: string): string | null {
+           const match = /^(.)$/.exec(input);
+           return match?.[1] ?? null;
+         }
+         export function dynamic(items: number[] | null, index: number): number | undefined {
+           return items?.[index];
+         }
+         export function tuple(pair: [number, string] | null): string | undefined {
+           return pair?.[1];
+         }
+         export function present(items: number[], index: number): number | undefined {
+           return items?.[index];
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('optional_chain_receiver.value().capture(1.0)');
+    expect(emitted).toContain('optional_chain_receiver.value().get(index)');
+    expect(emitted).toContain('std::get<1>(optional_chain_receiver.value())');
+    expect(emitted).toContain('return items.element(index);');
+
+    const outOfRange = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'optional-tuple-out-of-range.ts',
+          `export function read(pair: [number, string] | null): unknown {
+             return pair?.[2];
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(outOfRange.message).toContain('fixed-tuple projection index 2 is out of range');
+
+    const dynamicTuple = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'optional-tuple-dynamic-index.ts',
+          `export function read(pair: [number, string] | null, index: number): number | string | undefined {
+             return pair?.[index];
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(dynamicTuple.message).toContain('tuple projection requires one statically known nonnegative integer index');
+
+    const ambiguous = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'optional-element-ambiguous-collection.ts',
+          `export function read(items: number[] | Uint8Array | null, index: number): number | undefined {
+             return items?.[index];
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(ambiguous.message).toContain(
+      'optional element access requires one concrete nullable indexed collection receiver',
+    );
+  });
+
   it('guards an optional element after an optional collection lookup', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [

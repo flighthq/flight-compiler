@@ -3320,7 +3320,9 @@ function emitExpression(
       }
       if (expression.semantics.receivers.includes('tuple')) {
         context.includes.add('tuple');
-        const index = getElementAccessTupleIndexCpp(expression, context);
+        const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+        const tuple = objectType ? getIrTupleTypeCpp(objectType, context, new Set()) : undefined;
+        const index = getElementAccessTupleIndexCpp(expression, context, tuple);
         return `std::get<${String(index)}>(${emitExpression(expression.object, context)})`;
       }
       const object = emitExpression(expression.object, context);
@@ -14779,24 +14781,55 @@ function emitOptionalElementExpressionCpp(
   if (semantics.receiverNullish === 'excluded') {
     return emitExpression({ ...expression, optional: false }, context);
   }
+  const receiverPlan = getCppOptionalElementReceiverPlanCpp(expression, semantics.receiverType, context);
+  const tupleIndex =
+    receiverPlan?.kind === 'tuple' ? getElementAccessTupleIndexCpp(expression, context, receiverPlan.type) : undefined;
   const payload = emitOptionalChainPayloadTypeCpp(semantics.valueType, context);
   const object = emitOptionalChainReceiverCpp(expression.object, context);
   const index = emitExpression(expression.index, context);
   context.includes.add('optional');
-  if (semantics.receiverType.kind === 'union') {
-    const receiver = getOptionalPayloadTypeCpp(semantics.receiverType, context);
-    if (receiver.kind === 'tuple') {
-      const tupleIndex = getElementAccessTupleIndexCpp(expression, context);
-      if (getCppRuntimeProfile(context.options) === 'flight-cpp' && getIrHomogeneousTupleElementTypeCpp(receiver)) {
-        return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().get(${index}); }())`;
-      }
-      return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return std::get<${String(tupleIndex)}>(optional_chain_receiver.value()); }())`;
-    }
-    if (receiver.kind === 'array') {
+  if (receiverPlan?.kind === 'tuple' && tupleIndex !== undefined) {
+    if (
+      getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+      getIrHomogeneousTupleElementTypeCpp(receiverPlan.type)
+    ) {
       return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().get(${index}); }())`;
     }
+    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return std::get<${String(tupleIndex)}>(optional_chain_receiver.value()); }())`;
   }
-  emissionError(context, 'optional element access requires nullable array or fixed-tuple receiver evidence');
+  if (receiverPlan?.kind === 'regexpExecArray') {
+    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().capture(${index}); }())`;
+  }
+  if (receiverPlan?.kind === 'runtimeIndexed') {
+    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().get(${index}); }())`;
+  }
+  emissionError(context, 'optional element access requires one concrete nullable indexed collection receiver');
+}
+
+function getCppOptionalElementReceiverPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  type: Readonly<IrType>,
+  context: EmitContext,
+):
+  | Readonly<{ kind: 'regexpExecArray' | 'runtimeIndexed' }>
+  | Readonly<{ kind: 'tuple'; type: Extract<IrType, { kind: 'tuple' }> }>
+  | undefined {
+  // Nullability and collection identity are separate facts. Strip only the receiver sentinel, then require
+  // exactly one concrete collection representation: syntax-level arrays and tuples, the regexp capture
+  // carrier's checked lookup, or a runtime-planned array. A remaining union would need a variant visitor and
+  // stays refused even when every alternative happens to be indexable.
+  const receiver = getCppNonNullableType(type, context, new Set());
+  if (!receiver || receiver.kind === 'union') return undefined;
+  const tuple = getIrTupleTypeCpp(receiver, context, new Set());
+  if (tuple) return { kind: 'tuple', type: tuple };
+  if (getIrArrayTypeCpp(receiver, context, new Set())) return { kind: 'runtimeIndexed' };
+  if (hasCppRegExpExecArrayIndexedReceiverCpp(expression, context)) return { kind: 'regexpExecArray' };
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  const representation = context.referenceRepresentationPlanner.plan(receiver, context.module);
+  return representation.kind === 'represented' &&
+    (representation.category === 'array' || representation.category === 'typedArray')
+    ? { kind: 'runtimeIndexed' }
+    : undefined;
 }
 
 function emitOptionalPropertyExpressionCpp(
@@ -16733,9 +16766,10 @@ function getIrTaskAwaitedTypeCpp(type: Readonly<IrType>, context: EmitContext): 
 function getElementAccessTupleIndexCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
+  tuple?: Readonly<Extract<IrType, { kind: 'tuple' }>> | undefined,
 ): number {
   if (
-    expression.semantics.receivers.length !== 1 ||
+    (!tuple && expression.semantics.receivers.length !== 1) ||
     expression.index.kind !== 'literal' ||
     typeof expression.index.value !== 'number' ||
     !Number.isSafeInteger(expression.index.value) ||
@@ -16743,7 +16777,11 @@ function getElementAccessTupleIndexCpp(
   ) {
     emissionError(context, 'tuple projection requires one statically known nonnegative integer index');
   }
-  return expression.index.value;
+  const index = expression.index.value;
+  if (tuple && index >= tuple.elements.length) {
+    emissionError(context, `fixed-tuple projection index ${String(index)} is out of range`);
+  }
+  return index;
 }
 
 function getGeneratedTargetName(base: string, context: EmitContext): string {
