@@ -249,79 +249,97 @@ describe('getCompilerExternalBindingCallResultTypeCpp', () => {
   });
 });
 
-describe('external call-result absence', () => {
-  const bindings = {
-    bindings: [
-      {
-        callResultAbsence: 'undefined' as const,
-        callResultType: 'std::optional<host::Entry>',
-        headers: ['host/registry.hpp'],
-        nullability: 'non-null' as const,
-        ownership: 'value' as const,
-        sourceName: 'readEntry',
-        space: 'value' as const,
-        targetName: 'host::read_entry',
-      },
-      {
-        headers: ['host/registry.hpp'],
-        members: [
-          {
-            callResultAbsence: 'null' as const,
-            callResultType: 'std::optional<host::Entry>',
-            sourceMember: 'find',
-            targetName: 'find',
-          },
-        ],
-        nullability: 'non-null' as const,
-        ownership: 'shared' as const,
-        sourceName: 'HostRegistry',
-        space: 'type' as const,
-        targetName: 'host::Registry',
-      },
-      {
-        headers: ['host/registry.hpp'],
-        members: [
-          {
-            callResultAbsence: 'undefined' as const,
-            callResultType: 'std::optional<host::Entry>',
-            sourceMember: 'read',
-            targetName: 'host::read',
-          },
-        ],
-        nullability: 'non-null' as const,
-        ownership: 'value' as const,
-        sourceName: 'HostRegistry',
-        space: 'value' as const,
-        targetName: 'host::Registry',
-      },
-    ],
-    schema: 'flight-cpp-external-bindings/1' as const,
-  };
+const callResultAbsenceBindings = {
+  bindings: [
+    {
+      callResultAbsence: 'undefined' as const,
+      callResultType: 'std::optional<host::Entry>',
+      headers: ['host/registry.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'value' as const,
+      sourceName: 'readEntry',
+      space: 'value' as const,
+      targetName: 'host::read_entry',
+    },
+    {
+      headers: ['host/registry.hpp'],
+      members: [
+        {
+          callResultAbsence: 'null' as const,
+          callResultType: 'std::optional<host::Entry>',
+          sourceMember: 'find',
+          targetName: 'find',
+        },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'HostRegistry',
+      space: 'type' as const,
+      targetName: 'host::Registry',
+    },
+    {
+      headers: ['host/registry.hpp'],
+      members: [
+        {
+          callResultAbsence: 'undefined' as const,
+          callResultType: 'std::optional<host::Entry>',
+          sourceMember: 'read',
+          targetName: 'host::read',
+        },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'value' as const,
+      sourceName: 'HostRegistry',
+      space: 'value' as const,
+      targetName: 'host::Registry',
+    },
+  ],
+  schema: 'flight-cpp-external-bindings/1' as const,
+};
 
-  it('resolves exact direct, static-member, and instance-member evidence', () => {
-    expect(getCompilerExternalBindingCallResultAbsenceCpp('readEntry', bindings)).toBe('undefined');
-    expect(getCompilerRuntimeExternalSymbolCallResultAbsenceCpp('readEntry', 'flight-cpp', bindings)).toBe('undefined');
-    expect(
-      getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp('HostRegistry', 'find', 'flight-cpp', bindings),
-    ).toBe('null');
-    expect(getCompilerRuntimeExternalMemberCallResultAbsenceCpp('HostRegistry', 'read', 'flight-cpp', bindings)).toBe(
-      'undefined',
-    );
+describe('getCompilerExternalBindingCallResultAbsenceCpp', () => {
+  it('returns exact direct call-result absence evidence', () => {
+    expect(getCompilerExternalBindingCallResultAbsenceCpp('readEntry', callResultAbsenceBindings)).toBe('undefined');
+    expect(getCompilerExternalBindingCallResultAbsenceCpp('Missing', callResultAbsenceBindings)).toBeUndefined();
   });
 
-  it('requires a result type and a supported sentinel', () => {
+  it('requires an accompanying result type', () => {
     expect(() =>
       getCompilerExternalBindingCallResultAbsenceCpp('readEntry', {
-        ...bindings,
-        bindings: [{ ...bindings.bindings[0]!, callResultType: undefined }],
+        ...callResultAbsenceBindings,
+        bindings: [{ ...callResultAbsenceBindings.bindings[0]!, callResultType: undefined }],
       }),
     ).toThrow('malformed call-result absence');
+  });
+});
+
+describe('getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp', () => {
+  it('returns exact instance-member call-result absence evidence', () => {
+    expect(
+      getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp(
+        'HostRegistry',
+        'find',
+        'flight-cpp',
+        callResultAbsenceBindings,
+      ),
+    ).toBe('null');
+    expect(
+      getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp(
+        'HostRegistry',
+        'Missing',
+        'flight-cpp',
+        callResultAbsenceBindings,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('requires a supported sentinel', () => {
     expect(() =>
       getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp('HostRegistry', 'find', 'flight-cpp', {
-        ...bindings,
+        ...callResultAbsenceBindings,
         bindings: [
           {
-            ...bindings.bindings[1]!,
+            ...callResultAbsenceBindings.bindings[1]!,
             members: [
               {
                 callResultAbsence: 'missing' as 'null',
@@ -334,6 +352,38 @@ describe('external call-result absence', () => {
         ],
       }),
     ).toThrow('malformed static-member mappings');
+  });
+});
+
+describe('getCompilerRuntimeExternalMemberCallResultAbsenceCpp', () => {
+  it('returns exact static-member call-result absence evidence', () => {
+    expect(
+      getCompilerRuntimeExternalMemberCallResultAbsenceCpp(
+        'HostRegistry',
+        'read',
+        'flight-cpp',
+        callResultAbsenceBindings,
+      ),
+    ).toBe('undefined');
+    expect(
+      getCompilerRuntimeExternalMemberCallResultAbsenceCpp(
+        'HostRegistry',
+        'Missing',
+        'flight-cpp',
+        callResultAbsenceBindings,
+      ),
+    ).toBeUndefined();
+  });
+});
+
+describe('getCompilerRuntimeExternalSymbolCallResultAbsenceCpp', () => {
+  it('returns exact runtime-symbol call-result absence evidence', () => {
+    expect(
+      getCompilerRuntimeExternalSymbolCallResultAbsenceCpp('readEntry', 'flight-cpp', callResultAbsenceBindings),
+    ).toBe('undefined');
+    expect(
+      getCompilerRuntimeExternalSymbolCallResultAbsenceCpp('Missing', 'flight-cpp', callResultAbsenceBindings),
+    ).toBeUndefined();
   });
 });
 
