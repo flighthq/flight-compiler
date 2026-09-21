@@ -3558,6 +3558,79 @@ describe('createCppCompilerBackend', () => {
     ).toBe('cpp-union-member-access-unguarded');
   });
 
+  // A member read on a value a conversion produced. The conversion is a `flight::String`, and the read is
+  // a member of that string -- `length` is a method the runtime exposes, not a field it has. The read
+  // resolves against the surface the object's own type names, because the call's IR result is erased
+  // (its signature comes from the ambient surface) and the analysis therefore left no member evidence.
+  it('reads a represented string member through the conversion that produced it', () => {
+    const module = lower(
+      'converted-string-member.ts',
+      `interface Box { value: string | number; }
+       export function convertedLength(flag: boolean): number {
+         const box: Box = { value: flag ? "text" : 2 };
+         return box.value.toString().length;
+       }
+       export function directLength(text: string): number {
+         return text.toString().length;
+       }
+       export function narrowedLength(text: string | undefined): number {
+         if (text === undefined) return 0;
+         return text.toString().length;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain(
+      'return static_cast<double>(std::visit([](const auto& value) { return flight::to_string(value); }, box->value).length());',
+    );
+    // A string receiver answers itself, and the runtime spells that as the free conversion -- `String`
+    // has no `to_string` member, so the name map's method spelling would name nothing.
+    expect(emitted).toContain('return static_cast<double>(flight::to_string(text).length());');
+    expect(emitted).toContain('return static_cast<double>(flight::to_string(text.value()).length());');
+  });
+
+  // The controls: a member read keeps the spelling its own receiver's surface calls for, and a length is
+  // not assumed to be a string's. A declared string answers `length()`, a call that returns one answers
+  // through the call once, an array and a map answer `size()`, and a source field named `length` stays a
+  // field.
+  it('keeps each receiver its own length spelling', () => {
+    const module = lower(
+      'length-receivers.ts',
+      `interface Sized { length: string }
+       export function named(): string {
+         return "text";
+       }
+       export function declared(text: string): number {
+         return text.length;
+       }
+       export function optional(text: string | undefined): number {
+         if (text === undefined) return 0;
+         return text.length;
+       }
+       export function produced(): number {
+         return named().length;
+       }
+       export function counted(values: readonly string[]): number {
+         return values.length;
+       }
+       export function entries(values: ReadonlyMap<string, string>): number {
+         return values.size;
+       }
+       export function field(value: Sized): string {
+         return value.length;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('return static_cast<double>(text.length());');
+    expect(emitted).toContain('return static_cast<double>(text.value().length());');
+    expect(emitted).toContain('return static_cast<double>(named().length());');
+    expect(emitted).toContain('return static_cast<double>(values.size());');
+    expect(emitted).toContain('return value->length;');
+  });
+
   // Three refusals the rule keeps: a carrier still absent where the query is written was never narrowed, a
   // carrier of two domains would answer with a member no single read names, and a member whose answer is a
   // declaration shape stays with the deferred node. Each is written out in the source and refused at

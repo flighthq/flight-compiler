@@ -2886,7 +2886,11 @@ function emitExpression(
         expression.callee.kind === 'property' &&
         expression.callee.name === 'toString' &&
         (expression.callee.member?.receiver === 'number' ||
-          isIrNumberTypeEvidenceCpp(getIrExpressionTypeEvidenceCpp(expression.callee.object, context)))
+          isIrNumberTypeEvidenceCpp(getIrExpressionTypeEvidenceCpp(expression.callee.object, context)) ||
+          // A string receiver answers itself, and the runtime spells that as the free
+          // `flight::to_string` rather than a member: `flight::String` has no `to_string`, so the
+          // member spelling a general name map produces (`text.to_string()`) names nothing.
+          isIrStringTypeEvidenceCpp(getIrExpressionTypeEvidenceCpp(expression.callee.object, context)))
       ) {
         const receiver = emitExpression(expression.callee.object, context);
         if (expression.arguments.length === 1) {
@@ -4080,8 +4084,14 @@ function emitExpression(
       // the alternatives, not about the storage they share. A variant receiver therefore goes to the
       // variant proof below, which is the only path that can spell an access reaching every
       // alternative -- or refuse when it cannot.
-      if (expression.member && !isCppExpressionVariantUnionCpp(expression.object, context)) {
-        const binding = getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options));
+      const memberEvidence =
+        expression.member ??
+        (() => {
+          const receiver = getCppExpressionMemberReceiverCpp(expression.object, context);
+          return receiver ? ({ name: expression.name, receiver } as const) : undefined;
+        })();
+      if (memberEvidence && !isCppExpressionVariantUnionCpp(expression.object, context)) {
+        const binding = getCompilerCppAmbientMemberBinding(memberEvidence, getCppRuntimeProfile(context.options));
         if (binding && binding.kind === 'sizeMethod') {
           const receiver = emitExpression(expression.object, context);
           return `static_cast<double>(${receiver}${memberOp(expression.object, context)}${binding.targetName}())`;
@@ -10109,14 +10119,40 @@ function isCppVariantPrimitiveStringConversionCpp(
   if (!type) return false;
   const domain = getIrTypeRuntimeDomainCpp(type, context, new Set()) ?? type;
   const union = getIrVariantUnionTypeCpp(domain, context, new Set());
-  return (
-    union !== undefined &&
-    union.types.every(
-      (member) =>
-        member.kind === 'primitive' &&
-        (member.name === 'boolean' || member.name === 'number' || member.name === 'string'),
-    )
-  );
+  return union !== undefined && union.types.every(isCppPrimitiveStringConversionTypeCpp);
+}
+
+// The primitive domains whose `toString` the runtime answers with its own string conversion. A union of
+// them is one domain per alternative, which is what a primitive variant is.
+function isCppPrimitiveStringConversionTypeCpp(type: Readonly<IrType>): boolean {
+  return type.kind === 'primitive' && (type.name === 'boolean' || type.name === 'number' || type.name === 'string');
+}
+
+function isCppPrimitiveStringConversionDomainCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  const domain = getIrTypeRuntimeDomainCpp(type, context, new Set()) ?? type;
+  if (isCppPrimitiveStringConversionTypeCpp(domain)) return true;
+  const union = getIrVariantUnionTypeCpp(domain, context, new Set());
+  return union !== undefined && union.types.every(isCppPrimitiveStringConversionTypeCpp);
+}
+
+// The result of a primitive string conversion is a string, whatever the call's own recorded result says.
+//
+// `value.toString()` is a member of a primitive, and the surface declaring it belongs to the runtime
+// rather than to this module: the lowering records the call as erased (`any`), which is true of the
+// signature and false of the value -- the emitted C++ is a `flight::String`. A member read on that result
+// (`value.toString().length`) has no other way to learn that it is reading a string, so the conversion
+// answers its own result type here. Only a primitive receiver is claimed: an object may declare a
+// `toString` of its own.
+function getCppPrimitiveStringConversionCallResultTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const callee = expression.callee;
+  if (callee.kind !== 'property' || callee.name !== 'toString') return undefined;
+  const receiver = getIrExpressionTypeEvidenceCpp(callee.object, context);
+  return receiver && isCppPrimitiveStringConversionDomainCpp(receiver, context)
+    ? { kind: 'primitive', name: 'string' }
+    : undefined;
 }
 
 function emitCppVariantCommonPropertyExpression(
@@ -10213,6 +10249,41 @@ function getCppVariantMemberReceiverCpp(type: Readonly<IrType>): IrResolvedMembe
     return category;
   }
   return undefined;
+}
+
+// The surface a member read resolves against when the analysis attached no member of its own.
+//
+// The analysis resolves a receiver from the type it can name and deliberately declines a union it cannot
+// name one receiver for. A string that arrives from a conversion is the shape that leaves a read with
+// nothing: `value.toString().length` reaches the string surface through a call whose IR result is erased,
+// so the read has no member evidence and no source field to fall back on -- and the direct spelling is
+// `length`, a property `flight::String` does not have, where the runtime exposes `length()`. What the
+// emitter does know is what it emitted, so the object's own type names the surface here, under the same
+// agreement rule the analysis applies: every inhabited member of a union has to answer the same receiver.
+//
+// Only a read the analysis left unresolved is answered this way. A resolved member is that analysis's
+// answer, including when it names a source field the runtime categories know nothing about.
+function getCppExpressionMemberReceiverCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): IrResolvedMemberReceiver | undefined {
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  return type ? getCppTypeMemberReceiverCpp(type) : undefined;
+}
+
+function getCppTypeMemberReceiverCpp(type: Readonly<IrType>): IrResolvedMemberReceiver | undefined {
+  if (type.kind === 'union') {
+    const inhabited = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    const resolved = inhabited.map((member) => getCppTypeMemberReceiverCpp(member));
+    if (resolved.length === 0 || resolved.some((receiver) => receiver === undefined)) return undefined;
+    const receivers = new Set(resolved);
+    return receivers.size === 1 ? [...receivers][0] : undefined;
+  }
+  if (type.kind === 'literal') {
+    return typeof type.value === 'string' ? 'string' : typeof type.value === 'number' ? 'number' : undefined;
+  }
+  if (type.kind === 'primitive' && (type.name === 'number' || type.name === 'string')) return type.name;
+  return getCppVariantMemberReceiverCpp(type);
 }
 
 function emitNarrowedUnionMemberCpp(
@@ -12034,6 +12105,7 @@ function getIrCallReturnTypeCpp(
     }
   }
   const runtimeResult = getCppRuntimeMemberCallResultTypeEvidence(expression, context);
+  const stringConversion = getCppPrimitiveStringConversionCallResultTypeCpp(expression, context);
   if (expression.semantics.resultType.kind !== 'unknown') {
     return (
       (runtimeResult
@@ -12042,12 +12114,17 @@ function getIrCallReturnTypeCpp(
     );
   }
   if (runtimeResult) return runtimeResult;
+  if (stringConversion) return stringConversion;
   const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
   return calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined;
 }
 
 function isIrNumberTypeEvidenceCpp(type: Readonly<IrType> | undefined): boolean {
   return type?.kind === 'primitive' && type.name === 'number';
+}
+
+function isIrStringTypeEvidenceCpp(type: Readonly<IrType> | undefined): boolean {
+  return type?.kind === 'primitive' && type.name === 'string';
 }
 
 // C++ cannot infer a function template parameter which appears only in the return type. TypeScript
