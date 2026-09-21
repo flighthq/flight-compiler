@@ -2488,6 +2488,16 @@ function emitExpression(
     case 'array':
       return emitArrayExpressionCpp(expression, context, expectedType);
     case 'assignment': {
+      if (
+        (expression.left.kind === 'property' || expression.left.kind === 'element') &&
+        getCppExternalNumericPropertyViewAccessPlanCpp(expression.left, context)
+      ) {
+        emissionError(
+          context,
+          'an external numeric-property view is read-only',
+          'cpp-external-numeric-property-view-write',
+        );
+      }
       // The named-property view is the read side only, and that is the point of it: a name that was
       // never declared cannot become a way to mutate the object behind it. A write through the view is
       // refused here rather than emitted as a `get` on the left of an assignment, which would be an
@@ -4244,6 +4254,17 @@ function emitExpression(
         : emitCppInlineTupleConstructionCpp(elements, context);
     }
     case 'unary': {
+      if (
+        (expression.operator === '++' || expression.operator === '--' || expression.operator === 'delete') &&
+        (expression.operand.kind === 'property' || expression.operand.kind === 'element') &&
+        getCppExternalNumericPropertyViewAccessPlanCpp(expression.operand, context)
+      ) {
+        emissionError(
+          context,
+          'an external numeric-property view is read-only',
+          'cpp-external-numeric-property-view-write',
+        );
+      }
       const structuralRowDelete = emitCppStructuralRowDeleteCpp(expression, context);
       if (structuralRowDelete) return structuralRowDelete;
       const nullishNegation = emitCppNullishObjectNegation(expression, context);
@@ -12966,13 +12987,18 @@ function getCppExternalNumericPropertyViewPlanCpp(
   return view ? { sourceName, targetName: view.targetName } : undefined;
 }
 
+function getCppExternalNumericPropertyViewAccessPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' | 'property' }>>,
+  context: EmitContext,
+): Readonly<CppExternalNumericPropertyViewPlan> | undefined {
+  if (expression.kind === 'property' && getCppExternalInstanceMemberBindingCpp(expression, context)) return undefined;
+  return getCppExternalNumericPropertyViewPlanCpp(expression.object, context);
+}
+
 function getCppExternalNumericPropertyViewTypeCpp(): Readonly<IrType> {
   return {
     kind: 'union',
-    types: [
-      { kind: 'primitive', name: 'number' },
-      { kind: 'undefined' },
-    ],
+    types: [{ kind: 'primitive', name: 'number' }, { kind: 'undefined' }],
   };
 }
 
@@ -12980,7 +13006,7 @@ function emitCppExternalNumericPropertyViewPropertyCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
 ): string | undefined {
-  const plan = getCppExternalNumericPropertyViewPlanCpp(expression.object, context);
+  const plan = getCppExternalNumericPropertyViewAccessPlanCpp(expression, context);
   if (!plan) return undefined;
   addCppExternalBindingHeaders(plan.sourceName, 'type', context);
   context.includes.add('flight/string.hpp');
@@ -12991,7 +13017,7 @@ function emitCppExternalNumericPropertyViewElementCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
 ): string | undefined {
-  const plan = getCppExternalNumericPropertyViewPlanCpp(expression.object, context);
+  const plan = getCppExternalNumericPropertyViewAccessPlanCpp(expression, context);
   if (!plan) return undefined;
   if (!isCppStringKeyIndexCpp(expression.index, context)) {
     emissionError(
@@ -14721,7 +14747,7 @@ function getIrExpressionTypeEvidenceCpp(
       return expression.type;
     }
     case 'element': {
-      if (getCppExternalNumericPropertyViewPlanCpp(expression.object, context)) {
+      if (getCppExternalNumericPropertyViewAccessPlanCpp(expression, context)) {
         return getCppExternalNumericPropertyViewTypeCpp();
       }
       const computedSymbol = getComputedSymbolElementPropertyCpp(expression, context);
@@ -14739,10 +14765,7 @@ function getIrExpressionTypeEvidenceCpp(
         : elementType;
     }
     case 'property': {
-      if (
-        !getCppExternalInstanceMemberBindingCpp(expression, context) &&
-        getCppExternalNumericPropertyViewPlanCpp(expression.object, context)
-      ) {
+      if (getCppExternalNumericPropertyViewAccessPlanCpp(expression, context)) {
         return getCppExternalNumericPropertyViewTypeCpp();
       }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'this') {

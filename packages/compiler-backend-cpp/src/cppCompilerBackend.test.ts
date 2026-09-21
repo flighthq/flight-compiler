@@ -4542,13 +4542,13 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
       'native-numeric-property-view.ts',
       `function receiver(value: HostExtension): HostExtension { return value; }
        function key(value: string): string { return value; }
-       export function named(extension: HostExtension): number | undefined { return extension.ZERO; }
+       export function named(extension: HostExtension): number | undefined { return receiver(extension).ZERO; }
        export function dynamic(extension: HostExtension, name: string): number | undefined {
          return receiver(extension)[key(name)];
        }
-       export function guarded(extension: HostExtension | null): number {
-         if (extension === null) return -1;
-         return typeof extension.ZERO === 'number' ? extension.ZERO : -1;
+       export function guarded(extension: HostExtension | null): number | undefined {
+         if (extension === null) return undefined;
+         return extension.ZERO;
        }`,
     );
     const binding = {
@@ -4572,25 +4572,51 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(result.diagnostics).toEqual([]);
     const emitted = emit(binding).contents;
     expect(emitted).toContain('std::optional<double> named(host::Extension extension)');
-    expect(emitted).toContain('return extension.get(flight::String("ZERO"));');
+    const named = /std::optional<double> named[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(named).toContain('return receiver(extension).get(flight::String("ZERO"));');
+    expect(named?.match(/receiver\(extension\)/gu)).toHaveLength(1);
     const dynamic = /std::optional<double> dynamic[^]*?\n\}/u.exec(emitted)?.[0];
     expect(dynamic).toContain('receiver(extension).get(key(name))');
     expect(dynamic?.match(/receiver\(extension\)/gu)).toHaveLength(1);
     expect(dynamic?.match(/key\(name\)/gu)).toHaveLength(1);
     expect(emitted).not.toContain('value_or(0.0)');
     expect(emitted).toContain('std::optional<host::Extension> extension');
-    expect(emitted).toContain('extension.value().get(flight::String("ZERO")).has_value()');
-    expect(emitted).toContain('extension.value().get(flight::String("ZERO")).value()');
+    expect(emitted).toContain('return extension.value().get(flight::String("ZERO"));');
 
     const failure = captureBackendEmissionFailure(() => emit({ ...binding, numericPropertyView: undefined }));
     expect(failure.rule).toBe('cpp-contextual-union-missing-expression-type:optionalSingle');
+
+    const nonStringKey = lower(
+      'native-numeric-property-number-key.ts',
+      'export function read(extension: HostExtension, key: number): number | undefined { return extension[key]; }',
+    );
+    const nonStringKeyFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(nonStringKey.module, {
+        externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+        runtimeProfile: 'flight-cpp',
+      }),
+    );
+    expect(nonStringKeyFailure.rule).toBe('cpp-external-numeric-property-view-key-unrepresented');
+
+    const write = lower(
+      'native-numeric-property-write.ts',
+      'export function write(extension: HostExtension): void { extension.ZERO = 0; }',
+    );
+    const writeFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(write.module, {
+        externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+        runtimeProfile: 'flight-cpp',
+      }),
+    );
+    expect(writeFailure.rule).toBe('cpp-external-numeric-property-view-write');
   });
 
   it('keeps ordinary external fields and explicit instance mappings outside the numeric-property view', () => {
     const result = lower(
       'native-static-extension.ts',
       `export function direct(extension: StaticExtension): number { return extension.VALUE; }
-       export function mapped(extension: ViewedExtension): number { return extension.VALUE; }`,
+       export function mapped(extension: ViewedExtension): number { return extension.VALUE; }
+       export function mappedWrite(extension: ViewedExtension): void { extension.VALUE = 1; }`,
     );
     const externalBindings = {
       bindings: [
@@ -4621,6 +4647,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(result.diagnostics).toEqual([]);
     expect(emitted).toContain('return extension.value;');
     expect(emitted).toContain('return extension.fixed_value;');
+    expect(emitted).toContain('(extension.fixed_value = 1.0);');
     expect(emitted).not.toContain('.get(');
   });
 

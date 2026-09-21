@@ -268,6 +268,7 @@ describe('getCompilerExternalBindingNumericPropertyViewCpp', () => {
 
   it.each([
     ['an empty getter', { numericPropertyView: { targetName: '' } }],
+    ['a non-member getter', { numericPropertyView: { targetName: 'get()' } }],
     ['value-space evidence', { space: 'value' as const }],
   ])('rejects %s', (_label, replacement) => {
     expect(() =>

@@ -95,16 +95,6 @@ export function getCompilerExternalBindingEvidenceCpp(
     : undefined;
 }
 
-export function getCompilerExternalBindingNumericPropertyViewCpp(
-  sourceName: string,
-  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
-): Readonly<CppCompilerExternalBindingNumericPropertyView> | undefined {
-  const binding = getCppCompilerExternalBindings(externalBindings).find(
-    (candidate) => candidate.sourceName === sourceName.normalize('NFC') && candidate.space === 'type',
-  );
-  return binding?.numericPropertyView ? Object.freeze({ ...binding.numericPropertyView }) : undefined;
-}
-
 export function getCompilerExternalBindingHeadersCpp(
   sourceName: string,
   space: CompilerRuntimeExternalSymbolSpace,
@@ -116,6 +106,16 @@ export function getCompilerExternalBindingHeadersCpp(
       (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === space,
     )?.headers ?? []
   );
+}
+
+export function getCompilerExternalBindingNumericPropertyViewCpp(
+  sourceName: string,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): Readonly<CppCompilerExternalBindingNumericPropertyView> | undefined {
+  const binding = getCppCompilerExternalBindings(externalBindings).find(
+    (candidate) => candidate.sourceName === sourceName.normalize('NFC') && candidate.space === 'type',
+  );
+  return binding?.numericPropertyView ? Object.freeze({ ...binding.numericPropertyView }) : undefined;
 }
 
 export function getCompilerExternalBindingObjectConstructionCpp(
@@ -351,7 +351,7 @@ function getCppCompilerExternalBindings(
       binding.numericPropertyView !== undefined &&
       (binding.space !== 'type' ||
         typeof binding.numericPropertyView.targetName !== 'string' ||
-        binding.numericPropertyView.targetName.length === 0)
+        !isCppExternalBindingFieldTarget(binding.numericPropertyView.targetName))
     ) {
       throw new TypeError(`${subject} has a malformed numeric-property view`);
     }
