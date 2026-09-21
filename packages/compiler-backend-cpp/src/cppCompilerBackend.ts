@@ -8727,9 +8727,17 @@ function emitContextualUnionExpressionInContextCpp(
     const leftUnion = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
     const leftStorageType = getIrExpressionTypeEvidenceCpp(expression.left, context);
     const leftStorageUnion = leftStorageType ? getIrUnionTypeCpp(leftStorageType, context, new Set()) : undefined;
-    const leftStoragePlan = leftStorageUnion ? getCppUnionRepresentationPlan(leftStorageUnion, context) : undefined;
-    if (leftUnion) {
-      const leftPlan = getCppUnionRepresentationPlan(leftUnion, context);
+    const declaredLeftStoragePlan = leftStorageUnion
+      ? getCppUnionRepresentationPlan(leftStorageUnion, context)
+      : undefined;
+    const implicitLeftStoragePlan =
+      leftStorageType && hasCppAbsenceStorageCpp(expression.left, context)
+        ? getCppImplicitAbsenceStoragePlanCpp(leftStorageType, context)
+        : undefined;
+    const leftStoragePlan = implicitLeftStoragePlan ?? declaredLeftStoragePlan;
+    const leftPlan = leftUnion ? getCppUnionRepresentationPlan(leftUnion, context) : undefined;
+    const representedLeftPlan = implicitLeftStoragePlan ?? leftPlan;
+    if (representedLeftPlan) {
       const targetSlot = plan.valueSlots[0];
       const sourceSlot = leftStoragePlan?.valueSlots[0];
       const expectedSentinels = union.types.filter(
@@ -8766,15 +8774,19 @@ function emitContextualUnionExpressionInContextCpp(
         return `([&]() -> ${emitUnionTypeCpp(union, context)} { auto ${source} = ${left}; if (std::holds_alternative<${sourceSlot.targetType}>(${source})) return ${present}; return ${absent}; }())`;
       }
       if (
-        hasEquivalentCppOptionalUnionRepresentation(plan, leftPlan) &&
+        hasEquivalentCppOptionalUnionRepresentation(plan, representedLeftPlan) &&
         ((expression.right.kind === 'literal' && expression.right.value === null) ||
           expression.right.kind === 'undefinedValue')
       ) {
-        return emitExpression(expression.left, context, leftType);
+        return implicitLeftStoragePlan
+          ? emitOptionalExpressionCpp(expression.left, context, leftStorageType)
+          : emitExpression(expression.left, context, leftType);
       }
-      if (hasEquivalentCppOptionalUnionRepresentation(plan, leftPlan)) {
+      if (hasEquivalentCppOptionalUnionRepresentation(plan, representedLeftPlan)) {
         const unionType = emitUnionTypeCpp(union, context);
-        const left = emitExpression(expression.left, context, leftType);
+        const left = implicitLeftStoragePlan
+          ? emitOptionalExpressionCpp(expression.left, context, leftStorageType)
+          : emitExpression(expression.left, context, leftType);
         const right = emitExpression(expression.right, context, expectedType);
         return `([&]() -> ${unionType} { auto nullish_coalesce_left = ${left}; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left; return ${right}; }())`;
       }
@@ -9237,6 +9249,26 @@ function hasEquivalentCppOptionalUnionRepresentation(
     (left.kind === 'optionalSingle' || left.kind === 'optionalVariant') &&
     hasEquivalentCppUnionRepresentation(left, right)
   );
+}
+
+// A runtime collection lookup carries one implicit undefined state outside the source value type.
+// Build the representation of that storage explicitly before deciding that `lookup ?? null` can
+// keep the lookup's optional unchanged. Comparing the value type spelling to the destination slot
+// loses imported aliases (`types::Format` is still `flight::String`), while comparing the two plans
+// uses the same alias resolution and target types that emit both carriers.
+//
+// A value type that already admits null or undefined is excluded: its lookup storage has two layers
+// (`optional<optional<T>>` or the corresponding variant), so returning the raw lookup would preserve
+// a missing-key layer that the nullish coalesce is required to consume.
+function getCppImplicitAbsenceStoragePlanCpp(
+  valueType: Readonly<IrType>,
+  context: EmitContext,
+): ReturnType<typeof getCppUnionRepresentationPlan> | undefined {
+  const valueUnion = getIrUnionTypeCpp(valueType, context, new Set());
+  if (valueUnion?.types.some((member) => member.kind === 'null' || member.kind === 'undefined')) {
+    return undefined;
+  }
+  return getCppUnionRepresentationPlan({ kind: 'union', types: [valueType, { kind: 'undefined' }] }, context);
 }
 
 // Two unions are interchangeable at a conversion site when they build the same C++ value: the same

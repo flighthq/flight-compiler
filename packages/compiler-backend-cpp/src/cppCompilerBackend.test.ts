@@ -12370,6 +12370,81 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('.value_or(std::nullopt)');
   });
 
+  it('preserves imported alias storage when a Record miss changes from undefined to null', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export type TextureFormat = 'rgba8' | 'bc1';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const texture = ts.createSourceFile(
+      '/flight/packages/texture/src/format.ts',
+      `import type { TextureFormat } from '@flighthq/types/contract';
+       export function nullable(
+         formats: Readonly<Record<number, TextureFormat>>,
+         key: number,
+       ): TextureFormat | null {
+         return formats[key] ?? null;
+       }
+       export function assigned(
+         formats: Readonly<Record<number, TextureFormat>>,
+         key: number,
+       ): TextureFormat | null {
+         let format: TextureFormat | null;
+         format = formats[key] ?? null;
+         return format;
+       }
+       export function defaulted(
+         formats: Readonly<Record<number, TextureFormat>>,
+         key: number,
+       ): TextureFormat {
+         return formats[key] ?? 'rgba8';
+       }
+       export function nested(
+         formats: Readonly<Record<number, TextureFormat | null>>,
+         key: number,
+       ): TextureFormat | null {
+         return formats[key] ?? null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/texture', sourceFile: texture, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/texture': { includePrefix: 'flight/texture', namespace: 'flight::texture' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(emitted).toContain('return formats.get(key);');
+    expect(emitted).toContain('(format = formats.get(key));');
+    expect(emitted).toContain('return formats.get(key).value_or(flight::String("rgba8"));');
+    const nested = emitted.slice(emitted.indexOf('inline std::optional<flight::String> nested'));
+    expect(nested).not.toContain('return formats.get(key);');
+    expect(emitted).not.toContain('.value_or(nullptr)');
+  });
+
   it('retains the intermediate optional carrier in chained nullish coalescing', () => {
     const result = lower(
       'chained-nullish-coalesce.ts',
