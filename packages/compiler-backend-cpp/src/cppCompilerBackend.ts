@@ -3731,8 +3731,9 @@ function emitExpression(
             : expression.type;
       const record = getCppRecordTypeArgumentsCpp(constructionType, context, new Set());
       if (record) {
+        if (expression.members.length === 0) return `${emitType(constructionType, context)}{}`;
         if (expression.members.some((member) => member.kind !== 'property')) {
-          emissionError(context, 'Record construction with spreads requires ordered entry lowering');
+          return emitCppOrderedRecordConstructionCpp(expression, constructionType, record, context);
         }
         const entries = expression.members.map((member) => {
           if (member.kind !== 'property') throw new TypeError('expected Record property');
@@ -5468,7 +5469,16 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         !collectionView && statement.iterable.kind === 'array' && statement.variable.type
           ? ({ element: statement.variable.type, kind: 'array', readonly: false } as const)
           : undefined;
-      const iterable = emitExpression(iterableExpression, context, literalElementType);
+      const narrowedIndexedStorageType =
+        iterableExpression.kind === 'identifier' &&
+        iterableExpression.reference.kind === 'binding' &&
+        // An indexed Record read has optional C++ storage even though its source type names only the
+        // value. A preceding terminating nullish guard records the present payload in this context.
+        context.arrayElementBindingIds.has(iterableExpression.reference.binding.id) &&
+        context.narrowedBindingTypes.has(iterableExpression.reference.binding.id)
+          ? iterableType
+          : undefined;
+      const iterable = emitExpression(iterableExpression, context, literalElementType ?? narrowedIndexedStorageType);
       const variableName = getBindingTargetName(statement.variable.binding, context);
       const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(statement.variable.binding.id);
       if (collectionView && !(collectionView.collectionKind === 'set' && collectionView.projection !== 'entry')) {
@@ -7911,6 +7921,63 @@ function getCppRecordTypeArgumentsCpp(
   if (!alias) return undefined;
   const nextResolvingAliases = new Set(resolvingAliases).add(type.reference.binding.id);
   return getCppRecordTypeArgumentsCpp(alias, context, nextResolvingAliases);
+}
+
+function emitCppOrderedRecordConstructionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  constructionType: Readonly<IrType>,
+  record: Readonly<{ key: IrType; value: IrType }>,
+  context: EmitContext,
+): string {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') {
+    emissionError(context, 'ordered Record construction requires the flight-cpp runtime profile');
+  }
+  // The neutral object member list is already the source evaluation order. Materialize each key,
+  // value, and spread operand separately because C++ call arguments do not provide JavaScript's
+  // key-before-value ordering. Record::set replaces an existing value without reinserting its key,
+  // so replaying those writes also preserves last-write-wins and stable property position.
+  const result = getGeneratedTargetName('recordConstruction', context);
+  const lines = [`${emitType(constructionType, context)} ${result} = {};`];
+  for (const member of expression.members) {
+    if (member.kind === 'getAccessor') {
+      emissionError(context, 'Record construction does not support accessors');
+    }
+    if (member.kind === 'spread') {
+      const sourceType = getIrExpressionTypeEvidenceCpp(member.expression, context);
+      const sourceRecord = getCppRecordTypeArgumentsCpp(sourceType, context, new Set());
+      if (
+        !sourceRecord ||
+        !areCppTypesRepresentationEquivalent(sourceRecord.key, record.key, context) ||
+        !areCppTypesRepresentationEquivalent(sourceRecord.value, record.value, context)
+      ) {
+        emissionError(
+          context,
+          'Record spread construction requires a represented Record with equivalent key and value storage',
+          'cpp-record-spread-source-unrepresented',
+        );
+      }
+      const source = getGeneratedTargetName('recordSpreadSource', context);
+      const entry = getGeneratedTargetName('recordSpreadEntry', context);
+      lines.push(
+        `auto&& ${source} = ${emitExpression(member.expression, context)};`,
+        `for (const auto& ${entry} : ${source}) { ${result}.set(${entry}.first, ${entry}.second); }`,
+      );
+      continue;
+    }
+    const key = getGeneratedTargetName('recordConstructionKey', context);
+    const value = getGeneratedTargetName('recordConstructionValue', context);
+    lines.push(
+      `auto ${key} = ${
+        member.kind === 'computedProperty'
+          ? emitCppRequiredRecordKeyCpp(member.key, record.key, context)
+          : emitCppRecordLiteralKey(member.name, record.key, context)
+      };`,
+      `auto ${value} = ${emitExpression(member.value, context, record.value)};`,
+      `${result}.set(${key}, ${value});`,
+    );
+  }
+  lines.push(`return ${result};`);
+  return `(${context.namespaceScope ? '[]' : '[&]'}() { ${lines.join(' ')} }())`;
 }
 
 function emitCppRecordLiteralKey(name: string, keyType: Readonly<IrType>, context: EmitContext): string {

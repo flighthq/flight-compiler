@@ -11836,6 +11836,146 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('#include <variant>');
   });
 
+  it('constructs an empty Record without entering ordered entry lowering', () => {
+    const output = emitIrModuleCpp(
+      lower('empty-record.ts', 'export function empty(): Record<string, number> { return {}; }').module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('return flight::Record<flight::String, double>{};');
+    expect(output).not.toContain('record_construction');
+  });
+
+  it('copies a spread-only Record through its ordered entries', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'spread-only-record.ts',
+        `export function copy(source: Readonly<Record<string, number>>): Record<string, number> {
+           return { ...source };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('flight::Record<flight::String, double> record_construction = {};');
+    expect(output).toContain('auto&& record_spread_source = source;');
+    expect(output).toContain(
+      'for (const auto& record_spread_entry : record_spread_source) { record_construction.set(record_spread_entry.first, record_spread_entry.second); }',
+    );
+    expect(output).toContain('return record_construction;');
+  });
+
+  it('retains explicit Record writes on the requested side of a spread', () => {
+    const emit = (body: string): string =>
+      emitIrModuleCpp(
+        lower(
+          'record-spread-override.ts',
+          `export function merge(source: Readonly<Record<string, number>>): Record<string, number> {
+             return ${body};
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+    const before = emit('{ fixed: 1, ...source }');
+    const after = emit('{ ...source, fixed: 2 }');
+
+    expect(before.indexOf('record_construction.set(record_construction_key, record_construction_value)')).toBeLessThan(
+      before.indexOf('auto&& record_spread_source = source'),
+    );
+    expect(after.indexOf('auto&& record_spread_source = source')).toBeLessThan(
+      after.indexOf('record_construction.set(record_construction_key, record_construction_value)'),
+    );
+  });
+
+  it('applies multiple Record spreads in source order', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'multiple-record-spreads.ts',
+        `export function merge(
+           first: Readonly<Record<string, number>>,
+           second: Readonly<Record<string, number>>,
+         ): Record<string, number> {
+           return { ...first, ...second };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output.indexOf('auto&& record_spread_source = first')).toBeLessThan(
+      output.indexOf('auto&& record_spread_source_2 = second'),
+    );
+    expect(output.match(/for \(const auto& record_spread_entry(?:_2)? : record_spread_source(?:_2)?\)/gu)).toHaveLength(
+      2,
+    );
+  });
+
+  it('evaluates computed Record keys, values, and spread sources once from left to right', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'record-entry-effects.ts',
+        `function readKey(log: number[]): string { log.push(1); return 'fixed'; }
+         function readValue(log: number[]): number { log.push(2); return 1; }
+         function readSource(
+           log: number[],
+           source: Readonly<Record<string, number>>,
+         ): Readonly<Record<string, number>> { log.push(3); return source; }
+         export function build(
+           log: number[],
+           source: Readonly<Record<string, number>>,
+         ): Record<string, number> {
+           return { [readKey(log)]: readValue(log), ...readSource(log, source) };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    const key = output.indexOf('auto record_construction_key = read_key(log)');
+    const value = output.indexOf('auto record_construction_value = read_value(log)');
+    const spread = output.indexOf('auto&& record_spread_source = read_source(log, source)');
+    expect(key).toBeGreaterThan(-1);
+    expect(key).toBeLessThan(value);
+    expect(value).toBeLessThan(spread);
+    expect(output.match(/read_key\(log\)/gu)).toHaveLength(1);
+    expect(output.match(/read_value\(log\)/gu)).toHaveLength(1);
+    expect(output.match(/read_source\(log, source\)/gu)).toHaveLength(1);
+  });
+
+  it('constructs a computed module Record without an illegal capture default', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'module-record-entries.ts',
+        'export const shapes: Readonly<Record<number, readonly number[]>> = { [1]: [] };',
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('inline flight::Record<double, flight::Array<double>> shapes = ([]() {');
+    expect(output).not.toContain('shapes = ([&]()');
+  });
+
+  it('iterates the present payload of a guarded Record lookup', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'record-array-iteration.ts',
+        `export function total(
+           shapes: Readonly<Record<number, readonly number[]>>,
+           opcode: number,
+         ): number | null {
+           const shape = shapes[opcode];
+           if (shape === undefined) return null;
+           let result = 0;
+           for (const value of shape) result += value;
+           return result;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('std::optional<flight::Array<double>> shape = shapes.get(opcode);');
+    expect(output).toContain('if (!shape.has_value())');
+    expect(output).toContain('for (auto value : shape.value())');
+  });
+
   it('retains absence storage for nullish-tested record element bindings', () => {
     const result = lower(
       'record-element-presence.ts',
