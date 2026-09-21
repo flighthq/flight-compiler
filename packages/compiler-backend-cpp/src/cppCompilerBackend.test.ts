@@ -11786,6 +11786,109 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('std::variant<double, auto>');
   });
 
+  it('constructs a closed partial row from one borrowed compatible spread', () => {
+    const result = lower(
+      'closed-row-spread.ts',
+      `interface Data { text: string }
+       interface Label { alpha: number; data: Data; name: string | null }
+       export function create(): Readonly<Partial<Label>> {
+         const common = { alpha: 0.5, name: null as string | null };
+         return { ...common, data: { text: 'ready' } };
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('auto&& structural_spread_source = common;');
+    expect(output).toContain('auto structural_spread_field_alpha = structural_spread_source->alpha;');
+    expect(output).toContain('auto structural_spread_field_name = structural_spread_source->name;');
+    expect(output).toContain('auto structural_spread_field_data = flight::make_ref<Data>');
+    expect(output).toContain('flight::row_field<flight::RowKey<"alpha">>(std::move(structural_spread_field_alpha))');
+    expect(output).not.toContain('(*common)');
+  });
+
+  it('resolves an imported target against a local spread schema for closed row construction', () => {
+    const model = lowerPackage(
+      '@flighthq/types',
+      'Label.ts',
+      `export type Alpha = number;
+       export interface Data { text: string }
+       export interface Label { alpha: Alpha; data: Data; name: string | null }`,
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/text',
+      'labelFactory.ts',
+      `import type { Label } from '@flighthq/types/Label';
+       export function create(alpha: number): Readonly<Partial<Label>> {
+         const common = { alpha, name: null as string | null };
+         return { ...common, data: { text: 'ready' } };
+       }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: consumer,
+          specifier: '@flighthq/types/Label',
+          target: { packageName: model.packageName, source: model.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, model],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain('auto&& structural_spread_source = common;');
+    expect(output).toContain('flight::RowOf<flight::Ref<flighthq_types::Label>>');
+    expect(output).toContain('auto structural_spread_field_alpha = structural_spread_source->alpha;');
+
+    const construction = consumer.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'create',
+    );
+    if (construction?.kind !== 'function') throw new TypeError('expected create function');
+    const unresolvedPlanner = createIrTypeReferenceRepresentationPlannerCpp([consumer]);
+    expect(unresolvedPlanner.resolveStructuralRow(construction.returns, consumer)).toBeUndefined();
+
+    const duplicate = {
+      ...structuredClone(model),
+      name: 'LabelDuplicate',
+    };
+    const ambiguousPlanner = createIrTypeReferenceRepresentationPlannerCpp(
+      [consumer, model, duplicate],
+      moduleResolution,
+    );
+    expect(ambiguousPlanner.resolveStructuralRow(construction.returns, consumer)).toBeUndefined();
+  });
+
+  it('refuses incompatible and optional-to-required closed row spread fields', () => {
+    const incompatible = lower(
+      'incompatible-row-spread.ts',
+      `interface Shape { alpha: number; label?: string }
+       export function create(): Readonly<Partial<Shape>> {
+         const common = { alpha: 'opaque' };
+         return { ...common, label: 'ready' };
+       }`,
+    );
+    const optional = lower(
+      'optional-required-row-spread.ts',
+      `interface Shape { alpha: number; label: string }
+       export function create(
+         common: Readonly<{ alpha?: number }>,
+       ): Readonly<Required<Partial<Shape>>> {
+         return { ...common, label: 'ready' };
+       }`,
+    );
+
+    for (const result of [incompatible, optional]) {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+      );
+      expect(failure.message).toContain('structural-row construction requires explicit named properties');
+    }
+  });
+
   it('uses a present Partial property as optional return construction evidence', () => {
     const result = lower(
       'partial-array-member.ts',

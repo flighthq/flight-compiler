@@ -76,6 +76,24 @@ describe('C++ reference planner object shapes', () => {
     ]);
   });
 
+  it('recognizes one imported alias identity across inherited property bindings', () => {
+    const values = lower('values.ts', "export type Alignment = 'left' | 'right';");
+    const base = lower(
+      'base.ts',
+      "import type { Alignment } from './values'; export interface Base { alignment: Alignment; }",
+    );
+    const derived = lower(
+      'derived.ts',
+      "import type { Base } from './base'; import type { Alignment } from './values'; export interface Derived extends Base { alignment: Alignment; value: number; }",
+    );
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([derived, base, values]);
+
+    expect(resolver.resolveObjectShape(declarationType(derived, 'Derived'), derived)).toEqual([
+      expect.objectContaining({ name: 'alignment', optional: false }),
+      { name: 'value', optional: false, readonly: false, type: numberType },
+    ]);
+  });
+
   it('selects the narrower compatible property when flattening Node2D-style intersections', () => {
     const module = lower(
       'node-2d-shape.ts',

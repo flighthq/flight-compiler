@@ -85,6 +85,11 @@ export type CompilerCppStructuralRowPlan =
   | Readonly<{ kind: 'writable'; row: CompilerCppStructuralRowPlan }>;
 
 export interface CompilerCppReferenceRepresentationPlanner {
+  readonly isStructurallyAssignable: (
+    source: Readonly<IrType>,
+    target: Readonly<IrType>,
+    module: Readonly<IrModule>,
+  ) => boolean;
   readonly plan: (type: Readonly<IrType>, module: Readonly<IrModule>) => CompilerCppReferenceRepresentationPlan;
   readonly resolveAlias: (type: Readonly<IrType>, module: Readonly<IrModule>) => Readonly<IrType> | undefined;
   readonly resolveConditionalFacetReference: (

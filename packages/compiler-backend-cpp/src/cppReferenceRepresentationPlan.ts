@@ -106,6 +106,15 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
     resolutionCache,
   };
   return Object.freeze({
+    isStructurallyAssignable(source: Readonly<IrType>, target: Readonly<IrType>, module: Readonly<IrModule>) {
+      const subject = getReferenceModuleRecordCpp(module, moduleSet);
+      if (!subject) throw new TypeError('C++ structural comparison subject must belong to the explicit module set');
+      return isIrTypeStructurallyAssignableCpp(source, target, subject, moduleSet, resolutionCache, new Set(), {
+        aliases: new Set(),
+        ancestors: new WeakMap(),
+        valueQueries: new Set(),
+      });
+    },
     plan(type: Readonly<IrType>, module: Readonly<IrModule>) {
       const subject = getReferenceModuleRecordCpp(module, moduleSet);
       if (!subject) throw new TypeError('C++ reference representation subject must belong to the explicit module set');
@@ -1143,6 +1152,13 @@ function isIrTypeStructurallyAssignableCpp(
       }
     }
     const sourceAlias = resolveIrTypeAliasForShapeComparisonCpp(source, module, moduleSet, cache);
+    const targetAlias = resolveIrTypeAliasForShapeComparisonCpp(target, module, moduleSet, cache);
+    // Two import bindings can name the same declaration from different modules. Their binding ids
+    // deliberately differ, but resolving both references proves that the applied aliases are the
+    // same type. Recognize that identity before expanding either side: expanding the source marks
+    // this declaration as active, which otherwise prevents the target from taking the identical
+    // alias step and makes a repeated inherited property look contradictory.
+    if (sourceAlias && targetAlias && sourceAlias.identity === targetAlias.identity) return true;
     if (sourceAlias && !comparison.aliases.has(sourceAlias.identity)) {
       comparison.aliases.add(sourceAlias.identity);
       try {
@@ -1159,7 +1175,6 @@ function isIrTypeStructurallyAssignableCpp(
         comparison.aliases.delete(sourceAlias.identity);
       }
     }
-    const targetAlias = resolveIrTypeAliasForShapeComparisonCpp(target, module, moduleSet, cache);
     if (targetAlias && !comparison.aliases.has(targetAlias.identity)) {
       comparison.aliases.add(targetAlias.identity);
       try {

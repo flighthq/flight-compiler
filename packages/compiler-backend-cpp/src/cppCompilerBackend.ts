@@ -188,6 +188,20 @@ interface CppStructuralOpenRowConstructionPlan {
   readonly fields: readonly CppStructuralOpenRowConstructionField[];
 }
 
+interface CppStructuralClosedRowSpreadConstructionPlan {
+  readonly fields: readonly Readonly<
+    | {
+        kind: 'property';
+        member: Readonly<Extract<IrObjectMember, { kind: 'property' }>>;
+        property: Readonly<IrObjectTypeProperty>;
+      }
+    | { kind: 'spread'; property: Readonly<IrObjectTypeProperty> }
+  >[];
+  readonly source: Readonly<IrExpression>;
+  readonly sourceKind: 'reference' | 'structuralRow';
+  readonly sourceType: Readonly<IrType>;
+}
+
 type CppDirectBindingOwner = Readonly<{ declaration: IrDeclaration; module: IrModule }>;
 type CppImportBindingOwner = Readonly<{ imported: string; module: IrModule; specifier: string }>;
 type CppTypeDeclarationOwner = Readonly<{
@@ -3809,6 +3823,39 @@ function emitExpression(
             'cpp-structural-open-row-construction-unproven',
           );
         }
+        const closedSpreadConstruction = getCppStructuralClosedRowSpreadConstructionPlanCpp(
+          expression,
+          constructionType,
+          structuralRow,
+          context,
+        );
+        if (closedSpreadConstruction) {
+          const sourceName = getGeneratedTargetName('structuralSpreadSource', context);
+          const source = emitExpression(closedSpreadConstruction.source, context, closedSpreadConstruction.sourceType);
+          const evaluations: string[] = [];
+          const fields = closedSpreadConstruction.fields.map((field) => {
+            const propertyName = field.kind === 'property' ? field.member.name : field.property.name;
+            const valueName = getGeneratedTargetName(`structuralSpreadField_${propertyName}`, context);
+            if (field.kind === 'property') {
+              // The member is present by construction. Its declared value domain is therefore the
+              // contextual type; the optional marker belongs to the row cell and is added by
+              // RowPartial when row_field initializes it.
+              evaluations.push(
+                `auto ${valueName} = ${emitExpression(field.member.value, context, field.property.type)};`,
+              );
+            } else {
+              const value =
+                closedSpreadConstruction.sourceKind === 'structuralRow'
+                  ? `flight::row_get<flight::RowKey<${JSON.stringify(field.property.name)}>>(${sourceName})`
+                  : `${sourceName}->${safeCppName(field.property.name)}`;
+              evaluations.push(`auto ${valueName} = ${value};`);
+            }
+            return `flight::row_field<flight::RowKey<${JSON.stringify(propertyName)}>>(std::move(${valueName}))`;
+          });
+          context.includes.add('flight/structural_ref.hpp');
+          context.includes.add('utility');
+          return `([&]() { auto&& ${sourceName} = ${source}; ${evaluations.join(' ')} return flight::make_structural_ref<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>(${fields.join(', ')}); }())`;
+        }
         if (expression.members.some((member) => member.kind !== 'property')) {
           emissionError(context, 'structural-row construction requires explicit named properties');
         }
@@ -4684,6 +4731,108 @@ function getCppStructuralOpenRowConstructionPlanCpp(
     return undefined;
   }
   return { fields };
+}
+
+// A spread object names runtime copy semantics, but a closed structural row can implement the common
+// construction form without cloning either reference: read each proven source cell once and place that
+// value in the new target row. Keep the accepted form deliberately narrow. One leading spread followed
+// by distinct named properties has no overwritten cells to reconstruct, and a complete source shape
+// proves that no enumerable field is silently dropped. Emission still binds every value in source order
+// because C++ function-argument evaluation order cannot carry the source language's ordering guarantee.
+function getCppStructuralClosedRowSpreadConstructionPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  type: Readonly<IrType>,
+  row: Readonly<CompilerCppStructuralRowPlan>,
+  context: EmitContext,
+): Readonly<CppStructuralClosedRowSpreadConstructionPlan> | undefined {
+  if (!expression.copySemantics || expression.members.length < 2) return undefined;
+  const [spread, ...members] = expression.members;
+  if (spread?.kind !== 'spread' || members.some((member) => member.kind !== 'property')) return undefined;
+
+  const targetObject = getCppStructuralRowObjectTypeCpp(row);
+  if (!targetObject || !getCppNominalTypeDeclarationOwnerCpp(targetObject, context.module, context)) return undefined;
+  const targetPlan = context.referenceRepresentationPlanner.plan(targetObject, context.module);
+  if (
+    targetPlan.kind !== 'represented' ||
+    targetPlan.identity.identity !== 'reference' ||
+    targetPlan.identityDomain !== 'object' ||
+    targetPlan.valueRepresentation !== 'flightReference'
+  ) {
+    return undefined;
+  }
+
+  const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
+  const sourceType = getIrExpressionTypeEvidenceCpp(spread.expression, context);
+  const sourceProperties = sourceType
+    ? context.referenceRepresentationPlanner.resolveObjectShape(sourceType, context.module)
+    : undefined;
+  if (!targetProperties || !sourceType || !sourceProperties) return undefined;
+  if (sourceProperties.some((property) => property.computedKey || property.phantom)) return undefined;
+
+  const targetByName = new Map(
+    targetProperties
+      .filter((property) => !property.computedKey && !property.phantom)
+      .map((property) => [property.name, property] as const),
+  );
+  const sourceKind = context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module)
+    ? ('structuralRow' as const)
+    : hasFlightReferenceRepresentationCpp(sourceType, context)
+      ? ('reference' as const)
+      : undefined;
+  if (!sourceKind) return undefined;
+
+  const fields: CppStructuralClosedRowSpreadConstructionPlan['fields'][number][] = [];
+  const supplied = new Set<string>();
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  for (const sourceProperty of sourceProperties) {
+    const targetProperty = targetByName.get(sourceProperty.name);
+    if (
+      !targetProperty ||
+      supplied.has(sourceProperty.name) ||
+      sourceProperty.role !== targetProperty.role ||
+      (sourceProperty.optional && !targetProperty.optional) ||
+      !context.referenceRepresentationPlanner.isStructurallyAssignable(
+        sourceProperty.type,
+        targetProperty.type,
+        context.module,
+      ) ||
+      getCppStructuralClosedRowCellStorageTypeCpp(sourceProperty.type, isolatedContext) !==
+        getCppStructuralClosedRowCellStorageTypeCpp(targetProperty.type, isolatedContext)
+    ) {
+      return undefined;
+    }
+    supplied.add(sourceProperty.name);
+    fields.push({ kind: 'spread', property: sourceProperty });
+  }
+  for (const member of members) {
+    if (member.kind !== 'property') return undefined;
+    const property = targetByName.get(member.name);
+    if (!property || supplied.has(member.name)) return undefined;
+    supplied.add(member.name);
+    fields.push({ kind: 'property', member, property });
+  }
+  if (
+    targetProperties.some(
+      (property) => !property.phantom && !property.optional && (property.computedKey || !supplied.has(property.name)),
+    )
+  ) {
+    return undefined;
+  }
+  return { fields, source: spread.expression, sourceKind, sourceType };
+}
+
+function getCppStructuralClosedRowCellStorageTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
+  let resolved = type;
+  const aliases = new Set<string>();
+  for (;;) {
+    const key = normalizeCompilerStructuralValueCanonical(resolved);
+    if (aliases.has(key)) break;
+    aliases.add(key);
+    const alias = context.referenceRepresentationPlanner.resolveAlias(resolved, context.module);
+    if (!alias) break;
+    resolved = alias;
+  }
+  return emitType(resolved, context);
 }
 
 function hasCppOpenStructuralRowTypeParameterCpp(type: Readonly<IrType>, context: EmitContext): boolean {
