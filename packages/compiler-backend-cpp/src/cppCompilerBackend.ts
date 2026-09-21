@@ -3040,6 +3040,19 @@ function emitExpression(
         context.includes.add('flight/structural_ref.hpp');
         return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitCppAssertionSubjectCpp(expression.expression, context)})`;
       }
+      // A fresh literal has no runtime identity before this assertion: the asserted reference type is
+      // the storage it is being constructed as. Emitting the literal without that context first gives
+      // it a generated anonymous referent and leaves C++ trying to cast an unrelated `Ref<anonymous>`
+      // to the declared interface. Nonliteral assertions are projections of an existing identity and
+      // deliberately stay on the cast paths above/below; structural literals have already taken the row
+      // construction path above.
+      if (
+        expression.expression.kind === 'object' &&
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        hasFlightReferenceRepresentationCpp(expression.type, context)
+      ) {
+        return emitExpression(expression.expression, context, expression.type);
+      }
       const conditionalFacet = context.referenceRepresentationPlanner.resolveConditionalFacetReference(
         expression.type,
         context.module,

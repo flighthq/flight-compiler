@@ -2218,6 +2218,94 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toMatch(/struct r_g_b_[0-9a-f]{16}/u);
   });
 
+  it('constructs a fresh asserted literal with its imported nominal capability identity', () => {
+    const glyphSource = ts.createSourceFile(
+      '/flight/packages/types/src/GlyphSource.ts',
+      `export interface GlyphRasterizeOptions { fontSize: number }
+       export interface GlyphRasterizedBitmap { width: number }
+       export interface HostGlyphRasterizerCapability {
+         rasterize(codepoint: number, options: Readonly<GlyphRasterizeOptions>): GlyphRasterizedBitmap | null;
+         measureMetrics?(options: Readonly<GlyphRasterizeOptions>): number | null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export * from './GlyphSource.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const backend = ts.createSourceFile(
+      '/flight/packages/glyphatlas/src/glyphRasterizerBackend.ts',
+      `import type {
+         GlyphRasterizedBitmap,
+         HostGlyphRasterizerCapability,
+       } from '@flighthq/types/contract';
+       export function allocateStubGlyphRasterizerBackend(): HostGlyphRasterizerCapability {
+         const out = {} as HostGlyphRasterizerCapability;
+         initializeStubGlyphRasterizerBackend(out);
+         return out;
+       }
+       export function initializeStubGlyphRasterizerBackend(out: HostGlyphRasterizerCapability): void {
+         out.rasterize = (_codepoint, _options): GlyphRasterizedBitmap | null => ({ width: 1 });
+       }
+       export function allocateAnonymous(): { rasterize?: (codepoint: number) => number } {
+         return {} as { rasterize?: (codepoint: number) => number };
+       }
+       export function projectCapability(
+         out: HostGlyphRasterizerCapability,
+       ): Readonly<Partial<HostGlyphRasterizerCapability>> {
+         return out as Readonly<Partial<HostGlyphRasterizerCapability>>;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './GlyphSource.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/GlyphSource.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: glyphSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/glyphatlas', sourceFile: backend, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/glyphatlas': { includePrefix: 'flight/glyphatlas', namespace: 'flight::glyphatlas' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain(
+      'auto out = flight::make_ref<flight::types::HostGlyphRasterizerCapability>(flight::types::HostGlyphRasterizerCapability{})',
+    );
+    expect(emitted).not.toContain(
+      'static_cast<flight::Ref<flight::types::HostGlyphRasterizerCapability>>(flight::make_ref<',
+    );
+    expect(emitted).toMatch(/return flight::make_ref<rasterize_[0-9a-f]{16}>\(rasterize_[0-9a-f]{16}\{\}\);/u);
+    expect(emitted).toContain(
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>>>(out)',
+    );
+  });
+
   it('constructs a named record property through its foreign writable row without inventing a helper', () => {
     const model = ts.createSourceFile(
       '/flight/packages/types/src/model.ts',
