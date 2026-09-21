@@ -3399,6 +3399,8 @@ function emitExpression(
       return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
     }
     case 'conditional': {
+      const numericPropertyTypeof = emitCppNumericPropertyTypeofConditionalCpp(expression, context, expectedType);
+      if (numericPropertyTypeof) return numericPropertyTypeof;
       const erasedTypeof = emitCppErasedTypeofConditionalCpp(expression, context, expectedType);
       if (erasedTypeof) return erasedTypeof;
       const evidence =
@@ -8984,10 +8986,18 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
   }
   const comparison = getCppTypeofTagComparisonCpp(expression.left, expression.right);
   if (!comparison) return undefined;
+  if (comparison.operand.kind === 'element') {
+    const numericProperty = getCppOptionalNumericPropertyLookupPlanCpp(comparison.operand, context);
+    if (!numericProperty) return undefined;
+    if (comparison.tag === 'number') {
+      const present = expression.operator === '==' || expression.operator === '===';
+      return emitCppPresenceTestCpp(comparison.operand, 'undefined', present, false, context);
+    }
+  }
   // An element read is not the union's own storage: the key may name no cell at all, so the read can be
   // absent where the element's type carries no absence, and an alternative test would ask a cell that
-  // need not exist. Element reads keep the lanes that already answer them -- the closed-key lane for a
-  // literal key, and a refusal for a dynamic one.
+  // need not exist. The explicit numeric-lookup lane above owns its one closed answer; every other
+  // element read stays refused here.
   // A binding whose absence the narrowing lane owns is left to it: it already reads a guarded local as
   // the value its evidence proves, and answering here would displace that. A binding whose storage is a
   // variant of value alternatives has no absence for that lane to answer -- refusing it would leave the
@@ -9000,7 +9010,6 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
   ) {
     return undefined;
   }
-  if (comparison.operand.kind === 'element') return undefined;
   const operandType = getCppNullishComparisonOperandTypeCpp(comparison.operand, context);
   // An erased value answers the tag itself at run time, and it can answer only the words the runtime
   // carries: `Any::type_of` reports undefined, boolean, number, string, symbol, function, and object --
@@ -9057,6 +9066,71 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
       ? `([&]() { const auto& typeof_value = ${emitted}; return typeof_value.has_value() && typeof_value.value().index() == ${String(plan.valueSlots.indexOf(slot))}; }())`
       : `std::holds_alternative<${slot.targetType}>(${emitted})`;
   return present ? test : `!(${test})`;
+}
+
+// TypeScript uses this idiom to turn a checked optional numeric lookup into a required number:
+// `typeof receiver?.[key] === 'number' ? receiver[key] : fallback`. The branch read is safe only when
+// the tested receiver and key are the same stable bindings and the lookup has the closed numeric proof
+// above. Keep both property reads -- a host getter may observe different state -- while evaluating the
+// nullable receiver guard before the key, as optional chaining requires.
+function emitCppNumericPropertyTypeofConditionalCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'conditional' }>>,
+  context: EmitContext,
+  expectedType: Readonly<IrType> | undefined,
+): string | undefined {
+  const test = expression.condition;
+  if (test.kind !== 'binary' || (test.operator !== '==' && test.operator !== '===')) return undefined;
+  const comparison = getCppTypeofTagComparisonCpp(test.left, test.right);
+  const tested = comparison?.operand;
+  const narrowed = expression.whenTrue;
+  if (comparison?.tag !== 'number' || tested?.kind !== 'element') return undefined;
+  const plan = getCppOptionalNumericPropertyLookupPlanCpp(tested, context);
+  if (!plan) return undefined;
+  const stableRead =
+    tested.object.kind !== 'identifier' ||
+    tested.object.reference.kind !== 'binding' ||
+    tested.index.kind !== 'identifier' ||
+    tested.index.reference.kind !== 'binding' ||
+    narrowed.kind !== 'element' ||
+    narrowed.optional ||
+    narrowed.object.kind !== 'identifier' ||
+    narrowed.object.reference.kind !== 'binding' ||
+    narrowed.index.kind !== 'identifier' ||
+    narrowed.index.reference.kind !== 'binding'
+      ? false
+      : tested.object.reference.binding.id === narrowed.object.reference.binding.id &&
+        tested.index.reference.binding.id === narrowed.index.reference.binding.id;
+  if (!stableRead) {
+    if (narrowed.kind === 'element' && hasCppNumericPropertyLookupCpp(narrowed, context)) {
+      emissionError(
+        context,
+        'a numeric-property typeof guard can narrow only the same stable receiver and key binding',
+        'cpp-numeric-property-typeof-guard-unstable-read',
+      );
+    }
+    return undefined;
+  }
+  if (
+    !isIrNumberTypeEvidenceCpp(expectedType) &&
+    !isIrNumberTypeEvidenceCpp(getIrExpressionTypeEvidenceCpp(expression.whenFalse, context))
+  ) {
+    return undefined;
+  }
+  const semantics = tested.semantics.optionalChain;
+  if (!semantics) return undefined;
+  const projection = getCppOptionalChainReceiverProjectionCpp(semantics.receiverType, context);
+  const receiver = emitOptionalChainReceiverCpp(tested.object, context);
+  const key = getGeneratedTargetName('numericPropertyKey', context);
+  const lookup = getGeneratedTargetName('numericPropertyLookup', context);
+  const keyValue = emitCppOptionalNumericPropertyKeyCpp(plan, tested.index, context);
+  const read = emitCppOptionalNumericPropertyLookupCpp(plan, projection.value, key, context);
+  const fallback = emitCppConditionalBranchCpp(
+    expression.whenFalse,
+    context,
+    expectedType ?? { kind: 'primitive', name: 'number' },
+  );
+  context.includes.add('optional');
+  return `([&]() -> double { auto optional_chain_receiver = ${receiver}; if (${projection.absent}) return ${fallback}; const auto ${key} = ${keyValue}; const auto ${lookup} = ${read}; if (!${lookup}.has_value()) return ${fallback}; return ${read}.value(); }())`;
 }
 
 function emitCppErasedTypeofConditionalCpp(
@@ -9277,6 +9351,7 @@ function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: Em
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
     (hasCppRegExpExecArrayIndexedReceiverCpp(expression, context) ||
       hasIndexedRuntimeReceiverCpp(expression, context) ||
+      Boolean(getCppOptionalNumericPropertyLookupPlanCpp(expression, context)) ||
       Boolean(
         getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(expression.object, context), context, new Set()),
       ))
@@ -13318,14 +13393,117 @@ interface CppExternalNumericPropertyViewPlan {
   readonly targetName: string;
 }
 
+type CppOptionalNumericPropertyLookupPlan =
+  | Readonly<{
+      kind: 'external';
+      memberOperator: '.' | '->';
+      sourceName: string;
+      targetName: string;
+    }>
+  | Readonly<{ keyType: IrType; kind: 'record' }>;
+
 function getCppExternalNumericPropertyViewPlanCpp(
   receiver: Readonly<IrExpression>,
   context: EmitContext,
 ): Readonly<CppExternalNumericPropertyViewPlan> | undefined {
   const sourceName = getCppExternalInstanceReceiverSourceNameCpp(receiver, context);
+  if (sourceName) {
+    const view = getCompilerExternalBindingNumericPropertyViewCpp(sourceName, context.options.externalBindings);
+    if (view) return { sourceName, targetName: view.targetName };
+  }
+  const type = getIrExpressionTypeEvidenceCpp(receiver, context);
+  return type ? getCppExternalNumericPropertyViewTypePlanCpp(type, context) : undefined;
+}
+
+function getCppExternalNumericPropertyViewTypePlanCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppExternalNumericPropertyViewPlan> | undefined {
+  const present = getCppNonNullableType(type, context, new Set()) ?? type;
+  const sourceName =
+    present.kind === 'named' && present.reference.kind === 'ambient' ? present.reference.name : undefined;
   if (!sourceName) return undefined;
   const view = getCompilerExternalBindingNumericPropertyViewCpp(sourceName, context.options.externalBindings);
   return view ? { sourceName, targetName: view.targetName } : undefined;
+}
+
+// An optional computed read can answer `typeof ... === "number"` only when the lookup operation itself
+// proves that every present cell is numeric. External objects opt into that fact explicitly through the
+// numeric-property-view schema. A Record has the same proof in its closed key/value arguments. Merely being
+// nullable, or having some numeric-looking member elsewhere, is deliberately insufficient.
+function getCppOptionalNumericPropertyLookupPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): Readonly<CppOptionalNumericPropertyLookupPlan> | undefined {
+  if (!expression.optional || !expression.semantics.optionalChain) return undefined;
+  const receiverType = expression.semantics.optionalChain.receiverType;
+  const external = getCppExternalNumericPropertyViewTypePlanCpp(receiverType, context);
+  if (external) {
+    if (!isCppStringKeyIndexCpp(expression.index, context)) {
+      emissionError(
+        context,
+        'an external numeric-property view requires a proven string key',
+        'cpp-external-numeric-property-view-key-unrepresented',
+      );
+    }
+    const present = getCppNonNullableType(receiverType, context, new Set()) ?? receiverType;
+    return {
+      kind: 'external',
+      memberOperator:
+        hasFlightReferenceRepresentationCpp(present, context) ||
+        hasFlightFacetReferenceRepresentationCpp(present, context)
+          ? '->'
+          : '.',
+      sourceName: external.sourceName,
+      targetName: external.targetName,
+    };
+  }
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  const present = getCppNonNullableType(receiverType, context, new Set()) ?? receiverType;
+  const record = getCppRecordTypeArgumentsCpp(present, context, new Set());
+  return record && isIrStringTypeEvidenceCpp(record.key) && isIrNumberTypeEvidenceCpp(record.value)
+    ? { keyType: record.key, kind: 'record' }
+    : undefined;
+}
+
+function hasCppNumericPropertyLookupCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): boolean {
+  const external = getCppExternalNumericPropertyViewAccessPlanCpp(expression, context);
+  if (external) return isCppStringKeyIndexCpp(expression.index, context);
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  const receiverType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const present = receiverType ? (getCppNonNullableType(receiverType, context, new Set()) ?? receiverType) : undefined;
+  const record = getCppRecordTypeArgumentsCpp(present, context, new Set());
+  return Boolean(record && isIrStringTypeEvidenceCpp(record.key) && isIrNumberTypeEvidenceCpp(record.value));
+}
+
+function emitCppOptionalNumericPropertyKeyCpp(
+  plan: Readonly<CppOptionalNumericPropertyLookupPlan>,
+  index: Readonly<IrExpression>,
+  context: EmitContext,
+): string {
+  if (plan.kind === 'external') {
+    addCppExternalBindingHeaders(plan.sourceName, 'type', context);
+    context.includes.add('flight/string.hpp');
+    return emitExpression(index, context);
+  }
+  return emitCppRequiredRecordKeyCpp(index, plan.keyType, context);
+}
+
+function emitCppOptionalNumericPropertyLookupCpp(
+  plan: Readonly<CppOptionalNumericPropertyLookupPlan>,
+  receiver: string,
+  index: string,
+  context: EmitContext,
+): string {
+  if (plan.kind === 'external') {
+    addCppExternalBindingHeaders(plan.sourceName, 'type', context);
+    context.includes.add('flight/string.hpp');
+    return `${receiver}${plan.memberOperator}${plan.targetName}(${index})`;
+  }
+  return `${receiver}.get(${index})`;
 }
 
 function getCppExternalNumericPropertyViewAccessPlanCpp(
@@ -17785,6 +17963,23 @@ function emitOptionalElementExpressionCpp(
 ): string {
   const semantics = expression.semantics.optionalChain;
   if (!semantics) emissionError(context, 'optional element access lacks neutral optional-chain evidence');
+  const numericProperty = getCppOptionalNumericPropertyLookupPlanCpp(expression, context);
+  if (numericProperty) {
+    if (semantics.receiverNullish === 'excluded') {
+      return emitExpression({ ...expression, optional: false }, context);
+    }
+    const receiverProjection = getCppOptionalChainReceiverProjectionCpp(semantics.receiverType, context);
+    const object = emitOptionalChainReceiverCpp(expression.object, context);
+    const index = emitCppOptionalNumericPropertyKeyCpp(numericProperty, expression.index, context);
+    const projected = emitCppOptionalNumericPropertyLookupCpp(
+      numericProperty,
+      receiverProjection.value,
+      index,
+      context,
+    );
+    context.includes.add('optional');
+    return `([&]() -> std::optional<double> { auto optional_chain_receiver = ${object}; if (${receiverProjection.absent}) return std::nullopt; return ${projected}; }())`;
+  }
   assertIrOptionalChainReceiverIsSingleSentinelCpp(semantics.receiverType, context);
   if (semantics.receiverNullish === 'excluded') {
     return emitExpression({ ...expression, optional: false }, context);

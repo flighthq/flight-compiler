@@ -4899,6 +4899,83 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(writeFailure.rule).toBe('cpp-external-numeric-property-view-write');
   });
 
+  it('uses explicit numeric lookup evidence for optional computed typeof guards', () => {
+    const result = lower(
+      'native-optional-numeric-property-view.ts',
+      `export function available(extension: HostExtension | null | undefined, name: string): boolean {
+         return typeof extension?.[name] === 'number';
+       }
+       export function guarded(extension: HostExtension | null | undefined, name: string): number {
+         return typeof extension?.[name] === 'number' ? extension[name] : -1;
+       }
+       export function recordGuarded(extension: Record<string, number> | null | undefined, name: string): number {
+         return typeof extension?.[name] === 'number' ? extension[name] : -1;
+       }`,
+    );
+    const binding = {
+      headers: ['host/extension.hpp'],
+      nullability: 'nullable' as const,
+      numericPropertyView: { targetName: 'get' },
+      ownership: 'value' as const,
+      sourceName: 'HostExtension',
+      space: 'type' as const,
+      targetName: 'host::Extension',
+    };
+    const emit = (externalBinding: Readonly<CppCompilerExternalBinding>) =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [externalBinding],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      });
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emit(binding).contents;
+    const available = /bool available[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(available).toContain('std::variant<host::Extension, flight::Null, flight::Undefined> extension');
+    expect(available).toContain('std::get<host::Extension>(optional_chain_receiver).get(name)');
+    expect(available).toContain('.has_value()');
+    const guarded = /double guarded[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(guarded).toMatch(/const auto numeric_property_key[^=]*= name;/u);
+    expect(guarded?.match(/\.get\(numeric_property_key[^)]*\)/gu)).toHaveLength(2);
+    expect(guarded).toContain('if (!numeric_property_lookup');
+    expect(guarded).toContain('return -1.0;');
+    const recordGuarded = /double record_guarded[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(recordGuarded?.match(/\.get\(numeric_property_key[^)]*\)/gu)).toHaveLength(2);
+
+    const absentMetadata = captureBackendEmissionFailure(() => emit({ ...binding, numericPropertyView: undefined }));
+    expect(absentMetadata.message).toContain('typeof requires closed runtime type evidence');
+
+    const nonStringKey = lower(
+      'native-optional-numeric-property-number-key.ts',
+      `export function available(extension: HostExtension | null, name: number): boolean {
+         return typeof extension?.[name] === 'number';
+       }`,
+    );
+    const nonStringKeyFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(nonStringKey.module, {
+        externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+        runtimeProfile: 'flight-cpp',
+      }),
+    );
+    expect(nonStringKeyFailure.rule).toBe('cpp-external-numeric-property-view-key-unrepresented');
+
+    const unstableRead = lower(
+      'native-optional-numeric-property-unstable-read.ts',
+      `export function read(extension: HostExtension | null, name: string, other: string): number {
+         return typeof extension?.[name] === 'number' ? extension[other] : -1;
+       }`,
+    );
+    const unstableReadFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(unstableRead.module, {
+        externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+        runtimeProfile: 'flight-cpp',
+      }),
+    );
+    expect(unstableReadFailure.rule).toBe('cpp-numeric-property-typeof-guard-unstable-read');
+  });
+
   it('keeps ordinary external fields and explicit instance mappings outside the numeric-property view', () => {
     const result = lower(
       'native-static-extension.ts',
