@@ -102,9 +102,12 @@ import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
   getCompilerExternalBindingCallResultTypeCpp,
   getCompilerExternalBindingConstructionCpp,
+  getCompilerExternalBindingEvidenceCpp,
   getCompilerExternalBindingHeadersCpp,
+  getCompilerExternalBindingObjectConstructionCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
   getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
+  getCompilerRuntimeExternalInstanceMemberParameterTypeCpp,
   getCompilerRuntimeExternalInstanceMemberTargetCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
@@ -3824,16 +3827,27 @@ function emitExpression(
         expectedType && hasIrTypeAbsentMember(expectedType)
           ? getCppNonNullableType(expectedType, context, new Set())
           : undefined;
+      const expectedExternalObject =
+        getCppExternalValueObjectSourceNameCpp(expectedType, context) ??
+        getCppExternalValueObjectSourceNameCpp(expectedPayload, context);
       const constructionType =
-        expectedType &&
-        (hasFlightReferenceRepresentationCpp(expectedType, context) ||
-          hasFlightStructuralRowRepresentationCpp(expectedType, context))
+        expectedType && expectedExternalObject
           ? expectedType
-          : expectedPayload &&
-              (hasFlightReferenceRepresentationCpp(expectedPayload, context) ||
-                hasFlightStructuralRowRepresentationCpp(expectedPayload, context))
+          : expectedPayload && expectedExternalObject
             ? expectedPayload
-            : expression.type;
+            : expectedType &&
+                (hasFlightReferenceRepresentationCpp(expectedType, context) ||
+                  hasFlightStructuralRowRepresentationCpp(expectedType, context))
+              ? expectedType
+              : expectedPayload &&
+                  (hasFlightReferenceRepresentationCpp(expectedPayload, context) ||
+                    hasFlightStructuralRowRepresentationCpp(expectedPayload, context))
+                ? expectedPayload
+                : expression.type;
+      const externalObjectSourceName = getCppExternalValueObjectSourceNameCpp(constructionType, context);
+      if (externalObjectSourceName) {
+        return emitCppExternalObjectConstructionCpp(expression, externalObjectSourceName, context);
+      }
       const record = getCppRecordTypeArgumentsCpp(constructionType, context, new Set());
       if (record) {
         if (expression.members.length === 0) return `${emitType(constructionType, context)}{}`;
@@ -12833,6 +12847,91 @@ function getCppExternalInstanceReceiverSourceNameCpp(
   return present?.kind === 'named' && present.reference.kind === 'ambient' ? present.reference.name : undefined;
 }
 
+function getCppExternalInstanceCallParameterExpectedTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  index: number,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.callee.kind !== 'property') return undefined;
+  const receiver = getCppExternalInstanceReceiverSourceNameCpp(expression.callee.object, context);
+  if (!receiver) return undefined;
+  const sourceType = getCompilerRuntimeExternalInstanceMemberParameterTypeCpp(
+    receiver,
+    expression.callee.name,
+    index,
+    getCppRuntimeProfile(context.options),
+    context.options.externalBindings,
+  );
+  return sourceType
+    ? {
+        kind: 'named',
+        reference: { kind: 'ambient', name: sourceType },
+        typeArguments: [],
+      }
+    : undefined;
+}
+
+function getCppExternalValueObjectSourceNameCpp(
+  type: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string | undefined {
+  if (type?.kind !== 'named' || type.reference.kind !== 'ambient') return undefined;
+  const evidence = getCompilerExternalBindingEvidenceCpp(type.reference.name, 'type', context.options.externalBindings);
+  return evidence?.ownership === 'value' && evidence.nullability === 'non-null' ? evidence.sourceName : undefined;
+}
+
+function emitCppExternalObjectConstructionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  sourceName: string,
+  context: EmitContext,
+): string {
+  const construction = getCompilerExternalBindingObjectConstructionCpp(sourceName, context.options.externalBindings);
+  if (!construction) {
+    emissionError(
+      context,
+      `external object ${sourceName} construction requires an exact field contract`,
+      'cpp-external-object-field-contract-missing',
+    );
+  }
+  if (expression.members.some((member) => member.kind !== 'property')) {
+    emissionError(
+      context,
+      `external object ${sourceName} construction requires explicit named fields`,
+      'cpp-external-object-field-contract-unproven',
+    );
+  }
+  const properties = expression.members.filter(
+    (member): member is Extract<(typeof expression.members)[number], { kind: 'property' }> =>
+      member.kind === 'property',
+  );
+  const sourceFields = new Set(properties.map((property) => property.name.normalize('NFC')));
+  if (sourceFields.size !== properties.length) {
+    emissionError(
+      context,
+      `external object ${sourceName} construction has ambiguous source fields`,
+      'cpp-external-object-field-contract-ambiguous',
+    );
+  }
+  const fields = new Map(construction.fields.map((field) => [field.sourceField, field] as const));
+  const assignments = properties.map((property) => {
+    const field = fields.get(property.name.normalize('NFC'));
+    if (!field) {
+      emissionError(
+        context,
+        `external object ${sourceName} field ${property.name} has no exact field contract`,
+        'cpp-external-object-field-contract-missing',
+      );
+    }
+    return { field, property };
+  });
+  addCppExternalBindingHeaders(sourceName, 'type', context);
+  const target = getGeneratedTargetName(`external_${sourceName}`, context);
+  const statements = assignments.map(
+    ({ field, property }) => `${target}.${field.targetName} = ${emitExpression(property.value, context)};`,
+  );
+  return `(${context.namespaceScope ? '[]' : '[&]'}() { ${construction.targetName} ${target}{}; ${statements.join(' ')} return ${target}; }())`;
+}
+
 function getCppExternalInstanceMemberBindingCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
@@ -13438,6 +13537,8 @@ function getIrCallArgumentExpectedTypeCpp(
   expectedType?: Readonly<IrType> | undefined,
   representedTypeArguments?: readonly Readonly<IrType>[] | undefined,
 ): Readonly<IrType> | undefined {
+  const externalParameterType = getCppExternalInstanceCallParameterExpectedTypeCpp(expression, index, context);
+  if (externalParameterType) return externalParameterType;
   const resolvedPromiseArgument = getCppResolvedPromiseArgumentExpectedTypeCpp(expression, index, expectedType);
   if (resolvedPromiseArgument) return resolvedPromiseArgument;
   const collectionType = getCppCollectionCallArgumentExpectedTypeCpp(expression, index, context);

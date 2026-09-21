@@ -91,13 +91,35 @@ export interface CppCompilerExternalBindingConstruction {
   readonly targetName: string;
 }
 
+export interface CppCompilerExternalFieldBinding {
+  readonly sourceField: string;
+  readonly targetName: string;
+}
+
+export interface CppCompilerExternalObjectConstruction {
+  readonly fields: readonly CppCompilerExternalFieldBinding[];
+  readonly kind: 'field-assignment';
+}
+
+export interface CppCompilerExternalMemberParameterBinding {
+  readonly position: number;
+  readonly sourceType: string;
+}
+
+export interface CppCompilerExternalMemberBinding extends CompilerRuntimeExternalMemberBinding {
+  /** Exact ambient source types for parameters whose erased call-site IR cannot retain them. */
+  readonly parameters?: readonly CppCompilerExternalMemberParameterBinding[] | undefined;
+}
+
 export interface CppCompilerExternalBinding {
   readonly callResultType?: string | undefined;
   readonly construction?: CppCompilerExternalBindingConstruction | undefined;
   readonly headers: readonly string[];
   /** Static members for value-space bindings; instance members for type-space bindings. */
-  readonly members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
+  readonly members?: readonly CppCompilerExternalMemberBinding[] | undefined;
   readonly nullability: 'non-null' | 'nullable';
+  /** Explicitly elects assignment-based construction for an external value object. */
+  readonly objectConstruction?: CppCompilerExternalObjectConstruction | undefined;
   readonly ownership: 'borrowed' | 'owned' | 'shared' | 'value';
   readonly sourceName: string;
   readonly space: 'type' | 'value';

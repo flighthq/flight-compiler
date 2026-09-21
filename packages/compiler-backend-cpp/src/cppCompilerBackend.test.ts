@@ -4634,6 +4634,124 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('constructs an erased external object parameter by source-ordered field assignment', () => {
+    const result = lower(
+      'native-object-parameter.ts',
+      `interface HostState { readonly device: NativeDevice }
+       export function create(state: HostState, first: () => number, second: () => string): void {
+         state.device.createTexture({ format: second(), sampleCount: first() });
+       }`,
+    );
+    const descriptorFields = [
+      { sourceField: 'sampleCount', targetName: 'sample_count' },
+      { sourceField: 'format', targetName: 'pixel_format' },
+    ];
+    const nativeDevice = {
+      headers: ['host/device.hpp'],
+      members: [
+        {
+          parameters: [{ position: 0, sourceType: 'NativeDescriptor' }],
+          sourceMember: 'createTexture',
+          targetName: 'create_texture',
+        },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'NativeDevice',
+      space: 'type' as const,
+      targetName: 'host::Device',
+    };
+    const emit = (fields: typeof descriptorFields) =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [
+            nativeDevice,
+            {
+              headers: ['host/descriptor.hpp'],
+              nullability: 'non-null',
+              objectConstruction: { fields, kind: 'field-assignment' },
+              ownership: 'value',
+              sourceName: 'NativeDescriptor',
+              space: 'type',
+              targetName: 'host::Descriptor',
+            },
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emit(descriptorFields);
+    const reverseContract = emit([...descriptorFields].reverse());
+    const construction =
+      'host::Descriptor external_native_descriptor{}; external_native_descriptor.pixel_format = second(); external_native_descriptor.sample_count = first(); return external_native_descriptor;';
+    expect(emitted).toContain('#include <host/descriptor.hpp>');
+    expect(emitted).toContain(`state->device.create_texture(([&]() { ${construction} }()));`);
+    expect(emitted.match(/second\(\)/gu)).toHaveLength(1);
+    expect(emitted.match(/first\(\)/gu)).toHaveLength(1);
+    expect(emitted.indexOf('second()')).toBeLessThan(emitted.indexOf('first()'));
+    expect(reverseContract).toContain(construction);
+  });
+
+  it('refuses missing and ambiguous external object field contracts', () => {
+    const result = lower(
+      'native-object-contract.ts',
+      `interface HostState { readonly device: NativeDevice }
+       export function create(state: HostState): void {
+         state.device.createTexture({ format: 'rgba8unorm', sampleCount: 1 });
+       }`,
+    );
+    const nativeDevice = {
+      headers: ['host/device.hpp'],
+      members: [
+        {
+          parameters: [{ position: 0, sourceType: 'NativeDescriptor' }],
+          sourceMember: 'createTexture',
+          targetName: 'create_texture',
+        },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'NativeDevice',
+      space: 'type' as const,
+      targetName: 'host::Device',
+    };
+    const descriptor = (fields: readonly { sourceField: string; targetName: string }[]) => ({
+      headers: ['host/descriptor.hpp'],
+      nullability: 'non-null' as const,
+      objectConstruction: { fields, kind: 'field-assignment' as const },
+      ownership: 'value' as const,
+      sourceName: 'NativeDescriptor',
+      space: 'type' as const,
+      targetName: 'host::Descriptor',
+    });
+    const emit = (fields: readonly { sourceField: string; targetName: string }[]) =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [nativeDevice, descriptor(fields)],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      });
+
+    const missing = captureBackendEmissionFailure(() => emit([{ sourceField: 'format', targetName: 'pixel_format' }]));
+    expect(missing.rule).toBe('cpp-external-object-field-contract-missing');
+    expect(missing.message).toContain('field sampleCount has no exact field contract');
+    expect(() =>
+      emit([
+        { sourceField: 'format', targetName: 'pixel_format' },
+        { sourceField: 'format', targetName: 'other_format' },
+      ]),
+    ).toThrow('malformed or ambiguous object-construction field contract');
+    expect(() =>
+      emit([
+        { sourceField: 'format', targetName: 'value' },
+        { sourceField: 'sampleCount', targetName: 'value' },
+      ]),
+    ).toThrow('malformed or ambiguous object-construction field contract');
+  });
+
   it('lowers PropertyKey intrinsically while preserving an unrelated Proxy refusal', () => {
     const propertyBag = lower(
       'property-key.ts',

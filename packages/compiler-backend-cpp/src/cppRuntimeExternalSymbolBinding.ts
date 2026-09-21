@@ -1,11 +1,12 @@
 import type {
   CompilerRuntimeCapabilityName,
-  CompilerRuntimeExternalMemberBinding,
   CompilerRuntimeExternalSymbolBinding,
   CompilerRuntimeExternalSymbolBindingPlan,
   CompilerRuntimeExternalSymbolSpace,
   CppCompilerExternalBinding,
   CppCompilerExternalBindingConstruction,
+  CppCompilerExternalMemberBinding,
+  CppCompilerExternalObjectConstruction,
   CppCompilerExternalBindingManifest,
   CppCompilerRuntimeProfile,
 } from '../../compiler-types/src/index.js';
@@ -14,7 +15,7 @@ type CppRuntimeExternalSymbolBinding =
   | Readonly<{
       callResultType?: string | undefined;
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'native' }>['kind'];
-      members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
+      members?: readonly CppCompilerExternalMemberBinding[] | undefined;
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
@@ -25,7 +26,7 @@ type CppRuntimeExternalSymbolBinding =
       callResultType?: string | undefined;
       capability: CompilerRuntimeCapabilityName;
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'runtime' }>['kind'];
-      members?: readonly CompilerRuntimeExternalMemberBinding[] | undefined;
+      members?: readonly CppCompilerExternalMemberBinding[] | undefined;
       sourceName: string;
       space: CompilerRuntimeExternalSymbolSpace;
       targetName: string;
@@ -70,6 +71,18 @@ export function getCompilerExternalBindingConstructionCpp(
   return getCppCompilerExternalBindings(externalBindings).find(
     (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'value',
   )?.construction;
+}
+
+export function getCompilerExternalBindingObjectConstructionCpp(
+  sourceName: string,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): Readonly<CppCompilerExternalObjectConstruction & { targetName: string }> | undefined {
+  const binding = getCppCompilerExternalBindings(externalBindings).find(
+    (candidate) => candidate.sourceName === sourceName.normalize('NFC') && candidate.space === 'type',
+  );
+  return binding?.objectConstruction
+    ? Object.freeze({ ...binding.objectConstruction, targetName: binding.targetName })
+    : undefined;
 }
 
 export function getCompilerExternalBindingEvidenceCpp(
@@ -142,6 +155,23 @@ export function getCompilerRuntimeExternalInstanceMemberTargetCpp(
   ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'type');
   if (!binding) return undefined;
   return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
+}
+
+export function getCompilerRuntimeExternalInstanceMemberParameterTypeCpp(
+  sourceName: string,
+  member: string,
+  position: number,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): string | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
+    runtimeProfile,
+    externalBindings,
+  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'type');
+  return binding?.members
+    ?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))
+    ?.parameters?.find((parameter) => parameter.position === position)?.sourceType;
 }
 
 export function getCompilerRuntimeExternalMemberCallResultTypeCpp(
@@ -247,14 +277,24 @@ function getCppCompilerExternalBindings(
     }
     if (
       binding.members?.some(
-        (member: Readonly<CompilerRuntimeExternalMemberBinding>) =>
+        (member: Readonly<CppCompilerExternalMemberBinding>) =>
           !member ||
           typeof member.sourceMember !== 'string' ||
           member.sourceMember.length === 0 ||
           typeof member.targetName !== 'string' ||
           member.targetName.length === 0 ||
           (member.callResultType !== undefined &&
-            (typeof member.callResultType !== 'string' || member.callResultType.length === 0)),
+            (typeof member.callResultType !== 'string' || member.callResultType.length === 0)) ||
+          member.parameters?.some(
+            (parameter) =>
+              !parameter ||
+              !Number.isSafeInteger(parameter.position) ||
+              parameter.position < 0 ||
+              typeof parameter.sourceType !== 'string' ||
+              parameter.sourceType.length === 0,
+          ) ||
+          (member.parameters !== undefined &&
+            new Set(member.parameters.map((parameter) => parameter.position)).size !== member.parameters.length),
       )
     ) {
       throw new TypeError(`${subject} has malformed static-member mappings`);
@@ -275,6 +315,28 @@ function getCppCompilerExternalBindings(
       throw new TypeError(`${subject} has a malformed call-result type`);
     }
     if (
+      binding.objectConstruction &&
+      (binding.space !== 'type' ||
+        binding.ownership !== 'value' ||
+        binding.nullability !== 'non-null' ||
+        binding.objectConstruction.kind !== 'field-assignment' ||
+        !Array.isArray(binding.objectConstruction.fields) ||
+        binding.objectConstruction.fields.some(
+          (field) =>
+            !field ||
+            typeof field.sourceField !== 'string' ||
+            field.sourceField.length === 0 ||
+            typeof field.targetName !== 'string' ||
+            !isCppExternalBindingFieldTarget(field.targetName),
+        ) ||
+        new Set(binding.objectConstruction.fields.map((field) => field.sourceField.normalize('NFC'))).size !==
+          binding.objectConstruction.fields.length ||
+        new Set(binding.objectConstruction.fields.map((field) => field.targetName)).size !==
+          binding.objectConstruction.fields.length)
+    ) {
+      throw new TypeError(`${subject} has a malformed or ambiguous object-construction field contract`);
+    }
+    if (
       binding.weakKeyPolicyTargetName !== undefined &&
       (binding.space !== 'type' ||
         binding.ownership !== 'shared' ||
@@ -290,12 +352,31 @@ function getCppCompilerExternalBindings(
       headers: [...binding.headers],
       ...(binding.members
         ? {
-            members: binding.members.map((member: Readonly<CompilerRuntimeExternalMemberBinding>) => ({
+            members: binding.members.map((member: Readonly<CppCompilerExternalMemberBinding>) => ({
               ...member,
+              ...(member.parameters
+                ? {
+                    parameters: member.parameters.map((parameter) => ({
+                      position: parameter.position,
+                      sourceType: parameter.sourceType.normalize('NFC'),
+                    })),
+                  }
+                : {}),
             })),
           }
         : {}),
       nullability: binding.nullability,
+      ...(binding.objectConstruction
+        ? {
+            objectConstruction: {
+              fields: binding.objectConstruction.fields.map((field) => ({
+                sourceField: field.sourceField.normalize('NFC'),
+                targetName: field.targetName,
+              })),
+              kind: binding.objectConstruction.kind,
+            },
+          }
+        : {}),
       ownership: binding.ownership,
       sourceName: binding.sourceName.normalize('NFC'),
       space: binding.space,
@@ -311,6 +392,20 @@ function getCppCompilerExternalBindings(
     }
     identities.add(identity);
   }
+  for (const binding of bindings) {
+    for (const member of binding.members ?? []) {
+      for (const parameter of member.parameters ?? []) {
+        const parameterType = bindings.find(
+          (candidate) => candidate.sourceName === parameter.sourceType && candidate.space === 'type',
+        );
+        if (!parameterType?.objectConstruction) {
+          throw new TypeError(
+            `C++ external binding ${binding.sourceName}.${member.sourceMember} parameter ${String(parameter.position)} requires an exact object-construction contract for ${parameter.sourceType}`,
+          );
+        }
+      }
+    }
+  }
   return bindings;
 }
 
@@ -323,6 +418,10 @@ function isCppExternalBindingHeader(value: unknown): value is string {
     !/[<>"\r\n]/u.test(value) &&
     value.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
   );
+}
+
+function isCppExternalBindingFieldTarget(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(value);
 }
 
 const cppExternalBindingOwnerships = new Set(['borrowed', 'owned', 'shared', 'value']);
