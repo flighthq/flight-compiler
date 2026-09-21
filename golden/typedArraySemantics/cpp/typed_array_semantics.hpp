@@ -82,7 +82,7 @@ inline flight::Uint8Array data_view_aliases_typed_array() {
   flight::DataView view = flight::DataView(bytes.buffer, 1.0, 6.0);
   view.set_uint32(0.0, 16909060.0);
   view.set_uint16(4.0, 1286.0, true);
-  const bool matches = (((((view.get_uint32(0.0) == 16909060.0) && (view.get_uint16(4.0, true) == 1286.0)) && (view.byte_length == 6.0)) && (view.byte_offset == 1.0)) && (view.buffer == bytes.buffer));
+  const bool matches = (((((view.get_uint32(0.0) == 16909060.0) && (view.get_uint16(4.0, true) == 1286.0)) && (static_cast<double>(view.byte_length) == 6.0)) && (static_cast<double>(view.byte_offset) == 1.0)) && (view.buffer == bytes.buffer));
   (bytes.element(7.0) = (matches ? 1.0 : 0.0));
   return bytes;
 }
