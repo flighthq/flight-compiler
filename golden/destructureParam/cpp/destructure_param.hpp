@@ -20,7 +20,7 @@ struct Rectangle : public flight::ReferenceEnabled {
 inline double area(flight::Ref<Rectangle> parameter_pattern_value) {
   double width;
   double height;
-  flight::Ref<Rectangle> object_pattern_value = parameter_pattern_value;
+  auto object_pattern_value = parameter_pattern_value;
   (width = object_pattern_value->width);
   (height = object_pattern_value->height);
   return (width * height);
@@ -29,7 +29,7 @@ inline double area(flight::Ref<Rectangle> parameter_pattern_value) {
 inline double perimeter(flight::Ref<Rectangle> parameter_pattern_value) {
   double width;
   double height;
-  flight::Ref<Rectangle> object_pattern_value = parameter_pattern_value;
+  auto object_pattern_value = parameter_pattern_value;
   (width = object_pattern_value->width);
   (height = object_pattern_value->height);
   return (2.0 * (width + height));
@@ -38,7 +38,7 @@ inline double perimeter(flight::Ref<Rectangle> parameter_pattern_value) {
 inline double diagonal(flight::Ref<Rectangle> parameter_pattern_value) {
   double width;
   double height;
-  flight::Ref<Rectangle> object_pattern_value = parameter_pattern_value;
+  auto object_pattern_value = parameter_pattern_value;
   (width = object_pattern_value->width);
   (height = object_pattern_value->height);
   return std::sqrt(((width * width) + (height * height)));
@@ -47,7 +47,7 @@ inline double diagonal(flight::Ref<Rectangle> parameter_pattern_value) {
 inline bool is_square(flight::Ref<Rectangle> parameter_pattern_value) {
   double width;
   double height;
-  flight::Ref<Rectangle> object_pattern_value = parameter_pattern_value;
+  auto object_pattern_value = parameter_pattern_value;
   (width = object_pattern_value->width);
   (height = object_pattern_value->height);
   return (width == height);
