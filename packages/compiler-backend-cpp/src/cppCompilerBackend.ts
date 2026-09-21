@@ -1049,6 +1049,7 @@ function isCppInterfaceRepresentationAliasCpp(
 ): boolean {
   const type = getCppInterfaceDeclarationTypeCpp(declaration);
   return Boolean(
+    context.referenceRepresentationPlanner.resolveStructuralRow(type, module) ??
     context.referenceRepresentationPlanner.resolveFacetReference(type, module) ??
     context.referenceRepresentationPlanner.resolveExternalProjection(type, module),
   );
@@ -1751,6 +1752,14 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   };
   const name = getBindingTargetName(declaration.binding, context);
   const interfaceType = getCppInterfaceDeclarationTypeCpp(declaration);
+  const structuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(interfaceType, context.module);
+  if (structuralRow && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
+    const lines: string[] = [];
+    if (typeParams) lines.push(`template ${typeParams}`);
+    lines.push(`using ${name} = ${emitCppStructuralRowReferenceTypeCpp(structuralRow, context)};`);
+    return lines;
+  }
   const externalProjection = context.referenceRepresentationPlanner.resolveExternalProjection(
     interfaceType,
     context.module,
@@ -4297,6 +4306,14 @@ function emitCppStructuralReferenceValueConversionCpp(
   expectedType: Readonly<IrType>,
   context: EmitContext,
 ): string | undefined {
+  const preservesInterfaceStorage = isCppStructuralInterfaceStorageAliasCpp(sourceType, expectedType, context);
+  if (preservesInterfaceStorage) return source;
+  if (
+    isCppStructuralInterfaceRepresentationAliasTypeCpp(sourceType, context) ||
+    isCppStructuralInterfaceRepresentationAliasTypeCpp(expectedType, context)
+  ) {
+    return undefined;
+  }
   const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module);
   const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module);
   if (targetRow && !sourceRow) {
@@ -6928,13 +6945,13 @@ function getCppNominalIntersectionBaseCpp(
   return properties ? { properties, type: baseType } : undefined;
 }
 
-function getCppNominalTypeDeclarationOwnerCpp(
+function getCppNamedTypeDeclarationOwnerCpp(
   type: Readonly<IrType>,
   module: Readonly<IrModule>,
   context: EmitContext,
 ):
   | Readonly<{
-      declaration: Readonly<IrClassDeclaration | IrInterfaceDeclaration>;
+      declaration: Readonly<IrDeclaration>;
       module: Readonly<IrModule>;
     }>
   | undefined {
@@ -6972,6 +6989,20 @@ function getCppNominalTypeDeclarationOwnerCpp(
     type.reference.binding.kind === 'import'
       ? importedOwner()
       : context.directBindingOwners.get(type.reference.binding.id);
+  return owner ? { declaration: owner.declaration, module: owner.module } : undefined;
+}
+
+function getCppNominalTypeDeclarationOwnerCpp(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+):
+  | Readonly<{
+      declaration: Readonly<IrClassDeclaration | IrInterfaceDeclaration>;
+      module: Readonly<IrModule>;
+    }>
+  | undefined {
+  const owner = getCppNamedTypeDeclarationOwnerCpp(type, module, context);
   return owner?.declaration.kind === 'class' || owner?.declaration.kind === 'interface'
     ? { declaration: owner.declaration, module: owner.module }
     : undefined;
@@ -7043,6 +7074,89 @@ function getCppNominalTypeIdentityCpp(
   const owner = getCppNominalTypeDeclarationOwnerCpp(type, module, context);
   if (!owner || type.kind !== 'named') return undefined;
   return `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}\0${normalizeCompilerStructuralValueCanonical(type.typeArguments)}`;
+}
+
+function getCppNamedTypeDeclarationIdentityCpp(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): string | undefined {
+  const owner = getCppNamedTypeDeclarationOwnerCpp(type, module, context);
+  if (!owner || !('binding' in owner.declaration) || type.kind !== 'named') return undefined;
+  return `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}\0${normalizeCompilerStructuralValueCanonical(type.typeArguments)}`;
+}
+
+// An empty interface may give an authored structural-row alias a compatibility name without
+// creating another runtime object. Preserve the row only when the source declaration is exactly the
+// interface's sole base and both resolved rows name the same C++ carrier. Shape alone is not enough:
+// an anonymous lookalike or a different alias with the same fields has no declaration identity that
+// authorizes it to initialize the interface arm.
+function isCppStructuralInterfaceRepresentationAliasTypeCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind !== 'named') return false;
+  const module = getCppNamedTypeBindingModuleCpp(type, context);
+  const owner = getCppNamedTypeDeclarationOwnerCpp(type, module, context);
+  return Boolean(
+    owner?.declaration.kind === 'interface' &&
+    owner.declaration.extends.length === 1 &&
+    owner.declaration.properties.length === 0 &&
+    context.referenceRepresentationPlanner.resolveStructuralRow(type, module),
+  );
+}
+
+function isCppStructuralInterfaceStorageAliasCpp(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (source.kind !== 'named' || target.kind !== 'named') return false;
+  const sourceModule = getCppNamedTypeBindingModuleCpp(source, context);
+  const targetModule = getCppNamedTypeBindingModuleCpp(target, context);
+  const sourceOwner = getCppNamedTypeDeclarationOwnerCpp(source, sourceModule, context);
+  const targetOwner = getCppNamedTypeDeclarationOwnerCpp(target, targetModule, context);
+  const interfaceAliases = (
+    alias: Readonly<IrType>,
+    aliasModule: Readonly<IrModule>,
+    aliasOwner: ReturnType<typeof getCppNamedTypeDeclarationOwnerCpp>,
+    interfaceType: Readonly<IrType>,
+    interfaceOwner: ReturnType<typeof getCppNamedTypeDeclarationOwnerCpp>,
+  ): boolean => {
+    if (
+      aliasOwner?.declaration.kind !== 'typeAlias' ||
+      interfaceOwner?.declaration.kind !== 'interface' ||
+      interfaceOwner.declaration.extends.length !== 1 ||
+      interfaceOwner.declaration.properties.length !== 0
+    ) {
+      return false;
+    }
+    const substitutions = createIrTypeParameterSubstitutionPlan(
+      interfaceOwner.declaration.typeParameters,
+      interfaceType.kind === 'named' ? interfaceType.typeArguments : [],
+    );
+    const base = resolveIrTypeStructuralSubstitution(interfaceOwner.declaration.extends[0]!, substitutions);
+    const aliasIdentity = getCppNamedTypeDeclarationIdentityCpp(alias, aliasModule, context);
+    const baseIdentity = getCppNamedTypeDeclarationIdentityCpp(base, interfaceOwner.module, context);
+    return Boolean(aliasIdentity && aliasIdentity === baseIdentity);
+  };
+  if (
+    !interfaceAliases(source, sourceModule, sourceOwner, target, targetOwner) &&
+    !interfaceAliases(target, targetModule, targetOwner, source, sourceOwner)
+  ) {
+    return false;
+  }
+  const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(source, sourceModule);
+  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(target, targetModule);
+  if (
+    !sourceRow ||
+    !targetRow ||
+    normalizeCompilerStructuralValueCanonical(sourceRow) !== normalizeCompilerStructuralValueCanonical(targetRow)
+  ) {
+    return false;
+  }
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  return (
+    emitCppStructuralRowReferenceTypeCpp(sourceRow, isolatedContext) ===
+    emitCppStructuralRowReferenceTypeCpp(targetRow, isolatedContext)
+  );
 }
 
 function isCppNominalTypeDerivedFromCpp(

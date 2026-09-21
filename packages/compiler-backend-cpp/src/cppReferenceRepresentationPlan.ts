@@ -278,9 +278,30 @@ function resolveIrTypeStructuralRowCpp(
     if (resolution.kind !== 'location') return undefined;
     const location = resolution.location;
     const declaration = location.declaration;
-    if (declaration.kind !== 'typeAlias') return allowRowOf ? { kind: 'rowOf', type } : undefined;
     const key = `${location.identity}\0${JSON.stringify(type.typeArguments)}`;
     if (aliases.has(key)) return undefined;
+    if (declaration.kind !== 'typeAlias') {
+      // An interface with no storage of its own can be a declaration name for an authored
+      // structural-row alias. TypeScript uses this form for compatibility names such as
+      // `interface DisplayObject extends Node2D {}`: it does not create another object, so emitting a
+      // second native reference carrier would make a value of the base row impossible to preserve.
+      // Keep this deliberately narrower than ordinary interface inheritance. One base must supply
+      // the complete row, and any own member means the interface needs its own representation.
+      if (declaration.kind === 'interface' && declaration.extends.length === 1 && declaration.properties.length === 0) {
+        const substitutions = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments);
+        const base = resolveIrTypeStructuralSubstitution(declaration.extends[0]!, substitutions);
+        const row = resolveIrTypeStructuralRowCpp(
+          base,
+          location.module,
+          moduleSet,
+          cache,
+          new Set(aliases).add(key),
+          false,
+        );
+        if (row) return row;
+      }
+      return allowRowOf ? { kind: 'rowOf', type } : undefined;
+    }
     const typeArguments =
       type.typeArguments.length === 0 && declaration.typeParameters.length > 0
         ? declaration.typeParameters.map(

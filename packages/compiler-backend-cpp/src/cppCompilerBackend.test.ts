@@ -21495,6 +21495,117 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(incompatibleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('preserves one declared structural-row interface alias across contextual nullable unions', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/types.ts' },
+        },
+        {
+          specifier: '@flighthq/provider',
+          target: { packageName: '@flighthq/provider', source: 'packages/provider/src/provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const consumer = (file: string, body: string) =>
+      source(
+        '@flighthq/consumer',
+        `packages/consumer/src/${file}.ts`,
+        `import { anonymous, display, maybeDisplay, node, other } from '@flighthq/provider';
+         import type { Display, Extended, Mirror, Node2D } from '@flighthq/types';
+         ${body}`,
+      );
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/types.ts',
+          `export const RuntimeKey = Symbol.for('Runtime');
+           export interface Node<Traits> { [RuntimeKey]: Traits; traits: Traits }
+           export interface Traits { trait: number }
+           export type Node2D = Node<Traits> & Traits;
+           export interface Display extends Node2D {}
+           export interface Mirror extends Node2D {}
+           export interface Extended extends Node2D { extra: number }
+           export interface OtherTraits { trait: number }
+           export type OtherNode = Node<OtherTraits> & OtherTraits;`,
+        ),
+        source(
+          '@flighthq/provider',
+          'packages/provider/src/provider.ts',
+          `import type { Display, Node, Node2D, OtherNode, Traits } from '@flighthq/types';
+           export function node(): Node2D | null { throw new Error('stub'); }
+           export function display(): Display { throw new Error('stub'); }
+           export function maybeDisplay(): Display | null { throw new Error('stub'); }
+           export function anonymous(): (Node<Traits> & { trait: number }) | null { throw new Error('stub'); }
+           export function other(): OtherNode | null { throw new Error('stub'); }`,
+        ),
+        source(
+          '@flighthq/local',
+          'packages/local/src/local.ts',
+          `const RuntimeKey = Symbol.for('Runtime');
+           interface Node<Traits> { [RuntimeKey]: Traits; traits: Traits }
+           interface Traits { trait: number }
+           type Node2D = Node<Traits> & Traits;
+           interface Display extends Node2D {}
+           function node(): Node2D | null { throw new Error('stub'); }
+           export function choose(): Display | null { return node(); }`,
+        ),
+        consumer(
+          'imported',
+          `export function forward(): Display | null { return node(); }
+           export function reverse(): Node2D | null { return maybeDisplay(); }
+           export function present(): Node2D | null { return display(); }`,
+        ),
+        consumer('anonymous', `export function choose(): Display | null { return anonymous(); }`),
+        consumer('zero', `export function choose(): Display | null { return other(); }`),
+        consumer('multiple', `export function choose(): Display | Mirror | null { return node(); }`),
+        consumer('remainder', `export function choose(): Extended | null { return node(); }`),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/consumer': { includePrefix: 'flight/consumer', namespace: 'flight::consumer' },
+          '@flighthq/local': { includePrefix: 'flight/local', namespace: 'flight::local' },
+          '@flighthq/provider': { includePrefix: 'flight/provider', namespace: 'flight::provider' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+
+    const types = session.emitModule(modules[0]!)[0]!.contents;
+    const local = session.emitModule(modules[2]!)[0]!.contents;
+    const imported = session.emitModule(modules[3]!)[0]!.contents;
+    expect(types).toContain('using Display = flight::StructuralRef<');
+    expect(types).toContain('using Mirror = flight::StructuralRef<');
+    expect(types).toContain('struct Extended : public flight::ReferenceEnabled');
+    expect(local).toContain('contextual_union_source');
+    expect(imported.match(/auto contextual_union_source/gu)).toHaveLength(2);
+    expect(imported).toContain('{flight::provider::display()};');
+    expect(`${local}\n${imported}`).not.toContain('structural_ref_cast');
+
+    const refusals = modules.slice(4).map((module) => captureBackendEmissionFailure(() => session.emitModule(module)));
+    expect(refusals.map((failure) => failure.rule)).toEqual([
+      'cpp-contextual-union-inequivalent',
+      'cpp-contextual-union-inequivalent',
+      'cpp-contextual-union-inequivalent',
+      'cpp-contextual-union-inequivalent',
+    ]);
+  });
+
   it('coalesces one proven optional identity into one multi-variant arm', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
