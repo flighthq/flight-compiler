@@ -10216,6 +10216,58 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).not.toContain('NodeAny');
   });
 
+  it('keeps an expanded alias after the header that owns its materialized alternatives', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './texture.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/texture.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/texture.ts',
+            `export interface Entity { uid: string }
+             export type Texture =
+               | (Entity & { kind: 'two-dimensional'; width: number })
+               | (Entity & { faces: number; kind: 'cube' });`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/shapeCommand.ts',
+            `import type { Texture } from './texture.js';
+             export type ShapeCommandToken = Texture | number | null;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+    const include = output.indexOf('#include "texture.hpp"');
+    const alias = output.indexOf('using ShapeCommandToken =');
+
+    expect(include).toBeGreaterThan(-1);
+    expect(alias).toBeGreaterThan(include);
+    expect(output.match(/using ShapeCommandToken =/gu)).toHaveLength(1);
+  });
+
   it('forward declares imported functions across a module cycle', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [

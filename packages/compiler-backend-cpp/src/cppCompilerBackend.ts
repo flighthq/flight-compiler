@@ -234,6 +234,10 @@ interface EmitContext {
   currentOrigin?: Readonly<{ column: number; line: number }> | undefined;
   expandAliasesForEarlyPublication?: boolean | undefined;
   earlyPublicationResolvingAliases?: ReadonlySet<string> | undefined;
+  // Opening an imported alias can expose anonymous alternatives that are defined by another
+  // module. Their resolved declaration owners, rather than their generated spellings, decide
+  // whether the alias can appear before that module's header.
+  earlyPublicationMaterializedOwners?: Set<string> | undefined;
   capturedReferentOnlyBindingIds: ReadonlySet<string>;
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
@@ -565,9 +569,11 @@ function emitIrModuleCppWithContext(
     .filter((declaration) => declaration.kind !== 'function' || !declaration.namespaceMember)
     .map((declaration) => {
       const existingAnonymousStructs = new Set(context.anonymousStructs.keys());
+      const earlyPublicationMaterializedOwners = new Set<string>();
       const lines = emitDeclaration(declaration, {
         ...context,
         currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+        earlyPublicationMaterializedOwners,
       });
       const anonymousStructs = [...context.anonymousStructs]
         .filter(([key]) => !existingAnonymousStructs.has(key))
@@ -576,7 +582,7 @@ function emitIrModuleCppWithContext(
         '',
         ...emitAnonymousStructCpp(struct, context),
       ]);
-      return { anonymousStructLines, declaration, lines };
+      return { anonymousStructLines, declaration, earlyPublicationMaterializedOwners, lines };
     });
   const mutuallyRecursiveFunctionForwardDeclarations = emitCppMutuallyRecursiveFunctionForwardDeclarations(
     mutuallyRecursiveFunctionGroups,
@@ -814,6 +820,7 @@ function planCppEarlyPublicationCpp(
   declarations: readonly Readonly<{
     anonymousStructLines: readonly string[];
     declaration: Readonly<IrDeclaration>;
+    earlyPublicationMaterializedOwners: ReadonlySet<string>;
     lines: readonly string[];
   }>[],
   forwardDeclarations: readonly string[],
@@ -883,7 +890,8 @@ function planCppEarlyPublicationCpp(
         if (unordered) continue;
       }
       const ownName = getBindingTargetName(entry.declaration.binding, context);
-      const isUnschedulable = (lines: readonly string[]): boolean => {
+      const isUnschedulable = (lines: readonly string[], materializedOwners?: ReadonlySet<string>): boolean => {
+        if (materializedOwners && materializedOwners.size > 0) return true;
         const text = lines.join('\n');
         return [...text.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)].some((match) => {
           const name = match[1]!;
@@ -905,7 +913,7 @@ function planCppEarlyPublicationCpp(
         });
       };
       let publicationLines = entry.lines;
-      if (isUnschedulable(publicationLines)) {
+      if (isUnschedulable(publicationLines, entry.earlyPublicationMaterializedOwners)) {
         const expanded = emitCppExpandedEarlyPublicationAliasCpp(entry.declaration, entry.lines, context);
         if (!expanded || isUnschedulable(expanded)) continue;
         publicationLines = expanded;
@@ -937,6 +945,7 @@ function emitCppExpandedEarlyPublicationAliasCpp(
   const name = getBindingTargetName(declaration.binding, outer);
   if (!emittedLines.some((line) => line.startsWith(`using ${name} = `))) return undefined;
   const anonymousStructs = new Map(outer.anonymousStructs);
+  const materializedOwners = new Set<string>();
   const context: EmitContext = {
     ...outer,
     anonymousStructs,
@@ -945,10 +954,11 @@ function emitCppExpandedEarlyPublicationAliasCpp(
       declaration.typeParameters,
     ),
     earlyPublicationResolvingAliases: new Set(),
+    earlyPublicationMaterializedOwners: materializedOwners,
     expandAliasesForEarlyPublication: true,
   };
   const type = emitType(declaration.type, context);
-  if (anonymousStructs.size !== outer.anonymousStructs.size) return undefined;
+  if (anonymousStructs.size !== outer.anonymousStructs.size || materializedOwners.size > 0) return undefined;
   const typeParameters = emitTypeParameters(declaration.typeParameters, context, true);
   return [...(typeParameters ? [`template ${typeParameters}`] : []), `using ${name} = ${type};`];
 }
@@ -6529,6 +6539,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           const owner = declared.owner;
           const ownerContext: EmitContext = { ...context, anonymousStructs: new Map(), module: owner };
           const emitted = emitType(declared.arm, ownerContext, representation);
+          if (ownerContext.anonymousStructs.size > 0) {
+            context.earlyPublicationMaterializedOwners?.add(getCppModuleIdentityKey(owner));
+          }
           return qualifyCppDeclaringModuleAlternativesCpp(emitted, ownerContext, owner, context.options);
         }
       }
