@@ -2323,6 +2323,9 @@ function emitExpression(
   if (expectedType && getCppRuntimeProfile(context.options) === 'flight-cpp') {
     const voidValueConversion = emitCppContextualVoidValueCpp(expression, expectedType, context);
     if (voidValueConversion) return voidValueConversion;
+    const erasedDynamicConversion = emitCppContextualErasedDynamicValueCpp(expression, expectedType, context);
+    if (erasedDynamicConversion) return erasedDynamicConversion;
+    refuseCppContextualStructuralArrayNominalRecoveryCpp(expression, expectedType, context);
     const optionalPropertyConversion = emitCppOptionalPropertyDualSentinelConversionCpp(
       expression,
       expectedType,
@@ -2920,6 +2923,12 @@ function emitExpression(
         }
         emissionError(context, 'erased WeakMap assertion target requires an approved typed WeakMap view');
       }
+      const erasedDynamicConversion = emitCppContextualErasedDynamicValueCpp(
+        expression.expression,
+        expression.type,
+        context,
+      );
+      if (erasedDynamicConversion) return erasedDynamicConversion;
       const namedPropertiesSource = getCppNamedPropertiesViewSourceCpp(expression, context);
       if (
         isCppUnknownRecordTypeCpp(expression.type, 'PropertyKey') &&
@@ -3132,6 +3141,17 @@ function emitExpression(
         assertedGenericFactory ??
         getCppErasedValueAssertionCpp(expression.type, sourceEvidence, expression.expression, context);
       if (assertedExpression) return assertedExpression;
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        isCppErasedDynamicValueTypeCpp(sourceEvidence) &&
+        hasCppExternalRuntimeReferenceRepresentationCpp(expression.type, context)
+      ) {
+        emissionError(
+          context,
+          'an erased dynamic value cannot be asserted to a host reference without a proven exact external extraction',
+          'cpp-erased-external-reference-assertion-unrepresented',
+        );
+      }
       // An erased value answers only what the runtime can read out of it honestly: the primitives, a
       // reference it can identify, and a callable. `flight::Array` is not one of them, by the runtime's own
       // contract — an array cannot be handed to `flight::Any` without inventing an identity or reinterpreting
@@ -12109,6 +12129,70 @@ function getIrExpressionTypeEvidenceCpp(
     case 'undefinedValue':
       return undefined;
   }
+}
+
+// An unconstrained position is a value, not an erased object pointer. A Flight reference therefore
+// enters it through the runtime's object alternative, which retains both the shared identity and the
+// concrete referent type. Structural rows are deliberately excluded: `Any` has no row alternative,
+// and boxing the projection handle would not store the concrete Flight reference its schema describes.
+function emitCppContextualErasedDynamicValueCpp(
+  expression: Readonly<IrExpression>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || !isCppErasedDynamicValueTypeCpp(target)) {
+    return undefined;
+  }
+  const source = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (!source || isCppErasedDynamicValueTypeCpp(source)) return undefined;
+  if (context.referenceRepresentationPlanner.resolveStructuralRow(source, context.module)) {
+    emissionError(
+      context,
+      'a structural row has no erased dynamic value because its projected schema is not one concrete Flight reference type',
+      'cpp-erased-structural-row-construction-unrepresented',
+    );
+  }
+  if (!hasFlightReferenceRepresentationCpp(source, context)) return undefined;
+  context.includes.add('flight/any.hpp');
+  return `flight::Any::object(${emitExpression(expression, context, source)})`;
+}
+
+// A readonly structural sequence parameter is an owner-preserving view: it can accept any compatible
+// row without pretending that the rows have one nominal element type. Writing that view into an owning
+// array of one nominal reference would need either a clone (which loses the source array's identity) or
+// an unchecked nominal recovery. Neither is the assignment TypeScript wrote, so stop before row_set's
+// constructibility assertion has to diagnose the representation mismatch in generated C++.
+function refuseCppContextualStructuralArrayNominalRecoveryCpp(
+  expression: Readonly<IrExpression>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): void {
+  if (expression.kind === 'array') return;
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    context.contextualBindingStorageTargetTypes.has(expression.reference.binding.id)
+  ) {
+    return;
+  }
+  const source = getIrExpressionTypeEvidenceCpp(expression, context);
+  const sourceArray = getIrArrayTypeCpp(source, context, new Set());
+  const targetArray = getIrArrayTypeCpp(target, context, new Set());
+  if (!sourceArray?.readonly || !targetArray || !hasFlightReferenceRepresentationCpp(targetArray.element, context)) {
+    return;
+  }
+  const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(sourceArray.element, context.module);
+  if (!sourceRow) return;
+  const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceArray.element, context.module);
+  const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetArray.element, context.module);
+  if (!sourceShape || !targetShape || !areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context)) {
+    return;
+  }
+  emissionError(
+    context,
+    'a readonly structural sequence cannot be stored as an owning array of nominal references without cloning its array identity or assuming an unproven referent type',
+    'cpp-contextual-structural-array-nominal-recovery-unproven',
+  );
 }
 
 // `source as string` on a position TypeScript states as unconstrained is an assertion about a value

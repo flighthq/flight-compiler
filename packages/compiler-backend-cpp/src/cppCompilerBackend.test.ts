@@ -484,6 +484,64 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('flight::Any erased = values.fill(0.0);');
   });
 
+  it('stores exact Flight references in erased dynamic values without treating structural rows as objects', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'erased-object-reference.ts',
+        `interface Widget { value: number }
+         export function eraseReturn(value: Widget): unknown { return value; }
+         export function eraseAssertion(value: Widget): unknown { return value as unknown; }
+         export function eraseLiteral(width: number, height: number): unknown {
+           return { height, width } as unknown;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted.match(/flight::Any::object\(value\)/gu)).toHaveLength(2);
+    expect(emitted).toMatch(/flight::Any::object\(flight::make_ref<height_width_[a-f0-9]+>/u);
+    expect(emitted).not.toContain('static_cast<flight::Any>(value)');
+
+    const structuralFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'erased-structural-row.ts',
+          `interface Widget { value: number }
+           export function erase(value: Readonly<Widget>): unknown { return value as unknown; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(structuralFailure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+  });
+
+  it('refuses to recover a host reference from an erased Flight object', () => {
+    const result = lower(
+      'erased-host-reference.ts',
+      `export function create(width: number, height: number): CanvasImageSource {
+         return { height, width } as unknown as CanvasImageSource;
+       }`,
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['flight/host_sdl/image.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'CanvasImageSource',
+          space: 'type' as const,
+          targetName: 'flight::host_sdl::ImageSource',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-erased-external-reference-assertion-unrepresented');
+  });
+
   // One structural shape is one C++ type, so every module of a package that writes it has to spell it
   // the same way -- and the guard around its definition has to follow the name it actually got.
   //
@@ -14017,6 +14075,43 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'total(flight::SequenceView<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Rectangle>>>>> rectangles)',
     );
     expect(output).toContain('return total(rectangles)');
+  });
+
+  it('refuses to narrow a readonly structural sequence into an owning nominal-reference array', () => {
+    const declarations = `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+      interface Entity { [EntityRuntimeKey]: object | undefined }
+      type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
+      interface RiveProperty { key: number; value: number }
+      interface RiveCoreObject { properties: RiveProperty[]; typeKey: number }
+      interface ImportContext extends Entity { objects: readonly RiveCoreObject[] }`;
+    const incompatible = lower(
+      'structural-sequence-row-write.ts',
+      `${declarations}
+       export function initialize(
+         out: EntityConstruction<ImportContext>,
+         objects: readonly Readonly<RiveCoreObject>[],
+       ): void { out.objects = objects; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(incompatible.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-contextual-structural-array-nominal-recovery-unproven');
+
+    const compatible = emitIrModuleCpp(
+      lower(
+        'nominal-sequence-row-write.ts',
+        `${declarations}
+         export function initialize(
+           out: EntityConstruction<ImportContext>,
+           objects: readonly RiveCoreObject[],
+         ): void { out.objects = objects; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(compatible).toContain('flight::row_set<flight::RowKey<"objects">>(out, objects);');
+    expect(compatible).toContain('flight::Array<flight::Ref<RiveCoreObject>> objects');
+    expect(compatible).not.toContain('flight::SequenceView');
   });
 
   it('keeps erased index-signature parameters generic over indexable carriers', () => {
