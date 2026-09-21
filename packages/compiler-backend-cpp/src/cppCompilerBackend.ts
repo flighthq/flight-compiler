@@ -13619,12 +13619,28 @@ function emitCppForeignAnonymousPropertyObjectCpp(
   if (target.kind !== 'property' || value.kind !== 'object') return undefined;
   const receiverType = getIrExpressionTypeEvidenceCpp(target.object, context);
   if (!receiverType) return undefined;
-  const owner = getCppTypeReferenceOwnerModuleCpp(receiverType, context);
+  // A writable projection such as EntityConstruction<Grid> stores RowOf<Grid>. Its resolved shape is
+  // useful for deciding that `bounds` exists, but shape resolution expands a declared object alias
+  // such as `bounds: AabbLike` into its raw `{ max, min }` members. Constructing that expansion would
+  // mint an anonymous helper in Grid's namespace even though Grid's header emits the named AabbLike.
+  // Recover the row subject first so a directly declared property retains its nominal source identity.
+  const row = context.referenceRepresentationPlanner.resolveStructuralRow(receiverType, context.module);
+  const declarationType = row ? getCppStructuralRowObjectTypeCpp(row) : receiverType;
+  const owner = declarationType ? getCppTypeReferenceOwnerModuleCpp(declarationType, context) : context.module;
   if (owner.packageName === context.module.packageName) return undefined;
+  const declaredProperty = declarationType
+    ? context.referenceRepresentationPlanner.resolveOwnObjectProperty(declarationType, target.name, context.module)
+    : undefined;
+  if (declaredProperty?.type.kind === 'named' && declaredProperty.type.reference.kind === 'binding') {
+    return emitExpression(value, context, declaredProperty.type);
+  }
   const property = context.referenceRepresentationPlanner
     .resolveObjectShape(receiverType, context.module)
     ?.find((candidate) => candidate.name === target.name);
-  return property ? emitCppForeignAnonymousObjectValueCpp(value, property.type, owner, context) : undefined;
+  const constructionProperty = declaredProperty ?? property;
+  return constructionProperty
+    ? emitCppForeignAnonymousObjectValueCpp(value, constructionProperty.type, owner, context)
+    : undefined;
 }
 
 function emitCppForeignAnonymousObjectValueCpp(

@@ -2218,6 +2218,89 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toMatch(/struct r_g_b_[0-9a-f]{16}/u);
   });
 
+  it('constructs a named record property through its foreign writable row without inventing a helper', () => {
+    const model = ts.createSourceFile(
+      '/flight/packages/types/src/model.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime { binding: object | null }
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export interface Vector3Like { x: number; y: number; z: number }
+       export type AabbLike = { max: Vector3Like; min: Vector3Like };
+       export interface LightProbeGrid extends Entity {
+         bounds: AabbLike;
+         inlineBounds: { max: Vector3Like; min: Vector3Like };
+       }
+       export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './model';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const lightProbe = ts.createSourceFile(
+      '/flight/packages/lighting/src/lightProbe.ts',
+      `import type { AabbLike, EntityConstruction, LightProbeGrid } from '@flighthq/types/contract';
+       export function initializeLightProbeGrid(
+         out: EntityConstruction<LightProbeGrid>,
+         bounds: Readonly<AabbLike>,
+       ): void {
+         out.bounds = { max: bounds.max, min: bounds.min };
+         out.inlineBounds = { max: bounds.max, min: bounds.min };
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './model',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/model.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: model, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/lighting', sourceFile: lightProbe, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/lighting': { includePrefix: 'flight/lighting', namespace: 'flight::lighting' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const owner = session.emitModule(modules[0]!)[0]!.contents;
+    const emitted = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(owner).toContain('struct AabbLike : public flight::ReferenceEnabled');
+    expect(emitted).toContain(
+      'flight::row_set<flight::RowKey<"bounds">>(out, flight::make_ref<flight::types::AabbLike>(flight::types::AabbLike{',
+    );
+    expect(owner).toMatch(/struct max_min_[0-9a-f]{16} : public flight::ReferenceEnabled/u);
+    expect(emitted).toMatch(
+      /flight::row_set<flight::RowKey<"inlineBounds">>\(out, flight::make_ref<flight::types::max_min_[0-9a-f]{16}>/u,
+    );
+    expect(emitted).not.toMatch(/struct max_min_[0-9a-f]{16}/u);
+  });
+
   it('recovers optional construction values through a symbol-key Omit projection', () => {
     const model = ts.createSourceFile(
       '/flight/packages/types/src/model.ts',
