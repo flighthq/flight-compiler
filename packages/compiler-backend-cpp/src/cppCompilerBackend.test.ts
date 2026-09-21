@@ -9945,6 +9945,44 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(required).not.toContain('value_or(0.0)');
   });
 
+  it('types an Object.entries value from the record it enumerates, and only as far as the record proves', () => {
+    // `net/netForm.ts` hands an entry value to a `string` parameter. The runtime's `object_entries` returns an
+    // erased value, so the domain has to come from the record the source enumerated — and only from what that
+    // record proves. A `Record<string, string>` proves string; anything else must keep its own domain, because
+    // reading every entry value as a string would silently stringify numbers, booleans and records alike.
+    const stringRecord = emitIrModuleCpp(
+      lower(
+        'entries-string.ts',
+        `function encodeFormComponent(value: string): string { return value; }
+         export function formatNetFormBody(fields: Readonly<Record<string, string>>): string {
+           return Object.entries(fields)
+             .map(([key, value]) => \`\${encodeFormComponent(key)}=\${encodeFormComponent(value)}\`)
+             .join('&');
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(stringRecord).toContain('std::tuple<flight::String, flight::String> parameter_pattern_value');
+    expect(stringRecord).toContain('flight::String value;');
+    expect(stringRecord).not.toContain('flight::Any');
+
+    // The non-string side: the entry value keeps its own domain and is never stringified.
+    const numberRecord = emitIrModuleCpp(
+      lower(
+        'entries-number.ts',
+        `export function total(fields: Readonly<Record<string, number>>): number {
+           let sum = 0;
+           for (const [, value] of Object.entries(fields)) sum += value;
+           return sum;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(numberRecord).toContain('flight::Record<flight::String, double> fields');
+    expect(numberRecord).toContain('auto value = std::get<1>(array_pattern_value);');
+    expect(numberRecord).not.toContain('flight::to_string(value)');
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',
