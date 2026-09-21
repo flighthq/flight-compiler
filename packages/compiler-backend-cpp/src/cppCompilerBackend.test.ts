@@ -8987,9 +8987,89 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).contents;
 
     expect(output).toContain('std::optional<flight::Ref<Value>>');
+    expect(output).toContain('[=](flight::String key) -> std::optional<flight::Ref<Value>>');
     expect(output).toContain('return values.get(key);');
     expect(output).not.toContain('value_or(std::nullopt)');
     expect(output).not.toContain('return values.get(key).value()');
+  });
+
+  it('gives every nullable lambda branch one proven optional return carrier', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'nullable-lambda-return.ts',
+        `type Resolver = (tag: string) => Uint8Array | null;
+         export function create(value: Uint8Array): Resolver {
+           return (tag: string): Uint8Array | null => {
+             if (tag === 'value') return value;
+             return null;
+           };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('[=](flight::String tag) -> std::optional<flight::Uint8Array> {');
+    expect(output).toContain('return std::optional<flight::Uint8Array>{value};');
+    expect(output).toContain('return std::nullopt;');
+    expect(output).not.toContain('flight::Any');
+  });
+
+  it('uses the represented variant ABI for heterogeneous lambda returns', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'heterogeneous-lambda-return.ts',
+        `type Resolver = (flag: boolean) => number | string;
+         export function create(): Resolver {
+           return (flag: boolean): number | string => flag ? 1 : 'one';
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('[=](bool flag) -> std::variant<double, flight::String> {');
+    expect(output).toContain('std::variant<double, flight::String>{std::in_place_type<double>, 1.0}');
+    expect(output).toContain(
+      'std::variant<double, flight::String>{std::in_place_type<flight::String>, flight::String("one")}',
+    );
+    expect(output).not.toContain('flight::Any');
+  });
+
+  it('refuses a lambda union whose distinct runtime domains share one external target', () => {
+    const result = lower(
+      'erased-lambda-return.ts',
+      `declare class First { readonly first: number }
+       declare class Second { readonly second: string }
+       export function choose(first: First, second: Second): First {
+         return ((pick: boolean): First | Second => pick ? first : second)(true) as First;
+       }`,
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['flight/same.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'First',
+          space: 'type' as const,
+          targetName: 'flight::Same',
+        },
+        {
+          headers: ['flight/same.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'Second',
+          space: 'type' as const,
+          targetName: 'flight::Same',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-union-runtime-domains-erased');
+    expect(failure.message).toContain('flight::Same');
   });
 
   it('uses stable source-identity spelling for colliding public C++ names', () => {

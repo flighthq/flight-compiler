@@ -3163,23 +3163,31 @@ function emitExpression(
           : '[=]';
       const lambdaTemplate = template.parameters ? template.parameters : '';
       const lambdaRequirement = template.requirement ? ` requires ${template.requirement}` : '';
+      // C++ return deduction compares the branch expressions themselves. A source union instead has
+      // one representation selected for every branch: `T | null` is `optional<T>`, for example, even
+      // when one return is a constructed optional and another is `nullopt`. State that proven ABI on
+      // the lambda so deduction cannot split the shared carrier back into its branch-local spellings.
+      const returnUnion = getIrUnionTypeCpp(returns, functionContext, new Set());
+      const lambdaReturn = returnUnion ? ` -> ${emitUnionTypeCpp(returnUnion, functionContext)}` : '';
       if (
         expression.expression &&
         functionContext.defaultedParameterIds.size === 0 &&
         !hasSharedCaptureParameterCpp(parameters, functionContext)
       ) {
-        return `${capture}${lambdaTemplate}(${params.join(', ')})${lambdaRequirement} { ${ignoredContextualParameterDiscards.join(' ')}${ignoredContextualParameterDiscards.length > 0 ? ' ' : ''}return ${emitExpression(expression.expression, functionContext, returns)}; }`;
+        return `${capture}${lambdaTemplate}(${params.join(', ')})${lambdaReturn}${lambdaRequirement} { ${ignoredContextualParameterDiscards.join(' ')}${ignoredContextualParameterDiscards.length > 0 ? ' ' : ''}return ${emitExpression(expression.expression, functionContext, returns)}; }`;
       }
-      return `${capture}${lambdaTemplate}(${params.join(', ')})${lambdaRequirement} {\n${indentSourceLines([
-        ...ignoredContextualParameterDiscards,
-        ...emitParameterInitializersCpp(parameters, functionContext),
-        ...(expression.expression
-          ? [`return ${emitExpression(expression.expression, functionContext, returns)};`]
-          : [
-              ...emitStatements(expression.body, functionContext),
-              ...emitImplicitCompletionCpp(expression.body, functionContext),
-            ]),
-      ]).join('\n')}\n}`;
+      return `${capture}${lambdaTemplate}(${params.join(', ')})${lambdaReturn}${lambdaRequirement} {\n${indentSourceLines(
+        [
+          ...ignoredContextualParameterDiscards,
+          ...emitParameterInitializersCpp(parameters, functionContext),
+          ...(expression.expression
+            ? [`return ${emitExpression(expression.expression, functionContext, returns)};`]
+            : [
+                ...emitStatements(expression.body, functionContext),
+                ...emitImplicitCompletionCpp(expression.body, functionContext),
+              ]),
+        ],
+      ).join('\n')}\n}`;
     }
     case 'identifier': {
       if (
