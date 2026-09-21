@@ -17764,6 +17764,103 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('preserves one-domain optional evidence across a nullish merge', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, filename: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${filename}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/RenderTargetClear.ts',
+          `export type Color = readonly [number, number, number, number];
+           export type Other = readonly [string, string, string, string];
+           export interface RenderTargetClear {
+             color?: Color;
+             colors?: ReadonlyArray<Color | undefined>;
+             nested?: RenderTargetClear;
+             nullableColor?: Color | null;
+             other?: Other;
+           }`,
+        ),
+        source('@flighthq/types', 'packages/types/src/contract.ts', `export * from './RenderTargetClear';`),
+        source(
+          '@flighthq/scene2d-canvas',
+          'packages/scene2d-canvas/src/canvasRenderPass.ts',
+          `import type { Color, RenderTargetClear } from '@flighthq/types/contract';
+           export function same(clear: Readonly<RenderTargetClear> | undefined): Color | undefined {
+             return clear?.colors?.[0] ?? clear?.color;
+           }
+           export function distinct(
+             first: Readonly<RenderTargetClear> | undefined,
+             second: Readonly<RenderTargetClear> | undefined,
+           ): Color | undefined {
+             return first?.colors?.[0] ?? second?.color;
+           }
+           export function nested(clear: Readonly<RenderTargetClear> | undefined): Color | undefined {
+             return clear?.nested?.colors?.[0] ?? clear?.nested?.color;
+           }`,
+        ),
+        source(
+          '@flighthq/scene2d-canvas',
+          'packages/scene2d-canvas/src/nullProperty.ts',
+          `import type { Color, RenderTargetClear } from '@flighthq/types/contract';
+           export function read(clear: Readonly<RenderTargetClear> | undefined): Color | null | undefined {
+             return clear?.colors?.[0] ?? clear?.nullableColor;
+           }`,
+        ),
+        source(
+          '@flighthq/scene2d-canvas',
+          'packages/scene2d-canvas/src/incompatibleDomain.ts',
+          `import type { Color, Other, RenderTargetClear } from '@flighthq/types/contract';
+           export function read(clear: Readonly<RenderTargetClear> | undefined): Color | Other | undefined {
+             return clear?.colors?.[0] ?? clear?.other;
+           }`,
+        ),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/scene2d-canvas': {
+            includePrefix: 'flight/scene2d-canvas',
+            namespace: 'flight::scene2d_canvas',
+          },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('optional_chain_receiver.value().get(0.0).value_or(std::nullopt)');
+    expect(emitted.match(/auto nullish_coalesce_left/g)).toHaveLength(3);
+    expect(emitted).toContain(' same(');
+    expect(emitted).toContain(' distinct(');
+    expect(emitted).toContain(' nested(');
+
+    const nullProperty = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    const incompatibleDomain = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+    expect(nullProperty.rule).toBe('cpp-contextual-union-missing-expression-type:dualSentinelVariant');
+    expect(incompatibleDomain.rule).toBe('cpp-contextual-union-missing-expression-type:optionalVariant');
+  });
+
   it('guards an optional element after an optional collection lookup', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [

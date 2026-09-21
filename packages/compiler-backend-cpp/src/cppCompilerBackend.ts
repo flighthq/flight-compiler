@@ -9399,6 +9399,7 @@ function emitContextualUnionExpressionInContextCpp(
     return emitCppUnionSentinelConstruction('null', union, plan.kind, context);
   }
   if (expression.kind === 'binary' && expression.operator === '??') {
+    const mergeEvidence = getCppNullishMergeEvidenceCpp(expression, context);
     const fallback =
       expression.right.kind === 'literal' && expression.right.value === null
         ? ('null' as const)
@@ -9410,6 +9411,7 @@ function emitContextualUnionExpressionInContextCpp(
           : undefined;
     const leftType =
       (fallback ? getIrOptionalChainCoalescedTypeEvidenceCpp(expression.left, fallback, context) : undefined) ??
+      mergeEvidence?.leftType ??
       getIrExpressionTypeEvidenceCpp(expression.left, context);
     const leftUnion = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
     const leftStorageType = getIrExpressionTypeEvidenceCpp(expression.left, context);
@@ -10370,6 +10372,8 @@ function getIrNullishCoalesceTypeEvidenceCpp(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   if (expression.operator !== '??') return undefined;
+  const preserved = getCppNullishMergeEvidenceCpp(expression, context);
+  if (preserved) return preserved.resultType;
   const left = getIrExpressionTypeEvidenceCpp(expression.left, context);
   const right =
     getIrExpressionTypeEvidenceCpp(expression.right, context) ??
@@ -10381,6 +10385,84 @@ function getIrNullishCoalesceTypeEvidenceCpp(
     ...(leftUnion?.types ?? [left]).filter((member) => member.kind !== 'null' && member.kind !== 'undefined'),
     ...(rightUnion?.types ?? [right]),
   ]);
+}
+
+// An optional-chain element and an optional-chain property can carry the same value while generic
+// expression recovery sees only the property's recorded type. Preserve their common result through
+// `??` only from the representation plan both branches independently prove: one value domain, the
+// same runtime representation, and the same mapping for null and undefined. Receiver spelling and
+// nesting are irrelevant; a different value domain or sentinel mapping is not silently chosen.
+function getCppNullishMergeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+):
+  | Readonly<{
+      leftType: IrType;
+      resultType: IrType;
+      rightType: IrType;
+    }>
+  | undefined {
+  if (expression.operator !== '??') return undefined;
+  const leftType = getCppNullishMergeBranchTypeEvidenceCpp(expression.left, context);
+  const rightType = getCppNullishMergeBranchTypeEvidenceCpp(expression.right, context);
+  if (!leftType || !rightType) return undefined;
+  const leftUnion = getIrUnionTypeCpp(leftType, context, new Set());
+  const rightUnion = getIrUnionTypeCpp(rightType, context, new Set());
+  if (!leftUnion || !rightUnion) return undefined;
+  const leftPlan = getCppUnionRepresentationPlan(leftUnion, context);
+  const rightPlan = getCppUnionRepresentationPlan(rightUnion, context);
+  const leftSlot = leftPlan.valueSlots.length === 1 ? leftPlan.valueSlots[0] : undefined;
+  const rightSlot = rightPlan.valueSlots.length === 1 ? rightPlan.valueSlots[0] : undefined;
+  if (
+    !leftSlot ||
+    !rightSlot ||
+    leftSlot.representationKey !== rightSlot.representationKey ||
+    leftSlot.targetType !== rightSlot.targetType ||
+    leftPlan.sentinels.null !== rightPlan.sentinels.null ||
+    leftPlan.sentinels.undefined !== rightPlan.sentinels.undefined
+  ) {
+    return undefined;
+  }
+  const resultType = createIrTypeEvidenceUnionCpp([
+    ...leftUnion.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined'),
+    ...rightUnion.types,
+  ]);
+  if (!resultType) return undefined;
+  const resultUnion = getIrUnionTypeCpp(resultType, context, new Set());
+  if (!resultUnion) return undefined;
+  const resultPlan = getCppUnionRepresentationPlan(resultUnion, context);
+  const resultSlot = resultPlan.valueSlots.length === 1 ? resultPlan.valueSlots[0] : undefined;
+  if (
+    !resultSlot ||
+    resultSlot.representationKey !== leftSlot.representationKey ||
+    resultSlot.targetType !== leftSlot.targetType ||
+    resultPlan.sentinels.null !== leftPlan.sentinels.null ||
+    resultPlan.sentinels.undefined !== leftPlan.sentinels.undefined
+  ) {
+    return undefined;
+  }
+  return { leftType, resultType, rightType };
+}
+
+function getCppNullishMergeBranchTypeEvidenceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const direct = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (direct && direct.kind !== 'unknown') return direct;
+  const valueType = getIrOptionalChainValueTypeEvidenceCpp(expression, context);
+  if (!valueType || valueType.kind === 'unknown') return undefined;
+  const semantics =
+    expression.kind === 'call'
+      ? expression.semantics.optionalChain
+      : expression.kind === 'element'
+        ? expression.semantics.optionalChain
+        : expression.kind === 'property'
+          ? expression.optionalChain
+          : undefined;
+  return semantics?.receiverNullish === 'possible'
+    ? createIrTypeEvidenceUnionCpp([valueType, { kind: semantics.result }])
+    : valueType;
 }
 
 function createIrTypeEvidenceUnionCpp(types: readonly Readonly<IrType>[]): Readonly<IrType> | undefined {
@@ -15063,7 +15145,15 @@ function emitOptionalElementExpressionCpp(
       getCppRuntimeProfile(context.options) === 'flight-cpp' &&
       getIrHomogeneousTupleElementTypeCpp(receiverPlan.type)
     ) {
-      return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().get(${index}); }())`;
+      const elementType = getIrHomogeneousTupleElementTypeCpp(receiverPlan.type)!;
+      const projected = emitCppOptionalElementLookupCpp(
+        `optional_chain_receiver.value()`,
+        index,
+        elementType,
+        semantics.valueType,
+        context,
+      );
+      return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${projected}; }())`;
     }
     return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return std::get<${String(tupleIndex)}>(optional_chain_receiver.value()); }())`;
   }
@@ -15071,9 +15161,44 @@ function emitOptionalElementExpressionCpp(
     return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().capture(${index}); }())`;
   }
   if (receiverPlan?.kind === 'runtimeIndexed') {
-    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().get(${index}); }())`;
+    const projected = emitCppOptionalElementLookupCpp(
+      `optional_chain_receiver.value()`,
+      index,
+      receiverPlan.elementType,
+      semantics.valueType,
+      context,
+    );
+    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${projected}; }())`;
   }
   emissionError(context, 'optional element access requires one concrete nullable indexed collection receiver');
+}
+
+function emitCppOptionalElementLookupCpp(
+  receiver: string,
+  index: string,
+  elementType: Readonly<IrType> | undefined,
+  valueType: Readonly<IrType>,
+  context: EmitContext,
+): string {
+  const projected = `${receiver}.get(${index})`;
+  const storageUnion = elementType ? getIrUnionTypeCpp(elementType, context, new Set()) : undefined;
+  const storagePlan = storageUnion ? getCppUnionRepresentationPlan(storageUnion, context) : undefined;
+  const resultType = createIrTypeEvidenceUnionCpp([valueType, { kind: 'undefined' }]);
+  const resultUnion = resultType ? getIrUnionTypeCpp(resultType, context, new Set()) : undefined;
+  const resultPlan = resultUnion ? getCppUnionRepresentationPlan(resultUnion, context) : undefined;
+  const storageSlot = storagePlan?.valueSlots.length === 1 ? storagePlan.valueSlots[0] : undefined;
+  const resultSlot = resultPlan?.valueSlots.length === 1 ? resultPlan.valueSlots[0] : undefined;
+  // A checked runtime lookup contributes an outer undefined absence. Flatten it only when the stored
+  // element independently uses that same absence for its one value domain; null or a second domain must
+  // remain distinguishable. This is the element counterpart to the nullish-merge representation proof.
+  return storagePlan?.kind === 'optionalSingle' &&
+    resultPlan?.kind === 'optionalSingle' &&
+    storageSlot?.representationKey === resultSlot?.representationKey &&
+    storageSlot?.targetType === resultSlot?.targetType &&
+    storagePlan.sentinels.null === resultPlan.sentinels.null &&
+    storagePlan.sentinels.undefined === resultPlan.sentinels.undefined
+    ? `${projected}.value_or(std::nullopt)`
+    : projected;
 }
 
 function getCppOptionalElementReceiverPlanCpp(
@@ -15081,7 +15206,8 @@ function getCppOptionalElementReceiverPlanCpp(
   type: Readonly<IrType>,
   context: EmitContext,
 ):
-  | Readonly<{ kind: 'regexpExecArray' | 'runtimeIndexed' }>
+  | Readonly<{ kind: 'regexpExecArray' }>
+  | Readonly<{ elementType?: IrType | undefined; kind: 'runtimeIndexed' }>
   | Readonly<{ kind: 'tuple'; type: Extract<IrType, { kind: 'tuple' }> }>
   | undefined {
   // Nullability and collection identity are separate facts. Strip only the receiver sentinel, then require
@@ -15092,7 +15218,8 @@ function getCppOptionalElementReceiverPlanCpp(
   if (!receiver || receiver.kind === 'union') return undefined;
   const tuple = getIrTupleTypeCpp(receiver, context, new Set());
   if (tuple) return { kind: 'tuple', type: tuple };
-  if (getIrArrayTypeCpp(receiver, context, new Set())) return { kind: 'runtimeIndexed' };
+  const array = getIrArrayTypeCpp(receiver, context, new Set());
+  if (array) return { elementType: array.element, kind: 'runtimeIndexed' };
   if (hasCppRegExpExecArrayIndexedReceiverCpp(expression, context)) return { kind: 'regexpExecArray' };
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
   const representation = context.referenceRepresentationPlanner.plan(receiver, context.module);
