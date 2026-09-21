@@ -13287,11 +13287,28 @@ function appendCppOmittedInvocationArguments(
     expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
       ? getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context)
       : undefined;
-  if (!declaration && !optionals) return emitted;
+  // A function-valued variable has no function declaration whose C++ defaults a call can inherit.
+  // Its storage is std::function, so source defaults are optional ABI parameters and an omitted one
+  // must be supplied explicitly just like an omitted optional callback parameter.
+  const callableVariable =
+    !declaration &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'binding' &&
+    expression.callee.reference.binding.kind === 'variable'
+      ? getCppClosedCallableType(
+          getIrExpressionTypeEvidenceCpp(expression.callee, context) ?? { kind: 'unknown', source: 'unknown' },
+          context,
+          new Set(),
+        )
+      : undefined;
+  if (!declaration && !callableVariable && !optionals) return emitted;
   if (plan.providedArgumentCount === 'dynamic') {
     emissionError(context, 'spread calls into optional or default parameters require ABI expansion lowering');
   }
-  const omitted = new Set([...(declaration ? (defaults?.omitted ?? []) : []), ...(optionals?.omitted ?? [])]);
+  const omitted = new Set([
+    ...(declaration || callableVariable ? (defaults?.omitted ?? []) : []),
+    ...(optionals?.omitted ?? []),
+  ]);
   const result = [...emitted];
   for (let index = emitted.length; index < plan.parameterCount; index += 1) {
     if (!omitted.has(index))

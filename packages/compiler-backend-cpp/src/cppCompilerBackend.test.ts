@@ -9896,6 +9896,62 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toMatch(/void apply\(count_label_[0-9a-f]{16} options\)/u);
   });
 
+  it('emits a finite imported-key mapped construction as complete optional storage', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: {
+            name: 'formats',
+            packageName: '@flighthq/render',
+            source: 'packages/render/src/formats.ts',
+          },
+          importedNames: ['Format'],
+          specifier: '@flighthq/types/Format',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Format.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Format.ts',
+            "export type Format = 'first' | 'second';",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/render',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/render/src/formats.ts',
+            `import type { Format } from '@flighthq/types/Format';
+             interface Info { value: number; }
+             function info(): Info { return { value: 1 }; }
+             export const formats: Partial<Record<Format, Info>> = { first: info() };`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(results[1]!.module)[0]!.contents;
+
+    expect(emitted).toContain('std::optional<flight::Ref<Info>> first;');
+    expect(emitted).toContain('std::optional<flight::Ref<Info>> second;');
+    expect(emitted).toContain('std::optional<flight::Ref<Info>>{info()}');
+    expect(emitted).not.toContain('flight::Record');
+  });
+
   it('resolves NonNullable over a named object indexed access', () => {
     const result = lower(
       'non-nullable-indexed.ts',
@@ -13675,6 +13731,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(emitted.contents).toContain('optional(1.0, std::nullopt)');
     expect(emitted.contents).toContain('defaulted(2.0, std::nullopt)');
+  });
+
+  it('materializes omitted defaults when calling a function-valued variable', () => {
+    const result = lower(
+      'omitted-callable-value-defaults.ts',
+      `const sum = (value: number, left = 2, right = 3): number => value + left + right;
+       export const result = sum(1);`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('sum(1.0, std::nullopt, std::nullopt)');
   });
 
   it('materializes an omitted trailing optional callable-member argument', () => {

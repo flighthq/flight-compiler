@@ -1628,6 +1628,105 @@ describe('lowerTypeScriptSource', () => {
     expect(result.diagnostics).toEqual([]);
   });
 
+  it('materializes only finite optional mapped object constructions', () => {
+    const keySource = ts.createSourceFile(
+      '/flight/packages/types/src/Key.ts',
+      "export type Key = 'first' | 'second';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/closed-mapped-construction.ts',
+      `import type { Key } from '@flighthq/types/Key';
+       interface Value { count: number; }
+       function value(): Value { return { count: 1 }; }
+       export const closed: Partial<Record<Key, Value>> = { first: value() };
+       export const plain: Record<Key, Value> = { first: value(), second: value() };
+       export const open: Partial<Record<string, Value>> = { first: value() };
+       export const required: Required<Partial<Record<Key, Value>>> = {
+         first: value(),
+         second: value(),
+       };
+       export const incompatible: Partial<Record<Key, Value>> = { first: 'unsupported' };
+       export const duplicate: Partial<Record<Key, Value>> = { first: value(), first: value() };
+       export const spread: Partial<Record<Key, Value>> = { ...closed };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: keySource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            importer: {
+              name: 'closed-mapped-construction',
+              packageName: '@flighthq/math',
+              source: 'packages/math/src/closed-mapped-construction.ts',
+            },
+            importedNames: ['Key'],
+            specifier: '@flighthq/types/Key',
+            target: { packageName: '@flighthq/types', source: 'packages/types/src/Key.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    if (!result) throw new TypeError('expected mapped construction consumer');
+    const variables = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        declaration.kind === 'variable' && 'binding' in declaration
+          ? [[declaration.binding.name, declaration.type] as const]
+          : [],
+      ),
+    );
+
+    expect(variables.get('closed')).toEqual({
+      kind: 'object',
+      properties: [
+        {
+          name: 'first',
+          optional: true,
+          readonly: false,
+          type: expect.objectContaining({
+            kind: 'named',
+            reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'Value' }) }),
+          }),
+        },
+        {
+          name: 'second',
+          optional: true,
+          readonly: false,
+          type: expect.objectContaining({
+            kind: 'named',
+            reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'Value' }) }),
+          }),
+        },
+      ],
+    });
+    expect(variables.get('plain')).toMatchObject({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Record' },
+    });
+    expect(variables.get('open')).toMatchObject({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Partial' },
+    });
+    expect(variables.get('required')).toMatchObject({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Required' },
+    });
+    for (const name of ['incompatible', 'duplicate', 'spread']) {
+      expect(variables.get(name)).toMatchObject({
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'Partial' },
+      });
+    }
+    expect(result.diagnostics).toEqual([]);
+  });
+
   it('preserves readonly-removal identity mappings over a generic source type', () => {
     const result = lower(
       'entity-construction.ts',

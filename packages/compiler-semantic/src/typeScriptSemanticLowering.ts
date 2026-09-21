@@ -5969,23 +5969,28 @@ function lowerConcreteTypeScriptMappedAliasReference(
   node: ts.TypeReferenceNode,
   context: LoweringContext,
 ): Readonly<Extract<IrType, { kind: 'object' }>> | undefined {
-  // Built-in utilities have explicit neutral representations. Expanding TypeScript's library aliases
-  // here would erase nominal member identities that a barrel must introduce into the current module.
-  if (
-    hasExternalTypeScriptTypeParameter(node, context) ||
-    (ts.isIdentifier(node.typeName) &&
-      ['Omit', 'Partial', 'Pick', 'Readonly', 'Record', 'Required'].includes(node.typeName.text))
-  ) {
-    return undefined;
-  }
+  if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
   const unresolved = context.checker.getSymbolAtLocation(node.typeName);
   const symbol = unresolved ? (resolveTypeBindingAliasTarget(unresolved, context) ?? unresolved) : undefined;
   const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
   if (!declaration || !ts.isMappedTypeNode(declaration.type)) return undefined;
+  const checkerType = context.checker.getTypeFromTypeNode(node);
+  // Library utility aliases ordinarily retain their neutral IR spelling: expanding Partial<Interface>
+  // would erase the interface member identities that imported barrels establish. A fully instantiated
+  // mapped row is different. At a concrete object construction its checker properties are synthetic,
+  // finite, optional, and have no authored member identity to lose, so the existing structural evidence
+  // path can carry the exact row. Keeping this tied to a checked construction preserves the neutral
+  // wrappers everywhere else, including open generics and optional-to-required mapped flows.
+  if (
+    isTypeScriptAmbientSymbol(symbol, context) &&
+    !isTypeScriptClosedMappedObjectConstruction(node, checkerType, context)
+  ) {
+    return undefined;
+  }
   let properties: readonly IrObjectTypeProperty[] | undefined;
   try {
     properties = lowerTypeScriptCheckerObjectProperties(
-      context.checker.getTypeFromTypeNode(node),
+      checkerType,
       context,
       0,
       declaration.type,
@@ -5997,6 +6002,52 @@ function lowerConcreteTypeScriptMappedAliasReference(
     throw error;
   }
   return properties ? { kind: 'object', properties } : undefined;
+}
+
+function isTypeScriptClosedMappedObjectConstruction(
+  node: ts.TypeReferenceNode,
+  type: ts.Type,
+  context: LoweringContext,
+): boolean {
+  const owner = node.parent;
+  if (
+    !ts.isVariableDeclaration(owner) ||
+    owner.type !== node ||
+    !owner.initializer ||
+    !ts.isObjectLiteralExpression(owner.initializer) ||
+    context.checker.getIndexInfosOfType(type).length > 0
+  ) {
+    return false;
+  }
+  const properties = context.checker.getPropertiesOfType(type);
+  if (
+    properties.length === 0 ||
+    properties.some(
+      (property) => !(property.flags & ts.SymbolFlags.Optional) || (property.declarations?.length ?? 0) > 0,
+    )
+  ) {
+    return false;
+  }
+  const propertiesByName = new Map(properties.map((property) => [property.getName(), property] as const));
+  const seen = new Set<string>();
+  for (const member of owner.initializer.properties) {
+    if (!ts.isPropertyAssignment(member) && !ts.isShorthandPropertyAssignment(member)) return false;
+    const name = tryPropertyName(member.name);
+    if (!name || seen.has(name)) return false;
+    const property = propertiesByName.get(name);
+    if (!property) return false;
+    const expression = ts.isPropertyAssignment(member) ? member.initializer : member.name;
+    if (
+      !context.checker.isTypeAssignableTo(
+        context.checker.getTypeAtLocation(expression),
+        context.checker.getTypeOfSymbolAtLocation(property, node),
+      )
+    ) {
+      return false;
+    }
+    seen.add(name);
+  }
+  return true;
 }
 
 function lowerConcreteTypeScriptConditionalTypeEvidence(
