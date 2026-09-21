@@ -9381,14 +9381,9 @@ function emitCppClosedKeyElementSelectionCpp(
         'cpp-closed-key-absent-member',
       );
     }
-    if (property.optional) {
-      emissionError(
-        context,
-        `closed key ${key} names an optional member, which requires presence projection`,
-        'cpp-closed-key-optional-member',
-      );
-    }
-    memberTypes.push(emitType(property.type, context));
+    // Select the member's read type rather than its declared payload. For an optional member this is
+    // `T | undefined`, whose C++ representation is the optional cell the materialized object stores.
+    memberTypes.push(emitType(getIrObjectPropertyReadTypeCpp(property)!, context));
   }
   const distinct = [...new Set(memberTypes)];
   if (distinct.length !== 1) {
@@ -9398,13 +9393,17 @@ function emitCppClosedKeyElementSelectionCpp(
       'cpp-closed-key-multiple-member-types',
     );
   }
-  const select = (member: string): string => `selection_receiver->${safeCppName(member)}`;
+  const receiver = getGeneratedTargetName('selectionReceiver', context);
+  const selectionKey = getGeneratedTargetName('selectionKey', context);
+  const select = (member: string): string => `${receiver}->${safeCppName(member)}`;
   const branches = keys.map((key) => {
     const property = members.get(key)!;
-    return `if (${emitExpression(expression.index, context)} == ${emitLiteral(key, context)}) return ${select(property.name)};`;
+    return `if (${selectionKey} == ${emitLiteral(key, context)}) return ${select(property.name)};`;
   });
   context.includes.add('stdexcept');
-  return `([&]() -> ${distinct[0]!} { const auto& selection_receiver = ${emitExpression(expression.object, context)}; ${branches.join(' ')} throw std::logic_error("Flight finite-key selection reached no member"); }())`;
+  // JavaScript evaluates the receiver and key once, in that order. Binding both before the dispatch
+  // keeps that contract for effectful expressions as well as the plain identifiers in the common case.
+  return `([&]() -> ${distinct[0]!} { const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${selectionKey} = ${emitExpression(expression.index, context)}; ${branches.join(' ')} throw std::logic_error("Flight finite-key selection reached no member"); }())`;
 }
 
 function getCppNullishLiteralKind(expression: Readonly<IrExpression>): 'null' | 'undefined' | undefined {
@@ -14324,6 +14323,19 @@ function getIrIndexedElementTypeCpp(
     if (expression.index.kind !== 'literal' || typeof expression.index.value !== 'number') return undefined;
     return type.elements[expression.index.value]?.type;
   }
+  if (type.kind === 'object') {
+    // A finite mapped object is materialized as an object type before its initializer is emitted. Its
+    // optional bit is part of every indexed read, so recover the read type from exactly the members the
+    // checker-recorded key set can select rather than treating the materialized storage as an open index.
+    const keys = getCppClosedElementKeyNamesCpp(expression, context);
+    if (!keys) return undefined;
+    const members = keys.map((key) =>
+      getIrObjectPropertyReadTypeCpp(type.properties.find((property) => property.name === key)),
+    );
+    return members.every((member): member is Readonly<IrType> => member !== undefined)
+      ? createIrTypeEvidenceUnionCpp(members)
+      : undefined;
+  }
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
     if (/^(?:Float32|Float64|Int16|Int32|Int8|Uint16|Uint32|Uint8|Uint8Clamped)Array$/u.test(type.reference.name)) {
@@ -14339,6 +14351,12 @@ function getIrIndexedElementTypeCpp(
       type.typeArguments[0]
     ) {
       return getIrIndexedElementTypeCpp(type.typeArguments[0], expression, context, resolvingAliases);
+    }
+    if (type.reference.name === 'Partial' && type.typeArguments.length === 1 && type.typeArguments[0]) {
+      // Partial contributes undefined only after the underlying indexed read has been proved. An open or
+      // unresolved operand still returns no evidence; the contextual target cannot manufacture its value.
+      const element = getIrIndexedElementTypeCpp(type.typeArguments[0], expression, context, resolvingAliases);
+      return element ? createIrTypeEvidenceUnionCpp([element, { kind: 'undefined' }]) : undefined;
     }
     if (
       (type.reference.name === 'Array' || type.reference.name === 'ReadonlyArray') &&

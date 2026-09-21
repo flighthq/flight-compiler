@@ -744,14 +744,25 @@ describe('createCppCompilerBackend', () => {
          if (signals !== null) use(signals[name]);
        }`,
     );
-    // Every key in the union is a branch, the receiver is bound once, and the fall-through is
-    // unreachable by type but still present.
-    expect(closed).toContain('if (name == flight::String("onLoop")) return selection_receiver->on_loop;');
-    expect(closed).toContain('if (name == flight::String("onStop")) return selection_receiver->on_stop;');
+    // Every key in the union is a branch, the receiver and key are each bound once, and the
+    // fall-through is unreachable by type but still present.
+    expect(closed).toContain('if (selection_key == flight::String("onLoop")) return selection_receiver->on_loop;');
+    expect(closed).toContain('if (selection_key == flight::String("onStop")) return selection_receiver->on_stop;');
     expect(closed).toContain('const auto& selection_receiver = signals.value();');
+    expect(closed).toContain('const auto selection_key = name;');
     expect(closed).toContain('throw std::logic_error(');
     // Nothing subscripts the reference, which has no subscript to offer.
     expect(closed).not.toContain('signals.value()[');
+
+    const effectfulKey = emitOnly(
+      `export interface Signals { onLoop: () => void; onStop: () => void }
+       function use(s: () => void): void { s(); }
+       export function selected(signals: Signals, next: () => 'onLoop' | 'onStop'): void {
+         use(signals[next()]);
+       }`,
+    );
+    expect(effectfulKey).toContain('const auto selection_key = next();');
+    expect(effectfulKey.match(/\bnext\(\)/gu)).toHaveLength(1);
 
     // A key the object does not have selects nothing and is refused.
     expect(
@@ -9931,7 +9942,12 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
             `import type { Format } from '@flighthq/types/Format';
              interface Info { value: number; }
              function info(): Info { return { value: 1 }; }
-             export const formats: Partial<Record<Format, Info>> = { first: info() };`,
+             export const formats: Partial<Record<Format, Info>> = { first: info() };
+             export function lookup(format: Format): Info | null {
+               const value = formats[format];
+               if (value !== undefined) return value;
+               return null;
+             }`,
             ts.ScriptTarget.Latest,
             true,
           ),
@@ -9950,6 +9966,34 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('std::optional<flight::Ref<Info>> second;');
     expect(emitted).toContain('std::optional<flight::Ref<Info>>{info()}');
     expect(emitted).not.toContain('flight::Record');
+    expect(emitted).toContain('auto value = ([&]() -> std::optional<flight::Ref<Info>>');
+    expect(emitted).toContain('const auto& selection_receiver = formats; const auto selection_key = format;');
+    expect(emitted).toContain('return std::optional<flight::Ref<Info>>{value.value()};');
+    expect(emitted.match(/const auto selection_key = format;/gu)).toHaveLength(1);
+  });
+
+  it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('partial-index-negative.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    expect(
+      refusal(
+        `interface Info { value: number }
+         export function lookup(values: Partial<Record<string, Info>>, key: string): Info | null {
+           return values[key] ?? null;
+         }`,
+      ).rule,
+    ).toBe('cpp-partial-shape-unresolvable');
+    expect(
+      refusal(
+        `interface Values { info?: { value: number }; count?: number }
+         export function lookup(values: Values, key: keyof Values): { value: number } | number | undefined {
+           return values[key];
+         }`,
+      ).rule,
+    ).toBe('cpp-closed-key-multiple-member-types');
   });
 
   it('resolves NonNullable over a named object indexed access', () => {
