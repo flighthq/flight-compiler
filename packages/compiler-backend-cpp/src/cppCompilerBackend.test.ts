@@ -10472,26 +10472,35 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
+    // The local no longer over-allocates absence at all: the guard narrowed the read, so its storage is the
+    // reference itself and the assertion's subject is that reference. `structural_ref_cast` consumes a
+    // structural reference, and a native `Ref` is not one, so the subject alone is no argument the overload
+    // accepts — the source's own projection view is built from the owner first. Without that step the cast
+    // names no viable overload, whatever the subject's spelling.
+    expect(emitted).toContain('auto image = texture.value()->source.value();');
     expect(emitted).toContain(
-      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Bitmap>>>>>(image.value())',
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Bitmap>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<TextureSource>>>>(image))',
     );
-    // The carrier itself is never the subject of the cast.
-    expect(emitted).not.toContain('>>>(image))');
+    // The carrier is never the subject, and the view is built once.
+    expect(emitted).not.toContain('std::optional<flight::Ref<TextureSource>> image');
+    expect(emitted.match(/RowWritable<flight::RowOf<flight::Ref<TextureSource>>>>\(image\)/gu)?.length).toBe(1);
 
-    // The negative side: a subject whose storage carries no absence is left exactly as it was, so a cast
-    // over a plain reference does not grow a `.value()` it has nothing to read.
+    // The negative side: a subject that is already a structural row is cast as it stands. It needs no view
+    // built around it, and building one anyway would wrap a view in a view rather than view the owner.
     const direct = emitIrModuleCpp(
       lower(
         'assertion-subject-direct.ts',
         `export interface TextureSource { readonly kind: string; readonly id: number }
          export interface Bitmap extends TextureSource { readonly kind: 'bitmap'; readonly data: number[] }
-         export function byteSize(image: TextureSource): number {
+         export function byteSize(image: Readonly<TextureSource>): number {
            return (image as Readonly<Bitmap>).data.byteLength;
          }`,
       ).module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
-    expect(direct).toContain('flight::structural_ref_cast<');
+    expect(direct.match(/structural_ref_cast</gu)?.length).toBe(1);
+    expect(direct).toContain('(image)');
+    expect(direct).not.toContain('RowWritable<flight::RowOf<flight::Ref<TextureSource>>>>(image)');
     expect(direct).not.toContain('.value()');
   });
 
