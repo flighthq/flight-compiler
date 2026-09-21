@@ -7852,6 +7852,119 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('flight::Array<double> result = flight::Array<double>((size * 3.0))');
   });
 
+  it('emits a zero-sized array because it contains no sparse slots', () => {
+    const result = lower(
+      'array-zero-length-flight.ts',
+      'export function values(): number[] { return new Array<number>(0); }',
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('return flight::Array<double>(0.0);');
+  });
+
+  it('appends proven property-bounded sequential writes without observing dense defaults', () => {
+    const result = lower(
+      'array-property-sequential-append-flight.ts',
+      `export function transform(rows: readonly (readonly number[])[]): number[][] {
+        const sourceRows = rows;
+        const output: number[][] = new Array(sourceRows.length);
+        for (let row = 0; row < sourceRows.length; row++) {
+          const source = sourceRows[row];
+          const values: number[] = new Array(source.length);
+          for (let index = 0; index < source.length; index += 2) {
+            values[index] = source[index] * 2;
+            values[index + 1] = source[index + 1] * 3;
+          }
+          output[row] = values;
+        }
+        return output;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents.match(/sequential_append_array[^;]*\.clear\(\)/gu)).toHaveLength(2);
+    expect(emitted.contents.match(/sequential_append_receiver[^;]*\.push\(/gu)).toHaveLength(3);
+    expect(emitted.contents).toContain('sequential_append_index != static_cast<double>');
+    expect(emitted.contents).not.toMatch(/values\.element\([^)]*index[^)]*\)\s*=/u);
+    expect(emitted.contents).not.toMatch(/output\.element\([^)]*row[^)]*\)\s*=/u);
+  });
+
+  it('keeps explicit undefined writes, later indexed writes, length reads, iteration, and evaluation order', () => {
+    const result = lower(
+      'array-sequential-append-observation-flight.ts',
+      `export function values(length: () => number, read: (index: number) => number): number {
+        const size = length();
+        const result = new Array<number | undefined>(size);
+        for (let index = 0; index < size; index += 2) {
+          result[index] = read(index);
+          result[index + 1] = undefined;
+        }
+        if (size > 0) result[0] = read(-1);
+        let total = result.length;
+        for (const value of result) if (value !== undefined) total += value;
+        return total;
+      }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted.match(/length\(\)/gu)).toHaveLength(1);
+    expect(emitted).toContain('.clear()');
+    expect(emitted.match(/\.push\(/gu)).toHaveLength(2);
+    expect(emitted).toContain('std::nullopt');
+    expect(emitted).toMatch(/result\.element\(0\.0\)\s*=\s*std::optional<double>\{read\(-1\.0\)\}/u);
+    expect(emitted).toContain('static_cast<double>(result.size())');
+    expect(emitted).toContain('for (auto value : result)');
+    expect(emitted.indexOf('length()')).toBeLessThan(emitted.indexOf('.clear()'));
+    expect(emitted.indexOf('sequential_append_index')).toBeLessThan(emitted.indexOf('read(index)'));
+  });
+
+  it('refuses observed or effectfully unstable property-bounded sparse arrays', () => {
+    const observed = lower(
+      'array-sequential-append-observed-flight.ts',
+      `export function values(source: readonly number[]): number[] {
+        const result = new Array<number>(source.length);
+        const initialLength = result.length;
+        for (let index = 0; index < source.length; index++) result[index] = source[index];
+        return initialLength === result.length ? result : [];
+      }`,
+    );
+    expect(() => emitIrModuleCpp(observed.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Array length construction is outside the dense flight-cpp array profile',
+    );
+
+    const unstable = lower(
+      'array-sequential-append-unstable-flight.ts',
+      `export function values(source: number[], mutate: (source: number[]) => void): number[] {
+        const result = new Array<number>(source.length);
+        for (let index = 0; index < source.length; index++) {
+          mutate(source);
+          result[index] = source[index];
+        }
+        return result;
+      }`,
+    );
+    expect(() => emitIrModuleCpp(unstable.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Array length construction is outside the dense flight-cpp array profile',
+    );
+
+    const aliasedMutation = lower(
+      'array-sequential-append-aliased-mutation-flight.ts',
+      `export function values(source: number[]): number[] {
+        const sourceValue = source;
+        const alias = sourceValue;
+        const result = new Array<number>(sourceValue.length);
+        for (let index = 0; index < sourceValue.length; index++) {
+          alias.length = 0;
+          result[index] = sourceValue[index];
+        }
+        return result;
+      }`,
+    );
+    expect(() => emitIrModuleCpp(aliasedMutation.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Array length construction is outside the dense flight-cpp array profile',
+    );
+  });
+
   it('emits product-sized arrays initialized by nested loops and a sequential write cursor', () => {
     const result = lower(
       'array-nested-sequential-fill-flight.ts',

@@ -188,6 +188,11 @@ interface CppStructuralOpenRowConstructionPlan {
   readonly fields: readonly CppStructuralOpenRowConstructionField[];
 }
 
+interface CppDenseArraySequentialAppendPlan {
+  readonly indexBindingId: string;
+  readonly offsets: ReadonlySet<number>;
+}
+
 interface CppStructuralClosedRowSpreadConstructionPlan {
   readonly fields: readonly Readonly<
     | {
@@ -241,6 +246,7 @@ interface EmitContext {
   capturedReferentOnlyBindingIds: ReadonlySet<string>;
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
+  denseArraySequentialAppendPlans: ReadonlyMap<string, Readonly<CppDenseArraySequentialAppendPlan>>;
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
   exceptionPointerBindingIds: ReadonlySet<string>;
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
@@ -445,6 +451,12 @@ function emitIrModuleCppWithContext(
   const erasedDynamicStorageBindingIds = new Set<string>();
   const erasedObjectParameterBindingIds = new Set<string>();
   const arrayElementBindingIds = new Set<string>();
+  const denseArrayLengthBindingIds = collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule);
+  const denseArraySequentialAppendPlans = new Map(
+    [...collectIrModuleDenseArraySequentialAppendPlansCpp(sourceModule)].filter(
+      ([bindingId]) => !denseArrayLengthBindingIds.has(bindingId),
+    ),
+  );
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
     anonymousStructs: new Map(),
@@ -456,7 +468,8 @@ function emitIrModuleCppWithContext(
     capturedReferentOnlyBindingIds,
     contextualBindingStorageTargetTypes,
     defaultedParameterIds: new Set(),
-    denseArrayLengthBindingIds: collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule),
+    denseArrayLengthBindingIds: new Set([...denseArrayLengthBindingIds, ...denseArraySequentialAppendPlans.keys()]),
+    denseArraySequentialAppendPlans,
     dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
     erasedDynamicStorageBindingIds,
@@ -2059,6 +2072,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(variable.binding.id);
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(variable.binding.id);
   const structuralCastRow = context.structuralCastBindingRows.get(variable.binding.id);
+  const denseArraySequentialAppendPlan = context.denseArraySequentialAppendPlans.get(variable.binding.id);
   const exceptionPointer = context.exceptionPointerBindingIds.has(variable.binding.id);
   if (exceptionPointer) context.includes.add('exception');
   const type =
@@ -2078,19 +2092,24 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
             : emitType(variable.type, context));
   const emittedType = arrayElement && type !== 'auto' ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
-  const initializer = variable.initializer
+  const initializerValue = variable.initializer
+    ? weakMapViewPlan && weakMapViewInitializer
+      ? emitCppErasedWeakMapViewAcquisition(weakMapViewInitializer, weakMapViewPlan, context)
+      : arrayElement
+        ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
+        : emitExpression(
+            variable.initializer,
+            context,
+            contextualStorageTarget ?? preservedInitializerType ?? variable.type,
+            true,
+            context.denseArrayLengthBindingIds.has(variable.binding.id),
+          )
+    : undefined;
+  const initializer = initializerValue
     ? ` = ${
-        weakMapViewPlan && weakMapViewInitializer
-          ? emitCppErasedWeakMapViewAcquisition(weakMapViewInitializer, weakMapViewPlan, context)
-          : arrayElement
-            ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
-            : emitExpression(
-                variable.initializer,
-                context,
-                contextualStorageTarget ?? preservedInitializerType ?? variable.type,
-                true,
-                context.denseArrayLengthBindingIds.has(variable.binding.id),
-              )
+        denseArraySequentialAppendPlan
+          ? emitCppDenseArraySequentialAppendConstructionCpp(initializerValue, context)
+          : initializerValue
       }`
     : '';
   const sharedCaptureTargetName = context.sharedCaptureTargetNames.get(variable.binding.id);
@@ -2121,6 +2140,11 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     return `const auto ${sharedCaptureTargetName} = ${emitSharedCaptureCellConstructionCpp(sharedType, sharedInitializer, context, runtimeArrayInitializer)};`;
   }
   return `${constness}${emittedType} ${name}${initializer};`;
+}
+
+function emitCppDenseArraySequentialAppendConstructionCpp(initializer: string, context: EmitContext): string {
+  const storage = getGeneratedTargetName('sequentialAppendArray', context);
+  return `([&]() { auto ${storage} = ${initializer}; ${storage}.clear(); return ${storage}; }())`;
 }
 
 // Every type parameter the module declares, by binding identity. The traversal observer is used rather
@@ -2492,6 +2516,11 @@ function emitExpression(
       const right =
         foreignAnonymousObject ??
         emitExpression(expression.right, context, exactCallableFieldAssignment ? rightType : assignmentType);
+      const denseArraySequentialAppendAssignment =
+        expression.operator === '='
+          ? emitCppDenseArraySequentialAppendAssignmentCpp(expression.left, right, context)
+          : undefined;
+      if (denseArraySequentialAppendAssignment) return denseArraySequentialAppendAssignment;
       const capturedRuntimeReferentAssignment = emitCppCapturedRuntimeReferentPropertyAssignmentCpp(
         expression,
         right,
@@ -3726,7 +3755,8 @@ function emitExpression(
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
         ambientConstructorName === 'Array' &&
         args.length > 0 &&
-        !denseArrayLengthInitialized
+        !denseArrayLengthInitialized &&
+        !(expression.arguments.length === 1 && getNonnegativeIntegerLiteralCpp(expression.arguments[0]!) === 0)
       ) {
         emissionError(context, 'Array length construction is outside the dense flight-cpp array profile');
       }
@@ -14343,6 +14373,308 @@ function collectIrModuleArrayElementBindingIdsCpp(
   return result;
 }
 
+// A sized JavaScript Array begins sparse, while flight::Array is dense. One sound bridge is an
+// immediate sequential initializer: construct first so the length expression and RangeError occur in
+// source order, clear the unobservable holes, then append the values that the source writes at the
+// current length. This also preserves a final partial stride -- `i += 2` followed by writes at `i` and
+// `i + 1` grows an odd-sized JavaScript array by one, which a fixed dense allocation cannot model.
+function collectIrModuleDenseArraySequentialAppendPlansCpp(
+  module: Readonly<IrModule>,
+): ReadonlyMap<string, Readonly<CppDenseArraySequentialAppendPlan>> {
+  const immutableBindingIds = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if ('binding' in variable && !variable.mutable) immutableBindingIds.add(variable.binding.id);
+    },
+  });
+  const result = new Map<string, Readonly<CppDenseArraySequentialAppendPlan>>();
+  const inspectStatements = (statements: readonly Readonly<IrStatement>[]): void => {
+    statements.forEach((statement, statementIndex) => {
+      if (statement.kind === 'variable') {
+        for (const variable of statement.declarations) {
+          if (!('binding' in variable) || !variable.initializer) continue;
+          const length = getDirectDenseArrayLengthExpressionCpp(variable.initializer);
+          const loop = statements[statementIndex + 1];
+          const plan =
+            length && loop
+              ? getDenseArraySequentialAppendPlanCpp(variable.binding.id, length, loop, immutableBindingIds)
+              : undefined;
+          if (plan) result.set(variable.binding.id, plan);
+        }
+      }
+      switch (statement.kind) {
+        case 'block':
+          inspectStatements(statement.statements);
+          break;
+        case 'do':
+        case 'for':
+        case 'forIn':
+        case 'forOf':
+        case 'while':
+          inspectStatements(statement.body.kind === 'block' ? statement.body.statements : [statement.body]);
+          break;
+        case 'if':
+          inspectStatements(
+            statement.consequent.kind === 'block' ? statement.consequent.statements : [statement.consequent],
+          );
+          if (statement.otherwise) {
+            inspectStatements(
+              statement.otherwise.kind === 'block' ? statement.otherwise.statements : [statement.otherwise],
+            );
+          }
+          break;
+        case 'switch':
+          for (const switchCase of statement.cases) inspectStatements(switchCase.statements);
+          break;
+        case 'try':
+          inspectStatements(statement.tryBody.kind === 'block' ? statement.tryBody.statements : [statement.tryBody]);
+          if (statement.catchClause) {
+            inspectStatements(
+              statement.catchClause.body.kind === 'block'
+                ? statement.catchClause.body.statements
+                : [statement.catchClause.body],
+            );
+          }
+          if (statement.finallyBody) {
+            inspectStatements(
+              statement.finallyBody.kind === 'block' ? statement.finallyBody.statements : [statement.finallyBody],
+            );
+          }
+          break;
+        case 'break':
+        case 'continue':
+        case 'expression':
+        case 'return':
+        case 'throw':
+          break;
+      }
+    });
+  };
+  for (const declaration of module.declarations) {
+    if (declaration.kind === 'function') inspectStatements(declaration.body);
+    if (declaration.kind === 'class') {
+      if (declaration.classConstructor) inspectStatements(declaration.classConstructor.body);
+      for (const method of declaration.methods) inspectStatements(method.body);
+    }
+  }
+  return result;
+}
+
+function getDirectDenseArrayLengthExpressionCpp(
+  expression: Readonly<IrExpression>,
+): Readonly<IrExpression> | undefined {
+  return expression.kind === 'new' &&
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'ambient' &&
+    expression.callee.reference.name === 'Array' &&
+    expression.arguments.length === 1
+    ? expression.arguments[0]
+    : undefined;
+}
+
+function getDenseArraySequentialAppendPlanCpp(
+  arrayBindingId: string,
+  length: Readonly<IrExpression>,
+  statement: Readonly<IrStatement>,
+  immutableBindingIds: ReadonlySet<string>,
+): Readonly<CppDenseArraySequentialAppendPlan> | undefined {
+  if (statement.kind !== 'for' || !Array.isArray(statement.initializer) || statement.initializer.length !== 1) {
+    return undefined;
+  }
+  const index = statement.initializer[0]!;
+  const condition = statement.condition;
+  if (
+    !('binding' in index) ||
+    !index.initializer ||
+    getNonnegativeIntegerLiteralCpp(index.initializer) !== 0 ||
+    !condition ||
+    condition.kind !== 'binary' ||
+    condition.operator !== '<' ||
+    !isIrBindingIdentifierCpp(condition.left, index.binding.id) ||
+    !isEquivalentDenseArraySequentialBoundCpp(length, condition.right) ||
+    !isStableDenseArraySequentialBoundCpp(condition.right, immutableBindingIds)
+  ) {
+    return undefined;
+  }
+  const step = getDenseArraySequentialLoopStepCpp(statement.increment, index.binding.id);
+  if (step === undefined) return undefined;
+  const body = statement.body.kind === 'block' ? statement.body.statements : [statement.body];
+  const propertyBoundObject = getDenseArrayLengthPropertyObjectBindingIdCpp(condition.right);
+  const freshBodyArrayBindingIds = collectDenseArrayFreshBindingIdsCpp(body);
+  let expectedOffset = 0;
+  for (const bodyStatement of body) {
+    const offset = getDenseArraySequentialAppendStatementOffsetCpp(bodyStatement, arrayBindingId, index.binding.id);
+    if (offset !== undefined) {
+      if (offset !== expectedOffset || offset >= step) return undefined;
+      expectedOffset += 1;
+      continue;
+    }
+    if (
+      doesIrStatementReferenceBindingCpp(bodyStatement, arrayBindingId) ||
+      doesIrStatementContainLoopControlCpp(bodyStatement) ||
+      (propertyBoundObject &&
+        doesIrStatementInvalidateDenseArrayPropertyBoundCpp(
+          bodyStatement,
+          propertyBoundObject,
+          freshBodyArrayBindingIds,
+        ))
+    ) {
+      return undefined;
+    }
+  }
+  if (expectedOffset !== step) return undefined;
+  return { indexBindingId: index.binding.id, offsets: new Set(Array.from({ length: step }, (_, offset) => offset)) };
+}
+
+function collectDenseArrayFreshBindingIdsCpp(statements: readonly Readonly<IrStatement>[]): ReadonlySet<string> {
+  const result = new Set<string>();
+  for (const statement of statements) {
+    analyzeIrStatementSubtreeTraversal(statement, {
+      variable(variable) {
+        if (
+          'binding' in variable &&
+          variable.initializer &&
+          getDirectDenseArrayLengthExpressionCpp(variable.initializer)
+        ) {
+          result.add(variable.binding.id);
+        }
+      },
+    });
+  }
+  return result;
+}
+
+function getDenseArraySequentialLoopStepCpp(
+  increment: Readonly<IrExpression> | undefined,
+  indexBindingId: string,
+): number | undefined {
+  if (
+    increment?.kind === 'unary' &&
+    increment.operator === '++' &&
+    isIrBindingIdentifierCpp(increment.operand, indexBindingId)
+  ) {
+    return 1;
+  }
+  return increment?.kind === 'assignment' &&
+    increment.operator === '+=' &&
+    isIrBindingIdentifierCpp(increment.left, indexBindingId)
+    ? getPositiveIntegerLiteralCpp(increment.right)
+    : undefined;
+}
+
+function getDenseArraySequentialAppendStatementOffsetCpp(
+  statement: Readonly<IrStatement>,
+  arrayBindingId: string,
+  indexBindingId: string,
+): number | undefined {
+  if (
+    statement.kind !== 'expression' ||
+    statement.expression.kind !== 'assignment' ||
+    statement.expression.operator !== '=' ||
+    statement.expression.left.kind !== 'element' ||
+    !isIrBindingIdentifierCpp(statement.expression.left.object, arrayBindingId) ||
+    doesIrExpressionReferenceBindingCpp(statement.expression.right, arrayBindingId)
+  ) {
+    return undefined;
+  }
+  return getDenseArraySequentialWriteOffsetCpp(statement.expression.left.index, indexBindingId);
+}
+
+function getDenseArraySequentialWriteOffsetCpp(
+  expression: Readonly<IrExpression>,
+  indexBindingId: string,
+): number | undefined {
+  if (isIrBindingIdentifierCpp(expression, indexBindingId)) return 0;
+  return expression.kind === 'binary' &&
+    expression.operator === '+' &&
+    isIrBindingIdentifierCpp(expression.left, indexBindingId)
+    ? getNonnegativeIntegerLiteralCpp(expression.right)
+    : undefined;
+}
+
+function isStableDenseArraySequentialBoundCpp(
+  expression: Readonly<IrExpression>,
+  immutableBindingIds: ReadonlySet<string>,
+): boolean {
+  if (getNonnegativeIntegerLiteralCpp(expression) !== undefined) return true;
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    immutableBindingIds.has(expression.reference.binding.id)
+  ) {
+    return true;
+  }
+  const objectBindingId = getDenseArrayLengthPropertyObjectBindingIdCpp(expression);
+  return objectBindingId !== undefined && immutableBindingIds.has(objectBindingId);
+}
+
+function isEquivalentDenseArraySequentialBoundCpp(
+  left: Readonly<IrExpression>,
+  right: Readonly<IrExpression>,
+): boolean {
+  if (isEquivalentDenseArrayBoundCpp(left, right)) return true;
+  const leftObject = getDenseArrayLengthPropertyObjectBindingIdCpp(left);
+  const rightObject = getDenseArrayLengthPropertyObjectBindingIdCpp(right);
+  return leftObject !== undefined && leftObject === rightObject;
+}
+
+function getDenseArrayLengthPropertyObjectBindingIdCpp(expression: Readonly<IrExpression>): string | undefined {
+  return expression.kind === 'property' &&
+    expression.member?.receiver === 'array' &&
+    expression.member.name === 'length' &&
+    expression.object.kind === 'identifier' &&
+    expression.object.reference.kind === 'binding'
+    ? expression.object.reference.binding.id
+    : undefined;
+}
+
+function doesIrStatementInvalidateDenseArrayPropertyBoundCpp(
+  statement: Readonly<IrStatement>,
+  objectBindingId: string,
+  freshArrayBindingIds: ReadonlySet<string>,
+): boolean {
+  let invalidates = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(expression) {
+      if (expression.kind === 'call') invalidates = true;
+      if (expression.kind === 'assignment' && doesIrExpressionReferenceBindingCpp(expression.left, objectBindingId)) {
+        invalidates = true;
+      }
+      if (
+        expression.kind === 'assignment' &&
+        (expression.left.kind === 'element' || expression.left.kind === 'property') &&
+        !(
+          expression.left.object.kind === 'identifier' &&
+          expression.left.object.reference.kind === 'binding' &&
+          freshArrayBindingIds.has(expression.left.object.reference.binding.id)
+        )
+      ) {
+        invalidates = true;
+      }
+      if (
+        expression.kind === 'unary' &&
+        (expression.operator === '++' || expression.operator === '--') &&
+        (expression.operand.kind === 'element' || expression.operand.kind === 'property')
+      ) {
+        invalidates = true;
+      }
+      return invalidates ? false : undefined;
+    },
+    variable(variable) {
+      if (
+        'binding' in variable &&
+        variable.initializer &&
+        isIrBindingIdentifierCpp(variable.initializer, objectBindingId)
+      ) {
+        invalidates = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return invalidates;
+}
+
 // A sized JavaScript Array begins sparse, while flight::Array is dense. Permit the sized form only
 // when the source itself proves that every slot is overwritten by contiguous writes before the array
 // can be observed. The proof is intentionally narrow: it covers lookup-table builders without turning
@@ -14955,6 +15287,29 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
     return emitIdentifierReference(expression.reference, context);
   }
   return emitExpression(expression, context);
+}
+
+function emitCppDenseArraySequentialAppendAssignmentCpp(
+  expression: Readonly<IrExpression>,
+  right: string,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.kind !== 'element' ||
+    expression.object.kind !== 'identifier' ||
+    expression.object.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const plan = context.denseArraySequentialAppendPlans.get(expression.object.reference.binding.id);
+  if (!plan) return undefined;
+  const offset = getDenseArraySequentialWriteOffsetCpp(expression.index, plan.indexBindingId);
+  if (offset === undefined || !plan.offsets.has(offset)) return undefined;
+  const receiver = getGeneratedTargetName('sequentialAppendReceiver', context);
+  const index = getGeneratedTargetName('sequentialAppendIndex', context);
+  const value = getGeneratedTargetName('sequentialAppendValue', context);
+  context.includes.add('stdexcept');
+  return `([&]() { auto&& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${index} = ${emitExpression(expression.index, context)}; if (${index} != static_cast<double>(${receiver}.size())) throw std::range_error("proven sequential Array write did not append at its current length"); const auto ${value} = ${right}; ${receiver}.push(${value}); return ${value}; }())`;
 }
 
 function getCppVariantIndexedReceiverCpp(
