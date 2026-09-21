@@ -15009,6 +15009,30 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('does not invent absence for a present scalar conditional supplied to an optional ambient parameter', () => {
+    const result = lower(
+      'ambient-optional-scalar-conditional.ts',
+      `export function read(value: string, decimal: boolean): number {
+         return parseInt(value, decimal ? 10 : 16);
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain('return flight::parse_int(value, (decimal ? 10.0 : 16.0))');
+    expect(emitted).not.toContain('std::optional<flight::Any>');
+
+    const carrier = lower(
+      'any-optional-scalar-conditional.ts',
+      `function accept(value?: any): void { value; }
+       export function choose(decimal: boolean): void { accept(decimal ? 10 : 16); }`,
+    );
+    expect(carrier.diagnostics).toEqual([]);
+    const carrierOutput = emitIrModuleCpp(carrier.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(carrierOutput).toContain('void accept(std::optional<flight::Any> value = std::nullopt)');
+    expect(carrierOutput).toContain('accept((decimal ? 10.0 : 16.0))');
+  });
+
   it('emits try-catch return detection through if-else branches', () => {
     const result = lower(
       'try-if-return.ts',

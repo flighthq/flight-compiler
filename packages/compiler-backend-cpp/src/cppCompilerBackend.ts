@@ -13079,14 +13079,24 @@ function getIrInvocationArgumentExpectedTypeCpp(
   ].find((argument) => argument.position === index);
   const parameterType = provided?.parameterType;
   const argument = expression.arguments[index];
-  if (!parameterType || !optionalParameters?.optional.includes(index) || argument?.kind !== 'conditional') {
+  const argumentType = provided?.argumentType;
+  const argumentIsClosedPresentScalar =
+    argumentType?.kind === 'literal' ||
+    (argumentType?.kind === 'primitive' && argumentType.name !== 'bigint' && argumentType.name !== 'void');
+  if (
+    !parameterType ||
+    !optionalParameters?.optional.includes(index) ||
+    argument?.kind !== 'conditional' ||
+    argumentIsClosedPresentScalar
+  ) {
     return parameterType;
   }
   // The semantic invocation records an optional parameter's declared value type separately from its
   // optional bit. C++ can implicitly lift an ordinary supplied value into that parameter's
-  // std::optional, but a conditional has to choose one type for BOTH arms first. Restore the absent
-  // alternative only there, so both arms are constructed through the same union plan instead of
-  // spelling `std::nullopt` beside a bare present value.
+  // std::optional. A conditional needs an explicit common carrier only when its type evidence does
+  // not prove one closed, present scalar domain; otherwise adding absence invents a source branch
+  // and can box the value into an ABI the resolved call does not accept. Keep unknown, structural,
+  // collection, open-generic, and absent-bearing conditionals on the checked union path.
   return createIrTypeEvidenceUnionCpp([parameterType, { kind: 'undefined' }]);
 }
 
