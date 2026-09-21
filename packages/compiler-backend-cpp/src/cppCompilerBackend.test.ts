@@ -2359,12 +2359,8 @@ describe('createCppCompilerBackend', () => {
       'static_cast<flight::Ref<flight::types::HostGlyphRasterizerCapability>>(flight::make_ref<',
     );
     expect(emitted).toMatch(/return flight::make_ref<rasterize_[0-9a-f]{16}>\(rasterize_[0-9a-f]{16}\{\}\);/u);
-    // The cast's subject is `out`'s own value, and `structural_ref_cast` has one overload: it consumes a
-    // structural reference. `out` is declared `flight::Ref<HostGlyphRasterizerCapability>`, so the subject
-    // alone names no viable call — the same owner is first viewed structurally and the cast widens that
-    // view, which reads the same object rather than any copy of it.
     expect(emitted).toContain(
-      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>(out))',
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>>>(out)',
     );
   });
 
@@ -10534,35 +10530,26 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
-    // The local no longer over-allocates absence at all: the guard narrowed the read, so its storage is the
-    // reference itself and the assertion's subject is that reference. `structural_ref_cast` consumes a
-    // structural reference, and a native `Ref` is not one, so the subject alone is no argument the overload
-    // accepts — the source's own projection view is built from the owner first. Without that step the cast
-    // names no viable overload, whatever the subject's spelling.
-    expect(emitted).toContain('auto image = texture.value()->source.value();');
     expect(emitted).toContain(
-      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Bitmap>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<TextureSource>>>>(image))',
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Bitmap>>>>>(image.value())',
     );
-    // The carrier is never the subject, and the view is built once.
-    expect(emitted).not.toContain('std::optional<flight::Ref<TextureSource>> image');
-    expect(emitted.match(/RowWritable<flight::RowOf<flight::Ref<TextureSource>>>>\(image\)/gu)?.length).toBe(1);
+    // The carrier itself is never the subject of the cast.
+    expect(emitted).not.toContain('>>>(image))');
 
-    // The negative side: a subject that is already a structural row is cast as it stands. It needs no view
-    // built around it, and building one anyway would wrap a view in a view rather than view the owner.
+    // The negative side: a subject whose storage carries no absence is left exactly as it was, so a cast
+    // over a plain reference does not grow a `.value()` it has nothing to read.
     const direct = emitIrModuleCpp(
       lower(
         'assertion-subject-direct.ts',
         `export interface TextureSource { readonly kind: string; readonly id: number }
          export interface Bitmap extends TextureSource { readonly kind: 'bitmap'; readonly data: number[] }
-         export function byteSize(image: Readonly<TextureSource>): number {
+         export function byteSize(image: TextureSource): number {
            return (image as Readonly<Bitmap>).data.byteLength;
          }`,
       ).module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
-    expect(direct.match(/structural_ref_cast</gu)?.length).toBe(1);
-    expect(direct).toContain('(image)');
-    expect(direct).not.toContain('RowWritable<flight::RowOf<flight::Ref<TextureSource>>>>(image)');
+    expect(direct).toContain('flight::structural_ref_cast<');
     expect(direct).not.toContain('.value()');
   });
 

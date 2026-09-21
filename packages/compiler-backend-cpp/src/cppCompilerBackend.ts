@@ -3035,7 +3035,6 @@ function emitExpression(
         if (expression.expression.kind === 'object') {
           return emitExpression(expression.expression, context, expression.type);
         }
-        const subject = emitCppAssertionSubjectCpp(expression.expression, context);
         const structuralSourceObject = structuralSource
           ? getCppStructuralRowObjectTypeCpp(structuralSource)
           : undefined;
@@ -3043,24 +3042,12 @@ function emitExpression(
           structuralSourceObject &&
           emitType(structuralSourceObject, context) === emitType(expression.type, context)
         ) {
-          return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${subject})`;
+          return `flight::structural_ref_cast<${emitType(expression.type, context)}>(${emitCppAssertionSubjectCpp(expression.expression, context)})`;
         }
         const target = structuralProjectionTarget
           ? emitCppStructuralRowReferenceTypeCpp(structuralProjectionTarget, context)
           : emitType(expression.type, context);
-        // `structural_ref_cast` takes a structural reference, and a cast can only view a value that is one.
-        // A source that is not itself a structural row is a native reference — a declared interface whose
-        // C++ storage is the runtime's `Ref` — and the subject alone is then no argument that overload
-        // accepts. The source's own projection view is built from that owner first, exactly as a value
-        // conversion between the same pair of types does, so the cast views the same object the source
-        // named rather than a carrier built around it.
-        const sourceProjection =
-          !structuralSource && structuralSourceType
-            ? getCppStructuralProjectionRowCpp(structuralSourceType, context)
-            : undefined;
-        return `flight::structural_ref_cast<${target}>(${
-          sourceProjection ? `${emitCppStructuralRowReferenceTypeCpp(sourceProjection, context)}(${subject})` : subject
-        })`;
+        return `flight::structural_ref_cast<${target}>(${emitCppAssertionSubjectCpp(expression.expression, context)})`;
       }
       if (structuralSource && getCppRuntimeProfile(context.options) === 'flight-cpp' && structuralSourceType) {
         const targetPlan = context.referenceRepresentationPlanner.plan(expression.type, context.module);
