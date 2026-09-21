@@ -11286,6 +11286,43 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('std::get<flight::Ref<flight::types::Texture2D>>');
   });
 
+  it('answers a tag over direct, chained and duplicate unions, and leaves absence to the narrowing lane', () => {
+    // The rule reads the union's leaves, so an alias chain reaches the same answer as a direct union, and
+    // a binding whose absence the narrowing lane owns is left to it rather than answered here.
+    const emitCase = (body: string, preamble = '') =>
+      emitIrModuleCpp(lower('typeofDomains.ts', `${preamble}\n${body}`).module, { runtimeProfile: 'flight-cpp' })
+        .contents;
+    // An inline union is answered by the lowering's own member test, which names the alternative's index;
+    // an alias reaches this rule instead, because the lowering cannot see the member through it. Both
+    // select the same alternative, and this control is that neither refuses.
+    const direct = emitCase(
+      `export function check(value: string | number | boolean): boolean { return typeof value === 'string'; }`,
+    );
+    expect(direct).toMatch(/value\.index\(\) == \d+/u);
+    const chained = emitCase(
+      `export function check(value: Outer | boolean): boolean { return typeof value === 'number'; }`,
+      `export type Inner = string | number;
+       export type Outer = Inner;`,
+    );
+    expect(chained).toMatch(/holds_alternative<double>\(value\)|value\.index\(\) == \d+/u);
+    // Two members reporting the same tag cannot be told apart by the tag, so the test is not this rule's
+    // to answer.
+    expect(() =>
+      emitCase(
+        `interface Left { readonly l: number }
+         interface Right { readonly r: number }
+         export function check(value: Left | Right | boolean): boolean { return typeof value === 'object'; }`,
+      ),
+    ).toThrow();
+    // A callable-or-absent binding is the narrowing lane's: its storage carries absence, so this rule
+    // steps aside and the presence answer stands.
+    const callable = emitCase(
+      `export function check(value: (() => void) | undefined): boolean { return typeof value === 'function'; }`,
+    );
+    expect(callable).toContain('has_value()');
+    expect(callable).not.toContain('holds_alternative');
+  });
+
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
     // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
     // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the

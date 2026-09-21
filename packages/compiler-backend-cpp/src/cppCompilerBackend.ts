@@ -8589,10 +8589,18 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
   // absent where the element's type carries no absence, and an alternative test would ask a cell that
   // need not exist. Element reads keep the lanes that already answer them -- the closed-key lane for a
   // literal key, and a refusal for a dynamic one.
-  // An identifier binding is answered by the narrowing lane, which already reads a guarded local as the
-  // value its evidence proves; answering it here would displace that and change an emission that is not
-  // this rule's to change.
-  if (comparison.operand.kind === 'identifier') return undefined;
+  // A binding whose absence the narrowing lane owns is left to it: it already reads a guarded local as
+  // the value its evidence proves, and answering here would displace that. A binding whose storage is a
+  // variant of value alternatives has no absence for that lane to answer -- refusing it would leave the
+  // tag question to the variant guard, which refuses precisely because nobody proved the member test.
+  // This rule is that proof, so it answers those.
+  if (
+    comparison.operand.kind === 'identifier' &&
+    comparison.operand.reference.kind === 'binding' &&
+    hasCppAbsenceStorageCpp(comparison.operand, context)
+  ) {
+    return undefined;
+  }
   if (comparison.operand.kind === 'element') return undefined;
   const operandType = getCppNullishComparisonOperandTypeCpp(comparison.operand, context);
   const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
