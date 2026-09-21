@@ -9771,6 +9771,41 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('defaults an optional call result instead of dropping the fallback as a tautology', () => {
+    // `f?.()` is `undefined` when the callee is missing, whatever the callee's return says, so the `??`
+    // fallback is reachable and must be emitted. The call's type evidence reports only the callee's return,
+    // so a rule that keys on the declared type alone reads the coalesce as a tautology and drops the
+    // default — leaving `optional<double>` where the source has a `number`, which no ternary branch can
+    // meet. The positive case pins the default; the negative case pins that the tautology rule still
+    // applies to a call that genuinely cannot be absent.
+    const optional = emitIrModuleCpp(
+      lower(
+        'optional-call-default.ts',
+        `export interface HostVideoCapability { readonly getDuration?: (element: number) => number }
+         export function videoDuration(hostVideo: HostVideoCapability, element: number | null): number {
+           return element !== null ? (hostVideo.getDuration?.(element) ?? 0) : 0;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(optional).toContain('}()).value_or(0.0) : 0.0');
+
+    const required = emitIrModuleCpp(
+      lower(
+        'required-call-default.ts',
+        `function measure(element: number): number { return element; }
+         export function size(element: number | null): number {
+           return element !== null ? (measure(element) ?? 0) : 0;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    // A call that cannot be absent answers the test at compile time, so the fallback really is
+    // unreachable and no default is emitted.
+    expect(required).toContain('measure(element.value())');
+    expect(required).not.toContain('value_or(0.0)');
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',

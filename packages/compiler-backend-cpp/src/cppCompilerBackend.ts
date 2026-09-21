@@ -2406,10 +2406,20 @@ function emitExpression(
           getIrExpressionTypeEvidenceCpp(expression.left, context);
         const union = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
         const leftUsesOptionalStorage = hasCppAbsenceStorageCpp(expression.left, context);
+        // A left whose type excludes absence answers the test at compile time, so the coalesce is the
+        // tautology the source wrote and the fallback is unreachable. An OPTIONAL CALL is the exception:
+        // `f?.()` is `undefined` when the callee is missing whatever the callee's return says, and the
+        // call's type evidence reports only that return. Treating it as absence-free dropped the fallback
+        // and left `optional<double>` where the source has a `number` — so the default is kept, and the
+        // optional-call result is defaulted below like any other absent-capable left.
+        const leftIsOptionalCall =
+          expression.left.kind === 'call' &&
+          (expression.left.optional === true || expression.left.semantics.optionalChain !== undefined);
         if (
           leftType &&
           !union &&
           !leftUsesOptionalStorage &&
+          !leftIsOptionalCall &&
           leftType.kind !== 'null' &&
           leftType.kind !== 'undefined'
         ) {
