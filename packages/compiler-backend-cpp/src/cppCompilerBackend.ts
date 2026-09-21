@@ -16924,14 +16924,57 @@ function emitCppReferenceIdentityComparison(
   context: EmitContext,
 ): string | undefined {
   if (!leftType || !rightType) return undefined;
-  const leftStructural = context.referenceRepresentationPlanner.resolveStructuralRow(leftType, context.module);
-  const rightStructural = context.referenceRepresentationPlanner.resolveStructuralRow(rightType, context.module);
+  const erasedIdentityOperand = (
+    operand: Readonly<IrExpression>,
+    type: Readonly<IrType>,
+  ): Readonly<{ erased: boolean; expression: Readonly<IrExpression>; type: Readonly<IrType> }> => {
+    if (operand.kind !== 'cast' || !isCppErasedDynamicValueTypeCpp(operand.type)) {
+      return { erased: false, expression: operand, type };
+    }
+    const sourceType = getIrExpressionTypeEvidenceCpp(operand.expression, context);
+    return sourceType
+      ? { erased: true, expression: operand.expression, type: sourceType }
+      : { erased: false, expression: operand, type };
+  };
+  const leftOperand = erasedIdentityOperand(expression.left, leftType);
+  const rightOperand = erasedIdentityOperand(expression.right, rightType);
+  const leftStructural = context.referenceRepresentationPlanner.resolveStructuralRow(leftOperand.type, context.module);
+  const rightStructural = context.referenceRepresentationPlanner.resolveStructuralRow(
+    rightOperand.type,
+    context.module,
+  );
   if (Boolean(leftStructural) === Boolean(rightStructural)) return undefined;
-  const structuralType = leftStructural ? leftType : rightType;
-  const referenceType = leftStructural ? rightType : leftType;
+  const structuralType = leftStructural ? leftOperand.type : rightOperand.type;
+  const referenceType = leftStructural ? rightOperand.type : leftOperand.type;
   if (!hasFlightReferenceRepresentationCpp(referenceType, context)) return undefined;
-  const structuralExpression = leftStructural ? expression.left : expression.right;
-  const referenceExpression = leftStructural ? expression.right : expression.left;
+  if (leftOperand.erased || rightOperand.erased) {
+    // Erasure in an equality expression does not change JavaScript reference identity. Avoid
+    // materializing `Any` only when BOTH sides explicitly erased their types and the row retains the
+    // exact nominal owner compared on the other side. A lookalike row, a derived owner, or a one-sided
+    // erasure stays on the fail-closed erased-value path.
+    if (!leftOperand.erased || !rightOperand.erased) return undefined;
+    const structuralObject = getCppStructuralRowObjectTypeCpp(leftStructural ?? rightStructural!);
+    if (
+      !structuralObject ||
+      normalizeCompilerStructuralValueCanonical(structuralObject) !==
+        normalizeCompilerStructuralValueCanonical(referenceType)
+    ) {
+      return undefined;
+    }
+    const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+    if (emitType(structuralObject, isolatedContext) !== emitType(referenceType, isolatedContext)) return undefined;
+    const left = getGeneratedTargetName('referenceIdentityLeft', context);
+    const right = getGeneratedTargetName('referenceIdentityRight', context);
+    const structural = leftStructural ? left : right;
+    const reference = leftStructural ? right : left;
+    const referenceAsStructural = `${emitType(structuralType, context)}(${reference})`;
+    const comparedLeft = leftStructural ? structural : referenceAsStructural;
+    const comparedRight = leftStructural ? referenceAsStructural : structural;
+    const op = emitBinaryOperator(expression.operator, expression.semantics, context);
+    return `([&]() { auto ${left} = ${emitExpression(leftOperand.expression, context)}; auto ${right} = ${emitExpression(rightOperand.expression, context)}; return (${comparedLeft} ${op} ${comparedRight}); }())`;
+  }
+  const structuralExpression = leftStructural ? leftOperand.expression : rightOperand.expression;
+  const referenceExpression = leftStructural ? rightOperand.expression : leftOperand.expression;
   const structural = emitExpression(structuralExpression, context);
   const referenceAsStructural = `${emitType(structuralType, context)}(${emitExpression(referenceExpression, context)})`;
   const left = leftStructural ? structural : referenceAsStructural;

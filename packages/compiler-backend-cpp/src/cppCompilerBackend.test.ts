@@ -516,6 +516,40 @@ describe('createCppCompilerBackend', () => {
     expect(structuralFailure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
   });
 
+  it('compares an exactly owned structural row through explicit erased reference identity', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'erased-structural-reference-identity.ts',
+        `interface Widget { value: number }
+         export function same(value: Widget, view: Readonly<Widget>): boolean {
+           return (value as unknown) === (view as unknown);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('auto reference_identity_left = value; auto reference_identity_right = view;');
+    expect(emitted).toContain(
+      'flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Widget>>>>(reference_identity_left) == reference_identity_right',
+    );
+    expect(emitted).not.toContain('flight::Any');
+
+    const lookalikeFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'erased-structural-reference-lookalike.ts',
+          `interface Widget { value: number }
+           interface Lookalike { value: number }
+           export function same(value: Lookalike, view: Readonly<Widget>): boolean {
+             return (value as unknown) === (view as unknown);
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(lookalikeFailure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+  });
+
   it('refuses to recover a host reference from an erased Flight object', () => {
     const result = lower(
       'erased-host-reference.ts',
