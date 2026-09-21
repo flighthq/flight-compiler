@@ -6316,6 +6316,139 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('flight::Symbol(std::variant');
   });
 
+  it('binds canonical computed symbols to native members without merging equal descriptions', () => {
+    const result = lower(
+      'symbol-bindings.ts',
+      `interface Runtime { ready: boolean }
+       const FirstRuntimeKey: unique symbol = Symbol('Runtime');
+       const SecondRuntimeKey: unique symbol = Symbol('Runtime');
+       export interface State {
+         [FirstRuntimeKey]?: Runtime;
+         [SecondRuntimeKey]: Runtime | undefined;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('struct GeneratedSymbolBindings<flighthq_math::State>');
+    expect(emitted).toContain('flighthq_math::first_runtime_key,');
+    expect(emitted).toContain('flighthq_math::second_runtime_key,');
+    expect(emitted.match(/owner\.bind_symbol\(/gu)).toHaveLength(2);
+    expect(emitted).toContain('value.first_runtime_key.has_value()');
+    expect(emitted).toContain('value.second_runtime_key.has_value()');
+    expect(emitted).not.toContain('Symbol::for_key(flight::String("Runtime"))');
+  });
+
+  it('emits the exact Scene3D resolver runtime key binding', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Entity',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Entity.ts',
+            `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+             export interface EntityRuntime { alive: boolean }
+             export interface Entity { [EntityRuntimeKey]?: EntityRuntime }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Scene3DResources.ts',
+            `import type { Entity } from './Entity';
+             export interface Scene3DResourceResolver extends Entity { ready: boolean }
+             export interface Scene3DResourceResolverRuntime { loaded: boolean }
+             export const Scene3DResourceResolverRuntimeKey: unique symbol =
+               Symbol('Scene3DResourceResolverRuntime');
+             export interface Scene3DResourceResolverWithRuntime extends Scene3DResourceResolver {
+               [Scene3DResourceResolverRuntimeKey]: Scene3DResourceResolverRuntime;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: {
+        packageTargets: {
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(results[1]!.module)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('struct GeneratedSymbolBindings<flight::types::Scene3DResourceResolverWithRuntime>');
+    expect(emitted).toContain('flight::types::scene3_dresource_resolver_runtime_key,');
+    expect(emitted).toContain('flight::types::entity_runtime_key,');
+    expect(emitted).toContain(
+      '[object]() -> decltype(auto) { return (object->scene3_dresource_resolver_runtime_key); }',
+    );
+  });
+
+  it('refuses computed-symbol bindings without a runtime declaration', () => {
+    const result = lower(
+      'unreferencable-symbol-binding.ts',
+      `declare const RuntimeKey: unique symbol;
+       export interface State { [RuntimeKey]: number }`,
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      expect.objectContaining({ rule: 'cpp-generated-symbol-binding-key-unreferencable' }),
+    );
+  });
+
+  it('refuses a computed-symbol key with more than one declaration owner', () => {
+    const module = lower(
+      'ambiguous-symbol-owner.ts',
+      `const RuntimeKey: unique symbol = Symbol('Runtime');
+       export interface State { [RuntimeKey]: number }`,
+    ).module;
+    const duplicate = {
+      ...structuredClone(module),
+      packageName: '@flighthq/duplicate',
+      source: 'packages/duplicate/src/ambiguous-symbol-owner.ts',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      modules: [module, duplicate],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    expect(() => session.emitModule(module)).toThrow(
+      expect.objectContaining({ rule: 'cpp-generated-symbol-binding-key-ambiguous' }),
+    );
+  });
+
+  it('refuses distinct computed symbols that normalize to one native member', () => {
+    const result = lower(
+      'ambiguous-symbol-binding.ts',
+      `const RuntimeKey: unique symbol = Symbol('first');
+       const runtime_key: unique symbol = Symbol('second');
+       export interface State { [RuntimeKey]: number; [runtime_key]: number }`,
+    );
+
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      expect.objectContaining({ rule: 'cpp-generated-symbol-binding-member-ambiguous' }),
+    );
+  });
+
   it('retains exact mutable storage for Symbol member calls and construction', () => {
     const result = lower(
       'symbol-call-results.ts',

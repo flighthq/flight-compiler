@@ -247,6 +247,16 @@ interface CppExternalCallResultPresencePlan {
   readonly immutable: boolean;
 }
 
+interface CppGeneratedSymbolBindingMember {
+  readonly key: string;
+  readonly member: string;
+}
+
+interface CppGeneratedSymbolBindingPlan {
+  readonly members: readonly CppGeneratedSymbolBindingMember[];
+  readonly object: string;
+}
+
 interface EmitContext {
   activeDependentCallablePackIds: ReadonlySet<string>;
   anonymousStructs: Map<string, AnonymousStruct>;
@@ -649,6 +659,7 @@ function emitIrModuleCppWithContext(
   const importedFunctionForwardDeclarations = emitCppImportedFunctionForwardDeclarations(context);
   const reexports = emitReexportsCpp(module, context);
   const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
+  const generatedSymbolBindings = emitCppGeneratedSymbolBindingsCpp(module, context);
   const importedForwardDeclarations = emitCppImportedForwardDeclarations(context);
   const earlyPublication =
     imports.length > 0
@@ -717,6 +728,9 @@ function emitIrModuleCppWithContext(
     lines.push('', ...declaration.lines);
   });
   lines.push('', `} // namespace ${namespaceName}`);
+  if (generatedSymbolBindings.length > 0) {
+    lines.push('', 'namespace flight::detail {', ...generatedSymbolBindings, '} // namespace flight::detail');
+  }
   const contents = lines.join('\n');
   if (getCppRuntimeProfile(options) === 'flight-cpp') {
     // This guard reads the assembled module, so it cannot say which declaration left the placeholder
@@ -1864,6 +1878,208 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   }
   lines.push('};');
   return lines;
+}
+
+function emitCppGeneratedSymbolBindingsCpp(module: Readonly<IrModule>, context: EmitContext): string[] {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return [];
+  const plans = module.declarations.flatMap((declaration): CppGeneratedSymbolBindingPlan[] => {
+    if (declaration.kind !== 'interface') return [];
+    const computedProperties = declaration.properties.filter(
+      (property) => property.computedKey && !isCppValuelessStructMemberCpp(property.type),
+    );
+    if (computedProperties.length === 0) return [];
+    const declarationContext = {
+      ...context,
+      currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+    };
+    if (isCppInterfaceRepresentationAliasCpp(declaration, module, declarationContext)) return [];
+    if (declaration.typeParameters.length > 0) {
+      emissionError(
+        declarationContext,
+        `computed-symbol members on generic interface ${declaration.binding.name} require a closed native object type`,
+        'cpp-generated-symbol-binding-generic-object',
+      );
+    }
+    const membersByTarget = new Map<string, string | undefined>();
+    const targetsByKey = new Map<string, string>();
+    const members: CppGeneratedSymbolBindingMember[] = [];
+    for (const property of declaration.properties) {
+      if (isCppValuelessStructMemberCpp(property.type)) continue;
+      const target = safeCppName(property.name);
+      const keyIdentity = property.computedKey
+        ? getCppGeneratedSymbolReferenceIdentityCpp(property.computedKey)
+        : undefined;
+      const existingKey = membersByTarget.get(target);
+      if (membersByTarget.has(target)) {
+        if (keyIdentity === undefined && existingKey === undefined) continue;
+        if (keyIdentity === existingKey) continue;
+        emissionError(
+          declarationContext,
+          `computed-symbol member ${property.name} shares C++ storage ${target} with a different property`,
+          'cpp-generated-symbol-binding-member-ambiguous',
+        );
+      }
+      membersByTarget.set(target, keyIdentity);
+      if (!property.computedKey) continue;
+      const key = getCppGeneratedSymbolReferenceCpp(property.computedKey, declarationContext);
+      const existingTarget = targetsByKey.get(key.identity);
+      if (existingTarget && existingTarget !== target) {
+        emissionError(
+          declarationContext,
+          `computed symbol ${property.name} names more than one C++ member`,
+          'cpp-generated-symbol-binding-member-ambiguous',
+        );
+      }
+      if (existingTarget) continue;
+      targetsByKey.set(key.identity, target);
+      members.push({ key: key.target, member: target });
+    }
+    if (members.length === 0) return [];
+    const namespace = getCppCompilerPackageNamespace(module.packageName, context.options.packageTargets);
+    const targetName =
+      context.targetNameMaps.get(getCppModuleIdentityKey(module))?.get(declaration.binding.id) ??
+      safeCppTypeName(declaration.binding.name);
+    return [{ members, object: `${namespace}::${targetName}` }];
+  });
+  return plans.flatMap((plan, index) => [
+    ...(index > 0 ? [''] : []),
+    'template <>',
+    `struct GeneratedSymbolBindings<${plan.object}> {`,
+    `  static void bind(RowOwner& owner, const std::shared_ptr<${plan.object}>& object) {`,
+    ...plan.members.flatMap(({ key, member }) => [
+      '    owner.bind_symbol(',
+      `        ${key},`,
+      `        [object]() -> decltype(auto) { return (object->${member}); },`,
+      `        [object]<typename Object = ${plan.object}>() -> bool {`,
+      '          auto& value = static_cast<Object&>(*object);',
+      `          if constexpr (requires { value.${member}.has_value(); })`,
+      `            return value.${member}.has_value();`,
+      '          else',
+      '            return true;',
+      '        });',
+    ]),
+    '  }',
+    '};',
+  ]);
+}
+
+function getCppGeneratedSymbolReferenceCpp(
+  reference: Readonly<IrValueNameReference>,
+  context: EmitContext,
+): Readonly<{ identity: string; target: string }> {
+  if (reference.kind === 'ambient' || reference.path.length > 0) {
+    emissionError(
+      context,
+      `computed-symbol member ${getCppComputedPropertySourceName(reference, context)} has no referencable declaration`,
+      'cpp-generated-symbol-binding-key-unreferencable',
+    );
+  }
+  let owner: CppValueBindingOwner | undefined;
+  let target: string | undefined;
+  if (reference.binding.kind === 'import') {
+    const importOwner = context.importBindingOwners.get(reference.binding.id);
+    if (!importOwner) {
+      emissionError(
+        context,
+        `computed-symbol member ${reference.binding.name} has no import owner`,
+        'cpp-generated-symbol-binding-key-unreferencable',
+      );
+    }
+    const ownerContext = importOwner.module === context.module ? context : { ...context, module: importOwner.module };
+    const targetModules = getCppResolvedImportModules(importOwner.specifier, ownerContext);
+    const candidates = targetModules.flatMap((targetModule) =>
+      getCppExportedValueBindingOwnersCpp(targetModule, importOwner.imported, context, new Set()),
+    );
+    const unique = new Map(
+      candidates.map((candidate) => [
+        `${getCppModuleIdentityKey(candidate.module)}\0${candidate.binding.id}`,
+        candidate,
+      ]),
+    );
+    if (unique.size !== 1) {
+      emissionError(
+        context,
+        `computed-symbol member ${reference.binding.name} requires one exported symbol declaration`,
+        unique.size > 1
+          ? 'cpp-generated-symbol-binding-key-ambiguous'
+          : 'cpp-generated-symbol-binding-key-unreferencable',
+      );
+    }
+    owner = [...unique.values()][0]!;
+    target = getCppImportedBindingTargetName(reference.binding.id, [], 'value', context);
+  } else {
+    const direct = context.directBindingOwners.get(reference.binding.id);
+    if (!direct || !('binding' in direct.declaration)) {
+      emissionError(
+        context,
+        `computed-symbol member ${reference.binding.name} has no unique declaration owner`,
+        direct === null
+          ? 'cpp-generated-symbol-binding-key-ambiguous'
+          : 'cpp-generated-symbol-binding-key-unreferencable',
+      );
+    }
+    owner = { binding: direct.declaration.binding, module: direct.module };
+    const namespace = getCppCompilerPackageNamespace(direct.module.packageName, context.options.packageTargets);
+    const targetName =
+      context.targetNameMaps.get(getCppModuleIdentityKey(direct.module))?.get(reference.binding.id) ??
+      safeCppName(reference.binding.name);
+    target = `${namespace}::${targetName}`;
+  }
+  if (!owner || !target) {
+    emissionError(
+      context,
+      `computed-symbol member ${reference.binding.name} has no emitted C++ identity`,
+      'cpp-generated-symbol-binding-key-unreferencable',
+    );
+  }
+  const declaration = owner.module.declarations.find(
+    (candidate) => 'binding' in candidate && candidate.binding.id === owner.binding.id,
+  );
+  if (
+    declaration?.kind !== 'variable' ||
+    !('binding' in declaration) ||
+    !isCppCanonicalGeneratedSymbolDeclarationCpp(declaration)
+  ) {
+    emissionError(
+      context,
+      `computed-symbol member ${reference.binding.name} requires a canonical const Symbol declaration`,
+      'cpp-generated-symbol-binding-key-unreferencable',
+    );
+  }
+  return {
+    identity: `${getCppModuleIdentityKey(owner.module)}\0${owner.binding.id}`,
+    target,
+  };
+}
+
+function getCppGeneratedSymbolReferenceIdentityCpp(reference: Readonly<IrValueNameReference>): string {
+  return reference.kind === 'ambient'
+    ? `ambient:${reference.name}`
+    : `binding:${reference.binding.id}:${reference.path.join('.')}`;
+}
+
+function isCppCanonicalGeneratedSymbolDeclarationCpp(declaration: Readonly<IrVariableDeclaration>): boolean {
+  if (
+    declaration.declarationKind !== 'const' ||
+    declaration.mutable ||
+    declaration.type?.kind !== 'primitive' ||
+    declaration.type.name !== 'symbol' ||
+    declaration.initializer?.kind !== 'call' ||
+    declaration.initializer.arguments.length !== 1 ||
+    declaration.initializer.arguments[0]?.kind !== 'literal' ||
+    typeof declaration.initializer.arguments[0].value !== 'string'
+  ) {
+    return false;
+  }
+  const callee = declaration.initializer.callee;
+  return (
+    (callee.kind === 'identifier' && callee.reference.kind === 'ambient' && callee.reference.name === 'Symbol') ||
+    (callee.kind === 'property' &&
+      callee.name === 'for' &&
+      callee.object.kind === 'identifier' &&
+      callee.object.reference.kind === 'ambient' &&
+      callee.object.reference.name === 'Symbol')
+  );
 }
 
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: EmitContext): string[] {
