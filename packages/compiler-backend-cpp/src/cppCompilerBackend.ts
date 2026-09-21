@@ -2591,6 +2591,8 @@ function emitExpression(
       if (inferredNullishComparison) return inferredNullishComparison;
       const ambientTypeofComparison = emitAmbientTypeofUndefinedComparisonCpp(expression, context);
       if (ambientTypeofComparison) return ambientTypeofComparison;
+      const typeofFunctionComparison = emitCppInferredOptionalTypeofFunctionComparisonCpp(expression, context);
+      if (typeofFunctionComparison) return typeofFunctionComparison;
       if (expression.operator === '??') {
         const leftType =
           getIrExpressionBindingTypeCpp(expression.left, context) ??
@@ -8238,6 +8240,79 @@ function emitNullishComparisonCpp(
     expression.operator === '===' || expression.operator === '!==',
     context,
   );
+}
+
+// `typeof X === 'function'` asks whether X holds a callable. When X's runtime type is a closed union
+// whose only member that is not absence is a callable, that is the question the presence machinery
+// already answers: an absent or null value is not a function, and there is no other value the operand
+// could hold, so "present" and "a function" are the same answer. The domain has to be closed AND have
+// exactly one non-absent member -- two callables, a callable beside a string, a primitive, an open
+// generic, or anything the emitter cannot close is a different question, and it is left to the lanes
+// that know it rather than approximated here. The test is the loose one on purpose: `typeof` reports
+// both `null` and `undefined` as something other than `function`, so an operand admitting both is
+// asked the nullish question, which is exactly the answer the source asked for.
+function emitCppInferredOptionalTypeofFunctionComparisonCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.operator !== '==' &&
+    expression.operator !== '===' &&
+    expression.operator !== '!=' &&
+    expression.operator !== '!=='
+  ) {
+    return undefined;
+  }
+  const operand = getCppTypeofFunctionComparisonOperandCpp(expression.left, expression.right);
+  if (!operand) return undefined;
+  const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
+  const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const values = union.types.filter((member) => member.kind !== 'undefined' && member.kind !== 'null');
+  const only = values[0];
+  if (values.length !== 1 || !only || !isCppCallableDomainTypeCpp(only, context)) return undefined;
+  // The literal is the callable, so the comparison asserts PRESENCE where the nullish lane's literal
+  // asserts absence: `typeof X === 'function'` is true when X holds a value, and `!==` when it does not.
+  return emitCppPresenceTestCpp(
+    operand,
+    'undefined',
+    expression.operator === '==' || expression.operator === '===',
+    false,
+    context,
+  );
+}
+
+// Whether a member of a closed domain is a callable. A callable reached through a type alias is the
+// same callable: the SDK writes `transform: ColorTransformFunction`, and that name denotes the arrow
+// type. The alias is followed to what it denotes, with a bound so a cycle in an alias chain cannot loop
+// here -- and anything a bounded walk does not reach is not proven, which leaves the question to the
+// lanes that know it rather than answering it here.
+function isCppCallableDomainTypeCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  let current = type;
+  for (let depth = 0; depth < 8; depth++) {
+    if (current.kind === 'function') return true;
+    if (current.kind !== 'named') return false;
+    const target = resolveCppTypeAliasTarget(current, context);
+    if (!target) return false;
+    current = target;
+  }
+  return false;
+}
+
+// The operand of `typeof X === 'function'`, when that is the comparison: one side a `typeof` of
+// anything and the other the literal `'function'`, in either order. Both sides being a `typeof` is not
+// this comparison, and neither is a literal on both sides.
+function getCppTypeofFunctionComparisonOperandCpp(
+  left: Readonly<IrExpression>,
+  right: Readonly<IrExpression>,
+): Readonly<IrExpression> | undefined {
+  const typeofOperand = (side: Readonly<IrExpression>): Readonly<IrExpression> | undefined =>
+    side.kind === 'unary' && side.operator === 'typeof' ? side.operand : undefined;
+  const isFunctionLiteral = (side: Readonly<IrExpression>): boolean =>
+    side.kind === 'literal' && side.value === 'function';
+  if (isFunctionLiteral(right)) return typeofOperand(left);
+  if (isFunctionLiteral(left)) return typeofOperand(right);
+  return undefined;
 }
 
 function emitCppInferredOptionalNullishComparison(

@@ -11038,6 +11038,102 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toMatch(/read\(flight::Ref<flight::types::/u);
   });
 
+  it('answers typeof-a-function as presence for a closed callable-or-absent domain', () => {
+    // `typeof X === 'function'` where X's runtime type is a closed union of one callable and absence is
+    // the presence question, and it is the same answer whichever side the callable literal is written on.
+    const emitCase = (body: string) =>
+      emitIrModuleCpp(
+        lower(
+          'typeofFunction.ts',
+          `export interface ColorLutAdjustment { readonly kind: 'colorLut'; readonly transform?: (out: number[], r: number) => void }
+           ${body}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+    const shape = `typeof (operation as Readonly<Partial<ColorLutAdjustment>>).transform`;
+
+    // The shape the SDK writes, on both an absent-member operand and a binding, and in both directions.
+    const eq = emitCase(
+      `export function f(operation: Readonly<{ kind: string }>): number { return ${shape} === 'function' ? 1 : 0; }`,
+    );
+    expect(eq).toContain('row_get<flight::RowKey<"transform">>');
+    expect(eq).toMatch(/return \((?:flight::row_get|!flight::row_get)/u);
+    const eqLine = eq.split('\n').find((line) => line.includes('has_value'))!;
+    expect(eqLine).not.toContain('!');
+    const neqLine = emitCase(
+      `export function f(operation: Readonly<{ kind: string }>): number { return ${shape} !== 'function' ? 1 : 0; }`,
+    )
+      .split('\n')
+      .find((line) => line.includes('has_value'))!;
+    expect(neqLine).toContain('!');
+    expect(
+      emitCase(
+        `export function f(operation: Readonly<{ kind: string }>): number { const t = (operation as Readonly<Partial<ColorLutAdjustment>>).transform; return typeof t === 'function' ? 1 : 0; }`,
+      ),
+    ).toContain('t.has_value()');
+    // A callable beside null is the same question: neither null nor undefined is a function.
+    expect(
+      emitCase(
+        `export function f(operation: Readonly<Partial<ColorLutAdjustment>>): number { return typeof operation.transform === 'function' ? 1 : 0; }`,
+      ),
+    ).toContain('has_value');
+
+    // The callable the SDK writes is a type alias, not an arrow type: `transform: ColorTransformFunction`.
+    // The name denotes the same callable, so it reaches the same answer -- directly and through a chain --
+    // and the alias is what the module that refuses here actually carries.
+    const aliased = emitCase(
+      `export type ColorTransformFunction = (out: readonly number[], r: number, g: number, b: number) => void;
+       export interface LutAdjustment { readonly kind: 'lut'; transform: ColorTransformFunction }
+       export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<LutAdjustment>>).transform === 'function' ? 1 : 0; }`,
+    );
+    expect(aliased).toContain('row_get<flight::RowKey<"transform">>');
+    expect(aliased).toMatch(/return \(flight::row_get/u);
+    expect(
+      emitCase(
+        `export type Inner = (out: readonly number[], r: number) => void;
+         export type Outer = Inner;
+         export interface LutAdjustment { readonly kind: 'lut'; transform: Outer }
+         export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<LutAdjustment>>).transform === 'function' ? 1 : 0; }`,
+      ),
+    ).toContain('has_value');
+
+    // A primitive and a reference each answer statically: the operand's type is not a union of a
+    // callable and absence, so no presence test is emitted and no runtime question is asked.
+    const primitive = emitCase(
+      `export function f(count: number): number { return typeof count === 'function' ? 1 : 0; }`,
+    );
+    expect(primitive).not.toContain('has_value');
+    expect(primitive).toContain('flight::String("number")');
+    const reference = emitCase(
+      `export interface Box { readonly size: number }
+       export function f(box: Box): number { return typeof box === 'function' ? 1 : 0; }`,
+    );
+    expect(reference).not.toContain('has_value');
+    expect(reference).toContain('flight::String("object")');
+
+    // A callable beside another value domain is ambiguous about which member the test selects: the
+    // domain has two non-absent members, so the presence answer is not the typeof answer and it is
+    // refused rather than guessed at.
+    expect(() =>
+      emitCase(
+        `export function f(operation: Readonly<{ a?: (() => void) | string }>): number { return typeof operation.a === 'function' ? 1 : 0; }`,
+      ),
+    ).toThrow();
+    // An open generic has no closed domain to test against.
+    expect(() =>
+      emitCase(`export function f<T>(value: T | undefined): number { return typeof value === 'function' ? 1 : 0; }`),
+    ).toThrow();
+    // A callable OBJECT -- an interface with a call signature -- is not proven a callable here, and a
+    // bounded alias walk that does not reach an arrow type leaves the question to the lanes that know it.
+    expect(() =>
+      emitCase(
+        `export interface Callable { (out: readonly number[], r: number): void }
+         export interface LutAdjustment { readonly kind: 'lut'; transform: Callable }
+         export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<LutAdjustment>>).transform === 'function' ? 1 : 0; }`,
+      ),
+    ).toThrow();
+  });
+
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
     // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
     // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the
