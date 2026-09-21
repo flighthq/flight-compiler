@@ -1117,6 +1117,34 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('guard.value().value()');
   });
 
+  it('unwraps guarded shorthand object values and retains unguarded optional storage', () => {
+    const guarded = emitIrModuleCpp(
+      lower(
+        'guarded-shorthand.ts',
+        `interface Wrapped { value: Uint8Array }
+         export function wrap(value: Uint8Array | null): Wrapped | null {
+           if (value === null) return null;
+           return { value };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const unguarded = emitIrModuleCpp(
+      lower(
+        'unguarded-shorthand.ts',
+        `interface Wrapped { value: Uint8Array | null }
+         export function wrap(value: Uint8Array | null): Wrapped { return { value }; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(guarded).toContain('if (!value.has_value())');
+    expect(guarded).toContain('return std::nullopt;');
+    expect(guarded).toContain('.value = value.value()');
+    expect(unguarded).toContain('.value = value');
+    expect(unguarded).not.toContain('.value = value.value()');
+  });
+
   it('lowers for-of destructuring through an imported tuple element alias', () => {
     const rows = ts.createSourceFile(
       '/flight/packages/model/src/rows.ts',

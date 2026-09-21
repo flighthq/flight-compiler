@@ -5836,6 +5836,55 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
       kind: 'return',
     });
   });
+  it('preserves checker presence on shorthand object reads after a terminating null guard', () => {
+    const result = lower(
+      'shorthand-presence.ts',
+      `interface Wrapped { value: number }
+       export function guarded(value: number | null): Wrapped | null {
+         if (value === null) return null;
+         return { value };
+       }
+       export function unguarded(value: number | null): { value: number | null } {
+         return { value };
+       }`,
+    );
+    const guarded = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'guarded',
+    );
+    const unguarded = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'unguarded',
+    );
+    const guardedReturn = guarded?.kind === 'function' ? guarded.body[1] : undefined;
+    const unguardedReturn = unguarded?.kind === 'function' ? unguarded.body[0] : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(guarded?.kind === 'function' ? guarded.body[0] : undefined).toMatchObject({
+      consequent: { expression: { kind: 'literal', value: null }, kind: 'return' },
+      kind: 'if',
+    });
+    expect(guardedReturn).toMatchObject({
+      expression: {
+        kind: 'object',
+        members: [{ kind: 'property', name: 'value', value: { kind: 'identifier', presence: 'narrowedPresent' } }],
+      },
+      kind: 'return',
+    });
+    expect(unguardedReturn).toMatchObject({
+      expression: {
+        kind: 'object',
+        members: [{ kind: 'property', name: 'value', value: { kind: 'identifier' } }],
+      },
+      kind: 'return',
+    });
+    if (
+      unguardedReturn?.kind !== 'return' ||
+      unguardedReturn.expression?.kind !== 'object' ||
+      unguardedReturn.expression.members[0]?.kind !== 'property'
+    ) {
+      throw new Error('Expected unguarded shorthand object return');
+    }
+    expect(unguardedReturn.expression.members[0].value).not.toHaveProperty('presence');
+  });
   it('retains explicit short-circuit presence when an indexed annotation excludes its runtime sentinel', () => {
     const result = lower(
       'indexed-short-circuit-presence.ts',

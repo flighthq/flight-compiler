@@ -2736,7 +2736,10 @@ function lowerObjectMember(
     return {
       kind: 'property',
       name: node.name.text,
-      value: { kind: 'identifier', reference: lowerIdentifierReference(node.name, context) },
+      // A shorthand is still a read at its own lexical site. Route it through ordinary expression
+      // lowering so checker flow evidence such as a terminating null guard reaches the identifier;
+      // manufacturing the reference here discarded both presence and narrowed-union evidence.
+      value: lowerExpression(node.name, context, memberType, memberTargetType),
     };
   }
   if (ts.isPropertyAssignment(node)) {
@@ -6726,7 +6729,7 @@ function getTypeScriptReferencePresence(
   context: LoweringContext,
 ): { presence?: 'narrowedPresent' } {
   if (reference.kind !== 'binding') return {};
-  const symbol = context.checker.getSymbolAtLocation(node);
+  const symbol = getTypeScriptIdentifierValueSymbol(node, context);
   const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
   if (!symbol || !declaration) return {};
   const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
@@ -7027,7 +7030,7 @@ function getTypeScriptReferenceNarrowedMember(
   context: LoweringContext,
 ): { narrowedMember?: string } {
   if (reference.kind !== 'binding') return {};
-  const symbol = context.checker.getSymbolAtLocation(node);
+  const symbol = getTypeScriptIdentifierValueSymbol(node, context);
   const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
   if (!symbol || !declaration) return {};
   const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
@@ -8142,11 +8145,14 @@ function getTypeScriptAnalysisRelativeCandidates(containingFile: string, specifi
   return candidates;
 }
 
+function getTypeScriptIdentifierValueSymbol(node: ts.Identifier, context: LoweringContext): ts.Symbol | undefined {
+  return ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
+    ? context.checker.getShorthandAssignmentValueSymbol(node.parent)
+    : context.checker.getSymbolAtLocation(node);
+}
+
 function lowerIdentifierReference(node: ts.Identifier, context: LoweringContext): IrIdentifierReference {
-  const symbol =
-    ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node
-      ? context.checker.getShorthandAssignmentValueSymbol(node.parent)
-      : context.checker.getSymbolAtLocation(node);
+  const symbol = getTypeScriptIdentifierValueSymbol(node, context);
   return symbol?.declarations?.some(isValueBindingDeclaration) && !isTypeScriptAmbientSymbol(symbol, context)
     ? { binding: lowerBindingSymbol(symbol, node, context), kind: 'binding' }
     : { kind: 'ambient', name: node.text };
