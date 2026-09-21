@@ -153,6 +153,62 @@ export function getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp(
   return binding?.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.callResultType;
 }
 
+// The instance member a property read reaches through an external type: `device.features` where the
+// reader holds a `GPUDevice`. The profile declares it, and the resolution reports what it found rather
+// than guessing: a member with no property result evidence is incomplete, two bindings claiming one type
+// name are ambiguous, and a member only a VALUE-space binding declares is in the wrong space -- each of
+// those refuses at the read rather than falling through to a target the profile never named.
+type CppCompilerExternalInstanceMemberResolution =
+  | Readonly<{ kind: 'resolved'; storageType: string; targetName: string }>
+  // A member the profile does not declare as a property read at all: it names a target and no property
+  // result, so the read keeps the target spelling it always had and whatever its result evidence is
+  // stays the reader's question -- a call's result type, or a downstream refusal.
+  | Readonly<{ kind: 'callable'; targetName: string }>
+  | Readonly<{ kind: 'ambiguous' | 'incomplete' | 'wrongSpace' }>;
+
+export function getCompilerRuntimeExternalInstanceMemberCpp(
+  typeSourceName: string,
+  member: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): CppCompilerExternalInstanceMemberResolution | undefined {
+  const normalized = typeSourceName.normalize('NFC');
+  const memberName = member.normalize('NFC');
+  const bindings = getCppRuntimeExternalSymbolBindings(runtimeProfile, externalBindings);
+  const typeBindings = bindings.filter(
+    (candidate) => candidate.sourceName === normalized && candidate.space === 'type',
+  );
+  if (typeBindings.length === 0) return undefined;
+  if (typeBindings.length > 1) return { kind: 'ambiguous' };
+  const declared = typeBindings[0]!.members?.filter((entry) => entry.sourceMember === memberName) ?? [];
+  if (declared.length > 1) return { kind: 'ambiguous' };
+  const entry = declared[0];
+  if (!entry) {
+    const valueSpace = bindings.some(
+      (candidate) =>
+        candidate.sourceName === normalized &&
+        candidate.space === 'value' &&
+        candidate.members?.some((candidateEntry) => candidateEntry.sourceMember === memberName),
+    );
+    return valueSpace ? { kind: 'wrongSpace' } : undefined;
+  }
+  const declaresPropertyResult = entry.propertyResultType !== undefined || entry.propertyOwnership !== undefined;
+  if (!declaresPropertyResult) return { kind: 'callable', targetName: entry.targetName };
+  // A declaration that names one half of the property result and not the other is incomplete: the read
+  // needs both the type and the storage, and a half-declared member is a profile that meant to opt in.
+  if (entry.propertyResultType === undefined || entry.propertyOwnership === undefined) return { kind: 'incomplete' };
+  // The storage the profile named: a shared result is held by reference, a value result by itself, and a
+  // nullable result wraps whichever of those in an optional. Nothing else is spelled here, so an
+  // ownership this does not know keeps the read incomplete rather than inventing a wrapper.
+  const storage =
+    entry.propertyOwnership === 'shared' ? `flight::Ref<${entry.propertyResultType}>` : entry.propertyResultType;
+  return {
+    kind: 'resolved',
+    storageType: entry.propertyNullability === 'nullable' ? `std::optional<${storage}>` : storage,
+    targetName: entry.targetName,
+  };
+}
+
 export function getCompilerRuntimeExternalInstanceMemberParameterTypeCpp(
   sourceName: string,
   member: string,

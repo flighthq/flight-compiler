@@ -9,6 +9,7 @@ import {
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
   getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
   getCompilerRuntimeExternalInstanceMemberParameterTypeCpp,
+  getCompilerRuntimeExternalInstanceMemberCpp,
   getCompilerRuntimeExternalInstanceMemberTargetCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
@@ -945,5 +946,66 @@ describe('isCompilerRuntimeExternalSymbolProvidedCpp', () => {
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('JSON', 'value', 'flight-cpp')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('RegExpExecArray', 'type', 'flight-cpp')).toBe(true);
     expect(isCompilerRuntimeExternalSymbolProvidedCpp('WeakMap', 'type', 'flight-cpp')).toBe(true);
+  });
+});
+
+describe('getCompilerRuntimeExternalInstanceMemberCpp', () => {
+  const instanceBindings = {
+    bindings: [
+      {
+        headers: ['flight/wgpu.hpp'],
+        members: [
+          {
+            propertyNullability: 'non-null' as const,
+            propertyOwnership: 'shared' as const,
+            propertyResultType: 'flight::wgpu::GpuQueue',
+            sourceMember: 'queue',
+            targetName: 'queue',
+          },
+          { sourceMember: 'createTexture', targetName: 'create_texture' },
+        ],
+        nullability: 'non-null' as const,
+        ownership: 'shared' as const,
+        sourceName: 'GPUDevice',
+        space: 'type' as const,
+        targetName: 'flight::wgpu::GpuDevice',
+      },
+    ],
+    schema: 'flight-cpp-external-bindings/1' as const,
+  };
+
+  it('answers a declared property read with the storage the declaration names', () => {
+    expect(getCompilerRuntimeExternalInstanceMemberCpp('GPUDevice', 'queue', 'flight-cpp', instanceBindings)).toEqual({
+      kind: 'resolved',
+      storageType: 'flight::Ref<flight::wgpu::GpuQueue>',
+      targetName: 'queue',
+    });
+  });
+
+  it('keeps a member declared without a property result as a target spelling only', () => {
+    expect(
+      getCompilerRuntimeExternalInstanceMemberCpp('GPUDevice', 'createTexture', 'flight-cpp', instanceBindings),
+    ).toEqual({ kind: 'callable', targetName: 'create_texture' });
+  });
+
+  it('reports a half-declared property result as incomplete and an unknown member as undeclared', () => {
+    const halfDeclared = {
+      bindings: [
+        {
+          ...instanceBindings.bindings[0]!,
+          members: [{ propertyResultType: 'flight::wgpu::GpuQueue', sourceMember: 'queue', targetName: 'queue' }],
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    expect(getCompilerRuntimeExternalInstanceMemberCpp('GPUDevice', 'queue', 'flight-cpp', halfDeclared)).toEqual({
+      kind: 'incomplete',
+    });
+    expect(getCompilerRuntimeExternalInstanceMemberCpp('GPUDevice', 'feature', 'flight-cpp', instanceBindings)).toBe(
+      undefined,
+    );
+    expect(getCompilerRuntimeExternalInstanceMemberCpp('GPUAdapter', 'queue', 'flight-cpp', instanceBindings)).toBe(
+      undefined,
+    );
   });
 });

@@ -107,9 +107,9 @@ import {
   getCompilerExternalBindingNumericPropertyViewCpp,
   getCompilerExternalBindingObjectConstructionCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
+  getCompilerRuntimeExternalInstanceMemberCpp,
   getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
   getCompilerRuntimeExternalInstanceMemberParameterTypeCpp,
-  getCompilerRuntimeExternalInstanceMemberTargetCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolCallResultTypeCpp,
@@ -4176,6 +4176,17 @@ function emitExpression(
       }
       const externalNumericProperty = emitCppExternalNumericPropertyViewPropertyCpp(expression, context);
       if (externalNumericProperty) return externalNumericProperty;
+      // A member the profile DECLARED for an external instance type, read as a property, is answered by
+      // that declaration or not at all: the source type erased to `any`, so the result type and the
+      // storage are facts only the profile holds, and a declaration that omits them is incomplete.
+      const declaredInstanceMember = resolveCppExternalInstanceMemberReadCpp(expression, context);
+      if (declaredInstanceMember) {
+        emissionError(
+          context,
+          `external instance member ${expression.name} on ${declaredInstanceMember.sourceName} needs a complete property result declaration (${declaredInstanceMember.kind})`,
+          `cpp-external-instance-member-${declaredInstanceMember.kind === 'wrongSpace' ? 'wrong-space' : declaredInstanceMember.kind}`,
+        );
+      }
       if (expression.namespaceMember) {
         return `${emitExpression(expression.object, context)}::${safeCppName(expression.name)}`;
       }
@@ -12963,13 +12974,18 @@ function getCppExternalInstanceMemberBindingCpp(
 ): Readonly<{ sourceName: string; targetName: string }> | undefined {
   const sourceName = getCppExternalInstanceReceiverSourceNameCpp(expression.object, context);
   if (!sourceName) return undefined;
-  const targetName = getCompilerRuntimeExternalInstanceMemberTargetCpp(
+  // The read is answered only by a COMPLETE declaration: a member entry that names a target but no
+  // property result is incomplete, and the read refuses rather than being emitted with storage nothing
+  // named. The declaration is the opt-in, so a profile that declares no members keeps the fallback.
+  const resolution = getCompilerRuntimeExternalInstanceMemberCpp(
     sourceName,
     expression.name,
     getCppRuntimeProfile(context.options),
     context.options.externalBindings,
   );
-  return targetName ? { sourceName, targetName } : undefined;
+  return resolution?.kind === 'resolved' || resolution?.kind === 'callable'
+    ? { sourceName, targetName: resolution.targetName }
+    : undefined;
 }
 
 interface CppExternalNumericPropertyViewPlan {
@@ -13057,6 +13073,47 @@ function getCppRuntimeExternalCallResultTargetCpp(
   return undefined;
 }
 
+// A property read of a member the profile declared on an external instance type but did not complete.
+// The declared-target path above already answered the complete declarations; what reaches here is a
+// member entry that names a target without naming the result, a name two bindings claim, or a member
+// declared where the reader cannot be -- each of which refuses rather than emitting an untyped read.
+function resolveCppExternalInstanceMemberReadCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): Readonly<{ kind: 'ambiguous' | 'incomplete' | 'wrongSpace'; sourceName: string }> | undefined {
+  const sourceName = getCppExternalInstanceReceiverSourceNameCpp(expression.object, context);
+  if (!sourceName) return undefined;
+  const resolution = getCompilerRuntimeExternalInstanceMemberCpp(
+    sourceName,
+    expression.name,
+    getCppRuntimeProfile(context.options),
+    context.options.externalBindings,
+  );
+  return resolution &&
+    (resolution.kind === 'ambiguous' || resolution.kind === 'incomplete' || resolution.kind === 'wrongSpace')
+    ? { kind: resolution.kind, sourceName }
+    : undefined;
+}
+
+// The storage an external instance-property read yields, or undefined when the profile says nothing about
+// it. The read's result is a library type the source erased to `any`, so this is the only place the C++
+// storage for it can come from.
+function getCppExternalInstanceMemberStorageTypeCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind !== 'property') return undefined;
+  const sourceName = getCppExternalInstanceReceiverSourceNameCpp(expression.object, context);
+  if (!sourceName) return undefined;
+  const resolution = getCompilerRuntimeExternalInstanceMemberCpp(
+    sourceName,
+    expression.name,
+    getCppRuntimeProfile(context.options),
+    context.options.externalBindings,
+  );
+  return resolution?.kind === 'resolved' ? resolution.storageType : undefined;
+}
+
 function collectCppExternalBindingStorageTargetTypesCpp(
   module: Readonly<IrModule>,
   context: EmitContext,
@@ -13065,7 +13122,9 @@ function collectCppExternalBindingStorageTargetTypesCpp(
   const recordCandidate = (bindingId: string, expression: Readonly<IrExpression>): void => {
     const declaredType = context.bindingTypes.get(bindingId);
     if (!declaredType || !isCppUnresolvedExternalStorageTypeCpp(declaredType)) return;
-    const targetType = getCppExternalCallResultTargetCpp(expression, context);
+    const targetType =
+      getCppExternalCallResultTargetCpp(expression, context) ??
+      getCppExternalInstanceMemberStorageTypeCpp(expression, context);
     if (!targetType) return;
     const targets = candidates.get(bindingId) ?? new Set<string>();
     targets.add(targetType);
@@ -18708,6 +18767,14 @@ function emitCppEnumMemberReferenceCpp(
 function memberOp(object: Readonly<IrExpression>, context: EmitContext): string {
   if (isSuperAccess(object)) return '::';
   if (isThisAccess(object)) return '->';
+  // A binding whose storage an external binding declared holds exactly what the profile named: a result
+  // the profile holds by reference is read through the reference and one it holds by value is read
+  // directly. These bindings have no IR type to ask -- the source type erased to `any` -- so the
+  // declaration is the only evidence for the operator, and the same one the storage spelling used.
+  if (object.kind === 'identifier' && object.reference.kind === 'binding') {
+    const declaredStorage = context.externalBindingStorageTargetTypes.get(object.reference.binding.id);
+    if (declaredStorage) return declaredStorage.startsWith('flight::Ref<') ? '->' : '.';
+  }
   const genericCarrier =
     object.kind === 'property' && object.presence === 'narrowedPresent'
       ? getCppGenericCarrierPropertyPresencePlanCpp(object, context)

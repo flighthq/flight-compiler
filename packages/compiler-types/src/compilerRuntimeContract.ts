@@ -104,6 +104,15 @@ export type CompilerRuntimeExternalConstructorAbiCompleteness =
 // to infer the result from `targetName`.
 export interface CompilerRuntimeExternalMemberBinding {
   readonly callResultType?: string | undefined;
+  // A member a reader reaches as an INSTANCE PROPERTY rather than as a call, on a type-space binding.
+  // The three fields are the whole contract for that read and are deliberately explicit: the profile
+  // names the value type, how the reader stores it, and whether absence is part of the result. Nothing
+  // here may be inferred -- not from where the result is used, and not from the member's name -- because
+  // the source type is a library type that erased to `any` before this binding existed, so a guess is
+  // indistinguishable from a fact. A read whose member omits any of them is incomplete and refuses.
+  readonly propertyNullability?: 'non-null' | 'nullable' | undefined;
+  readonly propertyOwnership?: 'shared' | 'value' | undefined;
+  readonly propertyResultType?: string | undefined;
   readonly sourceMember: string;
   readonly targetName: string;
 }

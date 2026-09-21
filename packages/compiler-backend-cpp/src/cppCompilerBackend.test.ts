@@ -9,6 +9,7 @@ import { analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerModuleResolutionPlan,
+  CompilerRuntimeExternalMemberBinding,
   CppCompilerExternalBinding,
   IrModule,
   IrType,
@@ -3483,6 +3484,170 @@ describe('createCppCompilerBackend', () => {
     expect(emit('variant-call.ts')).toContain(
       'std::visit([](const auto& value) { return value->tag; }, pass_value(value))',
     );
+  });
+
+  // An external instance property: `device.features` where the reader holds a `GPUDevice`. The source
+  // type erased to `any`, so the profile's declaration is the whole contract -- it names the member's
+  // target, the result type, and how the result is stored. The storage it names is the storage the local
+  // gets, and the reference it names is the operator a chain through that local uses.
+  const instancePropertyProfile = (members: readonly Readonly<CompilerRuntimeExternalMemberBinding>[]) => ({
+    bindings: [
+      {
+        headers: ['flight/wgpu.hpp'],
+        members,
+        nullability: 'non-null' as const,
+        ownership: 'shared' as const,
+        sourceName: 'GPUDevice',
+        space: 'type' as const,
+        targetName: 'flight::wgpu::GpuDevice',
+      },
+    ],
+    schema: 'flight-cpp-external-bindings/1' as const,
+  });
+  const featuresMember: Readonly<CompilerRuntimeExternalMemberBinding> = {
+    propertyNullability: 'non-null',
+    propertyOwnership: 'shared',
+    propertyResultType: 'flight::wgpu::GpuSupportedFeatures',
+    sourceMember: 'features',
+    targetName: 'features',
+  };
+  const queueMember: Readonly<CompilerRuntimeExternalMemberBinding> = {
+    propertyNullability: 'non-null',
+    propertyOwnership: 'shared',
+    propertyResultType: 'flight::wgpu::GpuQueue',
+    sourceMember: 'queue',
+    targetName: 'queue',
+  };
+
+  it('carries an external instance property result into its exact storage', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'instance-property.ts',
+        `export function read(device: GPUDevice, buffer: Float32Array): void {
+           const features = device.features;
+           const queue = device.queue;
+           queue.writeBuffer(buffer, 0);
+           void features;
+         }`,
+      ).module,
+      {
+        externalBindings: instancePropertyProfile([featuresMember, queueMember]),
+        runtimeProfile: 'flight-cpp',
+      },
+    ).contents;
+
+    // The result type and its storage come from the declaration, not from the destination.
+    expect(emitted).toContain('flight::Ref<flight::wgpu::GpuSupportedFeatures> features = device.features;');
+    expect(emitted).toContain('flight::Ref<flight::wgpu::GpuQueue> queue = device.queue;');
+    // The chain reads through the reference the profile named, and the receiver is evaluated once.
+    expect(emitted).toContain('queue->write_buffer(buffer, 0.0);');
+    expect(emitted.match(/device\.queue/gu)).toHaveLength(1);
+  });
+
+  it('carries a nullable external instance property result as an optional', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'nullable-instance-property.ts',
+        `export function read(device: GPUDevice): void {
+           const queue = device.queue;
+           void queue;
+         }`,
+      ).module,
+      {
+        externalBindings: instancePropertyProfile([{ ...queueMember, propertyNullability: 'nullable' }]),
+        runtimeProfile: 'flight-cpp',
+      },
+    ).contents;
+
+    expect(emitted).toContain('std::optional<flight::Ref<flight::wgpu::GpuQueue>> queue = device.queue;');
+  });
+
+  // The declaration is the opt-in, so a half-declared member and a member declared where the reader
+  // cannot reach it both refuse: the result type and the storage are facts only the profile holds, and a
+  // declaration that names one without the other is a profile that meant to opt in and did not.
+  it('refuses an external instance property declaration that cannot answer the read', () => {
+    const refuse = (members: readonly Readonly<CompilerRuntimeExternalMemberBinding>[]): string | undefined =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            'instance-property-unproven.ts',
+            `export function read(device: GPUDevice): void {
+               const features = device.features;
+               void features;
+             }`,
+          ).module,
+          { externalBindings: instancePropertyProfile(members), runtimeProfile: 'flight-cpp' },
+        ),
+      ).rule;
+
+    // The result type without the storage it goes into, and the storage without a result type.
+    expect(refuse([{ ...featuresMember, propertyOwnership: undefined }])).toBe(
+      'cpp-external-instance-member-incomplete',
+    );
+    expect(refuse([{ ...featuresMember, propertyResultType: undefined }])).toBe(
+      'cpp-external-instance-member-incomplete',
+    );
+    // A member only a VALUE-space binding declares is not an instance member of the type the reader holds.
+    expect(
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            'instance-property-wrong-space.ts',
+            `export function read(device: GPUDevice): void {
+               const features = device.features;
+               void features;
+             }`,
+          ).module,
+          {
+            externalBindings: {
+              bindings: [
+                {
+                  headers: ['flight/wgpu.hpp'],
+                  members: [],
+                  nullability: 'non-null' as const,
+                  ownership: 'shared' as const,
+                  sourceName: 'GPUDevice',
+                  space: 'type' as const,
+                  targetName: 'flight::wgpu::GpuDevice',
+                },
+                {
+                  headers: ['flight/wgpu.hpp'],
+                  members: [{ sourceMember: 'features', targetName: 'features' }],
+                  nullability: 'non-null' as const,
+                  ownership: 'value' as const,
+                  sourceName: 'GPUDevice',
+                  space: 'value' as const,
+                  targetName: 'flight::wgpu::gpu_device',
+                },
+              ],
+              schema: 'flight-cpp-external-bindings/1' as const,
+            },
+            runtimeProfile: 'flight-cpp',
+          },
+        ),
+      ).rule,
+    ).toBe('cpp-external-instance-member-wrong-space');
+  });
+
+  // A runtime whose profile declares no external bindings at all -- the pinned flight-cpp profile binds
+  // none of the WebGPU types -- keeps refusing these reads rather than emitting against a spelling
+  // nobody promised. The entries this contract adds are what a downstream profile supplies to enable
+  // them, and until it does, the read has no evidence at all.
+  it('keeps an external instance property read refused without a profile entry', () => {
+    expect(
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            'instance-property-unbound.ts',
+            `export function read(device: GPUDevice): void {
+               const features = device.features;
+               void features;
+             }`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      ).rule,
+    ).toBe('cpp-runtime-external-symbol-binding-incomplete');
   });
 
   // The optional-external-receiver gap: a guard clause (`if (texture === null) return;`) proves the
