@@ -1267,17 +1267,31 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
       'concrete-node-row.ts',
       `export const RuntimeKey = Symbol.for('Runtime');
        interface Node<Traits extends object> { enabled: boolean; [RuntimeKey]: object | undefined }
+       type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
        interface VisualTraits { enabled: boolean; opacity: number }
        interface IncompatibleTraits { enabled: string }
        export type VisualNode = Node<VisualTraits> & VisualTraits;
        export type IncompatibleNode = Node<IncompatibleTraits> & IncompatibleTraits;`,
     );
     const planner = createIrTypeReferenceRepresentationPlannerCpp([module]);
+    const visualNodeOf = {
+      ...declarationType(module, 'NodeOf'),
+      typeArguments: [declarationType(module, 'VisualTraits')],
+    } as const;
+    const incompatibleNodeOf = {
+      ...declarationType(module, 'NodeOf'),
+      typeArguments: [declarationType(module, 'IncompatibleTraits')],
+    } as const;
 
     expect(planner.resolveStructuralRow(declarationType(module, 'VisualNode'), module)).toMatchObject({
       kind: 'merge',
       rows: [{ kind: 'rowOf' }, { kind: 'rowOf' }],
     });
+    expect(planner.resolveStructuralRow(visualNodeOf, module)).toMatchObject({
+      kind: 'merge',
+      rows: [{ kind: 'rowOf' }, { kind: 'rowOf' }],
+    });
+    expect(planner.resolveStructuralRow(incompatibleNodeOf, module)).toBeUndefined();
     expect(planner.resolveStructuralRow(declarationType(module, 'IncompatibleNode'), module)).toBeUndefined();
   });
 

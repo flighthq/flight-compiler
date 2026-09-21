@@ -14,6 +14,7 @@ import type {
   IrUnionMemberTestEvidence,
 } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
+import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
 
 // Returns the refusal rather than asserting a throw, so a probe that stops refusing leaves the
 // caller comparing against a subject that was never produced instead of passing silently.
@@ -18432,6 +18433,105 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('flight::structural_ref_cast<flighthq_types::NodeOf<Traits>>(source)');
     expect(emitted).not.toContain('NoInfer');
     expect(emitted).not.toContain('flight::Any');
+  });
+
+  it('recognizes equivalent imported node-row aliases in a nullable assertion', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/node',
+          target: { packageName: '@flighthq/node', source: 'packages/node/src/hierarchy.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export const RuntimeKey = Symbol.for('Runtime');
+             export interface Node<Traits extends object> {
+               readonly enabled: boolean;
+               [RuntimeKey]: object | undefined;
+             }
+             export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+             export interface Node2DTraits { readonly enabled: boolean; readonly x: number }
+             export type Node2D = Node<Node2DTraits> & Node2DTraits;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/node',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/node/src/hierarchy.ts',
+            `import type { Node, NodeOf } from '@flighthq/types/contract';
+             export function getNodeChildAt<Traits extends object>(
+               source: Readonly<Node<Traits>>,
+               index: number,
+             ): NodeOf<Traits> | null {
+               return index >= 0 ? source as NodeOf<Traits> : null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/scene2d-formats',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/scene2d-formats/src/svgDocument.ts',
+            `import type { Node2D } from '@flighthq/types/contract';
+             import { getNodeChildAt } from '@flighthq/node';
+             export function getChild(target: Node2D): Node2D | null {
+               return getNodeChildAt(target, 0) as Node2D | null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const declaration = modules[2]!.declarations[0];
+    const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const cast = returned?.kind === 'return' ? returned.expression : undefined;
+    if (cast?.kind !== 'cast' || cast.expression.kind !== 'call' || !cast.expression.semantics?.resultType) {
+      throw new Error('expected cast over typed call');
+    }
+    const planner = createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution);
+    if (cast.expression.semantics.resultType.kind !== 'union' || cast.type.kind !== 'union') {
+      throw new Error('expected nullable unions');
+    }
+    const sourceType = cast.expression.semantics.resultType.types[0]!;
+    expect(planner.resolveStructuralRow(sourceType, modules[2]!)).toMatchObject({ kind: 'merge' });
+    expect(planner.resolveStructuralRow(cast.type.types[0]!, modules[2]!)).toMatchObject({ kind: 'merge' });
+    const ambiguousTypes = { ...structuredClone(modules[0]!), name: 'ambiguous-contract' };
+    const ambiguousPlanner = createIrTypeReferenceRepresentationPlannerCpp(
+      [ambiguousTypes, ...modules],
+      moduleResolution,
+    );
+    expect(ambiguousPlanner.resolveStructuralRow(sourceType, modules[2]!)).toBeUndefined();
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('flight::structural_ref_cast<');
+    expect(emitted).toContain('flighthq_node::get_node_child_at<');
+    expect(emitted).toContain('(target, 0.0).value())');
+    expect(emitted).not.toContain('std::static_pointer_cast');
   });
 
   it('recovers erased entity bindings through their checked runtime type and refuses scalar assertions', () => {

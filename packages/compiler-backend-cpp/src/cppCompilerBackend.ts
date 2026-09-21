@@ -8684,17 +8684,30 @@ function isCppExplicitStructuralRowExtensionCpp(
 ): boolean {
   const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(source, context.module);
   const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(target, context.module);
-  return Boolean(sourceRow && targetRow && cppStructuralRowContainsPlanCpp(targetRow, sourceRow));
+  return Boolean(sourceRow && targetRow && cppStructuralRowContainsPlanCpp(targetRow, sourceRow, context));
 }
 
 function cppStructuralRowContainsPlanCpp(
   target: Readonly<CompilerCppStructuralRowPlan>,
   source: Readonly<CompilerCppStructuralRowPlan>,
+  context: EmitContext,
 ): boolean {
-  if (normalizeCompilerStructuralValueCanonical(target) === normalizeCompilerStructuralValueCanonical(source)) {
+  if (
+    normalizeCompilerStructuralValueCanonical(target) === normalizeCompilerStructuralValueCanonical(source) ||
+    emitCppStructuralRowReferenceTypeCpp(target, {
+      ...context,
+      anonymousStructs: new Map(),
+      includes: new Set(),
+    }) ===
+      emitCppStructuralRowReferenceTypeCpp(source, {
+        ...context,
+        anonymousStructs: new Map(),
+        includes: new Set(),
+      })
+  ) {
     return true;
   }
-  return target.kind === 'merge' && target.rows.some((row) => cppStructuralRowContainsPlanCpp(row, source));
+  return target.kind === 'merge' && target.rows.some((row) => cppStructuralRowContainsPlanCpp(row, source, context));
 }
 
 // How an assertion relates the union's one value slot to the type it names. Both sides being references

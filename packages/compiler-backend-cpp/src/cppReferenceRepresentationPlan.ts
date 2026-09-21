@@ -294,13 +294,17 @@ function resolveIrTypeStructuralRowCpp(
       new Set(aliases).add(key),
       declaration.objectView === 'writable',
     );
-    // A generic homomorphic partial alias can establish a structural view while its concrete
-    // expansion becomes a closed object shape. Keep that declared view instead of falling back to
-    // RowOf<Alias<...>>, which would inspect the StructuralRef wrapper rather than its subject row.
+    // A generic alias can establish a structural view while its concrete expansion becomes a closed
+    // object shape. Keep that declared view instead of forgetting the representation the alias itself
+    // emits: `NodeOf<T> = Node<T> & NoInfer<T>` is an open row, but `NodeOf<Node2DTraits>` has a
+    // flattenable object shape. The applied alias still names the StructuralRef emitted for NodeOf.
+    // Require the concrete expansion to have a valid shape before restoring the open row so a
+    // conflicting instantiation cannot bypass the intersection conflict check.
     if (
-      !row ||
-      (row.kind === 'rowOf' &&
-        normalizeCompilerStructuralValueCanonical(row.type) === normalizeCompilerStructuralValueCanonical(type))
+      (!row ||
+        (row.kind === 'rowOf' &&
+          normalizeCompilerStructuralValueCanonical(row.type) === normalizeCompilerStructuralValueCanonical(type))) &&
+      resolveIrTypeObjectShapeCpp(resolved, location.module, moduleSet, cache, new Set())
     ) {
       const openRow = resolveIrTypeStructuralRowCpp(
         declaration.type,
@@ -310,7 +314,7 @@ function resolveIrTypeStructuralRowCpp(
         new Set(aliases).add(key),
         declaration.objectView === 'writable',
       );
-      if (openRow?.kind === 'partial') {
+      if (openRow) {
         row = substituteCppStructuralRowPlan(
           openRow,
           createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
