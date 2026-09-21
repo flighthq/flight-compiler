@@ -200,10 +200,17 @@ interface CppStructuralClosedRowSpreadConstructionPlan {
         member: Readonly<Extract<IrObjectMember, { kind: 'property' }>>;
         property: Readonly<IrObjectTypeProperty>;
       }
+    | {
+        kind: 'overriddenSpread';
+        member: Readonly<Extract<IrObjectMember, { kind: 'property' }>>;
+        property: Readonly<IrObjectTypeProperty>;
+        sourceProperty: Readonly<IrObjectTypeProperty>;
+      }
     | { kind: 'spread'; property: Readonly<IrObjectTypeProperty> }
   >[];
   readonly source: Readonly<IrExpression>;
   readonly sourceKind: 'reference' | 'structuralRow';
+  readonly sourceMayBeAbsent: boolean;
   readonly sourceType: Readonly<IrType>;
 }
 
@@ -3882,23 +3889,56 @@ function emitExpression(
           const sourceName = getGeneratedTargetName('structuralSpreadSource', context);
           const source = emitExpression(closedSpreadConstruction.source, context, closedSpreadConstruction.sourceType);
           const evaluations: string[] = [];
-          const fields = closedSpreadConstruction.fields.map((field) => {
-            const propertyName = field.kind === 'property' ? field.member.name : field.property.name;
-            const valueName = getGeneratedTargetName(`structuralSpreadField_${propertyName}`, context);
-            if (field.kind === 'property') {
-              // The member is present by construction. Its declared value domain is therefore the
-              // contextual type; the optional marker belongs to the row cell and is added by
-              // RowPartial when row_field initializes it.
+          const valueNames = new Map<string, string>();
+          for (const field of closedSpreadConstruction.fields) {
+            if (field.kind === 'property') continue;
+            const sourceProperty = field.kind === 'spread' ? field.property : field.sourceProperty;
+            const sourceValue = closedSpreadConstruction.sourceMayBeAbsent ? `${sourceName}.value()` : sourceName;
+            const value =
+              closedSpreadConstruction.sourceKind === 'structuralRow'
+                ? `flight::row_get<flight::RowKey<${JSON.stringify(sourceProperty.name)}>>(${sourceValue})`
+                : `${sourceValue}->${safeCppName(sourceProperty.name)}`;
+            if (field.kind === 'overriddenSpread') {
+              // Object spread still performs Get on a source property whose value a later member
+              // replaces. Keep that observation in source order even though the value is discarded.
               evaluations.push(
-                `auto ${valueName} = ${emitExpression(field.member.value, context, field.property.type)};`,
+                closedSpreadConstruction.sourceMayBeAbsent
+                  ? `if (${sourceName}.has_value()) static_cast<void>(${value});`
+                  : `static_cast<void>(${value});`,
               );
+              continue;
+            }
+            const valueName = getGeneratedTargetName(`structuralSpreadField_${sourceProperty.name}`, context);
+            if (closedSpreadConstruction.sourceMayBeAbsent) {
+              const valueType = emitOptionalTypeCpp(
+                getCppStructuralClosedRowCellStorageTypeCpp(sourceProperty.type, context),
+                true,
+                context,
+              );
+              evaluations.push(`${valueType} ${valueName}; if (${sourceName}.has_value()) ${valueName} = ${value};`);
             } else {
-              const value =
-                closedSpreadConstruction.sourceKind === 'structuralRow'
-                  ? `flight::row_get<flight::RowKey<${JSON.stringify(field.property.name)}>>(${sourceName})`
-                  : `${sourceName}->${safeCppName(field.property.name)}`;
               evaluations.push(`auto ${valueName} = ${value};`);
             }
+            valueNames.set(sourceProperty.name, valueName);
+          }
+          for (const member of expression.members) {
+            if (member.kind !== 'property') continue;
+            const field = closedSpreadConstruction.fields.find(
+              (candidate) => candidate.kind !== 'spread' && candidate.member === member,
+            );
+            if (!field) throw new TypeError(`expected structural spread member ${member.name}`);
+            const propertyName = member.name;
+            const valueName = getGeneratedTargetName(`structuralSpreadField_${propertyName}`, context);
+            // The member is present by construction. Its declared value domain is therefore the
+            // contextual type; the optional marker belongs to the row cell and is added by
+            // RowPartial when row_field initializes it.
+            evaluations.push(`auto ${valueName} = ${emitExpression(member.value, context, field.property.type)};`);
+            valueNames.set(propertyName, valueName);
+          }
+          const fields = closedSpreadConstruction.fields.map((field) => {
+            const propertyName = field.kind === 'property' ? field.member.name : field.property.name;
+            const valueName = valueNames.get(propertyName);
+            if (!valueName) throw new TypeError(`expected structural spread field ${propertyName}`);
             return `flight::row_field<flight::RowKey<${JSON.stringify(propertyName)}>>(std::move(${valueName}))`;
           });
           context.includes.add('flight/structural_ref.hpp');
@@ -4793,9 +4833,10 @@ function getCppStructuralOpenRowConstructionPlanCpp(
 // A spread object names runtime copy semantics, but a closed structural row can implement the common
 // construction form without cloning either reference: read each proven source cell once and place that
 // value in the new target row. Keep the accepted form deliberately narrow. One leading spread followed
-// by distinct named properties has no overwritten cells to reconstruct, and a complete source shape
-// proves that no enumerable field is silently dropped. Emission still binds every value in source order
-// because C++ function-argument evaluation order cannot carry the source language's ordering guarantee.
+// by distinct named properties has a complete source shape proving that no enumerable field is silently
+// dropped. A named property may replace a source cell, but emission must still read that source cell
+// before evaluating the replacement. Every value is bound in source order because C++ function-argument
+// evaluation order cannot carry the source language's ordering guarantee.
 function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
   type: Readonly<IrType>,
@@ -4826,10 +4867,19 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
 
   const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
   const sourceType = getIrExpressionTypeEvidenceCpp(spread.expression, context);
-  const sourceProperties = sourceType
-    ? context.referenceRepresentationPlanner.resolveObjectShape(sourceType, context.module)
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const sourceUnion = sourceType ? getIrUnionTypeCpp(sourceType, context, new Set()) : undefined;
+  const sourceUnionPlan = sourceUnion ? getCppUnionRepresentationPlan(sourceUnion, isolatedContext) : undefined;
+  const sourceMayBeAbsent = sourceUnionPlan?.kind === 'optionalSingle';
+  const sourceObjectType = sourceMayBeAbsent
+    ? getCppNonNullableType(sourceType!, context, new Set())
+    : sourceUnion
+      ? undefined
+      : sourceType;
+  const sourceProperties = sourceObjectType
+    ? context.referenceRepresentationPlanner.resolveObjectShape(sourceObjectType, context.module)
     : undefined;
-  if (!targetProperties || !sourceType || !sourceProperties) return undefined;
+  if (!targetProperties || !sourceType || !sourceObjectType || !sourceProperties) return undefined;
   if (sourceProperties.some((property) => property.computedKey || property.phantom)) return undefined;
 
   const targetByName = new Map(
@@ -4837,38 +4887,60 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
       .filter((property) => !property.computedKey && !property.phantom)
       .map((property) => [property.name, property] as const),
   );
-  const sourceKind = context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module)
+  const explicitByName = new Map<
+    string,
+    Readonly<{
+      member: Readonly<Extract<IrObjectMember, { kind: 'property' }>>;
+      property: Readonly<IrObjectTypeProperty>;
+    }>
+  >();
+  for (const member of members) {
+    if (member.kind !== 'property') return undefined;
+    const property = targetByName.get(member.name);
+    if (!property || explicitByName.has(member.name)) return undefined;
+    explicitByName.set(member.name, { member, property });
+  }
+  const sourceKind = context.referenceRepresentationPlanner.resolveStructuralRow(sourceObjectType, context.module)
     ? ('structuralRow' as const)
-    : hasFlightReferenceRepresentationCpp(sourceType, context)
+    : hasFlightReferenceRepresentationCpp(sourceObjectType, context)
       ? ('reference' as const)
       : undefined;
   if (!sourceKind) return undefined;
 
   const fields: CppStructuralClosedRowSpreadConstructionPlan['fields'][number][] = [];
   const supplied = new Set<string>();
-  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const overridden = new Set<string>();
   for (const sourceProperty of sourceProperties) {
     const targetProperty = targetByName.get(sourceProperty.name);
+    const explicit = explicitByName.get(sourceProperty.name);
     if (
       !targetProperty ||
       supplied.has(sourceProperty.name) ||
-      sourceProperty.role !== targetProperty.role ||
-      (sourceProperty.optional && !targetProperty.optional) ||
-      !context.referenceRepresentationPlanner.isStructurallyAssignable(
-        sourceProperty.type,
-        targetProperty.type,
-        context.module,
-      ) ||
-      getCppStructuralClosedRowCellStorageTypeCpp(sourceProperty.type, isolatedContext) !==
-        getCppStructuralClosedRowCellStorageTypeCpp(targetProperty.type, isolatedContext)
+      (!explicit &&
+        (Boolean(sourceMayBeAbsent && !sourceProperty.optional) ||
+          sourceProperty.role !== targetProperty.role ||
+          (sourceProperty.optional && !targetProperty.optional) ||
+          !context.referenceRepresentationPlanner.isStructurallyAssignable(
+            sourceProperty.type,
+            targetProperty.type,
+            context.module,
+          ) ||
+          getCppStructuralClosedRowCellStorageTypeCpp(sourceProperty.type, isolatedContext) !==
+            getCppStructuralClosedRowCellStorageTypeCpp(targetProperty.type, isolatedContext)))
     ) {
       return undefined;
     }
     supplied.add(sourceProperty.name);
-    fields.push({ kind: 'spread', property: sourceProperty });
+    if (explicit) {
+      overridden.add(sourceProperty.name);
+      fields.push({ kind: 'overriddenSpread', sourceProperty, ...explicit });
+    } else {
+      fields.push({ kind: 'spread', property: sourceProperty });
+    }
   }
   for (const member of members) {
     if (member.kind !== 'property') return undefined;
+    if (overridden.has(member.name)) continue;
     const property = targetByName.get(member.name);
     if (!property || supplied.has(member.name)) return undefined;
     supplied.add(member.name);
@@ -4881,7 +4953,7 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   ) {
     return undefined;
   }
-  return { fields, source: spread.expression, sourceKind, sourceType };
+  return { fields, source: spread.expression, sourceKind, sourceMayBeAbsent, sourceType };
 }
 
 function getCppStructuralClosedRowCellStorageTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
@@ -9060,6 +9132,39 @@ function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: Em
   );
 }
 
+// An optional property whose declared type is a nullable alias has two independent absence channels
+// in its emitted storage. The property's outer optional represents omission (`undefined`), while the
+// alias's inner optional represents its declared `null`. Alias identity is deliberately retained in
+// the field type, so the effective read type's dual-sentinel plan cannot be used directly: that plan
+// describes a flat variant, while the field is `optional<NullableAlias>`.
+//
+// Keep this query tied to the declaration and the storage election. A directly written nullable union
+// is materialized as one flat three-state value by emitCppObjectPropertyStorageCpp and therefore does
+// not qualify; only a type whose declared spelling hides the nullish member, but whose resolved union
+// has exactly null-as-optional-absence, produces the nested representation answered below.
+function hasCppNestedNullableOptionalPropertyStorageCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): boolean {
+  if (expression.kind !== 'property' || expression.optional || getCppRuntimeProfile(context.options) !== 'flight-cpp') {
+    return false;
+  }
+  const receiverType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  if (!receiverType) return false;
+  const row = getCppStructuralRowExpressionPlanCpp(expression.object, context);
+  const objectType = row ? getCppStructuralRowObjectTypeCpp(row) : receiverType;
+  if (!objectType) return false;
+  const property = context.referenceRepresentationPlanner
+    .resolveObjectShape(objectType, context.module)
+    ?.find((candidate) => candidate.name === expression.name);
+  if (!property?.optional || hasIrTypeAbsentMember(property.type)) return false;
+  const union = getIrUnionTypeCpp(property.type, context, new Set());
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  return (
+    (plan?.kind === 'optionalSingle' || plan?.kind === 'optionalVariant') && plan.sentinels.null === 'optionalAbsence'
+  );
+}
+
 // A source member is projected from the payload, never from `std::optional` itself. The storage fact
 // and the source type are deliberately separate: Record and indexed Array reads may elect optional
 // storage even when their TypeScript annotation names only the payload. Require control-flow evidence
@@ -9122,6 +9227,23 @@ function emitCppPresenceTestCpp(
   const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
   const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (hasCppNestedNullableOptionalPropertyStorageCpp(operand, context)) {
+    context.includes.add('optional');
+    const value = emitExpression(operand, context);
+    let test: string;
+    if (!strict) {
+      test = present
+        ? 'presence_operand.has_value() && presence_operand.value().has_value()'
+        : '!presence_operand.has_value() || !presence_operand.value().has_value()';
+    } else if (sentinel === 'undefined') {
+      test = `${present ? '' : '!'}presence_operand.has_value()`;
+    } else {
+      test = present
+        ? '!presence_operand.has_value() || presence_operand.value().has_value()'
+        : 'presence_operand.has_value() && !presence_operand.value().has_value()';
+    }
+    return `([&]() { const auto& presence_operand = ${value}; return ${test}; }())`;
+  }
   if (plan?.kind === 'dualSentinelVariant') {
     context.includes.add('variant');
     const sentinels = getCppDualSentinelTargetTypes(context);

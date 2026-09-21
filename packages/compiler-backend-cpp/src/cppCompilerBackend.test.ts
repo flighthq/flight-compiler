@@ -394,6 +394,64 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flight::undefined');
   });
 
+  it('projects both absence channels from an optional property with a nullable alias', () => {
+    const types = lowerPackage(
+      '@flighthq/types',
+      'request.ts',
+      `export type Body = string | null;
+       export interface Request { readonly body?: Body }`,
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/net',
+      'guard.ts',
+      `import type { Request } from '@flighthq/types';
+       export function strictPresent(request: Readonly<Request>): boolean {
+         return request.body !== undefined && request.body !== null;
+       }
+       export function strictUndefined(request: Readonly<Request>): boolean { return request.body === undefined; }
+       export function strictNull(request: Readonly<Request>): boolean { return request.body === null; }
+       export function looseAbsent(request: Readonly<Request>): boolean { return request.body == null; }
+       export function loosePresent(request: Readonly<Request>): boolean { return request.body != null; }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['Request'],
+          importer: consumer,
+          specifier: '@flighthq/types',
+          target: { packageName: types.packageName, source: types.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, types],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    expect(output).toContain(
+      'const auto& presence_operand = flight::row_get<flight::RowKey<"body">>(request); return presence_operand.has_value();',
+    );
+    expect(output).toContain(
+      'const auto& presence_operand = flight::row_get<flight::RowKey<"body">>(request); return !presence_operand.has_value() || presence_operand.value().has_value();',
+    );
+    expect(output).toContain(
+      'return ([&]() { const auto& presence_operand = flight::row_get<flight::RowKey<"body">>(request); return !presence_operand.has_value(); }());',
+    );
+    expect(output).toContain(
+      'return ([&]() { const auto& presence_operand = flight::row_get<flight::RowKey<"body">>(request); return presence_operand.has_value() && !presence_operand.value().has_value(); }());',
+    );
+    expect(output).toContain(
+      'return ([&]() { const auto& presence_operand = flight::row_get<flight::RowKey<"body">>(request); return !presence_operand.has_value() || !presence_operand.value().has_value(); }());',
+    );
+    expect(output).toContain(
+      'return ([&]() { const auto& presence_operand = flight::row_get<flight::RowKey<"body">>(request); return presence_operand.has_value() && presence_operand.value().has_value(); }());',
+    );
+    expect(output).not.toContain('std::holds_alternative<flight::Null>');
+    expect(output).not.toContain('std::holds_alternative<flight::Undefined>');
+  });
+
   // The erased dynamic value carries presence in its own kind tag, so the test is an operation on the
   // chosen C++ representation rather than a comparison the target's operator set has to have been
   // given. The runtime names it: `is_undefined`, `is_null`, and `is_nullish`, the last documented as
@@ -12877,6 +12935,64 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('auto structural_spread_field_data = flight::make_ref<Data>');
     expect(output).toContain('flight::row_field<flight::RowKey<"alpha">>(std::move(structural_spread_field_alpha))');
     expect(output).not.toContain('(*common)');
+  });
+
+  it('reads a closed row spread before installing an explicit source-field override', () => {
+    const result = lower(
+      'closed-row-spread-override.ts',
+      `interface Common { alpha: string; data: string; name: string | null }
+       interface Data { text: string }
+       interface Label { alpha: number; data: Data; name: string | null }
+       function readCommon(): Common { return { alpha: 'discarded', data: 'discarded', name: null }; }
+       function readAlpha(): number { return 0.5; }
+       function readData(): Data { return { text: 'ready' }; }
+       export function create(): Readonly<Partial<Label>> {
+         return { ...readCommon(), data: readData(), alpha: readAlpha() };
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('auto&& structural_spread_source = read_common();');
+    expect(output).toContain('static_cast<void>(structural_spread_source->alpha);');
+    expect(output).toContain('static_cast<void>(structural_spread_source->data);');
+    expect(output).toContain('auto structural_spread_field_name = structural_spread_source->name;');
+    expect(output).toContain('auto structural_spread_field_data = read_data();');
+    expect(output).toContain('auto structural_spread_field_alpha = read_alpha();');
+    expect(output.indexOf('static_cast<void>(structural_spread_source->alpha)')).toBeLessThan(
+      output.indexOf('auto structural_spread_field_name = structural_spread_source->name'),
+    );
+    expect(output.indexOf('auto structural_spread_field_name = structural_spread_source->name')).toBeLessThan(
+      output.indexOf('auto structural_spread_field_data = read_data()'),
+    );
+    expect(output.indexOf('auto structural_spread_field_data = read_data()')).toBeLessThan(
+      output.indexOf('auto structural_spread_field_alpha = read_alpha()'),
+    );
+    expect(output.match(/flight::row_field<flight::RowKey<"alpha">>/gu)).toHaveLength(1);
+  });
+
+  it('skips an absent closed row spread before installing an explicit override', () => {
+    const result = lower(
+      'nullable-closed-row-spread-override.ts',
+      `interface Data { text: string }
+       interface Label { alpha: number; data: Data; name: string | null }
+       export function create(common?: Readonly<Partial<Label>>): Readonly<Partial<Label>> {
+         return { ...common, alpha: 0.5 };
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('auto&& structural_spread_source = common;');
+    expect(output).toContain(
+      'if (structural_spread_source.has_value()) static_cast<void>(structural_spread_source.value()->alpha);',
+    );
+    expect(output).toContain('std::optional<flight::Ref<Data>> structural_spread_field_data;');
+    expect(output).toContain(
+      'if (structural_spread_source.has_value()) structural_spread_field_data = structural_spread_source.value()->data;',
+    );
+    expect(output).toContain('auto structural_spread_field_alpha = 0.5;');
+    expect(output.match(/flight::row_field<flight::RowKey<"alpha">>/gu)).toHaveLength(1);
   });
 
   it('resolves an imported target against a local spread schema for closed row construction', () => {
