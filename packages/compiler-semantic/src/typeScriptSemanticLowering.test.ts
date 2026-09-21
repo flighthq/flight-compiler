@@ -16186,6 +16186,118 @@ it('defers member type queries whose answer is a declaration shape or an unsuppo
   });
 });
 
+// The same boundary one segment further along: the carrier is a property the declaration says may be
+// absent, and the guard above the query is what keeps it present. `typeof config.backend.provider` has no
+// declaration spelling to defer to, so the answer is written where the query is written.
+it('answers a member type query over a carrier a guard keeps present', () => {
+  const result = lower(
+    'narrowed-property-query.ts',
+    `export const config = { backend: { provider: 'local' } as { provider: string } | undefined };
+     export function readProvider(): void {
+       if (config.backend === undefined) return;
+       const provider: typeof config.backend.provider = config.backend.provider;
+       void provider;
+     }`,
+  );
+  const readProvider = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'readProvider',
+  );
+  if (readProvider?.kind !== 'function') throw new TypeError('expected readProvider');
+  const provider = readProvider.body.find(
+    (statement) =>
+      statement.kind === 'variable' &&
+      statement.declarations.some((entry) => 'binding' in entry && entry.binding.name === 'provider'),
+  );
+  if (provider?.kind !== 'variable') throw new TypeError('expected provider');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(provider.declarations[0]?.type).toMatchObject({ kind: 'primitive', name: 'string' });
+  // The answer is what changed; the read it annotates is still the guard's own narrowed read.
+  expect(provider.declarations[0]?.initializer).toMatchObject({
+    kind: 'property',
+    name: 'provider',
+    object: { kind: 'property', name: 'backend', presence: 'narrowedPresent' },
+  });
+});
+
+// A generic carrier reaches the same answer, because the declaration's constraint is what says the carrier
+// may be absent, and it is absent in the emitted storage there for a different reason (the guard on an
+// optional row member has no absence channel) -- a refusal this query does not decide.
+it('answers a member type query over a generic carrier a guard keeps present', () => {
+  const result = lower(
+    'narrowed-generic-property-query.ts',
+    `export interface Holder { backend?: { provider: string } }
+     export function readHolder<T extends Holder>(holder: T): void {
+       if (holder.backend === undefined) return;
+       const provider: typeof holder.backend.provider = holder.backend.provider;
+       void provider;
+     }`,
+  );
+  const readHolder = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'readHolder',
+  );
+  if (readHolder?.kind !== 'function') throw new TypeError('expected readHolder');
+  const provider = readHolder.body.find(
+    (statement) =>
+      statement.kind === 'variable' &&
+      statement.declarations.some((entry) => 'binding' in entry && entry.binding.name === 'provider'),
+  );
+  if (provider?.kind !== 'variable') throw new TypeError('expected provider');
+
+  expect(result.diagnostics).toEqual([]);
+  expect(provider.declarations[0]?.type).toMatchObject({ kind: 'primitive', name: 'string' });
+});
+
+// What the answer must not do, three ways. A carrier still absent where the query is written was never
+// narrowed -- TypeScript rejects that source, and the query keeps the deferred node it cannot resolve. A
+// carrier of two domains would answer with a member no single read names (`string | number`). And a member
+// whose answer is a declaration shape is still the deferred node's job. All three refuse; none is guessed.
+it('defers a member type query that is absent, ambiguous, or a declaration shape', () => {
+  const result = lower(
+    'deferred-property-queries.ts',
+    `export const config = { backend: { provider: 'local' } as { provider: string } | undefined };
+     export const settings = { backend: { limits: { retries: 3 } } as { limits: { retries: number } } | undefined };
+     export interface Left { tag: string }
+     export interface Right { tag: number }
+     export const holder = { value: undefined as Left | Right | undefined };
+     export function readAll(): void {
+       const absent: typeof config.backend.provider = config.backend.provider;
+       const ambiguous: typeof holder.value.tag = holder.value.tag;
+       const shaped: typeof settings.backend.limits = settings.backend.limits;
+       void absent;
+       void ambiguous;
+       void shaped;
+     }`,
+  );
+  const readAll = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'readAll',
+  );
+  if (readAll?.kind !== 'function') throw new TypeError('expected readAll');
+  const declared = (name: string) => {
+    const statement = readAll.body.find(
+      (candidate) =>
+        candidate.kind === 'variable' &&
+        candidate.declarations.some((entry) => 'binding' in entry && entry.binding.name === name),
+    );
+    if (statement?.kind !== 'variable') throw new TypeError(`expected ${name}`);
+    return statement.declarations[0]!.type;
+  };
+
+  expect(result.diagnostics).toEqual([]);
+  expect(declared('absent')).toMatchObject({
+    kind: 'typeOf',
+    reference: { kind: 'binding', path: ['backend', 'provider'] },
+  });
+  expect(declared('ambiguous')).toMatchObject({
+    kind: 'typeOf',
+    reference: { kind: 'binding', path: ['value', 'tag'] },
+  });
+  expect(declared('shaped')).toMatchObject({
+    kind: 'typeOf',
+    reference: { kind: 'binding', path: ['backend', 'limits'] },
+  });
+});
+
 it('lowers unique symbol syntax through the ordinary symbol representation', () => {
   const result = lower('unique-symbol.ts', 'export const s: unique symbol = Symbol();');
   expect(result.diagnostics).toEqual([]);

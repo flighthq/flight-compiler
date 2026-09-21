@@ -3797,26 +3797,25 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   }
   if (ts.isTypeQueryNode(node)) {
     const reference = lowerValueNameReference(node.exprName, context);
-    // A member query a guard narrowed is answered where it was written, because the declaration has no
-    // spelling for the member the narrowed carrier carries -- see `isTypeScriptTypeQueryCarrierNarrowed`.
-    // Every other query keeps the deferred `typeOf` node the target resolves from the declaration, except
-    // for an ambient symbol or an imported binding, whose declaration is not this module's to resolve, and
-    // only a scalar answer is written for those.
-    const narrowedReference = getTypeNameNodeParts(node.exprName);
-    const narrowedMemberQuery =
+    // A member query whose carrier only a guard keeps present is answered where it was written, because
+    // the member it asks for has no spelling in the declaration to defer to -- see
+    // `isTypeScriptTypeQueryMemberQueryNarrowed`. Every other query keeps the deferred `typeOf` node the
+    // target resolves from the declaration, except for an ambient symbol or an imported binding, whose
+    // declaration is not this module's to resolve, and only a scalar answer is written for those.
+    const memberQuery =
       reference.kind === 'binding' &&
       reference.path.length > 0 &&
-      narrowedReference !== undefined &&
-      isTypeScriptTypeQueryCarrierNarrowed(narrowedReference.root, context);
+      isTypeScriptBindingIntroducedInModule(reference.binding, context) &&
+      isTypeScriptTypeQueryMemberQueryNarrowed(node, context);
     if (
-      narrowedMemberQuery ||
+      memberQuery ||
       reference.kind === 'ambient' ||
       !isTypeScriptBindingIntroducedInModule(reference.binding, context)
     ) {
       const checkerType = getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
       if (
         checkerType &&
-        (narrowedMemberQuery
+        (memberQuery
           ? isIrTypeRepresentableTypeQueryEvidence(checkerType)
           : isIrTypeScalarTypeQueryEvidence(checkerType))
       ) {
@@ -3837,25 +3836,77 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
   unsupported(node, `unsupported type ${ts.SyntaxKind[node.kind]}`);
 }
 
-// Whether control flow narrowed the carrier a member query names between its declaration and the query.
+// Whether a member query is one only control flow can answer: the declaration says the carrier may be
+// absent, the carrier is present where the query is written, and one domain is left to read.
 //
-// `typeOf` defers by following the declaration's own type along the path, which answers every query that
-// declaration carries -- `typeof RegistryEntryState.Bound` is the literal the const holds. The query a
-// declaration cannot answer is one the checker resolves only because a guard narrowed the carrier:
-// `const progress = options?.progress` has the type `Signal | undefined`, and `typeof progress.emit` is
-// well-typed only below the guard that removes the undefined. The checker's answer at the query differs
-// from the value's own declared type exactly when that happened, and then the answer has to be written
-// here -- the deferred node has no spelling to resolve.
+// The deferred `typeOf` node asks the target to resolve the reference through the declaration's type with
+// no flow information, so a member only a guard makes reachable has no answer there: `config.backend` is
+// `{ provider: string } | undefined`, and `typeof config.backend.provider` is well-typed only below
+// `if (config.backend === undefined) return;`. That is the same boundary as a narrowed binding
+// (`const progress = options?.progress` then `typeof progress.emit`) one segment further along, because
+// the carrier is what narrowing changes -- the root for a one-segment path, the prefix for a longer one --
+// and absence is what narrowing removes. So the three questions are: does the *declaration* say the
+// carrier may be absent, is the carrier present where the query is written, and does one domain remain?
 //
-// A narrowing that leaves the binding's own type alone -- a guard on a property read, `if (config.backend)`
-// followed by `typeof config.backend.provider` -- is not detected, and such a query keeps the deferred
-// node and refuses downstream rather than resolving. That is the conservative direction: the refusal is
-// visible, and nothing is written that the declaration does not carry.
-function isTypeScriptTypeQueryCarrierNarrowed(root: ts.Identifier, context: LoweringContext): boolean {
-  const symbol = context.checker.getSymbolAtLocation(root);
+// The last question is what keeps an ambiguous carrier out. A member drawn from two domains at once is a
+// member no single read names -- `Left | Right` narrowed away from `undefined` then `typeof carrier.tag`
+// is `string | number` -- and the emitted read has no form for it (a `std::variant` carrier is read
+// straight through its member, which does not compile). Those keep the refusal.
+function isTypeScriptTypeQueryMemberQueryNarrowed(node: ts.TypeQueryNode, context: LoweringContext): boolean {
+  const parts = getTypeNameNodeParts(node.exprName);
+  if (!parts || parts.path.length === 0) return false;
+  const symbol = context.checker.getSymbolAtLocation(parts.root);
   const declaration = symbol?.valueDeclaration;
   if (!symbol || !declaration) return false;
-  return context.checker.getTypeAtLocation(root) !== context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
+  const carrier = ts.isQualifiedName(node.exprName) ? node.exprName.left : node.exprName;
+  const declaredCarrier = getTypeScriptDeclaredMemberTypes(
+    [context.checker.getTypeOfSymbolAtLocation(symbol, declaration)],
+    parts.path.slice(0, -1),
+    declaration,
+    context,
+  );
+  if (!declaredCarrier) return false;
+  if (!declaredCarrier.some(isTypeScriptAbsentConstituent)) return false;
+  if (declaredCarrier.flatMap(getTypeScriptPresentConstituents).length !== 1) return false;
+  return !getTypeScriptUnionConstituents(context.checker.getTypeAtLocation(carrier)).some(
+    isTypeScriptAbsentConstituent,
+  );
+}
+
+// The declared types a path reaches, or undefined when a segment is missing from one of them. Unions are
+// flattened so that every constituent has to carry the member: this walk is the deferred node's own
+// question, and its resolution has no narrowing to lean on.
+function getTypeScriptDeclaredMemberTypes(
+  types: readonly ts.Type[],
+  path: readonly string[],
+  declaration: ts.Declaration,
+  context: LoweringContext,
+): readonly ts.Type[] | undefined {
+  let current = types.flatMap(getTypeScriptUnionConstituents);
+  for (const segment of path) {
+    if (current.length === 0) return undefined;
+    const next: ts.Type[] = [];
+    for (const type of current) {
+      const member = context.checker.getPropertyOfType(type, segment);
+      if (!member) return undefined;
+      next.push(context.checker.getTypeOfSymbolAtLocation(member, member.valueDeclaration ?? declaration));
+    }
+    current = next.flatMap(getTypeScriptUnionConstituents);
+  }
+  return current.length === 0 ? undefined : current;
+}
+
+// Absence is the one constituent a guard removes, so it is the one a member read does not have to find.
+function isTypeScriptAbsentConstituent(type: ts.Type): boolean {
+  return (type.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0;
+}
+
+function getTypeScriptPresentConstituents(type: ts.Type): readonly ts.Type[] {
+  return getTypeScriptUnionConstituents(type).filter((constituent) => !isTypeScriptAbsentConstituent(constituent));
+}
+
+function getTypeScriptUnionConstituents(type: ts.Type): readonly ts.Type[] {
+  return type.isUnion() ? type.types : [type];
 }
 
 // Whether a `typeof <value>` value query's checker result is a domain that is exactly itself.

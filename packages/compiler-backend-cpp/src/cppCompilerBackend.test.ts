@@ -3217,6 +3217,60 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  // The same boundary as the narrowed binding above, one segment further along: the carrier is a property
+  // the declaration says may be absent, and the guard is what keeps it present. The annotation is the
+  // member the guard leaves, and the read is the guard's own narrowed read of that member -- nothing about
+  // how the value is read changes here.
+  it('answers a member type query over a carrier a guard keeps present', () => {
+    const module = lower(
+      'narrowed-property-query.ts',
+      `export const config = { backend: { provider: 'local' } as { provider: string } | undefined };
+       export function readProvider(): string {
+         if (config.backend === undefined) return '';
+         const provider: typeof config.backend.provider = config.backend.provider;
+         return provider;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('const flight::String provider = config->backend.value()->provider;');
+    expect(emitted).toContain('return provider;');
+  });
+
+  // Three refusals the rule keeps: a carrier still absent where the query is written was never narrowed, a
+  // carrier of two domains would answer with a member no single read names, and a member whose answer is a
+  // declaration shape stays with the deferred node. Each is written out in the source and refused at
+  // emission rather than guessed at.
+  it('refuses a member type query over an absent, ambiguous, or declaration-shaped carrier', () => {
+    const emit = (body: string): void => {
+      const module = lower(
+        'deferred-property-queries.ts',
+        `export const config = { backend: { provider: 'local' } as { provider: string } | undefined };
+         export const settings = { backend: { limits: { retries: 3 } } as { limits: { retries: number } } | undefined };
+         export interface Left { tag: string }
+         export interface Right { tag: number }
+         export const holder = { value: undefined as Left | Right | undefined };
+         export function readAll(): void {
+           ${body}
+         }`,
+      ).module;
+      emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' });
+    };
+
+    expect(() => emit(`const absent: typeof config.backend.provider = config.backend.provider; void absent;`)).toThrow(
+      'typeOf types require C++ type computation lowering',
+    );
+    expect(() =>
+      emit(`if (holder.value === undefined) return;
+         const ambiguous: typeof holder.value.tag = holder.value.tag; void ambiguous;`),
+    ).toThrow('typeOf types require C++ type computation lowering');
+    expect(() =>
+      emit(`if (settings.backend === undefined) return;
+         const shaped: typeof settings.backend.limits = settings.backend.limits; void shaped;`),
+    ).toThrow('typeOf types require C++ type computation lowering');
+  });
+
   it('constructs a buffered-log interval handle from exact ambient call-result evidence', () => {
     const module = lowerPackage(
       '@flighthq/log',
