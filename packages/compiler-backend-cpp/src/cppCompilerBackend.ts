@@ -5410,7 +5410,7 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
     );
     if (nullableWeakMapView) refuseCppErasedRefWeakMapView(statementContext, true);
     emitted.push(...emitStatement(statement, statementContext));
-    const narrowing = getCppCapturedReferentPresentGuardNarrowingCpp(statement, statementContext);
+    const narrowing = getCppOptionalStoragePresentGuardNarrowingCpp(statement, statementContext);
     if (narrowing) {
       statementContext = {
         ...statementContext,
@@ -5421,10 +5421,12 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
   return emitted;
 }
 
-// TypeScript preserves a `const` binding's narrowing in a closure created after a terminating null
-// guard. Closure evidence deliberately records capture and mutation rather than target-specific flow,
-// so retain that proven outer narrowing while choosing the optional C++ capture representation.
-function getCppCapturedReferentPresentGuardNarrowingCpp(
+// A terminating nullish guard proves subsequent statements see the present payload. Most such reads
+// carry checker narrowing on each identifier. Backend-elected optional storage for an indexed read is
+// different: its source type already excludes absence, so there is no source union for the checker to
+// narrow. Retain the guard in the statement context for that storage boundary and for closures whose
+// capture evidence likewise does not carry target-specific flow.
+function getCppOptionalStoragePresentGuardNarrowingCpp(
   statement: Readonly<IrStatement>,
   context: EmitContext,
 ): Readonly<{ bindingId: string; type: Readonly<IrType> }> | undefined {
@@ -5444,7 +5446,13 @@ function getCppCapturedReferentPresentGuardNarrowingCpp(
   const operand = leftSentinel ? statement.condition.right : statement.condition.left;
   if (operand.kind !== 'identifier' || operand.reference.kind !== 'binding') return undefined;
   const bindingId = operand.reference.binding.id;
-  if (!context.capturedReferentOnlyBindingIds.has(bindingId)) return undefined;
+  if (
+    !context.capturedReferentOnlyBindingIds.has(bindingId) &&
+    !context.nullableBindingIds.has(bindingId) &&
+    !context.arrayElementBindingIds.has(bindingId)
+  ) {
+    return undefined;
+  }
   const evidence = statement.condition.semantics.nullishComparison;
   const testsEveryAbsentMember =
     statement.condition.operator === '==' ||
@@ -10949,6 +10957,8 @@ function getCppCollectionCallArgumentExpectedTypeCpp(
   if (weakSet && weakSet.typeArguments.length === 1 && index === 0 && ['add', 'delete', 'has'].includes(name)) {
     return weakSet.typeArguments[0];
   }
+  const array = getIrArrayTypeCpp(objectType, context, new Set());
+  if (array && member?.receiver === 'array' && name === 'push') return array.element;
   if (!member) return undefined;
   const collection = getIrAmbientCollectionTypeCpp(objectType, context, new Set());
   if (!collection) return undefined;
@@ -10985,7 +10995,7 @@ function assertCppPresentOptionalCollectionArgumentCpp(
   ) {
     return;
   }
-  if (argument.presence !== 'narrowedPresent') {
+  if (argument.presence !== 'narrowedPresent' && !context.narrowedBindingTypes.has(argument.reference.binding.id)) {
     emissionError(
       context,
       `collection member ${expression.callee.kind === 'property' ? expression.callee.name : 'call'} argument from optional C++ storage requires proven present payload`,

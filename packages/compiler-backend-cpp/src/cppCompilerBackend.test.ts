@@ -16130,6 +16130,40 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('auto optional_chain_receiver = items');
   });
 
+  it('unwraps a guarded indexed array value at an Array push boundary', () => {
+    const result = lower(
+      'push-guarded-index.ts',
+      `export function select(pools: number[][], index: number): number[][] | null {
+         const selected: number[][] = [];
+         const pool = pools[index];
+         if (pool === undefined) return null;
+         selected.push(pool);
+         return selected;
+       }`,
+    );
+    const select = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'select',
+    );
+    const push =
+      select?.kind === 'function'
+        ? select.body.find(
+            (statement) =>
+              statement.kind === 'expression' &&
+              statement.expression.kind === 'call' &&
+              statement.expression.callee.kind === 'property' &&
+              statement.expression.callee.name === 'push',
+          )
+        : undefined;
+    const argument =
+      push?.kind === 'expression' && push.expression.kind === 'call' ? push.expression.arguments[0] : undefined;
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(argument).toMatchObject({ kind: 'identifier', reference: { binding: { name: 'pool' } } });
+    expect(argument).not.toHaveProperty('presence');
+    expect(emitted).toContain('selected.push(pool.value())');
+    expect(emitted).not.toContain('selected.push(pool);');
+  });
+
   it('emits optional call with receiverNullish excluded', () => {
     const result = lower(
       'opt-call-excluded.ts',
