@@ -4492,17 +4492,20 @@ function lowerTypeScriptIndexedAccessSyntax(node: ts.IndexedAccessTypeNode, cont
   };
 }
 
+interface TypeScriptPartialRowSubject {
+  readonly structuralRowOverride?: readonly IrObjectTypeProperty[] | undefined;
+  readonly type: Readonly<IrType>;
+}
+
 // `{ key?: Value } & Partial<Omit<Subject, 'key'>>` states the partial row of one subject with a
-// member re-stated on top of it. Once the row is the representation — which is how this compiler
-// already emits `Omit` over a reference-preserving subject, by projecting nothing and keeping the
-// subject's own row — the re-statement is a type-level refinement the row carries through its
-// accessors, and the whole body is the partial row of the subject. Recognising it here is what lets
-// an alias whose re-stated member cannot itself be lowered still name a type, instead of dropping
-// the declaration to opaque.
+// member re-stated on top of it. `Partial<Subject>` remains the safe open-generic representation,
+// while the authored member domains are retained separately so a target can recover the exact
+// closed row after `Subject` is concrete. The keys must agree exactly: treating a merely adjacent
+// property as an override would silently invent a member relationship the source never stated.
 function getTypeScriptPartialRowSubject(
   node: ts.TypeAliasDeclaration,
   context: LoweringContext,
-): Readonly<IrType> | undefined {
+): Readonly<TypeScriptPartialRowSubject> | undefined {
   if (node.typeParameters?.length !== 1 || !ts.isIntersectionTypeNode(node.type)) return undefined;
   const parameter = node.typeParameters[0];
   const parameterSymbol = parameter && context.checker.getSymbolAtLocation(parameter.name);
@@ -4514,19 +4517,125 @@ function getTypeScriptPartialRowSubject(
   const literal = members.find(ts.isTypeLiteralNode);
   const keys = removed.find((candidate) => candidate !== undefined);
   if (!literal || !keys || keys.size === 0) return undefined;
-  const restated = literal.members.map((member) =>
-    ts.isPropertySignature(member) && member.questionToken && ts.isIdentifier(member.name)
-      ? member.name.text
-      : undefined,
-  );
-  if (restated.length === 0 || restated.some((name) => name === undefined || !keys.has(name))) return undefined;
+  const properties = literal.members.map((member) => {
+    if (!ts.isPropertySignature(member) || !member.type) return undefined;
+    const key = lowerTypeScriptTypePropertyKey(member.name, context);
+    return key && !key.computedKey
+      ? {
+          member,
+          name: key.name,
+          optional: member.questionToken !== undefined,
+          readonly: hasModifier(member, ts.SyntaxKind.ReadonlyKeyword),
+        }
+      : undefined;
+  });
+  if (
+    properties.length === 0 ||
+    properties.some((property) => !property) ||
+    new Set(properties.map((property) => property!.name)).size !== properties.length ||
+    keys.size !== properties.length ||
+    properties.some((property) => !keys.has(property!.name))
+  ) {
+    return undefined;
+  }
   const reference = lowerTypeNameReference(parameter.name, context);
   if (!reference) return undefined;
-  return {
+  const type: IrType = {
     kind: 'named',
     reference: { kind: 'ambient', name: 'Partial' },
     typeArguments: [{ kind: 'named', reference, typeArguments: [] }],
   };
+  const override = properties.map((property): IrObjectTypeProperty | undefined => {
+    const domain = lowerTypeScriptPartialRowOverrideDomain(
+      property!.member.type!,
+      parameterSymbol,
+      property!.name,
+      context,
+    );
+    return domain
+      ? {
+          name: property!.name,
+          optional: property!.optional,
+          readonly: property!.readonly,
+          type: domain,
+        }
+      : undefined;
+  });
+  return override.every((property): property is IrObjectTypeProperty => property !== undefined)
+    ? { structuralRowOverride: override, type }
+    : { type };
+}
+
+function lowerTypeScriptPartialRowOverrideDomain(
+  node: ts.TypeNode,
+  parameterSymbol: ts.Symbol,
+  propertyName: string,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const unwrapped = ts.isParenthesizedTypeNode(node) ? node.type : node;
+  if (ts.isTypeReferenceNode(unwrapped) && unwrapped.typeArguments?.length === 1 && unwrapped.typeArguments[0]) {
+    const extracted = getTypeScriptPartialRowExtractedMember(
+      unwrapped.typeArguments[0],
+      parameterSymbol,
+      propertyName,
+      context,
+    );
+    const reference = extracted ? lowerTypeNameReference(unwrapped.typeName, context) : undefined;
+    if (extracted && reference) {
+      return { kind: 'named', reference, typeArguments: [extracted] };
+    }
+  }
+  const extracted = getTypeScriptPartialRowExtractedMember(unwrapped, parameterSymbol, propertyName, context);
+  if (extracted) return extracted;
+  try {
+    return lowerType(unwrapped, context);
+  } catch (error) {
+    if (isUnsupportedSyntaxFailure(error)) return undefined;
+    throw error;
+  }
+}
+
+// `T extends { key: infer Value } ? Value : never` is exactly the required member domain `T['key']`
+// for the instantiations accepted by the conditional. Match symbols for T and the inferred binding,
+// and the resolved property key shared with the row override; no helper or SDK declaration name is
+// involved in the rule.
+function getTypeScriptPartialRowExtractedMember(
+  node: ts.TypeNode,
+  parameterSymbol: ts.Symbol,
+  propertyName: string,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const conditional = ts.isParenthesizedTypeNode(node) ? node.type : node;
+  if (
+    !ts.isConditionalTypeNode(conditional) ||
+    !isTypeScriptBareTypeReferenceToSymbol(conditional.checkType, parameterSymbol, context) ||
+    !ts.isTypeLiteralNode(conditional.extendsType) ||
+    conditional.extendsType.members.length !== 1 ||
+    conditional.falseType.kind !== ts.SyntaxKind.NeverKeyword
+  ) {
+    return undefined;
+  }
+  const member = conditional.extendsType.members[0];
+  if (
+    !member ||
+    !ts.isPropertySignature(member) ||
+    member.questionToken ||
+    !member.type ||
+    tryPropertyName(member.name) !== propertyName ||
+    !ts.isInferTypeNode(member.type)
+  ) {
+    return undefined;
+  }
+  const inferred = context.checker.getSymbolAtLocation(member.type.typeParameter.name);
+  if (!inferred || !isTypeScriptBareTypeReferenceToSymbol(conditional.trueType, inferred, context)) return undefined;
+  const binding = context.typeBindings.get(parameterSymbol);
+  return binding
+    ? {
+        index: { kind: 'literal', value: propertyName },
+        kind: 'indexedAccess',
+        object: { kind: 'named', reference: { binding, kind: 'binding', path: [] }, typeArguments: [] },
+      }
+    : undefined;
 }
 
 // A mapped type over `keyof Subject` that keeps `Subject[Key]` as written selects some of the
@@ -4626,15 +4735,18 @@ function lowerTypeAlias(node: ts.TypeAliasDeclaration, context: LoweringContext)
   const objectView = getTypeScriptReadonlyRemovalIdentityMappedTypeSource(node.type, context)
     ? ('writable' as const)
     : undefined;
-  const partialRowSubject =
-    getTypeScriptPartialRowSubject(node, context) ?? getTypeScriptMappedSubjectSelection(node, context);
+  const partialRowSubject = getTypeScriptPartialRowSubject(node, context);
+  const mappedSubject = partialRowSubject ? undefined : getTypeScriptMappedSubjectSelection(node, context);
   return {
     binding: lowerTypeBindingIdentity(node.name, context),
     exported: isExported(node),
     kind: 'typeAlias',
     ...(objectView ? { objectView } : {}),
     origin: origin(node, context),
-    type: partialRowSubject ?? lowerType(node.type, context),
+    ...(partialRowSubject?.structuralRowOverride
+      ? { structuralRowOverride: partialRowSubject.structuralRowOverride }
+      : {}),
+    type: partialRowSubject?.type ?? mappedSubject ?? lowerType(node.type, context),
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
 }

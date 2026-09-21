@@ -56,6 +56,10 @@ export interface IrTypeAliasDeclaration {
   // shared owner while changing which operations the alias admits.
   readonly objectView?: 'writable' | undefined;
   readonly origin: CompilerSourceOrigin;
+  // Some generic row helpers have a safe, representation-preserving fallback while also restating
+  // selected members with narrower domains. The fallback remains `type`; these authored properties
+  // let targets recover the narrower closed shape only when a concrete instantiation proves it.
+  readonly structuralRowOverride?: readonly IrObjectTypeProperty[] | undefined;
   readonly type: IrType;
   readonly typeParameters: readonly IrTypeParameter[];
 }

@@ -8726,6 +8726,100 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('RowOf<flight::types::PartialNode<');
   });
 
+  it('plans concrete mapped-row overrides for local and imported aliases with safe fallback', () => {
+    const provider = ts.createSourceFile(
+      '/flight/packages/types/src/row-overrides.ts',
+      `export interface Data { value: number; label: string }
+       export interface Item { data: Data; name: string }
+       export interface Recursive { data: Recursive; name: string }
+       export type ImportedPatch<Value> = {
+         data?: Partial<Value extends { data: infer Data } ? Data : never>
+       } & Partial<Omit<Value, 'data'>>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/node/src/row-overrides.ts',
+      `import type { Data, ImportedPatch, Item, Recursive } from '@flighthq/types/row-overrides';
+       type LocalPatch<Value> = {
+         data?: Partial<Value extends { data: infer Data } ? Data : never>
+       } & Partial<Omit<Value, 'data'>>;
+       type RequiredPatch<Value> = { data: Partial<Data> } & Partial<Omit<Value, 'data'>>;
+       type ConflictingPatch<Value> = { data?: string } & Partial<Omit<Value, 'data'>>;
+       interface Common { name?: string }
+       export function imported(value: ImportedPatch<Item>): void { void value.data; }
+       export function local(value: LocalPatch<Item>): void { void value.data; }
+       export function required(value: RequiredPatch<Item>): void { void value.data; }
+       export function conflicting(value: ConflictingPatch<Item>): void { void value.data; }
+       export function recursive(value: ImportedPatch<Recursive>): void { void value.data; }
+       export function construct(source: Common): ImportedPatch<Item> {
+         return { ...source, data: { value: 1 } };
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['Data', 'ImportedPatch', 'Item', 'Recursive'],
+          specifier: '@flighthq/types/row-overrides',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/row-overrides.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: provider, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/node', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const planner = createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution);
+    const functions = new Map(
+      modules[1]!.declarations.flatMap((declaration) =>
+        declaration.kind === 'function' ? [[declaration.binding.name, declaration] as const] : [],
+      ),
+    );
+    const parameterType = (name: string): IrType => functions.get(name)!.parameters[0]!.type;
+    const property = (name: string) =>
+      planner.resolveObjectShape(parameterType(name), modules[1]!)?.find((candidate) => candidate.name === 'data');
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const name of ['imported', 'local', 'recursive']) {
+      expect(planner.resolveStructuralRow(parameterType(name), modules[1]!)).toMatchObject({
+        kind: 'rowOf',
+        type: { kind: 'object' },
+      });
+      expect(property(name)).toMatchObject({
+        optional: true,
+        type: { kind: 'named', reference: { kind: 'ambient', name: 'Partial' } },
+      });
+    }
+    expect(property('required')).toMatchObject({
+      optional: false,
+      type: { kind: 'named', reference: { kind: 'ambient', name: 'Partial' } },
+    });
+    expect(planner.resolveStructuralRow(parameterType('conflicting'), modules[1]!)).toMatchObject({
+      kind: 'partial',
+    });
+    expect(property('conflicting')).toMatchObject({
+      optional: true,
+      type: { kind: 'named', reference: { kind: 'binding' } },
+    });
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+    expect(emitted).toContain('std::optional<double> value;');
+    expect(emitted).toContain('std::optional<flight::String> label;');
+    expect(emitted).toContain('auto structural_spread_field_data = flight::make_ref<');
+    expect(emitted).toContain('inline void conflicting(ConflictingPatch<flight::Ref<flighthq_types::Item>> value)');
+    expect(emitted).not.toContain('RowOf<flighthq_types::ImportedPatch<');
+  });
+
   it('refuses a structurally assignable sibling constraint as a contextual entity reference', () => {
     const result = lowerPackage(
       '@flighthq/node',

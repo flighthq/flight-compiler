@@ -4750,7 +4750,13 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   if (spread?.kind !== 'spread' || members.some((member) => member.kind !== 'property')) return undefined;
 
   const targetObject = getCppStructuralRowObjectTypeCpp(row);
-  if (!targetObject || !getCppNominalTypeDeclarationOwnerCpp(targetObject, context.module, context)) return undefined;
+  if (
+    !targetObject ||
+    (!getCppNominalTypeDeclarationOwnerCpp(targetObject, context.module, context) &&
+      !(targetObject.kind === 'object' && getCppStructuralRowOverrideAliasOwnerCpp(type, context.module, context)))
+  ) {
+    return undefined;
+  }
   const targetPlan = context.referenceRepresentationPlanner.plan(targetObject, context.module);
   if (
     targetPlan.kind !== 'represented' ||
@@ -6333,9 +6339,16 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     ) {
       return getTypeReferenceTargetName(type, context);
     }
-    if (type.kind !== 'named' || type.reference.kind === 'ambient') {
-      const structuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module);
-      if (structuralRow) return emitCppStructuralRowReferenceTypeCpp(structuralRow, context);
+    const structuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module);
+    const structuralObject = structuralRow ? getCppStructuralRowObjectTypeCpp(structuralRow) : undefined;
+    if (
+      structuralRow &&
+      (type.kind !== 'named' ||
+        type.reference.kind === 'ambient' ||
+        (structuralObject?.kind === 'object' &&
+          getCppStructuralRowOverrideAliasOwnerCpp(type, context.module, context)))
+    ) {
+      return emitCppStructuralRowReferenceTypeCpp(structuralRow, context);
     }
     const projection = getCppCallableObjectIndexedProjectionCpp(type, context);
     if (projection) {
@@ -6960,6 +6973,64 @@ function getCppNominalTypeDeclarationOwnerCpp(
       ? importedOwner()
       : context.directBindingOwners.get(type.reference.binding.id);
   return owner?.declaration.kind === 'class' || owner?.declaration.kind === 'interface'
+    ? { declaration: owner.declaration, module: owner.module }
+    : undefined;
+}
+
+function getCppStructuralRowOverrideAliasOwnerCpp(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+):
+  | Readonly<{
+      declaration: Readonly<IrTypeAliasDeclaration>;
+      module: Readonly<IrModule>;
+    }>
+  | undefined {
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    return getCppStructuralRowOverrideAliasOwnerCpp(type.typeArguments[0], module, context);
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.reference.path.length > 0
+  ) {
+    return undefined;
+  }
+  const reference = type.reference;
+  const importedOwner = ():
+    | Readonly<{ declaration: Readonly<IrDeclaration>; module: Readonly<IrModule> }>
+    | undefined => {
+    if (reference.kind !== 'binding' || reference.binding.kind !== 'import') return undefined;
+    const moduleContext = module === context.module ? context : { ...context, module };
+    const importItem = module.imports.find((candidate) =>
+      candidate.bindings.some((binding) => binding.binding.id === reference.binding.id),
+    );
+    const binding = importItem?.bindings.find((candidate) => candidate.binding.id === reference.binding.id);
+    if (!importItem || !binding || binding.imported === '*') return undefined;
+    const candidates = getCppResolvedImportModules(importItem.specifier, moduleContext).flatMap((targetModule) =>
+      getCppExportedTypeDeclarationOwnersCpp(targetModule, binding.imported, context, new Set()),
+    );
+    const unique = new Map(
+      candidates.map((candidate) => [
+        `${getCppModuleIdentityKey(candidate.module)}\0${candidate.declaration.binding.id}`,
+        candidate,
+      ]),
+    );
+    return unique.size === 1 ? [...unique.values()][0] : undefined;
+  };
+  const owner =
+    type.reference.binding.kind === 'import'
+      ? importedOwner()
+      : context.directBindingOwners.get(type.reference.binding.id);
+  return owner?.declaration.kind === 'typeAlias' && owner.declaration.structuralRowOverride
     ? { declaration: owner.declaration, module: owner.module }
     : undefined;
 }

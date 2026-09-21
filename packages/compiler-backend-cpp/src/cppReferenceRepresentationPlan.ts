@@ -291,10 +291,19 @@ function resolveIrTypeStructuralRowCpp(
             }),
           )
         : type.typeArguments;
-    const resolved = resolveIrTypeStructuralSubstitution(
-      declaration.type,
-      createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
+    const substitutions = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments);
+    const overrideProperties = resolveIrTypeAliasStructuralRowOverrideCpp(
+      declaration,
+      substitutions,
+      location.module,
+      moduleSet,
+      cache,
+      new Set(aliases).add(key),
     );
+    if (overrideProperties) {
+      return { kind: 'rowOf', type: { kind: 'object', properties: overrideProperties } };
+    }
+    const resolved = resolveIrTypeStructuralSubstitution(declaration.type, substitutions);
     let row = resolveIrTypeStructuralRowCpp(
       resolved,
       location.module,
@@ -324,10 +333,7 @@ function resolveIrTypeStructuralRowCpp(
         declaration.objectView === 'writable',
       );
       if (openRow) {
-        row = substituteCppStructuralRowPlan(
-          openRow,
-          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
-        );
+        row = substituteCppStructuralRowPlan(openRow, substitutions);
       }
     }
     if (row) return declaration.objectView === 'writable' ? { kind: 'writable', row } : row;
@@ -625,6 +631,10 @@ function resolveIrTypeObjectShapeCpp(
   ancestors: ReadonlySet<string>,
 ): readonly Readonly<IrObjectTypeProperty>[] | undefined {
   if (type.kind === 'object') return type.properties;
+  if (type.kind === 'indexedAccess') {
+    const member = resolveIrTypeIndexedAccessCpp(type, module, moduleSet, cache, ancestors);
+    return member ? resolveIrTypeObjectShapeCpp(member, module, moduleSet, cache, ancestors) : undefined;
+  }
   if (type.kind === 'conditionalFacet') {
     return resolveIrConditionalFacetArmCpp(type, module, moduleSet, cache) ? [] : undefined;
   }
@@ -697,6 +707,15 @@ function resolveIrTypeObjectShapeCpp(
   const declaration = location.declaration;
   const substitutions = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, type.typeArguments);
   if (declaration.kind === 'typeAlias') {
+    const overrideProperties = resolveIrTypeAliasStructuralRowOverrideCpp(
+      declaration,
+      substitutions,
+      location.module,
+      moduleSet,
+      cache,
+      nextAncestors,
+    );
+    if (overrideProperties) return overrideProperties;
     return resolveIrTypeObjectShapeCpp(
       resolveIrTypeStructuralSubstitution(declaration.type, substitutions),
       location.module,
@@ -743,6 +762,125 @@ function resolveIrTypeObjectShapeCpp(
     cache,
     nextAncestors,
   );
+}
+
+function resolveIrTypeAliasStructuralRowOverrideCpp(
+  declaration: Readonly<Extract<IrDeclaration, { kind: 'typeAlias' }>>,
+  substitutions: Parameters<typeof resolveIrTypeStructuralSubstitution>[1],
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  ancestors: ReadonlySet<string>,
+): readonly Readonly<IrObjectTypeProperty>[] | undefined {
+  if (!declaration.structuralRowOverride || declaration.structuralRowOverride.length === 0) return undefined;
+  const fallback = resolveIrTypeStructuralSubstitution(declaration.type, substitutions);
+  if (
+    fallback.kind !== 'named' ||
+    fallback.reference.kind !== 'ambient' ||
+    fallback.reference.name !== 'Partial' ||
+    fallback.typeArguments.length !== 1 ||
+    !fallback.typeArguments[0]
+  ) {
+    return undefined;
+  }
+  const subjectProperties = resolveIrTypeObjectShapeCpp(fallback.typeArguments[0], module, moduleSet, cache, ancestors);
+  if (!subjectProperties) return undefined;
+  const subjectByName = new Map(subjectProperties.map((property) => [property.name, property] as const));
+  const overrides = declaration.structuralRowOverride.map((property) => ({
+    ...property,
+    type: resolveIrTypeStructuralSubstitution(property.type, substitutions),
+  }));
+  const overrideByName = new Map<string, Readonly<IrObjectTypeProperty>>();
+  for (const override of overrides) {
+    const subject = subjectByName.get(override.name);
+    if (
+      !subject ||
+      overrideByName.has(override.name) ||
+      !areIrObjectShapeComputedKeysEquivalentCpp(subject, override, module, moduleSet) ||
+      subject.role !== override.role ||
+      (subject.optional && containsIrTypeIndexedAccessCpp(override.type))
+    ) {
+      return undefined;
+    }
+    const comparison = {
+      aliases: new Set<string>(),
+      ancestors: new WeakMap<object, WeakSet<object>>(),
+      valueQueries: new Set<string>(),
+    };
+    if (
+      !isIrTypeStructurallyAssignableCpp(
+        subject.type,
+        override.type,
+        module,
+        moduleSet,
+        cache,
+        ancestors,
+        comparison,
+      ) &&
+      !isIrTypeStructurallyAssignableCpp(override.type, subject.type, module, moduleSet, cache, ancestors, {
+        aliases: new Set(),
+        ancestors: new WeakMap(),
+        valueQueries: new Set(),
+      })
+    ) {
+      return undefined;
+    }
+    overrideByName.set(override.name, override);
+  }
+  return subjectProperties.map(
+    (property): Readonly<IrObjectTypeProperty> => overrideByName.get(property.name) ?? { ...property, optional: true },
+  );
+}
+
+function containsIrTypeIndexedAccessCpp(type: Readonly<IrType>): boolean {
+  switch (type.kind) {
+    case 'indexedAccess':
+      return true;
+    case 'array':
+      return containsIrTypeIndexedAccessCpp(type.element);
+    case 'conditionalFacet':
+      return containsIrTypeIndexedAccessCpp(type.check) || containsIrTypeIndexedAccessCpp(type.facet);
+    case 'function':
+      return (
+        type.parameters.some((parameter) => containsIrTypeIndexedAccessCpp(parameter.type)) ||
+        containsIrTypeIndexedAccessCpp(type.returns)
+      );
+    case 'intersection':
+    case 'union':
+      return type.types.some(containsIrTypeIndexedAccessCpp);
+    case 'keyof':
+      return containsIrTypeIndexedAccessCpp(type.type);
+    case 'named':
+      return type.typeArguments.some(containsIrTypeIndexedAccessCpp);
+    case 'object':
+      return type.properties.some((property) => containsIrTypeIndexedAccessCpp(property.type));
+    case 'tuple':
+      return type.elements.some((element) => containsIrTypeIndexedAccessCpp(element.type));
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'typeOf':
+    case 'undefined':
+    case 'unknown':
+      return false;
+  }
+}
+
+function resolveIrTypeIndexedAccessCpp(
+  type: Readonly<Extract<IrType, { kind: 'indexedAccess' }>>,
+  module: Readonly<ReferenceModuleRecord>,
+  moduleSet: Readonly<ReferenceModuleSet>,
+  cache: ReferenceResolutionCache,
+  ancestors: ReadonlySet<string>,
+): Readonly<IrType> | undefined {
+  if (type.index.kind !== 'literal' || (typeof type.index.value !== 'string' && typeof type.index.value !== 'number')) {
+    return undefined;
+  }
+  const index = String(type.index.value);
+  const properties = resolveIrTypeObjectShapeCpp(type.object, module, moduleSet, cache, ancestors);
+  const property = properties?.find((candidate) => !candidate.computedKey && candidate.name === index);
+  return property && !property.optional ? property.type : undefined;
 }
 
 function resolveIrFacetReferenceCpp(
@@ -1102,6 +1240,18 @@ function isIrTypeStructurallyAssignableCpp(
   comparison: IrTypeStructuralComparisonStateCpp,
 ): boolean {
   if (JSON.stringify(source) === JSON.stringify(target)) return true;
+  if (source.kind === 'indexedAccess') {
+    const resolved = resolveIrTypeIndexedAccessCpp(source, module, moduleSet, cache, shapeAncestors);
+    if (resolved) {
+      return isIrTypeStructurallyAssignableCpp(resolved, target, module, moduleSet, cache, shapeAncestors, comparison);
+    }
+  }
+  if (target.kind === 'indexedAccess') {
+    const resolved = resolveIrTypeIndexedAccessCpp(target, module, moduleSet, cache, shapeAncestors);
+    if (resolved) {
+      return isIrTypeStructurallyAssignableCpp(source, resolved, module, moduleSet, cache, shapeAncestors, comparison);
+    }
+  }
   const targets = comparison.ancestors.get(source) ?? new WeakSet<object>();
   if (targets.has(target)) return true;
   targets.add(target);

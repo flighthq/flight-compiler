@@ -1604,13 +1604,35 @@ describe('lowerTypeScriptSource', () => {
       },
     );
 
-    // The re-stated `data` member rides on the row rather than being materialized, so the helper's
-    // own unlowerable member never reaches lowering as a failure at all.
+    // The open helper retains its safe Partial<Value> representation, while the authored member is
+    // preserved as indexed-access evidence for targets that can close the concrete row.
     expect(helperResult!.diagnostics).toEqual([]);
     expect(helperResult!.module.declarations).toContainEqual(
       expect.objectContaining({
         binding: expect.objectContaining({ name: 'PartialNode' }),
         kind: 'typeAlias',
+        structuralRowOverride: [
+          {
+            name: 'data',
+            optional: true,
+            readonly: false,
+            type: {
+              kind: 'named',
+              reference: { kind: 'ambient', name: 'Partial' },
+              typeArguments: [
+                {
+                  index: { kind: 'literal', value: 'data' },
+                  kind: 'indexedAccess',
+                  object: {
+                    kind: 'named',
+                    reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'Value' }) }),
+                    typeArguments: [],
+                  },
+                },
+              ],
+            },
+          },
+        ],
         type: {
           kind: 'named',
           reference: { kind: 'ambient', name: 'Partial' },
@@ -1629,6 +1651,36 @@ describe('lowerTypeScriptSource', () => {
     expect(result!.module.declarations).toContainEqual(
       expect.objectContaining({ binding: expect.objectContaining({ name: 'create' }), kind: 'function' }),
     );
+  });
+
+  it('preserves optional and required row overrides only for the keys removed from the rest', () => {
+    const result = lower(
+      'row-overrides.ts',
+      `export type OptionalOverride<Value> = { data?: string } & Partial<Omit<Value, 'data'>>;
+       export type RequiredOverride<Value> = { data: string } & Partial<Omit<Value, 'data'>>;
+       export type NoOverride<Value> = { data?: string } & Partial<Omit<Value, 'name'>>;
+       export type SafeFallback<Value> = {
+         data?: Value extends { other: infer Other } ? Other : never
+       } & Partial<Omit<Value, 'data'>>;`,
+    );
+    const aliases = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        declaration.kind === 'typeAlias' ? [[declaration.binding.name, declaration] as const] : [],
+      ),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(aliases.get('OptionalOverride')).toMatchObject({
+      structuralRowOverride: [{ name: 'data', optional: true, type: { kind: 'primitive', name: 'string' } }],
+    });
+    expect(aliases.get('RequiredOverride')).toMatchObject({
+      structuralRowOverride: [{ name: 'data', optional: false, type: { kind: 'primitive', name: 'string' } }],
+    });
+    expect(aliases.get('NoOverride')).not.toHaveProperty('structuralRowOverride');
+    expect(aliases.get('SafeFallback')).toMatchObject({
+      type: { kind: 'named', reference: { kind: 'ambient', name: 'Partial' } },
+    });
+    expect(aliases.get('SafeFallback')).not.toHaveProperty('structuralRowOverride');
   });
 
   it('keeps the position when the unlowerable construct is in the module being lowered', () => {
