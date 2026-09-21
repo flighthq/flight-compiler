@@ -8662,8 +8662,46 @@ function emitContextualUnionExpressionInContextCpp(
       (fallback ? getIrOptionalChainCoalescedTypeEvidenceCpp(expression.left, fallback, context) : undefined) ??
       getIrExpressionTypeEvidenceCpp(expression.left, context);
     const leftUnion = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
+    const leftStorageType = getIrExpressionTypeEvidenceCpp(expression.left, context);
+    const leftStorageUnion = leftStorageType ? getIrUnionTypeCpp(leftStorageType, context, new Set()) : undefined;
+    const leftStoragePlan = leftStorageUnion ? getCppUnionRepresentationPlan(leftStorageUnion, context) : undefined;
     if (leftUnion) {
       const leftPlan = getCppUnionRepresentationPlan(leftUnion, context);
+      const targetSlot = plan.valueSlots[0];
+      const sourceSlot = leftStoragePlan?.valueSlots[0];
+      const expectedSentinels = union.types.filter(
+        (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+          member.kind === 'null' || member.kind === 'undefined',
+      );
+      // A literal-sentinel fallback deliberately merges both absent states from the left. Project
+      // the dual-sentinel carrier into the contextual optional only when its sole value slot is the
+      // destination's exact C++ representation; a heterogeneous destination or erased Any keeps the
+      // existing fail-closed conversion path.
+      if (
+        fallback &&
+        plan.kind === 'optionalSingle' &&
+        targetSlot &&
+        targetSlot.targetType !== 'flight::Any' &&
+        expectedSentinels.length === 1 &&
+        expectedSentinels[0]!.kind === fallback &&
+        leftStorageType &&
+        leftStoragePlan?.kind === 'dualSentinelVariant' &&
+        leftStoragePlan.valueSlots.length === 1 &&
+        sourceSlot?.targetType === targetSlot.targetType
+      ) {
+        const source = getGeneratedTargetName('nullishCoalesceLeft', context);
+        const left = emitExpression(expression.left, context, leftStorageType);
+        const present = emitCppUnionValueConstruction(
+          `std::get<${sourceSlot.targetType}>(${source})`,
+          targetSlot.targetType,
+          union,
+          plan.kind,
+          context,
+        );
+        const absent = emitCppUnionSentinelConstruction(fallback, union, plan.kind, context);
+        context.includes.add('variant');
+        return `([&]() -> ${emitUnionTypeCpp(union, context)} { auto ${source} = ${left}; if (std::holds_alternative<${sourceSlot.targetType}>(${source})) return ${present}; return ${absent}; }())`;
+      }
       if (
         hasEquivalentCppOptionalUnionRepresentation(plan, leftPlan) &&
         ((expression.right.kind === 'literal' && expression.right.value === null) ||

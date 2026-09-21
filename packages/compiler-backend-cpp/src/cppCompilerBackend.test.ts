@@ -2295,6 +2295,84 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('std::optional<auto>');
   });
 
+  it('collapses a coalesced dual-sentinel property only into the matching structural row cell', () => {
+    const model = ts.createSourceFile(
+      '/flight/packages/types/src/model.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface Entity { [EntityRuntimeKey]: object | undefined; }
+       export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
+       export interface Frame extends Entity { pivotX: number | null; frameDurations: number[] | null; }
+       export interface MixedFrame extends Entity { pivotX: number | string | null; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      "export * from './model.js';",
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const positive = ts.createSourceFile(
+      '/flight/packages/spritesheet/src/frame.ts',
+      `import type { EntityConstruction, Frame } from '@flighthq/types/contract';
+       export function initialize(out: EntityConstruction<Frame>, obj?: Partial<Frame>): void {
+         out.pivotX = obj?.pivotX ?? null;
+         out.frameDurations = obj?.frameDurations ?? null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const incompatible = ts.createSourceFile(
+      '/flight/packages/spritesheet/src/incompatible.ts',
+      `import type { EntityConstruction, Frame, MixedFrame } from '@flighthq/types/contract';
+       export function initialize(out: EntityConstruction<MixedFrame>, obj?: Partial<Frame>): void {
+         out.pivotX = obj?.pivotX ?? null;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './model.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/model.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: model, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/spritesheet', sourceFile: positive, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/spritesheet', sourceFile: incompatible, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(results[2]!.diagnostics).toEqual([]);
+    expect(emitted).toContain('flight::row_set<flight::RowKey<"pivotX">>(out, ([&]() -> std::optional<double>');
+    expect(emitted).toContain(
+      'flight::row_set<flight::RowKey<"frameDurations">>(out, ([&]() -> std::optional<flight::Array<double>>',
+    );
+    expect(emitted).not.toContain('flight::row_set<flight::RowKey<"pivotX">>(out, ([&]() -> std::variant');
+    expect(emitted).not.toContain('flight::row_set<flight::RowKey<"frameDurations">>(out, ([&]() -> std::variant');
+    expect(captureBackendEmissionFailure(() => session.emitModule(modules[3]!)).rule).toBe(
+      'cpp-contextual-union-inequivalent',
+    );
+  });
+
   it('recovers nullable property evidence through an imported entity optional chain', () => {
     const entity = ts.createSourceFile(
       '/flight/packages/types/src/entity.ts',
