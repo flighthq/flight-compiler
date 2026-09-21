@@ -294,6 +294,7 @@ interface EmitContext {
   // destructuring bindings, since the ordinary homogeneous TypeScript tuple is a flight::Array.
   objectEntriesTupleArrayBindingIds: Set<string>;
   objectEntriesTupleBindingIds: Set<string>;
+  optionalParameterBindingIds: ReadonlySet<string>;
   structuralCloneRecordBindingIds: ReadonlySet<string>;
   structuralOpenRowConstructionAssignments: ReadonlyMap<
     Readonly<Extract<IrExpression, { kind: 'object' }>>,
@@ -504,6 +505,7 @@ function emitIrModuleCppWithContext(
     structuralCastBindingRows,
     objectEntriesTupleArrayBindingIds: new Set(),
     objectEntriesTupleBindingIds: new Set(),
+    optionalParameterBindingIds: collectCppOptionalParameterBindingIds(module),
     structuralCloneRecordBindingIds,
     structuralOpenRowConstructionAssignments: collectCppStructuralOpenRowConstructionAssignmentsCpp(module),
     targetNameMaps: resolvedTargetNameMaps,
@@ -8732,7 +8734,7 @@ function emitNullishComparisonCpp(
     const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
     const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
     const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
-    if (!plan || plan.kind !== 'dualSentinelVariant') {
+    if (!getCppOptionalParameterNullishStorageCpp(operand, context) && (!plan || plan.kind !== 'dualSentinelVariant')) {
       emissionError(context, 'nullish comparison admitting null and undefined requires dual-sentinel union evidence');
     }
   }
@@ -9260,6 +9262,36 @@ function getCppGenericCarrierPropertyPresencePlanCpp(
     : undefined;
 }
 
+// An optional parameter adds one storage layer outside its declared type: the outer `std::optional`
+// records an omitted argument (`undefined`). When the declared payload is exactly `null`, engagement
+// itself records the other sentinel. When the declared type is a nullable value union, its inner
+// `std::optional` records `null` while the outer layer still records `undefined`. These are the two
+// declaration-elected shapes that preserve both sentinels without a flat dual-sentinel variant.
+//
+// Keep the query tied to an optional parameter with no default. A required `null` parameter has no
+// outer storage, and a defaulted parameter consumes `undefined` before its body observes the value.
+function getCppOptionalParameterNullishStorageCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): 'nestedNullable' | 'nullPayload' | undefined {
+  if (
+    expression.kind !== 'identifier' ||
+    expression.reference.kind !== 'binding' ||
+    !context.optionalParameterBindingIds.has(expression.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const type = getCppBindingTypeCpp(expression.reference.binding.id, context);
+  if (type?.kind === 'null') return 'nullPayload';
+  const union = type ? getIrUnionTypeCpp(type, context, new Set()) : undefined;
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  return (plan?.kind === 'optionalSingle' || plan?.kind === 'optionalVariant') &&
+    plan.sentinels.null === 'optionalAbsence' &&
+    plan.sentinels.undefined === 'absent'
+    ? 'nestedNullable'
+    : undefined;
+}
+
 // A source member is projected from the payload, never from `std::optional` itself. The storage fact
 // and the source type are deliberately separate: Record and indexed Array reads may elect optional
 // storage even when their TypeScript annotation names only the payload. Require control-flow evidence
@@ -9322,6 +9354,30 @@ function emitCppPresenceTestCpp(
   const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
   const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  const optionalParameterStorage = getCppOptionalParameterNullishStorageCpp(operand, context);
+  if (optionalParameterStorage === 'nullPayload') {
+    if (!strict) return present ? 'false' : 'true';
+    context.includes.add('optional');
+    const hasValue = `${emitExpression(operand, context)}.has_value()`;
+    return sentinel === 'undefined' ? `${present ? '' : '!'}${hasValue}` : `${present ? '!' : ''}${hasValue}`;
+  }
+  if (optionalParameterStorage === 'nestedNullable') {
+    context.includes.add('optional');
+    const value = emitExpression(operand, context);
+    let test: string;
+    if (!strict) {
+      test = present
+        ? 'presence_operand.has_value() && presence_operand.value().has_value()'
+        : '!presence_operand.has_value() || !presence_operand.value().has_value()';
+    } else if (sentinel === 'undefined') {
+      test = `${present ? '' : '!'}presence_operand.has_value()`;
+    } else {
+      test = present
+        ? '!presence_operand.has_value() || presence_operand.value().has_value()'
+        : 'presence_operand.has_value() && !presence_operand.value().has_value()';
+    }
+    return `([&]() { const auto& presence_operand = ${value}; return ${test}; }())`;
+  }
   const genericCarrier = getCppGenericCarrierPropertyPresencePlanCpp(operand, context);
   if (genericCarrier) {
     context.includes.add('flight/structural_ref.hpp');
@@ -17657,6 +17713,16 @@ function getExpectedReturnTypeCpp(context: EmitContext): Readonly<IrType> | unde
 
 function collectDefaultedParameterIdsCpp(parameters: readonly IrParameter[]): ReadonlySet<string> {
   return new Set(parameters.filter((parameter) => parameter.initializer).map((parameter) => parameter.binding.id));
+}
+
+function collectCppOptionalParameterBindingIds(module: Readonly<IrModule>): ReadonlySet<string> {
+  const bindingIds = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    parameter(parameter) {
+      if (parameter.optional && !parameter.initializer) bindingIds.add(parameter.binding.id);
+    },
+  });
+  return bindingIds;
 }
 
 function emitParameterInitializersCpp(parameters: readonly IrParameter[], context: EmitContext): string[] {

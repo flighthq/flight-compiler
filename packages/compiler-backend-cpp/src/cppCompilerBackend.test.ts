@@ -540,6 +540,64 @@ describe('createCppCompilerBackend', () => {
     }
   });
 
+  it('projects null and undefined from optional-parameter storage that preserves both', () => {
+    const module = lower(
+      'optional-parameter-presence.ts',
+      `type Body = string | null;
+       export function nullPayloadStrictNull(value?: null): boolean { return value === null; }
+       export function nullPayloadStrictUndefined(value?: null): boolean { return value === undefined; }
+       export function nullPayloadLooseAbsent(value?: null): boolean { return value == null; }
+       export function nullPayloadLoosePresent(value?: null): boolean { return value != null; }
+       export function nestedStrictNull(value?: Body): boolean { return value === null; }
+       export function nestedStrictUndefined(value?: Body): boolean { return value === undefined; }
+       export function nestedLooseAbsent(value?: Body): boolean { return value == null; }
+       export function nestedLoosePresent(value?: Body): boolean { return value != null; }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain(
+      'inline bool null_payload_strict_null(std::optional<flight::Null> value = std::nullopt) {\n  return value.has_value();',
+    );
+    expect(emitted).toContain(
+      'inline bool null_payload_strict_undefined(std::optional<flight::Null> value = std::nullopt) {\n  return !value.has_value();',
+    );
+    expect(emitted).toContain(
+      'inline bool null_payload_loose_absent(std::optional<flight::Null> value = std::nullopt) {\n  return true;',
+    );
+    expect(emitted).toContain(
+      'inline bool null_payload_loose_present(std::optional<flight::Null> value = std::nullopt) {\n  return false;',
+    );
+    expect(emitted).toContain('std::optional<Body> value = std::nullopt');
+    expect(emitted).toContain(
+      'const auto& presence_operand = value; return presence_operand.has_value() && !presence_operand.value().has_value();',
+    );
+    expect(emitted).toContain('const auto& presence_operand = value; return !presence_operand.has_value();');
+    expect(emitted).toContain(
+      'const auto& presence_operand = value; return !presence_operand.has_value() || !presence_operand.value().has_value();',
+    );
+    expect(emitted).toContain(
+      'const auto& presence_operand = value; return presence_operand.has_value() && presence_operand.value().has_value();',
+    );
+    expect(emitted).not.toContain('std::holds_alternative<flight::Null>');
+    expect(emitted).not.toContain('std::holds_alternative<flight::Undefined>');
+  });
+
+  it('refuses dual-sentinel evidence when the declaration did not elect optional-parameter storage', () => {
+    const module = structuredClone(
+      lower('required-null-presence.ts', 'export function strictNull(value?: null): boolean { return value === null; }')
+        .module,
+    );
+    const declaration = module.declarations.find((candidate) => candidate.kind === 'function');
+    if (declaration?.kind === 'function' && declaration.parameters[0]) {
+      (declaration.parameters[0] as Record<string, unknown>).optional = false;
+    }
+
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }));
+    expect(failure.message).toContain(
+      'nullish comparison admitting null and undefined requires dual-sentinel union evidence',
+    );
+  });
+
   // The erased dynamic value carries presence in its own kind tag, so the test is an operation on the
   // chosen C++ representation rather than a comparison the target's operator set has to have been
   // given. The runtime names it: `is_undefined`, `is_null`, and `is_nullish`, the last documented as
