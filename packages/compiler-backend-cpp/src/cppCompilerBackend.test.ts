@@ -11715,6 +11715,68 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toThrow();
   });
 
+  it('answers a number-or-string tag question on an imported meta-reading property', () => {
+    // The shape `spritesheet-formats` writes twice, in `metaScale`: `number | string` has two leaves with
+    // two distinct tags, so the tag selects exactly one and the question is an alternative test. The
+    // property's declaration is imported, which is the form the SDK actually carries.
+    const types = ts.createSourceFile(
+      '/flight/packages/spritesheet-formats/src/aseprite.ts',
+      `export interface AsepriteMeta { readonly scale: number | string }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/spritesheet-formats/src/asepriteParse.ts',
+      `import type { AsepriteMeta } from './aseprite.js';
+       export function metaScale(meta: AsepriteMeta): number {
+         if (typeof meta.scale === 'string') return 1;
+         return meta.scale;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const plan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: undefined as never,
+          specifier: './aseprite.js',
+          target: {
+            packageName: '@flighthq/spritesheet-formats',
+            source: 'packages/spritesheet-formats/src/aseprite.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [typesModule, consumerModule] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/spritesheet-formats', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/spritesheet-formats', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      plan,
+    );
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: plan,
+      modules: [typesModule!.module, consumerModule!.module],
+      options: {
+        packageTargets: {
+          '@flighthq/spritesheet-formats': {
+            includePrefix: 'flight/spritesheet-formats',
+            namespace: 'flight::spritesheet_formats',
+          },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    })
+      .emitModule(consumerModule!.module)
+      .map((file) => file.contents)
+      .join('\n');
+
+    expect(emitted).toContain('if (std::holds_alternative<flight::String>(meta->scale))');
+    // The read is taken once for the test, not once per comparison.
+    expect(emitted.match(/meta->scale/gu)?.length).toBeGreaterThan(0);
+  });
+
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
     // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
     // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the
