@@ -2301,8 +2301,12 @@ describe('createCppCompilerBackend', () => {
       'static_cast<flight::Ref<flight::types::HostGlyphRasterizerCapability>>(flight::make_ref<',
     );
     expect(emitted).toMatch(/return flight::make_ref<rasterize_[0-9a-f]{16}>\(rasterize_[0-9a-f]{16}\{\}\);/u);
+    // The cast's subject is `out`'s own value, and `structural_ref_cast` has one overload: it consumes a
+    // structural reference. `out` is declared `flight::Ref<HostGlyphRasterizerCapability>`, so the subject
+    // alone names no viable call — the same owner is first viewed structurally and the cast widens that
+    // view, which reads the same object rather than any copy of it.
     expect(emitted).toContain(
-      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>>>(out)',
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>(out))',
     );
   });
 
