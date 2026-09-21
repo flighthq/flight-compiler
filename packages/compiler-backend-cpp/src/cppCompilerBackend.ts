@@ -6782,9 +6782,31 @@ function getCppNominalTypeDeclarationOwnerCpp(
   ) {
     return undefined;
   }
+  const reference = type.reference;
+  const importedOwner = ():
+    | Readonly<{ declaration: Readonly<IrDeclaration>; module: Readonly<IrModule> }>
+    | undefined => {
+    if (reference.kind !== 'binding' || reference.binding.kind !== 'import') return undefined;
+    const moduleContext = module === context.module ? context : { ...context, module };
+    const importItem = module.imports.find((candidate) =>
+      candidate.bindings.some((binding) => binding.binding.id === reference.binding.id),
+    );
+    const binding = importItem?.bindings.find((candidate) => candidate.binding.id === reference.binding.id);
+    if (!importItem || !binding || binding.imported === '*') return undefined;
+    const candidates = getCppResolvedImportModules(importItem.specifier, moduleContext).flatMap((targetModule) =>
+      getCppExportedTypeDeclarationOwnersCpp(targetModule, binding.imported, context, new Set()),
+    );
+    const unique = new Map(
+      candidates.map((candidate) => [
+        `${getCppModuleIdentityKey(candidate.module)}\0${candidate.declaration.binding.id}`,
+        candidate,
+      ]),
+    );
+    return unique.size === 1 ? [...unique.values()][0] : undefined;
+  };
   const owner =
     type.reference.binding.kind === 'import'
-      ? getCppImportedBindingDeclarationCpp(type, { ...context, module })
+      ? importedOwner()
       : context.directBindingOwners.get(type.reference.binding.id);
   return owner?.declaration.kind === 'class' || owner?.declaration.kind === 'interface'
     ? { declaration: owner.declaration, module: owner.module }
@@ -9708,6 +9730,16 @@ function emitContextualUnionExpressionInContextCpp(
       : undefined;
   const representedValueSlot = constrainedValueSlot ?? callableValueSlot ?? valueSlot;
   if (representedValueSlot < 0) {
+    const declaredValueSlot = getCppConcreteNamedUnionValueSlotCpp(runtimeType, plan.valueSlots, context);
+    if (declaredValueSlot !== undefined) {
+      return emitCppUnionValueConstruction(
+        emitExpression(expression, context, runtimeType, false),
+        plan.valueSlots[declaredValueSlot]!.targetType,
+        union,
+        plan.kind,
+        context,
+      );
+    }
     const structuralSlots = plan.valueSlots.flatMap((slot) => {
       const alternatives = slot.sourceAlternatives.filter((alternative) => {
         const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
@@ -10144,8 +10176,15 @@ function getCppContextualObjectUnionRuntimeTypeCpp(
       const properties = context.referenceRepresentationPlanner.resolveObjectShape(alternative, context.module);
       if (!properties) return false;
       const targetByName = new Map(properties.map((property) => [property.name, property] as const));
-      if (members.some((member) => !targetByName.has(member.name))) return false;
-      if (properties.some((property) => !property.optional && !byName.has(property.name))) return false;
+      const unknownMember = members.some((member) => !targetByName.has(member.name));
+      if (unknownMember) return false;
+      // A required source property whose value domain contains absence has optional C++ storage. A
+      // contextual partial object can omit it safely even when mapped-type lowering retained the
+      // declaration's required bit; the aggregate's default construction represents that absence.
+      const missingRequired = properties.some(
+        (property) => !property.optional && !byName.has(property.name) && !hasIrTypeAbsentMember(property.type),
+      );
+      if (missingRequired) return false;
       const discriminants = members.map((member) =>
         getCppLiteralDiscriminantMatchCpp(member.value, targetByName.get(member.name)!.type, context),
       );
@@ -10175,7 +10214,11 @@ function getCppExpandedUnionSourceAlternativesCpp(
   ) {
     return [type];
   }
-  const alias = resolveCppTypeAliasTarget(type, context);
+  const aliasModule = getCppNamedTypeBindingModuleCpp(type, context);
+  const alias = resolveCppTypeAliasTarget(
+    type,
+    aliasModule === context.module ? context : { ...context, module: aliasModule },
+  );
   if (!alias) return [type];
   const nextResolvingAliases = new Set(resolvingAliases);
   nextResolvingAliases.add(type.reference.binding.id);
@@ -10218,10 +10261,20 @@ function isCppExpressionRepresentableAsRuntimeTypeCpp(
     if (!source) return false;
     const sourceUnion = getIrUnionTypeCpp(source, context, new Set());
     const targetUnion = getIrUnionTypeCpp(target, context, new Set());
-    if (!sourceUnion || !targetUnion) return false;
+    if (!targetUnion) return false;
     const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
-    const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, isolatedContext);
     const targetPlan = getCppUnionRepresentationPlan(targetUnion, isolatedContext);
+    // A concrete named reference can initialize one wider union alternative even when an inferred
+    // import through a barrel has no usable local C++ spelling. Compare the declared nominal heritage,
+    // not object shape: an anonymous lookalike must not acquire a nominal arm, while a declared derived
+    // reference may use its base arm. Exactly one arm is required, and a nullable or otherwise
+    // union-valued source stays on the complete union-conversion path.
+    if (!sourceUnion) {
+      const sourceRuntime = getIrTypeRuntimeDomainCpp(source, context, new Set());
+      if (!sourceRuntime || sourceRuntime.kind === 'null' || sourceRuntime.kind === 'undefined') return false;
+      return getCppConcreteNamedUnionValueSlotCpp(sourceRuntime, targetPlan.valueSlots, context) !== undefined;
+    }
+    const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, isolatedContext);
     return (
       sourcePlan.valueSlots.length === 1 &&
       targetPlan.valueSlots.length === 1 &&
@@ -10249,6 +10302,70 @@ function isCppExpressionRepresentableAsRuntimeTypeCpp(
   if (expression.value === null) return runtime?.kind === 'null';
   if (runtime?.kind !== 'primitive') return false;
   return runtime.name === (typeof expression.value === 'number' ? 'number' : typeof expression.value);
+}
+
+function getCppConcreteNamedUnionValueSlotCpp(
+  source: Readonly<IrType>,
+  valueSlots: readonly Readonly<{
+    representationKey: string;
+    runtimeType: IrType;
+    sourceAlternatives: readonly IrType[];
+  }>[],
+  context: EmitContext,
+): number | undefined {
+  if (
+    source.kind !== 'named' ||
+    source.reference.kind !== 'binding' ||
+    source.reference.binding.kind === 'typeParameter' ||
+    source.typeArguments.length !== 0
+  ) {
+    return undefined;
+  }
+  const sourceModule = getCppNamedTypeBindingModuleCpp(source, context);
+  const matches = valueSlots.flatMap((slot, slotIndex) =>
+    slot.sourceAlternatives
+      .flatMap((alternative) => getCppExpandedUnionSourceAlternativesCpp(alternative, context, new Set()))
+      .flatMap((alternative) => {
+        if (
+          alternative.kind !== 'named' ||
+          alternative.reference.kind !== 'binding' ||
+          alternative.reference.binding.kind === 'typeParameter' ||
+          alternative.typeArguments.length !== 0
+        ) {
+          return [];
+        }
+        const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+        const alternativePlan = getCppUnionRepresentationPlan(
+          { kind: 'union', types: [alternative, { kind: 'null' }] },
+          isolatedContext,
+        );
+        return alternativePlan.valueSlots[0]?.representationKey === slot.representationKey &&
+          isCppNominalTypeDerivedFromCpp(
+            source,
+            sourceModule,
+            alternative,
+            getCppNamedTypeBindingModuleCpp(alternative, context),
+            context,
+            new Set(),
+          )
+          ? [slotIndex]
+          : [];
+      }),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function getCppNamedTypeBindingModuleCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+): Readonly<IrModule> {
+  if (type.reference.kind !== 'binding') return context.module;
+  const binding = type.reference.binding;
+  return (
+    context.sourceModules.find(
+      (module) => module.packageName === binding.packageName && module.source === binding.source,
+    ) ?? context.module
+  );
 }
 
 function emitCppInferredPropertyUnionMemberTestCpp(
@@ -10480,6 +10597,13 @@ function getIrCallReturnTypeCpp(
   if (expression.callee.kind === 'function') return expression.callee.returns;
   const objectProjection = getCppObjectProjectionCallResultTypeCpp(expression, context);
   if (objectProjection) return objectProjection;
+  // An overload call's checker-selected result is narrower than the implementation signature by
+  // design. Prefer that recorded selection before resolving the implementation declaration, or a
+  // package-graph session which has already indexed the callee widens the same call that an isolated
+  // session keeps narrow.
+  if (expression.semantics.overloadImplementation && expression.semantics.resultType.kind !== 'unknown') {
+    return expression.semantics.resultType;
+  }
   if (expression.callee.kind === 'property' && expression.callee.optionalChain) {
     const callableReturns = getCppCallableReturnType(expression.callee.optionalChain.valueType, context, new Set());
     const recovered = getCppOptionalPropertyCallResultTypeEvidenceCpp(expression, context);

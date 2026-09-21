@@ -20956,6 +20956,130 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(incompatibleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('constructs one declared reference union arm and refuses unproven competitors', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './base',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/base.ts' },
+        },
+        {
+          specifier: './payload',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/payload.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/factory',
+          target: { packageName: '@flighthq/factory', source: 'packages/factory/src/factory.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const consumer = (file: string, body: string) =>
+      source(
+        '@flighthq/consumer',
+        `packages/consumer/src/${file}.ts`,
+        `import { both, chosen, maybeChosen, outside } from '@flighthq/factory';
+         import type { DualPayload, Payload } from '@flighthq/types/contract';
+         ${body}`,
+      );
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/base.ts',
+          `export interface Base { base: number }
+           export interface Chosen extends Base { readonly tag: 'chosen' }
+           export interface Other extends Base { readonly tag: 'other' }
+           export type Choice = Chosen | Other;
+           export interface Left { left: number }
+           export interface Right { right: number }
+           export interface Both extends Left, Right { both: number }
+           export interface Outside { outside: number }`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/payload.ts',
+          `import type { Base, Choice, Left, Right } from './base';
+           export interface Payload { choice: Choice | null; marker: number | undefined; source: Base | null }
+           export interface DualPayload { choice: Left | Right | null }`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          `export * from './base'; export * from './payload';`,
+        ),
+        source(
+          '@flighthq/factory',
+          'packages/factory/src/factory.ts',
+          `import type { Both, Choice, Chosen, Outside } from '@flighthq/types/contract';
+           export function chosen(): Chosen;
+           export function chosen(): Choice { throw new Error('stub'); }
+           export function maybeChosen(): Chosen | null { throw new Error('stub'); }
+           export function both(): Both { throw new Error('stub'); }
+           export function outside(): Outside { throw new Error('stub'); }`,
+        ),
+        consumer(
+          'positive',
+          `export function run(): Payload | null {
+          return { choice: chosen(), source: chosen() };
+        }`,
+        ),
+        consumer(
+          'anonymous',
+          `function lookalike(): { base: number; readonly tag: 'chosen' } {
+             return { base: 1, tag: 'chosen' };
+           }
+           export function run(): Payload | null { return { choice: lookalike(), source: chosen() }; }`,
+        ),
+        consumer(
+          'nullable',
+          `export function run(): Payload | null { return { choice: maybeChosen(), source: chosen() }; }`,
+        ),
+        consumer('multiple', `export function run(): DualPayload | null { return { choice: both() }; }`),
+        consumer(
+          'incompatible',
+          `export function run(): Payload | null { return { choice: outside(), source: chosen() }; }`,
+        ),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/consumer': { includePrefix: 'flight/consumer', namespace: 'flight::consumer' },
+          '@flighthq/factory': { includePrefix: 'flight/factory', namespace: 'flight::factory' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+
+    const emitted = session.emitModule(modules[4]!)[0]!.contents;
+    expect(emitted).toContain('std::in_place_type<flight::Ref<Chosen>>');
+    expect(emitted).toContain('std::optional<flight::Ref<flight::types::Base>>{flight::factory::chosen()}');
+
+    const anonymousFailure = captureBackendEmissionFailure(() => session.emitModule(modules[5]!));
+    const nullableFailure = captureBackendEmissionFailure(() => session.emitModule(modules[6]!));
+    const multipleFailure = captureBackendEmissionFailure(() => session.emitModule(modules[7]!));
+    const incompatibleFailure = captureBackendEmissionFailure(() => session.emitModule(modules[8]!));
+    expect(anonymousFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(nullableFailure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(multipleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(incompatibleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
   it('reads an imported own member without treating an unresolved inherited shape as complete', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
