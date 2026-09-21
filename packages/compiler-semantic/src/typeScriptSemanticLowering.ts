@@ -3821,7 +3821,14 @@ function lowerConcreteTypeScriptObjectProjection(
   if ((name !== 'Omit' && name !== 'Pick') || node.typeArguments?.length !== 2) return undefined;
   const subject = node.typeArguments[0]!;
   const keyType = node.typeArguments[1]!;
-  const properties = lowerTypeScriptCheckerObjectProperties(context.checker.getTypeFromTypeNode(subject), context, 0);
+  const properties = lowerTypeScriptCheckerObjectProperties(
+    context.checker.getTypeFromTypeNode(subject),
+    context,
+    0,
+    undefined,
+    undefined,
+    true,
+  );
   const keys = getTypeScriptObjectProjectionKeys(keyType);
   if (!properties || !keys) return undefined;
   const available = new Set(properties.map((property) => property.name));
@@ -4478,30 +4485,47 @@ function getTypeScriptMappedSubjectSelection(
   if (node.typeParameters?.length !== 1 || !ts.isMappedTypeNode(node.type)) return undefined;
   const parameter = node.typeParameters[0];
   const parameterSymbol = parameter && context.checker.getSymbolAtLocation(parameter.name);
-  const keySymbol = context.checker.getSymbolAtLocation(node.type.typeParameter.name);
-  const constraint = node.type.typeParameter.constraint;
   if (
     !parameter ||
     !parameterSymbol ||
-    !keySymbol ||
-    !constraint ||
-    !ts.isTypeOperatorNode(constraint) ||
-    constraint.operator !== ts.SyntaxKind.KeyOfKeyword ||
-    !isTypeScriptBareTypeReferenceToSymbol(constraint.type, parameterSymbol, context)
-  ) {
-    return undefined;
-  }
-  const value = node.type.type;
-  if (
-    !value ||
-    !ts.isIndexedAccessTypeNode(value) ||
-    !isTypeScriptBareTypeReferenceToSymbol(value.objectType, parameterSymbol, context) ||
-    !isTypeScriptBareTypeReferenceToSymbol(value.indexType, keySymbol, context)
+    !isTypeScriptMappedSubjectPropertySelection(node.type, context, parameterSymbol)
   ) {
     return undefined;
   }
   const reference = lowerTypeNameReference(parameter.name, context);
   return reference ? { kind: 'named', reference, typeArguments: [] } : undefined;
+}
+
+function isTypeScriptMappedSubjectPropertySelection(
+  node: ts.MappedTypeNode,
+  context: LoweringContext,
+  expectedSubject?: ts.Symbol,
+): boolean {
+  const constraint = node.typeParameter.constraint;
+  const value = node.type;
+  if (
+    !constraint ||
+    !ts.isTypeOperatorNode(constraint) ||
+    constraint.operator !== ts.SyntaxKind.KeyOfKeyword ||
+    !ts.isTypeReferenceNode(constraint.type) ||
+    !value ||
+    !ts.isIndexedAccessTypeNode(value) ||
+    !ts.isTypeReferenceNode(value.objectType) ||
+    !ts.isTypeReferenceNode(value.indexType)
+  ) {
+    return false;
+  }
+  const subject = context.checker.getSymbolAtLocation(constraint.type.typeName);
+  const selectedSubject = context.checker.getSymbolAtLocation(value.objectType.typeName);
+  const key = context.checker.getSymbolAtLocation(node.typeParameter.name);
+  const selectedKey = context.checker.getSymbolAtLocation(value.indexType.typeName);
+  return (
+    subject !== undefined &&
+    subject === selectedSubject &&
+    (expectedSubject === undefined || subject === expectedSubject) &&
+    key !== undefined &&
+    key === selectedKey
+  );
 }
 
 function getTypeScriptPartialOmitKeys(
@@ -4820,7 +4844,14 @@ function lowerConcreteMappedType(node: ts.MappedTypeNode, context: LoweringConte
   if (identity) return identity;
   if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
   const type = context.checker.getTypeFromTypeNode(node);
-  const properties = lowerTypeScriptCheckerObjectProperties(type, context, 0, node);
+  const properties = lowerTypeScriptCheckerObjectProperties(
+    type,
+    context,
+    0,
+    node,
+    undefined,
+    isTypeScriptMappedSubjectPropertySelection(node, context),
+  );
   return properties ? { kind: 'object', properties } : undefined;
 }
 
@@ -5533,6 +5564,8 @@ function lowerConcreteTypeScriptMappedAliasReference(
       context,
       0,
       declaration.type,
+      undefined,
+      isTypeScriptMappedSubjectPropertySelection(declaration.type, context),
     );
   } catch (error) {
     if (isUnsupportedSyntaxFailure(error)) return undefined;
@@ -7684,6 +7717,7 @@ function lowerTypeScriptCheckerObjectProperties(
   depth: number,
   mapped?: ts.MappedTypeNode,
   lexicalSite?: ts.Node,
+  preserveWrittenTypes = false,
 ): readonly IrObjectTypeProperty[] | undefined {
   if (!(type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) || depth > 4) return undefined;
   if (
@@ -7699,7 +7733,9 @@ function lowerTypeScriptCheckerObjectProperties(
     if (name.startsWith('__@')) return undefined;
     const optional = Boolean(property.flags & ts.SymbolFlags.Optional);
     const propertyType = context.checker.getTypeOfSymbolAtLocation(property, mapped ?? context.sourceFile);
-    const lowered = lowerTypeScriptCheckerPropertyType(propertyType, optional, context, depth + 1, lexicalSite);
+    const lowered =
+      (preserveWrittenTypes ? getTypeScriptCheckerPropertyWrittenTypeEvidence(property, context) : undefined) ??
+      lowerTypeScriptCheckerPropertyType(propertyType, optional, context, depth + 1, lexicalSite);
     if (!lowered) return undefined;
     properties.push({
       name,
@@ -7709,6 +7745,39 @@ function lowerTypeScriptCheckerObjectProperties(
     });
   }
   return properties;
+}
+
+// A mapped or projected row keeps a selected property's authored type even when the checker has
+// expanded one of its aliases into an anonymous object. That identity matters to static targets:
+// `Readonly<BoundsNodeAny>` and an equivalent anonymous row accept the same TypeScript values, but
+// only the former names the structural-reference contract used at every other occurrence. A
+// property whose type depends on another declaration's type parameter still needs the checker's
+// instantiated evidence, and merged declarations remain checker-owned because no single spelling
+// describes their combined type.
+function getTypeScriptCheckerPropertyWrittenTypeEvidence(
+  property: ts.Symbol,
+  context: LoweringContext,
+): Readonly<IrType> | undefined {
+  const declarations =
+    property.declarations?.filter(
+      (declaration): declaration is ts.PropertySignature | ts.PropertyDeclaration | ts.MethodSignature =>
+        ts.isPropertySignature(declaration) ||
+        ts.isPropertyDeclaration(declaration) ||
+        ts.isMethodSignature(declaration),
+    ) ?? [];
+  if (declarations.length !== 1) return undefined;
+  const declaration = declarations[0]!;
+  if (ts.isMethodSignature(declaration)) {
+    const types = [declaration.type, ...declaration.parameters.map((parameter) => parameter.type)].filter(
+      (type): type is ts.TypeNode => type !== undefined,
+    );
+    return types.some((type) => hasExternalTypeScriptTypeParameter(type, context))
+      ? undefined
+      : lowerFunctionType(declaration, context);
+  }
+  return declaration.type && !hasExternalTypeScriptTypeParameter(declaration.type, context)
+    ? lowerTypeScriptTypeNodeEvidence(declaration.type, context)
+    : undefined;
 }
 
 function lowerTypeScriptCheckerPropertyType(

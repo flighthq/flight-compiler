@@ -1414,6 +1414,117 @@ describe('lowerTypeScriptSource', () => {
     );
   });
 
+  it('preserves authored callback parameter identities through an imported mapped helper', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/runtime.ts',
+      `export interface NodeAny { enabled: boolean; }
+       export type BoundsNodeAny = NodeAny & { bounds: number };
+       export interface Runtime {
+         run: (source: Readonly<BoundsNodeAny>) => void;
+         inspect: (source: Readonly<{ enabled: boolean }>) => boolean;
+         count: number;
+       }
+       export type MethodsOf<Value> = {
+         [Key in keyof Value as Value[Key] extends (...args: any) => any ? Key : never]: Value[Key]
+       };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/app/src/runtime.ts',
+      `import type { MethodsOf, Runtime } from '@flight/types';
+       export function init(methods?: Readonly<Partial<MethodsOf<Runtime>>>): void { void methods; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flight/app', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            importer: {
+              name: 'runtime',
+              packageName: '@flight/app',
+              source: 'packages/app/src/runtime.ts',
+            },
+            importedNames: ['MethodsOf', 'Runtime'],
+            specifier: '@flight/types',
+            target: { packageName: '@flight/types', source: 'packages/types/src/runtime.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const declaration = result!.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'init',
+    );
+    if (declaration?.kind !== 'function') throw new TypeError('expected init function');
+    const methods = declaration.parameters[0]?.type;
+    if (methods?.kind !== 'named' || methods.reference.kind !== 'ambient' || methods.reference.name !== 'Readonly') {
+      throw new TypeError('expected readonly methods parameter');
+    }
+    const partial = methods.typeArguments[0];
+    if (partial?.kind !== 'named' || partial.reference.kind !== 'ambient' || partial.reference.name !== 'Partial') {
+      throw new TypeError('expected partial methods parameter');
+    }
+    const projected = partial.typeArguments[0];
+    if (projected?.kind !== 'object') throw new TypeError('expected projected method row');
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(projected.properties).toMatchObject([
+      {
+        name: 'run',
+        type: {
+          kind: 'function',
+          parameters: [
+            {
+              type: {
+                kind: 'named',
+                reference: { kind: 'ambient', name: 'Readonly' },
+                typeArguments: [
+                  {
+                    kind: 'named',
+                    reference: { binding: { kind: 'import', name: 'BoundsNodeAny' }, kind: 'binding', path: [] },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      {
+        name: 'inspect',
+        type: {
+          kind: 'function',
+          parameters: [
+            {
+              type: {
+                kind: 'named',
+                reference: { kind: 'ambient', name: 'Readonly' },
+                typeArguments: [
+                  {
+                    kind: 'object',
+                    properties: [
+                      {
+                        name: 'enabled',
+                        optional: false,
+                        readonly: false,
+                        type: { kind: 'primitive', name: 'boolean' },
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ]);
+  });
+
   it('preserves imported mapped and conditional helpers instantiated with a consumer type parameter', () => {
     const helper = ts.createSourceFile(
       '/flight/packages/types/src/generic-helpers.ts',
