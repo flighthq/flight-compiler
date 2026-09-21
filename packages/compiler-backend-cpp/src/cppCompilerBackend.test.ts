@@ -6900,6 +6900,37 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('flight::to_string(');
   });
 
+  it('stringifies explicit nullable conversions with JavaScript sentinel text', () => {
+    const result = lower(
+      'nullable-string-conversion.ts',
+      `export function nullable(value: string | null): string { return \`\${value}\`; }
+       export function optional(value: string | undefined): string { return String(value); }
+       export function dual(value: string | null | undefined): string { return \`\${value}\`; }
+       export function nullLiteral(): string { return \`\${null}\`; }
+       export function undefinedLiteral(): string { return String(undefined); }
+       function read(): string | null { return null; }
+       export function nullableCall(): string { return \`\${read()}\`; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain(
+      'string_conversion_value.has_value() ? flight::to_string(string_conversion_value.value()) : flight::String("null")',
+    );
+    expect(emitted).toContain(
+      'string_conversion_value.has_value() ? flight::to_string(string_conversion_value.value()) : flight::String("undefined")',
+    );
+    expect(emitted).toContain('std::is_same_v<Value, flight::Null>');
+    expect(emitted).toContain('std::is_same_v<Value, flight::Undefined>');
+    expect(emitted).toContain('else return flight::to_string(value)');
+    expect(emitted).toContain(
+      'inline flight::String null_literal() {\n  return flight::String("") + flight::String("null") + flight::String("");',
+    );
+    expect(emitted).toContain('inline flight::String undefined_literal() {\n  return flight::String("undefined");');
+    expect(emitted).toContain('const auto& string_conversion_value = read();');
+    expect(emitted.match(/string_conversion_value = read\(\)/gu)).toHaveLength(1);
+  });
+
   it('emits empty template literal as empty string construction', () => {
     const result = lower('empty-tpl.ts', 'export const x: number = 1;');
     const module = structuredClone(result.module);

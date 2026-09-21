@@ -2684,19 +2684,11 @@ function emitExpression(
         expression.arguments.length === 1
       ) {
         const argument = expression.arguments[0]!;
-        const arg = emitExpression(argument, context);
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
-          const argumentType = getIrExpressionTypeEvidenceCpp(argument, context);
-          const union = argumentType ? getIrUnionTypeCpp(argumentType, context, new Set()) : undefined;
-          const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
-          if (plan?.kind === 'multiVariant') {
-            context.includes.add('variant');
-            return `std::visit([](const auto& value) { return flight::to_string(value); }, ${arg})`;
-          }
-          return `flight::to_string(${arg})`;
+          return emitCppExplicitStringConversionCpp(argument, context);
         }
         context.includes.add('string');
-        return `std::to_string(${arg})`;
+        return `std::to_string(${emitExpression(argument, context)})`;
       }
       const hasDependentCallableSpread = expression.arguments.some(
         (argument) => getCppDependentCallableSpreadParameter(argument, context) !== undefined,
@@ -3684,7 +3676,7 @@ function emitExpression(
             ? `flight::String(${JSON.stringify(part)})`
             : `std::string(${JSON.stringify(part)})`
           : flightRuntime
-            ? `flight::to_string(${emitExpression(part, context)})`
+            ? emitCppExplicitStringConversionCpp(part, context)
             : `std::to_string(${emitExpression(part, context)})`,
       );
       return parts.length === 0 ? (flightRuntime ? 'flight::String()' : 'std::string()') : parts.join(' + ');
@@ -3838,6 +3830,46 @@ function emitExpression(
         `cpp-structured-binding-unsupported:${expression.kind}`,
       );
   }
+}
+
+// Template substitutions and the global String function perform JavaScript ToString conversion.
+// A single-sentinel union uses std::optional for storage, but its representation plan still records
+// whether absence came from null or undefined; that source distinction determines the text. Keep
+// this conversion at the explicit source operation rather than teaching arbitrary optionals to
+// stringify, and evaluate the substituted expression once before testing its presence.
+function emitCppExplicitStringConversionCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
+  if (expression.kind === 'literal' && expression.value === null) return 'flight::String("null")';
+  if (
+    expression.kind === 'undefinedValue' ||
+    (expression.kind === 'identifier' &&
+      expression.reference.kind === 'ambient' &&
+      expression.reference.name === 'undefined')
+  ) {
+    return 'flight::String("undefined")';
+  }
+  const emitted = emitExpression(expression, context);
+  const type = getIrExpressionTypeEvidenceCpp(expression, context);
+  const union = type ? getIrUnionTypeCpp(type, context, new Set()) : undefined;
+  if (!union) return `flight::to_string(${emitted})`;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (plan.kind === 'singleValue') return `flight::to_string(${emitted})`;
+  if (plan.kind === 'multiVariant') {
+    context.includes.add('variant');
+    return `std::visit([](const auto& value) { return flight::to_string(value); }, ${emitted})`;
+  }
+  if (plan.kind === 'dualSentinelVariant') {
+    context.includes.add('flight/presence.hpp');
+    context.includes.add('type_traits');
+    context.includes.add('variant');
+    return `std::visit([](const auto& value) -> flight::String { using Value = std::remove_cvref_t<decltype(value)>; if constexpr (std::is_same_v<Value, flight::Null>) return flight::String("null"); else if constexpr (std::is_same_v<Value, flight::Undefined>) return flight::String("undefined"); else return flight::to_string(value); }, ${emitted})`;
+  }
+  const absence = plan.sentinels.null === 'optionalAbsence' ? 'null' : 'undefined';
+  context.includes.add('optional');
+  if (plan.kind === 'optionalSingle') {
+    return `([&]() { const auto& string_conversion_value = ${emitted}; return string_conversion_value.has_value() ? flight::to_string(string_conversion_value.value()) : flight::String("${absence}"); }())`;
+  }
+  context.includes.add('variant');
+  return `([&]() -> flight::String { const auto& string_conversion_value = ${emitted}; if (!string_conversion_value.has_value()) return flight::String("${absence}"); return std::visit([](const auto& value) { return flight::to_string(value); }, string_conversion_value.value()); }())`;
 }
 
 function emitCppContextualStructuralReferenceCpp(
