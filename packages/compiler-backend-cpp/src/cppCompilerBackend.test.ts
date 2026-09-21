@@ -18297,6 +18297,68 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('std::variant');
   });
 
+  it('carries discriminated union evidence into if statement branches', () => {
+    const result = lower(
+      'discriminated-if.ts',
+      `type Shape =
+         | { readonly kind: 'circle'; readonly radius: number }
+         | { readonly kind: 'square'; readonly side: number };
+       export function size(value: Shape): number {
+         if (value.kind === 'circle') {
+           return value.radius;
+         } else {
+           return value.side;
+         }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('std::get<0>(value).radius');
+    expect(emitted.contents).toContain('std::get<1>(value).side');
+  });
+
+  it('tests a retained discriminant when union members share one C++ storage type', () => {
+    const result = lower(
+      'coalesced-discriminant.ts',
+      `type Segment =
+         | { readonly kind: 'move'; readonly x: number }
+         | { readonly kind: 'line'; readonly x: number };
+       export function command(value: Segment): string {
+         if (value.kind === 'move') return 'M';
+         return 'L';
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('value.kind == "move"');
+    expect(emitted.contents).not.toContain('if (true)');
+  });
+
+  it('tests a retained discriminant inside optional coalesced union storage', () => {
+    const result = lower(
+      'optional-coalesced-discriminant.ts',
+      `type Segment =
+         | { readonly kind: 'move'; readonly x: number }
+         | { readonly kind: 'line'; readonly x: number };
+       export function isMove(value: Segment | undefined): boolean {
+         if (value === undefined) return false;
+         return value.kind === 'move';
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('value.has_value()');
+    expect(emitted.contents).toContain('value.value().kind == "move"');
+  });
+
+  it('tests a literal value when literal union members share one C++ storage type', () => {
+    const result = lower(
+      'coalesced-literal.ts',
+      `export function isMove(value: 'move' | 'line'): boolean {
+         return value === 'move';
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module);
+    expect(emitted.contents).toContain('value == "move"');
+  });
+
   it('emits isCppScalarValueType with union of primitives', () => {
     const result = lower(
       'scalar-union.ts',

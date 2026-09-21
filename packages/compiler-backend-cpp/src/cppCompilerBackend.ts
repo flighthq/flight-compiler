@@ -3350,18 +3350,7 @@ function emitExpression(
       if (erasedTypeof) return erasedTypeof;
       const evidence =
         expression.condition.kind === 'binary' ? expression.condition.semantics.unionMemberTest : undefined;
-      const branchContext = (result: boolean): EmitContext => {
-        if (!evidence) return context;
-        const narrowedType =
-          evidence.whenResult === result ? evidence.member : getCppUnionMemberComplementTypeCpp(evidence, context);
-        return narrowedType
-          ? {
-              ...context,
-              narrowedBindingTypes: new Map(context.narrowedBindingTypes).set(evidence.binding.id, narrowedType),
-            }
-          : context;
-      };
-      return `(${emitCppTruthinessExpression(expression.condition, context)} ? ${emitCppConditionalBranchCpp(expression.whenTrue, branchContext(true), expectedType)} : ${emitCppConditionalBranchCpp(expression.whenFalse, branchContext(false), expectedType)})`;
+      return `(${emitCppTruthinessExpression(expression.condition, context)} ? ${emitCppConditionalBranchCpp(expression.whenTrue, getCppUnionMemberTestBranchContextCpp(evidence, true, context), expectedType)} : ${emitCppConditionalBranchCpp(expression.whenFalse, getCppUnionMemberTestBranchContextCpp(evidence, false, context), expectedType)})`;
     }
     case 'element': {
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
@@ -5844,13 +5833,23 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ];
     }
     case 'if': {
+      const evidence =
+        statement.condition.kind === 'binary' ? statement.condition.semantics.unionMemberTest : undefined;
       const lines = [
         `if (${emitCppTruthinessExpression(statement.condition, context)}) {`,
-        ...indentSourceLines(emitStatementBody(statement.consequent, context)),
+        ...indentSourceLines(
+          emitStatementBody(statement.consequent, getCppUnionMemberTestBranchContextCpp(evidence, true, context)),
+        ),
         '}',
       ];
       if (statement.otherwise)
-        lines.push('else {', ...indentSourceLines(emitStatementBody(statement.otherwise, context)), '}');
+        lines.push(
+          'else {',
+          ...indentSourceLines(
+            emitStatementBody(statement.otherwise, getCppUnionMemberTestBranchContextCpp(evidence, false, context)),
+          ),
+          '}',
+        );
       return lines;
     }
     case 'return': {
@@ -9620,12 +9619,35 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
     if (alternatives.length !== 1) {
       emissionError(context, 'union member test must identify exactly one C++ optional value alternative');
     }
+    const alternative = alternatives[0]!;
     const binding = emitInitializedBindingValueCpp(evidence.binding, context);
     const present =
       plan.kind === 'optionalSingle'
         ? `${binding}.has_value()`
-        : `(${binding}.has_value() && ${binding}.value().index() == ${String(plan.valueSlots.indexOf(alternatives[0]!))})`;
-    return evidence.whenResult ? present : `!(${present})`;
+        : `(${binding}.has_value() && ${binding}.value().index() == ${String(plan.valueSlots.indexOf(alternative))})`;
+    const alternativeIndex = plan.valueSlots.indexOf(alternative);
+    const value =
+      plan.kind === 'optionalSingle'
+        ? `${binding}.value()`
+        : `std::get<${String(alternativeIndex)}>(${binding}.value())`;
+    const discriminant = emitCppCoalescedUnionMemberDiscriminantTestCpp(
+      evidence.member,
+      {
+        members: alternative.sourceAlternatives,
+        runtimeType: alternative.runtimeType,
+        targetType: alternative.targetType,
+      },
+      value,
+      context,
+    );
+    if (alternative.sourceAlternatives.length > 1 && !discriminant) {
+      emissionError(
+        context,
+        'coalesced C++ optional union storage requires one retained literal discriminant for a member test',
+      );
+    }
+    const test = discriminant ? `(${present} && ${discriminant})` : present;
+    return evidence.whenResult ? test : `!(${test})`;
   }
   const representation = getCppVariantRepresentationForInspection(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
@@ -9634,11 +9656,68 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   if (alternatives.length !== 1) {
     emissionError(context, 'union member test must identify exactly one C++ variant alternative');
   }
-  const alternativeIndex = representation.alternatives.indexOf(alternatives[0]!);
-  const test = representation.direct
-    ? 'true'
-    : `${emitInitializedBindingValueCpp(evidence.binding, context)}.index() == ${String(alternativeIndex)}`;
+  const alternative = alternatives[0]!;
+  const alternativeIndex = representation.alternatives.indexOf(alternative);
+  const binding = emitInitializedBindingValueCpp(evidence.binding, context);
+  const value = representation.direct ? binding : `std::get<${String(alternativeIndex)}>(${binding})`;
+  const discriminant = emitCppCoalescedUnionMemberDiscriminantTestCpp(evidence.member, alternative, value, context);
+  if (alternative.members.length > 1 && !discriminant) {
+    emissionError(context, 'coalesced C++ union storage requires one retained literal discriminant for a member test');
+  }
+  const alternativeTest = representation.direct ? undefined : `${binding}.index() == ${String(alternativeIndex)}`;
+  const test =
+    alternativeTest && discriminant
+      ? `(${alternativeTest} && ${discriminant})`
+      : (alternativeTest ?? discriminant ?? 'true');
   return evidence.whenResult ? test : `!(${test})`;
+}
+
+function emitCppCoalescedUnionMemberDiscriminantTestCpp(
+  member: Readonly<IrType>,
+  alternative: CppVariantRepresentation['alternatives'][number],
+  value: string,
+  context: EmitContext,
+): string | undefined {
+  // Literal values are erased from C++ field types, so source alternatives with the same layout can
+  // intentionally share one storage slot. The slot index then proves only the shared layout. Retain
+  // the source distinction by testing a literal value that uniquely identifies the selected member.
+  if (alternative.members.length < 2) return undefined;
+  const exact = alternative.members.filter((candidate) => isDeepStrictEqual(candidate, member));
+  const discriminantMatches = alternative.members.filter((candidate) =>
+    areCppUnionMemberDiscriminantsEquivalent(candidate, member, context),
+  );
+  const selected =
+    exact.length === 1 ? exact[0] : discriminantMatches.length === 1 ? discriminantMatches[0] : undefined;
+  if (!selected) return undefined;
+  if (
+    selected.kind === 'literal' &&
+    alternative.members.every(
+      (candidate) => candidate === selected || (candidate.kind === 'literal' && candidate.value !== selected.value),
+    )
+  ) {
+    return `${value} == ${emitLiteral(selected.value, context)}`;
+  }
+  const selectedProperties = context.referenceRepresentationPlanner.resolveObjectShape(selected, context.module);
+  if (!selectedProperties) return undefined;
+  const discriminant = selectedProperties.find((property) => {
+    if (property.type.kind !== 'literal') return false;
+    const value = property.type.value;
+    return alternative.members.every((candidate) => {
+      if (candidate === selected) return true;
+      const properties = context.referenceRepresentationPlanner.resolveObjectShape(candidate, context.module);
+      const candidateProperty = properties?.find((item) => item.name === property.name);
+      return candidateProperty?.type.kind === 'literal' && candidateProperty.type.value !== value;
+    });
+  });
+  if (
+    !discriminant ||
+    discriminant.type.kind !== 'literal' ||
+    !getIrObjectPropertyTypeCpp(alternative.runtimeType, discriminant.name, context)
+  ) {
+    return undefined;
+  }
+  const operator = hasFlightReferenceRepresentationCpp(alternative.runtimeType, context) ? '->' : '.';
+  return `${value}${operator}${safeCppName(discriminant.name)} == ${emitLiteral(discriminant.type.value, context)}`;
 }
 
 function getCppUnionMemberComplementTypeCpp(
@@ -9666,6 +9745,22 @@ function getCppUnionMemberComplementTypeCpp(
     ...remaining,
     ...union.types.filter((member) => member.kind === 'null' || member.kind === 'undefined'),
   ]);
+}
+
+function getCppUnionMemberTestBranchContextCpp(
+  evidence: Readonly<IrUnionMemberTestEvidence> | undefined,
+  result: boolean,
+  context: EmitContext,
+): EmitContext {
+  if (!evidence) return context;
+  const narrowedType =
+    evidence.whenResult === result ? evidence.member : getCppUnionMemberComplementTypeCpp(evidence, context);
+  return narrowedType
+    ? {
+        ...context,
+        narrowedBindingTypes: new Map(context.narrowedBindingTypes).set(evidence.binding.id, narrowedType),
+      }
+    : context;
 }
 
 function doesCppVariantAlternativeMatchType(
