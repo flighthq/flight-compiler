@@ -4,8 +4,10 @@ import {
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingEvidenceCpp,
   getCompilerExternalBindingHeadersCpp,
+  getCompilerExternalBindingObjectConstructionCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
   getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
+  getCompilerRuntimeExternalInstanceMemberParameterTypeCpp,
   getCompilerRuntimeExternalInstanceMemberTargetCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
@@ -328,6 +330,90 @@ describe('getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp', () => {
   });
 });
 
+describe('getCompilerRuntimeExternalInstanceMemberParameterTypeCpp', () => {
+  const descriptorBinding = {
+    headers: ['host/device.hpp'],
+    nullability: 'non-null' as const,
+    objectConstruction: {
+      fields: [{ sourceField: 'format', targetName: 'pixel_format' }],
+      kind: 'field-assignment' as const,
+    },
+    ownership: 'value' as const,
+    sourceName: 'NativeDescriptor',
+    space: 'type' as const,
+    targetName: 'host::Descriptor',
+  };
+  const deviceBinding = {
+    headers: ['host/device.hpp'],
+    members: [
+      {
+        parameters: [{ position: 0, sourceType: 'NativeDescriptor' }],
+        sourceMember: 'createSurface',
+        targetName: 'make_surface',
+      },
+    ],
+    nullability: 'non-null' as const,
+    ownership: 'shared' as const,
+    sourceName: 'NativeDevice',
+    space: 'type' as const,
+    targetName: 'host::Device',
+  };
+  const manifest = {
+    bindings: [deviceBinding, descriptorBinding],
+    schema: 'flight-cpp-external-bindings/1' as const,
+  };
+
+  it('returns an exact parameter source type from one external instance member', () => {
+    expect(
+      getCompilerRuntimeExternalInstanceMemberParameterTypeCpp(
+        'NativeDevice',
+        'createSurface',
+        0,
+        'flight-cpp',
+        manifest,
+      ),
+    ).toBe('NativeDescriptor');
+    expect(
+      getCompilerRuntimeExternalInstanceMemberParameterTypeCpp(
+        'NativeDevice',
+        'createSurface',
+        1,
+        'flight-cpp',
+        manifest,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('rejects duplicate parameter positions and a referenced type without a construction contract', () => {
+    expect(() =>
+      getCompilerRuntimeExternalInstanceMemberParameterTypeCpp('NativeDevice', 'createSurface', 0, 'flight-cpp', {
+        bindings: [
+          {
+            ...deviceBinding,
+            members: [
+              {
+                ...deviceBinding.members[0]!,
+                parameters: [
+                  { position: 0, sourceType: 'NativeDescriptor' },
+                  { position: 0, sourceType: 'NativeDescriptor' },
+                ],
+              },
+            ],
+          },
+          descriptorBinding,
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('malformed static-member mappings');
+    expect(() =>
+      getCompilerRuntimeExternalInstanceMemberParameterTypeCpp('NativeDevice', 'createSurface', 0, 'flight-cpp', {
+        bindings: [deviceBinding, { ...descriptorBinding, objectConstruction: undefined }],
+        schema: 'flight-cpp-external-bindings/1',
+      }),
+    ).toThrow('requires an exact object-construction contract for NativeDescriptor');
+  });
+});
+
 describe('getCompilerRuntimeExternalInstanceMemberTargetCpp', () => {
   it('returns the instance target spelling from a downstream type binding', () => {
     const instanceBindings = {
@@ -537,6 +623,41 @@ describe('getCompilerExternalBindingHeadersCpp', () => {
     expect(getCompilerExternalBindingHeadersCpp('WeakMap', 'type', undefined, 'flight-cpp')).toEqual([
       'flight/weak_map.hpp',
     ]);
+  });
+});
+
+describe('getCompilerExternalBindingObjectConstructionCpp', () => {
+  it('returns the exact assignment field contract and target type for an external value object', () => {
+    const manifest = {
+      bindings: [
+        {
+          headers: ['host/descriptor.hpp'],
+          nullability: 'non-null' as const,
+          objectConstruction: {
+            fields: [
+              { sourceField: 'format', targetName: 'pixel_format' },
+              { sourceField: 'sampleCount', targetName: 'sample_count' },
+            ],
+            kind: 'field-assignment' as const,
+          },
+          ownership: 'value' as const,
+          sourceName: 'NativeDescriptor',
+          space: 'type' as const,
+          targetName: 'host::Descriptor',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    expect(getCompilerExternalBindingObjectConstructionCpp('NativeDescriptor', manifest)).toEqual({
+      fields: [
+        { sourceField: 'format', targetName: 'pixel_format' },
+        { sourceField: 'sampleCount', targetName: 'sample_count' },
+      ],
+      kind: 'field-assignment',
+      targetName: 'host::Descriptor',
+    });
+    expect(getCompilerExternalBindingObjectConstructionCpp('Missing', manifest)).toBeUndefined();
   });
 });
 
