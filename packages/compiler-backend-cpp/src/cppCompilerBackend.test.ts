@@ -452,6 +452,84 @@ describe('createCppCompilerBackend', () => {
     expect(output).not.toContain('std::holds_alternative<flight::Undefined>');
   });
 
+  it('tests a constrained generic property through its dependent optional or required storage', () => {
+    const result = lower(
+      'generic-property-presence.ts',
+      `interface Backend { readonly provider: string }
+       interface OptionalHolder { readonly backend?: Backend }
+       interface RequiredHolder { readonly backend: Backend }
+       export function optionalAbsent<Type extends OptionalHolder>(holder: Readonly<Type>): boolean {
+         return holder.backend === undefined;
+       }
+       export function optionalPresent<Type extends OptionalHolder>(holder: Readonly<Type>): boolean {
+         return holder.backend !== undefined;
+       }
+       export function optionalDirect<Type extends OptionalHolder>(holder: Type): boolean {
+         return holder.backend === undefined;
+       }
+       export function requiredAbsent<Type extends RequiredHolder>(holder: Readonly<Type>): boolean {
+         return holder.backend === undefined;
+       }
+       export function concreteAbsent(holder: Readonly<OptionalHolder>): boolean {
+         return holder.backend === undefined;
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain(
+      'if constexpr (flight::detail::optional_traits<std::remove_cvref_t<decltype(presence_operand)>>::optional) return !presence_operand.has_value(); return false;',
+    );
+    expect(output).toContain(
+      'if constexpr (flight::detail::optional_traits<std::remove_cvref_t<decltype(presence_operand_2)>>::optional) return presence_operand_2.has_value(); return true;',
+    );
+    expect(output).toContain('const auto& presence_operand_3 = holder->backend;');
+    expect(output).toContain(
+      'const auto& presence_operand_4 = flight::row_get<flight::RowKey<"backend">>(holder); static_cast<void>(presence_operand_4); return false;',
+    );
+    expect(output).toContain('return !flight::row_get<flight::RowKey<"backend">>(holder).has_value();');
+    expect(output.match(/flight::row_get<flight::RowKey<"backend">>\(holder\)/gu)).toHaveLength(4);
+    expect(output.match(/holder->backend/gu)).toHaveLength(1);
+  });
+
+  it('keeps open, ambiguous, nullable, and erased generic property presence unrepresented', () => {
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('generic-property-presence-refusal.ts', source).module, {
+          runtimeProfile: 'flight-cpp',
+        }),
+      );
+    const sources = [
+      `interface Backend { readonly provider: string }
+       export function test<Type extends Record<string, Backend | undefined>>(
+         holder: Readonly<Type>,
+       ): boolean { return holder.backend === undefined; }`,
+      `interface Backend { readonly provider: string }
+       interface Left { readonly backend?: Backend }
+       interface Right { readonly backend: Backend }
+       export function test<Type extends Left | Right>(holder: Readonly<Type>): boolean {
+         return holder.backend === undefined;
+       }`,
+      `interface Backend { readonly provider: string }
+       interface Holder { readonly backend?: Backend | null }
+       export function test<Type extends Holder>(holder: Readonly<Type>): boolean {
+         return holder.backend === undefined;
+       }`,
+      `interface Holder { readonly backend?: any }
+       export function test<Type extends Holder>(holder: Readonly<Type>): boolean {
+         return holder.backend === undefined;
+       }`,
+      `interface Holder { readonly backend?: unknown }
+       export function test<Type extends Holder>(holder: Readonly<Type>): boolean {
+         return holder.backend === undefined;
+       }`,
+    ];
+
+    for (const source of sources) {
+      expect(refusal(source).rule).toBe('cpp-presence-test-without-absence-storage');
+    }
+  });
+
   // The erased dynamic value carries presence in its own kind tag, so the test is an operation on the
   // chosen C++ representation rather than a comparison the target's operator set has to have been
   // given. The runtime names it: `is_undefined`, `is_null`, and `is_nullish`, the last documented as

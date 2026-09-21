@@ -9185,6 +9185,77 @@ function hasCppNestedNullableOptionalPropertyStorageCpp(
   );
 }
 
+interface CppGenericCarrierPropertyPresencePlan {
+  readonly kind: 'alwaysPresent' | 'optionalUndefined';
+}
+
+// A constrained generic carrier keeps its member storage dependent. `Readonly<T>` is emitted as a
+// row over T, and row_get therefore returns generated_row_member_t<Key, T>: an optional member in one
+// valid instantiation may be a required bare value in a narrower one. The constraint can still prove
+// the complete set of representations a nullish test must handle when it names one closed property,
+// one present runtime domain, and at most undefined absence. In that case C++ can select between the
+// optional and bare storage at instantiation without choosing a destination type or erasing the value.
+//
+// Nullable, erased, open, or union-shaped constraints deliberately do not qualify. Null and undefined
+// may use the same optional spelling with different meanings, Any carries its own tag, and an open or
+// ambiguous constraint does not prove which member storage an instantiation supplies.
+function getCppGenericCarrierPropertyPresencePlanCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<CppGenericCarrierPropertyPresencePlan> | undefined {
+  if (expression.kind !== 'property' || expression.optional || getCppRuntimeProfile(context.options) !== 'flight-cpp') {
+    return undefined;
+  }
+  const receiverType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const typeParameter = getCppReadonlyBareTypeParameterCpp(receiverType) ?? receiverType;
+  const declaration = typeParameter ? getCppTypeParameterDeclarationCpp(typeParameter, context) : undefined;
+  const constraint = declaration?.constraint;
+  if (!constraint || getIrUnionTypeCpp(constraint, context, new Set())) return undefined;
+  const row = getCppStructuralRowExpressionPlanCpp(expression.object, context);
+  if (row) {
+    const rowObject = getCppStructuralRowObjectTypeCpp(row);
+    if (
+      !rowObject ||
+      normalizeCompilerStructuralValueCanonical(rowObject) !== normalizeCompilerStructuralValueCanonical(typeParameter!)
+    ) {
+      return undefined;
+    }
+  } else if (receiverType !== typeParameter || !hasFlightReferenceRepresentationCpp(constraint, context)) {
+    return undefined;
+  }
+  const properties = context.referenceRepresentationPlanner.resolveObjectShape(constraint, context.module);
+  const matches = properties?.filter((property) => property.name === expression.name) ?? [];
+  const property = matches.length === 1 ? matches[0] : undefined;
+  if (
+    !property ||
+    property.computedKey ||
+    property.phantom ||
+    property.role ||
+    isCppAliasResolvedErasedDynamicValueTypeCpp(property.type, context)
+  ) {
+    return undefined;
+  }
+  const readType = getIrObjectPropertyReadTypeCpp(property);
+  if (!readType) return undefined;
+  const union = getIrUnionTypeCpp(readType, context, new Set());
+  if (!union) return { kind: 'alwaysPresent' };
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (
+    plan.kind === 'singleValue' &&
+    plan.valueSlots.length === 1 &&
+    plan.sentinels.null === 'absent' &&
+    plan.sentinels.undefined === 'absent'
+  ) {
+    return { kind: 'alwaysPresent' };
+  }
+  return plan.kind === 'optionalSingle' &&
+    plan.valueSlots.length === 1 &&
+    plan.sentinels.null === 'absent' &&
+    plan.sentinels.undefined === 'optionalAbsence'
+    ? { kind: 'optionalUndefined' }
+    : undefined;
+}
+
 // A source member is projected from the payload, never from `std::optional` itself. The storage fact
 // and the source type are deliberately separate: Record and indexed Array reads may elect optional
 // storage even when their TypeScript annotation names only the payload. Require control-flow evidence
@@ -9247,6 +9318,20 @@ function emitCppPresenceTestCpp(
   const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
   const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  const genericCarrier = getCppGenericCarrierPropertyPresencePlanCpp(operand, context);
+  if (genericCarrier) {
+    context.includes.add('flight/structural_ref.hpp');
+    context.includes.add('type_traits');
+    const valueName = getGeneratedTargetName('presenceOperand', context);
+    const value = emitExpression(operand, context);
+    const requiredResult = present ? 'true' : 'false';
+    const absenceMatches = !strict || sentinel === 'undefined';
+    if (genericCarrier.kind === 'alwaysPresent' || !absenceMatches) {
+      return `([&]() { const auto& ${valueName} = ${value}; static_cast<void>(${valueName}); return ${requiredResult}; }())`;
+    }
+    const optionalResult = `${present ? '' : '!'}${valueName}.has_value()`;
+    return `([&]() { const auto& ${valueName} = ${value}; if constexpr (flight::detail::optional_traits<std::remove_cvref_t<decltype(${valueName})>>::optional) return ${optionalResult}; return ${requiredResult}; }())`;
+  }
   if (hasCppNestedNullableOptionalPropertyStorageCpp(operand, context)) {
     context.includes.add('optional');
     const value = emitExpression(operand, context);
