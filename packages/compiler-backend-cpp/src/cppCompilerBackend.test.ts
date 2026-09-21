@@ -10317,6 +10317,45 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('return 0.0;');
   });
 
+  it('materializes an object literal passed to a callable rather than sending a brace list', () => {
+    // The shape `@flighthq/socket` uses: a module-level optional guard invoked with an object literal, and a
+    // signal helper that forwards a rest pack. A brace-enclosed list cannot convert to a `Ref<T>` parameter,
+    // and cannot be deduced into a variadic pack at all, so either one reaching the emitted call is a compile
+    // error — `no match for call to 'std::function<void(Ref<...>)>'`. The literal is built at the call site
+    // instead, at whatever the parameter's type asks for.
+    const guard = emitIrModuleCpp(
+      lower(
+        'guard-notice.ts',
+        `export interface SocketGuardNotice { readonly operation: string; readonly socket: object }
+         export type SocketGuard = (notice: Readonly<SocketGuardNotice>) => void;
+         let _guard: SocketGuard | null = null;
+         export function setSocketGuard(guard: SocketGuard | null): void { _guard = guard; }
+         export function closeSocket(): void { _guard?.({ operation: 'closeSocket', socket: {} }); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(guard).toContain('optional_chain_receiver.value()(flight::make_structural_ref<');
+    expect(guard).not.toMatch(/value\(\)\(\{/u);
+
+    // The signal helper's own signature, as `@flighthq/signals` writes it: a rest pack of the callable's
+    // parameters. The literal is materialized before it is forwarded, not passed as a brace list into the pack.
+    const signal = emitIrModuleCpp(
+      lower(
+        'signal-guard.ts',
+        `export interface Signal<T> { readonly id: number }
+         export function emitSignal<T extends (...args: never[]) => void>(signal: Signal<T>, ...args: Parameters<T>): void { void signal; }
+         export interface SocketGuardNotice { readonly operation: string; readonly socket: object }
+         export function warn(signal: Signal<(notice: Readonly<SocketGuardNotice>) => void>): void {
+           emitSignal(signal, { operation: 'closeSocket', socket: {} });
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(signal).toContain('emit_signal<std::function<void(flight::StructuralRef<');
+    expect(signal).not.toMatch(/emit_signal<[^>]*>\(signal, \{/u);
+    expect(signal).toContain('flight::make_ref<');
+  });
+
   it('uses distinct standard sentinel alternatives without the flight-cpp runtime', () => {
     const result = lower(
       'generic-dual-sentinel.ts',
