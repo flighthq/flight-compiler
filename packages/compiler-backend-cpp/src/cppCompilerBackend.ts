@@ -108,11 +108,14 @@ import {
   getCompilerExternalBindingObjectConstructionCpp,
   getCompilerExternalBindingWeakKeyPolicyTargetCpp,
   getCompilerRuntimeExternalInstanceMemberCpp,
+  getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp,
   getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
   getCompilerRuntimeExternalInstanceMemberParameterTypeCpp,
+  getCompilerRuntimeExternalMemberCallResultAbsenceCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberRecordConversionCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
+  getCompilerRuntimeExternalSymbolCallResultAbsenceCpp,
   getCompilerRuntimeExternalSymbolCallResultTypeCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
 } from './cppRuntimeExternalSymbolBinding.js';
@@ -239,6 +242,11 @@ type CppValueBindingOwner = Readonly<{
   module: IrModule;
 }>;
 
+interface CppExternalCallResultPresencePlan {
+  readonly absence: 'null' | 'undefined';
+  readonly immutable: boolean;
+}
+
 interface EmitContext {
   activeDependentCallablePackIds: ReadonlySet<string>;
   anonymousStructs: Map<string, AnonymousStruct>;
@@ -247,6 +255,7 @@ interface EmitContext {
   async?: boolean | undefined;
   bindingClasses: ReadonlyMap<string, Readonly<IrClassDeclaration>>;
   bindingInitializers: ReadonlyMap<string, Readonly<IrExpression>>;
+  externalCallResultPresenceBindings: Map<string, Readonly<CppExternalCallResultPresencePlan>>;
   contextualBindingStorageTargetTypes: Map<string, Readonly<IrType>>;
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
   // Every type parameter the module declares, by binding identity, wherever it is declared. An index
@@ -493,6 +502,7 @@ function emitIrModuleCppWithContext(
     erasedDynamicStorageBindingIds,
     erasedObjectParameterBindingIds,
     exceptionPointerBindingIds: collectCppExceptionPointerBindingIdsCpp(module, bindingTypes),
+    externalCallResultPresenceBindings: new Map(),
     externalBindingStorageTargetTypes,
     forwardDeclaredFunctionBindingIds,
     facetTagNames: new Map(),
@@ -558,6 +568,13 @@ function emitIrModuleCppWithContext(
         erasedDynamicStorageBindingIds.add(variable.binding.id);
       }
       if (!('binding' in variable) || !variable.initializer) return;
+      const externalCallResultAbsence = getCppExternalCallResultAbsenceCpp(variable.initializer, context);
+      if (externalCallResultAbsence) {
+        context.externalCallResultPresenceBindings.set(variable.binding.id, {
+          absence: externalCallResultAbsence,
+          immutable: !variable.mutable,
+        });
+      }
       if (variable.initializer.kind === 'call' && variable.initializer.presence === 'narrowedPresent') return;
       if (hasIrTypeAbsentMember(getIrExpressionTypeEvidenceCpp(variable.initializer, context))) {
         nullableBindingIds.add(variable.binding.id);
@@ -2011,6 +2028,7 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   }
   const name = getBindingTargetName(declaration.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(declaration.binding.id);
+  const externalCallResultPresence = context.externalCallResultPresenceBindings.get(declaration.binding.id);
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(declaration.binding.id);
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(declaration.binding.id);
   const preservedInitializerType = context.preservedInitializerTypes.get(declaration.binding.id);
@@ -2021,7 +2039,9 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
     (exceptionPointer ? 'std::exception_ptr' : undefined) ??
     getCppNamedPropertiesStorageTypeCpp(declaration.initializer, context) ??
     (externalStorageTarget
-      ? emitCppExternalBindingStorageTypeCpp(declaration.type, externalStorageTarget, context)
+      ? externalCallResultPresence
+        ? externalStorageTarget
+        : emitCppExternalBindingStorageTypeCpp(declaration.type, externalStorageTarget, context)
       : contextualStorageTarget
         ? emitType(contextualStorageTarget, context)
         : preservedInitializerType
@@ -2091,6 +2111,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   ) {
     context.objectEntriesTupleArrayBindingIds.add(variable.binding.id);
   }
+  const externalCallResultPresence = context.externalCallResultPresenceBindings.get(variable.binding.id);
   const externalStorageTarget = context.externalBindingStorageTargetTypes.get(variable.binding.id);
   const contextualStorageTarget = context.contextualBindingStorageTargetTypes.get(variable.binding.id);
   const structuralCastRow = context.structuralCastBindingRows.get(variable.binding.id);
@@ -2101,7 +2122,9 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     (exceptionPointer ? 'std::exception_ptr' : undefined) ??
     getCppNamedPropertiesStorageTypeCpp(variable.initializer, context) ??
     (externalStorageTarget
-      ? emitCppExternalBindingStorageTypeCpp(variable.type, externalStorageTarget, context)
+      ? externalCallResultPresence
+        ? externalStorageTarget
+        : emitCppExternalBindingStorageTypeCpp(variable.type, externalStorageTarget, context)
       : contextualStorageTarget
         ? emitType(contextualStorageTarget, context)
         : structuralCastRow
@@ -9508,6 +9531,21 @@ function getCppOptionalParameterNullishStorageCpp(
     : undefined;
 }
 
+// An external profile can state both the exact target result type and the single source sentinel its
+// empty carrier represents. That evidence belongs to the call. It can cross one local binding only
+// when the binding is immutable: after a mutable assignment, the initializer no longer proves what
+// storage the comparison reads.
+function getCppExternalCallResultPresencePlanCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<CppExternalCallResultPresencePlan> | undefined {
+  const direct = getCppExternalCallResultAbsenceCpp(expression, context);
+  if (direct) return { absence: direct, immutable: true };
+  return expression.kind === 'identifier' && expression.reference.kind === 'binding'
+    ? context.externalCallResultPresenceBindings.get(expression.reference.binding.id)
+    : undefined;
+}
+
 // A source member is projected from the payload, never from `std::optional` itself. The storage fact
 // and the source type are deliberately separate: Record and indexed Array reads may elect optional
 // storage even when their TypeScript annotation names only the payload. Require control-flow evidence
@@ -9593,6 +9631,29 @@ function emitCppPresenceTestCpp(
         : 'presence_operand.has_value() && !presence_operand.value().has_value()';
     }
     return `([&]() { const auto& presence_operand = ${value}; return ${test}; }())`;
+  }
+  const externalCallResult = getCppExternalCallResultPresencePlanCpp(operand, context);
+  if (externalCallResult) {
+    if (!externalCallResult.immutable) refuseCppPresenceTestCpp(operand, sentinel, context);
+    const sourceAbsences = union?.types.filter(
+      (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+        member.kind === 'null' || member.kind === 'undefined',
+    );
+    if (sourceAbsences && (sourceAbsences.length !== 1 || sourceAbsences[0]!.kind !== externalCallResult.absence)) {
+      emissionError(
+        context,
+        `external call-result absence ${externalCallResult.absence} does not match its closed source union`,
+        'cpp-external-call-result-absence-mismatch',
+      );
+    }
+    const value = emitExpression(operand, context);
+    const absenceMatches = !strict || sentinel === externalCallResult.absence;
+    if (!absenceMatches) {
+      const valueName = getGeneratedTargetName('presenceOperand', context);
+      return `([&]() { const auto& ${valueName} = ${value}; static_cast<void>(${valueName}); return ${present ? 'true' : 'false'}; }())`;
+    }
+    context.includes.add('optional');
+    return `${present ? '' : '!'}${value}.has_value()`;
   }
   const genericCarrier = getCppGenericCarrierPropertyPresencePlanCpp(operand, context);
   if (genericCarrier) {
@@ -11357,6 +11418,23 @@ function emitContextualUnionExpressionInContextCpp(
       ? context.externalBindingStorageTargetTypes.get(expression.reference.binding.id)
       : undefined);
   if (externalValueTarget) {
+    const externalPresence = getCppExternalCallResultPresencePlanCpp(expression, context);
+    const absentMembers = union.types.filter(
+      (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+        member.kind === 'null' || member.kind === 'undefined',
+    );
+    if (
+      externalPresence?.immutable &&
+      plan.kind === 'optionalSingle' &&
+      absentMembers.length === 1 &&
+      absentMembers[0]!.kind === externalPresence.absence
+    ) {
+      // `callResultType` already names the complete carrier. Reconstructing the union here would wrap
+      // that carrier once more. The source present type may name an overload-specific ambient object
+      // whose target differs from the erased host carrier, so exact result plus sentinel metadata --
+      // rather than reconstructed source spelling -- is the authority for this call.
+      return emitExpression(expression, context, undefined, false);
+    }
     const targetSlots = plan.valueSlots.filter((slot) => slot.targetType === externalValueTarget);
     const unresolvedTargetSlot =
       targetSlots.length === 0 &&
@@ -13399,6 +13477,35 @@ function getCppExternalCallResultTargetCpp(
     : undefined;
 }
 
+function getCppExternalCallResultAbsenceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): 'null' | 'undefined' | undefined {
+  const direct = getCppRuntimeExternalCallResultAbsenceCpp(
+    expression,
+    getCppRuntimeProfile(context.options),
+    context.options.externalBindings,
+  );
+  if (direct) return direct;
+  if (
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.semantics.optionalChain ||
+    expression.callee.kind !== 'property'
+  ) {
+    return undefined;
+  }
+  const receiver = getCppExternalInstanceReceiverSourceNameCpp(expression.callee.object, context);
+  return receiver
+    ? getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp(
+        receiver,
+        expression.callee.name,
+        getCppRuntimeProfile(context.options),
+        context.options.externalBindings,
+      )
+    : undefined;
+}
+
 function getCppExternalInstanceReceiverSourceNameCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -13703,6 +13810,36 @@ function getCppRuntimeExternalCallResultTargetCpp(
   return undefined;
 }
 
+function getCppRuntimeExternalCallResultAbsenceCpp(
+  expression: Readonly<IrExpression>,
+  runtimeProfile: CppCompilerRuntimeProfile,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): 'null' | 'undefined' | undefined {
+  if (
+    (expression.kind !== 'call' && expression.kind !== 'new') ||
+    (expression.kind === 'call' && (expression.optional || expression.semantics.optionalChain))
+  ) {
+    return undefined;
+  }
+  const callee = expression.callee;
+  if (callee.kind === 'identifier' && callee.reference.kind === 'ambient') {
+    return getCompilerRuntimeExternalSymbolCallResultAbsenceCpp(
+      callee.reference.name,
+      runtimeProfile,
+      externalBindings,
+    );
+  }
+  if (callee.kind === 'property' && callee.object.kind === 'identifier' && callee.object.reference.kind === 'ambient') {
+    return getCompilerRuntimeExternalMemberCallResultAbsenceCpp(
+      callee.object.reference.name,
+      callee.name,
+      runtimeProfile,
+      externalBindings,
+    );
+  }
+  return undefined;
+}
+
 // A property read of a member the profile declared on an external instance type but did not complete.
 // The declared-target path above already answered the complete declarations; what reaches here is a
 // member entry that names a target without naming the result, a name two bindings claim, or a member
@@ -13751,7 +13888,8 @@ function collectCppExternalBindingStorageTargetTypesCpp(
   const candidates = new Map<string, Set<string>>();
   const recordCandidate = (bindingId: string, expression: Readonly<IrExpression>): void => {
     const declaredType = context.bindingTypes.get(bindingId);
-    if (!declaredType || !isCppUnresolvedExternalStorageTypeCpp(declaredType)) return;
+    const declaredCallResultAbsence = getCppExternalCallResultAbsenceCpp(expression, context);
+    if (!declaredType || (!declaredCallResultAbsence && !isCppUnresolvedExternalStorageTypeCpp(declaredType))) return;
     const targetType =
       getCppExternalCallResultTargetCpp(expression, context) ??
       getCppExternalInstanceMemberStorageTypeCpp(expression, context);

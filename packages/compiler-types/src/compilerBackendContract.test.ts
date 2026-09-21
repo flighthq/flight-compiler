@@ -77,6 +77,7 @@ describe('compiler backend contracts', () => {
             headers: ['host/gl.hpp'],
             members: [
               {
+                callResultAbsence: 'null',
                 callResultType: 'std::optional<host::GlExtension>',
                 recordConversion: {
                   invocation: 'carrier-function',
@@ -123,6 +124,7 @@ describe('compiler backend contracts', () => {
             headers: ['host/gl.hpp'],
             members: [
               {
+                callResultAbsence: 'null',
                 callResultType: 'std::optional<host::GlExtension>',
                 recordConversion: {
                   invocation: 'carrier-function',

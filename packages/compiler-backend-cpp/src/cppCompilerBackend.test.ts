@@ -4976,6 +4976,126 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(unstableReadFailure.rule).toBe('cpp-numeric-property-typeof-guard-unstable-read');
   });
 
+  it('uses declared external call-result absence for direct calls and immutable locals', () => {
+    const result = lower(
+      'native-call-result-presence.ts',
+      `export function direct(registry: HostRegistry): boolean {
+         return registry.find('direct') !== null;
+       }
+       export function local(registry: HostRegistry): boolean {
+         const entry = registry.find('local');
+         return entry === null;
+       }
+       export function opposite(registry: HostRegistry): boolean {
+         return registry.find('opposite') === undefined;
+       }
+       export function loose(registry: HostRegistry): boolean {
+         return registry.find('loose') != undefined;
+       }
+       export function undefinedResult(registry: HostRegistry): boolean {
+         return registry.read('undefined') !== undefined;
+       }
+       export function undefinedOpposite(registry: HostRegistry): boolean {
+         return registry.read('opposite') !== null;
+       }`,
+    );
+    const binding = {
+      headers: ['host/registry.hpp'],
+      members: [
+        {
+          callResultAbsence: 'null' as const,
+          callResultType: 'std::optional<host::Entry>',
+          sourceMember: 'find',
+          targetName: 'find',
+        },
+        {
+          callResultAbsence: 'undefined' as const,
+          callResultType: 'std::optional<host::Entry>',
+          sourceMember: 'read',
+          targetName: 'read',
+        },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'HostRegistry',
+      space: 'type' as const,
+      targetName: 'host::Registry',
+    };
+    const emit = (externalBinding: Readonly<CppCompilerExternalBinding>) =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: { bindings: [externalBinding], schema: 'flight-cpp-external-bindings/1' },
+        runtimeProfile: 'flight-cpp',
+      }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emit(binding);
+    const direct = /bool direct[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(direct).toContain(`registry.find(flight::String("direct")).has_value()`);
+    expect(direct?.match(/registry\.find/gu)).toHaveLength(1);
+    const local = /bool local[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(local).toContain('std::optional<host::Entry> entry = registry.find');
+    expect(local).toContain('return !entry.has_value();');
+    const opposite = /bool opposite[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(opposite?.match(/registry\.find/gu)).toHaveLength(1);
+    expect(opposite).toContain('static_cast<void>(presence_operand');
+    expect(opposite).toContain('return false;');
+    const loose = /bool loose[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(loose).toContain(`registry.find(flight::String("loose")).has_value()`);
+    const undefinedResult = /bool undefined_result[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(undefinedResult).toContain(`registry.read(flight::String("undefined")).has_value()`);
+    const undefinedOpposite = /bool undefined_opposite[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(undefinedOpposite?.match(/registry\.read/gu)).toHaveLength(1);
+    expect(undefinedOpposite).toContain('return true;');
+
+    const withoutAbsence = captureBackendEmissionFailure(() =>
+      emit({
+        ...binding,
+        members: binding.members.map(({ callResultAbsence: _, ...member }) => member),
+      }),
+    );
+    expect(withoutAbsence.rule).toBe('cpp-presence-test-without-absence-storage');
+  });
+
+  it('does not propagate external call-result absence through mutable storage', () => {
+    const result = lower(
+      'native-mutable-call-result-presence.ts',
+      `export function available(registry: HostRegistry): boolean {
+         let entry = registry.find('first');
+         entry = registry.find('second');
+         return entry !== null;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [
+            {
+              headers: ['host/registry.hpp'],
+              members: [
+                {
+                  callResultAbsence: 'null',
+                  callResultType: 'std::optional<host::Entry>',
+                  sourceMember: 'find',
+                  targetName: 'find',
+                },
+              ],
+              nullability: 'non-null',
+              ownership: 'shared',
+              sourceName: 'HostRegistry',
+              space: 'type',
+              targetName: 'host::Registry',
+            },
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-presence-test-without-absence-storage');
+  });
+
   it('converts one erased external member result to an exact Record only through explicit metadata', () => {
     const result = lower(
       'native-record-conversion.ts',
@@ -5138,6 +5258,13 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
       `import type { GlContext } from '@flighthq/types/contract';
        export function compressed(gl: GlContext): Record<string, number> | null {
          return gl.getExtension('WEBGL_compressed_texture_s3tc') as Record<string, number> | null;
+       }
+       export function available(gl: GlContext): boolean {
+         return gl.getExtension('EXT_color_buffer_float') !== null;
+       }
+       export function availableLocal(gl: GlContext): boolean {
+         const extension = gl.getExtension('EXT_texture_filter_anisotropic');
+         return extension !== null;
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -5169,6 +5296,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
               headers: ['flight/host_sdl/webgl.hpp'],
               members: [
                 {
+                  callResultAbsence: 'null',
                   callResultType: 'std::optional<flight::host_sdl::GlExtension>',
                   recordConversion: {
                     invocation: 'carrier-function',
@@ -5187,6 +5315,23 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
               sourceName: 'WebGL2RenderingContext',
               space: 'type',
               targetName: 'flight::host_sdl::WebGl2Context',
+            },
+            {
+              headers: ['flight/host_sdl/webgl.hpp'],
+              nullability: 'nullable',
+              numericPropertyView: { targetName: 'get' },
+              ownership: 'value',
+              sourceName: 'EXT_color_buffer_float',
+              space: 'type',
+              targetName: 'flight::host_sdl::GlExtension',
+            },
+            {
+              headers: ['flight/host_sdl/webgl.hpp'],
+              nullability: 'non-null',
+              ownership: 'value',
+              sourceName: 'EXT_texture_filter_anisotropic',
+              space: 'type',
+              targetName: 'flight::host_sdl::GlAnisotropyExtension',
             },
           ],
           schema: 'flight-cpp-external-bindings/1',
@@ -5208,6 +5353,9 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     ).toHaveLength(1);
     expect(emittedRender).toContain('return flight::host_sdl::gl_extension_record(external_record_source);');
     expect(emittedRender).not.toContain('external_record_source.value()');
+    expect(emittedRender).toContain('return gl.get_extension(flight::String("EXT_color_buffer_float")).has_value();');
+    expect(emittedRender).toContain('std::optional<flight::host_sdl::GlExtension> extension = gl.get_extension(');
+    expect(emittedRender).toContain('return extension.has_value();');
   });
 
   it('keeps ordinary external fields and explicit instance mappings outside the numeric-property view', () => {

@@ -1,5 +1,6 @@
 import {
   createCompilerRuntimeExternalSymbolBindingPlanCpp,
+  getCompilerExternalBindingCallResultAbsenceCpp,
   getCompilerExternalBindingCallResultTypeCpp,
   getCompilerExternalBindingConstructionCpp,
   getCompilerExternalBindingEvidenceCpp,
@@ -10,10 +11,13 @@ import {
   getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp,
   getCompilerRuntimeExternalInstanceMemberParameterTypeCpp,
   getCompilerRuntimeExternalInstanceMemberCpp,
+  getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp,
   getCompilerRuntimeExternalInstanceMemberTargetCpp,
+  getCompilerRuntimeExternalMemberCallResultAbsenceCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberRecordConversionCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
+  getCompilerRuntimeExternalSymbolCallResultAbsenceCpp,
   getCompilerRuntimeExternalSymbolCallResultTypeCpp,
   getCompilerRuntimeExternalSymbolTargetCpp,
   isCompilerRuntimeExternalSymbolProvidedCpp,
@@ -242,6 +246,94 @@ describe('getCompilerExternalBindingCallResultTypeCpp', () => {
         schema: 'flight-cpp-external-bindings/1',
       }),
     ).toThrow('ambiguous for setTimeout[value]');
+  });
+});
+
+describe('external call-result absence', () => {
+  const bindings = {
+    bindings: [
+      {
+        callResultAbsence: 'undefined' as const,
+        callResultType: 'std::optional<host::Entry>',
+        headers: ['host/registry.hpp'],
+        nullability: 'non-null' as const,
+        ownership: 'value' as const,
+        sourceName: 'readEntry',
+        space: 'value' as const,
+        targetName: 'host::read_entry',
+      },
+      {
+        headers: ['host/registry.hpp'],
+        members: [
+          {
+            callResultAbsence: 'null' as const,
+            callResultType: 'std::optional<host::Entry>',
+            sourceMember: 'find',
+            targetName: 'find',
+          },
+        ],
+        nullability: 'non-null' as const,
+        ownership: 'shared' as const,
+        sourceName: 'HostRegistry',
+        space: 'type' as const,
+        targetName: 'host::Registry',
+      },
+      {
+        headers: ['host/registry.hpp'],
+        members: [
+          {
+            callResultAbsence: 'undefined' as const,
+            callResultType: 'std::optional<host::Entry>',
+            sourceMember: 'read',
+            targetName: 'host::read',
+          },
+        ],
+        nullability: 'non-null' as const,
+        ownership: 'value' as const,
+        sourceName: 'HostRegistry',
+        space: 'value' as const,
+        targetName: 'host::Registry',
+      },
+    ],
+    schema: 'flight-cpp-external-bindings/1' as const,
+  };
+
+  it('resolves exact direct, static-member, and instance-member evidence', () => {
+    expect(getCompilerExternalBindingCallResultAbsenceCpp('readEntry', bindings)).toBe('undefined');
+    expect(getCompilerRuntimeExternalSymbolCallResultAbsenceCpp('readEntry', 'flight-cpp', bindings)).toBe('undefined');
+    expect(
+      getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp('HostRegistry', 'find', 'flight-cpp', bindings),
+    ).toBe('null');
+    expect(getCompilerRuntimeExternalMemberCallResultAbsenceCpp('HostRegistry', 'read', 'flight-cpp', bindings)).toBe(
+      'undefined',
+    );
+  });
+
+  it('requires a result type and a supported sentinel', () => {
+    expect(() =>
+      getCompilerExternalBindingCallResultAbsenceCpp('readEntry', {
+        ...bindings,
+        bindings: [{ ...bindings.bindings[0]!, callResultType: undefined }],
+      }),
+    ).toThrow('malformed call-result absence');
+    expect(() =>
+      getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp('HostRegistry', 'find', 'flight-cpp', {
+        ...bindings,
+        bindings: [
+          {
+            ...bindings.bindings[1]!,
+            members: [
+              {
+                callResultAbsence: 'missing' as 'null',
+                callResultType: 'std::optional<host::Entry>',
+                sourceMember: 'find',
+                targetName: 'find',
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow('malformed static-member mappings');
   });
 });
 

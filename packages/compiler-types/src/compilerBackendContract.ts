@@ -107,6 +107,8 @@ export interface CppCompilerExternalMemberParameterBinding {
 }
 
 export interface CppCompilerExternalMemberBinding extends CompilerRuntimeExternalMemberBinding {
+  /** The one source sentinel represented by an absent `callResultType` carrier. */
+  readonly callResultAbsence?: 'null' | 'undefined' | undefined;
   /** Exact ambient source object types for parameters whose erased call-site IR cannot retain them. */
   readonly parameters?: readonly CppCompilerExternalMemberParameterBinding[] | undefined;
   /** Exact Record conversion capability of this member's external result; requires `callResultType`. */
@@ -134,6 +136,8 @@ export interface CppCompilerExternalBindingRecordConversion {
 }
 
 export interface CppCompilerExternalBinding {
+  /** The one source sentinel represented by an absent `callResultType` carrier. */
+  readonly callResultAbsence?: 'null' | 'undefined' | undefined;
   readonly callResultType?: string | undefined;
   readonly construction?: CppCompilerExternalBindingConstruction | undefined;
   readonly headers: readonly string[];

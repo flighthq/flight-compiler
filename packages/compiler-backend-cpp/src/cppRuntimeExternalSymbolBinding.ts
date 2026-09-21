@@ -15,6 +15,7 @@ import type {
 
 type CppRuntimeExternalSymbolBinding =
   | Readonly<{
+      callResultAbsence?: 'null' | 'undefined' | undefined;
       callResultType?: string | undefined;
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'native' }>['kind'];
       members?: readonly CppCompilerExternalMemberBinding[] | undefined;
@@ -25,6 +26,7 @@ type CppRuntimeExternalSymbolBinding =
       construction?: CppCompilerExternalBindingConstruction | undefined;
     }>
   | Readonly<{
+      callResultAbsence?: 'null' | 'undefined' | undefined;
       callResultType?: string | undefined;
       capability: CompilerRuntimeCapabilityName;
       kind: Extract<CompilerRuntimeExternalSymbolBinding, { kind: 'runtime' }>['kind'];
@@ -55,6 +57,15 @@ export function createCompilerRuntimeExternalSymbolBindingPlanCpp(
     ),
     contract: 'flight-runtime-contract/2',
   };
+}
+
+export function getCompilerExternalBindingCallResultAbsenceCpp(
+  sourceName: string,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): 'null' | 'undefined' | undefined {
+  return getCppCompilerExternalBindings(externalBindings).find(
+    (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'value',
+  )?.callResultAbsence;
 }
 
 export function getCompilerExternalBindingCallResultTypeCpp(
@@ -138,6 +149,20 @@ export function getCompilerExternalBindingWeakKeyPolicyTargetCpp(
   return getCppCompilerExternalBindings(externalBindings).find(
     (binding) => binding.sourceName === sourceName.normalize('NFC') && binding.space === 'type',
   )?.weakKeyPolicyTargetName;
+}
+
+export function getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp(
+  sourceName: string,
+  member: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): 'null' | 'undefined' | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
+    runtimeProfile,
+    externalBindings,
+  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'type');
+  return binding?.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.callResultAbsence;
 }
 
 export function getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp(
@@ -242,6 +267,20 @@ export function getCompilerRuntimeExternalInstanceMemberTargetCpp(
   return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
 }
 
+export function getCompilerRuntimeExternalMemberCallResultAbsenceCpp(
+  sourceName: string,
+  member: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): 'null' | 'undefined' | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
+    runtimeProfile,
+    externalBindings,
+  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'value');
+  return binding?.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.callResultAbsence;
+}
+
 export function getCompilerRuntimeExternalMemberCallResultTypeCpp(
   sourceName: string,
   member: string,
@@ -305,6 +344,17 @@ export function getCompilerRuntimeExternalMemberTargetCpp(
   ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'value');
   if (!binding) return undefined;
   return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
+}
+
+export function getCompilerRuntimeExternalSymbolCallResultAbsenceCpp(
+  sourceName: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): 'null' | 'undefined' | undefined {
+  const normalized = sourceName.normalize('NFC');
+  return getCppRuntimeExternalSymbolBindings(runtimeProfile, externalBindings).find(
+    (candidate) => candidate.sourceName === normalized && candidate.space === 'value',
+  )?.callResultAbsence;
 }
 
 export function getCompilerRuntimeExternalSymbolCallResultTypeCpp(
@@ -389,6 +439,10 @@ function getCppCompilerExternalBindings(
           member.targetName.length === 0 ||
           (member.callResultType !== undefined &&
             (typeof member.callResultType !== 'string' || member.callResultType.length === 0)) ||
+          (member.callResultAbsence !== undefined &&
+            member.callResultAbsence !== 'null' &&
+            member.callResultAbsence !== 'undefined') ||
+          (member.callResultAbsence !== undefined && member.callResultType === undefined) ||
           member.parameters?.some(
             (parameter) =>
               !parameter ||
@@ -439,6 +493,14 @@ function getCppCompilerExternalBindings(
       throw new TypeError(`${subject} has a malformed call-result type`);
     }
     if (
+      binding.callResultAbsence !== undefined &&
+      (binding.space !== 'value' ||
+        binding.callResultType === undefined ||
+        (binding.callResultAbsence !== 'null' && binding.callResultAbsence !== 'undefined'))
+    ) {
+      throw new TypeError(`${subject} has a malformed call-result absence`);
+    }
+    if (
       binding.objectConstruction &&
       (binding.space !== 'type' ||
         binding.ownership !== 'value' ||
@@ -479,6 +541,7 @@ function getCppCompilerExternalBindings(
       throw new TypeError(`${subject} has a malformed weak-key policy target`);
     }
     return {
+      ...(binding.callResultAbsence ? { callResultAbsence: binding.callResultAbsence } : {}),
       ...(binding.callResultType ? { callResultType: binding.callResultType } : {}),
       ...(binding.construction ? { construction: { ...binding.construction } } : {}),
       headers: [...binding.headers],
