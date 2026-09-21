@@ -3477,7 +3477,10 @@ function emitExpression(
       const structuralWriteProxy = emitCppStructuralWriteProxyConstructionCpp(expression, expectedType, context);
       if (structuralWriteProxy) return structuralWriteProxy;
       const ambientConstructorName = getIrAmbientConstructorNameCpp(expression.callee);
-      const constructedType = getIrNewExpressionTypeEvidenceCpp(expression, context);
+      const contextualConstructedType = expectedType
+        ? getCppNonNullableType(expectedType, context, new Set())
+        : undefined;
+      const constructedType = getIrNewExpressionTypeEvidenceCpp(expression, context, contextualConstructedType);
       const mapType =
         getCppRuntimeProfile(context.options) === 'flight-cpp' && ambientConstructorName === 'Map'
           ? getIrAmbientCollectionTypeCpp(constructedType, context, new Set())
@@ -3536,9 +3539,6 @@ function emitExpression(
           : undefined;
       const contextualArrayTypeArguments =
         ambientConstructorName === 'Array' && expectedType?.kind === 'array' ? [expectedType.element] : [];
-      const contextualConstructedType = expectedType
-        ? getCppNonNullableType(expectedType, context, new Set())
-        : undefined;
       const contextualNamedTypeArguments = getCppContextualAmbientConstructorTypeArgumentsCpp(
         ambientConstructorName,
         contextualConstructedType,
@@ -11872,6 +11872,7 @@ function getCppExportedBindingTypesCpp(
 function getIrNewExpressionTypeEvidenceCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
   context: EmitContext,
+  contextualType?: Readonly<IrType>,
 ): Readonly<Extract<IrType, { kind: 'named' }>> | undefined {
   if (expression.callee.kind !== 'identifier') return undefined;
   if (expression.callee.reference.kind === 'binding') {
@@ -11900,6 +11901,10 @@ function getIrNewExpressionTypeEvidenceCpp(
       reference: { kind: 'ambient', name },
       typeArguments: [tuple.elements[0]!.type, tuple.elements[1]!.type],
     };
+  }
+  const contextualTypeArguments = getCppContextualAmbientConstructorTypeArgumentsCpp(name, contextualType);
+  if (contextualTypeArguments.length > 0) {
+    return { kind: 'named', reference: { kind: 'ambient', name }, typeArguments: contextualTypeArguments };
   }
   return { kind: 'named', reference: { kind: 'ambient', name }, typeArguments: [] };
 }

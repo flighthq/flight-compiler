@@ -10417,6 +10417,29 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('std::in_place_type<std::string>, "argument"');
   });
 
+  it('uses contextual Map types for empty, singleton, and heterogeneous literal entries', () => {
+    const result = lower(
+      'contextual-map-entries.ts',
+      `export const empty: ReadonlyMap<number, string> = new Map([]);
+       export const singleton: ReadonlyMap<number, string> = new Map([[0, 'End']]);
+       export const heterogeneous: ReadonlyMap<number, string> = new Map([
+        [0, 'End'],
+        [1, 'ShowFrame'],
+      ]);`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('flight::Map<double, flight::String> empty = flight::Map<double, flight::String>({})');
+    expect(output).toContain(
+      'flight::Map<double, flight::String> singleton = flight::Map<double, flight::String>({{0.0, flight::String("End")}})',
+    );
+    expect(output).toContain(
+      'flight::Map<double, flight::String> heterogeneous = flight::Map<double, flight::String>({{0.0, flight::String("End")}, {1.0, flight::String("ShowFrame")}})',
+    );
+    expect(output).not.toContain('flight::Array<flight::Array<std::variant<double, flight::String>>>');
+    expect(output).not.toContain('std::make_tuple');
+  });
+
   it('preserves null and undefined as distinct flight-cpp variant alternatives', () => {
     const result = lower(
       'dual-sentinel.ts',
