@@ -7016,6 +7016,70 @@ it('resolves property access binding type evidence through declarations and chec
   expect(result.diagnostics).toEqual([]);
 });
 
+it('records literal evidence for a member of an imported const value namespace', () => {
+  const moduleResolution = {
+    edges: [
+      {
+        specifier: './values',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/values.ts' },
+      },
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1' as const,
+  };
+  const results = lowerTypeScriptSources(
+    [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/values.ts',
+          `export const Mode = { Normal: 'Normal' } as const;
+           export type Mode = string;`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          `export * from './values';`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/mode.ts',
+          `import { Mode } from '@flighthq/types/contract';
+           export function normal(): Mode | null { return Mode.Normal; }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ],
+    moduleResolution,
+  );
+  const selectedTypes: IrType[] = [];
+  analyzeIrModuleTraversal(results[2]!.module, {
+    expression(expression) {
+      if (expression.kind === 'property' && expression.name === 'Normal' && expression.type) {
+        selectedTypes.push(expression.type);
+      }
+    },
+  });
+
+  expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+  expect(selectedTypes).toEqual([{ kind: 'literal', value: 'Normal' }]);
+});
+
 it('lowers element access without argument expression as unsupported', () => {
   const result = lower(
     'element-access.ts',

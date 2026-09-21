@@ -20633,6 +20633,112 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('std::optional<flight::String>');
   });
 
+  it('uses recorded property evidence for exact optional construction and refuses competing domains', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './values',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/values.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const consumer = (file: string, body: string) => ({
+      packageName: '@flighthq/math',
+      sourceFile: ts.createSourceFile(
+        `/flight/packages/math/src/${file}.ts`,
+        `import { Mode } from '@flighthq/types/contract';
+         import type { Box, Host, Mode as ModeType, Value } from '@flighthq/types/contract';
+         ${body}`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/values.ts',
+            `export interface Value { value: number }
+             export interface Other { other: number }
+             export interface Box {
+               present: Value;
+               nullish: Value | null;
+               ambiguous: Value | Other;
+               incompatible: Other;
+             }
+             export interface Host { box: Box }
+             export const Mode = { Normal: 'Normal' } as const;
+             export type Mode = string;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export * from './values';`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        consumer(
+          'present',
+          `export function read(host: Host): Value | null {
+             const box = host.box;
+             return box.present;
+           }`,
+        ),
+        consumer('nullish', `export function read(box: Box): Value | null { return box.nullish; }`),
+        consumer(
+          'mode',
+          `export function selected(): ModeType | null { return Mode.Normal; }
+           export function literal(): ModeType | null { return 'Normal'; }`,
+        ),
+        consumer('ambiguous', `export function read(box: Box): Value | null { return box.ambiguous; }`),
+        consumer('incompatible', `export function read(box: Box): Value | null { return box.incompatible; }`),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const presentFunction = modules[2]!.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+    );
+    const presentVariable = presentFunction?.kind === 'function' ? presentFunction.body[0] : undefined;
+    if (presentVariable?.kind !== 'variable') throw new TypeError('expected imported property alias');
+    (presentVariable.declarations[0] as { type?: IrType }).type = { kind: 'unknown', source: 'unknown' };
+    const createSession = (availableModules: readonly IrModule[]) =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution: resolution,
+        modules: availableModules,
+        options: { runtimeProfile: 'flight-cpp' },
+      });
+
+    // The present receiver intentionally models a property-derived local whose binding table lost its
+    // nominal type, as in the exact RichText source. Its selected field still carries checker evidence.
+    // Already-nullish imported fields keep their equivalent optional representation.
+    const present = createSession(modules).emitModule(modules[2]!)[0]!.contents;
+    const nullish = createSession(modules).emitModule(modules[3]!)[0]!.contents;
+    const mode = createSession(modules).emitModule(modules[4]!)[0]!.contents;
+    expect(present).toContain('std::optional<flight::Ref<flighthq_types::Value>>{box->present}');
+    expect(nullish).toContain('return box->nullish;');
+    expect(mode).toContain('std::optional<flight::String>{flight::String("Normal")}');
+
+    const ambiguousFailure = captureBackendEmissionFailure(() => createSession(modules).emitModule(modules[5]!));
+    const incompatibleFailure = captureBackendEmissionFailure(() => createSession(modules).emitModule(modules[6]!));
+    expect(ambiguousFailure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(incompatibleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
   it('reads an imported own member without treating an unresolved inherited shape as complete', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [

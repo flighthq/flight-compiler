@@ -12885,12 +12885,25 @@ function getIrPropertyExpressionTypeEvidenceCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  const valueType = expression.optional
+  const recordedType = expression.type?.kind === 'unknown' ? undefined : expression.type;
+  const reconstructedType = expression.optional
     ? getIrOptionalChainValueTypeEvidenceCpp(expression, context)
     : (() => {
         const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
         return objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
       })();
+  // A literal recorded for a const-object member is a closed runtime domain even when the object is
+  // imported through a barrel and its namespace-shaped receiver cannot be reconstructed here. A
+  // member selected through a property-derived local alias is equally exact: the alias provenance
+  // proves which source object supplied the field. Other recorded results still require the receiver
+  // path above; accepting them would let unavailable inheritance or narrowed unions escape emission.
+  const recordedLiteralType = recordedType?.kind === 'literal' ? recordedType : undefined;
+  const receiverInitializer =
+    expression.object.kind === 'identifier' && expression.object.reference.kind === 'binding'
+      ? context.bindingInitializers.get(expression.object.reference.binding.id)
+      : undefined;
+  const recordedAliasedMemberType = receiverInitializer?.kind === 'property' ? recordedType : undefined;
+  const valueType = reconstructedType ?? recordedLiteralType ?? recordedAliasedMemberType;
   if (!valueType || !expression.optional || expression.optionalChain?.receiverNullish !== 'possible') return valueType;
   return createIrTypeEvidenceUnionCpp([valueType, { kind: 'undefined' }]);
 }

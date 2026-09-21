@@ -1028,12 +1028,22 @@ function lowerExpression(
     // generic method value can revisit library mapped types (for example Promise.allSettled) even
     // though the call result already has its own instantiated evidence. Besides being redundant,
     // that speculative materialization reports diagnostics at an otherwise supported call site.
-    const candidateType =
+    const declaredCandidateType =
       receiverShape?.kind === 'object' ||
       (memberDeclaration !== undefined &&
         (ts.isPropertySignature(memberDeclaration) || ts.isPropertyDeclaration(memberDeclaration)))
         ? getTypeScriptExpressionBindingTypeEvidence(node, context)
         : undefined;
+    // A const object used as a value namespace (for example `BlendMode.Normal`) exposes its
+    // members through property assignments rather than property declarations. The selected
+    // initializer's checker type is still closed value evidence: it is the literal/member domain
+    // stored by that exact property, not a reconstructed shape for the namespace object.
+    const initializerCandidateType =
+      memberDeclaration !== undefined &&
+      (ts.isPropertyAssignment(memberDeclaration) || ts.isShorthandPropertyAssignment(memberDeclaration))
+        ? getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0, true, node)
+        : undefined;
+    const candidateType = declaredCandidateType ?? initializerCandidateType;
     const type = candidateType && isIrExpressionValueTypeEvidence(candidateType) ? candidateType : undefined;
     const resolved =
       getIrResolvedMemberReceiver(receiver) ??
