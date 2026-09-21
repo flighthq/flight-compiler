@@ -25261,7 +25261,11 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('template <typename Traits = flight::Ref<NodeTraits>>');
     expect(emitted).toContain('flight::make_structural_ref<');
     expect(emitted).toContain('flight::row_field<flight::RowKey<"data">>');
-    expect(emitted).toContain('flight::row_field(entity_runtime_key');
+    expect(emitted).toContain('auto structural_open_row_key = entity_runtime_key;');
+    expect(emitted).toContain(
+      'flight::row_set(structural_open_row, structural_open_row_key, std::move(structural_open_row_value_4));',
+    );
+    expect(emitted).not.toContain('flight::row_field(entity_runtime_key');
     expect(emitted).toContain('flight::row_set<flight::RowKey<"enabled">>(out, true)');
     expect(emitted).toContain('create_node<flight::Ref<VisualTraits>>(std::nullopt)');
     expect(emitted).toContain('flight::row_set<flight::RowKey<"opacity">>(out, 0.5)');

@@ -4218,14 +4218,41 @@ function emitExpression(
         }
         const openRowConstruction = getCppStructuralOpenRowConstructionPlanCpp(expression, constructionType, context);
         if (openRowConstruction) {
-          const fields = openRowConstruction.fields.map(({ member, property }) => {
-            const value = emitExpression(member.value, context, property.type);
-            return member.kind === 'computedProperty'
-              ? `flight::row_field(${emitExpression(member.key, context)}, ${value})`
-              : `flight::row_field<flight::RowKey<${JSON.stringify(member.name)}>>(${value})`;
-          });
+          // `row_field` describes one compile-time string key, while a computed Symbol is an
+          // identity known only at runtime. Evaluate every source member in order, construct the
+          // named cells, then write the proven Symbol cells through the runtime's identity-aware
+          // path. Keeping values in temporaries also avoids C++ argument evaluation order changing
+          // the object literal's effects.
+          const result = getGeneratedTargetName('structuralOpenRow', context);
+          const values = new Map<
+            Readonly<Extract<IrObjectMember, { kind: 'computedProperty' | 'property' }>>,
+            string
+          >();
+          const keys = new Map<Readonly<Extract<IrObjectMember, { kind: 'computedProperty' }>>, string>();
+          const evaluations: string[] = [];
+          for (const { member, property } of openRowConstruction.fields) {
+            if (member.kind === 'computedProperty') {
+              const key = getGeneratedTargetName('structuralOpenRowKey', context);
+              keys.set(member, key);
+              evaluations.push(`auto ${key} = ${emitExpression(member.key, context)};`);
+            }
+            const value = getGeneratedTargetName('structuralOpenRowValue', context);
+            values.set(member, value);
+            evaluations.push(`auto ${value} = ${emitExpression(member.value, context, property.type)};`);
+          }
+          const fields = openRowConstruction.fields.flatMap(({ member }) =>
+            member.kind === 'property'
+              ? [`flight::row_field<flight::RowKey<${JSON.stringify(member.name)}>>(std::move(${values.get(member)!}))`]
+              : [],
+          );
+          const symbolWrites = openRowConstruction.fields.flatMap(({ member }) =>
+            member.kind === 'computedProperty'
+              ? [`flight::row_set(${result}, ${keys.get(member)!}, std::move(${values.get(member)!}));`]
+              : [],
+          );
           context.includes.add('flight/structural_ref.hpp');
-          return `flight::make_structural_ref<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>(${fields.join(', ')})`;
+          context.includes.add('utility');
+          return `([&]() { ${evaluations.join(' ')} auto ${result} = flight::make_structural_ref<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>(${fields.join(', ')}); ${symbolWrites.join(' ')} return ${result}; }())`;
         }
         if (hasCppOpenStructuralRowTypeParameterCpp(constructionType, context)) {
           emissionError(
