@@ -10940,25 +10940,30 @@ function collectCppContextualBindingStorageTargetTypesCpp(
     const targetType = expectedType
       ? (getCppNonNullableType(expectedType, context, new Set()) ?? expectedType)
       : undefined;
+    if (!sourceType || !targetType) return;
+    let representationEquivalent = true;
     if (
-      !sourceType ||
-      !targetType ||
-      !hasFlightReferenceRepresentationCpp(targetType, context) ||
-      hasFlightStructuralRowRepresentationCpp(targetType, context)
+      !isCppContextualCollectionProjectionCpp(sourceType, targetType, context) &&
+      !isCppEmptyArrayAssignmentStorageTargetCpp(bindingId, sourceType, targetType, module, context)
     ) {
-      return;
-    }
-    const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceType, context.module);
-    const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetType, context.module);
-    if (!sourceShape || !targetShape) {
-      return;
-    }
-    const representationEquivalent = areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context);
-    if (
-      !representationEquivalent &&
-      !isCppContextualNamedObjectLiteralConstructionCpp(bindingId, targetType, context)
-    ) {
-      return;
+      if (
+        !hasFlightReferenceRepresentationCpp(targetType, context) ||
+        hasFlightStructuralRowRepresentationCpp(targetType, context)
+      ) {
+        return;
+      }
+      const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceType, context.module);
+      const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetType, context.module);
+      if (!sourceShape || !targetShape) {
+        return;
+      }
+      representationEquivalent = areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context);
+      if (
+        !representationEquivalent &&
+        !isCppContextualNamedObjectLiteralConstructionCpp(bindingId, targetType, context)
+      ) {
+        return;
+      }
     }
     acceptedReferenceCounts.set(bindingId, (acceptedReferenceCounts.get(bindingId) ?? 0) + 1);
     if (!representationEquivalent) projected.add(bindingId);
@@ -10987,7 +10992,10 @@ function collectCppContextualBindingStorageTargetTypesCpp(
         variable.initializer &&
         variable.type &&
         ((variable.initializer.kind === 'object' && hasFlightReferenceRepresentationCpp(variable.type, context)) ||
-          getIrArrayTypeCpp(inferredType, context, new Set()) !== undefined)
+          getIrArrayTypeCpp(inferredType, context, new Set()) !== undefined ||
+          (variable.initializer.kind === 'array' &&
+            variable.initializer.elements.length === 0 &&
+            getIrArrayTypeCpp(variable.type, context, new Set()) !== undefined))
       ) {
         eligible.add(variable.binding.id);
       }
@@ -11036,6 +11044,9 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       ) {
         const bindingId = expression.reference.binding.id;
         referenceCounts.set(bindingId, (referenceCounts.get(bindingId) ?? 0) + 1);
+      }
+      if (expression.kind === 'assignment' && expression.operator === '=') {
+        recordTarget(expression.right, getIrAssignmentTargetTypeCpp(expression.left, context));
       }
       if (expression.kind === 'object') {
         collectCppObjectContextualStorageTargetsCpp(expression, expression.type, eligible, candidates, context);
@@ -11190,6 +11201,86 @@ function isCppContextualCollectionProjectionCpp(
     targetShape &&
     hasFlightReferenceRepresentationCpp(targetArray.element, context) &&
     areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context),
+  );
+}
+
+function isCppEmptyArrayAssignmentStorageTargetCpp(
+  bindingId: string,
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): boolean {
+  const sourceArray = getIrArrayTypeCpp(source, context, new Set());
+  const targetArray = getIrArrayTypeCpp(target, context, new Set());
+  const initializer = context.bindingInitializers.get(bindingId);
+  if (
+    sourceArray?.element.kind !== 'unknown' ||
+    sourceArray.element.source !== 'any' ||
+    !targetArray ||
+    !hasFlightReferenceRepresentationCpp(targetArray.element, context) ||
+    initializer?.kind !== 'array' ||
+    initializer.elements.length !== 0
+  ) {
+    return false;
+  }
+  const targetIdentity = normalizeCompilerStructuralValueCanonical(target);
+  let references = 0;
+  let representedUses = 0;
+  let incompatibleWrite = false;
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (
+        expression.kind === 'identifier' &&
+        expression.reference.kind === 'binding' &&
+        expression.reference.binding.id === bindingId
+      ) {
+        references += 1;
+      }
+      if (
+        expression.kind === 'call' &&
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
+        expression.callee.name === 'push' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'binding' &&
+        expression.callee.object.reference.binding.id === bindingId
+      ) {
+        representedUses += 1;
+        incompatibleWrite ||= expression.arguments.some(
+          (argument) =>
+            argument.kind === 'spread' ||
+            !isCppContextualArrayElementWriteRepresentableCpp(argument, targetArray.element, context),
+        );
+      }
+      if (
+        expression.kind === 'assignment' &&
+        expression.operator === '=' &&
+        expression.right.kind === 'identifier' &&
+        expression.right.reference.kind === 'binding' &&
+        expression.right.reference.binding.id === bindingId
+      ) {
+        const assignmentTarget = getIrAssignmentTargetTypeCpp(expression.left, context);
+        if (assignmentTarget && normalizeCompilerStructuralValueCanonical(assignmentTarget) === targetIdentity) {
+          representedUses += 1;
+        }
+      }
+    },
+  });
+  return !incompatibleWrite && references > 0 && references === representedUses;
+}
+
+function isCppContextualArrayElementWriteRepresentableCpp(
+  expression: Readonly<IrExpression>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (isCppExpressionRepresentableAsRuntimeTypeCpp(expression, target, context)) return true;
+  if (expression.kind !== 'object' || expression.members.some((member) => member.kind !== 'property')) return false;
+  const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(expression.type, context.module);
+  const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(target, context.module);
+  return Boolean(
+    sourceShape && targetShape && areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context),
   );
 }
 

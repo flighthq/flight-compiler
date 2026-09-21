@@ -15022,6 +15022,27 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('.color_keys = color_keys');
   });
 
+  it('constructs an empty inferred array through its sole nominal assignment target', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-empty-object-array.ts',
+        `interface Point { x: number; y: number }
+         interface Manifold { points: Point[] }
+         export function initialize(out: Manifold): void {
+           const points = [];
+           points.push({ x: 0, y: 0 });
+           out.points = points;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('flight::Array<flight::Ref<Point>> points = flight::Array<flight::Ref<Point>>{}');
+    expect(output).toContain('points.push(flight::make_ref<Point>(Point{.x = 0.0, .y = 0.0}))');
+    expect(output).toContain('(out->points = points)');
+    expect(output).not.toContain('flight::Array<flight::Any> points');
+  });
+
   it('stores a locally built Map in an imported readonly structural result view', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/directory.ts',
