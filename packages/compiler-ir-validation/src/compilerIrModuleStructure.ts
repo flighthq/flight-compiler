@@ -55,7 +55,7 @@ interface IrLexicalScope {
 }
 
 interface IrModuleValidationState {
-  readonly bindings: Map<string, BindingDefinition>;
+  readonly bindings: Map<string, BindingDefinition[]>;
   readonly failures: CompilerIrModuleValidationFailure[];
   readonly module: Readonly<IrModule>;
   readonly references: BindingReference[];
@@ -201,22 +201,64 @@ function addBindingDefinition(
   validateBindingOrigin(binding, path, state);
   validateBindingIntroduction(binding, path, expectation, state);
   const scope = getBindingIntroductionScope(binding.scope, expectation.scope, state);
-  const existing = state.bindings.get(binding.id);
-  if (existing) {
-    if (isRepeatedFunctionVariableBinding(existing, binding, scope, expectation)) return;
+  const existing = state.bindings.get(binding.id) ?? [];
+  const sameScope = existing.find((definition) => definition.scope === scope);
+  if (sameScope) {
+    if (isRepeatedFunctionVariableBinding(sameScope, binding, scope, expectation)) return;
     addFailure(
       'duplicate-binding-identity',
       path,
-      `binding ${binding.id} was already introduced at ${existing.path}`,
+      `binding ${binding.id} was already introduced at ${sameScope.path}`,
       state,
     );
     return;
   }
-  state.bindings.set(binding.id, {
-    binding,
-    path,
-    scope,
-  });
+  if (existing.length > 0 && !isRepeatedScopedTypeParameterBinding(existing, binding, expectation)) {
+    addFailure(
+      'duplicate-binding-identity',
+      path,
+      `binding ${binding.id} was already introduced at ${existing[0]!.path}`,
+      state,
+    );
+    return;
+  }
+  existing.push({ binding, path, scope });
+  state.bindings.set(binding.id, existing);
+}
+
+function isRepeatedScopedTypeParameterBinding(
+  existing: readonly Readonly<BindingDefinition>[],
+  binding: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  expectation: Readonly<BindingIntroductionExpectation>,
+): boolean {
+  // Resolved type evidence may embed the same source-declared generic signature more than once.
+  // Its stable source binding identity repeats, while each embedded function type establishes an
+  // independent lexical scope. Only that exact type-parameter identity may repeat across scopes;
+  // two introductions in one scope remain a malformed duplicate.
+  return (
+    expectation.kind === 'typeParameter' &&
+    expectation.space === 'type' &&
+    binding.kind === 'typeParameter' &&
+    existing.every((definition) => hasSameBindingIdentityMetadata(definition.binding, binding))
+  );
+}
+
+function hasSameBindingIdentityMetadata(
+  left: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+  right: Readonly<IrBindingIdentity | IrTypeBindingIdentity>,
+): boolean {
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    left.kind === right.kind &&
+    left.scope === right.scope &&
+    left.space === right.space &&
+    left.packageName === right.packageName &&
+    left.source === right.source &&
+    left.line === right.line &&
+    left.column === right.column &&
+    left.fingerprint === right.fingerprint
+  );
 }
 
 function isRepeatedFunctionVariableBinding(
@@ -1705,8 +1747,8 @@ function validateSourceOrigin(
 
 function validateBindingReferences(state: IrModuleValidationState): void {
   for (const reference of state.references) {
-    const definition = state.bindings.get(reference.binding.id);
-    if (!definition) {
+    const definitions = state.bindings.get(reference.binding.id);
+    if (!definitions) {
       addFailure(
         'dangling-binding-reference',
         reference.path,
@@ -1715,7 +1757,8 @@ function validateBindingReferences(state: IrModuleValidationState): void {
       );
       continue;
     }
-    const expected = definition.binding;
+    const definition = getNearestBindingDefinition(definitions, reference.scope, state.scopeParents);
+    const expected = (definition ?? definitions[0]!).binding;
     const received = reference.binding;
     if (
       expected.space !== received.space ||
@@ -1730,32 +1773,33 @@ function validateBindingReferences(state: IrModuleValidationState): void {
       addFailure(
         'inconsistent-binding-reference',
         reference.path,
-        `binding ${received.id} metadata differs from its introduction at ${definition.path}`,
+        `binding ${received.id} metadata differs from its introduction at ${(definition ?? definitions[0]!).path}`,
         state,
       );
     }
-    if (!isLexicalScopeAncestor(definition.scope, reference.scope, state.scopeParents)) {
+    if (!definition) {
       addFailure(
         'out-of-scope-binding-reference',
         reference.path,
-        `binding ${received.id} is introduced outside the reference's lexical scope at ${definition.path}`,
+        `binding ${received.id} is introduced outside the reference's lexical scope at ${definitions[0]!.path}`,
         state,
       );
     }
   }
 }
 
-function isLexicalScopeAncestor(
-  expected: string,
-  received: string,
+function getNearestBindingDefinition(
+  definitions: readonly Readonly<BindingDefinition>[],
+  referenceScope: string,
   parents: ReadonlyMap<string, string | undefined>,
-): boolean {
-  let scope: string | undefined = received;
+): Readonly<BindingDefinition> | undefined {
+  let scope: string | undefined = referenceScope;
   while (scope !== undefined) {
-    if (scope === expected) return true;
+    const definition = definitions.find((candidate) => candidate.scope === scope);
+    if (definition) return definition;
     scope = parents.get(scope);
   }
-  return false;
+  return undefined;
 }
 
 function validateModuleIdentity(module: Readonly<IrModule>, state: IrModuleValidationState): void {

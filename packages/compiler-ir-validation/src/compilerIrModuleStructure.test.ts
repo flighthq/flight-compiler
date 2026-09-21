@@ -9,6 +9,7 @@ import type {
   IrModule,
   IrStatement,
   IrType,
+  IrTypeParameter,
   IrVariableDeclaration,
 } from '../../compiler-types/src/index.js';
 import { validateIrModuleStructure } from './compilerIrModuleStructure.js';
@@ -100,6 +101,48 @@ describe('validateIrModuleStructure', () => {
     expect(validateIrModuleStructure(rich)).toEqual({ kind: 'valid' });
     expect(validateIrModuleStructure(rich)).toEqual(validateIrModuleStructure(rich));
     expect(rich).toEqual(snapshot);
+  });
+
+  it('accepts one source generic signature embedded in distinct function type scopes', () => {
+    const module = lower(
+      'repeated-generic-method-evidence.ts',
+      `export function first(values?: number[]): number[] { return values?.map(Number) ?? []; }
+       export function second(values?: number[]): number[] { return values?.map(Number) ?? []; }`,
+    );
+
+    expect(validateIrModuleStructure(module)).toEqual({ kind: 'valid' });
+  });
+
+  it('rejects a repeated type parameter introduction in the same function type scope', () => {
+    const module = lower(
+      'duplicate-generic-method-parameter.ts',
+      'export function project(values?: number[]): number[] { return values?.map(Number) ?? []; }',
+    );
+    const declaration = module.declarations[0];
+    const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+    const expression = statement?.kind === 'return' ? statement.expression : undefined;
+    const call = expression?.kind === 'binary' && expression.left.kind === 'call' ? expression.left : undefined;
+    const valueType = call?.callee.kind === 'property' ? call.callee.optionalChain?.valueType : undefined;
+    if (valueType?.kind !== 'function' || !valueType.typeParameters[0]) {
+      throw new Error('Expected optional generic method evidence');
+    }
+    (valueType.typeParameters as IrTypeParameter[]).push(valueType.typeParameters[0]);
+
+    expect(validateIrModuleStructure(module)).toMatchObject({
+      failures: [
+        expect.objectContaining({
+          code: 'duplicate-binding-identity',
+          path: expect.stringContaining('.typeParameters[1].binding'),
+        }),
+      ],
+      kind: 'invalid',
+    });
+  });
+
+  it('accepts repeated references to one type parameter within its function scope', () => {
+    const module = lower('repeated-generic-reference.ts', 'export type Select = <T>(value: T, fallback: T) => T;');
+
+    expect(validateIrModuleStructure(module)).toEqual({ kind: 'valid' });
   });
 
   it('validates class method overload signatures in independent function scopes', () => {
