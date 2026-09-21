@@ -2676,7 +2676,9 @@ describe('createCppCompilerBackend', () => {
       options: { runtimeProfile: 'flight-cpp' },
     }).emitModule(modules[2]!)[0]!.contents;
 
-    expect(emitted).toContain('const double brightness = options.value()->brightness.value_or(0.0)');
+    expect(emitted).toContain(
+      'const double brightness = ([&]() -> double { auto nullish_coalesce_left = options.value()->brightness; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0; }())',
+    );
     expect(emitted).toContain('flight::row_set<flight::RowKey<"brightness">>(out, std::optional<double>{brightness})');
     expect(emitted).toContain(
       'flight::row_set<flight::RowKey<"contrast">>(out, ([&]() -> std::optional<double> { auto nullish_coalesce_left = options.value()->contrast;',
@@ -4297,7 +4299,9 @@ export function compare(left: string, right: string, locale: string, options: In
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(emitted).toContain('names.set(name.value(), assignment_value)');
-    expect(emitted).toContain('names.get(name.value()).value_or(match)');
+    expect(emitted).toContain(
+      'auto nullish_coalesce_left = names.get(name.value()); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return match;',
+    );
     expect(emitted).not.toContain('names.get(name.value()).value() =');
   });
 
@@ -4434,7 +4438,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('return flight::Array<double>{}');
-    expect(emitted.contents).toContain('return values.get(index).value_or(0.0)');
+    expect(emitted.contents).toContain(
+      'auto nullish_coalesce_left = values.get(index); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0;',
+    );
     expect(emitted.contents).toContain('values.element(index) *= 2.0');
     expect(emitted.contents).not.toContain('static_cast<size_t>');
   });
@@ -4908,7 +4914,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('std::optional<Value> value = values.get(0.0)');
-    expect(emitted.contents).toContain('return value.value_or(fallback)');
+    expect(emitted.contents).toContain('return (value.has_value() ? value.value() : fallback);');
   });
 
   it('passes through checker-proven optional calls and preserves named iteration elements', () => {
@@ -6764,10 +6770,15 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('~static_cast<int32_t>');
   });
 
-  it('emits nullish coalescing with value_or', () => {
-    const result = lower('nullish.ts', 'export function fallback(x: number | undefined): number { return x ?? 0; }');
+  it('lazily coalesces a stable optional binding without a temporary', () => {
+    const result = lower(
+      'nullish.ts',
+      'export function fallback(x: number | undefined, create: () => number): number { return x ?? create(); }',
+    );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('value_or');
+    expect(emitted.contents).toContain('return (x.has_value() ? x.value() : create());');
+    expect(emitted.contents).not.toContain('nullish_coalesce_left');
+    expect(emitted.contents).not.toContain('value_or');
     expect(emitted.contents).toContain('#include <optional>');
   });
 
@@ -7926,7 +7937,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('.value_or(flight::Array<double>(3.0))');
+    expect(emitted.contents).toContain(
+      'flight::Array<double> result = (out.has_value() ? out.value() : flight::Array<double>(3.0));',
+    );
   });
 
   it('emits tuple literal with absent element as std::nullopt', () => {
@@ -9921,7 +9934,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       { runtimeProfile: 'flight-cpp' },
     ).contents;
 
-    expect(output).toContain('return optional_chain_receiver.value()->height; }()).value_or(0.0)');
+    expect(output).toContain(
+      'return optional_chain_receiver.value()->height; }()); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0;',
+    );
   });
 
   it('uses a named contextual callback return type as the lambda ABI', () => {
@@ -13396,13 +13411,13 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('std::min_element');
   });
 
-  it('emits undefined default expression with .value_or', () => {
+  it('emits undefined default expression as a lazy binding conditional', () => {
     const result = lower(
       'default-expr.ts',
       'export function withDefault(x: number | undefined): number { return x ?? 42; }',
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('.value_or(');
+    expect(emitted.contents).toContain('return (x.has_value() ? x.value() : 42.0);');
   });
 
   it('emits tuple element access with std::get', () => {
@@ -14172,14 +14187,95 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.path).toBe('app.hpp');
   });
 
-  it('emits nullish coalescing as value_or', () => {
+  it('emits a nullish-coalescing binding as a lazy conditional', () => {
     const result = lower(
       'nullish-coalesce.ts',
       'export function fallback(a: number | undefined): number { return a ?? 0; }',
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('.value_or(');
+    expect(emitted.contents).toContain('return (a.has_value() ? a.value() : 0.0);');
+    expect(emitted.contents).not.toContain('.value_or(');
     expect(emitted.contents).toContain('#include <optional>');
+  });
+
+  it('evaluates optional-single property, row, and keyed reads once before a lazy fallback', () => {
+    // `effects-gl/src/glConvolutionEffect.ts:35` and its WGPU twin read the imported
+    // `ConvolutionEffect.divisor` row and compute the matrix sum only when that member is absent.
+    // The local property and keyed Record cases pin the same rule on the other storage-producing
+    // expressions: none may be duplicated around the presence test and none may eagerly call fallback.
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export interface ConvolutionEffect { readonly divisor?: number }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const effects = ts.createSourceFile(
+      '/flight/packages/effects-gl/src/glConvolutionEffect.ts',
+      `import type { ConvolutionEffect } from '@flighthq/types/contract';
+       interface LocalOptions { readonly value?: number }
+       function getAutoDivisor(): number { return 1; }
+       function readOptions(options: LocalOptions): LocalOptions { return options; }
+       export function importedRow(effect: Readonly<ConvolutionEffect>): number {
+         return effect.divisor ?? getAutoDivisor();
+       }
+       export function localProperty(options: LocalOptions, fallback: () => number): number {
+         return readOptions(options).value ?? fallback();
+       }
+       export function keyedRead(
+         values: Readonly<Record<string, number>>,
+         nextKey: () => string,
+         fallback: () => number,
+       ): number {
+         return values[nextKey()] ?? fallback();
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/effects-gl', sourceFile: effects, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: {
+        packageTargets: {
+          '@flighthq/effects-gl': { includePrefix: 'flight/effects-gl', namespace: 'flight::effects_gl' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(results[1]!.module)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const importedRow = emitted.slice(emitted.indexOf(' imported_row('), emitted.indexOf(' local_property('));
+    const localProperty = emitted.slice(emitted.indexOf(' local_property('), emitted.indexOf(' keyed_read('));
+    const keyedRead = emitted.slice(emitted.indexOf(' keyed_read('));
+    expect(importedRow.match(/row_get<flight::RowKey<"divisor">>\(effect\)/gu)).toHaveLength(1);
+    expect(importedRow).toMatch(
+      /auto nullish_coalesce_left = flight::row_get<flight::RowKey<"divisor">>\(effect\); if \(nullish_coalesce_left\.has_value\(\)\) return nullish_coalesce_left\.value\(\); return get_auto_divisor\(\);/u,
+    );
+    expect(localProperty.match(/read_options\(options\)->value/gu)).toHaveLength(1);
+    expect(localProperty).toMatch(
+      /auto nullish_coalesce_left = read_options\(options\)->value; if \(nullish_coalesce_left\.has_value\(\)\) return nullish_coalesce_left\.value\(\); return fallback\(\);/u,
+    );
+    expect(keyedRead.match(/values\.get\(next_key\(\)\)/gu)).toHaveLength(1);
+    expect(keyedRead).toMatch(
+      /auto nullish_coalesce_left = values\.get\(next_key\(\)\); if \(nullish_coalesce_left\.has_value\(\)\) return nullish_coalesce_left\.value\(\); return fallback\(\);/u,
+    );
+    expect(emitted).not.toContain('.value_or(');
   });
 
   it('preserves optional storage when nullish coalescing changes only the absence sentinel', () => {
@@ -14280,7 +14376,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('auto nullish_coalesce_left = primary;');
-    expect(emitted.contents).toContain('.value_or(flight::String("fallback"))');
+    expect(emitted.contents).toContain('return flight::String("fallback"); }())');
     expect(emitted.contents).not.toContain('.value_or(secondary).value_or');
   });
 
@@ -14433,7 +14529,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('optional_chain_receiver = holder;');
     expect(emitted.contents).not.toContain('optional_chain_receiver = holder.value()');
     expect(emitted.contents).toContain('.has_value()');
-    expect(emitted.contents).toContain('.value_or(0.0)');
+    expect(emitted.contents).toContain(
+      'if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0;',
+    );
   });
 
   it('emits an optional method call through an indirectly imported interface', () => {
@@ -15944,7 +16042,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).contents;
 
     expect(output).toContain('([&]() -> std::optional<double> {');
-    expect(output).toContain('return optional_chain_receiver.value().get(second); }()).value_or(0.0) > 0.0');
+    expect(output).toContain(
+      'return optional_chain_receiver.value().get(second); }()); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0;',
+    );
     expect(output).not.toContain('flight::Any');
 
     const erased = lower(
@@ -16602,12 +16702,12 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('M_PI');
   });
 
-  it('emits undefinedDefault as value_or', () => {
+  it('emits undefinedDefault as a lazy binding conditional', () => {
     const output = emitIrModuleCpp(
       lower('undef-def.ts', `export function fallback(x: number | undefined, d: number): number { return x ?? d; }`)
         .module,
     ).contents;
-    expect(output).toContain('value_or');
+    expect(output).toContain('return (x.has_value() ? x.value() : d);');
   });
 
   it('emits tupleRest as std::get', () => {
@@ -17298,7 +17398,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).contents;
 
     expect(output).toContain('optional_chain_receiver.value().map(');
-    expect(output).toContain('.value_or(flight::Array<double>{})');
+    expect(output).toContain(
+      'if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return flight::Array<double>{};',
+    );
     expect(output).toContain('optional_chain_receiver.value().for_each(');
     expect(output).toContain('std::optional<double> ready(');
     expect(output).toContain('optional_chain_receiver = hooks->ready;');
@@ -17530,7 +17632,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
   it('preserves optional array results until a nullish fallback consumes them', () => {
     const result = lower('pop.ts', 'export function last(items: number[]): number { return items.pop() ?? -1; }');
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
-    expect(emitted.contents).toContain('.pop().value_or(-1.0)');
+    expect(emitted.contents).toContain(
+      'auto nullish_coalesce_left = items.pop(); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return -1.0;',
+    );
     expect(emitted.contents).not.toContain('.pop().value().value_or');
   });
 

@@ -2684,6 +2684,15 @@ function emitExpression(
           const right = emitExpression(expression.right, context, expectedType);
           return `([&]() -> ${unionType} { auto nullish_coalesce_left = ${left}; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left; return ${right}; }())`;
         }
+        const optionalSingle = emitCppOptionalSingleNullishCoalesceCpp(
+          expression,
+          leftType,
+          leftUsesOptionalStorage,
+          expectedType,
+          context,
+          denseArrayLengthInitialized,
+        );
+        if (optionalSingle) return optionalSingle;
         context.includes.add('optional');
         return `${emitOptionalExpressionCpp(expression.left, context, leftType)}.value_or(${emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized)})`;
       }
@@ -10553,6 +10562,53 @@ function getCppImplicitAbsenceStoragePlanCpp(
     return undefined;
   }
   return getCppUnionRepresentationPlan({ kind: 'union', types: [valueType, { kind: 'undefined' }] }, context);
+}
+
+// `std::optional::value_or` is a function call, so its fallback argument is evaluated even when the
+// optional is present. A source `??` must not do that. One optional payload domain is enough evidence
+// to spell the lazy operation directly; wider optional variants remain on their existing conversion or
+// refusal lanes, and a dual-sentinel carrier is rejected before this helper is reached.
+//
+// A plain binding is safe to name for the test and extraction independently. Every other expression is
+// first bound because a property getter, collection lookup, or call may have effects of its own. This is
+// not only an optimization distinction: duplicating that expression around `has_value()` and `value()`
+// would change source evaluation count and order.
+function emitCppOptionalSingleNullishCoalesceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  leftType: Readonly<IrType> | undefined,
+  leftUsesOptionalStorage: boolean,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+  denseArrayLengthInitialized: boolean,
+): string | undefined {
+  if (!leftType) return undefined;
+  const union = getIrUnionTypeCpp(leftType, context, new Set());
+  const plan = union
+    ? getCppUnionRepresentationPlan(union, context)
+    : leftUsesOptionalStorage
+      ? getCppImplicitAbsenceStoragePlanCpp(leftType, context)
+      : undefined;
+  const value = plan?.kind === 'optionalSingle' && plan.valueSlots.length === 1 ? plan.valueSlots[0] : undefined;
+  if (!value) return undefined;
+  const left = emitOptionalExpressionCpp(expression.left, context, leftType);
+  const right = emitExpression(expression.right, context, expectedType, true, denseArrayLengthInitialized);
+  context.includes.add('optional');
+  if (isCppStableOptionalBindingIdentifierCpp(expression.left, context)) {
+    return `(${left}.has_value() ? ${left}.value() : ${right})`;
+  }
+  return `([&]() -> ${value.targetType} { auto nullish_coalesce_left = ${left}; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return ${right}; }())`;
+}
+
+function isCppStableOptionalBindingIdentifierCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
+  const bindingId = expression.reference.binding.id;
+  return (
+    expression.presence !== 'narrowedPresent' &&
+    !expression.narrowedMember &&
+    !context.narrowedBindingTypes.has(bindingId) &&
+    !context.sharedCaptureTargetNames.has(bindingId) &&
+    !context.defaultedParameterIds.has(bindingId)
+  );
 }
 
 // Two unions are interchangeable at a conversion site when they build the same C++ value: the same
