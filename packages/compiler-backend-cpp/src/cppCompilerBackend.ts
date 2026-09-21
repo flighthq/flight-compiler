@@ -14731,7 +14731,18 @@ function getIrCallArgumentExpectedTypeCpp(
     return parameterType;
   }
   const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
-  const parameterType = semanticType ?? declaration?.parameters[index]?.type;
+  // A LOCAL callable has no declaration to read: the binding's own type carries the signature, and it is
+  // the same closed-callable evidence the non-identifier branch above already uses. Without it a call
+  // through a local gets no parameter type at all, so the argument is emitted exactly as written -- which
+  // is what left an `optional<Record>` in a slot declared `variant<Record, Null, Undefined>` instead of
+  // being widened into it.
+  const bindingCallable = getCppClosedCallableType(
+    getCppBindingTypeCpp(expression.callee.reference.binding.id, context) ?? { kind: 'unknown', source: 'unknown' },
+    context,
+    new Set(),
+  );
+  const parameterType =
+    semanticType ?? declaration?.parameters[index]?.type ?? bindingCallable?.parameters[index]?.type;
   if (!declaration || !parameterType || declaration.typeParameters.length === 0) return parameterType;
   // Semantic invocation evidence can retain the declaration's type parameter even though template
   // emission has already inferred its concrete argument. Apply that same complete substitution to

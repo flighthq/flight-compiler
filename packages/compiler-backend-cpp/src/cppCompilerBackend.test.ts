@@ -3486,6 +3486,183 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  // A call through a LOCAL callable: the callee has no declaration to read, so its own binding type is
+  // the signature evidence. Without that, an argument reaches the call exactly as written and an
+  // `optional<Record>` lands in a slot declared `variant<Record, Null, Undefined>`; with it, the existing
+  // contextual union construction widens the value into the target -- once, mapping the missing optional
+  // to Null because Null is the absent alternative the source union names.
+  it('widens a local-callable argument into the target variant from the binding signature', () => {
+    const provider = ts.createSourceFile(
+      '/flight/packages/types/src/GlContext.ts',
+      `export interface GlContext extends Pick<WebGL2RenderingContext, 'getExtension'> {}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/render-gl/src/glCompressedTexture.ts',
+      `import type { GlContext } from '@flighthq/types/contract';
+       export function readFormat(gl: GlContext, format: string): number {
+         const astc = gl.getExtension('WEBGL_compressed_texture_astc') as Record<string, number> | null;
+         const enumFromExt = (ext: Record<string, number> | null | undefined, key: string): number =>
+           typeof ext?.[key] === 'number' ? ext[key] : -1;
+         if (format === 'astc') return enumFromExt(astc, 'COMPRESSED_RGBA_ASTC_4x4_KHR');
+         return enumFromExt(astc, 'COMPRESSED_RGBA_S3TC_DXT5_EXT');
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: {
+            name: 'GlCompressedTexture',
+            packageName: '@flighthq/render-gl',
+            source: 'packages/render-gl/src/glCompressedTexture.ts',
+          },
+          importedNames: ['GlContext'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/GlContext.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: provider, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/render-gl', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: {
+        externalBindings: {
+          bindings: [
+            {
+              headers: ['flight/host_sdl/gl.hpp'],
+              members: [
+                {
+                  callResultAbsence: 'null' as const,
+                  callResultType: 'std::optional<flight::host_sdl::GlExtension>',
+                  recordConversion: {
+                    invocation: 'carrier-function' as const,
+                    keyType: 'string' as const,
+                    resultNullability: 'nullable' as const,
+                    resultOwnership: 'value' as const,
+                    targetName: 'flight::host_sdl::gl_extension_record',
+                    valueType: 'number' as const,
+                  },
+                  sourceMember: 'getExtension',
+                  targetName: 'get_extension',
+                },
+              ],
+              nullability: 'non-null' as const,
+              ownership: 'shared' as const,
+              sourceName: 'WebGL2RenderingContext',
+              space: 'type' as const,
+              targetName: 'flight::host_sdl::GlContext',
+            },
+          ],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(results[1]!.module)[0]!.contents;
+
+    // The widening is a contextual union construction over the target's closed domains, so the source is
+    // evaluated once into a named local, the missing optional becomes Null (the alternative the source
+    // union names), and the present value becomes the Record alternative.
+    expect(emitted).toContain('std::variant<flight::Record<flight::String, double>, flight::Null, flight::Undefined>');
+    expect(emitted).toContain('auto contextual_union_source = astc;');
+    expect(emitted).toContain(
+      'return std::variant<flight::Record<flight::String, double>, flight::Null, flight::Undefined>{std::in_place_type<flight::Null>, flight::null};',
+    );
+    // Each call widens its own argument, and each evaluates the source once into that local.
+    expect(emitted.match(/auto contextual_union_source(_\d+)? = astc;/gu)).toHaveLength(2);
+  });
+
+  // The opposite sentinel does not borrow the proof: an asserted `undefined` union is not the null union
+  // the profile declares, and the emission refuses rather than choosing an absence nobody named.
+  it('refuses a converted external result whose asserted absence is not the declared one', () => {
+    const provider = ts.createSourceFile(
+      '/flight/packages/types/src/GlContext.ts',
+      `export interface GlContext extends Pick<WebGL2RenderingContext, 'getExtension'> {}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/render-gl/src/glCompressedTexture.ts',
+      `import type { GlContext } from '@flighthq/types/contract';
+       export function readFormat(gl: GlContext): number {
+         const ext = gl.getExtension('WEBGL_compressed_texture_astc') as Record<string, number> | undefined;
+         return typeof ext?.['x'] === 'number' ? ext['x'] : -1;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: {
+            name: 'GlCompressedTexture',
+            packageName: '@flighthq/render-gl',
+            source: 'packages/render-gl/src/glCompressedTexture.ts',
+          },
+          importedNames: ['GlContext'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/GlContext.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: provider, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/render-gl', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(() =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules: results.map((result) => result.module),
+        options: {
+          externalBindings: {
+            bindings: [
+              {
+                headers: ['flight/host_sdl/gl.hpp'],
+                members: [
+                  {
+                    callResultAbsence: 'null' as const,
+                    callResultType: 'std::optional<flight::host_sdl::GlExtension>',
+                    recordConversion: {
+                      invocation: 'carrier-function' as const,
+                      keyType: 'string' as const,
+                      resultNullability: 'nullable' as const,
+                      resultOwnership: 'value' as const,
+                      targetName: 'flight::host_sdl::gl_extension_record',
+                      valueType: 'number' as const,
+                    },
+                    sourceMember: 'getExtension',
+                    targetName: 'get_extension',
+                  },
+                ],
+                nullability: 'non-null' as const,
+                ownership: 'shared' as const,
+                sourceName: 'WebGL2RenderingContext',
+                space: 'type' as const,
+                targetName: 'flight::host_sdl::GlContext',
+              },
+            ],
+            schema: 'flight-cpp-external-bindings/1',
+          },
+          runtimeProfile: 'flight-cpp',
+        },
+      }).emitModule(results[1]!.module),
+    ).toThrow('does not exactly match the asserted Record union');
+  });
+
   // An external instance property: `device.features` where the reader holds a `GPUDevice`. The source
   // type erased to `any`, so the profile's declaration is the whole contract -- it names the member's
   // target, the result type, and how the result is stored. The storage it names is the storage the local
