@@ -11323,6 +11323,110 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(callable).not.toContain('holds_alternative');
   });
 
+  it('narrows a guarded property the same way whether its declaration is local or imported', () => {
+    // The presence marker is decided from the checker's declared and flow types, both resolved through
+    // the module graph. A local declaration and an imported one therefore receive the same evidence, and
+    // the same emission follows. This is pinned because probing the isolated single-file lowering entry
+    // point instead makes a local shape look unresolved (`declared undefined`, `flow any`) and reads as a
+    // locality difference that does not exist.
+    const material = `export interface Texture2D { readonly id: number }
+       export interface TextureCube { readonly face: number }
+       export type Texture = Texture2D | TextureCube;
+       export interface Pbr { readonly baseColorMap: Texture | null }`;
+    const body = `export function f(pbr: Readonly<Pbr>, out: Texture[]): void {
+        if (pbr.baseColorMap !== null) out.push(pbr.baseColorMap);
+      }`;
+    const plan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: undefined as never,
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Material.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emit = (modules: readonly Readonly<IrModule>[], target: Readonly<IrModule>) =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution: plan,
+        modules,
+        options: {
+          packageTargets: {
+            '@flighthq/scene3d-resources': {
+              includePrefix: 'flight/scene3d-resources',
+              namespace: 'flight::scene3d_resources',
+            },
+            '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+          },
+          runtimeProfile: 'flight-cpp',
+        },
+      })
+        .emitModule(target)
+        .map((file) => file.contents)
+        .join('\n');
+    const pushLine = (emitted: string) =>
+      emitted
+        .split('\n')
+        .find((line) => line.includes('out.push('))
+        ?.trim() ?? '';
+
+    // Local: one module, everything declared where it is used.
+    const localSource = ts.createSourceFile(
+      '/flight/packages/scene3d-resources/src/local.ts',
+      `${material}\n${body}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [localModule] = lowerTypeScriptSources(
+      [{ packageName: '@flighthq/scene3d-resources', sourceFile: localSource, upstreamDirectory: '/flight' }],
+      plan,
+    );
+    // Imported: the material type declared in another module and reached through a barrel.
+    const typesSource = ts.createSourceFile(
+      '/flight/packages/types/src/Material.ts',
+      material,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/scene3d-resources/src/registry.ts',
+      `import type { Pbr, Texture } from '@flighthq/types/contract';\n${body}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [typesModule, consumerModule] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: typesSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/scene3d-resources', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      plan,
+    );
+
+    const local = pushLine(emit([localModule!.module], localModule!.module));
+    const imported = pushLine(emit([typesModule!.module, consumerModule!.module], consumerModule!.module));
+    expect(local).not.toBe('');
+    expect(local).toBe(imported);
+    expect(local).toContain('.value()');
+
+    // One comparison does not prove full presence: `!== null` on a domain that also admits undefined
+    // leaves the value possibly undefined, so the guard does not narrow it to the payload.
+    const bothSource = ts.createSourceFile(
+      '/flight/packages/scene3d-resources/src/both.ts',
+      `${material}
+       export interface Both { readonly map: Texture | null | undefined }
+       export function g(both: Readonly<Both>, out: Texture[]): void {
+         if (both.map !== null) out.push(both.map);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [bothModule] = lowerTypeScriptSources(
+      [{ packageName: '@flighthq/scene3d-resources', sourceFile: bothSource, upstreamDirectory: '/flight' }],
+      plan,
+    );
+    expect(() => emit([bothModule!.module], bothModule!.module)).toThrow();
+  });
+
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
     // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
     // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the
