@@ -8739,6 +8739,22 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
   }
   if (comparison.operand.kind === 'element') return undefined;
   const operandType = getCppNullishComparisonOperandTypeCpp(comparison.operand, context);
+  // An erased value answers the tag itself at run time, and it can answer only the words the runtime
+  // carries: `Any::type_of` reports undefined, boolean, number, string, symbol, function, and object --
+  // which is what it reports for null, an object, and an external too. It has no `bigint` at all,
+  // because `Any` has no bigint kind, so a comparison against that tag is not a question the target can
+  // ask. Emitting it would spell a test that is silently always false, which is a claim about the
+  // source the target cannot make; the capability it would need is named instead.
+  if (hasCppErasedDynamicTestOperandCpp(comparison.operand, operandType, context)) {
+    if (!getCppErasedTypeofTagSupportCpp(comparison.tag)) {
+      emissionError(
+        context,
+        `the runtime's erased value cannot report the tag '${comparison.tag}': it carries undefined, boolean, number, string, symbol, function, object and no bigint`,
+        'cpp-erased-tag-unreportable',
+      );
+    }
+    return undefined;
+  }
   const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
   if (!union) return undefined;
   const alternatives = union.types.map((member) => collectCppTypeofLeavesCpp(member, context, new Set()));
@@ -8806,6 +8822,25 @@ function collectCppTypeofLeavesCpp(
   }
   const tag = getCppStaticTypeofTypeCpp(type, context, new Set(resolving));
   return tag ? [{ tag, type }] : undefined;
+}
+
+// Whether the runtime's erased value can report this tag. `Any::type_of` is ECMAScript `typeof` over
+// the kinds `Any` has: undefined, boolean, number, string, symbol and function each have one, and null,
+// an object and an external all report `object`. `bigint` has no kind, so it can never be reported --
+// which is what this answers, and it is a capability boundary rather than a guess about the value.
+function getCppErasedTypeofTagSupportCpp(tag: string): boolean {
+  switch (tag) {
+    case 'undefined':
+    case 'boolean':
+    case 'number':
+    case 'string':
+    case 'symbol':
+    case 'function':
+    case 'object':
+      return true;
+    default:
+      return false;
+  }
 }
 
 // The operand of a `typeof X === tag` comparison, and the tag: one side a `typeof` of anything and the

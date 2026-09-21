@@ -11528,6 +11528,51 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(() => emit([bothModule!.module], bothModule!.module)).toThrow();
   });
 
+  it('queries an erased value only for the tags the runtime can report, and refuses the rest', () => {
+    // An `unknown` operand erases to the runtime's dynamic value, whose `type_of` is ECMAScript `typeof`
+    // over the kinds it carries: undefined, boolean, number, string, symbol and function each have one,
+    // and null, an object and an external all report `object`. A tag outside that set has no answer to
+    // compare against, so it is refused rather than spelled as a test that is always false. The member
+    // read the four SDK probes actually write is refused too -- an erased value has no property set the
+    // runtime can enumerate, so there is no honest read to take a tag of.
+    const emitCase = (body: string) =>
+      emitIrModuleCpp(lower('erasedTag.ts', body).module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The tags the runtime reports.
+    expect(
+      emitCase(`export function f(obj: unknown): string { return typeof obj === 'string' ? obj : ''; }`),
+    ).toContain('.type_of() == flight::String("string")');
+    expect(emitCase(`export function f(obj: unknown): number { return typeof obj === 'number' ? 1 : 0; }`)).toContain(
+      '.type_of() == flight::String("number")',
+    );
+    // A callable and a reference both have an honest answer: the runtime reports `function`, and it
+    // reports `object` for null, an object and an external -- which IS ECMAScript `typeof`, so the
+    // comparison is faithful and nothing about an array is invented here.
+    expect(emitCase(`export function f(obj: unknown): number { return typeof obj === 'function' ? 1 : 0; }`)).toContain(
+      '.type_of() == flight::String("function")',
+    );
+    expect(emitCase(`export function f(obj: unknown): number { return typeof obj === 'object' ? 1 : 0; }`)).toContain(
+      '.type_of() == flight::String("object")',
+    );
+
+    // A tag the runtime cannot report: `Any` has no bigint kind, so the comparison would be silently
+    // always false and the capability it needs is named instead.
+    expect(() =>
+      emitCase(`export function f(obj: unknown): number { return typeof obj === 'bigint' ? 1 : 0; }`),
+    ).toThrow(/cannot report the tag 'bigint'/u);
+    // A word that is not a tag at all is the same answer for the same reason.
+    expect(() =>
+      emitCase(`export function f(obj: unknown): number { return typeof obj === 'array' ? 1 : 0; }`),
+    ).toThrow(/cannot report the tag 'array'/u);
+
+    // The member read: the shape all four SDK probes write, which needs a property set the erased value
+    // does not carry.
+    expect(() =>
+      emitCase(`function isRec(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null; }
+        export function f(obj: unknown, def: number): number { if (isRec(obj)) { return typeof obj.low === 'number' ? obj.low : def; } return def; }`),
+    ).toThrow();
+  });
+
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
     // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
     // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the
