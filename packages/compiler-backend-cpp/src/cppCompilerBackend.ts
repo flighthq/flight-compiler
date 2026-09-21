@@ -10228,9 +10228,7 @@ function getIrCallReturnTypeCpp(
   if (objectProjection) return objectProjection;
   if (expression.callee.kind === 'property' && expression.callee.optionalChain) {
     const callableReturns = getCppCallableReturnType(expression.callee.optionalChain.valueType, context, new Set());
-    const recovered =
-      getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(expression, context) ??
-      getCppRuntimeMemberCallResultTypeEvidence(expression, context);
+    const recovered = getCppOptionalPropertyCallResultTypeEvidenceCpp(expression, context);
     const returns =
       callableReturns?.kind === 'unknown' ? (recovered ?? callableReturns) : (callableReturns ?? recovered);
     if (returns && returns.kind !== 'unknown') {
@@ -10570,6 +10568,38 @@ function getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(
   }
   const value = collection.typeArguments[1];
   return value?.kind === 'unknown' ? undefined : value;
+}
+
+// A nullable receiver can retain one callable member while the lean package-graph library gives that
+// generic callable an `any` return. The call still carries the checker's instantiated result. Use that
+// result only when the member evidence identifies one callable surface, and remove only the sentinel
+// introduced by this optional-chain segment. A union of callables is deliberately not one surface: the
+// checker can report one selected signature even though another runtime alternative returns a different
+// domain, so accepting its result would choose an alternative the receiver did not prove.
+function getCppOptionalPropertyCallSemanticResultTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const callee = expression.callee;
+  const semantics = callee.kind === 'property' && callee.optional ? callee.optionalChain : undefined;
+  if (!semantics || !getCppClosedCallableType(semantics.valueType, context, new Set())) return undefined;
+  const result = expression.semantics.resultType;
+  if (result.kind === 'unknown') return undefined;
+  if (result.kind !== 'union') return hasIrTypeAbsentMember(result) ? undefined : result;
+  const invoked = result.types.filter((member) => member.kind !== semantics.result);
+  const recovered = createIrTypeEvidenceUnionCpp(invoked);
+  return recovered && !hasIrTypeAbsentMember(recovered) ? recovered : undefined;
+}
+
+function getCppOptionalPropertyCallResultTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  return (
+    getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(expression, context) ??
+    getCppRuntimeMemberCallResultTypeEvidence(expression, context) ??
+    getCppOptionalPropertyCallSemanticResultTypeEvidenceCpp(expression, context)
+  );
 }
 
 function getCppRuntimeCollectionResultRefinementCpp(
@@ -14701,9 +14731,7 @@ function emitOptionalPropertyCallExpressionCpp(
   }
   const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
   const callableReturns = getCppCallableReturnType(semantics.valueType, context, new Set());
-  const recovered =
-    getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(expression, context) ??
-    getCppRuntimeMemberCallResultTypeEvidence(expression, context);
+  const recovered = getCppOptionalPropertyCallResultTypeEvidenceCpp(expression, context);
   const returns = callableReturns?.kind === 'unknown' ? (recovered ?? callableReturns) : (callableReturns ?? recovered);
   if (!returns || returns.kind === 'unknown')
     emissionError(

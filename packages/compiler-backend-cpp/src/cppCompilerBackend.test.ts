@@ -16377,6 +16377,40 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('optional<void>');
   });
 
+  it('recovers an instantiated optional property-call result only for one callable surface', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'optional-property-call-result.ts',
+        `interface Hooks { close?: () => void; ready?: () => number }
+         export function parse(matches: RegExpExecArray | null): number[] {
+           return matches?.map(Number) ?? [];
+         }
+         export function visit(values: number[] | null, out: number[]): void {
+           values?.forEach((value) => { out.push(value); });
+         }
+         export function ready(hooks: Hooks): number | undefined { return hooks.ready?.(); }
+         export function close(hooks: Hooks): void { hooks.close?.(); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('optional_chain_receiver.value().map(');
+    expect(output).toContain('.value_or(flight::Array<double>{})');
+    expect(output).toContain('optional_chain_receiver.value().for_each(');
+    expect(output).toContain('std::optional<double> ready(');
+    expect(output).toContain('optional_chain_receiver = hooks->ready;');
+    expect(output).toContain('optional_chain_receiver = hooks->close;');
+    expect(output).not.toContain('optional<void>');
+
+    const ambiguous = lower(
+      'ambiguous-optional-property-call.ts',
+      `interface Source { run: (() => number) | (() => string) }
+       export function run(source: Source | null): number | string | undefined { return source?.run(); }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(ambiguous, { runtimeProfile: 'flight-cpp' }));
+    expect(failure.rule).toBe('cpp-optional-property-call-missing-callable-result');
+  });
+
   it('emits string length as size method with static_cast', () => {
     const output = emitIrModuleCpp(
       lower('str-len.ts', 'export function len(s: string): number { return s.length; }').module,
