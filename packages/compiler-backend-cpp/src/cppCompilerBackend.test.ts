@@ -15939,6 +15939,95 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('widens imported effect-runner rows through their shared closed declaration shape', () => {
+    const renderTarget = ts.createSourceFile(
+      '/flight/packages/types/src/renderTarget.ts',
+      `export interface GlRenderState { readonly frame: number }
+       export interface GlTextureRenderTarget { readonly texture: number; width: number; height: number }
+       export interface RenderEffect { readonly kind: string }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const effectState = ts.createSourceFile(
+      '/flight/packages/types/src/effectState.ts',
+      `import type { GlRenderState, GlTextureRenderTarget, RenderEffect } from './renderTarget';
+       export interface GlRenderEffectContext {
+         readonly state: GlRenderState;
+         readonly source: Readonly<GlTextureRenderTarget>;
+         readonly dest: Readonly<GlTextureRenderTarget>;
+       }
+       export type GlRenderEffectRunner = (
+         ctx: Readonly<GlRenderEffectContext>,
+         effect: Readonly<RenderEffect>,
+       ) => void;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export * from './renderTarget';
+       export * from './effectState';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const effect = ts.createSourceFile(
+      '/flight/packages/effects-gl/src/glChromaticAberrationEffect.ts',
+      `import type {
+         GlRenderEffectRunner,
+         GlRenderState,
+         GlTextureRenderTarget,
+         RenderEffect,
+       } from '@flight/types/contract';
+       function apply(
+         state: GlRenderState,
+         source: Readonly<GlTextureRenderTarget>,
+         dest: Readonly<GlTextureRenderTarget>,
+         effect: Readonly<RenderEffect>,
+       ): void {
+         void state; void source.texture; void dest.texture; void effect.kind;
+       }
+       export const runner: GlRenderEffectRunner = (ctx, effect) => {
+         apply(ctx.state, ctx.source, ctx.dest, effect);
+       };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './renderTarget',
+          target: { packageName: '@flight/types', source: 'packages/types/src/renderTarget.ts' },
+        },
+        {
+          specifier: './effectState',
+          target: { packageName: '@flight/types', source: 'packages/types/src/effectState.ts' },
+        },
+        {
+          specifier: '@flight/types/contract',
+          target: { packageName: '@flight/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: renderTarget, upstreamDirectory: '/flight' },
+        { packageName: '@flight/types', sourceFile: effectState, upstreamDirectory: '/flight' },
+        { packageName: '@flight/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flight/effects-gl', sourceFile: effect, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const output = emitCppModuleCppSession(results, moduleResolution, 3);
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(output).toContain('apply(flight::row_get<flight::RowKey<"state">>(ctx), flight::structural_ref_cast<');
+    expect(output.match(/flight::structural_ref_cast</gu)).toHaveLength(2);
+    expect(output).toContain('flight::row_get<flight::RowKey<"source">>(ctx)');
+    expect(output).toContain('flight::row_get<flight::RowKey<"dest">>(ctx)');
+    expect(output).not.toContain('flight::make_ref<GlTextureRenderTarget>');
+  });
+
   it('substitutes an imported generic Node2D slot and preserves the Renderable ABI refusal', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',
