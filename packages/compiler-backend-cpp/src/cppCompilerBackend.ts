@@ -1798,6 +1798,18 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
     lines.push(`using ${name} = ${emitCppCallableObjectIndexedProjectionTypeCpp(callableProjection, context)};`);
     return lines;
   }
+  const nominalIdentity =
+    declaration.type.kind === 'intersection' && getCppRuntimeProfile(context.options) === 'flight-cpp'
+      ? getCppRedundantNominalIntersectionIdentityCpp(declaration.type, context)
+      : undefined;
+  if (nominalIdentity) {
+    const name = getBindingTargetName(declaration.binding, context);
+    const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
+    const lines: string[] = [];
+    if (typeParams) lines.push(`template ${typeParams}`);
+    lines.push(`using ${name} = ${emitType(nominalIdentity, context)};`);
+    return lines;
+  }
   const objectProperties =
     declaration.type.kind === 'object'
       ? declaration.type.properties
@@ -6082,6 +6094,11 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       if (callableObject && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         return emitCppCallableObjectStorageTypeCpp(type, callableObject, context);
       }
+      const nominalIdentity =
+        getCppRuntimeProfile(context.options) === 'flight-cpp'
+          ? getCppRedundantNominalIntersectionIdentityCpp(type, context)
+          : undefined;
+      if (nominalIdentity) return emitType(nominalIdentity, context, representation);
       const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
       if (properties) {
         const nominalImplementation =
@@ -6493,6 +6510,102 @@ function getCppNominalIntersectionBaseCpp(
   if (!baseType) return undefined;
   const properties = context.referenceRepresentationPlanner.resolveObjectShape(baseType, context.module);
   return properties ? { properties, type: baseType } : undefined;
+}
+
+function getCppNominalTypeDeclarationOwnerCpp(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+):
+  | Readonly<{
+      declaration: Readonly<IrClassDeclaration | IrInterfaceDeclaration>;
+      module: Readonly<IrModule>;
+    }>
+  | undefined {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind === 'typeParameter' ||
+    type.reference.path.length > 0
+  ) {
+    return undefined;
+  }
+  const owner =
+    type.reference.binding.kind === 'import'
+      ? getCppImportedBindingDeclarationCpp(type, { ...context, module })
+      : context.directBindingOwners.get(type.reference.binding.id);
+  return owner?.declaration.kind === 'class' || owner?.declaration.kind === 'interface'
+    ? { declaration: owner.declaration, module: owner.module }
+    : undefined;
+}
+
+function getCppNominalTypeIdentityCpp(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): string | undefined {
+  const owner = getCppNominalTypeDeclarationOwnerCpp(type, module, context);
+  if (!owner || type.kind !== 'named') return undefined;
+  return `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}\0${normalizeCompilerStructuralValueCanonical(type.typeArguments)}`;
+}
+
+function isCppNominalTypeDerivedFromCpp(
+  source: Readonly<IrType>,
+  sourceModule: Readonly<IrModule>,
+  target: Readonly<IrType>,
+  targetModule: Readonly<IrModule>,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): boolean {
+  const sourceOwner = getCppNominalTypeDeclarationOwnerCpp(source, sourceModule, context);
+  const targetIdentity = getCppNominalTypeIdentityCpp(target, targetModule, context);
+  const sourceIdentity = getCppNominalTypeIdentityCpp(source, sourceModule, context);
+  if (!sourceOwner || !sourceIdentity || !targetIdentity) return false;
+  if (sourceIdentity === targetIdentity) return true;
+  const visitKey = `${sourceIdentity}\0${targetIdentity}`;
+  if (visited.has(visitKey) || source.kind !== 'named') return false;
+  const substitutions = createIrTypeParameterSubstitutionPlan(
+    sourceOwner.declaration.typeParameters,
+    source.typeArguments,
+  );
+  const bases =
+    sourceOwner.declaration.kind === 'interface'
+      ? sourceOwner.declaration.extends
+      : sourceOwner.declaration.extends
+        ? [sourceOwner.declaration.extends]
+        : [];
+  const nextVisited = new Set(visited).add(visitKey);
+  return bases.some((base) =>
+    isCppNominalTypeDerivedFromCpp(
+      resolveIrTypeStructuralSubstitution(base, substitutions),
+      sourceOwner.module,
+      target,
+      targetModule,
+      context,
+      nextVisited,
+    ),
+  );
+}
+
+// An intersection does not mint a new referent when one named member explicitly inherits every
+// other member: `GlyphSource & Entity` is still the authored GlyphSource identity because
+// GlyphSource extends Entity. Shape compatibility alone is deliberately insufficient — an
+// independent named interface or an anonymous structural refinement still needs its own carrier.
+function getCppRedundantNominalIntersectionIdentityCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  return type.types.find((candidate) => {
+    const plan = context.referenceRepresentationPlanner.plan(candidate, context.module);
+    return (
+      plan.kind === 'represented' &&
+      plan.identityDomain === 'object' &&
+      plan.valueRepresentation === 'flightReference' &&
+      type.types.every((member) =>
+        isCppNominalTypeDerivedFromCpp(candidate, context.module, member, context.module, context, new Set()),
+      )
+    );
+  });
 }
 
 function emitCppNominalIntersectionImplementationTypeCpp(

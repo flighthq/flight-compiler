@@ -8228,6 +8228,103 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('flight::Ref<flighthq_types::EntityConstruction<');
   });
 
+  it('retains a named reference identity when its intersection adds only an inherited base', () => {
+    const entityTypes = ts.createSourceFile(
+      '/flight/packages/types/src/Entity.ts',
+      `export interface Entity { runtime: object | undefined }
+       export type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const glyphTypes = ts.createSourceFile(
+      '/flight/packages/types/src/GlyphSource.ts',
+      `import type { Entity } from './Entity.js';
+       export interface GlyphSource extends Entity { lookup(codepoint: number): number }
+       export interface NamedExtension { label: string }
+       export interface StructuralTwin { runtime: object | undefined }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const entity = ts.createSourceFile(
+      '/flight/packages/entity/src/entity.ts',
+      `import type { Entity, EntityConstruction } from '@flighthq/types/contract';
+       export function allocateEntity<Type extends Entity>(): EntityConstruction<Type> {
+         return {} as EntityConstruction<Type>;
+       }
+       export function finishEntity<Type extends Entity>(out: EntityConstruction<Type>): Type {
+         return out as Type;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/bitmapfont/src/glyph.ts',
+      `import { allocateEntity, finishEntity } from '@flighthq/entity/contract';
+       import type { Entity, GlyphSource, NamedExtension, StructuralTwin } from '@flighthq/types/contract';
+       export type RedundantIdentity = GlyphSource & Entity;
+       export type NamedRefinement = GlyphSource & NamedExtension;
+       export type AnonymousRefinement = GlyphSource & { label: string };
+       export type TwinRefinement = GlyphSource & StructuralTwin;
+       export function keepNamed(value: GlyphSource & NamedExtension): GlyphSource & NamedExtension { return value; }
+       export function keepAnonymous(value: GlyphSource & { label: string }): GlyphSource & { label: string } { return value; }
+       export function keepTwin(value: GlyphSource & StructuralTwin): GlyphSource & StructuralTwin { return value; }
+       export function createGlyphSource(): GlyphSource & Entity {
+         const out = allocateEntity<GlyphSource>();
+         out.lookup = (codepoint) => codepoint;
+         return finishEntity(out);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Entity.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          importedNames: ['Entity', 'EntityConstruction'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          importedNames: ['GlyphSource', 'NamedExtension', 'StructuralTwin'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/GlyphSource.ts' },
+        },
+        {
+          specifier: '@flighthq/entity/contract',
+          target: { packageName: '@flighthq/entity', source: 'packages/entity/src/entity.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: entityTypes, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: glyphTypes, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/entity', sourceFile: entity, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/bitmapfont', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('inline flight::Ref<flighthq_types::GlyphSource> create_glyph_source()');
+    expect(emitted).toContain('return flighthq_entity::finish_entity<flight::Ref<flighthq_types::GlyphSource>>(out);');
+    expect(emitted).toContain('using RedundantIdentity = flight::Ref<flighthq_types::GlyphSource>;');
+    expect(emitted).toContain('struct NamedRefinement : public flight::ReferenceEnabled');
+    expect(emitted).toContain('struct AnonymousRefinement : public flight::ReferenceEnabled');
+    expect(emitted).toContain('struct TwinRefinement : public flight::ReferenceEnabled');
+    expect(emitted.match(/struct [^\s{]+ : public flighthq_types::GlyphSource/gu)).toHaveLength(3);
+  });
+
   it('preserves entity construction through a generic node initializer', () => {
     const entityTypes = ts.createSourceFile(
       '/flight/packages/types/src/Entity.ts',
