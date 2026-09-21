@@ -3600,7 +3600,9 @@ export function compare(left: string, right: string, locale: string, options: In
     );
 
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
-    expect(emitted.contents).toContain('flight::DataView(bytes.buffer, bytes.byte_offset, 8.0).get_float64(0.0, true)');
+    expect(emitted.contents).toContain(
+      'flight::DataView(bytes.buffer, static_cast<double>(bytes.byte_offset), 8.0).get_float64(0.0, true)',
+    );
     expect(emitted.contents).toContain('view.set_uint32(0.0, 42.0, true)');
     expect(emitted.contents).toContain('view.get_uint32(0.0, true)');
     expect(emitted.contents).toContain('view.byte_length');
