@@ -6316,7 +6316,16 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
   }
   if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
     const bindingType = getTypeScriptExpressionBindingTypeEvidence(node, context);
-    if (bindingType && bindingType.kind !== 'unknown') return bindingType;
+    if (bindingType && bindingType.kind !== 'unknown') {
+      // A property read can carry the same checker flow proof as an identifier. Preserve it in the
+      // inferred local type as well as on the initializer expression: after a terminating null
+      // guard, `const value = object.value` stores the value domain rather than nullable storage.
+      // The access-presence query is tied to this exact receiver and lexical site, so an unguarded
+      // property or the same property on another receiver retains its full nullish type.
+      return getTypeScriptAccessPresence(node, context).presence === 'narrowedPresent'
+        ? (removeIrTypeAbsentMembersSemantic(bindingType) ?? { kind: 'never' })
+        : bindingType;
+    }
   }
   // Where no written type reaches the value — a call into the ambient surface returns the surface's
   // own type parameter, which names nothing here — the checker's instantiation of it does.

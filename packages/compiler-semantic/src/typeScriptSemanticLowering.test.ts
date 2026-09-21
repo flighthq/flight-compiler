@@ -8600,6 +8600,54 @@ it('preserves explicit and flow-proven presence on property accesses', () => {
   });
 });
 
+it('infers a present local from a guarded property without narrowing unguarded receivers', () => {
+  const result = lower(
+    'property-initializer-presence.ts',
+    `interface Buffer { length: number }
+     interface Resource { buffer: Buffer | null }
+     export function guarded(source: Resource): number | null {
+       if (source.buffer === null) return null;
+       const buffer = source.buffer;
+       return buffer.length;
+     }
+     export function unguarded(source: Resource): Buffer | null {
+       const buffer = source.buffer;
+       return buffer;
+     }
+     export function unrelated(first: Resource, second: Resource): Buffer | null {
+       if (first.buffer === null) return null;
+       const buffer = second.buffer;
+       return buffer;
+     }`,
+  );
+  const functions = result.module.declarations.filter((declaration) => declaration.kind === 'function');
+  const guarded = functions.find((declaration) => declaration.binding.name === 'guarded');
+  const unguarded = functions.find((declaration) => declaration.binding.name === 'unguarded');
+  const unrelated = functions.find((declaration) => declaration.binding.name === 'unrelated');
+  const guardedVariable = guarded?.body[1];
+  const unguardedVariable = unguarded?.body[0];
+  const unrelatedVariable = unrelated?.body[1];
+
+  expect(result.diagnostics).toEqual([]);
+  expect(guardedVariable).toMatchObject({
+    declarations: [
+      {
+        initializer: { kind: 'property', presence: 'narrowedPresent' },
+        type: { kind: 'named', reference: { binding: { name: 'Buffer' }, kind: 'binding' } },
+      },
+    ],
+    kind: 'variable',
+  });
+  for (const variable of [unguardedVariable, unrelatedVariable]) {
+    expect(variable).toMatchObject({
+      declarations: [{ initializer: { kind: 'property' }, type: { kind: 'union' } }],
+      kind: 'variable',
+    });
+    if (variable?.kind !== 'variable') throw new TypeError('expected nullable control variable');
+    expect(variable.declarations[0]?.initializer).not.toHaveProperty('presence');
+  }
+});
+
 it('lowers as type assertion expression', () => {
   const result = lower(
     'assertions.ts',
