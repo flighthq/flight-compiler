@@ -1051,6 +1051,145 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('collapses only open string and number alias domains while retaining their named ABI', () => {
+    const result = lower(
+      'open-primitive-union.ts',
+      `export type NetMethod =
+         'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | (string & {});
+       export type StatusCode = (-1 | 0 | 200 | ((number & {})));
+       export type KeywordText = 'custom' | string;
+       export type OpenBoolean = true | (boolean & {});
+       export type LiteralText = 'GET' | 'POST';
+       export type LiteralNumber = 0 | 200;
+       export type BrandedText = 'GET' | (string & { readonly brand: 'method' });
+       export type NullableText = 'GET' | (string & {}) | null;
+       export type MixedDomain = 'GET' | (number & {});
+       export type UnknownDomain = 'GET' | (string & {}) | unknown;
+       export function accept(method: NetMethod, status: StatusCode): NetMethod {
+         void status;
+         return method;
+       }`,
+    );
+    const aliases = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        declaration.kind === 'typeAlias' ? [[declaration.binding.name, declaration.type] as const] : [],
+      ),
+    );
+    const accept = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'accept',
+    );
+    if (accept?.kind !== 'function') throw new TypeError('expected accept function');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(aliases.get('NetMethod')).toEqual({ kind: 'primitive', name: 'string' });
+    expect(aliases.get('StatusCode')).toEqual({ kind: 'primitive', name: 'number' });
+    expect(aliases.get('KeywordText')).toEqual({ kind: 'primitive', name: 'string' });
+    expect(aliases.get('OpenBoolean')).toEqual({ kind: 'primitive', name: 'boolean' });
+    expect(aliases.get('LiteralText')).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'literal' }, { kind: 'literal' }],
+    });
+    expect(aliases.get('LiteralNumber')).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'literal' }, { kind: 'literal' }],
+    });
+    expect(aliases.get('BrandedText')).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'literal' }, { kind: 'intersection' }],
+    });
+    expect(aliases.get('NullableText')).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'literal' }, { kind: 'intersection' }, { kind: 'null' }],
+    });
+    expect(aliases.get('MixedDomain')).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'literal' }, { kind: 'intersection' }],
+    });
+    expect(aliases.get('UnknownDomain')).toMatchObject({
+      kind: 'union',
+      types: expect.arrayContaining([{ kind: 'unknown', source: 'unknown' }]),
+    });
+    expect(accept.parameters).toMatchObject([
+      { type: { kind: 'named', reference: { binding: { name: 'NetMethod' }, kind: 'binding', path: [] } } },
+      { type: { kind: 'named', reference: { binding: { name: 'StatusCode' }, kind: 'binding', path: [] } } },
+    ]);
+    expect(accept.returns).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'NetMethod' }, kind: 'binding', path: [] },
+    });
+  });
+
+  it('opens an imported primitive-domain alias for exact destructured member evidence', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/net.ts',
+      `export type NetMethod = 'GET' | 'POST' | (string & {});
+       export interface NetRequest { method: NetMethod }
+       export interface NetGuardNotice { readonly request: Readonly<NetRequest> }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/net/src/enableNetGuards.ts',
+      `import type { NetGuardNotice } from '@flighthq/types/contract';
+       export function warnOnNetMisuse(notice: Readonly<NetGuardNotice>): string {
+         const { method } = notice.request;
+         return method.toUpperCase();
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'EnableNetGuards',
+            packageName: '@flighthq/net',
+            source: 'packages/net/src/enableNetGuards.ts',
+          },
+          importedNames: ['NetGuardNotice'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/net.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1' as const,
+    };
+    const [provider, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/net', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const alias = provider!.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'NetMethod',
+    );
+    const inspect = result!.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'warnOnNetMisuse',
+    );
+    if (alias?.kind !== 'typeAlias' || inspect?.kind !== 'function') throw new TypeError('expected net declarations');
+    const returned = inspect.body.find((statement) => statement.kind === 'return');
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'call')
+      throw new TypeError('expected call return');
+
+    expect(provider!.diagnostics).toEqual([]);
+    expect(result!.diagnostics).toEqual([]);
+    expect(alias.type).toEqual({ kind: 'primitive', name: 'string' });
+    expect(inspect.parameters[0]?.type).toMatchObject({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Readonly' },
+      typeArguments: [
+        {
+          kind: 'named',
+          reference: { binding: { kind: 'import', name: 'NetGuardNotice' }, kind: 'binding', path: [] },
+        },
+      ],
+    });
+    expect(returned.expression.callee).toMatchObject({
+      kind: 'property',
+      member: { name: 'toUpperCase', receiver: 'string' },
+    });
+  });
+
   it('preserves composite type cardinality, readonly state, and function structure', () => {
     const result = lower(
       'composite-types.ts',

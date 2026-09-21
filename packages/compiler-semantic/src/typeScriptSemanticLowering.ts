@@ -3743,7 +3743,14 @@ function lowerType(node: ts.TypeNode, context: LoweringContext): IrType {
       readonly: false,
     };
   }
-  if (ts.isUnionTypeNode(node)) return { kind: 'union', types: lowerCompoundTypes(node.types, node, context) };
+  if (ts.isUnionTypeNode(node)) {
+    return (
+      getTypeScriptOpenPrimitiveUnionDomainEvidence(node) ?? {
+        kind: 'union',
+        types: lowerCompoundTypes(node.types, node, context),
+      }
+    );
+  }
   if (ts.isIntersectionTypeNode(node)) {
     const types = lowerCompoundTypes(node.types, node, context);
     if (types.some((type) => type.kind === 'never')) return { kind: 'never' };
@@ -5757,11 +5764,80 @@ function createWrittenUnionTypeEvidence(
   if (type.types.some((member) => member.kind === ts.SyntaxKind.UnknownKeyword)) {
     return { kind: 'unknown', source: 'unknown' };
   }
+  const primitiveDomain = getTypeScriptOpenPrimitiveUnionDomainEvidence(type);
+  if (primitiveDomain) return primitiveDomain;
   const written = type.types.filter((member) => member.kind !== ts.SyntaxKind.NeverKeyword);
   if (written.length === 0) return { kind: 'never' };
   const types = written.map((member) => lowerTypeScriptTypeNodeEvidence(member, context, seen, substitutions));
   if (types.length === 1) return types[0]!;
   return { kind: 'union', types: [types[0]!, types[1]!, ...types.slice(2)] };
+}
+
+// An authored open primitive union is one runtime domain, even though the autocomplete-preserving
+// `Primitive & {}` spelling keeps its literal arms visible to TypeScript. Recognize that exact syntax
+// before lowering the empty object into an unrelated intersection member. This is deliberately not a
+// general union simplifier: pure literal vocabularies retain their alternatives, and a brand, sentinel,
+// alias, fallback unknown, or second primitive domain keeps the written union intact.
+function getTypeScriptOpenPrimitiveUnionDomainEvidence(
+  node: ts.TypeNode,
+): Readonly<Extract<IrType, { kind: 'primitive' }>> | undefined {
+  const type = unwrapTypeScriptParenthesizedTypeNode(node);
+  if (!ts.isUnionTypeNode(type)) return undefined;
+  const members = type.types.map(getTypeScriptPrimitiveUnionMemberDomainEvidence);
+  const first = members[0];
+  if (!first || members.some((member) => !member || member.name !== first.name)) return undefined;
+  return members.some((member) => member?.open === true) ? { kind: 'primitive', name: first.name } : undefined;
+}
+
+function getTypeScriptPrimitiveUnionMemberDomainEvidence(
+  node: ts.TypeNode,
+): Readonly<{ name: 'boolean' | 'number' | 'string'; open: boolean }> | undefined {
+  const type = unwrapTypeScriptParenthesizedTypeNode(node);
+  if (type.kind === ts.SyntaxKind.StringKeyword) return { name: 'string', open: true };
+  if (type.kind === ts.SyntaxKind.NumberKeyword) return { name: 'number', open: true };
+  if (type.kind === ts.SyntaxKind.BooleanKeyword) return { name: 'boolean', open: true };
+  if (ts.isLiteralTypeNode(type)) {
+    if (ts.isStringLiteral(type.literal) || ts.isNoSubstitutionTemplateLiteral(type.literal)) {
+      return { name: 'string', open: false };
+    }
+    if (ts.isNumericLiteral(type.literal)) return { name: 'number', open: false };
+    if (type.literal.kind === ts.SyntaxKind.TrueKeyword || type.literal.kind === ts.SyntaxKind.FalseKeyword) {
+      return { name: 'boolean', open: false };
+    }
+    if (
+      ts.isPrefixUnaryExpression(type.literal) &&
+      type.literal.operator === ts.SyntaxKind.MinusToken &&
+      ts.isNumericLiteral(type.literal.operand)
+    ) {
+      return { name: 'number', open: false };
+    }
+    return undefined;
+  }
+  if (!ts.isIntersectionTypeNode(type) || type.types.length !== 2) return undefined;
+  const members = type.types.map(unwrapTypeScriptParenthesizedTypeNode);
+  const primitive = members.find(
+    (member) =>
+      member.kind === ts.SyntaxKind.StringKeyword ||
+      member.kind === ts.SyntaxKind.NumberKeyword ||
+      member.kind === ts.SyntaxKind.BooleanKeyword,
+  );
+  const empty = members.find((member) => ts.isTypeLiteralNode(member) && member.members.length === 0);
+  if (!primitive || !empty || primitive === empty) return undefined;
+  return {
+    name:
+      primitive.kind === ts.SyntaxKind.StringKeyword
+        ? 'string'
+        : primitive.kind === ts.SyntaxKind.NumberKeyword
+          ? 'number'
+          : 'boolean',
+    open: true,
+  };
+}
+
+function unwrapTypeScriptParenthesizedTypeNode(node: ts.TypeNode): ts.TypeNode {
+  let type = node;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  return type;
 }
 
 // Checker evidence frequently reaches an imported mapped helper through a contextual object type.

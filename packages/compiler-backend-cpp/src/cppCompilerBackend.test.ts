@@ -13805,6 +13805,60 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('std::variant<flight::String, flight::String>');
   });
 
+  it('keeps open primitive aliases named while emitting local and imported member access directly', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/net.ts',
+      `export type NetMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | (string & {});
+       export type StatusCode = -1 | 0 | 200 | (number & {});
+       export interface NetRequest { method: NetMethod }
+       export interface NetGuardNotice { readonly request: Readonly<NetRequest> }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/net/src/enableNetGuards.ts',
+      `import type { NetGuardNotice } from '@flighthq/types/contract';
+       type LocalMethod = 'TRACE' | (string & {});
+       export function warnOnNetMisuse(notice: Readonly<NetGuardNotice>): string {
+         const { method } = notice.request;
+         return method.toUpperCase();
+       }
+       export function normalizeLocal(method: LocalMethod): string { return method.toUpperCase(); }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: {
+            name: 'EnableNetGuards',
+            packageName: '@flighthq/net',
+            source: 'packages/net/src/enableNetGuards.ts',
+          },
+          importedNames: ['NetGuardNotice'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/net.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/net', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const provider = emitCppModuleCppSession(results, moduleResolution, 0);
+    const emitted = emitCppModuleCppSession(results, moduleResolution, 1);
+
+    expect(provider).toContain('using NetMethod = flight::String;');
+    expect(provider).toContain('using StatusCode = double;');
+    expect(emitted).toContain('using LocalMethod = flight::String;');
+    expect(emitted.match(/to_upper\(\)/gu)).toHaveLength(2);
+    expect(emitted).not.toContain('std::variant');
+  });
+
   it('erases equivalent primitive and keyof intersection value domains', () => {
     const config = ts.createSourceFile(
       '/flight/packages/types/src/config.ts',
