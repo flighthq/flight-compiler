@@ -107,7 +107,7 @@ export interface CppCompilerExternalMemberParameterBinding {
 }
 
 export interface CppCompilerExternalMemberBinding extends CompilerRuntimeExternalMemberBinding {
-  /** Exact ambient source types for parameters whose erased call-site IR cannot retain them. */
+  /** Exact ambient source object types for parameters whose erased call-site IR cannot retain them. */
   readonly parameters?: readonly CppCompilerExternalMemberParameterBinding[] | undefined;
 }
 

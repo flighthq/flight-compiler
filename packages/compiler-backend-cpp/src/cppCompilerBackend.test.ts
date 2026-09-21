@@ -4694,6 +4694,39 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(reverseContract).toContain(construction);
   });
 
+  it('constructs an external object through an optional contextual payload', () => {
+    const result = lower(
+      'optional-native-object.ts',
+      `export function create(enabled: boolean): NativeDescriptor | undefined {
+         return enabled ? { format: 'rgba8unorm' } : undefined;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/descriptor.hpp'],
+            nullability: 'non-null',
+            objectConstruction: {
+              fields: [{ sourceField: 'format', targetName: 'pixel_format' }],
+              kind: 'field-assignment',
+            },
+            ownership: 'value',
+            sourceName: 'NativeDescriptor',
+            space: 'type',
+            targetName: 'host::Descriptor',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('std::optional<host::Descriptor>');
+    expect(emitted).toContain('external_native_descriptor.pixel_format = flight::String("rgba8unorm");');
+  });
+
   it('refuses missing and ambiguous external object field contracts', () => {
     const result = lower(
       'native-object-contract.ts',

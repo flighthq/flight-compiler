@@ -3827,13 +3827,12 @@ function emitExpression(
         expectedType && hasIrTypeAbsentMember(expectedType)
           ? getCppNonNullableType(expectedType, context, new Set())
           : undefined;
-      const expectedExternalObject =
-        getCppExternalValueObjectSourceNameCpp(expectedType, context) ??
-        getCppExternalValueObjectSourceNameCpp(expectedPayload, context);
+      const expectedExternalObject = getCppExternalValueObjectSourceNameCpp(expectedType, context);
+      const expectedExternalPayload = getCppExternalValueObjectSourceNameCpp(expectedPayload, context);
       const constructionType =
         expectedType && expectedExternalObject
           ? expectedType
-          : expectedPayload && expectedExternalObject
+          : expectedPayload && expectedExternalPayload
             ? expectedPayload
             : expectedType &&
                 (hasFlightReferenceRepresentationCpp(expectedType, context) ||
