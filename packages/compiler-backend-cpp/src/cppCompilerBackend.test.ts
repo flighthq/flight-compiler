@@ -2359,8 +2359,13 @@ describe('createCppCompilerBackend', () => {
       'static_cast<flight::Ref<flight::types::HostGlyphRasterizerCapability>>(flight::make_ref<',
     );
     expect(emitted).toMatch(/return flight::make_ref<rasterize_[0-9a-f]{16}>\(rasterize_[0-9a-f]{16}\{\}\);/u);
+    // The cast's subject is `out`'s own value, and `structural_ref_cast` has one overload: it consumes a
+    // structural reference. `out` is declared `flight::Ref<HostGlyphRasterizerCapability>`, so the subject
+    // alone names no viable call -- the same owner is first viewed structurally and the cast widens that
+    // view, which reads the same object rather than any copy of it. Both types name the same nominal
+    // object, so the view carries every member the asserted row reads.
     expect(emitted).toContain(
-      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>>>(out)',
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<flight::types::HostGlyphRasterizerCapability>>>>(out))',
     );
   });
 
@@ -10532,12 +10537,14 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toBe('cpp-contextual-union-inequivalent');
   });
 
-  it('casts the present owner a structural assertion is about, not the optional carrier that stores it', () => {
-    // The shape from @flighthq/textureatlas: a null guard narrows the read, the local's storage is
-    // nevertheless elected as an optional, and a `Readonly<...>` assertion over it lowers to a structural
-    // row. Every other use of the binding in the same block reads through `.value()`; the assertion's
-    // subject has to be that same value, or the cast is handed a carrier no structural ref can be built
-    // from and it asserts about the carrier rather than the owner.
+  it('refuses an assertion that would read a derived row through its base type owner', () => {
+    // The shape from @flighthq/textureatlas: a local reads a base-typed reference and asserts a readonly
+    // view of the DERIVED type, then reads a derived-only member. The subject is a native reference, so
+    // the cast needs a structural view of it -- and a structural owner's cells are bound from the type
+    // the object was first reached as. Building that view over the base binds the base's cells only, so
+    // the assertion compiles and then throws `std::out_of_range` on the first derived-only read, far from
+    // the assertion that asked for it. The widening proof the value-conversion lane already requires is
+    // what rules it out, and the refusal names it here instead of leaving a runtime trap behind.
     const result = lower(
       'assertion-subject.ts',
       `export interface TextureSource { readonly kind: string; readonly id: number }
@@ -10550,30 +10557,66 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
          return 0;
        }`,
     );
-    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
-    expect(result.diagnostics).toEqual([]);
-    expect(emitted).toContain(
-      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Bitmap>>>>>(image.value())',
+    // The refusal is the emission's, where the view would have been built: nothing is emitted that binds
+    // a base-typed owner and then reads a derived-only cell through it.
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'the asserted row reads members the source type does not declare',
     );
-    // The carrier itself is never the subject of the cast.
-    expect(emitted).not.toContain('>>>(image))');
+  });
 
-    // The negative side: a subject whose storage carries no absence is left exactly as it was, so a cast
-    // over a plain reference does not grow a `.value()` it has nothing to read.
-    const direct = emitIrModuleCpp(
+  it('views an assertion subject that declares every member its asserted row reads', () => {
+    // The subjects that may be viewed: one whose type IS the asserted row's type, and one whose type
+    // derives from it. Both carry every member the row reads, so the view built from the subject's own
+    // type answers all of them. The cast consumes a structural reference and the subject is a native
+    // `Ref`, so the same owner is viewed structurally first -- the two-step the value-conversion lane
+    // emits for the same pair -- and the cast widens that view rather than a copy of the object.
+    const identical = emitIrModuleCpp(
       lower(
-        'assertion-subject-direct.ts',
-        `export interface TextureSource { readonly kind: string; readonly id: number }
-         export interface Bitmap extends TextureSource { readonly kind: 'bitmap'; readonly data: number[] }
-         export function byteSize(image: TextureSource): number {
-           return (image as Readonly<Bitmap>).data.byteLength;
+        'assertion-owner-identical.ts',
+        `export interface Capability { readonly name: string; readonly rasterize?: (codepoint: number) => number | null }
+         export function project(out: Capability): Readonly<Capability> {
+           return out as Readonly<Capability>;
          }`,
       ).module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
-    expect(direct).toContain('flight::structural_ref_cast<');
-    expect(direct).not.toContain('.value()');
+    expect(identical).toContain(
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Capability>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<Capability>>>>(out))',
+    );
+
+    // A subject already typed as the asserted row's own type: the exact derived referent the row
+    // describes, which is the same proof as any other identical pair rather than a rule of its own.
+    const exact = emitIrModuleCpp(
+      lower(
+        'assertion-owner-exact.ts',
+        `export interface TextureSource { readonly kind: string; readonly id: number }
+         export interface Bitmap extends TextureSource { readonly kind: 'bitmap'; readonly data: number[] }
+         export function dataSize(bitmap: Bitmap): number {
+           return (bitmap as Readonly<Bitmap>).data.byteLength;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(exact).toContain(
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Bitmap>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<Bitmap>>>>(bitmap))',
+    );
+
+    // Derived subject, base row: every member the row reads is declared by the derived type.
+    const widened = emitIrModuleCpp(
+      lower(
+        'assertion-owner-widened.ts',
+        `export interface TextureSource { readonly kind: string; readonly id: number }
+         export interface Bitmap extends TextureSource { readonly kind: 'bitmap'; readonly data: number[] }
+         export function kindOf(bitmap: Bitmap): string {
+           return (bitmap as Readonly<TextureSource>).kind;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(widened).toContain(
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<TextureSource>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<Bitmap>>>>(bitmap))',
+    );
   });
 
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
