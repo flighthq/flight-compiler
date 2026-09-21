@@ -9,6 +9,7 @@ import { analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerModuleResolutionPlan,
+  CppCompilerExternalBinding,
   IrModule,
   IrType,
   IrUnionMemberTestEvidence,
@@ -575,6 +576,90 @@ describe('createCppCompilerBackend', () => {
       emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
     );
     expect(failure.rule).toBe('cpp-erased-external-reference-assertion-unrepresented');
+  });
+
+  it('applies complete ambient bindings to imported indexed property evidence exactly once', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/model.ts',
+      `export type Value = ValueHandle;
+       export interface Entry { value: Value; ref?: RefHandle }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/render/src/initialize.ts',
+      `import type { Entry } from '@flight/types';
+       export function initialize(out: Entry, value: Entry['value'], ref: Entry['ref']): void {
+         out.value = value;
+         out.ref = ref;
+       }
+       export function assign(out: Entry, next: () => RefHandle): void {
+         out.ref = next();
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flight/types',
+          target: { packageName: '@flight/types', source: 'packages/types/src/model.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flight/render', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const valueBinding = {
+      headers: ['host/handles.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'value' as const,
+      sourceName: 'ValueHandle',
+      space: 'type' as const,
+      targetName: 'host::ValueHandle',
+    };
+    const referenceBinding = {
+      headers: ['host/handles.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'RefHandle',
+      space: 'type' as const,
+      targetName: 'host::RefHandle',
+    };
+    const emit = (bindings: readonly Readonly<CppCompilerExternalBinding>[]) =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules,
+        options: {
+          externalBindings: { bindings, schema: 'flight-cpp-external-bindings/1' },
+          runtimeProfile: 'flight-cpp',
+        },
+      }).emitModule(modules[1]!)[0]!.contents;
+
+    const emitted = emit([valueBinding, referenceBinding]);
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain(
+      'void initialize(flight::Ref<flighthq_types::Entry> out, host::ValueHandle value, std::optional<host::RefHandle> ref)',
+    );
+    expect(emitted).toContain('(out->ref = std::optional<host::RefHandle>{next()});');
+    expect(emitted.match(/next\(\)/gu)).toHaveLength(1);
+
+    expect(emit([valueBinding, { ...referenceBinding, nullability: 'nullable', ownership: 'borrowed' }])).toContain(
+      'std::optional<host::RefHandle> ref',
+    );
+    expect(() => emit([referenceBinding])).toThrow(
+      'runtime external symbol binding plan is incomplete (missing: ValueHandle[type])',
+    );
+    expect(() => emit([valueBinding, { ...referenceBinding, space: 'value' }])).toThrow(
+      'runtime external symbol binding plan is incomplete (missing: RefHandle[type])',
+    );
+    expect(() => emit([])).toThrow('runtime external symbol binding plan is incomplete');
   });
 
   // One structural shape is one C++ type, so every module of a package that writes it has to spell it

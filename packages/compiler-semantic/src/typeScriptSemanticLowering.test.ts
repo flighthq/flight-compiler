@@ -2740,6 +2740,122 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(declarations.get('Property')).toMatchObject({ type: { kind: 'indexedAccess' } });
   });
 
+  it('recovers required and optional indexed property evidence from local interfaces and aliases', () => {
+    const result = lower(
+      'indexed-external-property.ts',
+      `type Handle = ExternalHandle;
+       type RequiredKey = 'required';
+       interface Entry { required: Handle; optional?: ExternalHandle }
+       export function initialize(required: Entry[RequiredKey], optional: Entry['optional']): void {
+         required; optional;
+       }`,
+    );
+    const initialize = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'initialize',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(initialize).toMatchObject({
+      parameters: [
+        {
+          type: {
+            kind: 'named',
+            reference: { kind: 'ambient', name: 'ExternalHandle' },
+            typeArguments: [],
+          },
+        },
+        {
+          type: {
+            kind: 'union',
+            types: [
+              {
+                kind: 'named',
+                reference: { kind: 'ambient', name: 'ExternalHandle' },
+                typeArguments: [],
+              },
+              { kind: 'undefined' },
+            ],
+          },
+        },
+      ],
+    });
+  });
+
+  it('recovers indexed property evidence through an imported interface and property alias', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/model.ts',
+      `export type Handle = ExternalHandle;
+       export interface Entry { required: Handle; optional?: Handle }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/render/src/initialize.ts',
+      `import type { Entry } from '@flight/types';
+       export function initialize(required: Entry['required'], optional: Entry['optional']): void {
+         required; optional;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const [, result] = lowerTypeScriptSources(
+      [
+        { packageName: '@flight/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flight/render', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      {
+        edges: [
+          {
+            specifier: '@flight/types',
+            target: { packageName: '@flight/types', source: 'packages/types/src/model.ts' },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    );
+    const initialize = result!.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'initialize',
+    );
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(initialize).toMatchObject({
+      parameters: [
+        { type: { kind: 'named', reference: { kind: 'ambient', name: 'ExternalHandle' } } },
+        {
+          type: {
+            kind: 'union',
+            types: [{ kind: 'named', reference: { kind: 'ambient', name: 'ExternalHandle' } }, { kind: 'undefined' }],
+          },
+        },
+      ],
+    });
+  });
+
+  it('keeps ambiguous, dynamic, open, unresolved, and unsupported indexed access evidence conservative', () => {
+    const result = lower(
+      'indexed-external-property-refusals.ts',
+      `interface Entry { left: ExternalLeft; right: ExternalRight }
+       type Both = 'left' | 'right';
+       declare const inferredExternal: any;
+       class InferredEntry { field = inferredExternal }
+       export function ambiguous(value: Entry[Both]): void { value; }
+       export function dynamic<Key extends keyof Entry>(value: Entry[Key]): void { value; }
+       export function unresolved(value: MissingEntry['left']): void { value; }
+       export function unsupported(value: InferredEntry['field']): void { value; }`,
+    );
+    const parameters = new Map(
+      result.module.declarations.flatMap((declaration) =>
+        declaration.kind === 'function' ? [[declaration.binding.name, declaration.parameters[0]?.type] as const] : [],
+      ),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(parameters.get('ambiguous')).toEqual({ kind: 'unknown', source: 'any' });
+    expect(parameters.get('dynamic')).toMatchObject({ kind: 'indexedAccess' });
+    expect(parameters.get('unresolved')).toEqual({ kind: 'unknown', source: 'any' });
+    expect(parameters.get('unsupported')).toEqual({ kind: 'unknown', source: 'any' });
+  });
+
   it('preserves closed callable-object indexed provenance through NonNullable', () => {
     const model = ts.createSourceFile(
       '/flight/packages/model/src/runtime.ts',

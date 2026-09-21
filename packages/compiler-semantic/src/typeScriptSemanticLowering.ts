@@ -4465,7 +4465,44 @@ function getIrTypeRuntimeRepresentationSemantic(type: IrType): IrType {
 
 function lowerConcreteIndexedAccessType(node: ts.IndexedAccessTypeNode, context: LoweringContext): IrType | undefined {
   if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
-  return getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
+  const checkerType = getTypeScriptCheckerTypeEvidence(
+    context.checker.getTypeFromTypeNode(node),
+    context,
+    0,
+    true,
+    node,
+  );
+  if (checkerType?.kind !== 'unknown' || checkerType.source !== 'any') return checkerType;
+  return getTypeScriptIndexedAccessPropertyEvidence(node, context) ?? checkerType;
+}
+
+// An unresolved external property type collapses the checker's indexed-access answer to `any`, even
+// when the object and literal key still resolve to one authored property declaration. That declaration
+// is the remaining type evidence: retain its written type and optionality so a backend can apply its
+// external-symbol binding, while every non-unique or computed lookup keeps the checker's refusal.
+function getTypeScriptIndexedAccessPropertyEvidence(
+  node: ts.IndexedAccessTypeNode,
+  context: LoweringContext,
+): IrType | undefined {
+  const keys = getTypeScriptCheckerStringLiteralTypeValues(node.indexType, context);
+  if (keys?.length !== 1) return undefined;
+  const object = context.checker.getTypeFromTypeNode(node.objectType);
+  if (object.flags & (ts.TypeFlags.Any | ts.TypeFlags.TypeParameter | ts.TypeFlags.Unknown)) return undefined;
+  const property = context.checker.getPropertyOfType(object, keys[0]!);
+  const declarations =
+    property?.declarations?.filter(
+      (declaration): declaration is ts.PropertyDeclaration | ts.PropertySignature =>
+        (ts.isPropertyDeclaration(declaration) || ts.isPropertySignature(declaration)) &&
+        declaration.type !== undefined,
+    ) ?? [];
+  if (declarations.length !== 1) return undefined;
+  const declaration = declarations[0]!;
+  const declarationSource = declaration.getSourceFile();
+  const declarationOptions = context.analysisModuleOptions.get(declarationSource.fileName);
+  if (!declarationOptions || hasExternalTypeScriptTypeParameter(declaration.type!, context)) return undefined;
+  const declarationContext = { ...context, options: declarationOptions, sourceFile: declarationSource };
+  const type = lowerTypeScriptTypeNodeEvidence(declaration.type!, declarationContext);
+  return property && property.flags & ts.SymbolFlags.Optional ? addIrTypeBindingPatternUndefined(type) : type;
 }
 
 function isTypeScriptClosedCallableObjectIndexedAccess(
