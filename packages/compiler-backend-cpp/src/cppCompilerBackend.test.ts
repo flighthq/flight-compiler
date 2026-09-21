@@ -16862,15 +16862,68 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('.element(');
   });
 
-  it('refuses unchecked typeof discrimination through a variant type alias', () => {
+  it('emits typeof discrimination for one uniform alias variant alternative', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export type BitmapResizeMode = 'bicubic' | 'bilinear' | 'nearest';
+       export interface BitmapResizeOptions { mode?: BitmapResizeMode; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const bitmapResize = ts.createSourceFile(
+      '/flight/packages/bitmap/src/bitmapResize.ts',
+      `import type { BitmapResizeMode, BitmapResizeOptions } from '@flighthq/types/contract';
+       export function normalize(
+         options: BitmapResizeMode | Readonly<BitmapResizeOptions> = 'bilinear',
+       ): Readonly<BitmapResizeOptions> {
+         return typeof options === 'string' ? { mode: options } : options;
+       }
+       export function isMode(
+         options: BitmapResizeMode | Readonly<BitmapResizeOptions> | null,
+       ): boolean {
+         return typeof options === 'string';
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/bitmap', sourceFile: bitmapResize, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted.contents).toContain('options.value().index() ==');
+    expect(emitted.contents).toContain('std::get<1>(options.value())');
+    expect(emitted.contents).not.toContain('std::optional<flight::String>{options.value()}');
+  });
+
+  it('refuses typeof discrimination when one alias spans matching and nonmatching variant alternatives', () => {
     expect(() =>
       emitIrModuleCpp(
         lower(
-          'alias-variant.ts',
-          `type Tag = 'a' | 'b';
-         export function check(value: Tag | number): string {
-           return typeof value === 'string' ? value : value.toString();
-         }`,
+          'ambiguous-alias-variant.ts',
+          `type Mixed = string | number;
+           export function check(value: Mixed | boolean): boolean {
+             return typeof value === 'string';
+           }`,
         ).module,
       ),
     ).toThrow('typeof on a C++ variant requires proven union member test evidence');

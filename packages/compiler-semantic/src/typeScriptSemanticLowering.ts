@@ -6491,9 +6491,41 @@ function getTypeScriptTypeofUnionMemberTestEvidence(
   if (!ts.isIdentifier(subject)) return undefined;
   const source = getTypeScriptUnionBindingEvidence(subject, context);
   if (!source) return undefined;
-  const members = source.type.types.filter((member) => getIrTypeTypeofName(member) === expected.text);
+  const alternatives = getTypeScriptNarrowingUnionAlternatives(source.declared, context, new Set());
+  const members = alternatives.filter((member) => getTypeScriptIrTypeTypeofName(member, context) === expected.text);
   if (members.length !== 1) return undefined;
   return { binding: source.binding, member: members[0]!, whenResult };
+}
+
+function getTypeScriptIrTypeTypeofName(
+  type: Readonly<IrType>,
+  context: LoweringContext,
+  resolvingAliases: ReadonlySet<string> = new Set(),
+): ReturnType<typeof getIrTypeTypeofName> {
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    return getTypeScriptIrTypeTypeofName(type.typeArguments[0], context, resolvingAliases);
+  }
+  if (type.kind === 'union') {
+    const names = new Set(type.types.map((member) => getTypeScriptIrTypeTypeofName(member, context, resolvingAliases)));
+    return names.size === 1 ? [...names][0] : undefined;
+  }
+  const direct = getIrTypeTypeofName(type);
+  if (direct) return direct;
+  if (type.kind === 'named' && type.reference.kind === 'binding' && resolvingAliases.has(type.reference.binding.id)) {
+    return undefined;
+  }
+  const alias = resolveTypeScriptNarrowingAlias(type, context, resolvingAliases);
+  if (alias) {
+    return getTypeScriptIrTypeTypeofName(alias.target, context, new Set(resolvingAliases).add(alias.bindingId));
+  }
+  const resolved = getIrTypeConstructionTargetShape(type, context);
+  return resolved && resolved !== type ? getTypeScriptIrTypeTypeofName(resolved, context, resolvingAliases) : undefined;
 }
 
 function getIrTypeTypeofName(type: Readonly<IrType>): string | undefined {
@@ -6535,14 +6567,38 @@ function getTypeScriptDiscriminantUnionMemberTestEvidence(
 function getTypeScriptUnionBindingEvidence(
   node: ts.Identifier,
   context: LoweringContext,
-): Readonly<{ binding: IrBindingIdentity; type: Extract<IrType, { kind: 'union' }> }> | undefined {
+): Readonly<{ binding: IrBindingIdentity; declared: IrType; type: Extract<IrType, { kind: 'union' }> }> | undefined {
   const symbol = context.checker.getSymbolAtLocation(node);
   const declared = symbol ? context.bindingTypes.get(symbol) : undefined;
   const members = declared ? getTypeScriptNarrowingAlternatives(declared, context, new Set()) : [];
   const type = members[0] ? commonType([members[0], ...members.slice(1)]) : undefined;
-  if (type?.kind !== 'union') return undefined;
+  if (!declared || type?.kind !== 'union') return undefined;
   const reference = lowerIdentifierReference(node, context);
-  return reference.kind === 'binding' ? { binding: reference.binding, type } : undefined;
+  return reference.kind === 'binding' ? { binding: reference.binding, declared, type } : undefined;
+}
+
+function getTypeScriptNarrowingUnionAlternatives(
+  type: Readonly<IrType>,
+  context: LoweringContext,
+  resolvingAliases: ReadonlySet<string>,
+): readonly IrType[] {
+  if (type.kind === 'union') return type.types;
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Readonly' || type.reference.name === 'Required') &&
+    type.typeArguments.length === 1
+  ) {
+    return getTypeScriptNarrowingUnionAlternatives(type.typeArguments[0]!, context, resolvingAliases);
+  }
+  const resolved = resolveTypeScriptNarrowingAlias(type, context, resolvingAliases);
+  return resolved
+    ? getTypeScriptNarrowingUnionAlternatives(
+        resolved.target,
+        context,
+        new Set(resolvingAliases).add(resolved.bindingId),
+      )
+    : [];
 }
 
 function getTypeScriptNarrowingAlternatives(
@@ -6561,23 +6617,37 @@ function getTypeScriptNarrowingAlternatives(
   ) {
     return getTypeScriptNarrowingAlternatives(type.typeArguments[0]!, context, resolvingAliases);
   }
+  const resolved = resolveTypeScriptNarrowingAlias(type, context, resolvingAliases);
+  if (!resolved) return [type];
+  return getTypeScriptNarrowingAlternatives(
+    resolved.target,
+    context,
+    new Set(resolvingAliases).add(resolved.bindingId),
+  );
+}
+
+function resolveTypeScriptNarrowingAlias(
+  type: Readonly<IrType>,
+  context: LoweringContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<{ bindingId: string; target: IrType }> | undefined {
   if (
     type.kind !== 'named' ||
     type.reference.kind !== 'binding' ||
     type.reference.path.length > 0 ||
     resolvingAliases.has(type.reference.binding.id)
   ) {
-    return [type];
+    return undefined;
   }
   const bindingId = type.reference.binding.id;
   const symbol = [...context.typeBindings].find(([, binding]) => binding.id === bindingId)?.[0];
   const declarationSymbol =
     symbol?.flags && symbol.flags & ts.SymbolFlags.Alias ? context.checker.getAliasedSymbol(symbol) : symbol;
   const declaration = declarationSymbol?.declarations?.find(ts.isTypeAliasDeclaration);
-  if (!declaration) return [type];
+  if (!declaration) return undefined;
   const declarationSourceFile = declaration.getSourceFile();
   const declarationOptions = context.analysisModuleOptions.get(declarationSourceFile.fileName);
-  if (!declarationOptions) return [type];
+  if (!declarationOptions) return undefined;
   const declarationContext = { ...context, options: declarationOptions, sourceFile: declarationSourceFile };
   // The alias body belongs to the module that declares it. When its instantiation cannot be
   // expanded there, this module keeps the named type rather than carrying the declaring module's
@@ -6586,7 +6656,7 @@ function getTypeScriptNarrowingAlternatives(
   try {
     unresolved = lowerType(declaration.type, declarationContext);
   } catch (error) {
-    if (isUnsupportedSyntaxFailure(error)) return [type];
+    if (isUnsupportedSyntaxFailure(error)) return undefined;
     throw error;
   }
   const target = resolveIrTypeStructuralSubstitution(
@@ -6596,8 +6666,7 @@ function getTypeScriptNarrowingAlternatives(
       type.typeArguments,
     ),
   );
-  const nextResolvingAliases = new Set(resolvingAliases).add(bindingId);
-  return getTypeScriptNarrowingAlternatives(target, context, nextResolvingAliases);
+  return { bindingId, target };
 }
 
 function getTypeScriptLiteralExpressionValue(expression: ts.Expression): boolean | number | string | undefined {

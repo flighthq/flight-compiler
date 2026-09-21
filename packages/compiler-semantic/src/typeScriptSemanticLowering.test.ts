@@ -6277,9 +6277,63 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(result.diagnostics).toEqual([]);
     expect(condition?.kind === 'binary' ? condition.semantics.unionMemberTest : undefined).toMatchObject({
       binding: { name: 'data' },
-      member: { kind: 'function' },
+      member: { kind: 'named', reference: { binding: { name: 'Provider' } } },
       whenResult: true,
     });
+  });
+
+  it('preserves one uniform alias alternative for typeof without inventing ambiguous evidence', () => {
+    const result = lower(
+      'alias-typeof-narrowing.ts',
+      `type BitmapResizeMode = 'bicubic' | 'bilinear' | 'nearest';
+       interface BitmapResizeOptions { mode?: BitmapResizeMode; }
+       type Mixed = string | number;
+       type First = 'first';
+       type Second = 'second';
+       export function matching(value: BitmapResizeMode | Readonly<BitmapResizeOptions>): boolean {
+         return typeof value === 'string';
+       }
+       export function nonmatching(value: BitmapResizeMode | Readonly<BitmapResizeOptions>): boolean {
+         return typeof value === 'number';
+       }
+       export function nullable(value: BitmapResizeMode | Readonly<BitmapResizeOptions> | null): boolean {
+         return typeof value === 'string';
+       }
+       export function nullableObject(value: Readonly<BitmapResizeOptions> | null): boolean {
+         return typeof value === 'object';
+       }
+       export function mixedAlias(value: Mixed | boolean): boolean {
+         return typeof value === 'string';
+       }
+       export function repeatedDomain(value: First | Second | number): boolean {
+         return typeof value === 'string';
+       }`,
+    );
+    const evidence = (name: string) => {
+      const declaration = result.module.declarations.find(
+        (candidate) => candidate.kind === 'function' && candidate.binding.name === name,
+      );
+      const returned = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+      return returned?.kind === 'return' && returned.expression?.kind === 'binary'
+        ? returned.expression.semantics.unionMemberTest
+        : undefined;
+    };
+
+    expect(result.diagnostics).toEqual([]);
+    expect(evidence('matching')).toMatchObject({
+      binding: { name: 'value' },
+      member: { kind: 'named', reference: { binding: { name: 'BitmapResizeMode' } } },
+      whenResult: true,
+    });
+    expect(evidence('nullable')).toMatchObject({
+      binding: { name: 'value' },
+      member: { kind: 'named', reference: { binding: { name: 'BitmapResizeMode' } } },
+      whenResult: true,
+    });
+    expect(evidence('nonmatching')).toBeUndefined();
+    expect(evidence('nullableObject')).toBeUndefined();
+    expect(evidence('mixedAlias')).toBeUndefined();
+    expect(evidence('repeatedDomain')).toBeUndefined();
   });
 
   it('records instanceof evidence for exactly one constructible union alternative', () => {

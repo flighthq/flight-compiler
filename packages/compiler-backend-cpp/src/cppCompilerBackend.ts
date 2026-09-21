@@ -3513,7 +3513,9 @@ function emitExpression(
       if (
         expression.reference.kind === 'binding' &&
         context.defaultedParameterIds.has(expression.reference.binding.id) &&
-        !context.sharedCaptureTargetNames.has(expression.reference.binding.id)
+        !context.sharedCaptureTargetNames.has(expression.reference.binding.id) &&
+        !expression.narrowedMember &&
+        !context.narrowedBindingTypes.has(expression.reference.binding.id)
       ) {
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
       }
@@ -8747,7 +8749,7 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
     if (alternatives.length !== 1) {
       emissionError(context, 'union member test must identify exactly one C++ optional value alternative');
     }
-    const binding = emitBindingValueCpp(evidence.binding, context);
+    const binding = emitInitializedBindingValueCpp(evidence.binding, context);
     const present =
       plan.kind === 'optionalSingle'
         ? `${binding}.has_value()`
@@ -8764,7 +8766,7 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   const alternativeIndex = representation.alternatives.indexOf(alternatives[0]!);
   const test = representation.direct
     ? 'true'
-    : `${emitBindingValueCpp(evidence.binding, context)}.index() == ${String(alternativeIndex)}`;
+    : `${emitInitializedBindingValueCpp(evidence.binding, context)}.index() == ${String(alternativeIndex)}`;
   return evidence.whenResult ? test : `!(${test})`;
 }
 
@@ -8925,6 +8927,7 @@ function emitNarrowedUnionMemberCpp(
   const union = getIrBindingVariantUnionTypeCpp(expression.reference.binding.id, context);
   if (!union) return undefined;
   const representation = getCppVariantRepresentationForInspection(union, context);
+  const binding = emitInitializedBindingValueCpp(expression.reference.binding, context);
   const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
   if (narrowedUnion) {
     const narrowedPlan = getCppUnionRepresentationPlan(narrowedUnion, context);
@@ -8937,7 +8940,6 @@ function emitNarrowedUnionMemberCpp(
       mapped.length < representation.alternatives.length &&
       mapped.every(({ sourceIndex }) => sourceIndex >= 0)
     ) {
-      const binding = emitIdentifierReference(expression.reference, context);
       const expressions = mapped.map(({ slot, sourceIndex }) =>
         emitCppUnionValueConstruction(
           `std::get<${String(sourceIndex)}>(${binding})`,
@@ -8989,8 +8991,8 @@ function emitNarrowedUnionMemberCpp(
       `narrowed member ${expression.narrowedMember ?? 'structural switch case'} must identify one C++ variant alternative`,
     );
   }
-  if (representation.direct) return emitIdentifierReference(expression.reference, context);
-  return `std::get<${String(representation.alternatives.indexOf(matches[0]!.alternative))}>(${emitIdentifierReference(expression.reference, context)})`;
+  if (representation.direct) return binding;
+  return `std::get<${String(representation.alternatives.indexOf(matches[0]!.alternative))}>(${binding})`;
 }
 
 function areCppUnionMemberDiscriminantsEquivalent(
@@ -15791,6 +15793,13 @@ function emitBindingValueCpp(binding: Readonly<{ id: string; name: string }>, co
       : value;
   }
   return context.targetNames.get(binding.id) ?? safeCppName(binding.name);
+}
+
+function emitInitializedBindingValueCpp(binding: Readonly<{ id: string; name: string }>, context: EmitContext): string {
+  const value = emitBindingValueCpp(binding, context);
+  return context.defaultedParameterIds.has(binding.id) && !context.sharedCaptureTargetNames.has(binding.id)
+    ? `${value}.value()`
+    : value;
 }
 
 function collectIrModuleUninitializedBindingIdsCpp(module: Readonly<IrModule>): ReadonlySet<string> {
