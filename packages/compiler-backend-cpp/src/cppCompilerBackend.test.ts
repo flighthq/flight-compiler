@@ -21080,6 +21080,139 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(incompatibleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('coalesces one proven optional identity into one multi-variant arm', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/types.ts' },
+        },
+        {
+          specifier: '@flighthq/provider',
+          target: { packageName: '@flighthq/provider', source: 'packages/provider/src/provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const consumer = (file: string, body: string) =>
+      source(
+        '@flighthq/consumer',
+        `packages/consumer/src/${file}.ts`,
+        `import { maybeAnonymous, maybeBoth, maybeColor, maybeColorOrOther, maybeDerived, maybeOther } from '@flighthq/provider';
+         import type { Color, Left, Right } from '@flighthq/types';
+         ${body}`,
+      );
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/types.ts',
+          `export interface Color { alpha: number; rgb: number }
+           export interface Other { other: number }
+           export interface Derived extends Color { derived: number }
+           export interface Left { left: number }
+           export interface Right { right: number }
+           export interface Both extends Left, Right { both: number }`,
+        ),
+        source(
+          '@flighthq/provider',
+          'packages/provider/src/provider.ts',
+          `import type { Both, Color, Derived, Other } from '@flighthq/types';
+           export function maybeColor(): Color | null { throw new Error('stub'); }
+           export function maybeAnonymous(): { alpha: number; rgb: number } | null { throw new Error('stub'); }
+           export function maybeColorOrOther(): Color | Other | null { throw new Error('stub'); }
+           export function maybeOther(): Other | null { throw new Error('stub'); }
+           export function maybeBoth(): Both | null { throw new Error('stub'); }
+           export function maybeDerived(): Derived | null { throw new Error('stub'); }`,
+        ),
+        source(
+          '@flighthq/local',
+          'packages/local/src/local.ts',
+          `interface Color { alpha: number; rgb: number }
+           function maybeColor(): Color | null { throw new Error('stub'); }
+           export function choose(): Color | { fallback: string } {
+             return maybeColor() ?? { fallback: 'local' };
+           }`,
+        ),
+        consumer(
+          'imported',
+          `export function choose(): Color | { fallback: string } {
+             return maybeColor() ?? { fallback: 'imported' };
+           }`,
+        ),
+        consumer(
+          'anonymous',
+          `export function choose(): Color | { fallback: string } {
+             return maybeAnonymous() ?? { fallback: 'anonymous' };
+           }`,
+        ),
+        consumer(
+          'nullable',
+          `export function choose(): Color | { fallback: string } {
+             return maybeColorOrOther() ?? { fallback: 'nullable' };
+           }`,
+        ),
+        consumer(
+          'zero',
+          `export function choose(): Color | { fallback: string } {
+             return maybeOther() ?? { fallback: 'zero' };
+           }`,
+        ),
+        consumer(
+          'multiple',
+          `export function choose(): Left | Right | { fallback: string } {
+             return maybeBoth() ?? { fallback: 'multiple' };
+           }`,
+        ),
+        consumer(
+          'storage',
+          `export function choose(): Color | { fallback: string } {
+             return maybeDerived() ?? { fallback: 'storage' };
+           }`,
+        ),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/consumer': { includePrefix: 'flight/consumer', namespace: 'flight::consumer' },
+          '@flighthq/local': { includePrefix: 'flight/local', namespace: 'flight::local' },
+          '@flighthq/provider': { includePrefix: 'flight/provider', namespace: 'flight::provider' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+
+    const local = session.emitModule(modules[2]!)[0]!.contents;
+    const imported = session.emitModule(modules[3]!)[0]!.contents;
+    expect(local).toContain('if (contextual_union_source.has_value())');
+    expect(local).toContain('std::in_place_type<flight::Ref<Color>>');
+    expect(local).toContain('flight::String("local")');
+    expect(imported).toContain('if (contextual_union_source.has_value())');
+    expect(imported).toContain('std::in_place_type<flight::Ref<flight::types::Color>>');
+    expect(imported).toContain('flight::String("imported")');
+    expect(imported).not.toContain('_cast<');
+
+    const refusals = modules.slice(4).map((module) => captureBackendEmissionFailure(() => session.emitModule(module)));
+    expect(refusals.map((failure) => failure.rule)).toEqual([
+      'cpp-contextual-union-inequivalent',
+      'cpp-contextual-union-inequivalent',
+      'cpp-contextual-union-inequivalent',
+      'cpp-contextual-union-inequivalent',
+      'cpp-contextual-union-inequivalent',
+    ]);
+  });
+
   it('reads an imported own member without treating an unresolved inherited shape as complete', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [

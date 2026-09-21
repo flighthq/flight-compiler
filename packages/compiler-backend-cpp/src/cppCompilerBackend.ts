@@ -9455,6 +9455,18 @@ function emitContextualUnionExpressionInContextCpp(
         (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
           member.kind === 'null' || member.kind === 'undefined',
       );
+      const variantMerge =
+        leftStorageType && leftStoragePlan
+          ? emitCppNullishCoalesceMultiVariantConstructionCpp(
+              expression,
+              leftStorageType,
+              leftStoragePlan,
+              union,
+              plan,
+              context,
+            )
+          : undefined;
+      if (variantMerge) return variantMerge;
       // A literal-sentinel fallback deliberately merges both absent states from the left. Project
       // the dual-sentinel carrier into the contextual optional only when its sole value slot is the
       // destination's exact C++ representation; a heterogeneous destination or erased Any keeps the
@@ -9771,6 +9783,71 @@ function emitContextualUnionExpressionInContextCpp(
     plan.kind,
     context,
   );
+}
+
+function emitCppNullishCoalesceMultiVariantConstructionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  sourceType: Readonly<IrType>,
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  targetUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.operator !== '??' ||
+    sourcePlan.kind !== 'optionalSingle' ||
+    sourcePlan.valueSlots.length !== 1 ||
+    targetPlan.kind !== 'multiVariant'
+  ) {
+    return undefined;
+  }
+  const sourceSlot = sourcePlan.valueSlots[0]!;
+  const targetSlotIndex = getCppConcreteNamedUnionValueSlotCpp(sourceSlot.runtimeType, targetPlan.valueSlots, context);
+  if (targetSlotIndex === undefined) return undefined;
+  const targetSlot = targetPlan.valueSlots[targetSlotIndex]!;
+  // Identity and storage are separate evidence. Resolving the declaration proves which arm this is;
+  // identical emitted storage proves that extracting the optional does not require a target cast.
+  // A derived reference, erased Any, or otherwise different carrier stays on the refusal path until
+  // its conversion has an explicit checked lowering of its own.
+  if (sourceSlot.targetType === 'flight::Any' || sourceSlot.targetType !== targetSlot.targetType) return undefined;
+
+  const fallbackSlots = targetPlan.valueSlots.filter((_, index) => index !== targetSlotIndex);
+  const fallbackType = getIrExpressionTypeForUnionConstructionCpp(expression.right, fallbackSlots, context);
+  if (!fallbackType || getIrUnionTypeCpp(fallbackType, context, new Set())) return undefined;
+  const fallbackRuntimeType = getIrTypeRuntimeDomainCpp(fallbackType, context, new Set());
+  if (!fallbackRuntimeType) return undefined;
+  const fallbackPlan = getCppUnionRepresentationPlan(
+    { kind: 'union', types: [fallbackRuntimeType, { kind: 'null' }] },
+    { ...context, anonymousStructs: new Map(), includes: new Set<string>() },
+  );
+  const fallbackSourceSlot = fallbackPlan.valueSlots.length === 1 ? fallbackPlan.valueSlots[0] : undefined;
+  if (!fallbackSourceSlot) return undefined;
+  const matchingFallbackSlots = fallbackSlots.filter(
+    (slot) =>
+      slot.representationKey === fallbackSourceSlot.representationKey &&
+      slot.targetType === fallbackSourceSlot.targetType,
+  );
+  if (matchingFallbackSlots.length !== 1) return undefined;
+  const fallbackSlot = matchingFallbackSlots[0]!;
+
+  const source = getGeneratedTargetName('contextualUnionSource', context);
+  const sourceValue = emitOptionalExpressionCpp(expression.left, context, sourceType);
+  const present = emitCppUnionValueConstruction(
+    `${source}.value()`,
+    targetSlot.targetType,
+    targetUnion,
+    targetPlan.kind,
+    context,
+  );
+  const fallback = emitCppUnionValueConstruction(
+    emitExpression(expression.right, context, fallbackSlot.runtimeType, false),
+    fallbackSlot.targetType,
+    targetUnion,
+    targetPlan.kind,
+    context,
+  );
+  const resultType = emitUnionTypeCpp(targetUnion, context);
+  return `([&]() -> ${resultType} { auto ${source} = ${sourceValue}; if (${source}.has_value()) return ${present}; return ${fallback}; }())`;
 }
 
 function getCppCallableUnionValueSlotCpp(
