@@ -10335,7 +10335,15 @@ function emitContextualUnionExpressionInContextCpp(
       'cpp-contextual-union-value-type-unrepresented',
     );
   }
-  const emitted = emitExpression(expression, context, runtimeType, false);
+  const emitted =
+    callableValueSlot === undefined
+      ? emitExpression(expression, context, runtimeType, false)
+      : emitCppContextualCallableUnionValueCpp(
+          expression,
+          runtimeType,
+          plan.valueSlots[callableValueSlot]!.runtimeType,
+          context,
+        );
   return emitCppUnionValueConstruction(
     emitted,
     plan.valueSlots[representedValueSlot]!.targetType,
@@ -10418,7 +10426,7 @@ function getCppCallableUnionValueSlotCpp(
   if (source.kind !== 'function' || source.typeParameters.length > 0) return undefined;
   const matches = valueSlots.flatMap((slot, index) => {
     const target = getCppClosedCallableType(slot.runtimeType, context, new Set());
-    if (!target || target.typeParameters.length > 0 || source.parameters.length !== target.parameters.length) {
+    if (!target || target.typeParameters.length > 0 || source.parameters.length > target.parameters.length) {
       return [];
     }
     const parametersAgree = source.parameters.every((parameter, parameterIndex) => {
@@ -10440,6 +10448,45 @@ function getCppCallableUnionValueSlotCpp(
     return targetObject && emitType(source.returns, context) === emitType(targetObject, context) ? [index] : [];
   });
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+// TypeScript callables may ignore trailing arguments: a `() => Value` is valid wherever a
+// `(options?: Options) => Value` is expected, and the caller still invokes the contextual signature.
+// `std::function` does not perform that adaptation -- a zero-argument target is not invocable with one
+// argument -- so retain the contextual signature in a small wrapper and call the source with only the
+// prefix it declares. The matcher above has already proved that every retained prefix parameter has the
+// same optional/rest mode and C++ representation and that the return representation agrees. Binding the
+// source in the lambda capture also preserves one evaluation for a call or property that produces it.
+function emitCppContextualCallableUnionValueCpp(
+  expression: Readonly<IrExpression>,
+  sourceType: Readonly<IrType>,
+  targetType: Readonly<IrType>,
+  context: EmitContext,
+): string {
+  if (sourceType.kind !== 'function') return emitExpression(expression, context, sourceType, false);
+  const target = getCppClosedCallableType(targetType, context, new Set());
+  if (!target || sourceType.parameters.length === target.parameters.length) {
+    return emitExpression(expression, context, sourceType, false);
+  }
+  const sourceName = getGeneratedTargetName('contextualCallable', context);
+  const parameterNames = target.parameters.map((_, index) =>
+    getGeneratedTargetName(`contextualCallableArgument${String(index)}`, context),
+  );
+  const parameters = target.parameters.map((parameter, index) => {
+    const type = emitOptionalTypeCpp(
+      emitCppParameterTypeCpp(parameter.type, parameter.rest, context),
+      parameter.optional,
+      context,
+    );
+    return `${type} ${parameterNames[index]!}`;
+  });
+  const arguments_ = parameterNames.slice(0, sourceType.parameters.length);
+  const invocation = `${sourceName}(${arguments_.join(', ')})`;
+  const returns = emitType(target.returns, context);
+  const body =
+    target.returns.kind === 'primitive' && target.returns.name === 'void' ? `${invocation};` : `return ${invocation};`;
+  const source = emitExpression(expression, context, sourceType, false);
+  return `[${sourceName} = ${source}](${parameters.join(', ')}) -> ${returns} { ${body} }`;
 }
 
 function getCppConstrainedTypeParameterUnionValueSlotCpp(

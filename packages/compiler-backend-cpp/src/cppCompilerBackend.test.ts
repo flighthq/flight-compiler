@@ -3168,6 +3168,35 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::nullopt');
   });
 
+  it('adapts a contextual callable that ignores trailing parameters without widening parameter conversions', () => {
+    const result = lower(
+      'contextual-callable-trailing-parameters.ts',
+      `type Factory = (value?: number) => string;
+       function createFactory(): () => string { return (): string => 'created'; }
+       export function factory(): Factory | undefined { return createFactory(); }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain(
+      'std::optional<std::function<flight::String(std::optional<double>)>>{[contextual_callable = create_factory()](std::optional<double> contextual_callable_argument0) -> flight::String { return contextual_callable(); }}',
+    );
+    expect(emitted.match(/contextual_callable = create_factory\(\)/gu)).toHaveLength(1);
+
+    const refusal = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'contextual-callable-parameter-conversion.ts',
+          `type NumberConsumer = (value: number) => string;
+           function consumeNumberOrString(value: number | string): string { return String(value); }
+           export function consumer(): NumberConsumer | undefined { return consumeNumberOrString; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(refusal.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
   it('refuses ambient call construction without an exact matching contextual result type', () => {
     const module = lower(
       'timer-call-result-controls.ts',
