@@ -273,6 +273,11 @@ interface EmitContext {
   // Anonymous structural type naming, shared by every module of one emission so a shape names the
   // same type wherever it is written. See `generateAnonymousStructName`.
   anonymousStructNaming: AnonymousStructNaming;
+  // Every union arm in the emission, keyed by the identity it holds: the declaration its nominal
+  // member names, plus the structure of the rest of it. Built once, on the first emission, and shared
+  // by every module, because the question it answers -- is this intersection an arm some module
+  // already declares -- is about the whole program rather than about one module.
+  unionArmIdentities: Map<string, CppUnionArmIdentity[]>;
   enclosingReturnType?: Readonly<IrType> | undefined;
 }
 
@@ -305,6 +310,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const importBindingOwners = createCppImportBindingOwners(modules);
       const targetNameMaps = createCppTargetNameMaps(modules);
       const anonymousStructNaming = createCppAnonymousStructNaming(targetNameMaps);
+      const unionArmIdentities = new Map<string, CppUnionArmIdentity[]>();
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
@@ -319,6 +325,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
               importBindingOwners,
               targetNameMaps,
               anonymousStructNaming,
+              unionArmIdentities,
             ),
           ];
         },
@@ -349,6 +356,7 @@ function emitIrModuleCppWithContext(
   importBindingOwners?: ReadonlyMap<string, CppImportBindingOwner | null> | undefined,
   targetNameMaps?: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
   anonymousStructNaming?: AnonymousStructNaming | undefined,
+  unionArmIdentities?: Map<string, CppUnionArmIdentity[]> | undefined,
 ): EmittedFile {
   let module: IrModule;
   try {
@@ -468,6 +476,7 @@ function emitIrModuleCppWithContext(
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
     anonymousStructNaming: anonymousStructNaming ?? createCppAnonymousStructNaming(resolvedTargetNameMaps),
+    unionArmIdentities: unionArmIdentities ?? new Map(),
   };
   for (const bindingId of collectIrModuleArrayElementBindingIdsCpp(module, context)) {
     arrayElementBindingIds.add(bindingId);
@@ -6256,6 +6265,34 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           ? getCppRedundantNominalIntersectionIdentityCpp(type, context)
           : undefined;
       if (nominalIdentity) return emitType(nominalIdentity, context, representation);
+      // This intersection may be an arm some module already declares -- a selection over an imported
+      // union arrives here expanded rather than as the alias it was written as, so its structure is the
+      // only thing left to recognize it by. When exactly one arm in the emission holds this identity and
+      // it belongs to another module, that arm is named: it is emitted from the declaring module's own
+      // node, in that module's context, and qualified to its namespace, which is the same type that
+      // module's union storage holds. Zero matches leaves an intersection written here alone; more than
+      // one cannot say which union's alternative this is, and choosing between them would be a guess
+      // about identity rather than a reading of it.
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        populateCppUnionArmIdentitiesCpp(context.unionArmIdentities, context);
+        const canonical = getCppUnionArmIdentityKeyCpp(type, context.module, context);
+        const candidates = canonical ? context.unionArmIdentities.get(canonical) : undefined;
+        // A module's identity is its package and source, not the object: the module being emitted is the
+        // one the passes produced, while the index is built from the modules they were given. Comparing the
+        // objects would make a module's own arms look like another module's, and naming them from there
+        // suppresses the definitions this module owes -- the arm would be referenced and never declared.
+        const declared =
+          candidates?.length === 1 &&
+          getCppModuleIdentityKey(candidates[0]!.owner) !== getCppModuleIdentityKey(context.module)
+            ? candidates[0]
+            : undefined;
+        if (declared) {
+          const owner = declared.owner;
+          const ownerContext: EmitContext = { ...context, anonymousStructs: new Map(), module: owner };
+          const emitted = emitType(declared.arm, ownerContext, representation);
+          return qualifyCppDeclaringModuleAlternativesCpp(emitted, ownerContext, owner, context.options);
+        }
+      }
       const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
       if (properties) {
         const nominalImplementation =
@@ -12217,6 +12254,95 @@ function getCppBindingTypeCpp(bindingId: string, context: EmitContext): Readonly
     context.bindingTypes.get(bindingId) ??
     getCppImportedBindingTypeCpp(bindingId, context)
   );
+}
+
+// An arm of a union, and the module that declares it.
+type CppUnionArmIdentity = Readonly<{ arm: Readonly<IrType>; owner: Readonly<IrModule> }>;
+
+// The declaration a type member names, resolved to the declaration itself rather than to the spelling
+// this module reached it by.
+//
+// A member written in the module that declares the type it names is a local binding; the same member
+// reached from anywhere else is an IMPORT of it, and the two carry different binding identities -- the
+// import records this module and the specifier it used, not the declaration. Resolving the import
+// through the module graph is what makes the two spellings one identity, and it follows barrels and
+// type-only forwards because that is how a type is published: `export * from './Collision.js'` and
+// `export type X = …` both hand out a declaration the barrel does not itself contain.
+//
+// A name that resolves to no declaration, or to more than one, has no identity to compare and returns
+// undefined. That is the conservative answer everywhere it is used: an unresolved member never matches,
+// so the emission it would have changed is left exactly as it is.
+function getCppMemberDeclarationKeyCpp(
+  member: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): string | undefined {
+  if (member.kind !== 'named' || member.reference.kind !== 'binding') return undefined;
+  const binding = member.reference.binding;
+  if (binding.kind !== 'import') return `${binding.packageName}\0${binding.source}\0${binding.name}`;
+  const importItem = module.imports.find((candidate) =>
+    candidate.bindings.some((candidateBinding) => candidateBinding.binding.id === binding.id),
+  );
+  const importedBinding = importItem?.bindings.find((candidate) => candidate.binding.id === binding.id);
+  if (!importItem || !importedBinding || importedBinding.imported === '*') return undefined;
+  const moduleContext: EmitContext = module === context.module ? context : { ...context, module };
+  const owners = getCppResolvedImportModules(importItem.specifier, moduleContext).flatMap((targetModule) =>
+    getCppExportedTypeDeclarationOwnersCpp(targetModule, importedBinding.imported, context, new Set()),
+  );
+  if (owners.length !== 1) return undefined;
+  const declaration = owners[0]!.declaration.binding;
+  return `${declaration.packageName}\0${declaration.source}\0${declaration.name}`;
+}
+
+// The identity an arm holds, which is what makes the same arm written in two modules one arm.
+//
+// An arm the provider's union storage holds is an anonymous record beside a nominal member, so its
+// identity is two things: which declaration that member names, and what the rest of the arm is made of.
+// Both are module-independent -- the declaration is the declaration however this module reached it, and
+// the remaining members are compared by their canonical form, which for the anonymous records this rule
+// is about is the same wherever it is written.
+//
+// The shape is required rather than searched for: one nominal member and at least one other. An arm that
+// is not that shape is not what this rule recognizes, and a remaining member that is itself a reference
+// can only be compared by a nested resolution this does not attempt -- so it simply fails to match, and
+// the local emission stands.
+function getCppUnionArmIdentityKeyCpp(
+  arm: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): string | undefined {
+  if (arm.kind !== 'intersection') return undefined;
+  const declared = arm.types.filter((member) => member.kind === 'named');
+  if (declared.length !== 1) return undefined;
+  const key = getCppMemberDeclarationKeyCpp(declared[0]!, module, context);
+  if (!key) return undefined;
+  const remaining = arm.types.filter((member) => member !== declared[0]);
+  if (remaining.length === 0) return undefined;
+  if (remaining.some((member) => member.kind === 'named')) return undefined;
+  return `${key}\0${remaining.map((member) => normalizeCompilerStructuralValueCanonical(member)).join('\x01')}`;
+}
+
+// Records every union arm in the emission under the identity it holds. Called once, from the first
+// module emitted, because the index is about the program and not about the module that happens to be
+// emitting when it is first needed.
+function populateCppUnionArmIdentitiesCpp(identities: Map<string, CppUnionArmIdentity[]>, context: EmitContext): void {
+  if (identities.size > 0) return;
+  for (const module of context.sourceModules) {
+    const moduleContext: EmitContext =
+      getCppModuleIdentityKey(module) === getCppModuleIdentityKey(context.module) ? context : { ...context, module };
+    for (const declaration of module.declarations) {
+      if (declaration.kind !== 'typeAlias' || !declaration.exported || declaration.type.kind !== 'union') {
+        continue;
+      }
+      for (const arm of declaration.type.types) {
+        const key = getCppUnionArmIdentityKeyCpp(arm, module, moduleContext);
+        if (!key) continue;
+        const existing = identities.get(key);
+        if (existing) existing.push({ arm, owner: module });
+        else identities.set(key, [{ arm, owner: module }]);
+      }
+    }
+  }
 }
 
 function getCppImportedBindingTypeCpp(bindingId: string, context: EmitContext): Readonly<IrType> | undefined {

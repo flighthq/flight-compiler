@@ -10718,6 +10718,181 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
+  it('names a selected arm as the declaration its union holds, and only when exactly one holds it', () => {
+    // The selection `Extract<U, C>` reaches the emitter expanded, so the arm is recognized by the identity
+    // it holds: the declaration its nominal member names, and the structure of the rest of it. Each
+    // control below is a way that identity could be read wrongly, and the answer each one must get.
+    const provider = ts.createSourceFile(
+      '/flight/packages/types/src/Collision.ts',
+      `export interface CollisionObb2D { readonly x: number; readonly y: number; readonly halfW: number; readonly halfH: number; readonly rotation: number }
+       export interface CollisionCircle2D { readonly x: number; readonly y: number; readonly radius: number }
+       export interface UnrelatedObb2D { readonly x: number; readonly y: number; readonly halfW: number; readonly halfH: number; readonly rotation: number }
+       export type CollisionBuiltInShape2D =
+         | (CollisionObb2D & { kind: 'obb' })
+         | (CollisionCircle2D & { kind: 'circle' });`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    // A barrel that publishes the union only as a type, which is how `@flighthq/types/contract` publishes it.
+    const barrel = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export type * from './Collision.js';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/collision/src/selectedArm.ts',
+      `import type { CollisionBuiltInShape2D, UnrelatedObb2D } from '@flighthq/types/contract';
+       // The unique match: this arm is the one the imported union declares, so it is named there.
+       export function raycastObb(shape: Extract<CollisionBuiltInShape2D, { kind: 'obb' }>): number { return shape.halfW; }
+       export function raycastBuiltIn(shape: CollisionBuiltInShape2D): number {
+         switch (shape.kind) {
+           case 'obb': return raycastObb(shape);
+           default: return 0;
+         }
+       }
+       // An unrelated declaration of the same shape: a different nominal member, so a different identity,
+       // and the selection is implemented here rather than named as another module's arm.
+       export function readUnrelated(shape: UnrelatedObb2D & { kind: 'obb' }): number { return shape.x; }
+       // A union this module declares keeps its own arms.
+       export interface LocalShape { readonly size: number }
+       export interface OtherShape { readonly name: string }
+       export type LocalUnion = (LocalShape & { tag: 'one' }) | (OtherShape & { tag: 'two' });
+       export function sizeOf(shape: Extract<LocalUnion, { tag: 'one' }>): number { return shape.size; }
+       // A module-scope subject of the selected type whose properties are assigned: the type stays the
+       // expanded intersection, so the representation planning that mutation needs is untouched.
+       const probe: Extract<CollisionBuiltInShape2D, { kind: 'obb' }> = { kind: 'obb', x: 0, y: 0, halfW: 0, halfH: 0, rotation: 0 };
+       export function moveProbe(scale: number): number {
+         probe.x = scale;
+         probe.y = scale;
+         return probe.x;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const plan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: undefined as never,
+          specifier: './Collision.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Collision.ts' },
+        },
+        {
+          importer: undefined as never,
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [types, contract, collision] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: provider, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: barrel, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/collision', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      plan,
+    );
+    const emit = (modules: readonly Readonly<IrModule>[], module: Readonly<IrModule>) =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution: plan,
+        modules,
+        options: {
+          packageTargets: {
+            '@flighthq/collision': { includePrefix: 'flight/collision', namespace: 'flight::collision' },
+            '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+          },
+          runtimeProfile: 'flight-cpp',
+        },
+      })
+        .emitModule(module)
+        .map((file) => file.contents)
+        .join('\n');
+
+    const emitted = emit([types!.module, contract!.module, collision!.module], collision!.module);
+
+    // Unique cross-module selection, reached through a type-only barrel: named as the declaring module's
+    // own arm, and the union's storage names that same type.
+    const arm = /raycast_obb\(flight::Ref<flight::types::(x_y_half_w_half_h_rotation_kind_\w+)> shape\)/u.exec(
+      emitted,
+    )?.[1];
+    expect(arm).toBeDefined();
+    expect(emitted).toContain('raycast_built_in(flight::types::CollisionBuiltInShape2D shape)');
+    expect(emitted).toMatch(/std::get<0>\(shape\)/u);
+    // A selection does not mint a second implementation of the arm beside the one it names.
+    expect(emitted).not.toMatch(new RegExp(`flight::collision::${arm} : public flight::types::CollisionObb2D`, 'u'));
+
+    // An unrelated declaration of the same shape is a different identity, so that selection is implemented
+    // where it is written.
+    expect(emitted).toMatch(/read_unrelated\(flight::Ref<x_y_half_w_half_h_rotation_kind_\w+> shape\)/u);
+    expect(emitted).not.toMatch(/read_unrelated\(flight::Ref<flight::types::/u);
+
+    // A local union keeps its own arms.
+    expect(emitted).toMatch(/size_of\(flight::Ref<size_tag_\w+> shape\)/u);
+
+    // The mutated subject still emits: its type is the expanded intersection, so the reference planning
+    // that a captured referent mutation needs is exactly what it was.
+    expect(emitted).toMatch(/move_probe\(/u);
+    expect(emitted).toMatch(/flight::types::x_y_half_w_half_h_rotation_kind_\w+> probe =/u);
+  });
+
+  it('leaves an arm alone when two imported unions both declare it', () => {
+    // The same arm reaches two unions: `ObbPhrase` declares the arm `CollisionBuiltInShape2D` already
+    // declares, so the identity is held twice and cannot say which union's alternative a selection is.
+    // Two matches is not a match -- the selection is implemented here rather than named as either.
+    const provider = ts.createSourceFile(
+      '/flight/packages/types/src/Phrase.ts',
+      `export interface CollisionObb2D { readonly x: number; readonly y: number }
+       export type FirstUnion = (CollisionObb2D & { kind: 'obb' }) | { readonly kind: 'none' };
+       export type SecondUnion = (CollisionObb2D & { kind: 'obb' }) | { readonly kind: 'other' };`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/collision/src/ambiguous.ts',
+      `import type { FirstUnion } from '@flighthq/types';
+       export function read(shape: Extract<FirstUnion, { kind: 'obb' }>): number { return shape.x; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const plan: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: undefined as never,
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Phrase.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [types, collision] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: provider, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/collision', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      plan,
+    );
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: plan,
+      modules: [types!.module, collision!.module],
+      options: {
+        packageTargets: {
+          '@flighthq/collision': { includePrefix: 'flight/collision', namespace: 'flight::collision' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    })
+      .emitModule(collision!.module)
+      .map((file) => file.contents)
+      .join('\n');
+
+    // Implemented here, in this module's namespace, because no single declaration owns it.
+    // Implemented here, and this module's own type is spelled without a namespace because it is at home.
+    expect(emitted).toMatch(/read\(flight::Ref<x_y_kind_\w+> shape\)/u);
+    expect(emitted).not.toMatch(/read\(flight::Ref<flight::types::/u);
+  });
+
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
     // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
     // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the
@@ -11018,12 +11193,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
   });
 
   it('initializes an inherited base member by assignment rather than by designation', () => {
-    // The shape `@flighthq/collision` writes: a literal declared as `Extract<CollisionBuiltInShape2D, { kind: 'obb' }>`,
-    // whose alternative is `CollisionObb2D & { kind: 'obb' }`. A nominal-intersection implementation INHERITS an
-    // IMPORTED interface base and declares only what the base does not provide, so a designated initializer
-    // naming `x` names a member the struct does not have and g++ says so: "no non-static data member named
-    // 'x'". C++ will not let a base clause sit beside designated member clauses either — a list must be all
-    // designated or none — so the inherited members are assigned onto the constructed value instead.
+    // A nominal intersection written out where it stands, over an IMPORTED interface base. Its implementation
+    // INHERITS that base and declares only what the base does not provide, so a designated initializer naming
+    // `x` names a member the struct does not have and g++ says so: "no non-static data member named 'x'". C++
+    // will not let a base clause sit beside designated member clauses either — a list must be all designated
+    // or none — so the inherited members are assigned onto the constructed value instead.
+    //
+    // This is the control for that rule. A selection that denotes this same arm — `Extract<CollisionBuiltInShape2D,
+    // { kind: 'obb' }>` — no longer reaches this lane: it is named as the arm its union declares, so a literal of
+    // it initializes that flat record rather than a second nominal implementation. Kept distinct on purpose,
+    // because the two are different questions: what an imported base costs an implementation here, and which
+    // declaration a selection denotes.
     const plan: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -11056,8 +11236,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
           packageName: '@flighthq/collision',
           sourceFile: ts.createSourceFile(
             '/flight/packages/collision/src/raycastCollisionShape2D.ts',
-            `import type { CollisionBuiltInShape2D } from '@flighthq/types';
-             const probe: Extract<CollisionBuiltInShape2D, { kind: 'obb' }> = { kind: 'obb', x: 0, y: 0, halfW: 0, halfH: 0, rotation: 0 };
+            `import type { CollisionObb2D } from '@flighthq/types';
+             const probe: CollisionObb2D & { kind: 'obb' } = { kind: 'obb', x: 0, y: 0, halfW: 0, halfH: 0, rotation: 0 };
              export function get(): number { return probe.x; }`,
             ts.ScriptTarget.Latest,
             true,
