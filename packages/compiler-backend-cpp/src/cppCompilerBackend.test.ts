@@ -6733,6 +6733,66 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('[object]() -> decltype(auto) { return (object->custom_key); }');
   });
 
+  it('erases generic phantom symbol brands only from C++ storage and runtime bindings', () => {
+    const result = lower(
+      'generic-phantom-symbol.ts',
+      `declare const StateNodeTypeKey: unique symbol;
+       export interface Node { name: string }
+       export interface State<NodeType extends object = Node> {
+         readonly [StateNodeTypeKey]?: NodeType;
+         ready: boolean;
+       }
+       export type StateKey<NodeType extends object = Node> = keyof State<NodeType>;
+       export type StateWithoutSymbols<NodeType extends object = Node> = Omit<State<NodeType>, symbol>;`,
+    );
+    const state = result.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'State',
+    );
+    const phantom = state?.kind === 'interface' ? state.properties[0] : undefined;
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(phantom).toMatchObject({
+      computedKey: { binding: { name: 'StateNodeTypeKey' }, kind: 'binding', path: [] },
+      name: 'StateNodeTypeKey',
+      optional: true,
+      phantom: true,
+      readonly: true,
+      type: { kind: 'named', reference: { binding: { name: 'NodeType' } } },
+    });
+    expect(emitted).toContain('template <typename NodeType = flight::Ref<Node>>');
+    expect(emitted).toContain('struct State : public flight::ReferenceEnabled {\n  bool ready;\n};');
+    expect(emitted).toContain('using StateKey = std::variant<flight::String, flight::Symbol>;');
+    expect(emitted).toContain('using StateWithoutSymbols = flight::Ref<State<NodeType>>;');
+    expect(emitted).not.toContain('state_node_type_key');
+    expect(emitted).not.toContain('GeneratedSymbolBindings<flighthq_math::State');
+  });
+
+  it.each([
+    [
+      'a local symbol used as a runtime value',
+      `const StateKey: unique symbol = Symbol('State');
+       export interface State<Value extends object> { readonly [StateKey]?: Value }
+       export function getStateKey(): symbol { return StateKey; }`,
+    ],
+    [
+      'an external ambient symbol',
+      `export interface State<Value extends object> { readonly [Symbol.iterator]?: Value }`,
+    ],
+  ])('does not erase %s as a phantom generic brand', (_name, source) => {
+    const result = lower('generic-runtime-symbol.ts', source);
+    const state = result.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'State',
+    );
+    const property = state?.kind === 'interface' ? state.properties[0] : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(property?.phantom).toBeUndefined();
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
+      expect.objectContaining({ rule: 'cpp-generated-symbol-binding-generic-object' }),
+    );
+  });
+
   it.each([
     [
       'another registered description',
@@ -6779,12 +6839,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
-  it('refuses computed-symbol bindings without a runtime declaration', () => {
-    const result = lower(
-      'unreferencable-symbol-binding.ts',
-      `declare const RuntimeKey: unique symbol;
-       export interface State { [RuntimeKey]: number }`,
-    );
+  it('refuses non-phantom computed-symbol bindings without an emitted declaration', () => {
+    const result = lower('unreferencable-symbol-binding.ts', `export interface State { [Symbol.iterator]: number }`);
 
     expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
       expect.objectContaining({ rule: 'cpp-generated-symbol-binding-key-unreferencable' }),

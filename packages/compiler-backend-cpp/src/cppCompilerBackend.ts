@@ -1056,14 +1056,13 @@ function isCppDuplicateStructMemberCpp(seen: Set<string>, name: string): boolean
   return false;
 }
 
-// A `void`-typed property is a brand, not storage. `readonly [ButtonControllerTypeKey]?: void` gives
-// an interface a nominal identity; there is no value it can hold, and `std::optional<void>` is not a
-// type C++ can form. The member is therefore left out of the emitted struct — but only out of the
-// struct: the property stays in the declared shape, which is what key projections read, so `Omit`
-// over a brand key still removes it. Nothing in generated code can read a value from it, because
-// there is none to read.
-function isCppValuelessStructMemberCpp(type: Readonly<IrType>): boolean {
-  return type.kind === 'primitive' && type.name === 'void';
+// Some source properties are type evidence rather than runtime storage. A `void`-typed property has
+// no value C++ can store. A phantom computed property carries a local erased unique-symbol brand: its
+// payload can be non-void, but semantic lowering proved that the key is used only by type declarations,
+// so no runtime slot can observe that payload. Keep both properties in the neutral shape for `keyof`,
+// indexed projections, and `Omit`; omit them only where C++ would declare or access a native member.
+function isCppNonEmittingObjectPropertyCpp(property: Readonly<IrObjectTypeProperty>): boolean {
+  return property.phantom === true || (property.type.kind === 'primitive' && property.type.name === 'void');
 }
 
 const cppReferenceLikeWrapperNames = new Set([
@@ -1867,7 +1866,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   );
   const emittedMemberNames = new Set<string>();
   for (const property of declaration.properties) {
-    if (isCppValuelessStructMemberCpp(property.type)) continue;
+    if (isCppNonEmittingObjectPropertyCpp(property)) continue;
     const propType = emitCppObjectPropertyStorageCpp(
       property,
       emitOptionalTypeCpp(emitType(property.type, context), property.optional, context),
@@ -1885,7 +1884,7 @@ function emitCppGeneratedSymbolBindingsCpp(module: Readonly<IrModule>, context: 
   const plans = module.declarations.flatMap((declaration): CppGeneratedSymbolBindingPlan[] => {
     if (declaration.kind !== 'interface') return [];
     const computedProperties = declaration.properties.filter(
-      (property) => property.computedKey && !isCppValuelessStructMemberCpp(property.type),
+      (property) => property.computedKey && !isCppNonEmittingObjectPropertyCpp(property),
     );
     if (computedProperties.length === 0) return [];
     const declarationContext = {
@@ -1909,7 +1908,7 @@ function emitCppGeneratedSymbolBindingsCpp(module: Readonly<IrModule>, context: 
     const targetsByKey = new Map<string, string>();
     const members: CppGeneratedSymbolBindingMember[] = [];
     for (const property of declaration.properties) {
-      if (isCppValuelessStructMemberCpp(property.type)) continue;
+      if (isCppNonEmittingObjectPropertyCpp(property)) continue;
       const target = safeCppName(property.name);
       if (!property.computedKey) continue;
       if (runtimeOwnedProperties.has(property)) continue;
@@ -1961,7 +1960,7 @@ function assertCppGeneratedSymbolMemberTargetsUnambiguousCpp(
 ): void {
   const membersByTarget = new Map<string, string | undefined>();
   for (const property of declaration.properties) {
-    if (isCppValuelessStructMemberCpp(property.type)) continue;
+    if (isCppNonEmittingObjectPropertyCpp(property)) continue;
     const target = safeCppName(property.name);
     const keyIdentity = property.computedKey
       ? getCppGeneratedSymbolReferenceIdentityCpp(property.computedKey)
@@ -2230,7 +2229,7 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
     );
     const emittedMemberNames = new Set<string>();
     for (const property of objectProperties) {
-      if (isCppValuelessStructMemberCpp(property.type)) continue;
+      if (isCppNonEmittingObjectPropertyCpp(property)) continue;
       const propertyType = emitCppObjectPropertyStorageCpp(
         property,
         emitOptionalTypeCpp(emitType(property.type, context), property.optional, context),
@@ -3775,7 +3774,7 @@ function emitExpression(
         : undefined;
       if (
         referenceReceiver &&
-        referenceMembers?.some((property) => !isCppValuelessStructMemberCpp(property.type)) &&
+        referenceMembers?.some((property) => !isCppNonEmittingObjectPropertyCpp(property)) &&
         hasFlightReferenceRepresentationCpp(referenceReceiver, context)
       ) {
         emissionError(
@@ -7353,8 +7352,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       const typeParameters = context.anonymousStructTypeParameters.map(
         (parameter) => context.targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name),
       );
-      if (type.properties.some((property) => property.optional)) context.includes.add('optional');
-      const emittedProperties = type.properties.map((property) => ({
+      const storedProperties = type.properties.filter((property) => !isCppNonEmittingObjectPropertyCpp(property));
+      if (storedProperties.some((property) => property.optional)) context.includes.add('optional');
+      const emittedProperties = storedProperties.map((property) => ({
         name: safeCppName(property.name),
         ...emitCppObjectPropertyStorageCpp(
           property,
@@ -7830,7 +7830,9 @@ function emitCppNominalIntersectionImplementationTypeCpp(
   if (existing) return `${existing.name}${typeParameters.length > 0 ? `<${typeParameters.join(', ')}>` : ''}`;
 
   const inheritedNames = new Set(baseProperties.map((property) => property.name));
-  const remaining = properties.filter((property) => !inheritedNames.has(property.name));
+  const remaining = properties.filter(
+    (property) => !inheritedNames.has(property.name) && !isCppNonEmittingObjectPropertyCpp(property),
+  );
   if (remaining.some((property) => property.optional)) context.includes.add('optional');
   const emittedProperties = remaining.map((property) => ({
     name: safeCppName(property.name),
@@ -10162,7 +10164,7 @@ function emitCppClosedKeyElementTypeofCpp(
   if (!runtime || !properties || !hasFlightReferenceRepresentationCpp(runtime, context)) return undefined;
   const members = new Map<string, Readonly<IrObjectTypeProperty>>();
   for (const property of properties) {
-    if (isCppValuelessStructMemberCpp(property.type)) continue;
+    if (isCppNonEmittingObjectPropertyCpp(property)) continue;
     if (!members.has(property.name)) members.set(property.name, property);
   }
   const selections = keys.map((key) => ({ key, property: members.get(key) }));
@@ -10213,7 +10215,7 @@ function emitCppClosedKeyElementSelectionCpp(
   }
   const members = new Map<string, Readonly<IrObjectTypeProperty>>();
   for (const property of properties) {
-    if (isCppValuelessStructMemberCpp(property.type)) continue;
+    if (isCppNonEmittingObjectPropertyCpp(property)) continue;
     if (!members.has(property.name)) members.set(property.name, property);
   }
   const memberTypes: string[] = [];
