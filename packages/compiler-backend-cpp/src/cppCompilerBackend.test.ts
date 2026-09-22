@@ -6604,6 +6604,135 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('GeneratedSymbolBindings<flighthq_types::Node<');
   });
 
+  it('preserves the exact EntityRuntime declaration through Flight type-only imports and inheritance', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Entity',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Entity.ts',
+            `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+             export interface EntityRuntime { binding: object | null }
+             export const EntityRuntimeKey = Symbol.for('EntityRuntime');`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Node.ts',
+            `import type { Entity, EntityRuntime, EntityRuntimeKey } from './Entity';
+             export interface NodeTraits { enabled: boolean; name: string | null }
+             export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {
+               [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+             }
+             export interface NodeRuntime<Traits extends object = NodeTraits> extends EntityRuntime {
+               traits?: Traits;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const node = results[1]!.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Node',
+    );
+    const runtimeKey = node?.kind === 'interface' ? node.properties[0]?.computedKey : undefined;
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: {
+        packageTargets: {
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(results[1]!.module)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(runtimeKey).toMatchObject({
+      binding: {
+        name: 'EntityRuntimeKey',
+        packageName: '@flighthq/types',
+        source: 'packages/types/src/Entity.ts',
+        space: 'value',
+      },
+      kind: 'binding',
+      path: [],
+    });
+    expect(emitted).toContain('template <typename Traits = flight::Ref<NodeTraits>>');
+    expect(emitted).toContain('std::optional<flight::Ref<NodeRuntime<Traits>>> entity_runtime_key;');
+    expect(emitted).not.toContain('GeneratedSymbolBindings<flight::types::Node<');
+  });
+
+  it('generates an inherited custom symbol binding after preserving its declaration', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Base',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Base.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Base.ts',
+            `export const CustomKey = Symbol('Custom');
+             export interface Base { [CustomKey]?: object }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Derived.ts',
+            `import type { Base } from './Base';
+             export interface Derived extends Base { ready: boolean }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: {
+        packageTargets: {
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(results[1]!.module)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('struct GeneratedSymbolBindings<flight::types::Derived>');
+    expect(emitted).toContain('flight::types::custom_key,');
+    expect(emitted).toContain('[object]() -> decltype(auto) { return (object->custom_key); }');
+  });
+
   it.each([
     [
       'another registered description',

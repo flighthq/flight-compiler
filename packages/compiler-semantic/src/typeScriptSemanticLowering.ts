@@ -5016,6 +5016,47 @@ function lowerValueNameReference(node: ts.EntityName | ts.Expression, context: L
     : { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
 }
 
+// `import type` may name a unique-symbol value in a computed property signature: the import has no
+// expression-level value in this module, but the property key still means the exact declaration it
+// aliases. Preserve that declaration identity rather than turning the key into an ambient spelling.
+// This is deliberately confined to type-property keys; an ordinary expression cannot use a type-only
+// import as a value. The declaration's own source context makes its identity match the module which
+// emits it, so later heritage flattening can carry the proof through any number of descendants.
+function lowerTypeScriptTypePropertyValueNameReference(
+  node: ts.Expression,
+  context: LoweringContext,
+): IrValueNameReference {
+  const reference = lowerValueNameReference(node, context);
+  if (reference.kind === 'binding') return reference;
+  const parts = getTypeNameNodeParts(node);
+  if (!parts || parts.path.length > 0) return reference;
+  const symbol = context.checker.getSymbolAtLocation(parts.root);
+  const typeOnlyImport = symbol?.declarations?.some(
+    (declaration) =>
+      (ts.isImportClause(declaration) || ts.isImportSpecifier(declaration) || ts.isNamespaceImport(declaration)) &&
+      isTypeOnlyImportBindingDeclaration(declaration),
+  );
+  if (!symbol || !typeOnlyImport || !(symbol.flags & ts.SymbolFlags.Alias)) {
+    return reference;
+  }
+  const aliased = context.checker.getAliasedSymbol(symbol);
+  const declaration = aliased.declarations?.find(isValueBindingDeclaration);
+  if (!declaration) return reference;
+  const declarationSourceFile = declaration.getSourceFile();
+  const declarationOptions = context.analysisModuleOptions.get(declarationSourceFile.fileName);
+  if (!declarationOptions) return reference;
+  const declarationContext = {
+    ...context,
+    options: declarationOptions,
+    sourceFile: declarationSourceFile,
+  };
+  return {
+    binding: lowerBindingSymbol(aliased, bindingDeclarationName(declaration), declarationContext),
+    kind: 'binding',
+    path: [],
+  };
+}
+
 function getTypeScriptValueNamespaceMemberReference(
   node: ts.PropertyAccessExpression,
   context: LoweringContext,
@@ -5060,7 +5101,7 @@ function lowerTypeScriptTypePropertyKey(
   if (!ts.isComputedPropertyName(node)) return undefined;
   const flags = context.checker.getTypeAtLocation(node.expression).flags;
   if ((flags & ts.TypeFlags.ESSymbolLike) === 0) return undefined;
-  const computedKey = lowerValueNameReference(node.expression, context);
+  const computedKey = lowerTypeScriptTypePropertyValueNameReference(node.expression, context);
   const storageName =
     computedKey.kind === 'binding'
       ? [computedKey.binding.name, ...computedKey.path].join('_')
