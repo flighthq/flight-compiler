@@ -22,7 +22,7 @@ A dispatched run publishes, because that is what the dispatch means; a **manual*
 4. The static sweep (`npm run check`) and the isolated package tests (`npm run test:packages`) run.
 5. The compiler version is stamped to the dispatched Flight version (`npm run version:tool-compiler`, which validates the version as strict SemVer and rewrites the manifest's own version token exactly).
 6. The packed-consumer proofs (`npm run pack:check` and `npm run smoke`) run against the stamped tree.
-7. The root release publisher publishes the stamped artifact, with provenance.
+7. The root release publisher (`npm run release -- --tag latest`) publishes the stamped artifact, with provenance.
 
 The stamp is checkable on its own: the same command with `--check` validates that the manifest already carries the dispatched version, which is how a rehearsal can prove the stamp would be a no-op or a real change without writing anything.
 
@@ -32,7 +32,7 @@ The cold-tree sweep (`npm run ci`) is deliberately **not** in this pipeline. It 
 
 ## Idempotency
 
-A release is identified by the version it publishes, so a redelivered event is harmless: the root release publisher finds the version already on the public registry and stops successfully, having published nothing. The same rule recovers a run that failed partway — rerun it, and the work that already happened is recognized rather than repeated.
+A release is identified by the version it publishes, so a redelivered event is harmless: the root release publisher (`npm run release`) reads the published versions from the registry, finds the version it would release already there, and stops successfully having published nothing. The same rule recovers a run that failed partway — rerun it, and the work that already happened is recognized rather than repeated.
 
 npm's own refusal to republish a version is the second line of the same defence. Neither is load-bearing alone: the registry read is what makes the common case a clean no-op, and npm's refusal is what makes a race between two runs a failure rather than a silent second publication.
 
@@ -52,11 +52,11 @@ Both facts are required inputs, so a recovery run cannot be started with half th
 
 ## Dry-run rehearsal
 
-A rehearsal is the whole pipeline with the publish step skipped. It needs **no registry token at all**: the `NPM_TOKEN` secret appears only in the publishing step's environment, and that step cannot run in a rehearsal. So the rehearsal is also the way to exercise the bridge before the token exists, and the way to answer "what would this release do" without arming anything.
+A rehearsal is the whole pipeline with the publisher invoked in its rehearsal mode (`npm run release -- --dry-run --tag latest`), which reads the registry, reports what it would publish, and publishes nothing. It needs **no registry token at all**: the `NPM_TOKEN` secret appears only on the armed publish step, which a rehearsal does not reach. So the rehearsal is also the way to exercise the bridge before the token exists, and the way to answer "what would this release do" without arming anything.
 
 ## Provenance
 
-The root release publisher publishes with `--provenance`, and `id-token: write` is what lets the registry sign an attestation linking the published artifact to the workflow run and commit that produced it. The publishing job holds `contents: read` and `id-token: write` and nothing else, and the publisher is the only step that reaches the registry: a raw `npm publish` beside it would publish without the idempotency read, the ordering, or the attestation.
+Publishing is a contract of the root release publisher: it enables npm's provenance attestation, and `id-token: write` is what lets the registry sign it against the workflow run and commit that produced the artifact. The publishing job holds `contents: read` and `id-token: write` and nothing else, and the publisher is the only step that reaches the registry: a raw `npm publish` beside it would publish without the idempotency read, the ordering, or the attestation.
 
 Provenance needs a public repository. If visibility ever prevents it, `NPM_PROVENANCE=false` is the documented exception — and the release then carries no attestation, which is a real loss and belongs in the release notes rather than in a quiet environment variable.
 
