@@ -35,7 +35,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: release-global
+  group: release
   cancel-in-progress: false
 jobs:
   release:
@@ -56,12 +56,12 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm run test:packages
-      - run: npm run version:tool-compiler
+      - run: npm run version:tool-compiler -- "$FLIGHT_VERSION"
       - run: npm run pack:check
       - run: npm run smoke
       - name: Publish
         if: env.DRY_RUN != 'true'
-        run: npm publish --access public --provenance
+        run: npm run release
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
 `;
@@ -119,9 +119,9 @@ describe('collectReleaseBridgeIssues', () => {
     ],
     [
       'a per-ref concurrency group',
-      'group: release-global',
+      'group: release',
       'group: release-per-ref',
-      'concurrency group is release-per-ref rather than release-global',
+      'concurrency group is release-per-ref rather than release',
     ],
     [
       'a cancellable release',
@@ -143,21 +143,33 @@ describe('collectReleaseBridgeIssues', () => {
     ],
     [
       'a version that is never stamped',
-      '      - run: npm run version:tool-compiler\n',
+      '      - run: npm run version:tool-compiler -- "$FLIGHT_VERSION"\n',
       '',
       'nothing stamps the compiler version with `npm run version:tool-compiler`',
     ],
     [
       'a static sweep that runs after the stamp',
-      '      - run: npm run check\n      - run: npm run test:packages\n      - run: npm run version:tool-compiler\n',
-      '      - run: npm run test:packages\n      - run: npm run version:tool-compiler\n      - run: npm run check\n',
+      '      - run: npm run check\n      - run: npm run test:packages\n      - run: npm run version:tool-compiler -- "$FLIGHT_VERSION"\n',
+      '      - run: npm run test:packages\n      - run: npm run version:tool-compiler -- "$FLIGHT_VERSION"\n      - run: npm run check\n',
       '`npm run check` runs after the version is stamped',
     ],
     [
       'a packed-consumer proof that runs before the stamp',
-      '      - run: npm run version:tool-compiler\n      - run: npm run pack:check\n',
-      '      - run: npm run pack:check\n      - run: npm run version:tool-compiler\n',
+      '      - run: npm run version:tool-compiler -- "$FLIGHT_VERSION"\n      - run: npm run pack:check\n',
+      '      - run: npm run pack:check\n      - run: npm run version:tool-compiler -- "$FLIGHT_VERSION"\n',
       '`npm run pack:check` runs before the version is stamped',
+    ],
+    [
+      'a stamp that carries a version literal',
+      '      - run: npm run version:tool-compiler -- "$FLIGHT_VERSION"\n',
+      '      - run: npm run version:tool-compiler -- "1.2.3"\n',
+      'the stamp carries a version literal',
+    ],
+    [
+      'a stamp that reads no version at all',
+      '      - run: npm run version:tool-compiler -- "$FLIGHT_VERSION"\n',
+      '      - run: npm run version:tool-compiler\n',
+      'the stamp does not read its version from the environment',
     ],
     [
       'the cold-tree sweep a release pipeline must not enter',
@@ -166,15 +178,26 @@ describe('collectReleaseBridgeIssues', () => {
       'the release pipeline runs `npm run ci`',
     ],
     [
-      'a publish with no rehearsal condition',
+      'a publish that cannot be rehearsed',
       "        if: env.DRY_RUN != 'true'\n",
       '',
-      'publishing is not conditioned on the rehearsal input',
+      'nothing rehearses: the publisher is neither invoked with --dry-run nor conditional',
     ],
   ])('reports %s', (_description, replace, replacement, expected) => {
     expect(collectReleaseBridgeIssues(receiverName, mutated(replace, replacement))).toContain(
       `${receiverName}: ${expected}`,
     );
+  });
+
+  // The other rehearsal route: a publisher invoked in a rehearsal mode rather than a step conditioned on the
+  // input. Either proves a rehearsal needs no token, so the check accepts both.
+  it('accepts a publisher that rehearses through its own flag', () => {
+    const contents = mutated(
+      "        if: env.DRY_RUN != 'true'\n        run: npm run release\n",
+      '        run: npm run release -- --dry-run --tag latest\n',
+    );
+
+    expect(collectReleaseBridgeIssues(receiverName, contents)).toEqual([]);
   });
 
   it('reports a payload interpolated into a shell body', () => {
@@ -233,7 +256,7 @@ describe('collectReleaseWorkflowIssues', () => {
 
     expect(clash).not.toBe(contents);
     expect(collectReleaseWorkflowIssues(releaseFile, clash)).toContain(
-      `${releaseFile}: concurrency group is release-\${{ github.ref }} rather than release-global`,
+      `${releaseFile}: concurrency group is release-\${{ github.ref }} rather than release`,
     );
   });
 });

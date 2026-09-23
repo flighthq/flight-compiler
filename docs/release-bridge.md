@@ -20,9 +20,11 @@ A dispatched run publishes, because that is what the dispatch means; a **manual*
 2. Flight dispatches `flight-release` with `{version, commit}`.
 3. The bridge checks the two facts are well formed (a release version, a full revision).
 4. The static sweep (`npm run check`) and the isolated package tests (`npm run test:packages`) run.
-5. The compiler version is stamped to the dispatched Flight version.
+5. The compiler version is stamped to the dispatched Flight version (`npm run version:tool-compiler`, which validates the version as strict SemVer and rewrites the manifest's own version token exactly).
 6. The packed-consumer proofs (`npm run pack:check` and `npm run smoke`) run against the stamped tree.
-7. The release publisher publishes the stamped artifact, with provenance.
+7. The root release publisher publishes the stamped artifact, with provenance.
+
+The stamp is checkable on its own: the same command with `--check` validates that the manifest already carries the dispatched version, which is how a rehearsal can prove the stamp would be a no-op or a real change without writing anything.
 
 The version stamp is the hinge. Everything before it judges the source; everything after it judges the artifact that would actually reach the registry, packed and installed as a consumer would. A gate that ran after the stamp could only ever approve what it was already too late to change, and a proof that ran before it would be proving a different artifact.
 
@@ -54,7 +56,7 @@ A rehearsal is the whole pipeline with the publish step skipped. It needs **no r
 
 ## Provenance
 
-`npm publish --provenance` with `id-token: write` has the registry sign an attestation linking the published artifact to the workflow run and commit that produced it. The publishing job holds `contents: read` and `id-token: write` and nothing else.
+The root release publisher publishes with `--provenance`, and `id-token: write` is what lets the registry sign an attestation linking the published artifact to the workflow run and commit that produced it. The publishing job holds `contents: read` and `id-token: write` and nothing else, and the publisher is the only step that reaches the registry: a raw `npm publish` beside it would publish without the idempotency read, the ordering, or the attestation.
 
 Provenance needs a public repository. If visibility ever prevents it, `NPM_PROVENANCE=false` is the documented exception — and the release then carries no attestation, which is a real loss and belongs in the release notes rather than in a quiet environment variable.
 

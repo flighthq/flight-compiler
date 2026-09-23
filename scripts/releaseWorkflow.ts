@@ -51,8 +51,25 @@ export function collectWorkflowJobs(document: Readonly<Record<string, unknown>>)
   });
 }
 
+// The concurrency group a workflow publishes under, for the caller that compares two of them. Two workflows
+// that publish the same package may not hold different groups, and that equality -- not the spelling -- is the
+// invariant; the accepted names below are one transition apart.
+export function getReleaseConcurrencyGroup(name: string, contents: string): string | undefined {
+  const document = parseWorkflow(name, contents);
+  if (document === undefined) return undefined;
+  const group = asRecord(document.concurrency)?.group;
+  return typeof group === 'string' ? group : undefined;
+}
+
 export function getStepRun(step: Readonly<Record<string, unknown>>): string {
   return typeof step.run === 'string' ? step.run : '';
+}
+
+// Whether a step is the one that reaches the registry: the root release publisher, and nothing else. A raw
+// `npm publish` is not accepted, because the idempotent publisher owns the registry read, the ordering, and
+// the provenance attestation; a step that bypassed it would publish without them.
+export function isPublishStep(step: Readonly<Record<string, unknown>>): boolean {
+  return publishStepPattern.test(getStepRun(step));
 }
 
 export function getWorkflowSteps(
@@ -67,7 +84,7 @@ function collectConcurrencyIssues(issues: string[], name: string, document: Read
     issues.push(`${name}: the workflow declares no concurrency group`);
     return;
   }
-  if (concurrency.group !== releaseConcurrencyGroup) {
+  if (typeof concurrency.group !== 'string' || !releaseConcurrencyGroups.has(concurrency.group)) {
     issues.push(`${name}: concurrency group is ${String(concurrency.group)} rather than ${releaseConcurrencyGroup}`);
   }
   if (concurrency['cancel-in-progress'] !== false) {
@@ -102,9 +119,7 @@ function collectPermissionIssues(issues: string[], name: string, document: Reado
       if (value !== 'read') issues.push(`${name}: top-level ${scope} permission is ${String(value)}`);
     }
   }
-  const publishing = collectWorkflowJobs(document).filter((job) =>
-    job.steps.some((step) => getStepRun(step).includes('npm publish')),
-  );
+  const publishing = collectWorkflowJobs(document).filter((job) => job.steps.some((step) => isPublishStep(step)));
   if (publishing.length !== 1) {
     issues.push(`${name}: exactly one job publishes, found ${String(publishing.length)}`);
     return;
@@ -127,9 +142,7 @@ function collectPermissionIssues(issues: string[], name: string, document: Reado
 // because it is the point of no return for what is being released: everything before it judges the source,
 // everything after it judges the artifact that would reach the registry.
 function collectPublishOrderIssues(issues: string[], name: string, document: Readonly<Record<string, unknown>>): void {
-  const publishing = collectWorkflowJobs(document).filter((job) =>
-    job.steps.some((step) => getStepRun(step).includes(publishCommand)),
-  );
+  const publishing = collectWorkflowJobs(document).filter((job) => job.steps.some((step) => isPublishStep(step)));
   if (publishing.length !== 1) {
     issues.push(`${name}: exactly one job publishes, found ${String(publishing.length)}`);
     return;
@@ -142,7 +155,8 @@ function collectPublishOrderIssues(issues: string[], name: string, document: Rea
       if (run.includes(command) && !order.has(command)) order.set(command, index);
     }
   }
-  const publishIndex = steps.findIndex((step) => getStepRun(step).includes(publishCommand));
+  const publishIndex = steps.findIndex((step) => isPublishStep(step));
+  const stampStep = steps.find((step) => getStepRun(step).includes(stampCommand));
   const stampIndex = order.get(stampCommand);
   if (stampIndex === undefined) {
     issues.push(`${name}: nothing stamps the compiler version with \`${stampCommand}\``);
@@ -160,7 +174,18 @@ function collectPublishOrderIssues(issues: string[], name: string, document: Rea
     else if (stampIndex !== undefined && index < stampIndex) {
       issues.push(`${name}: \`${command}\` runs before the version is stamped`);
     } else if (index > publishIndex) {
-      issues.push(`${name}: \`${command}\` runs after \`${publishCommand}\``);
+      issues.push(`${name}: \`${command}\` runs after the publish step`);
+    }
+  }
+  const stampRun = stampStep === undefined ? undefined : getStepRun(stampStep);
+  if (stampRun !== undefined) {
+    // Policy: the compiler is stamped to the version Flight dispatched. A stamp that carries a literal, or
+    // that reads the checkout's own placeholder, publishes a version nobody released.
+    if (!/\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/u.test(stampRun)) {
+      issues.push(`${name}: the stamp does not read its version from the environment`);
+    }
+    if (/\b\d+\.\d+\.\d+\b/u.test(stampRun)) {
+      issues.push(`${name}: the stamp carries a version literal`);
     }
   }
   for (const step of steps) {
@@ -193,18 +218,24 @@ function collectTokenIssues(issues: string[], name: string, document: Readonly<R
   const steps = getWorkflowSteps(document);
   for (const [index, step] of steps.entries()) {
     if (typeof asRecord(step.env)?.NODE_AUTH_TOKEN !== 'string') continue;
-    if (!getStepRun(step).includes(publishCommand)) {
+    if (!isPublishStep(step)) {
       issues.push(`${name}: step ${String(index + 1)} carries the registry token without publishing`);
     }
   }
-  const publish = steps.find((step) => getStepRun(step).includes(publishCommand));
-  if (publish === undefined) {
+  const publishing = steps.filter((step) => isPublishStep(step));
+  if (publishing.length === 0) {
     issues.push(`${name}: no step publishes`);
     return;
   }
-  const condition = publish.if;
-  if (typeof condition !== 'string' || !/dry[_-]run/iu.test(condition)) {
-    issues.push(`${name}: publishing is not conditioned on the rehearsal input`);
+  // A rehearsal must be possible without the registry token. Either route proves it: the publisher is invoked
+  // in a rehearsal mode, or the step that would publish is conditioned on the rehearsal input. What is not
+  // acceptable is a publish step that runs unconditionally, because then the only way to rehearse is to not
+  // run the workflow at all.
+  const rehearses =
+    publishing.some((step) => /--dry[_-]run\b/u.test(getStepRun(step))) ||
+    publishing.some((step) => typeof step.if === 'string' && /dry[_-]run/iu.test(step.if));
+  if (!rehearses) {
+    issues.push(`${name}: nothing rehearses: the publisher is neither invoked with --dry-run nor conditional`);
   }
 }
 
@@ -261,10 +292,12 @@ function asRecords(value: unknown): readonly Readonly<Record<string, unknown>>[]
 
 // The one event type Flight dispatches, the two facts every run needs, and the rehearsal default. These
 // names are the sending contract: changing one here changes what Flight has to send.
-const releaseConcurrencyGroup = 'release-global';
+const releaseConcurrencyGroup = 'release';
+// The receiver and the manual release are being aligned on one name. Both are accepted while that lands, and
+// the runner additionally requires the two to agree, which is the property that matters either way.
+const releaseConcurrencyGroups = new Set([releaseConcurrencyGroup, 'release-global']);
 const releaseEventType = 'flight-release';
 const publicRegistry = 'https://registry.npmjs.org';
-const publishCommand = 'npm publish';
 const rehearsalInput = 'dry_run';
 const dispatchedFacts = ['FLIGHT_VERSION', 'FLIGHT_COMMIT'] as const;
 const recoveryInputs = ['flight_version', 'flight_commit'] as const;
@@ -276,3 +309,4 @@ const preStampCommands = ['npm run check', 'npm run test:packages'] as const;
 const stampCommand = 'npm run version:tool-compiler';
 const postStampCommands = ['npm run pack:check', 'npm run smoke'] as const;
 const forbiddenPipelineCommands = ['npm run ci'] as const;
+const publishStepPattern = /\bnpm run release(?:\s|$)/u;
