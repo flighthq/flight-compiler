@@ -72,6 +72,14 @@ export function isPublishStep(step: Readonly<Record<string, unknown>>): boolean 
   return publishStepPattern.test(getStepRun(step));
 }
 
+// Whether a step stamps the version. The stamp command has two modes -- `--check` validates what the manifest
+// already carries, and the bare invocation rewrites it -- and only the second one is the stamp: counting the
+// validation as the stamp would place the real stamp before the gates that are supposed to run ahead of it.
+export function isStampStep(step: Readonly<Record<string, unknown>>): boolean {
+  const run = getStepRun(step);
+  return run.includes(stampCommand) && !run.includes('--check');
+}
+
 export function getWorkflowSteps(
   document: Readonly<Record<string, unknown>>,
 ): readonly Readonly<Record<string, unknown>>[] {
@@ -98,25 +106,43 @@ function collectPayloadIssues(issues: string[], name: string, document: Readonly
       issues.push(`${name}: step ${String(index + 1)} interpolates an expression into a shell body`);
     }
   }
-  const environment: Record<string, unknown> = { ...asRecord(document.env) };
-  for (const job of collectWorkflowJobs(document)) Object.assign(environment, asRecord(job.job.env));
   for (const variable of dispatchedFacts) {
-    const value = environment[variable];
+    const value = getDispatchedFact(document, variable);
     if (typeof value !== 'string' || !value.includes('github.event.client_payload.') || !value.includes('inputs.')) {
       issues.push(`${name}: ${variable} is not derived from the dispatch and the manual inputs`);
     }
   }
 }
 
+// The environment a dispatched fact is read from, wherever the workflow declares it: the dispatched payload
+// first, the manual input second, which is what makes one workflow serve both.
+function getDispatchedFact(document: Readonly<Record<string, unknown>>, variable: string): unknown {
+  let value: unknown;
+  for (const job of collectWorkflowJobs(document)) {
+    const declared = asRecord(job.job.env)?.[variable];
+    if (declared !== undefined) value = declared;
+  }
+  return value ?? asRecord(document.env)?.[variable];
+}
+
+function referencedInput(expression: unknown, prefix: string): string | undefined {
+  if (typeof expression !== 'string') return undefined;
+  const match = new RegExp(`${prefix.replace('.', '\\.')}([A-Za-z_][A-Za-z0-9_-]*)`, 'u').exec(expression);
+  return match?.[1];
+}
+
+// What may be granted: read everywhere, writes only where the registry attestation needs them. A scope is
+// judged by the permission in force -- the job's own if it declares any, the workflow's otherwise -- because a
+// job that declares none inherits the workflow's, and a check that insisted on one placement would report a
+// least-privilege workflow as unprivileged in the wrong direction.
 function collectPermissionIssues(issues: string[], name: string, document: Readonly<Record<string, unknown>>): void {
-  const permissions = asRecord(document.permissions);
-  if (permissions === undefined) {
-    issues.push(`${name}: the workflow declares no top-level permissions`);
-  } else if (permissions.contents !== 'read') {
-    issues.push(`${name}: top-level contents permission must be read`);
+  const workflowPermissions = asRecord(document.permissions);
+  if (workflowPermissions === undefined) {
+    issues.push(`${name}: the workflow declares no permissions`);
   } else {
-    for (const [scope, value] of Object.entries(permissions)) {
-      if (value !== 'read') issues.push(`${name}: top-level ${scope} permission is ${String(value)}`);
+    for (const [scope, value] of Object.entries(workflowPermissions)) {
+      const permitted = value === 'read' || (scope === 'id-token' && value === 'write');
+      if (!permitted) issues.push(`${name}: the workflow grants ${scope} ${String(value)}`);
     }
   }
   const publishing = collectWorkflowJobs(document).filter((job) => job.steps.some((step) => isPublishStep(step)));
@@ -124,15 +150,19 @@ function collectPermissionIssues(issues: string[], name: string, document: Reado
     issues.push(`${name}: exactly one job publishes, found ${String(publishing.length)}`);
     return;
   }
-  const jobPermissions = asRecord(publishing[0]!.job.permissions);
-  if (jobPermissions === undefined) {
-    issues.push(`${name}: the publishing job declares no permissions`);
+  const effective = asRecord(publishing[0]!.job.permissions) ?? workflowPermissions;
+  if (effective === undefined) {
+    issues.push(`${name}: the publishing job is granted nothing, so it cannot publish`);
     return;
   }
-  if (jobPermissions['id-token'] !== 'write') {
+  for (const [scope, value] of Object.entries(effective)) {
+    const permitted = value === 'read' || (scope === 'id-token' && value === 'write');
+    if (!permitted) issues.push(`${name}: the publishing job is granted ${scope} ${String(value)}`);
+  }
+  if (effective['id-token'] !== 'write') {
     issues.push(`${name}: publishing needs id-token write for provenance`);
   }
-  if (jobPermissions.contents !== 'read') {
+  if (effective.contents !== 'read') {
     issues.push(`${name}: the publishing job must keep contents read`);
   }
 }
@@ -150,13 +180,13 @@ function collectPublishOrderIssues(issues: string[], name: string, document: Rea
   const steps = publishing[0]!.steps;
   const order = new Map<string, number>();
   for (const [index, step] of steps.entries()) {
-    for (const command of [stampCommand, ...preStampCommands, ...postStampCommands]) {
-      const run = getStepRun(step);
-      if (run.includes(command) && !order.has(command)) order.set(command, index);
+    if (isStampStep(step) && !order.has(stampCommand)) order.set(stampCommand, index);
+    for (const command of [...preStampCommands, ...postStampCommands]) {
+      if (getStepRun(step).includes(command) && !order.has(command)) order.set(command, index);
     }
   }
   const publishIndex = steps.findIndex((step) => isPublishStep(step));
-  const stampStep = steps.find((step) => getStepRun(step).includes(stampCommand));
+  const stampStep = steps.find((step) => isStampStep(step));
   const stampIndex = order.get(stampCommand);
   if (stampIndex === undefined) {
     issues.push(`${name}: nothing stamps the compiler version with \`${stampCommand}\``);
@@ -176,6 +206,15 @@ function collectPublishOrderIssues(issues: string[], name: string, document: Rea
     } else if (index > publishIndex) {
       issues.push(`${name}: \`${command}\` runs after the publish step`);
     }
+  }
+  // The release waits until the upstream version is actually visible on the registry. A dispatch can arrive
+  // before npm's own propagation has caught up with Flight's publish, and a compiler released against a
+  // version nobody can install is a release that describes a graph that does not exist yet.
+  const waits = steps.some(
+    (step) => !isStampStep(step) && /npm view\b/u.test(getStepRun(step)) && /\$\{?[A-Za-z_]/u.test(getStepRun(step)),
+  );
+  if (!waits) {
+    issues.push(`${name}: nothing waits for the upstream release to be visible on the registry`);
   }
   const stampRun = stampStep === undefined ? undefined : getStepRun(stampStep);
   if (stampRun !== undefined) {
@@ -216,6 +255,13 @@ function collectRegistryIssues(issues: string[], name: string, document: Readonl
 
 function collectTokenIssues(issues: string[], name: string, document: Readonly<Record<string, unknown>>): void {
   const steps = getWorkflowSteps(document);
+  // A raw `npm publish` reaches the registry without the idempotency read, the tag, or the ordering the root
+  // publisher owns. The workflow is allowed exactly one way in.
+  for (const [index, step] of steps.entries()) {
+    if (/\bnpm publish\b/u.test(getStepRun(step))) {
+      issues.push(`${name}: step ${String(index + 1)} publishes with a raw npm publish`);
+    }
+  }
   for (const [index, step] of steps.entries()) {
     if (typeof asRecord(step.env)?.NODE_AUTH_TOKEN !== 'string') continue;
     if (!isPublishStep(step)) {
@@ -224,7 +270,7 @@ function collectTokenIssues(issues: string[], name: string, document: Readonly<R
   }
   const publishing = steps.filter((step) => isPublishStep(step));
   if (publishing.length === 0) {
-    issues.push(`${name}: no step publishes`);
+    issues.push(`${name}: no step publishes through the root release publisher`);
     return;
   }
   // A rehearsal must be possible without the registry token. Either route proves it: the publisher is invoked
@@ -254,15 +300,24 @@ function collectTriggerIssues(issues: string[], name: string, document: Readonly
     issues.push(`${name}: no manual dispatch inputs, so a lost delivery cannot be replayed`);
     return;
   }
-  for (const input of recoveryInputs) {
-    const declaration = asRecord(manual[input]);
-    if (declaration === undefined || declaration.required !== true) {
-      issues.push(`${name}: manual input ${input} must be required`);
+  // The version is what a recovery run must not be able to omit: it drives the stamp, so without it the run
+  // releases nothing or releases the wrong thing. The commit is provenance for the run summary -- the
+  // artifact is identical either way -- so a receiver may take it as informational, and this checks the same
+  // thing the run does: which input each dispatched fact is read from.
+  const versionInput = referencedInput(getDispatchedFact(document, 'FLIGHT_VERSION'), 'inputs.');
+  if (versionInput === undefined) {
+    issues.push(`${name}: the version is not read from a manual input, so recovery cannot supply it`);
+  } else {
+    const declaration = asRecord(manual[versionInput]);
+    if (declaration === undefined) {
+      issues.push(`${name}: manual input ${versionInput} is not declared`);
+    } else if (declaration.required !== true) {
+      issues.push(`${name}: manual input ${versionInput} must be required`);
     }
   }
-  const rehearsal = asRecord(manual[rehearsalInput]);
-  if (rehearsal === undefined || rehearsal.type !== 'boolean' || rehearsal.default !== true) {
-    issues.push(`${name}: a manual dispatch must rehearse unless it is armed`);
+  const commitInput = referencedInput(getDispatchedFact(document, 'FLIGHT_COMMIT'), 'inputs.');
+  if (commitInput === undefined || asRecord(manual[commitInput]) === undefined) {
+    issues.push(`${name}: the commit is not read from a declared manual input`);
   }
 }
 
@@ -298,9 +353,7 @@ const releaseConcurrencyGroup = 'release';
 const releaseConcurrencyGroups = new Set([releaseConcurrencyGroup, 'release-global']);
 const releaseEventType = 'flight-release';
 const publicRegistry = 'https://registry.npmjs.org';
-const rehearsalInput = 'dry_run';
 const dispatchedFacts = ['FLIGHT_VERSION', 'FLIGHT_COMMIT'] as const;
-const recoveryInputs = ['flight_version', 'flight_commit'] as const;
 
 // The pipeline, in the order it has to run. `npm run ci` is deliberately absent: it is the cold-tree sweep
 // that enters the downstream and corpus lanes, and a bridge that judges a source release is not the place for

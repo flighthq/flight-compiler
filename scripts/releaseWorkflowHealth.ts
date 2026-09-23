@@ -62,6 +62,6 @@ if (errors.length > 0) {
 }
 
 process.stdout.write(
-  `Release workflow health passed for ${String(checked)} workflow(s) ` +
-    `(${String(receivers)} receiver(s); ${receiverFile} is pending until it exists).\n`,
+  `Release workflow health passed for ${String(checked)} workflow(s) and ${String(receivers)} receiver(s).\n` +
+    (receivers === 0 ? `${receiverFile} is not there, so nothing received a dispatch.\n` : ''),
 );
