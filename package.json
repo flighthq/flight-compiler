@@ -47,6 +47,7 @@
     "readiness": "npm run _scripts:build --silent && node ./.script-build/readinessReport.js",
     "readiness:corpus": "npm run _scripts:build --silent && node ./.script-build/corpusReadinessReport.js",
     "readiness:issues": "npm run _scripts:build --silent && node ./.script-build/corpusIssueCensus.js",
+    "release": "npm run _scripts:build --silent && node ./.script-build/toolCompilerPublish.js",
     "rehydrate": "npm run _scripts:build --silent && node ./.script-build/dependencyRehydrate.js",
     "rehydrate:check": "npm run _scripts:build --silent && node ./.script-build/dependencyRehydrate.js --check",
     "rehydrate:update": "npm run _scripts:build --silent && node ./.script-build/dependencyRehydrate.js --update",
