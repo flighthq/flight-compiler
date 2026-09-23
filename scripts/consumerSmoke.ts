@@ -49,15 +49,33 @@ try {
   process.stdout.write(smoke.stdout);
 
   // The packed BIN, not only the published API: a consumer has to be able to run a check from the
-  // installed tarball with no network and no repository around it. The tiny workspace is two modules
-  // that compile, so the run is admitted -- and the assertion that matters is that check mode left the
-  // workspace exactly as it found it, because the check capability record has no output directory.
+  // installed tarball with no network and no repository around it. The workspace is the shape the
+  // compiler reads everywhere else -- a package with the root export lane its manifest declares -- so
+  // this proves the packed reader, planner, and report agree with the source tree rather than with a
+  // fixture that only the smoke knows how to make. The module compiles, so the run is admitted; the
+  // assertion that matters is that check mode left the workspace exactly as it found it, because the
+  // check capability record has no output directory.
   const workspace = path.join(consumer, 'workspace');
-  mkdirSync(workspace, { recursive: true });
+  const shapes = path.join(workspace, 'packages', 'shapes');
+  mkdirSync(path.join(shapes, 'src'), { recursive: true });
   writeFileSync(
-    path.join(workspace, 'shapes.ts'),
+    path.join(shapes, 'package.json'),
+    `${JSON.stringify(
+      {
+        name: '@flighthq/shapes',
+        version: '0.0.0',
+        exports: { '.': { types: './dist/index.d.ts', default: './dist/index.js' } },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    path.join(shapes, 'src', 'area.ts'),
     'export function area(width: number, height: number): number { return width * height; }\n',
   );
+  writeFileSync(path.join(shapes, 'src', 'index.ts'), "export * from './area.js';\n");
+  const before = readdirSync(workspace, { recursive: true }).map(String).sort();
   const flightCompile = path.join(
     consumer,
     'node_modules',
@@ -70,7 +88,7 @@ try {
     process.stderr.write(check.stderr ?? '');
     fail(`the installed bin did not check a local workspace (exit ${String(check.status)})`);
   }
-  if (readdirSync(workspace).map(String).sort().join(',') !== 'shapes.ts') {
+  if (readdirSync(workspace, { recursive: true }).map(String).sort().join(',') !== before.join(',')) {
     fail('check mode wrote beside the workspace it checked');
   }
   process.stdout.write(check.stdout ?? '');
