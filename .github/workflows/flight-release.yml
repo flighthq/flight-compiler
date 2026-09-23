@@ -1,0 +1,105 @@
+name: Flight release
+
+on:
+  repository_dispatch:
+    types: [flight-release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Flight release version to bridge
+        required: true
+        type: string
+      commit:
+        description: Informational Flight release commit for recovery runs
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Verify and publish Flight compiler release
+    runs-on: ubuntu-latest
+    env:
+      FLIGHT_VERSION: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.version || inputs.version }}
+      FLIGHT_COMMIT: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.commit || inputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+
+      - name: Validate the requested version
+        run: npm run version:tool-compiler -- --check "$FLIGHT_VERSION"
+
+      - name: Wait for the authoritative Flight release
+        shell: bash
+        run: |
+          maximum_attempts=20
+          for ((attempt = 1; attempt <= maximum_attempts; attempt += 1)); do
+            published_version="$(npm view "@flighthq/sdk@${FLIGHT_VERSION}" version 2>/dev/null || true)"
+            if [ "$published_version" = "$FLIGHT_VERSION" ]; then
+              echo "Found @flighthq/sdk@${FLIGHT_VERSION} on attempt ${attempt}."
+              exit 0
+            fi
+            if [ "$attempt" -eq "$maximum_attempts" ]; then
+              echo "@flighthq/sdk@${FLIGHT_VERSION} was not visible after ${maximum_attempts} attempts." >&2
+              exit 1
+            fi
+            echo "Waiting for @flighthq/sdk@${FLIGHT_VERSION} (attempt ${attempt}/${maximum_attempts})."
+            sleep 15
+          done
+
+      - name: Check the compiler repository
+        run: npm run check
+      - name: Test packages in isolation
+        run: npm run test:packages
+
+      - name: Stamp the compiler version
+        run: npm run version:tool-compiler -- "$FLIGHT_VERSION"
+      - name: Check the stamped package artifact
+        run: npm run pack:check
+      - name: Smoke-test the stamped package artifact
+        run: npm run smoke
+
+      - name: Record and run the release
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: ${{ vars.NPM_PROVENANCE != 'false' }}
+        shell: bash
+        run: |
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            release_intent=publish
+          else
+            release_intent=dry-run
+          fi
+
+          released_commit="${FLIGHT_COMMIT:-not supplied}"
+          released_commit="${released_commit//$'\r'/ }"
+          released_commit="${released_commit//$'\n'/ }"
+          compiler_commit="$(git rev-parse HEAD)"
+          {
+            echo '## Flight release bridge'
+            echo
+            printf -- '- Flight version: `%s`\n' "$FLIGHT_VERSION"
+            printf -- '- Flight commit: `%s`\n' "$released_commit"
+            printf -- '- Compiler commit: `%s`\n' "$compiler_commit"
+            printf -- '- Intent: `%s`\n' "$release_intent"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$release_intent" = dry-run ]; then
+            npm run release -- --dry-run --tag latest
+          else
+            npm run release -- --tag latest
+          fi
