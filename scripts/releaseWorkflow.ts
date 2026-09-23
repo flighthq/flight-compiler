@@ -122,6 +122,10 @@ function collectPermissionIssues(issues: string[], name: string, document: Reado
   }
 }
 
+// The pipeline order, as the contract states it: the static sweep and the isolated package tests before the
+// version is stamped, the packed-consumer proofs after it, and the publish last. The stamp sits between them
+// because it is the point of no return for what is being released: everything before it judges the source,
+// everything after it judges the artifact that would reach the registry.
 function collectPublishOrderIssues(issues: string[], name: string, document: Readonly<Record<string, unknown>>): void {
   const publishing = collectWorkflowJobs(document).filter((job) =>
     job.steps.some((step) => getStepRun(step).includes(publishCommand)),
@@ -131,11 +135,41 @@ function collectPublishOrderIssues(issues: string[], name: string, document: Rea
     return;
   }
   const steps = publishing[0]!.steps;
+  const order = new Map<string, number>();
+  for (const [index, step] of steps.entries()) {
+    for (const command of [stampCommand, ...preStampCommands, ...postStampCommands]) {
+      const run = getStepRun(step);
+      if (run.includes(command) && !order.has(command)) order.set(command, index);
+    }
+  }
   const publishIndex = steps.findIndex((step) => getStepRun(step).includes(publishCommand));
-  for (const gate of releaseGateCommands) {
-    const gateIndex = steps.findIndex((step) => getStepRun(step).includes(gate));
-    if (gateIndex === -1) issues.push(`${name}: the publishing job never runs \`${gate}\``);
-    else if (gateIndex > publishIndex) issues.push(`${name}: \`${gate}\` runs after \`${publishCommand}\``);
+  const stampIndex = order.get(stampCommand);
+  if (stampIndex === undefined) {
+    issues.push(`${name}: nothing stamps the compiler version with \`${stampCommand}\``);
+  }
+  for (const command of preStampCommands) {
+    const index = order.get(command);
+    if (index === undefined) issues.push(`${name}: the publishing job never runs \`${command}\``);
+    else if (stampIndex !== undefined && index > stampIndex) {
+      issues.push(`${name}: \`${command}\` runs after the version is stamped`);
+    }
+  }
+  for (const command of postStampCommands) {
+    const index = order.get(command);
+    if (index === undefined) issues.push(`${name}: the publishing job never runs \`${command}\``);
+    else if (stampIndex !== undefined && index < stampIndex) {
+      issues.push(`${name}: \`${command}\` runs before the version is stamped`);
+    } else if (index > publishIndex) {
+      issues.push(`${name}: \`${command}\` runs after \`${publishCommand}\``);
+    }
+  }
+  for (const step of steps) {
+    const run = getStepRun(step);
+    for (const forbidden of forbiddenPipelineCommands) {
+      if (run.includes(forbidden)) {
+        issues.push(`${name}: the release pipeline runs \`${forbidden}\``);
+      }
+    }
   }
 }
 
@@ -234,4 +268,11 @@ const publishCommand = 'npm publish';
 const rehearsalInput = 'dry_run';
 const dispatchedFacts = ['FLIGHT_VERSION', 'FLIGHT_COMMIT'] as const;
 const recoveryInputs = ['flight_version', 'flight_commit'] as const;
-const releaseGateCommands = ['npm run ci', 'npm run smoke'] as const;
+
+// The pipeline, in the order it has to run. `npm run ci` is deliberately absent: it is the cold-tree sweep
+// that enters the downstream and corpus lanes, and a bridge that judges a source release is not the place for
+// a lane whose cost is minutes and whose goldens are maintained elsewhere.
+const preStampCommands = ['npm run check', 'npm run test:packages'] as const;
+const stampCommand = 'npm run version:tool-compiler';
+const postStampCommands = ['npm run pack:check', 'npm run smoke'] as const;
+const forbiddenPipelineCommands = ['npm run ci'] as const;
