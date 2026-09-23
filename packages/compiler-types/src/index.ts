@@ -30,6 +30,7 @@ export type * from './compilerDependentCallablePackContract.js';
 export type * from './compilerDiagnosticContract.js';
 export type * from './compilerExecutableIntermediateRepresentation.js';
 export type * from './compilerEmittedSourceSyntaxContract.js';
+export type * from './compilerFlightWorkspaceContract.js';
 export type * from './compilerHaxeTaskEmissionContract.js';
 export type * from './compilerHaxeTaskLoweringContract.js';
 export type * from './compilerHostEndpointContract.js';

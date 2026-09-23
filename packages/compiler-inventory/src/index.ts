@@ -8,7 +8,12 @@ export { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
 export { analyzeFlightPackageImports } from './flightPackageImport.js';
 export { readFlightPackageManifests } from './flightPackageManifest.js';
 export { analyzeFlightWorkspace } from './flightWorkspaceInventory.js';
+export {
+  createFlightWorkspaceCompilationInput,
+  isFlightWorkspaceCompilationFailure,
+} from './flightWorkspaceCompilationInput.js';
 export { readGitCommit } from './gitCheckoutRevision.js';
+export { createMemoryWorkspaceSource } from './memoryWorkspaceSource.js';
 export { createTypeScriptProject } from './typeScriptProject.js';
 export { analyzeTypeScriptHostEndpoints } from './typeScriptHostEndpointInventory.js';
 export {
