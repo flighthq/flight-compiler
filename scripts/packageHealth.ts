@@ -151,6 +151,10 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
     dependencies: [],
     description: 'Host-independent canonical forms for deterministic compiler data',
   },
+  'compiler-check': {
+    dependencies: ['compiler-canonical-form', 'compiler-types'],
+    description: 'Pure compiler check reporting, baselines, and policy evaluation',
+  },
   'compiler-orchestration': {
     dependencies: [
       'compiler-canonical-form',

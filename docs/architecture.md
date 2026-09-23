@@ -18,6 +18,7 @@ Compiler domains are private workspaces with intentionally flat source trees:
 
 ```text
 compiler-canonical-form + compiler-types
+  <- compiler-check
   <- compiler-provenance
   <- compiler-emission
   <- compiler-runtime-contract

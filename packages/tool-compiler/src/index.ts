@@ -12,6 +12,7 @@ export * from '../../compiler-lowering/src/index.js';
 export * from '../../compiler-module/src/index.js';
 export * from '../../compiler-ambient/src/index.js';
 export * from '../../compiler-canonical-form/src/index.js';
+export * from '../../compiler-check/src/index.js';
 export * from '../../compiler-orchestration/src/index.js';
 export * from '../../compiler-patch/src/index.js';
 export * from '../../compiler-provenance/src/index.js';

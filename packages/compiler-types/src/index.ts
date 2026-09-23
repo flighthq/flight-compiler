@@ -46,6 +46,7 @@ export type * from './compilerOperatorIntermediateRepresentation.js';
 export type * from './compilerOperatorSemanticIntermediateRepresentation.js';
 export type * from './compilerOrchestrationContract.js';
 export type * from './compilerPackageCompilationContract.js';
+export type * from './compilerPackageCheckContract.js';
 export type * from './compilerRuntimeContract.js';
 export type * from './compilerRuntimeTaskCapabilityContract.js';
 export type * from './compilerRustOwnershipContract.js';
