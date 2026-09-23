@@ -110,15 +110,15 @@ to the published surface, so review it as one.
 | `CompilerClosureValueUseKind` | type |
 | `CompilerCommandLineCapabilities` | type |
 | `CompilerCommandLineCheckCapabilities` | type |
-| `CompilerCommandLineCheckFinding` | type |
 | `CompilerCommandLineCheckFormat` | type |
+| `CompilerCommandLineCheckOutcome` | type |
+| `CompilerCommandLineCheckRefusal` | type |
 | `CompilerCommandLineCheckRequest` | type |
 | `CompilerCommandLineCheckResult` | type |
 | `CompilerCommandLineRefusal` | type |
 | `CompilerCommandLineRequest` | type |
 | `CompilerCommandLineResult` | type |
 | `CompilerCommandLineSource` | type |
-| `CompilerCommandLineWorkspacePackage` | type |
 | `CompilerCompletion` | type |
 | `CompilerCompletionFailure` | type |
 | `CompilerCompletionFailureCode` | type |
