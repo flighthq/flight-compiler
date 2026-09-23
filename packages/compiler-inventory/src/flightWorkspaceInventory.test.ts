@@ -70,6 +70,7 @@ describe('analyzeFlightWorkspace', () => {
       const createValueExport = root.exports.find((item) => item.name === 'createValue');
       expect(createValueExport).toMatchObject({ kind: 'function', runtime: true });
       expect(createValueExport?.runtimeBinding).toBeUndefined();
+      expect(types.environment).toBe('web');
       expect(types.sdkExposures).toEqual([{ sdkLane: '@flighthq/sdk', target: '@flighthq/types' }]);
       expect(types.sdkIncluded).toBe(true);
       expectInventoryFailure(
@@ -903,6 +904,7 @@ function createUpstreamFixture(): string {
         '.': { default: './dist/index.js', types: './dist/index.d.ts' },
         './contract': { default: './dist/contract.js', types: './dist/contract.d.ts' },
       },
+      flight: { environment: 'web' },
       name: '@flighthq/types',
       version: '0.0.0',
     }),

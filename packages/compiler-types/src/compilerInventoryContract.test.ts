@@ -1,4 +1,10 @@
-import type { PackageExportLane, PackageInventory, UpstreamInventory } from './compilerInventoryContract.js';
+import type {
+  FlightPackageEligibilityOptions,
+  FlightPackageEligibilityPlan,
+  PackageExportLane,
+  PackageInventory,
+  UpstreamInventory,
+} from './compilerInventoryContract.js';
 
 describe('compiler inventory contracts', () => {
   it('compose package lanes, conflicts, runtime identity, and summary data without hidden behavior', () => {
@@ -22,6 +28,7 @@ describe('compiler inventory contracts', () => {
       bins: [{ name: 'math', target: './dist/cli.js' }],
       dependencies: [],
       directory: 'packages/math',
+      environment: 'web',
       exclusion: null,
       exportLanes: [lane],
       hostFacts: { dependencies: [], imports: [] },
@@ -51,8 +58,19 @@ describe('compiler inventory contracts', () => {
       },
       upstreamCommit: '0'.repeat(40),
     };
+    const eligibilityOptions: FlightPackageEligibilityOptions = {
+      environment: packageInventory.environment,
+      packages: inventory.packages,
+      selectedPackageNames: [packageInventory.name],
+    };
+    const eligibilityPlan: FlightPackageEligibilityPlan = {
+      eligiblePackageNames: eligibilityOptions.selectedPackageNames,
+      environment: eligibilityOptions.environment ?? null,
+      schema: 'flight-compiler-package-eligibility/1',
+    };
 
     expect(inventory.packages[0]?.exportLanes[0]).toBe(lane);
     expect(inventory.summary).toMatchObject({ exportConflicts: 1, exports: 1 });
+    expect(eligibilityPlan.environment).toBe('web');
   });
 });

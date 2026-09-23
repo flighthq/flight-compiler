@@ -130,6 +130,7 @@ export function analyzeFlightWorkspace(options: Readonly<AnalyzeFlightWorkspaceO
       bins: packageManifest.bins,
       dependencies: packageManifest.dependencies,
       directory: relativeSource(descriptor.directory, upstreamDirectory),
+      ...(packageManifest.environment === undefined ? {} : { environment: packageManifest.environment }),
       exclusion: null,
       exportLanes,
       hostFacts: analyzeFlightPackageHostFacts(packageManifest, imports),

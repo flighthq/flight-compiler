@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type {
+  FlightPackageEnvironment,
   FlightPackageManifest,
   PackageBinEntry,
   ReadFlightPackageManifestsOptions,
@@ -76,6 +77,7 @@ function readFlightPackageManifest(
     bins: readPackageBins(parsed.bin, subject),
     dependencies: readPackageDependencies(parsed, subject),
     directory: relativeUpstreamPath(path.dirname(manifestPath), upstreamDirectory),
+    ...readFlightPackageEnvironment(parsed.flight, subject),
     name,
     version,
   };
@@ -122,6 +124,20 @@ function readPackageDependencies(packageJson: Readonly<Record<string, unknown>>,
   return [...names].sort(compareTextCodeUnits);
 }
 
+function readFlightPackageEnvironment(
+  value: unknown,
+  subject: string,
+): Readonly<{ environment?: FlightPackageEnvironment | undefined }> {
+  if (value === undefined) return {};
+  if (!isRecord(value)) invalidManifest(subject, 'flight must be an object');
+  const environment = value.environment;
+  if (environment === undefined) return {};
+  if (typeof environment !== 'string' || !flightPackageEnvironments.has(environment as FlightPackageEnvironment)) {
+    invalidManifest(subject, 'flight.environment must be capacitor, electron, node, tauri, or web');
+  }
+  return { environment: environment as FlightPackageEnvironment };
+}
+
 function readRequiredString(packageJson: Readonly<Record<string, unknown>>, key: string, subject: string): string {
   const value = packageJson[key];
   return typeof value === 'string' && value.length > 0
@@ -140,3 +156,5 @@ function relativeUpstreamPath(target: string, upstreamDirectory: string): string
   }
   return normalizePathPortable(relative);
 }
+
+const flightPackageEnvironments = new Set<FlightPackageEnvironment>(['capacitor', 'electron', 'node', 'tauri', 'web']);

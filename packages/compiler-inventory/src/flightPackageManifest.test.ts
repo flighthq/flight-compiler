@@ -69,6 +69,23 @@ describe('readFlightPackageManifests', () => {
     ).toEqual([expect.objectContaining({ directory: 'workspace/modules/math', name: '@example/math' })]);
   });
 
+  it('preserves every supported optional Flight environment', () => {
+    const environments = ['capacitor', 'electron', 'node', 'tauri', 'web'] as const;
+    const files = Object.fromEntries(
+      environments.map((environment) => [
+        `/flight/packages/${environment}/package.json`,
+        manifest({ flight: { environment }, name: `@flighthq/${environment}`, version: '0.0.0' }),
+      ]),
+    );
+
+    expect(
+      (read(files) as Array<{ environment?: string; name: string }>).map(({ environment, name }) => ({
+        environment,
+        name,
+      })),
+    ).toEqual(environments.map((environment) => ({ environment, name: `@flighthq/${environment}` })));
+  });
+
   it('fails with stable codes for invalid directory, JSON, metadata, scope, dependencies, bins, and duplicates', () => {
     const cases: Array<{
       code:
@@ -156,6 +173,36 @@ describe('readFlightPackageManifests', () => {
         code: 'invalid-package-manifest',
         files: {
           '/flight/packages/math/package.json': manifest({ bin: { cli: 5 }, name: '@flighthq/math', version: '0.0.0' }),
+        },
+      },
+      {
+        code: 'invalid-package-manifest',
+        files: {
+          '/flight/packages/math/package.json': manifest({
+            flight: 'web',
+            name: '@flighthq/math',
+            version: '0.0.0',
+          }),
+        },
+      },
+      {
+        code: 'invalid-package-manifest',
+        files: {
+          '/flight/packages/math/package.json': manifest({
+            flight: { environment: 'native' },
+            name: '@flighthq/math',
+            version: '0.0.0',
+          }),
+        },
+      },
+      {
+        code: 'invalid-package-manifest',
+        files: {
+          '/flight/packages/math/package.json': manifest({
+            flight: { environment: null },
+            name: '@flighthq/math',
+            version: '0.0.0',
+          }),
         },
       },
       {

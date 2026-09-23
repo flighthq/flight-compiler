@@ -1,6 +1,7 @@
 export { createCompilerInventoryFailure, isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 export { createCompilerModuleResolutionPlan, isCompilerModuleResolutionFailure } from './compilerModuleResolution.js';
 export { analyzeFlightPackageExclusions } from './flightPackageExclusion.js';
+export { createFlightPackageEligibilityPlan, isFlightPackageEligibilityFailure } from './flightPackageEligibility.js';
 export { getPackageInventoryRootExportLane, resolvePackageExportLane } from './flightPackageExportLane.js';
 export { readPackageExportManifest } from './flightPackageExportManifest.js';
 export { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';

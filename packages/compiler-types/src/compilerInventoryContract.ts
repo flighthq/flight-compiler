@@ -48,10 +48,13 @@ export interface PackageBinEntry {
   readonly target: string;
 }
 
+export type FlightPackageEnvironment = 'capacitor' | 'electron' | 'node' | 'tauri' | 'web';
+
 export interface FlightPackageManifest {
   readonly bins: readonly PackageBinEntry[];
   readonly dependencies: readonly string[];
   readonly directory: string;
+  readonly environment?: FlightPackageEnvironment | undefined;
   readonly name: string;
   readonly version: string;
 }
@@ -90,20 +93,53 @@ export interface PackageExclusion {
   readonly rule: 'node-playwright-tooling' | 'node-tooling';
 }
 
-export interface PackageInventory {
-  readonly bins: readonly PackageBinEntry[];
+export interface FlightPackageEligibilityPackage {
   readonly dependencies: readonly string[];
+  readonly environment?: FlightPackageEnvironment | undefined;
+  readonly name: string;
+}
+
+export interface PackageInventory extends FlightPackageEligibilityPackage {
+  readonly bins: readonly PackageBinEntry[];
   readonly directory: string;
   readonly exclusion: PackageExclusion | null;
   readonly exportLanes: readonly PackageExportLane[];
   readonly hostFacts: PackageHostFacts;
   readonly imports: readonly PackageImportRecord[];
-  readonly name: string;
   readonly sdkExposures: readonly SdkExposure[];
   readonly sdkIncluded: boolean;
   readonly sourceFiles: number;
   readonly testFiles: number;
   readonly version: string;
+}
+
+export interface FlightPackageEligibilityOptions {
+  readonly environment?: FlightPackageEnvironment | undefined;
+  readonly packages: readonly Readonly<FlightPackageEligibilityPackage>[];
+  readonly selectedPackageNames: readonly string[];
+}
+
+export interface FlightPackageEligibilityPlan {
+  readonly eligiblePackageNames: readonly string[];
+  readonly environment: FlightPackageEnvironment | null;
+  readonly schema: 'flight-compiler-package-eligibility/1';
+}
+
+export type FlightPackageEligibilityFailureCode =
+  | 'duplicate-package'
+  | 'ineligible-package-environment'
+  | 'invalid-environment'
+  | 'invalid-package'
+  | 'invalid-selection'
+  | 'unknown-package';
+
+export interface FlightPackageEligibilityFailure extends Error {
+  readonly code: FlightPackageEligibilityFailureCode;
+  readonly dependencyPath?: readonly string[] | undefined;
+  readonly kind: 'flight-package-eligibility';
+  readonly requiredEnvironment?: FlightPackageEnvironment | undefined;
+  readonly selectedEnvironment?: FlightPackageEnvironment | null | undefined;
+  readonly subject: string;
 }
 
 export interface UpstreamInventory {
