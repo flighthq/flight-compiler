@@ -346,8 +346,9 @@ describe('getCompilerCommandLineUsage', () => {
 describe('validateCompilerCommandLineCheckRequest', () => {
   // A workspace with one package that compiles and one module that does not: the shape a check run is
   // actually pointed at, and the one where "what gates" has an answer.
-  const workspacePackage = (name: string, environments: readonly string[] = []) => ({
-    environments,
+  const workspacePackage = (name: string, environment?: 'node' | 'web') => ({
+    dependencies: [],
+    ...(environment === undefined ? {} : { environment }),
     name,
     root: `/ws/${name}`,
   });
@@ -415,8 +416,8 @@ describe('validateCompilerCommandLineCheckRequest', () => {
   });
 
   it('selects unmarked packages by default and named environments only when asked', () => {
-    const marked = { environments: ['web'], name: 'web', root: '/ws/web' };
-    const unmarked = { environments: [], name: 'core', root: '/ws/core' };
+    const marked = { dependencies: [], environment: 'web' as const, name: 'web', root: '/ws/web' };
+    const unmarked = { dependencies: [], name: 'core', root: '/ws/core' };
     const run = checkRun([source('only.ts', rustModule)], { packages: [marked, unmarked] });
 
     const byDefault = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'rust'] }, run.capabilities);
@@ -429,21 +430,22 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(selected.packages).toEqual(['web']);
   });
 
-  it('accepts a repeated environment without letting repetition change the answer', () => {
-    const marked = { environments: ['web', 'mobile'], name: 'platform', root: '/ws/platform' };
-    const run = checkRun([source('only.ts', rustModule)], { packages: [marked] });
+  it('unites repeated environments instead of letting the last one win', () => {
+    const web = { dependencies: [], environment: 'web' as const, name: 'browser', root: '/ws/browser' };
+    const node = { dependencies: [], environment: 'node' as const, name: 'server', root: '/ws/server' };
+    const run = checkRun([source('only.ts', rustModule)], { packages: [web, node] });
 
     const once = validateCompilerCommandLineCheckRequest(
       { argv: ['/ws', '--target', 'rust', '--environment', 'web'] },
       run.capabilities,
     );
     const twice = validateCompilerCommandLineCheckRequest(
-      { argv: ['/ws', '--target', 'rust', '--environment', 'web', '--environment', 'mobile'] },
+      { argv: ['/ws', '--target', 'rust', '--environment', 'web', '--environment', 'node'] },
       run.capabilities,
     );
 
-    expect(once.packages).toEqual(['platform']);
-    expect(twice.packages).toEqual(['platform']);
+    expect(once.packages).toEqual(['browser']);
+    expect(twice.packages).toEqual(['browser', 'server']);
     expect(twice.exitCode).toBe(once.exitCode);
   });
 
@@ -458,6 +460,44 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(result.exitCode).toBe(2);
     expect(result.findings).toEqual([]);
     expect(run.err.join('')).toContain('declares web');
+  });
+
+  it('checks only the packages a repeated --package names', () => {
+    const run = checkRun([source('only.ts', rustModule)], {
+      packages: [
+        { dependencies: [], name: 'core', root: '/ws/core' },
+        { dependencies: [], name: 'extra', root: '/ws/extra' },
+      ],
+    });
+
+    const named = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--package', 'extra'] },
+      run.capabilities,
+    );
+
+    expect(named.exitCode).toBe(0);
+    expect(named.packages).toEqual(['extra']);
+  });
+
+  it('refuses a named package whose environment was not selected, naming the environment it needs', () => {
+    const run = checkRun([source('only.ts', rustModule)], {
+      packages: [{ dependencies: [], environment: 'web', name: 'web', root: '/ws/web' }],
+    });
+
+    const named = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--package', 'web'] },
+      run.capabilities,
+    );
+    const selected = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--package', 'web', '--environment', 'web'] },
+      run.capabilities,
+    );
+
+    expect(named.exitCode).toBe(2);
+    expect(named.findings).toEqual([]);
+    expect(run.err.join('')).toContain('requires the web environment');
+    expect(selected.exitCode).toBe(0);
+    expect(selected.packages).toEqual(['web']);
   });
 
   it('treats an empty workspace as an invocation failure rather than a clean run', () => {
@@ -575,7 +615,7 @@ function checkRun(
   const out: string[] = [];
   const err: string[] = [];
   const reports = new Map<string, string>();
-  const packages = options.packages ?? [{ environments: [], name: 'one', root: '/ws/one' }];
+  const packages = options.packages ?? [{ dependencies: [], name: 'one', root: '/ws/one' }];
   // The graph checks that every source sits inside the package root it was declared with, so the shared
   // `source` helper (whose paths are /src/...) is rebased onto whichever root this run selected.
   const rebased = packages.map((entry) => ({

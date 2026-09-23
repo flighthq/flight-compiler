@@ -2,9 +2,14 @@ import { createCppCompilerBackend } from '../../compiler-backend-cpp/src/index.j
 import { createHaxeCompilerBackend } from '../../compiler-backend-hx/src/index.js';
 import { createRustCompilerBackend } from '../../compiler-backend-rs/src/index.js';
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import {
+  createFlightPackageEligibilityPlan,
+  isFlightPackageEligibilityFailure,
+} from '../../compiler-inventory/src/index.js';
 import { compileTypeScriptPackageGraph, parseTypeScriptSource } from '../../compiler-orchestration/src/index.js';
 import type {
   CompilerCommandLineCapabilities,
+  FlightPackageEnvironment,
   CompilerCommandLineCheckCapabilities,
   CompilerCommandLineCheckFinding,
   CompilerCommandLineCheckFormat,
@@ -165,9 +170,14 @@ export function validateCompilerCommandLineCheckRequest(
     capabilities.writeError(`${parsed.failure}\n\n${getCompilerCommandLineCheckUsage()}\n`);
     return createCompilerCommandLineCheckResult(capabilities, { packages: [], findings: [], resolved: [] }, 2);
   }
-  const selected = capabilities
-    .listWorkspacePackages(parsed.workspaceDirectory)
-    .filter((entry) => isCompilerCommandLinePackageSelected(entry, parsed.environmentNames));
+  const selected = selectCompilerCommandLinePackages(
+    capabilities.listWorkspacePackages(parsed.workspaceDirectory),
+    parsed,
+  );
+  if ('failure' in selected) {
+    capabilities.writeError(`${selected.failure}\n`);
+    return createCompilerCommandLineCheckResult(capabilities, { packages: [], findings: [], resolved: [] }, 2);
+  }
   if (selected.length === 0) {
     capabilities.writeError(
       parsed.environmentNames.length === 0
@@ -414,6 +424,8 @@ function createCompilerCommandLineCheckJson(result: Readonly<CompilerCommandLine
 const commandLineCheckUsage = `Usage: flight-compile check <workspace> --target <cpp|haxe|rust>
 
   --environment <name>    Package environment to check; repeat for several (default: unmarked packages)
+  --package <name>        Package to check by name; repeat for several (default: the workspace's unmarked
+                          packages). A package that declares an environment needs --environment for it
   --baseline <file>       Compare findings against a baseline; the file is never rewritten
   --format <text|json>    Report format (default: text)
   --report <file>         Write the report to a file as well as printing the summary
@@ -424,6 +436,7 @@ interface ParsedCompilerCommandLineCheckRequest {
   readonly baselinePath?: string | undefined;
   readonly environmentNames: readonly string[];
   readonly format: CompilerCommandLineCheckFormat;
+  readonly selectedPackageNames: readonly string[];
   readonly reportPath?: string | undefined;
   readonly runtimeHeader?: string | undefined;
   readonly runtimeProfile: 'flight-cpp' | 'standard-library';
@@ -437,6 +450,7 @@ function parseCompilerCommandLineCheckRequest(
   const positional: string[] = [];
   const named = new Map<string, string>();
   const environmentNames: string[] = [];
+  const selectedPackageNames: string[] = [];
   for (let index = 0; index < request.argv.length; index += 1) {
     const argument = request.argv[index]!;
     if (!argument.startsWith('--')) {
@@ -450,6 +464,11 @@ function parseCompilerCommandLineCheckRequest(
     if (argument === '--environment') {
       if (environmentNames.includes(value)) return { failure: `--environment ${value} is supplied twice` };
       environmentNames.push(value);
+      continue;
+    }
+    if (argument === '--package') {
+      if (selectedPackageNames.includes(value)) return { failure: `--package ${value} is supplied twice` };
+      selectedPackageNames.push(value);
       continue;
     }
     if (named.has(argument.slice(2))) return { failure: `${argument} may be supplied once` };
@@ -481,21 +500,51 @@ function parseCompilerCommandLineCheckRequest(
     ...(reportPath === undefined ? {} : { reportPath }),
     ...(runtimeHeader === undefined ? {} : { runtimeHeader }),
     runtimeProfile,
+    selectedPackageNames,
     target,
     workspaceDirectory,
   };
 }
 
-// An unmarked package is in scope unless environments were named, in which case only a package that
-// declares one of them is. Nothing here reads the target language: an environment is what the package
-// says about itself, not what the run is emitting.
-function isCompilerCommandLinePackageSelected(
-  entry: Readonly<CompilerCommandLineWorkspacePackage>,
-  environmentNames: readonly string[],
-): boolean {
-  return environmentNames.length === 0
-    ? entry.environments.length === 0
-    : entry.environments.some((environment) => environmentNames.includes(environment));
+// Which packages a run is about. The eligibility lane owns this question -- the declared
+// `flight.environment`, the narrow name selector, and what an unmarked package means -- so the CLI hands
+// it the workspace's packages and takes back names. Repeating `--environment` asks for each in turn and
+// unites the answers, which is what a caller naming two environments is asking for; with none named, the
+// plan's own default applies. A refusal there is an invocation failure, not a finding.
+function selectCompilerCommandLinePackages(
+  packages: readonly Readonly<CompilerCommandLineWorkspacePackage>[],
+  parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
+): readonly Readonly<CompilerCommandLineWorkspacePackage>[] | Readonly<{ failure: string }> {
+  const requested: readonly (FlightPackageEnvironment | undefined)[] =
+    parsed.environmentNames.length === 0
+      ? [undefined]
+      : (parsed.environmentNames as readonly FlightPackageEnvironment[]);
+  const eligible = new Set<string>();
+  for (const environment of requested) {
+    // Naming packages states the selection; naming none selects the workspace's own default, which is the
+    // packages that carry no environment. Either way the plan below decides what the selection pulls in.
+    const selected = packages.filter(
+      (entry) =>
+        (parsed.selectedPackageNames.length === 0 || parsed.selectedPackageNames.includes(entry.name)) &&
+        (parsed.selectedPackageNames.length > 0 || entry.environment === environment),
+    );
+    try {
+      const plan = createFlightPackageEligibilityPlan({
+        packages: selected.map((entry) => ({
+          dependencies: entry.dependencies,
+          ...(entry.environment === undefined ? {} : { environment: entry.environment }),
+          name: entry.name,
+        })),
+        selectedPackageNames: selected.map((entry) => entry.name),
+        ...(environment === undefined ? {} : { environment }),
+      });
+      for (const name of plan.eligiblePackageNames) eligible.add(name);
+    } catch (error) {
+      if (isFlightPackageEligibilityFailure(error)) return { failure: error.message };
+      throw error;
+    }
+  }
+  return packages.filter((entry) => eligible.has(entry.name));
 }
 
 // One finding identity per line. Blank lines and `#` comments are ignored so a baseline can explain
@@ -514,6 +563,7 @@ const commandLineCheckValueOptions = new Set([
   '--baseline',
   '--environment',
   '--format',
+  '--package',
   '--report',
   '--runtime-header',
   '--runtime-profile',

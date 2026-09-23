@@ -2,6 +2,7 @@
 //
 // The filesystem and the output stream arrive as capabilities so that the decision layer — which
 // modules to compile, what to report, what to exit with — can be exercised without a disk.
+import type { FlightPackageEnvironment } from './compilerInventoryContract.js';
 import type { CompilerPackageCompilationRefusalCode } from './compilerPackageCompilationContract.js';
 
 export interface CompilerCommandLineRequest {
@@ -50,10 +51,12 @@ export interface CompilerCommandLineCheckRequest {
 
 export type CompilerCommandLineCheckFormat = 'json' | 'text';
 
-// One package a check run may compile. `environments` is what the package declares about itself; an
-// empty list is what "unmarked" means, and it is the default scope.
+// One package a check run may compile, in the vocabulary the inventory already uses: the dependencies the
+// eligibility plan reads, the single declared `flight.environment` (absent is what "unmarked" means), and
+// where its sources are.
 export interface CompilerCommandLineWorkspacePackage {
-  readonly environments: readonly string[];
+  readonly dependencies: readonly string[];
+  readonly environment?: FlightPackageEnvironment | undefined;
   readonly name: string;
   readonly root: string;
 }
