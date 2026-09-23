@@ -92,7 +92,7 @@ function collectConcurrencyIssues(issues: string[], name: string, document: Read
     issues.push(`${name}: the workflow declares no concurrency group`);
     return;
   }
-  if (typeof concurrency.group !== 'string' || !releaseConcurrencyGroups.has(concurrency.group)) {
+  if (concurrency.group !== releaseConcurrencyGroup) {
     issues.push(`${name}: concurrency group is ${String(concurrency.group)} rather than ${releaseConcurrencyGroup}`);
   }
   if (concurrency['cancel-in-progress'] !== false) {
@@ -348,9 +348,6 @@ function asRecords(value: unknown): readonly Readonly<Record<string, unknown>>[]
 // The one event type Flight dispatches, the two facts every run needs, and the rehearsal default. These
 // names are the sending contract: changing one here changes what Flight has to send.
 const releaseConcurrencyGroup = 'release';
-// The receiver and the manual release are being aligned on one name. Both are accepted while that lands, and
-// the runner additionally requires the two to agree, which is the property that matters either way.
-const releaseConcurrencyGroups = new Set([releaseConcurrencyGroup, 'release-global']);
 const releaseEventType = 'flight-release';
 const publicRegistry = 'https://registry.npmjs.org';
 const dispatchedFacts = ['FLIGHT_VERSION', 'FLIGHT_COMMIT'] as const;
