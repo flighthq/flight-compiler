@@ -177,6 +177,34 @@ describe('validateCompilerCommandLineCheckDirectory', () => {
     ).toEqual(['bad.ts', 'index.ts']);
   });
 
+  it('checks the roots the workspace manifest declares', () => {
+    const workspace = createWorkspace({
+      'index.ts': 'export function doubled(value: number): number { return value * 2; }',
+    });
+    const other = path.join(workspace, 'packages', 'other');
+    mkdirSync(path.join(other, 'src'), { recursive: true });
+    writeFileSync(
+      path.join(other, 'package.json'),
+      JSON.stringify({
+        name: '@flighthq/other',
+        version: '1.0.0',
+        exports: { '.': { types: './dist/index.d.ts', default: './dist/index.js' } },
+      }),
+    );
+    writeFileSync(path.join(other, 'src', 'index.ts'), 'export const ready = Promise.resolve(1);\nawait ready;\n');
+    writeFileSync(
+      path.join(workspace, 'package.json'),
+      JSON.stringify({ name: '@flighthq/smoke', version: '0.0.0', dependencies: { '@flighthq/core': '*' } }),
+    );
+
+    // The refusing module belongs to a package the workspace does not depend on, so it is not a root and the
+    // run admits what it did check.
+    expect(validateCompilerCommandLineCheckDirectory([workspace, '--target', 'rust'])).toBe(0);
+    expect(
+      validateCompilerCommandLineCheckDirectory([workspace, '--target', 'rust', '--package', '@flighthq/other']),
+    ).toBe(1);
+  });
+
   it('reports the checked workspace own commit, and unversioned for a directory that is not a checkout', () => {
     const workspace = createWorkspace({
       'index.ts': 'export function doubled(value: number): number { return value * 2; }',

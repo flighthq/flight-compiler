@@ -2,6 +2,7 @@
 //
 // The filesystem and the output stream arrive as capabilities so that the decision layer — which
 // modules to compile, what to report, what to exit with — can be exercised without a disk.
+import type { FlightPackageEligibilitySubsetExcludedRoot } from './compilerInventoryContract.js';
 import type {
   CompilerPackageCheckComparison,
   CompilerPackageCheckPolicyResult,
@@ -72,6 +73,11 @@ export interface CompilerCommandLineCheckCapabilities {
    * one; a scratch directory does not, and answering undefined records `unversioned` rather than a guess.
    */
   readonly readUpstreamRevision?: ((workspace: string) => string | undefined) | undefined;
+  /**
+   * The packages the workspace itself depends on directly -- what a run with no `--package` takes as its
+   * candidate roots. Reading them is the edge's job, like every other workspace fact.
+   */
+  readonly readWorkspaceRoots: (workspace: string) => readonly string[];
   /** The workspace the run reads: the same four-operation capability the inventory reads through. */
   readonly workspaceSource: WorkspaceSource;
   readonly write: (text: string) => void;
@@ -85,6 +91,11 @@ export interface CompilerCommandLineCheckOutcome {
   readonly comparison: CompilerPackageCheckComparison;
   /** The packages the eligibility plan put in scope, sorted. */
   readonly eligiblePackageNames: readonly string[];
+  /**
+   * Workspace roots left out because they require an environment this run did not select. A selection
+   * fact rather than a compiler finding: nothing was compiled for them, so there is nothing to report.
+   */
+  readonly excludedRoots: readonly FlightPackageEligibilitySubsetExcludedRoot[];
   readonly exitCode: 0 | 1;
   readonly policyResult: CompilerPackageCheckPolicyResult;
   readonly report: CompilerPackageCheckReport;

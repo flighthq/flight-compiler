@@ -5,7 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import { isCompilerInventoryFailure, readGitCommit } from '../../compiler-inventory/src/index.js';
 import type {
   CompilerCommandLineSource,
@@ -62,6 +62,7 @@ export function validateCompilerCommandLineCheckDirectory(argv: readonly string[
       // The revision is the one fact here that needs another process, so it is read where processes are
       // read and nowhere else. A workspace that is not a checkout is an ordinary thing to check -- the
       // consumer smoke makes one -- so the failure is an absent revision rather than a failed run.
+      readWorkspaceRoots: (workspace) => readDeclaredPackageNames(path.join(workspace, 'package.json')),
       readUpstreamRevision: (workspace) => {
         try {
           return readGitCommit(workspace);
@@ -101,6 +102,27 @@ function listTypeScriptSources(directory: string): readonly CompilerCommandLineS
       };
     })
     .sort((left, right) => (left.moduleName < right.moduleName ? -1 : 1));
+}
+
+// The packages a workspace declares as its own dependencies. Names only: whether a package exists, and what
+// it means for one to be missing, is the inventory's question. A manifest that is not there, or cannot be
+// read, declares nothing -- and a workspace that declares nothing is treated as its own root set.
+function readDeclaredPackageNames(manifest: string): readonly string[] {
+  if (!existsSync(manifest)) return [];
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(manifest, 'utf8'));
+    if (parsed === null || typeof parsed !== 'object') return [];
+    const record = parsed as Readonly<Record<string, unknown>>;
+    const names = new Set<string>();
+    for (const key of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+      const value = record[key];
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
+      for (const name of Object.keys(value)) names.add(name);
+    }
+    return [...names].sort(compareTextCodeUnits);
+  } catch {
+    return [];
+  }
 }
 
 // The inventory reads a workspace through a four-operation capability, and its own filesystem

@@ -488,7 +488,7 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(run.out.join('')).toContain('Dependency cascades: 2');
   });
 
-  it('selects unmarked packages by default and named environments only when asked', () => {
+  it('selects the unmarked root by default and adds the ones an environment names', () => {
     const marked: CheckPackage = {
       directory: 'web',
       environment: 'web',
@@ -503,8 +503,10 @@ describe('validateCompilerCommandLineCheckRequest', () => {
       run.capabilities,
     );
 
+    // An unmarked package is compatible with every environment -- that is what "unmarked" means -- so
+    // choosing one adds the packages that declare it rather than replacing the unmarked ones.
     expect(checkOutcome(byDefault).eligiblePackageNames).toEqual(['@flighthq/quiet']);
-    expect(checkOutcome(selected).eligiblePackageNames).toEqual(['@flighthq/web']);
+    expect(checkOutcome(selected).eligiblePackageNames).toEqual(['@flighthq/quiet', '@flighthq/web']);
   });
 
   it('checks one environment per run, because two environments are two reports', () => {
@@ -548,8 +550,73 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(run.err.join('')).toContain('capacitor, electron, node, tauri, or web');
   });
 
-  it('refuses an invocation that names an environment no package declares', () => {
-    const run = checkRun([quiet]);
+  it('takes the workspace own roots and keeps what the chosen environment allows', () => {
+    // Two roots that are each checkable on their own: one is quietly unmarked, the other reaches a package
+    // that needs an environment this run did not select. The run keeps the first and names the second rather
+    // than refusing the whole workspace -- and the excluded root is a selection fact, not a finding.
+    const device: CheckPackage = {
+      directory: 'device',
+      environment: 'tauri',
+      name: '@flighthq/device',
+      sources: { 'index.ts': goodModule },
+    };
+    const gpu: CheckPackage = {
+      dependencies: ['@flighthq/device'],
+      directory: 'gpu',
+      name: '@flighthq/gpu',
+      sources: { 'index.ts': goodModule },
+    };
+    const run = checkRun([device, gpu, quiet], { roots: ['@flighthq/gpu', '@flighthq/quiet'] });
+
+    const result = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'rust'] }, run.capabilities);
+
+    expect(result.exitCode).toBe(0);
+    expect(checkOutcome(result).eligiblePackageNames).toEqual(['@flighthq/quiet']);
+    expect(checkOutcome(result).excludedRoots).toEqual([
+      {
+        dependencyPath: ['@flighthq/gpu', '@flighthq/device'],
+        name: '@flighthq/gpu',
+        requiredEnvironment: 'tauri',
+        selectedEnvironment: null,
+      },
+    ]);
+    expect(checkOutcome(result).report.directFindings).toEqual([]);
+    expect(run.out.join('')).toContain('Excluded 1 package root(s): @flighthq/gpu requires tauri.');
+  });
+
+  it('keeps a root whose closure needs the selected environment instead of excluding it', () => {
+    const device: CheckPackage = {
+      directory: 'device',
+      environment: 'tauri',
+      name: '@flighthq/device',
+      sources: { 'index.ts': goodModule },
+    };
+    const gpu: CheckPackage = {
+      dependencies: ['@flighthq/device'],
+      directory: 'gpu',
+      name: '@flighthq/gpu',
+      sources: { 'index.ts': goodModule },
+    };
+    const run = checkRun([device, gpu], { roots: ['@flighthq/gpu'] });
+
+    const result = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--environment', 'tauri'] },
+      run.capabilities,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(checkOutcome(result).eligiblePackageNames).toEqual(['@flighthq/device', '@flighthq/gpu']);
+    expect(checkOutcome(result).excludedRoots).toEqual([]);
+  });
+
+  it('refuses a run whose every root needs an environment it did not select', () => {
+    const device: CheckPackage = {
+      directory: 'device',
+      environment: 'tauri',
+      name: '@flighthq/device',
+      sources: { 'index.ts': goodModule },
+    };
+    const run = checkRun([device]);
 
     const result = validateCompilerCommandLineCheckRequest(
       { argv: ['/ws', '--target', 'rust', '--environment', 'web'] },
@@ -557,7 +624,8 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     );
 
     expect(result.exitCode).toBe(2);
-    expect(run.err.join('')).toContain('declares web');
+    expect(run.err.join('')).toContain('@flighthq/device requires tauri');
+    expect(run.out.join('')).not.toContain('package(s) checked');
   });
 
   it('checks only the packages a repeated --package names', () => {
@@ -694,7 +762,7 @@ function checkOutcome(result: Readonly<CompilerCommandLineCheckResult>): Readonl
 interface CheckPackage {
   readonly dependencies?: readonly string[] | undefined;
   readonly directory: string;
-  readonly environment?: 'node' | 'web' | undefined;
+  readonly environment?: 'node' | 'tauri' | 'web' | undefined;
   readonly name: string;
   readonly sources: Readonly<Record<string, string>>;
 }
@@ -704,6 +772,7 @@ function checkRun(
   options: Readonly<{
     baseline?: string | undefined;
     provenance?: CompilerPackageCheckProvenance | undefined;
+    roots?: readonly string[] | undefined;
     upstreamRevision?: string | undefined;
   }> = {},
 ): Readonly<{
@@ -720,6 +789,7 @@ function checkRun(
     capabilities: {
       readBaseline: (file) => (file === '/ws/check.baseline' ? options.baseline : undefined),
       readUpstreamRevision: () => options.upstreamRevision,
+      readWorkspaceRoots: () => options.roots ?? [],
       ...(provenance === undefined ? {} : { readProvenance: () => provenance }),
       workspaceSource: createMemoryWorkspaceSource(checkWorkspaceFiles(packages)),
       write: (text) => out.push(text),
@@ -822,6 +892,7 @@ describe('createCompilerCommandLineCheckReport', () => {
     return {
       comparison,
       eligiblePackageNames: ['@flighthq/core'],
+      excludedRoots: [],
       exitCode: policyResult.passed ? 0 : 1,
       policyResult,
       report,

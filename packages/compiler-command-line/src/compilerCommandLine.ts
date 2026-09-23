@@ -11,6 +11,7 @@ import {
 } from '../../compiler-check/src/index.js';
 import {
   createFlightPackageEligibilityPlan,
+  createFlightPackageEligibilitySubsetPlan,
   isFlightPackageEligibilityFailure,
   readFlightPackageManifests,
 } from '../../compiler-inventory/src/index.js';
@@ -33,6 +34,7 @@ import type {
   CompilerPackageCheckBaseline,
   CompilerPackageCheckProvenance,
   CompilerPackageCheckReport,
+  FlightPackageEligibilitySubsetExcludedRoot,
   FlightPackageEnvironment,
   FlightPackageManifest,
   HaxeCompilerEmissionMode,
@@ -131,13 +133,19 @@ export function createCompilerCommandLineCheckReport(
 // baseline every finding is introduced, which is why `0 baselined` and `0 resolved` read as a first run.
 function createCompilerCommandLineCheckSummaryLine(result: Readonly<CompilerCommandLineCheckOutcome>): string {
   const gating = result.policyResult.failingFindingIdentities.length;
+  const excluded =
+    result.excludedRoots.length === 0
+      ? ''
+      : ` Excluded ${String(result.excludedRoots.length)} package root(s): ${result.excludedRoots
+          .map((root) => `${root.name} requires ${root.requiredEnvironment}`)
+          .join(', ')}.`;
   return (
     `${String(result.eligiblePackageNames.length)} package(s) checked, ` +
     `${String(result.report.totals.directFindings)} direct finding(s), ` +
     `${String(result.comparison.introduced.length)} introduced, ${String(gating)} gating, ` +
     `${String(result.comparison.unchanged.length)} baselined, ` +
     `${String(result.comparison.resolvedFindingIdentities.length)} resolved, ` +
-    `policy ${result.policyResult.policy.id}.`
+    `policy ${result.policyResult.policy.id}.${excluded}`
   );
 }
 
@@ -193,19 +201,24 @@ export function validateCompilerCommandLineCheckRequest(
   } catch (error) {
     return refuseCompilerCommandLineCheck(capabilities, `${describeCompilerCommandLineFailure(error)}\n`);
   }
-  const selectedPackageNames = selectCompilerCommandLinePackageNames(manifests, parsed);
-  if ('failure' in selectedPackageNames) {
-    return refuseCompilerCommandLineCheck(capabilities, `${selectedPackageNames.failure}\n`);
-  }
+  const selection = selectCompilerCommandLinePackages(manifests, parsed, capabilities);
+  if ('failure' in selection) return refuseCompilerCommandLineCheck(capabilities, `${selection.failure}\n`);
+  const selectedPackageNames = selection.includedPackageNames;
   if (selectedPackageNames.length === 0) {
-    // Nothing in scope is an invocation failure rather than a clean run: the check was pointed at
-    // something that is not the workspace the caller meant, and saying so beats reporting zero findings.
+    // Nothing in scope is an invocation failure rather than a clean run: the check was pointed at something
+    // that is not the workspace the caller meant, and saying so beats reporting zero findings. When roots
+    // were left out for their environment, it is that -- and which root needed what -- that explains it.
+    const excluded = selection.excludedRoots
+      .map((root) => `${root.name} requires ${root.requiredEnvironment}`)
+      .join(', ');
     return refuseCompilerCommandLineCheck(
       capabilities,
       `${
-        parsed.environment === undefined
-          ? `No packages under ${parsed.workspaceDirectory}`
-          : `No package under ${parsed.workspaceDirectory} declares ${parsed.environment}`
+        excluded.length > 0
+          ? `No package under ${parsed.workspaceDirectory} can be checked: ${excluded}`
+          : parsed.environment === undefined
+            ? `No packages under ${parsed.workspaceDirectory}`
+            : `No package under ${parsed.workspaceDirectory} declares ${parsed.environment}`
       }\n`,
     );
   }
@@ -234,6 +247,7 @@ export function validateCompilerCommandLineCheckRequest(
   const outcome: CompilerCommandLineCheckOutcome = {
     comparison,
     eligiblePackageNames: selectedPackageNames,
+    excludedRoots: selection.excludedRoots,
     exitCode: policyResult.passed ? 0 : 1,
     policyResult,
     report,
@@ -456,6 +470,12 @@ function createCompilerCommandLineCheckJson(result: Readonly<CompilerCommandLine
     schema: 'flight-compiler-check-run/1',
     comparison: result.comparison,
     eligiblePackageNames: [...result.eligiblePackageNames],
+    excludedRoots: result.excludedRoots.map((root) => ({
+      dependencyPath: [...root.dependencyPath],
+      name: root.name,
+      requiredEnvironment: root.requiredEnvironment,
+      selectedEnvironment: root.selectedEnvironment,
+    })),
     exitCode: result.exitCode,
     policyResult: result.policyResult,
     report: result.report,
@@ -561,35 +581,74 @@ function parseCompilerCommandLineCheckRequest(
 // `flight.environment`, the narrow name selector, and what an unmarked package means -- so the CLI hands it
 // the workspace's packages and takes back names. The whole workspace goes in, not only the seeds, because
 // the plan is what pulls in the dependencies a selection needs; the seeds are only what the caller asked
-// for. Naming packages states the selection exactly and a refusal is then the answer; naming none takes the
-// workspace's own compatible default, which is the packages that carry no environment. A refusal from the
-// plan is an invocation failure, not a finding.
-function selectCompilerCommandLinePackageNames(
+// for.
+//
+// The two ways of asking mean different things. Naming packages asks for exactly those, so a package whose
+// closure needs an environment the run did not select is a refusal, with the dependency path that shows why.
+// Naming none asks what the workspace can be checked as: the plan takes the workspace's own roots and keeps
+// the maximal dependency-closed subset compatible with the chosen environment, reporting the roots it left
+// out. An environment another root needs is a selection fact, not a finding -- nothing was compiled for that
+// root, so there is nothing for the compiler to have refused.
+function selectCompilerCommandLinePackages(
   manifests: readonly Readonly<FlightPackageManifest>[],
   parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
-): readonly string[] | Readonly<{ failure: string }> {
-  const selectedPackageNames = manifests
-    .filter((manifest) =>
-      parsed.selectedPackageNames.length === 0
-        ? manifest.environment === parsed.environment
-        : parsed.selectedPackageNames.includes(manifest.name),
-    )
-    .map((manifest) => manifest.name);
+  capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
+):
+  | Readonly<{
+      excludedRoots: readonly FlightPackageEligibilitySubsetExcludedRoot[];
+      includedPackageNames: readonly string[];
+    }>
+  | Readonly<{ failure: string }> {
+  const packages = manifests.map((manifest) => ({
+    dependencies: manifest.dependencies,
+    ...(manifest.environment === undefined ? {} : { environment: manifest.environment }),
+    name: manifest.name,
+  }));
+  if (parsed.selectedPackageNames.length > 0) {
+    try {
+      const plan = createFlightPackageEligibilityPlan({
+        packages,
+        selectedPackageNames: parsed.selectedPackageNames,
+        ...(parsed.environment === undefined ? {} : { environment: parsed.environment }),
+      });
+      return { excludedRoots: [], includedPackageNames: [...plan.eligiblePackageNames].sort(compareTextCodeUnits) };
+    } catch (error) {
+      if (isFlightPackageEligibilityFailure(error)) return { failure: error.message };
+      throw error;
+    }
+  }
   try {
-    const plan = createFlightPackageEligibilityPlan({
-      packages: manifests.map((manifest) => ({
-        dependencies: manifest.dependencies,
-        ...(manifest.environment === undefined ? {} : { environment: manifest.environment }),
-        name: manifest.name,
-      })),
-      selectedPackageNames,
+    const plan = createFlightPackageEligibilitySubsetPlan({
+      candidatePackageNames: selectCompilerCommandLineWorkspaceRoots(manifests, parsed, capabilities),
+      packages,
       ...(parsed.environment === undefined ? {} : { environment: parsed.environment }),
     });
-    return [...plan.eligiblePackageNames].sort(compareTextCodeUnits);
+    return { excludedRoots: plan.excludedRoots, includedPackageNames: plan.includedPackageNames };
   } catch (error) {
     if (isFlightPackageEligibilityFailure(error)) return { failure: error.message };
     throw error;
   }
+}
+
+// The roots a run with no `--package` starts from: what the workspace's own manifest depends on, narrowed to
+// what the inventory holds -- a root it does not hold is not a package this compiler can check. A workspace
+// that declares none of its packages as a dependency is its own root set, which is what a scratch workspace
+// and the consumer smoke are.
+function selectCompilerCommandLineWorkspaceRoots(
+  manifests: readonly Readonly<FlightPackageManifest>[],
+  parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
+  capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
+): readonly string[] {
+  const names = processesDeclaredRoots(capabilities.readWorkspaceRoots(parsed.workspaceDirectory), manifests);
+  return names.length === 0 ? manifests.map((manifest) => manifest.name) : names;
+}
+
+function processesDeclaredRoots(
+  declared: readonly string[],
+  manifests: readonly Readonly<FlightPackageManifest>[],
+): readonly string[] {
+  const present = new Set(manifests.map((manifest) => manifest.name));
+  return [...new Set(declared.filter((name) => present.has(name)))].sort(compareTextCodeUnits);
 }
 
 // The environment names `--environment` accepts, spelled here the way `--target` spells its own values: the
