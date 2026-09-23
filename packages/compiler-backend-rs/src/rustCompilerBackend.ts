@@ -4264,6 +4264,8 @@ function assertRuntimeExternalSymbolBindingsRust(
     'rust',
     module,
     `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
+    'rust-runtime-external-symbol-binding-incomplete',
+    { classification: 'target-runtime' },
   );
 }
 
@@ -4288,6 +4290,8 @@ function assertRuntimeExternalConstructorAbiRust(module: Readonly<IrModule>): vo
     'rust',
     module,
     `runtime external constructor ABI plan is incomplete (${problems.join('; ')})`,
+    'rust-runtime-external-constructor-abi-incomplete',
+    { classification: 'target-runtime' },
   );
 }
 

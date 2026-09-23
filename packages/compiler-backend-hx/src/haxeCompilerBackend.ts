@@ -351,7 +351,9 @@ function emitIrModuleHaxeWithContext(
     );
   } catch (error) {
     if (isCompilerHaxeTaskLoweringFailure(error)) {
-      throw createBackendEmissionFailure('haxe', module, error.message);
+      throw createBackendEmissionFailure('haxe', module, error.message, `haxe-task-lowering-${error.code}`, {
+        classification: 'target-runtime',
+      });
     }
     throw error;
   }
@@ -6307,6 +6309,8 @@ function assertRuntimeExternalSymbolBindingsHaxe(module: Readonly<IrModule>): vo
     'haxe',
     module,
     `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
+    'haxe-runtime-external-symbol-binding-incomplete',
+    { classification: 'target-runtime' },
   );
 }
 
@@ -6331,6 +6335,8 @@ function assertRuntimeExternalConstructorAbiHaxe(module: Readonly<IrModule>): vo
     'haxe',
     module,
     `runtime external constructor ABI plan is incomplete (${problems.join('; ')})`,
+    'haxe-runtime-external-constructor-abi-incomplete',
+    { classification: 'target-runtime' },
   );
 }
 

@@ -115,6 +115,86 @@ describe('createCompilerPackageCheckPolicyStrict', () => {
 });
 
 describe('createCompilerPackageCheckReport', () => {
+  it('uses producer classifications by default while strict policy ignores runtime findings and cascades', () => {
+    const provenance = createOptions().provenance;
+    const runtime = directModule('@flight/a', 'src/runtime.ts', 'runtime', [
+      {
+        classification: 'target-runtime',
+        code: 'unsupported-ir',
+        message: 'runtime profile lacks a binding',
+        rule: 'rust-runtime-profile-incomplete',
+        stage: 'emission',
+      },
+    ]);
+    const report = createCompilerPackageCheckReport(
+      createCompilation([
+        directModule('@flight/a', 'src/restriction.ts', 'restriction', [
+          {
+            classification: 'compiler-restriction',
+            code: 'unsupported-ir',
+            message: 'backend cannot lower the construct',
+            rule: 'future-backend-capability',
+            stage: 'emission',
+          },
+        ]),
+        runtime,
+        directModule('@flight/a', 'src/defect.ts', 'defect', [
+          { code: 'unsafe-emitted-path', message: 'backend emitted ../value.cpp', stage: 'emission' },
+        ]),
+        directModule('@flight/a', 'src/unknown.ts', 'unknown', [
+          {
+            code: 'unsupported-ir',
+            message: 'a future producer omitted ownership',
+            rule: 'future-unowned-rule',
+            stage: 'emission',
+          },
+        ]),
+        cascadeModule('@flight/a', 'src/dependent.ts', 'dependent', ['@flight/a/src/runtime.ts']),
+      ]),
+      { provenance },
+    );
+
+    expect(
+      Object.fromEntries(report.directFindings.map((finding) => [finding.module.name, finding.policyClass])),
+    ).toEqual({
+      defect: 'compiler-defect',
+      restriction: 'compiler-restriction',
+      runtime: 'target-runtime',
+      unknown: 'unclassified',
+    });
+    expect(report.cascades).toHaveLength(1);
+    expect(report.cascades[0]?.directFindingIdentities).toEqual([
+      report.directFindings.find((finding) => finding.module.name === 'runtime')?.identity,
+    ]);
+    const emptyBaseline = createCompilerPackageCheckBaseline(
+      createCompilerPackageCheckReport(createCompilation([]), { provenance }),
+    );
+    const strict = createCompilerPackageCheckPolicyResult(
+      compareCompilerPackageCheckBaseline(report, emptyBaseline),
+      createCompilerPackageCheckPolicyStrict(),
+    );
+    const failingClasses = strict.failingFindingIdentities.map(
+      (identity) => report.directFindings.find((finding) => finding.identity === identity)?.policyClass,
+    );
+    expect(failingClasses).toEqual(['compiler-restriction', 'unclassified']);
+  });
+
+  it('lets an exact caller rule override producer-owned defaults', () => {
+    const module = directModule('@flight/a', 'src/value.ts', 'value', [
+      {
+        classification: 'compiler-restriction',
+        code: 'unsupported-ir',
+        message: 'portable source change requested',
+        rule: 'portable-call',
+        stage: 'emission',
+      },
+    ]);
+
+    const report = createCompilerPackageCheckReport(createCompilation([module]), createOptions());
+
+    expect(report.directFindings[0]?.policyClass).toBe('source-portability');
+  });
+
   it('is reorder-independent, deduplicates occurrences, and resolves cascades to direct findings', () => {
     const compilation = createCompilation(createModules());
     const options = createOptions();

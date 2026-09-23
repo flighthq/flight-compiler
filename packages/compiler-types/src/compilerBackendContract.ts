@@ -1,5 +1,6 @@
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
+import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
 import type { CompilerRuntimeAbiManifest, CompilerRuntimeExternalMemberBinding } from './compilerRuntimeContract.js';
 import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
@@ -46,6 +47,8 @@ export type BackendEmissionFailureCode = 'unsupported-ir';
 
 export interface BackendEmissionFailure extends Error, CompilerSourceIdentity {
   readonly backend: string;
+  /** Producer-owned attribution; absent only on failures created outside the compiler helpers. */
+  readonly classification?: CompilerRefusalClassification | undefined;
   readonly code: BackendEmissionFailureCode;
   /**
    * One-based source column, absent when the backend cannot place the construct it refused. A backend

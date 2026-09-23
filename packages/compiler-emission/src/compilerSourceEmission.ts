@@ -4,6 +4,7 @@ import type {
   BackendEmissionFailureCode,
   CompilerInvariantCode,
   CompilerInvariantFailure,
+  CompilerRefusalClassification,
   CompilerSourceIdentity,
   EmittedFile,
 } from '../../compiler-types/src/index.js';
@@ -17,13 +18,19 @@ export function createBackendEmissionFailure(
   sourceIdentity: Readonly<CompilerSourceIdentity>,
   message: string,
   rule?: string,
-  position?: Readonly<{ column: number; line: number }>,
+  metadata?: Readonly<{
+    classification?: CompilerRefusalClassification | undefined;
+    column?: number | undefined;
+    line?: number | undefined;
+  }>,
 ): BackendEmissionFailure {
   const subject = `${sourceIdentity.packageName}/${sourceIdentity.source}`;
   const failure = Object.assign(new Error(`${backend} emission failed for ${subject}: ${message}`), {
     backend,
+    classification: metadata?.classification ?? 'compiler-restriction',
     code: 'unsupported-ir' as const,
-    ...position,
+    ...(metadata?.column === undefined ? {} : { column: metadata.column }),
+    ...(metadata?.line === undefined ? {} : { line: metadata.line }),
     kind: 'backend-emission' as const,
     packageName: sourceIdentity.packageName,
     source: sourceIdentity.source,

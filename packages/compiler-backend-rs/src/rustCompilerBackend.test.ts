@@ -305,7 +305,13 @@ describe('emitIrModuleRust', () => {
     );
 
     expect(() => emitIrModuleRust(result.module)).toThrow(
-      'runtime external constructor ABI plan is incomplete (missing: Array[value](1))',
+      expect.objectContaining({
+        classification: 'target-runtime',
+        message: expect.stringContaining(
+          'runtime external constructor ABI plan is incomplete (missing: Array[value](1))',
+        ),
+        rule: 'rust-runtime-external-constructor-abi-incomplete',
+      }),
     );
   });
 

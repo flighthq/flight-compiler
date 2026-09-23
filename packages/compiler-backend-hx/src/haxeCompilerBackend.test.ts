@@ -1095,7 +1095,13 @@ describe('emitIrModuleHaxe', () => {
 
     expect(emitIrModuleHaxe(fixed.module).contents).toContain('new flighthq._internal._Array(Std.int(3))');
     expect(() => emitIrModuleHaxe(dynamic.module)).toThrow(
-      'runtime external constructor ABI plan is incomplete (missing: Map[value](...))',
+      expect.objectContaining({
+        classification: 'target-runtime',
+        message: expect.stringContaining(
+          'runtime external constructor ABI plan is incomplete (missing: Map[value](...))',
+        ),
+        rule: 'haxe-runtime-external-constructor-abi-incomplete',
+      }),
     );
   });
 

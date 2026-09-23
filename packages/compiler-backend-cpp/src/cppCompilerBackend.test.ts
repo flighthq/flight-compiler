@@ -16676,6 +16676,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     // The two messages name different missing symbols. Without a rule the pair is two rules, and a
     // report counting them has no way to see that they are one decision made twice.
     expect(first.message).not.toBe(second.message);
+    expect(first.classification).toBe('target-runtime');
+    expect(second.classification).toBe('target-runtime');
     expect(first.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
     expect(second.rule).toBe(first.rule);
   });

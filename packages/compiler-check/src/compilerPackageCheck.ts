@@ -261,6 +261,16 @@ const policyClasses = new Set<CompilerPackageCheckPolicyClass>([
   'unclassified',
 ]);
 
+const defaultCodeClassifications = new Map<string, CompilerPackageCheckPolicyClass>([
+  ['duplicate-emitted-path', 'compiler-defect'],
+  ['top-level-await', 'compiler-restriction'],
+  ['unsafe-emitted-contents', 'compiler-defect'],
+  ['unsafe-emitted-path', 'compiler-defect'],
+  ['unsupported-default-expression-order', 'compiler-restriction'],
+  ['unsupported-ir', 'compiler-restriction'],
+  ['unsupported-typescript', 'compiler-restriction'],
+]);
+
 function assertPolicyClass(value: CompilerPackageCheckPolicyClass): CompilerPackageCheckPolicyClass {
   if (!policyClasses.has(value)) throw new TypeError(`Unknown compiler check policy class ${value}`);
   return value;
@@ -273,8 +283,16 @@ function classifyRefusal(
     rules: ReadonlyMap<string, CompilerPackageCheckPolicyClass>;
   }>,
 ): CompilerPackageCheckPolicyClass {
-  if (refusal.rule !== undefined) return classification.rules.get(normalizeText(refusal.rule)) ?? 'unclassified';
-  return classification.codes.get(refusal.code) ?? 'unclassified';
+  if (refusal.rule !== undefined) {
+    const ruleClassification = classification.rules.get(normalizeText(refusal.rule));
+    if (ruleClassification !== undefined) return ruleClassification;
+  } else {
+    const codeClassification = classification.codes.get(refusal.code);
+    if (codeClassification !== undefined) return codeClassification;
+  }
+  if (refusal.classification !== undefined) return assertPolicyClass(refusal.classification);
+  if (refusal.rule !== undefined) return 'unclassified';
+  return defaultCodeClassifications.get(refusal.code) ?? 'unclassified';
 }
 
 function cloneFinding(finding: Readonly<CompilerPackageCheckFinding>): CompilerPackageCheckFinding {

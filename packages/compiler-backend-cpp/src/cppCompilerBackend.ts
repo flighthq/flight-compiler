@@ -20768,6 +20768,7 @@ function assertRuntimeExternalSymbolBindingsCpp(
     module,
     `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
     'cpp-runtime-external-symbol-binding-incomplete',
+    { classification: 'target-runtime' },
   );
 }
 
@@ -20993,13 +20994,26 @@ function isSuperCallStatement(statement: Readonly<IrStatement>): boolean {
 }
 
 function emissionError(context: EmitContext, message: string, rule?: string): never {
-  throw createBackendEmissionFailure('cpp', context.module, message, rule, context.currentOrigin);
+  const metadata =
+    rule !== undefined && cppTargetRuntimeRefusalRules.has(rule)
+      ? { ...context.currentOrigin, classification: 'target-runtime' as const }
+      : context.currentOrigin;
+  throw createBackendEmissionFailure('cpp', context.module, message, rule, metadata);
 }
 
 // The ambient wrappers that change a member's optionality or mutability but never WHICH members exist, so
 // a proof about one of them is a proof about its argument. `Pick`, `Omit`, and `Exclude` are absent on
 // purpose: they decide membership, so they are resolved through the shape planner rather than assumed.
 const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial', 'Readonly', 'Required']);
+
+const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
+  'cpp-external-object-field-contract-missing',
+  'cpp-external-record-conversion-incomplete',
+  'cpp-external-record-conversion-missing',
+  'cpp-external-record-conversion-wrong-space',
+  'cpp-number-to-fixed-runtime-helper-required',
+  'cpp-runtime-external-symbol-binding-incomplete',
+]);
 
 // The lib.d.ts type utilities this emitter cannot lower unconditionally. Each names a type-level
 // operation -- `Extract` filters a union, `Uppercase` transforms a string literal -- that a target must

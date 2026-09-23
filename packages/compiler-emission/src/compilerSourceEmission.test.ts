@@ -23,11 +23,29 @@ describe('createBackendEmissionFailure', () => {
     expect(failure.message).toBe('haxe emission failed for @flighthq/math/packages/math/src/value.ts: unsupported');
     expect(failure).toMatchObject({
       backend: 'haxe',
+      classification: 'compiler-restriction',
       code: 'unsupported-ir',
       kind: 'backend-emission',
       name: 'BackendEmissionError',
       packageName: '@flighthq/math',
       source: 'packages/math/src/value.ts',
+    });
+  });
+
+  it('lets the producing backend identify a target-runtime refusal without changing source placement', () => {
+    const failure = createBackendEmissionFailure(
+      'rust',
+      { packageName: '@flighthq/math', source: 'packages/math/src/value.ts' },
+      'runtime binding incomplete',
+      'rust-runtime-binding-incomplete',
+      { classification: 'target-runtime', column: 5, line: 9 },
+    );
+
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      column: 5,
+      line: 9,
+      rule: 'rust-runtime-binding-incomplete',
     });
   });
 

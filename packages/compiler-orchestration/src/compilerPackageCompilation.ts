@@ -93,6 +93,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     );
     if (!record) continue;
     record.refusals.push({
+      classification: 'compiler-restriction',
       code: diagnostic.code,
       ...(diagnostic.column === undefined ? {} : { column: diagnostic.column }),
       ...(diagnostic.line === undefined ? {} : { line: diagnostic.line }),
@@ -251,6 +252,7 @@ function compareCompilerPackageGraphRefusals(
 function createCompilerPackageGraphEmissionRefusal(error: unknown): CompilerPackageCompilationRefusal {
   if (isBackendEmissionFailure(error)) {
     return {
+      ...(error.classification === undefined ? {} : { classification: error.classification }),
       code: error.code,
       ...(error.column === undefined ? {} : { column: error.column }),
       ...(error.line === undefined ? {} : { line: error.line }),
@@ -260,10 +262,20 @@ function createCompilerPackageGraphEmissionRefusal(error: unknown): CompilerPack
     };
   }
   if (isCompilerLoweringFailure(error) && error.code === 'unsupported-ir') {
-    return { code: error.code, message: error.message, stage: 'emission' };
+    return {
+      classification: 'compiler-restriction',
+      code: error.code,
+      message: error.message,
+      stage: 'emission',
+    };
   }
   if (isCompilerInvariantFailure(error)) {
-    return { code: error.code, message: error.message, stage: 'emission' };
+    return {
+      ...(compilerDefectEmissionCodes.has(error.code) ? { classification: 'compiler-defect' as const } : {}),
+      code: error.code,
+      message: error.message,
+      stage: 'emission',
+    };
   }
   if (error instanceof Error) {
     return { code: 'internal-error', message: error.message, stage: 'emission' };
@@ -326,7 +338,14 @@ function createCompilerPackageGraphInitialization(
       if (!isCompilerModuleEvaluationFailure(error) || !error.module) throw error;
       const record = records.get(getCompilerPackageGraphModuleKey(error.module));
       if (!record || record.refusals.length > 0) throw error;
-      record.refusals.push({ code: error.code, message: error.message, stage: 'initialization' });
+      record.refusals.push({
+        ...(compilerRestrictionInitializationCodes.has(error.code)
+          ? { classification: 'compiler-restriction' as const }
+          : {}),
+        code: error.code,
+        message: error.message,
+        stage: 'initialization',
+      });
       record.files.splice(0);
       propagateCompilerPackageGraphRefusals(records, dependencies);
     }
@@ -665,6 +684,17 @@ function getCompilerPackageGraphModuleKey(identity: Readonly<CompilerModuleIdent
 
 const compilerPackageGraphModuleKeyCache = new WeakMap<object, string>();
 
+const compilerDefectEmissionCodes: ReadonlySet<string> = new Set([
+  'duplicate-emitted-path',
+  'unsafe-emitted-contents',
+  'unsafe-emitted-path',
+]);
+
+const compilerRestrictionInitializationCodes: ReadonlySet<string> = new Set([
+  'top-level-await',
+  'unsupported-default-expression-order',
+]);
+
 function propagateCompilerPackageGraphRefusals(
   records: Map<string, ModuleEmissionRecord>,
   dependencies: readonly Readonly<CompilerModuleLinkDependency>[],
@@ -706,7 +736,12 @@ function refuseCompilerPackageGraphOutputCollisions(records: Map<string, ModuleE
     if (colliding.length < 2) continue;
     const message = `Backend emitted colliding package file path: ${path}`;
     for (const record of colliding) {
-      record.refusals.push({ code: 'duplicate-emitted-path', message, stage: 'emission' });
+      record.refusals.push({
+        classification: 'compiler-defect',
+        code: 'duplicate-emitted-path',
+        message,
+        stage: 'emission',
+      });
       record.files.splice(0);
     }
   }

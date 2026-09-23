@@ -1,4 +1,5 @@
 import type { CompilerPackageCompilationRefusalCode } from './compilerPackageCompilationContract.js';
+import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 import type { CompilerTypeScriptAnalysisIdentity } from './compilerTypeScriptContract.js';
 
@@ -18,7 +19,9 @@ export interface CompilerPackageCheckCascade {
 }
 
 export interface CompilerPackageCheckClassificationTable {
+  /** Caller overrides for stable refusal codes. Producer attribution supplies the default. */
   readonly codes?: Readonly<Partial<Record<CompilerPackageCompilationRefusalCode, CompilerPackageCheckPolicyClass>>>;
+  /** Caller overrides for exact stable refusal rules. Producer attribution supplies the default. */
   readonly rules?: Readonly<Record<string, CompilerPackageCheckPolicyClass>>;
   readonly schema: 'flight-compiler-check-classification/1';
 }
@@ -75,12 +78,7 @@ export interface CompilerPackageCheckPolicy {
   readonly schema: 'flight-compiler-check-policy/1';
 }
 
-export type CompilerPackageCheckPolicyClass =
-  | 'compiler-defect'
-  | 'compiler-restriction'
-  | 'source-portability'
-  | 'target-runtime'
-  | 'unclassified';
+export type CompilerPackageCheckPolicyClass = CompilerRefusalClassification;
 
 export interface CompilerPackageCheckPolicyResult {
   readonly failingFindingIdentities: readonly string[];

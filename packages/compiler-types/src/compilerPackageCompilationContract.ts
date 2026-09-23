@@ -11,6 +11,7 @@ import type {
 } from './compilerModuleEvaluationContract.js';
 import type { CompilerModuleFacadePlan } from './compilerModuleFacadeContract.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
+import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
 import type { CompilerRuntimeAbiManifest } from './compilerRuntimeContract.js';
 import type { PatchAudit, SemanticPatch } from './compilerSemanticPatchContract.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
@@ -75,6 +76,8 @@ export type CompilerPackageCompilationRefusalCode =
   | 'internal-error';
 
 export interface CompilerPackageCompilationRefusal {
+  /** Producer-owned attribution for a direct refusal; dependency cascades inherit their direct findings. */
+  readonly classification?: CompilerRefusalClassification | undefined;
   readonly code: CompilerPackageCompilationRefusalCode;
   readonly column?: number | undefined;
   readonly line?: number | undefined;

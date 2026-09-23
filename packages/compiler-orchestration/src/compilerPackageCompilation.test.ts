@@ -164,7 +164,13 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(result.report.modules).toEqual([
       expect.objectContaining({
         module: badIdentity,
-        refusals: [expect.objectContaining({ code: 'unsupported-ir', stage: 'emission' })],
+        refusals: [
+          expect.objectContaining({
+            classification: 'compiler-restriction',
+            code: 'unsupported-ir',
+            stage: 'emission',
+          }),
+        ],
         status: 'refused',
       }),
       expect.objectContaining({
@@ -261,8 +267,11 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(refusalOf('BadA')?.message).not.toBe(refusalOf('BadB')?.message);
     expect(refusalOf('BadA')?.rule).toBe('cpp-missing-binding');
     expect(refusalOf('BadB')?.rule).toBe('cpp-missing-binding');
+    expect(refusalOf('BadA')?.classification).toBe('compiler-restriction');
+    expect(refusalOf('BadB')?.classification).toBe('compiler-restriction');
     // A message that names no instance is already the identity, so it carries no second spelling.
     expect(refusalOf('Stated')?.rule).toBeUndefined();
+    expect(refusalOf('Stated')?.classification).toBe('compiler-restriction');
     expect(refusalOf('Stated')?.message).toBe(
       'fixture emission failed for @local/source/packages/source/src/stated.ts: object getters require target-specific accessor lowering',
     );
@@ -395,12 +404,17 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(result.compilation.files).toEqual([]);
     expect(result.report.entries).toHaveLength(4);
     expect(
-      result.report.modules.map((module) => [module.module.name, module.refusals[0]?.code, module.refusals[0]?.stage]),
+      result.report.modules.map((module) => [
+        module.module.name,
+        module.refusals[0]?.classification,
+        module.refusals[0]?.code,
+        module.refusals[0]?.stage,
+      ]),
     ).toEqual([
-      ['Broken', 'internal-error', 'emission'],
-      ['Collision-a', 'duplicate-emitted-path', 'emission'],
-      ['Collision-b', 'duplicate-emitted-path', 'emission'],
-      ['Unsafe', 'unsafe-emitted-path', 'emission'],
+      ['Broken', undefined, 'internal-error', 'emission'],
+      ['Collision-a', 'compiler-defect', 'duplicate-emitted-path', 'emission'],
+      ['Collision-b', 'compiler-defect', 'duplicate-emitted-path', 'emission'],
+      ['Unsafe', 'compiler-defect', 'unsafe-emitted-path', 'emission'],
     ]);
   });
 
@@ -421,6 +435,7 @@ describe('compileTypeScriptPackageGraph', () => {
 
     expect(result.report.modules[0]?.refusals).toEqual([
       {
+        classification: 'compiler-restriction',
         code: 'unsupported-ir',
         message:
           'Compiler lowering pass fixture-pass failed for @local/source/packages/source/src/unsupported.ts: fixture unsupported IR',
