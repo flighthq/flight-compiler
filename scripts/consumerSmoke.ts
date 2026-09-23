@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,6 +47,33 @@ try {
     fail('the installed package did not compile a module through its published entry point');
   }
   process.stdout.write(smoke.stdout);
+
+  // The packed BIN, not only the published API: a consumer has to be able to run a check from the
+  // installed tarball with no network and no repository around it. The tiny workspace is two modules
+  // that compile, so the run is admitted -- and the assertion that matters is that check mode left the
+  // workspace exactly as it found it, because the check capability record has no output directory.
+  const workspace = path.join(consumer, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  writeFileSync(
+    path.join(workspace, 'shapes.ts'),
+    'export function area(width: number, height: number): number { return width * height; }\n',
+  );
+  const flightCompile = path.join(
+    consumer,
+    'node_modules',
+    '.bin',
+    process.platform === 'win32' ? 'flight-compile.cmd' : 'flight-compile',
+  );
+  const check = spawnSync(flightCompile, ['check', workspace, '--target', 'cpp'], { cwd: consumer, encoding: 'utf8' });
+  if (check.status !== 0) {
+    process.stderr.write(check.stdout ?? '');
+    process.stderr.write(check.stderr ?? '');
+    fail(`the installed bin did not check a local workspace (exit ${String(check.status)})`);
+  }
+  if (readdirSync(workspace).map(String).sort().join(',') !== 'shapes.ts') {
+    fail('check mode wrote beside the workspace it checked');
+  }
+  process.stdout.write(check.stdout ?? '');
   process.stdout.write(`Consumer smoke passed against ${tarball}.\n`);
 } finally {
   rmSync(consumer, { force: true, recursive: true });

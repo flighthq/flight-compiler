@@ -109,10 +109,16 @@ to the published surface, so review it as one.
 | `CompilerClosureValueUseEvidence` | type |
 | `CompilerClosureValueUseKind` | type |
 | `CompilerCommandLineCapabilities` | type |
+| `CompilerCommandLineCheckCapabilities` | type |
+| `CompilerCommandLineCheckFinding` | type |
+| `CompilerCommandLineCheckFormat` | type |
+| `CompilerCommandLineCheckRequest` | type |
+| `CompilerCommandLineCheckResult` | type |
 | `CompilerCommandLineRefusal` | type |
 | `CompilerCommandLineRequest` | type |
 | `CompilerCommandLineResult` | type |
 | `CompilerCommandLineSource` | type |
+| `CompilerCommandLineWorkspacePackage` | type |
 | `CompilerCompletion` | type |
 | `CompilerCompletionFailure` | type |
 | `CompilerCompletionFailureCode` | type |
@@ -361,6 +367,7 @@ to the published surface, so review it as one.
 | `createBackendEmissionFailure` | function |
 | `createCompilerAmbientSurfaceSource` | function |
 | `createCompilerAsyncTaskCompletionPlan` | function |
+| `createCompilerCommandLineCheckReport` | function |
 | `createCompilerCommandLineReport` | function |
 | `createCompilerCompletionSet` | function |
 | `createCompilerDiagnosticsFailure` | function |
@@ -456,6 +463,7 @@ to the published surface, so review it as one.
 | `FlightWorkspaceCompilationInput` | type |
 | `FlightWorkspaceCompilationResult` | type |
 | `getCompilerAmbientSurfaceFileName` | function |
+| `getCompilerCommandLineCheckUsage` | function |
 | `getCompilerCommandLineUsage` | function |
 | `getCompilerPackageCheckReportJson` | function |
 | `getCompilerPackageCheckReportText` | function |
@@ -668,6 +676,8 @@ to the published surface, so review it as one.
 | `TypeScriptPackageGraphSource` | type |
 | `TypeScriptProject` | type |
 | `UpstreamInventory` | type |
+| `validateCompilerCommandLineCheckDirectory` | function |
+| `validateCompilerCommandLineCheckRequest` | function |
 | `validateCompilerEmittedSourceSyntax` | function |
 | `validateCompilerTargetCompilationSmoke` | function |
 | `validateIrModuleStructure` | function |

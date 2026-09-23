@@ -34,6 +34,12 @@ Compile a directory directly. The C++ command elects the semantic `flight-cpp` r
 flight-compile src --target cpp --out generated
 ```
 
+Check a workspace without generating anything. `check` runs the same deterministic compilation and writes no generated sources at all: the check capability record has no output directory. It exits 0 when the run is admitted, 1 when a package introduces a finding that gates, and 2 when the invocation itself could not be carried out. Repeated `--environment` selections narrow the run to packages that declare them, and without one the unmarked packages are checked. `--baseline` compares findings against a baseline file and never rewrites it -- there is deliberately no baseline-update action in the same invocation; `--report` writes the chosen report to a file while the stream keeps the summary line.
+
+```sh
+flight-compile check <workspace> --target cpp [--environment web] [--baseline check.baseline] [--format json]
+```
+
 Programmatic package and workspace compilation uses `compileTypeScriptPackageGraph`. Its versioned graph names package roots, declared package dependencies, entry modules, and exact importer-to-module edges. The result contains normalized output, a deterministic per-module refusal ledger, source-to-output ownership, required include paths, and the module initialization plan. C++ callers can supply `packageTargets` and `externalBindings` without adding SDL, Dawn, native GL, or another host SDK to the compiler.
 
 See [C++ package compilation](https://github.com/flighthq/flight-compiler/blob/main/docs/cpp-package-compilation.md) for the request and downstream boundary.

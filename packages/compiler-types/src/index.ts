@@ -1,9 +1,15 @@
 export type {
   CompilerCommandLineCapabilities,
+  CompilerCommandLineCheckCapabilities,
+  CompilerCommandLineCheckFinding,
+  CompilerCommandLineCheckFormat,
+  CompilerCommandLineCheckRequest,
+  CompilerCommandLineCheckResult,
   CompilerCommandLineRefusal,
   CompilerCommandLineRequest,
   CompilerCommandLineResult,
   CompilerCommandLineSource,
+  CompilerCommandLineWorkspacePackage,
 } from './compilerCommandLineContract.js';
 export type {
   CompilerCppAmbientMemberBinding,
