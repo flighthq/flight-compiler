@@ -6,9 +6,10 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
-import { isCompilerInventoryFailure, readGitCommit } from '../../compiler-inventory/src/index.js';
+import { isCompilerInventoryFailure, readFlightPackageManifests } from '../../compiler-inventory/src/index.js';
 import type {
   CompilerCommandLineSource,
+  CompilerCommandLineWorkspacePackage,
   WorkspaceSource,
   WorkspaceSourceEntry,
 } from '../../compiler-types/src/index.js';
@@ -36,26 +37,16 @@ export function compileCompilerCommandLineDirectory(argv: readonly string[]): nu
       ).exitCode;
 }
 
-// The check edge. It hands the run the workspace to read and writes only what the caller asked for: the
+// The check edge. It reads what a check needs to read and writes only what the caller asked for: the
 // report file when `--report` names one. There is no output-directory capability here at all, so a check
 // cannot write generated sources however it is invoked.
 export function validateCompilerCommandLineCheckDirectory(argv: readonly string[]): number {
   return validateCompilerCommandLineCheckRequest(
     { argv },
     {
+      listSourceFiles: listTypeScriptSources,
+      listWorkspacePackages: listWorkspacePackages,
       readBaseline: (file) => (existsSync(file) ? readFileSync(file, 'utf8') : undefined),
-      // The revision is the one fact here that needs another process, so it is read where processes are
-      // read and nowhere else. A workspace that is not a checkout is an ordinary thing to check -- the
-      // consumer smoke makes one -- so the failure is an absent revision rather than a failed run.
-      readUpstreamRevision: (workspace) => {
-        try {
-          return readGitCommit(workspace);
-        } catch (error) {
-          if (!isCompilerInventoryFailure(error)) throw error;
-          return undefined;
-        }
-      },
-      workspaceSource: fileSystemWorkspaceSource(),
       write: (text) => process.stdout.write(text),
       writeError: (text) => process.stderr.write(text),
       writeReportFile: (file, contents) => {
@@ -88,6 +79,49 @@ function listTypeScriptSources(directory: string): readonly CompilerCommandLineS
     .sort((left, right) => (left.moduleName < right.moduleName ? -1 : 1));
 }
 
+// Every package under `<workspace>/packages`, read with the inventory's own manifest reader so the
+// declared `flight.environment` arrives in the vocabulary the eligibility lane uses. A workspace with no
+// packages directory is one package -- what a scratch project and the consumer smoke are -- and nothing
+// there declares an environment, so it is unmarked.
+function listWorkspacePackages(workspaceDirectory: string): readonly CompilerCommandLineWorkspacePackage[] {
+  const packagesDirectory = path.join(workspaceDirectory, 'packages');
+  if (!existsSync(packagesDirectory)) {
+    return [{ dependencies: [], name: path.basename(workspaceDirectory), root: workspaceDirectory }];
+  }
+  const scope = readWorkspacePackageScope(workspaceDirectory);
+  let manifests: ReturnType<typeof readFlightPackageManifests>;
+  try {
+    manifests = readFlightPackageManifests(
+      { upstreamDirectory: workspaceDirectory, ...(scope === undefined ? {} : { packageScope: scope }) },
+      fileSystemWorkspaceSource(),
+    );
+  } catch (error) {
+    if (!isCompilerInventoryFailure(error)) throw error;
+    // The directory exists but holds no readable manifests; the workspace is still one package to the
+    // caller, and saying so beats reporting that there was nothing to check.
+    return [{ dependencies: [], name: path.basename(workspaceDirectory), root: workspaceDirectory }];
+  }
+  return manifests
+    .map((manifest) => ({
+      dependencies: [...manifest.dependencies],
+      ...(manifest.environment === undefined ? {} : { environment: manifest.environment }),
+      name: manifest.name,
+      root: manifest.directory,
+    }))
+    .sort((left, right) => (left.name < right.name ? -1 : 1));
+}
+
+// The package scope a workspace keeps its packages under, taken from the workspace's own name: a
+// repository named `@flighthq/flight` holds `@flighthq/*` packages. A workspace without a scoped name
+// leaves the reader its default rather than inventing one.
+function readWorkspacePackageScope(workspaceDirectory: string): string | undefined {
+  const manifest = path.join(workspaceDirectory, 'package.json');
+  if (!existsSync(manifest)) return undefined;
+  const name = readPackageManifestName(manifest, '');
+  const separator = name.indexOf('/');
+  return separator > 0 && name.startsWith('@') ? name.slice(0, separator) : undefined;
+}
+
 // The inventory reads a workspace through a four-operation capability, and its own filesystem
 // implementation is not exported from that package's barrel, so the edge that owns filesystem access in
 // this package supplies the same four operations. It is the reader's shape, not a second reading of the
@@ -103,6 +137,17 @@ function fileSystemWorkspaceSource(): WorkspaceSource {
       })),
     readTextFile: (file) => readFileSync(file, 'utf8'),
   };
+}
+
+function readPackageManifestName(manifest: string, fallback: string): string {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(manifest, 'utf8'));
+    const name = (parsed as { name?: unknown }).name;
+    return typeof name === 'string' && name.length > 0 ? name : fallback;
+  } catch {
+    // A manifest that cannot be read names nothing; the directory still does.
+    return fallback;
+  }
 }
 
 const commandLineCheckCommand = 'check';

@@ -3,39 +3,22 @@ import { createHaxeCompilerBackend } from '../../compiler-backend-hx/src/index.j
 import { createRustCompilerBackend } from '../../compiler-backend-rs/src/index.js';
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
 import {
-  compareCompilerPackageCheckBaseline,
-  createCompilerPackageCheckPolicyResult,
-  createCompilerPackageCheckPolicyStrict,
-  createCompilerPackageCheckReport,
-  getCompilerPackageCheckReportText,
-} from '../../compiler-check/src/index.js';
-import {
   createFlightPackageEligibilityPlan,
-  createFlightPackageEligibilitySubsetPlan,
   isFlightPackageEligibilityFailure,
-  readFlightPackageManifests,
 } from '../../compiler-inventory/src/index.js';
-import {
-  compileFlightWorkspace,
-  compileTypeScriptPackageGraph,
-  parseTypeScriptSource,
-} from '../../compiler-orchestration/src/index.js';
+import { compileTypeScriptPackageGraph, parseTypeScriptSource } from '../../compiler-orchestration/src/index.js';
 import type {
   CompilerCommandLineCapabilities,
+  FlightPackageEnvironment,
   CompilerCommandLineCheckCapabilities,
+  CompilerCommandLineCheckFinding,
   CompilerCommandLineCheckFormat,
-  CompilerCommandLineCheckOutcome,
-  CompilerCommandLineCheckRefusal,
   CompilerCommandLineCheckRequest,
   CompilerCommandLineCheckResult,
   CompilerCommandLineRefusal,
   CompilerCommandLineRequest,
   CompilerCommandLineResult,
-  CompilerPackageCheckBaseline,
-  CompilerPackageCheckProvenance,
-  CompilerPackageCheckReport,
-  FlightPackageEnvironment,
-  FlightPackageManifest,
+  CompilerCommandLineWorkspacePackage,
   HaxeCompilerEmissionMode,
 } from '../../compiler-types/src/index.js';
 
@@ -56,7 +39,12 @@ export function compileCompilerCommandLineRequest(
     capabilities.writeError(`${parsed.failure}\n\n${getCompilerCommandLineUsage()}\n`);
     return { emitted: 0, exitCode: 2, refusals: [] };
   }
-  const backend = createCompilerCommandLineBackend(parsed);
+  const backend =
+    parsed.target === 'haxe'
+      ? createHaxeCompilerBackend()
+      : parsed.target === 'cpp'
+        ? createCppCompilerBackend()
+        : createRustCompilerBackend();
   const backendOptions: Record<string, unknown> =
     parsed.target === 'haxe'
       ? {
@@ -112,33 +100,35 @@ export function compileCompilerCommandLineRequest(
   return { emitted, exitCode: refusals.length > 0 && !parsed.reportOnly ? 1 : 0, refusals };
 }
 
-// What a check found. The check package renders the report -- the findings, the policy classes, the
-// cascades -- and this adds only the verdict the invocation itself reached, because that is the part the
-// report does not carry: what the baseline comparison and the policy made of it.
+// What a check found, as text. The summary line always prints; the findings print grouped by reason, the
+// way the emit report does, because one rule blocking forty modules is one thing to decide about.
 export function createCompilerCommandLineCheckReport(
   result: Readonly<CompilerCommandLineCheckResult>,
   format: CompilerCommandLineCheckFormat = 'text',
 ): string {
-  if (isCompilerCommandLineCheckRefusal(result)) {
-    return format === 'json'
-      ? `${JSON.stringify({ schema: 'flight-compiler-check-run/1', exitCode: 2, reason: result.reason }, undefined, 2)}\n`
-      : `${result.reason}\n`;
-  }
   if (format === 'json') return `${JSON.stringify(createCompilerCommandLineCheckJson(result), undefined, 2)}\n`;
-  return `${getCompilerPackageCheckReportText(result.report)}${createCompilerCommandLineCheckSummaryLine(result)}\n`;
+  const lines = [createCompilerCommandLineCheckSummaryLine(result)];
+  const grouped = new Map<string, string[]>();
+  for (const finding of result.findings)
+    grouped.set(finding.reason, [...(grouped.get(finding.reason) ?? []), finding.module]);
+  const ordered = [...grouped.entries()].sort(
+    (left, right) => right[1].length - left[1].length || compareTextCodeUnits(left[0], right[0]),
+  );
+  for (const [reason, modules] of ordered) {
+    lines.push('', `  ${String(modules.length)}x ${reason}`);
+    for (const module of modules.slice(0, refusalModuleSampleSize)) lines.push(`       ${module}`);
+    if (modules.length > refusalModuleSampleSize) {
+      lines.push(`       … and ${String(modules.length - refusalModuleSampleSize)} more`);
+    }
+  }
+  return `${lines.join('\n')}\n`;
 }
 
-// The one line the invocation always prints: what it checked, what it found, and what it decided. Absent a
-// baseline every finding is introduced, which is why `0 baselined` and `0 resolved` read as a first run.
-function createCompilerCommandLineCheckSummaryLine(result: Readonly<CompilerCommandLineCheckOutcome>): string {
-  const gating = result.policyResult.failingFindingIdentities.length;
+function createCompilerCommandLineCheckSummaryLine(result: Readonly<CompilerCommandLineCheckResult>): string {
   return (
-    `${String(result.eligiblePackageNames.length)} package(s) checked, ` +
-    `${String(result.report.totals.directFindings)} direct finding(s), ` +
-    `${String(result.comparison.introduced.length)} introduced, ${String(gating)} gating, ` +
-    `${String(result.comparison.unchanged.length)} baselined, ` +
-    `${String(result.comparison.resolvedFindingIdentities.length)} resolved, ` +
-    `policy ${result.policyResult.policy.id}.`
+    `${String(result.packages.length)} package(s) checked, ${String(result.findings.length)} finding(s): ` +
+    `${String(result.baselined)} baselined, ${String(result.introduced.length - result.runtimeOnly)} gating, ` +
+    `${String(result.runtimeOnly)} runtime-only, ${String(result.resolved.length)} resolved.`
   );
 }
 
@@ -171,167 +161,134 @@ export function getCompilerCommandLineUsage(): string {
   return commandLineUsage;
 }
 
-export function isCompilerCommandLineCheckRefusal(
-  result: Readonly<CompilerCommandLineCheckResult>,
-): result is CompilerCommandLineCheckRefusal {
-  return result.exitCode === 2;
-}
-
 export function validateCompilerCommandLineCheckRequest(
   request: Readonly<CompilerCommandLineCheckRequest>,
   capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
 ): CompilerCommandLineCheckResult {
   const parsed = parseCompilerCommandLineCheckRequest(request);
   if ('failure' in parsed) {
-    return refuseCompilerCommandLineCheck(capabilities, `${parsed.failure}\n\n${getCompilerCommandLineCheckUsage()}\n`);
+    capabilities.writeError(`${parsed.failure}\n\n${getCompilerCommandLineCheckUsage()}\n`);
+    return createCompilerCommandLineCheckResult(capabilities, { packages: [], findings: [], resolved: [] }, 2);
   }
-  let manifests: readonly Readonly<FlightPackageManifest>[];
-  try {
-    manifests = readFlightPackageManifests(
-      { upstreamDirectory: parsed.workspaceDirectory },
-      capabilities.workspaceSource,
-    );
-  } catch (error) {
-    return refuseCompilerCommandLineCheck(capabilities, `${describeCompilerCommandLineFailure(error)}\n`);
-  }
-  const selectedPackageNames = selectCompilerCommandLinePackageNames(manifests, parsed);
-  if ('failure' in selectedPackageNames) {
-    return refuseCompilerCommandLineCheck(capabilities, `${selectedPackageNames.failure}\n`);
-  }
-  if (selectedPackageNames.length === 0) {
-    // Nothing in scope is an invocation failure rather than a clean run: the check was pointed at
-    // something that is not the workspace the caller meant, and saying so beats reporting zero findings.
-    return refuseCompilerCommandLineCheck(
-      capabilities,
-      `${
-        parsed.environmentNames.length === 0
-          ? `No packages under ${parsed.workspaceDirectory}`
-          : `No package under ${parsed.workspaceDirectory} declares ${parsed.environmentNames.join(', ')}`
-      }\n`,
-    );
-  }
-  const baseline = readCompilerCommandLineCheckBaseline(capabilities, parsed);
-  if ('failure' in baseline) return refuseCompilerCommandLineCheck(capabilities, `${baseline.failure}\n`);
-  let report: CompilerPackageCheckReport;
-  try {
-    // One compilation of the whole selected closure, not one per package: the module graph, the export
-    // lanes, and the identity a baseline records are all graph facts, and a per-package run would answer
-    // "what is wrong with this module" with what a dependency could not do.
-    const compilation = compileFlightWorkspace({
-      backend: createCompilerCommandLineBackend(parsed),
-      backendOptions: createCompilerCommandLineCheckBackendOptions(parsed),
-      eligiblePackageNames: selectedPackageNames,
-      source: capabilities.workspaceSource,
-      upstreamDirectory: parsed.workspaceDirectory,
-    });
-    report = createCompilerPackageCheckReport(compilation.report, {
-      provenance: capabilities.readProvenance?.() ?? createCompilerCommandLineCheckProvenance(parsed, capabilities),
-    });
-  } catch (error) {
-    return refuseCompilerCommandLineCheck(capabilities, `${describeCompilerCommandLineFailure(error)}\n`);
-  }
-  const comparison = compareCompilerPackageCheckBaseline(report, baseline.baseline);
-  const policyResult = createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict());
-  const outcome: CompilerCommandLineCheckOutcome = {
-    comparison,
-    eligiblePackageNames: selectedPackageNames,
-    exitCode: policyResult.passed ? 0 : 1,
-    policyResult,
-    report,
-  };
-  const rendered = createCompilerCommandLineCheckReport(outcome, parsed.format);
-  if (parsed.reportPath === undefined) {
-    capabilities.write(rendered);
-  } else {
-    // The file carries the whole report; the stream carries the verdict, because a run that writes a file
-    // still has to say in one line what it decided.
-    capabilities.writeReportFile(parsed.reportPath, rendered);
-    capabilities.write(`${createCompilerCommandLineCheckSummaryLine(outcome)}\n`);
-  }
-  return outcome;
-}
-
-// A baseline is the identities an earlier run recorded, as the check package writes them. Naming one that
-// cannot be read or understood is an invocation failure: silently continuing would compare against nothing
-// and report every finding as introduced while appearing to have honoured the file.
-function readCompilerCommandLineCheckBaseline(
-  capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
-  parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
-): Readonly<{ baseline: CompilerPackageCheckBaseline }> | Readonly<{ failure: string }> {
-  const empty: CompilerPackageCheckBaseline = { findingIdentities: [], schema: 'flight-compiler-check-baseline/1' };
-  if (parsed.baselinePath === undefined) return { baseline: empty };
-  const text = capabilities.readBaseline(parsed.baselinePath);
-  if (text === undefined) return { failure: `Baseline ${parsed.baselinePath} could not be read` };
-  let parsedBaseline: unknown;
-  try {
-    parsedBaseline = JSON.parse(text);
-  } catch {
-    return { failure: `Baseline ${parsed.baselinePath} is not valid JSON` };
-  }
-  if (!isCompilerCommandLineCheckBaseline(parsedBaseline)) {
-    return { failure: `Baseline ${parsed.baselinePath} is not a flight-compiler-check-baseline/1 record` };
-  }
-  return { baseline: parsedBaseline };
-}
-
-function isCompilerCommandLineCheckBaseline(value: unknown): value is CompilerPackageCheckBaseline {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    'schema' in value &&
-    value.schema === 'flight-compiler-check-baseline/1' &&
-    'findingIdentities' in value &&
-    Array.isArray(value.findingIdentities) &&
-    value.findingIdentities.every((identity: unknown) => typeof identity === 'string')
+  const selected = selectCompilerCommandLinePackages(
+    capabilities.listWorkspacePackages(parsed.workspaceDirectory),
+    parsed,
   );
-}
-
-// A run reports what produced it. The upstream revision is whatever the caller's workspace reading could
-// establish -- a Git checkout has one and says so; the compiler and the target runtime have no revision the
-// compiler can read about itself, so those say `unversioned` rather than a guess.
-function createCompilerCommandLineCheckProvenance(
-  parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
-  capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
-): CompilerPackageCheckProvenance {
-  return {
-    compiler: { name: '@flighthq/tool-compiler', revision: unversionedRevision },
-    target: { name: parsed.target === 'cpp' ? parsed.runtimeProfile : parsed.target, revision: unversionedRevision },
-    upstream: {
-      name: 'workspace',
-      revision: capabilities.readUpstreamRevision?.(parsed.workspaceDirectory) ?? unversionedRevision,
-    },
-  };
-}
-
-function createCompilerCommandLineCheckBackendOptions(
-  parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
-): Record<string, unknown> {
-  return parsed.target === 'cpp'
-    ? {
-        runtimeProfile: parsed.runtimeProfile,
-        ...(parsed.runtimeHeader === undefined ? {} : { runtimeHeader: parsed.runtimeHeader }),
+  if ('failure' in selected) {
+    capabilities.writeError(`${selected.failure}\n`);
+    return createCompilerCommandLineCheckResult(capabilities, { packages: [], findings: [], resolved: [] }, 2);
+  }
+  if (selected.length === 0) {
+    capabilities.writeError(
+      parsed.environmentNames.length === 0
+        ? `No packages under ${parsed.workspaceDirectory}\n`
+        : `No package under ${parsed.workspaceDirectory} declares ${parsed.environmentNames.join(', ')}\n`,
+    );
+    return createCompilerCommandLineCheckResult(capabilities, { packages: [], findings: [], resolved: [] }, 2);
+  }
+  const backend =
+    parsed.target === 'haxe'
+      ? createHaxeCompilerBackend()
+      : parsed.target === 'cpp'
+        ? createCppCompilerBackend()
+        : createRustCompilerBackend();
+  const backendOptions: Record<string, unknown> =
+    parsed.target === 'cpp'
+      ? {
+          runtimeProfile: parsed.runtimeProfile,
+          ...(parsed.runtimeHeader === undefined ? {} : { runtimeHeader: parsed.runtimeHeader }),
+        }
+      : {};
+  const findings: CompilerCommandLineCheckFinding[] = [];
+  const packages: string[] = [];
+  for (const entry of selected) {
+    const sources = capabilities.listSourceFiles(entry.root);
+    if (sources.length === 0) {
+      // A package with nothing to compile is not a package that passed: the check was pointed at
+      // something that is not a workspace, which is an invocation failure rather than a clean run.
+      capabilities.writeError(`No TypeScript modules under ${entry.root}\n`);
+      return createCompilerCommandLineCheckResult(capabilities, { packages: [], findings: [], resolved: [] }, 2);
+    }
+    packages.push(entry.name);
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions,
+      graph: {
+        entries: [],
+        moduleDependencies: [],
+        packages: [{ dependencies: [], name: entry.name, root: entry.root }],
+        schema: 'flight-compiler-package-graph/1',
+      },
+      sources: sources.map((source) => ({
+        packageName: entry.name,
+        packageRoot: entry.root,
+        sourceFile: parseTypeScriptSource(source.sourcePath, source.contents),
+        upstreamDirectory: entry.root,
+      })),
+    });
+    for (const module of result.report.modules) {
+      for (const refusal of module.refusals) {
+        const moduleName = module.module.source;
+        const identity = refusal.rule ?? refusal.message;
+        const position = refusal.line === undefined ? '' : `:${String(refusal.line)}:${String(refusal.column ?? 0)}`;
+        findings.push({
+          code: refusal.code,
+          id: `${moduleName}::${identity}${position}`,
+          module: moduleName,
+          reason: refusal.message,
+          stage: refusal.stage,
+        });
       }
-    : {};
+    }
+  }
+  findings.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  const baseline = parsed.baselinePath === undefined ? undefined : capabilities.readBaseline(parsed.baselinePath);
+  const known = baseline === undefined ? undefined : parseCompilerCommandLineBaseline(baseline);
+  const introduced = known === undefined ? findings : findings.filter((finding) => !known.has(finding.id));
+  const resolved =
+    known === undefined
+      ? []
+      : [...known].filter((id) => !findings.some((finding) => finding.id === id)).sort(compareTextCodeUnits);
+  const result = createCompilerCommandLineCheckResult(
+    capabilities,
+    { packages, findings, introduced, resolved },
+    undefined,
+  );
+  const report = createCompilerCommandLineCheckReport(result, parsed.format);
+  if (parsed.reportPath === undefined) {
+    capabilities.write(report);
+  } else {
+    // The file carries the whole report; the stream carries the result, because a run that writes a file
+    // still has to say in one line what it decided.
+    capabilities.writeReportFile(parsed.reportPath, report);
+    capabilities.write(`${createCompilerCommandLineCheckSummaryLine(result)}\n`);
+  }
+  return result;
 }
 
-function createCompilerCommandLineBackend(parsed: Readonly<{ target: 'cpp' | 'haxe' | 'rust' }>) {
-  return parsed.target === 'haxe'
-    ? createHaxeCompilerBackend()
-    : parsed.target === 'cpp'
-      ? createCppCompilerBackend()
-      : createRustCompilerBackend();
-}
-
-function describeCompilerCommandLineFailure(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function refuseCompilerCommandLineCheck(
+function createCompilerCommandLineCheckResult(
   capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
-  text: string,
-): CompilerCommandLineCheckRefusal {
-  capabilities.writeError(text);
-  return { exitCode: 2, reason: text.trimEnd() };
+  parts: Readonly<{
+    packages: readonly string[];
+    findings: readonly CompilerCommandLineCheckFinding[];
+    introduced?: readonly CompilerCommandLineCheckFinding[] | undefined;
+    resolved: readonly string[];
+  }>,
+  forcedExitCode: number | undefined,
+): CompilerCommandLineCheckResult {
+  const introduced = parts.introduced ?? parts.findings;
+  const runtimeOnly = introduced.filter((finding) => capabilities.isRuntimeOnlyFinding?.(finding) === true);
+  const gated = introduced.filter((finding) => capabilities.isRuntimeOnlyFinding?.(finding) !== true);
+  const result: CompilerCommandLineCheckResult = {
+    baselined: parts.findings.length - introduced.length,
+    exitCode: forcedExitCode ?? (gated.length > 0 ? 1 : 0),
+    findings: parts.findings,
+    introduced,
+    packages: parts.packages,
+    resolved: parts.resolved,
+    runtimeOnly: runtimeOnly.length,
+  };
+  return result;
 }
 
 // What the compiler could not do, grouped by reason rather than listed by module. One rule blocking
@@ -445,27 +402,24 @@ const refusalModuleSampleSize = 3;
 
 // Checking a workspace without writing one.
 //
-// The same deterministic compilation the emit path runs, with the output-file capability simply absent:
-// check mode cannot write generated sources because its capability record has nowhere to put them. The
-// report goes to the caller's streams, and the exit code says which of three things happened -- the check
-// admitted the workspace, it found something that gates, or the invocation itself could not be carried out.
-// The machine-readable form: the three landed records the run produced, under one identity, with no
-// ordering that depends on iteration. Each part keeps its own schema, so a consumer can read the report
-// without reading this envelope's shape at all.
-function createCompilerCommandLineCheckJson(result: Readonly<CompilerCommandLineCheckOutcome>): unknown {
+// The same deterministic compilation the emit path runs, asked once per selected package, with the
+// output-file capability simply absent: check mode cannot write generated sources because its capability
+// record has nowhere to put them. The report goes to the caller's streams, and the exit code says which
+// of three things happened -- the check admitted the workspace, it found something that gates, or the
+// invocation itself could not be carried out.
+// The machine-readable form, with its own schema identity and no ordering that depends on iteration.
+function createCompilerCommandLineCheckJson(result: Readonly<CompilerCommandLineCheckResult>): unknown {
   return {
-    schema: 'flight-compiler-check-run/1',
-    comparison: result.comparison,
-    eligiblePackageNames: [...result.eligiblePackageNames],
+    schema: 'flight-compiler-check/1',
     exitCode: result.exitCode,
-    policyResult: result.policyResult,
-    report: result.report,
+    packages: [...result.packages],
+    findings: result.findings.map((finding) => ({ ...finding })),
+    introduced: result.introduced.map((finding) => finding.id),
+    resolved: [...result.resolved],
+    baselined: result.baselined,
+    runtimeOnly: result.runtimeOnly,
   };
 }
-
-// A run that did not establish a revision says so. The field is a fact about the invocation, and a guess
-// would make two different toolchains look like the same one.
-const unversionedRevision = 'unversioned';
 
 const commandLineCheckUsage = `Usage: flight-compile check <workspace> --target <cpp|haxe|rust>
 
@@ -553,67 +507,56 @@ function parseCompilerCommandLineCheckRequest(
 }
 
 // Which packages a run is about. The eligibility lane owns this question -- the declared
-// `flight.environment`, the narrow name selector, and what an unmarked package means -- so the CLI hands it
-// the workspace's packages and takes back names. The whole workspace goes in, not only the seeds, because
-// the plan is what pulls in the dependencies a selection needs; the seeds are only what the caller asked
-// for. Repeating `--environment` asks for each in turn and unites the answers, which is what a caller
-// naming two environments is asking for; with none named, the plan's own default applies. A refusal there
-// is an invocation failure, not a finding.
-function selectCompilerCommandLinePackageNames(
-  manifests: readonly Readonly<FlightPackageManifest>[],
+// `flight.environment`, the narrow name selector, and what an unmarked package means -- so the CLI hands
+// it the workspace's packages and takes back names. Repeating `--environment` asks for each in turn and
+// unites the answers, which is what a caller naming two environments is asking for; with none named, the
+// plan's own default applies. A refusal there is an invocation failure, not a finding.
+function selectCompilerCommandLinePackages(
+  packages: readonly Readonly<CompilerCommandLineWorkspacePackage>[],
   parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
-): readonly string[] | Readonly<{ failure: string }> {
+): readonly Readonly<CompilerCommandLineWorkspacePackage>[] | Readonly<{ failure: string }> {
   const requested: readonly (FlightPackageEnvironment | undefined)[] =
     parsed.environmentNames.length === 0
       ? [undefined]
       : (parsed.environmentNames as readonly FlightPackageEnvironment[]);
   const eligible = new Set<string>();
-
-  if (parsed.selectedPackageNames.length > 0) {
-    const manifestsByName = new Map(manifests.map((manifest) => [manifest.name, manifest] as const));
-    for (const name of parsed.selectedPackageNames) {
-      if (!manifestsByName.has(name)) {
-        return {
-          failure: `Selected Flight package is not present in the inventory: ${name}`,
-        };
-      }
-      let admitted = false;
-      let firstFailure: string | undefined;
-      for (const environment of requested) {
-        try {
-          const plan = createFlightPackageEligibilityPlan({
-            packages: manifests,
-            selectedPackageNames: [name],
-            ...(environment === undefined ? {} : { environment }),
-          });
-          for (const packageName of plan.eligiblePackageNames) eligible.add(packageName);
-          admitted = true;
-        } catch (error) {
-          if (!isFlightPackageEligibilityFailure(error)) throw error;
-          firstFailure ??= error.message;
-        }
-      }
-      if (!admitted) return { failure: firstFailure ?? `Package ${name} is not eligible` };
-    }
-    return [...eligible].sort(compareTextCodeUnits);
-  }
-
   for (const environment of requested) {
+    // Naming packages states the selection; naming none selects the workspace's own default, which is the
+    // packages that carry no environment. Either way the plan below decides what the selection pulls in.
+    const selected = packages.filter(
+      (entry) =>
+        (parsed.selectedPackageNames.length === 0 || parsed.selectedPackageNames.includes(entry.name)) &&
+        (parsed.selectedPackageNames.length > 0 || entry.environment === environment),
+    );
     try {
-      const plan = createFlightPackageEligibilitySubsetPlan({
-        candidatePackageNames: manifests
-          .filter((manifest) => manifest.environment === environment)
-          .map((manifest) => manifest.name),
-        packages: manifests,
+      const plan = createFlightPackageEligibilityPlan({
+        packages: selected.map((entry) => ({
+          dependencies: entry.dependencies,
+          ...(entry.environment === undefined ? {} : { environment: entry.environment }),
+          name: entry.name,
+        })),
+        selectedPackageNames: selected.map((entry) => entry.name),
         ...(environment === undefined ? {} : { environment }),
       });
-      for (const name of plan.includedPackageNames) eligible.add(name);
+      for (const name of plan.eligiblePackageNames) eligible.add(name);
     } catch (error) {
       if (isFlightPackageEligibilityFailure(error)) return { failure: error.message };
       throw error;
     }
   }
-  return [...eligible].sort(compareTextCodeUnits);
+  return packages.filter((entry) => eligible.has(entry.name));
+}
+
+// One finding identity per line. Blank lines and `#` comments are ignored so a baseline can explain
+// itself; the comparison is a set difference either way, so ordering never changes the answer.
+function parseCompilerCommandLineBaseline(text: string): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith('#')) continue;
+    ids.add(trimmed);
+  }
+  return ids;
 }
 
 const commandLineCheckValueOptions = new Set([

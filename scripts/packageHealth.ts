@@ -67,8 +67,6 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-backend-hx',
       'compiler-backend-rs',
       'compiler-canonical-form',
-      'compiler-check',
-      'compiler-inventory',
       'compiler-orchestration',
       'compiler-types',
     ],

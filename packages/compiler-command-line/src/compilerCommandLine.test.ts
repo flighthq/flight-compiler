@@ -1,19 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  createCompilerPackageCheckPolicyResult,
-  createCompilerPackageCheckPolicyStrict,
-  createCompilerPackageCheckReport,
-} from '../../compiler-check/src/index.js';
-import { createMemoryWorkspaceSource } from '../../compiler-inventory/src/index.js';
 import type {
   CompilerCommandLineCapabilities,
   CompilerCommandLineCheckCapabilities,
-  CompilerCommandLineCheckOutcome,
-  CompilerCommandLineCheckResult,
   CompilerCommandLineSource,
-  CompilerPackageCheckComparison,
-  CompilerPackageCheckProvenance,
+  CompilerCommandLineWorkspacePackage,
 } from '../../compiler-types/src/index.js';
 import {
   validateCompilerCommandLineCheckRequest,
@@ -22,7 +13,6 @@ import {
   createCompilerCommandLineReport,
   getCompilerCommandLineCheckUsage,
   getCompilerCommandLineUsage,
-  isCompilerCommandLineCheckRefusal,
 } from './compilerCommandLine.js';
 
 describe('compileCompilerCommandLineRequest', () => {
@@ -354,128 +344,81 @@ describe('getCompilerCommandLineUsage', () => {
 });
 
 describe('validateCompilerCommandLineCheckRequest', () => {
-  // A workspace the inventory reads: every fixture package declares the root export lane a real package
-  // has, and the modules behind it are where a finding is found.
-  const goodModule = 'export function doubled(value: number): number { return value * 2; }';
+  // A workspace with one package that compiles and one module that does not: the shape a check run is
+  // actually pointed at, and the one where "what gates" has an answer.
+  const workspacePackage = (name: string, environment?: 'node' | 'web') => ({
+    dependencies: [],
+    ...(environment === undefined ? {} : { environment }),
+    name,
+    root: `/ws/${name}`,
+  });
+  const rustModule = 'export function doubled(value: number): number { return value * 2; }';
   const refusedModule = 'export function bad(): RegExp { return /x/; }';
-  const core: CheckPackage = {
-    directory: 'core',
-    name: '@flighthq/core',
-    sources: { 'bad.ts': refusedModule, 'index.ts': "export * from './bad.js';\n" },
-  };
-  const quiet: CheckPackage = { directory: 'quiet', name: '@flighthq/quiet', sources: { 'index.ts': goodModule } };
-  // The identity the check package mints for the refused module, spelled out so a baseline fixture is a
-  // literal rather than something the test derives from the code it is testing.
-  const refusedIdentity =
-    'flight-compiler-check-finding/1:["@flighthq/core","packages/core/src/bad.ts","Bad","emission","unsupported-ir",null]';
 
   it('reports a finding and exits 1 when a module cannot be compiled', () => {
-    const run = checkRun([core]);
+    const run = checkRun([source('good.ts', rustModule), source('bad.ts', refusedModule)]);
 
-    const result = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'rust'] }, run.capabilities);
+    const result = validateCompilerCommandLineCheckRequest({ argv: ['/ws/one', '--target', 'rust'] }, run.capabilities);
 
     expect(result.exitCode).toBe(1);
-    expect(checkOutcome(result).eligiblePackageNames).toEqual(['@flighthq/core']);
-    expect(checkOutcome(result).report.directFindings.map((finding) => finding.module.source)).toEqual([
-      'packages/core/src/bad.ts',
-    ]);
-    expect(checkOutcome(result).comparison.introduced).toEqual(checkOutcome(result).report.directFindings);
+    expect(result.packages).toEqual(['one']);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.module).toBe('bad.ts');
+    expect(result.findings[0]?.stage).toBe('emission');
+    expect(result.introduced).toEqual(result.findings);
     expect(run.out.join('')).toContain('1 gating');
   });
 
-  it('admits a workspace whose modules all compile', () => {
-    const run = checkRun([quiet]);
+  it('admits the workspace when the only finding is the runtime to supply', () => {
+    const run = checkRun([source('bad.ts', refusedModule)], { runtimeOnly: true });
 
-    const result = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'rust'] }, run.capabilities);
+    const result = validateCompilerCommandLineCheckRequest({ argv: ['/ws/one', '--target', 'rust'] }, run.capabilities);
 
     expect(result.exitCode).toBe(0);
-    expect(checkOutcome(result).report.directFindings).toEqual([]);
-    expect(run.out.join('')).toContain('0 gating');
+    expect(result.runtimeOnly).toBe(1);
+    expect(result.introduced).toHaveLength(1);
+    expect(run.out.join('')).toContain('1 runtime-only');
   });
 
   it('admits a finding the baseline already carried and still reports it', () => {
-    const baseline = JSON.stringify({
-      findingIdentities: [refusedIdentity],
-      schema: 'flight-compiler-check-baseline/1',
-    });
-    const run = checkRun([core], { baseline });
+    const run = checkRun([source('bad.ts', refusedModule)]);
+    const first = validateCompilerCommandLineCheckRequest({ argv: ['/ws/one', '--target', 'rust'] }, run.capabilities);
+    const baseline = first.findings.map((finding) => finding.id).join('\n');
+    const ids = first.findings.map((finding) => finding.id);
 
+    const resumed = checkRun([source('bad.ts', refusedModule)], { baseline: `${baseline}\n` });
     const result = validateCompilerCommandLineCheckRequest(
-      { argv: ['/ws', '--target', 'rust', '--baseline', '/ws/check.baseline'] },
-      run.capabilities,
+      { argv: ['/ws/one', '--target', 'rust', '--baseline', '/ws/check.baseline'] },
+      resumed.capabilities,
     );
 
+    expect(ids).toHaveLength(1);
     expect(result.exitCode).toBe(0);
-    expect(checkOutcome(result).comparison.introduced).toEqual([]);
-    expect(checkOutcome(result).comparison.unchanged).toHaveLength(1);
-    expect(checkOutcome(result).report.directFindings).toHaveLength(1);
-    expect(run.out.join('')).toContain('1 baselined');
+    expect(result.baselined).toBe(1);
+    expect(result.introduced).toEqual([]);
+    expect(result.resolved).toEqual([]);
   });
 
   it('distinguishes an introduced finding from one the baseline no longer covers', () => {
-    const run = checkRun([core], {
-      baseline: '{"schema":"flight-compiler-check-baseline/1","findingIdentities":["gone"]}',
+    const run = checkRun([source('bad.ts', refusedModule)], {
+      baseline: 'gone.ts::a reason that no longer happens:3:1\n',
     });
 
     const result = validateCompilerCommandLineCheckRequest(
-      { argv: ['/ws', '--target', 'rust', '--baseline', '/ws/check.baseline'] },
+      { argv: ['/ws/one', '--target', 'rust', '--baseline', '/ws/check.baseline'] },
       run.capabilities,
     );
 
     expect(result.exitCode).toBe(1);
-    expect(checkOutcome(result).comparison.unchanged).toEqual([]);
-    expect(checkOutcome(result).comparison.introduced).toHaveLength(1);
-    expect(checkOutcome(result).comparison.resolvedFindingIdentities).toEqual(['gone']);
-  });
-
-  it('refuses a baseline it cannot read or understand rather than comparing against nothing', () => {
-    const absent = checkRun([core]);
-    const malformed = checkRun([core], { baseline: 'not json' });
-    const foreign = checkRun([core], {
-      baseline: '{"schema":"flight-compiler-check-baseline/2","findingIdentities":[]}',
-    });
-    const argv = ['/ws', '--target', 'rust', '--baseline', '/ws/check.baseline'];
-
-    const missingResult = validateCompilerCommandLineCheckRequest({ argv }, absent.capabilities);
-    const malformedResult = validateCompilerCommandLineCheckRequest({ argv }, malformed.capabilities);
-    const foreignResult = validateCompilerCommandLineCheckRequest({ argv }, foreign.capabilities);
-
-    expect(missingResult.exitCode).toBe(2);
-    expect(malformedResult.exitCode).toBe(2);
-    expect(foreignResult.exitCode).toBe(2);
-    expect(absent.err.join('')).toContain('could not be read');
-    expect(malformed.err.join('')).toContain('is not valid JSON');
-    expect(foreign.err.join('')).toContain('flight-compiler-check-baseline/1');
-  });
-
-  it('counts a refused dependency as a cascade rather than as the importing module finding', () => {
-    const importer: CheckPackage = {
-      dependencies: ['@flighthq/core'],
-      directory: 'importer',
-      name: '@flighthq/importer',
-      sources: { 'index.ts': "import { bad } from '@flighthq/core';\nvoid bad;" },
-    };
-    const run = checkRun([core, importer]);
-
-    const result = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'rust'] }, run.capabilities);
-
-    expect(result.exitCode).toBe(1);
-    expect(checkOutcome(result).report.directFindings).toHaveLength(1);
-    expect(checkOutcome(result).report.cascades.map((cascade) => cascade.module.source)).toEqual([
-      'packages/core/src/index.ts',
-      'packages/importer/src/index.ts',
-    ]);
-    expect(run.out.join('')).toContain('Dependency cascades: 2');
+    expect(result.baselined).toBe(0);
+    expect(result.introduced).toHaveLength(1);
+    expect(result.resolved).toEqual(['gone.ts::a reason that no longer happens:3:1']);
   });
 
   it('selects unmarked packages by default and named environments only when asked', () => {
-    const marked: CheckPackage = {
-      directory: 'web',
-      environment: 'web',
-      name: '@flighthq/web',
-      sources: { 'index.ts': goodModule },
-    };
-    const run = checkRun([marked, quiet]);
+    const marked = { dependencies: [], environment: 'web' as const, name: 'web', root: '/ws/web' };
+    const unmarked = { dependencies: [], name: 'core', root: '/ws/core' };
+    const run = checkRun([source('only.ts', rustModule)], { packages: [marked, unmarked] });
 
     const byDefault = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'rust'] }, run.capabilities);
     const selected = validateCompilerCommandLineCheckRequest(
@@ -483,48 +426,14 @@ describe('validateCompilerCommandLineCheckRequest', () => {
       run.capabilities,
     );
 
-    expect(checkOutcome(byDefault).eligiblePackageNames).toEqual(['@flighthq/quiet']);
-    expect(checkOutcome(selected).eligiblePackageNames).toEqual(['@flighthq/web']);
-  });
-
-  it('excludes an incompatible default root without dropping compatible unmarked packages', () => {
-    const web: CheckPackage = {
-      directory: 'web',
-      environment: 'web',
-      name: '@flighthq/web',
-      sources: { 'index.ts': goodModule },
-    };
-    const incompatible: CheckPackage = {
-      dependencies: ['@flighthq/web'],
-      directory: 'browser-dependent',
-      name: '@flighthq/browser-dependent',
-      sources: { 'index.ts': "export { doubled } from '@flighthq/web';" },
-    };
-    const run = checkRun([incompatible, quiet, web]);
-
-    const result = validateCompilerCommandLineCheckRequest(
-      { argv: ['/ws', '--target', 'rust'] },
-      run.capabilities,
-    );
-
-    expect(result.exitCode).toBe(0);
-    expect(checkOutcome(result).eligiblePackageNames).toEqual(['@flighthq/quiet']);
+    expect(byDefault.packages).toEqual(['core']);
+    expect(selected.packages).toEqual(['web']);
   });
 
   it('unites repeated environments instead of letting the last one win', () => {
-    const web: CheckPackage = {
-      directory: 'web',
-      environment: 'web',
-      name: '@flighthq/web',
-      sources: { 'index.ts': goodModule },
-    };
-    const node: CheckPackage = {
-      directory: 'node',
-      environment: 'node',
-      name: '@flighthq/node',
-      sources: { 'index.ts': goodModule },
-    };
-    const run = checkRun([web, node]);
+    const web = { dependencies: [], environment: 'web' as const, name: 'browser', root: '/ws/browser' };
+    const node = { dependencies: [], environment: 'node' as const, name: 'server', root: '/ws/server' };
+    const run = checkRun([source('only.ts', rustModule)], { packages: [web, node] });
 
     const once = validateCompilerCommandLineCheckRequest(
       { argv: ['/ws', '--target', 'rust', '--environment', 'web'] },
@@ -535,13 +444,13 @@ describe('validateCompilerCommandLineCheckRequest', () => {
       run.capabilities,
     );
 
-    expect(checkOutcome(once).eligiblePackageNames).toEqual(['@flighthq/web']);
-    expect(checkOutcome(twice).eligiblePackageNames).toEqual(['@flighthq/node', '@flighthq/web']);
+    expect(once.packages).toEqual(['browser']);
+    expect(twice.packages).toEqual(['browser', 'server']);
     expect(twice.exitCode).toBe(once.exitCode);
   });
 
   it('refuses an invocation that names an environment no package declares', () => {
-    const run = checkRun([quiet]);
+    const run = checkRun([source('only.ts', rustModule)], { packages: [workspacePackage('core')] });
 
     const result = validateCompilerCommandLineCheckRequest(
       { argv: ['/ws', '--target', 'rust', '--environment', 'web'] },
@@ -549,203 +458,106 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     );
 
     expect(result.exitCode).toBe(2);
+    expect(result.findings).toEqual([]);
     expect(run.err.join('')).toContain('declares web');
   });
 
   it('checks only the packages a repeated --package names', () => {
-    const run = checkRun([core, quiet]);
+    const run = checkRun([source('only.ts', rustModule)], {
+      packages: [
+        { dependencies: [], name: 'core', root: '/ws/core' },
+        { dependencies: [], name: 'extra', root: '/ws/extra' },
+      ],
+    });
 
-    const result = validateCompilerCommandLineCheckRequest(
-      { argv: ['/ws', '--target', 'rust', '--package', '@flighthq/quiet'] },
+    const named = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--package', 'extra'] },
       run.capabilities,
     );
 
-    expect(result.exitCode).toBe(0);
-    expect(checkOutcome(result).eligiblePackageNames).toEqual(['@flighthq/quiet']);
+    expect(named.exitCode).toBe(0);
+    expect(named.packages).toEqual(['extra']);
   });
 
   it('refuses a named package whose environment was not selected, naming the environment it needs', () => {
-    const web: CheckPackage = {
-      directory: 'web',
-      environment: 'web',
-      name: '@flighthq/web',
-      sources: { 'index.ts': goodModule },
-    };
-    const run = checkRun([web]);
+    const run = checkRun([source('only.ts', rustModule)], {
+      packages: [{ dependencies: [], environment: 'web', name: 'web', root: '/ws/web' }],
+    });
 
     const named = validateCompilerCommandLineCheckRequest(
-      { argv: ['/ws', '--target', 'rust', '--package', '@flighthq/web'] },
+      { argv: ['/ws', '--target', 'rust', '--package', 'web'] },
       run.capabilities,
     );
-    const withEnvironment = validateCompilerCommandLineCheckRequest(
-      { argv: ['/ws', '--target', 'rust', '--package', '@flighthq/web', '--environment', 'web'] },
+    const selected = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--package', 'web', '--environment', 'web'] },
       run.capabilities,
     );
 
     expect(named.exitCode).toBe(2);
+    expect(named.findings).toEqual([]);
     expect(run.err.join('')).toContain('requires the web environment');
-    expect(withEnvironment.exitCode).toBe(0);
-    expect(checkOutcome(withEnvironment).eligiblePackageNames).toEqual(['@flighthq/web']);
+    expect(selected.exitCode).toBe(0);
+    expect(selected.packages).toEqual(['web']);
   });
 
-  it('writes the report it was asked for and keeps the verdict on the stream', () => {
-    const run = checkRun([core]);
+  it('treats an empty workspace as an invocation failure rather than a clean run', () => {
+    const run = checkRun([], { packages: [workspacePackage('core')] });
+
+    const result = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'rust'] }, run.capabilities);
+
+    expect(result.exitCode).toBe(2);
+    expect(run.err.join('')).toContain('No TypeScript modules');
+  });
+
+  it('refuses an invocation it cannot parse without compiling anything', () => {
+    const run = checkRun([source('only.ts', rustModule)]);
+
+    const missingOut = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--out', '/out'] },
+      run.capabilities,
+    );
+    const missingTarget = validateCompilerCommandLineCheckRequest({ argv: ['/ws'] }, run.capabilities);
+
+    expect(missingOut.exitCode).toBe(2);
+    expect(missingTarget.exitCode).toBe(2);
+    expect(run.err.join('')).toContain('Unknown option --out');
+    expect(run.out.join('')).toBe('');
+  });
+
+  it('keeps the JSON report byte-identical between runs of the same workspace', () => {
+    const first = checkRun([source('bad.ts', refusedModule)]);
+    const second = checkRun([source('bad.ts', refusedModule)]);
+
+    const json = (run: ReturnType<typeof checkRun>): string => String(run.out.join(''));
+    validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws/one', '--target', 'rust', '--format', 'json'] },
+      first.capabilities,
+    );
+    validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws/one', '--target', 'rust', '--format', 'json'] },
+      second.capabilities,
+    );
+
+    expect(json(first)).toBe(json(second));
+    expect(json(first)).toContain('"schema": "flight-compiler-check/1"');
+    expect(json(first).indexOf('"code"')).toBeLessThan(json(first).indexOf('"module"'));
+  });
+
+  it('writes the named report file and still prints the result to the stream', () => {
+    const run = checkRun([source('bad.ts', refusedModule)]);
 
     const result = validateCompilerCommandLineCheckRequest(
-      { argv: ['/ws', '--target', 'rust', '--format', 'json', '--report', '/ws/check-report.json'] },
+      { argv: ['/ws/one', '--target', 'rust', '--report', '/ws/check.txt'] },
       run.capabilities,
     );
 
     expect(result.exitCode).toBe(1);
-    expect(run.reports.get('/ws/check-report.json')).toContain('"schema": "flight-compiler-check-run/1"');
-    expect(run.reports.get('/ws/check-report.json')).toContain('"schema": "flight-compiler-check-report/1"');
-    expect(run.out.join('')).toContain('1 gating');
-    expect(run.out.join('')).not.toContain('"schema"');
-  });
-
-  it('renders the same JSON for the same run, under one identity', () => {
-    const first = checkRun([core]);
-    const second = checkRun([core]);
-    const argv = ['/ws', '--target', 'rust', '--format', 'json'];
-
-    const rendered = validateCompilerCommandLineCheckRequest({ argv }, first.capabilities);
-    validateCompilerCommandLineCheckRequest({ argv }, second.capabilities);
-
-    expect(first.out.join('')).toBe(second.out.join(''));
-    expect(rendered.exitCode).toBe(1);
-    expect(JSON.parse(first.out.join('')) as unknown).toMatchObject({
-      exitCode: 1,
-      schema: 'flight-compiler-check-run/1',
-    });
-  });
-
-  it('records the provenance its caller supplies rather than the run own unversioned default', () => {
-    const provenance: CompilerPackageCheckProvenance = {
-      compiler: { name: 'flight-compiler', revision: 'abc123' },
-      target: { name: 'flight-cpp', revision: 'def456' },
-      upstream: { name: 'flight', revision: 'ghi789' },
-    };
-    const run = checkRun([quiet], { provenance });
-
-    const result = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'cpp'] }, run.capabilities);
-
-    expect(checkOutcome(result).report.provenance).toEqual(provenance);
-    expect(run.out.join('')).toContain('compiler=flight-compiler@abc123');
-  });
-
-  it('records the workspace revision its caller could read, and says unversioned when it could not', () => {
-    const read = checkRun([quiet], { upstreamRevision: 'a'.repeat(40) });
-    const absent = checkRun([quiet], { upstreamRevision: undefined });
-    const argv = ['/ws', '--target', 'rust'];
-
-    const recorded = validateCompilerCommandLineCheckRequest({ argv }, read.capabilities);
-    const unversioned = validateCompilerCommandLineCheckRequest({ argv }, absent.capabilities);
-
-    expect(checkOutcome(recorded).report.provenance.upstream).toEqual({
-      name: 'workspace',
-      revision: 'a'.repeat(40),
-    });
-    expect(checkOutcome(unversioned).report.provenance.upstream).toEqual({
-      name: 'workspace',
-      revision: 'unversioned',
-    });
-  });
-
-  it('treats a directory that holds no workspace as an invocation failure rather than a clean run', () => {
-    const run = checkRun([quiet]);
-
-    const result = validateCompilerCommandLineCheckRequest(
-      { argv: ['/ws/absent', '--target', 'rust'] },
-      run.capabilities,
-    );
-
-    expect(result.exitCode).toBe(2);
-    expect(run.err.join('')).toContain('packages directory does not exist');
-  });
-
-  it('refuses an incomplete invocation with the usage rather than a stack', () => {
-    const run = checkRun([quiet]);
-
-    const result = validateCompilerCommandLineCheckRequest({ argv: ['--target', 'rust'] }, run.capabilities);
-
-    expect(result.exitCode).toBe(2);
-    expect(run.err.join('')).toContain('A workspace directory is required');
-    expect(run.err.join('')).toContain(getCompilerCommandLineCheckUsage());
+    expect([...run.reports.keys()]).toEqual(['/ws/check.txt']);
+    expect(run.reports.get('/ws/check.txt')).toContain('bad.ts');
+    expect(run.out.join('')).toContain('1 package(s) checked');
+    expect(run.out.join('')).not.toContain('bad.ts');
   });
 });
-
-function goodModule(): string {
-  return 'export function doubled(value: number): number { return value * 2; }';
-}
-
-function checkOutcome(result: Readonly<CompilerCommandLineCheckResult>): Readonly<CompilerCommandLineCheckOutcome> {
-  if (isCompilerCommandLineCheckRefusal(result)) throw new Error(`Expected an outcome, got ${result.reason}`);
-  return result;
-}
-
-interface CheckPackage {
-  readonly dependencies?: readonly string[] | undefined;
-  readonly directory: string;
-  readonly environment?: 'node' | 'web' | undefined;
-  readonly name: string;
-  readonly sources: Readonly<Record<string, string>>;
-}
-
-function checkRun(
-  packages: readonly CheckPackage[],
-  options: Readonly<{
-    baseline?: string | undefined;
-    provenance?: CompilerPackageCheckProvenance | undefined;
-    upstreamRevision?: string | undefined;
-  }> = {},
-): Readonly<{
-  capabilities: CompilerCommandLineCheckCapabilities;
-  err: string[];
-  out: string[];
-  reports: Map<string, string>;
-}> {
-  const out: string[] = [];
-  const err: string[] = [];
-  const reports = new Map<string, string>();
-  const provenance = options.provenance;
-  return {
-    capabilities: {
-      readBaseline: (file) => (file === '/ws/check.baseline' ? options.baseline : undefined),
-      readUpstreamRevision: () => options.upstreamRevision,
-      ...(provenance === undefined ? {} : { readProvenance: () => provenance }),
-      workspaceSource: createMemoryWorkspaceSource(checkWorkspaceFiles(packages)),
-      write: (text) => out.push(text),
-      writeError: (text) => err.push(text),
-      writeReportFile: (file, contents) => reports.set(file, contents),
-    },
-    err,
-    out,
-    reports,
-  };
-}
-
-// A workspace as the inventory reads it: package manifests with the root export lane a real package
-// declares, and the sources behind it. The export target is `dist`, because that is the shape the export
-// reader resolves back to `src`, not a shorthand this fixture is allowed to invent.
-function checkWorkspaceFiles(packages: readonly CheckPackage[]): Record<string, string> {
-  const files: Record<string, string> = {};
-  for (const entry of packages) {
-    const root = `/ws/packages/${entry.directory}`;
-    files[`${root}/package.json`] = JSON.stringify({
-      name: entry.name,
-      version: '1.0.0',
-      exports: { '.': { types: './dist/index.d.ts', default: './dist/index.js' } },
-      ...(entry.dependencies === undefined
-        ? {}
-        : { dependencies: Object.fromEntries(entry.dependencies.map((name) => [name, '1.0.0'])) }),
-      ...(entry.environment === undefined ? {} : { flight: { environment: entry.environment } }),
-    });
-    for (const [moduleName, contents] of Object.entries(entry.sources)) {
-      files[`${root}/src/${moduleName}`] = contents;
-    }
-  }
-  return files;
-}
 
 describe('getCompilerCommandLineCheckUsage', () => {
   it('names every option the check parser accepts, so the usage cannot drift from the parser', () => {
@@ -760,82 +572,68 @@ describe('getCompilerCommandLineCheckUsage', () => {
   });
 });
 
-describe('isCompilerCommandLineCheckRefusal', () => {
-  it('separates a run that happened from an invocation that could not be carried out', () => {
-    const run = checkRun([{ directory: 'core', name: '@flighthq/core', sources: { 'index.ts': goodModule() } }]);
-
-    const outcome = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'rust'] }, run.capabilities);
-    const refusal = validateCompilerCommandLineCheckRequest({ argv: [] }, run.capabilities);
-
-    expect(isCompilerCommandLineCheckRefusal(outcome)).toBe(false);
-    expect(isCompilerCommandLineCheckRefusal(refusal)).toBe(true);
-    expect(refusal).toMatchObject({ exitCode: 2 });
-  });
-});
-
 describe('createCompilerCommandLineCheckReport', () => {
-  const refusedIdentity =
-    'flight-compiler-check-finding/1:["@flighthq/core","packages/core/src/bad.ts","Bad","emission","unsupported-ir",null]';
-  const outcome = (): Readonly<CompilerCommandLineCheckOutcome> => {
-    const report = createCompilerPackageCheckReport(
-      {
-        backend: 'rust',
-        modules: [
-          {
-            module: { name: 'Bad', packageName: '@flighthq/core', source: 'packages/core/src/bad.ts' },
-            refusals: [{ code: 'unsupported-ir', message: 'zebra reason', stage: 'emission' }],
-            status: 'refused' as const,
-          },
-        ],
-        packages: [{ dependencies: [], name: '@flighthq/core', root: 'packages/core' }],
-        schema: 'flight-compiler-package-report/1' as const,
-        typescript: {
-          checkerMode: 'full' as const,
-          compilerOptions: {},
-          schema: 'flight-typescript/1' as const,
-          typescriptVersion: '5.9.3',
-        },
-      } as never,
-      {
-        provenance: {
-          compiler: { name: 'c', revision: '1' },
-          target: { name: 't', revision: '1' },
-          upstream: { name: 'u', revision: '1' },
-        },
-      },
-    );
-    const comparison: CompilerPackageCheckComparison = {
-      introduced: report.directFindings,
-      resolvedFindingIdentities: [],
-      schema: 'flight-compiler-check-comparison/1',
-      unchanged: [],
-    };
-    const policyResult = createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict());
-    return {
-      comparison,
-      eligiblePackageNames: ['@flighthq/core'],
-      exitCode: policyResult.passed ? 0 : 1,
-      policyResult,
-      report,
-    };
+  const finding = {
+    code: 'unsupported-ir' as const,
+    id: 'a.ts::zebra',
+    module: 'a.ts',
+    reason: 'zebra reason',
+    stage: 'emission' as const,
   };
 
-  it('renders the report the check package produced and the verdict the invocation reached', () => {
-    const rendered = createCompilerCommandLineCheckReport(outcome());
-
-    expect(rendered).toContain('zebra reason');
-    expect(rendered).toContain('1 gating');
-    expect(rendered.indexOf('Flight compiler check')).toBeLessThan(rendered.indexOf('1 gating'));
-    expect(outcome().report.directFindings[0]?.identity).toBe(refusedIdentity);
-  });
-
-  it('renders a refusal it could not carry out as the reason, in either format', () => {
-    const refusal = { exitCode: 2 as const, reason: 'Baseline /ws/check.baseline could not be read' };
-
-    expect(createCompilerCommandLineCheckReport(refusal)).toContain('could not be read');
-    expect(JSON.parse(createCompilerCommandLineCheckReport(refusal, 'json'))).toMatchObject({
-      exitCode: 2,
-      schema: 'flight-compiler-check-run/1',
+  it('says what gated and what was already known before it lists either', () => {
+    const report = createCompilerCommandLineCheckReport({
+      baselined: 2,
+      exitCode: 1,
+      findings: [finding],
+      introduced: [finding],
+      packages: ['one'],
+      resolved: [],
+      runtimeOnly: 0,
     });
+
+    expect(report.indexOf('1 package(s) checked')).toBeLessThan(report.indexOf('zebra reason'));
+    expect(report).toContain('1 gating');
   });
 });
+
+// Check mode's capabilities, with no output-directory member at all: a check that tried to write a
+// generated source could not compile, which is a stronger statement than a test asserting it did not.
+function checkRun(
+  sources: readonly CompilerCommandLineSource[],
+  options: Readonly<{
+    baseline?: string | undefined;
+    packages?: readonly CompilerCommandLineWorkspacePackage[] | undefined;
+    runtimeOnly?: boolean | undefined;
+  }> = {},
+): Readonly<{
+  capabilities: CompilerCommandLineCheckCapabilities;
+  err: string[];
+  out: string[];
+  reports: Map<string, string>;
+}> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const reports = new Map<string, string>();
+  const packages = options.packages ?? [{ dependencies: [], name: 'one', root: '/ws/one' }];
+  // The graph checks that every source sits inside the package root it was declared with, so the shared
+  // `source` helper (whose paths are /src/...) is rebased onto whichever root this run selected.
+  const rebased = packages.map((entry) => ({
+    root: entry.root,
+    sources: sources.map((entry0) => ({ ...entry0, sourcePath: `${entry.root}/${entry0.moduleName}` })),
+  }));
+  return {
+    capabilities: {
+      listSourceFiles: (directory) => rebased.find((entry) => entry.root === directory)?.sources ?? [],
+      listWorkspacePackages: () => packages,
+      readBaseline: (file) => (file === '/ws/check.baseline' ? options.baseline : undefined),
+      ...(options.runtimeOnly === true ? { isRuntimeOnlyFinding: () => true } : {}),
+      write: (text) => out.push(text),
+      writeError: (text) => err.push(text),
+      writeReportFile: (file, contents) => reports.set(file, contents),
+    },
+    err,
+    out,
+    reports,
+  };
+}
