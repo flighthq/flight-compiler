@@ -44,6 +44,7 @@
     "pack:check": "npm run build --silent && node ./.script-build/packageArtifactHealth.js",
     "smoke": "npm run _scripts:build --silent && node ./.script-build/consumerSmoke.js",
     "packages:check": "npm run _scripts:build --silent && node ./.script-build/packageHealth.js",
+    "workflows:check": "npm run _scripts:build --silent && node ./.script-build/releaseWorkflowHealth.js",
     "readiness": "npm run _scripts:build --silent && node ./.script-build/readinessReport.js",
     "readiness:corpus": "npm run _scripts:build --silent && node ./.script-build/corpusReadinessReport.js",
     "readiness:issues": "npm run _scripts:build --silent && node ./.script-build/corpusIssueCensus.js",
@@ -76,7 +77,8 @@
     "oxfmt": "0.57.0",
     "oxlint": "1.72.0",
     "typescript": "5.9.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "yaml": "2.9.0"
   },
   "lint-staged": {
     "**/*.{ts,tsx}": [

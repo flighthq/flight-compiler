@@ -49,6 +49,8 @@ npm run test
 
 `npm run check` runs the static correctness gates, while `npm run test` runs the unit suite without coverage instrumentation. `npm run verify` is the explicit full sweep for CI and releases: it adds isolated-package tests, coverage ratchets, emitted-source compilation, behavioral oracles, and package assembly. See [AGENTS.md](AGENTS.md) for architecture and contribution rules.
 
+Releases follow an SDK release: the [release bridge](docs/release-bridge.md) is the contract that turns a Flight release into a compiler release, including how it is recovered when a dispatch is lost.
+
 ## License
 
 [MIT](LICENSE.md)

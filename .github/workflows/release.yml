@@ -23,6 +23,9 @@ on:
 permissions:
   contents: read
 
+# One publishing lane for the whole repository, shared with the Release bridge: a concurrency group is
+# repository-wide, and two workflows that publish the same package may not hold different ones. A tag push
+# and a dispatched release therefore queue behind each other rather than racing.
 concurrency:
   group: release
   cancel-in-progress: false

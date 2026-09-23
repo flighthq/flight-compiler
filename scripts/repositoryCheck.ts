@@ -38,6 +38,7 @@ const checkGateLabels = new Set([
   'order:check',
   'packages:check',
   'typecheck:root',
+  'workflows:check',
 ]);
 const pushGateLabels = new Set([...checkGateLabels].filter((label) => label !== 'typecheck:root'));
 
@@ -46,6 +47,7 @@ const profile = readProfile(process.argv.slice(2));
 const { add, gates } = createCheckGateRegistry();
 
 add('packages:check', process.execPath, compiledScript('packageHealth'));
+add('workflows:check', process.execPath, compiledScript('releaseWorkflowHealth'));
 add('exports:check', process.execPath, compiledScript('exportTestHealth'));
 add('docs:check', process.execPath, compiledScript('documentationHealth'));
 add('format:check', binary('oxfmt'), ['--check', '.']);

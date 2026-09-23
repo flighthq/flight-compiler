@@ -73,31 +73,32 @@ A citation written as a bare backticked script name with no `npm run` lead is re
 
 ## Current surface
 
-| script                    | meaning                                                                      |
-| ------------------------- | ---------------------------------------------------------------------------- |
-| `check`                   | static repository correctness, including the root TypeScript program         |
-| `check:push`              | shorter pre-push static profile; omits typechecking                          |
-| `verify`                  | every registered static, test, coverage, target, oracle, and artifact gate   |
-| `ci`                      | `clean` then `verify`                                                        |
-| `fix`                     | apply lint fixes and formatting                                              |
-| `format` / `format:check` | write formatting / fail on unformatted files                                 |
-| `lint` / `lint:fix`       | report lint findings / write fixes                                           |
-| `typecheck`               | strict no-emit check for the root and every workspace                        |
-| `typecheck:root`          | strict no-emit check for the root program once                               |
-| `typecheck:packages`      | strict no-emit checks for isolated workspace configurations                  |
-| `packages:check`          | manifests, layout, dependency direction, naming, and facade completeness     |
-| `exports:check`           | one colocated test per source and one `describe()` per exported function     |
-| `docs:check`              | bounded codebase map, Claude pointer, local links, and command citations     |
-| `order` / `order:check`   | rewrite import blocks / report import and exported-function order            |
-| `test` / `test:watch`     | run the aggregate suite once / in watch mode                                 |
-| `test:packages`           | run every workspace in isolation, proving package boundaries                 |
-| `test:coverage`           | run the aggregate suite with instrumentation against the coverage ratchets   |
-| `build`                   | clean stale output and assemble the public artifact                          |
-| `pack:check`              | build fresh, then inspect the publishable tarball                            |
-| `clean` / `clean:dist`    | remove generated output / remove distribution output only                    |
-| `mutation`                | report surviving mutants for one package; a worklist, not a gate             |
-| `untested`                | list branch and statement arms no test took in one package; also not a gate  |
-| `license:check`           | licensed text outside the named exemptions                                   |
-| `api` / `api:check`       | rewrite the published API report / fail when it no longer matches the facade |
-| `golden` / `golden:check` | rewrite emission fixtures / compare emitted output byte for byte             |
-| `smoke`                   | install the packed tarball as a consumer and compile through it (nightly)    |
+| script | meaning |
+| --- | --- |
+| `check` | static repository correctness, including the root TypeScript program |
+| `check:push` | shorter pre-push static profile; omits typechecking |
+| `verify` | every registered static, test, coverage, target, oracle, and artifact gate |
+| `ci` | `clean` then `verify` |
+| `fix` | apply lint fixes and formatting |
+| `format` / `format:check` | write formatting / fail on unformatted files |
+| `lint` / `lint:fix` | report lint findings / write fixes |
+| `typecheck` | strict no-emit check for the root and every workspace |
+| `typecheck:root` | strict no-emit check for the root program once |
+| `typecheck:packages` | strict no-emit checks for isolated workspace configurations |
+| `packages:check` | manifests, layout, dependency direction, naming, and facade completeness |
+| `exports:check` | one colocated test per source and one `describe()` per exported function |
+| `docs:check` | bounded codebase map, Claude pointer, local links, and command citations |
+| `order` / `order:check` | rewrite import blocks / report import and exported-function order |
+| `workflows:check` | release workflow invariants: the bridge event, permissions, gates, and one publishing lane |
+| `test` / `test:watch` | run the aggregate suite once / in watch mode |
+| `test:packages` | run every workspace in isolation, proving package boundaries |
+| `test:coverage` | run the aggregate suite with instrumentation against the coverage ratchets |
+| `build` | clean stale output and assemble the public artifact |
+| `pack:check` | build fresh, then inspect the publishable tarball |
+| `clean` / `clean:dist` | remove generated output / remove distribution output only |
+| `mutation` | report surviving mutants for one package; a worklist, not a gate |
+| `untested` | list branch and statement arms no test took in one package; also not a gate |
+| `license:check` | licensed text outside the named exemptions |
+| `api` / `api:check` | rewrite the published API report / fail when it no longer matches the facade |
+| `golden` / `golden:check` | rewrite emission fixtures / compare emitted output byte for byte |
+| `smoke` | install the packed tarball as a consumer and compile through it (nightly) |
