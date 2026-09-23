@@ -1,6 +1,8 @@
 import type {
   FlightPackageEligibilityOptions,
   FlightPackageEligibilityPlan,
+  FlightPackageEligibilitySubsetOptions,
+  FlightPackageEligibilitySubsetPlan,
   PackageExportLane,
   PackageInventory,
   UpstreamInventory,
@@ -68,9 +70,21 @@ describe('compiler inventory contracts', () => {
       environment: eligibilityOptions.environment ?? null,
       schema: 'flight-compiler-package-eligibility/1',
     };
+    const eligibilitySubsetOptions: FlightPackageEligibilitySubsetOptions = {
+      candidatePackageNames: eligibilityOptions.selectedPackageNames,
+      environment: eligibilityOptions.environment,
+      packages: eligibilityOptions.packages,
+    };
+    const eligibilitySubsetPlan: FlightPackageEligibilitySubsetPlan = {
+      environment: eligibilitySubsetOptions.environment ?? null,
+      excludedRoots: [],
+      includedPackageNames: eligibilitySubsetOptions.candidatePackageNames,
+      schema: 'flight-compiler-package-eligibility-subset/1',
+    };
 
     expect(inventory.packages[0]?.exportLanes[0]).toBe(lane);
     expect(inventory.summary).toMatchObject({ exportConflicts: 1, exports: 1 });
     expect(eligibilityPlan.environment).toBe('web');
+    expect(eligibilitySubsetPlan.includedPackageNames).toEqual(['@flighthq/math']);
   });
 });

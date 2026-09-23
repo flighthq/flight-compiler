@@ -125,6 +125,26 @@ export interface FlightPackageEligibilityPlan {
   readonly schema: 'flight-compiler-package-eligibility/1';
 }
 
+export interface FlightPackageEligibilitySubsetExcludedRoot {
+  readonly dependencyPath: readonly string[];
+  readonly name: string;
+  readonly requiredEnvironment: FlightPackageEnvironment;
+  readonly selectedEnvironment: FlightPackageEnvironment | null;
+}
+
+export interface FlightPackageEligibilitySubsetOptions {
+  readonly candidatePackageNames: readonly string[];
+  readonly environment?: FlightPackageEnvironment | undefined;
+  readonly packages: readonly Readonly<FlightPackageEligibilityPackage>[];
+}
+
+export interface FlightPackageEligibilitySubsetPlan {
+  readonly environment: FlightPackageEnvironment | null;
+  readonly excludedRoots: readonly FlightPackageEligibilitySubsetExcludedRoot[];
+  readonly includedPackageNames: readonly string[];
+  readonly schema: 'flight-compiler-package-eligibility-subset/1';
+}
+
 export type FlightPackageEligibilityFailureCode =
   | 'duplicate-package'
   | 'ineligible-package-environment'

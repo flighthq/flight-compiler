@@ -5,6 +5,9 @@ import type {
   FlightPackageEligibilityOptions,
   FlightPackageEligibilityPackage,
   FlightPackageEligibilityPlan,
+  FlightPackageEligibilitySubsetExcludedRoot,
+  FlightPackageEligibilitySubsetOptions,
+  FlightPackageEligibilitySubsetPlan,
   FlightPackageEnvironment,
 } from '../../compiler-types/src/index.js';
 
@@ -97,6 +100,82 @@ export function createFlightPackageEligibilityPlan(
     eligiblePackageNames: Object.freeze([...packageNames].sort(compareTextCodeUnits)),
     environment: options.environment ?? null,
     schema: 'flight-compiler-package-eligibility/1',
+  });
+}
+
+export function createFlightPackageEligibilitySubsetPlan(
+  options: Readonly<FlightPackageEligibilitySubsetOptions>,
+): FlightPackageEligibilitySubsetPlan {
+  if (!options || !Array.isArray(options.candidatePackageNames)) {
+    throw createFlightPackageEligibilityFailure(
+      'invalid-selection',
+      'candidatePackageNames',
+      'Flight package eligibility subset requires candidate package names',
+    );
+  }
+
+  createFlightPackageEligibilityPlan({
+    environment: options.environment,
+    packages: options.packages,
+    selectedPackageNames: [],
+  });
+
+  const packageNames = new Set(options.packages.map((package_) => package_.name));
+  const candidatePackageNames = new Set<string>();
+  for (const [index, name] of options.candidatePackageNames.entries()) {
+    if (typeof name !== 'string' || name.length === 0 || candidatePackageNames.has(name)) {
+      throw createFlightPackageEligibilityFailure(
+        'invalid-selection',
+        `candidatePackageNames[${String(index)}]`,
+        'Candidate Flight package names must be unique nonempty strings',
+      );
+    }
+    if (!packageNames.has(name)) {
+      throw createFlightPackageEligibilityFailure(
+        'unknown-package',
+        name,
+        `Candidate Flight package is not present in the inventory: ${name}`,
+      );
+    }
+    candidatePackageNames.add(name);
+  }
+
+  const excludedRoots: FlightPackageEligibilitySubsetExcludedRoot[] = [];
+  const includedPackageNames = new Set<string>();
+  for (const name of [...candidatePackageNames].sort(compareTextCodeUnits)) {
+    try {
+      const plan = createFlightPackageEligibilityPlan({
+        environment: options.environment,
+        packages: options.packages,
+        selectedPackageNames: [name],
+      });
+      for (const packageName of plan.eligiblePackageNames) includedPackageNames.add(packageName);
+    } catch (error) {
+      if (
+        !isFlightPackageEligibilityFailure(error) ||
+        error.code !== 'ineligible-package-environment' ||
+        error.dependencyPath === undefined ||
+        error.requiredEnvironment === undefined ||
+        error.selectedEnvironment === undefined
+      ) {
+        throw error;
+      }
+      excludedRoots.push(
+        Object.freeze({
+          dependencyPath: Object.freeze([...error.dependencyPath]),
+          name,
+          requiredEnvironment: error.requiredEnvironment,
+          selectedEnvironment: error.selectedEnvironment,
+        }),
+      );
+    }
+  }
+
+  return Object.freeze({
+    environment: options.environment ?? null,
+    excludedRoots: Object.freeze(excludedRoots),
+    includedPackageNames: Object.freeze([...includedPackageNames].sort(compareTextCodeUnits)),
+    schema: 'flight-compiler-package-eligibility-subset/1',
   });
 }
 
