@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   validateCompilerCommandLineCheckDirectory,
   compileCompilerCommandLineDirectory,
+  isCompilerCommandLineEntryPoint,
 } from './compilerCommandLineEntryPoint.js';
 
 const workspaces: string[] = [];
@@ -83,6 +84,24 @@ describe('compileCompilerCommandLineDirectory', () => {
     const emitted = readFileSync(path.join(output, 'label.hpp'), 'utf8');
     expect(emitted).toContain('#include "vendor/flight.hpp"');
     expect(emitted).toContain('flight::String label()');
+  });
+});
+
+describe('isCompilerCommandLineEntryPoint', () => {
+  // The installed bin is a symlink into the package, so a guard that compares the two paths literally answers
+  // no for every real invocation and the whole CLI becomes a silent exit 0. That is what this pins.
+  it('recognizes the module when the machine ran it through a symlink', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-command-line-entry-'));
+    workspaces.push(directory);
+    const moduleFile = path.join(directory, 'entry.js');
+    const link = path.join(directory, 'flight-compile');
+    writeFileSync(moduleFile, '#!/usr/bin/env node\n');
+    symlinkSync(moduleFile, link);
+
+    expect(isCompilerCommandLineEntryPoint(moduleFile, moduleFile)).toBe(true);
+    expect(isCompilerCommandLineEntryPoint(link, moduleFile)).toBe(true);
+    expect(isCompilerCommandLineEntryPoint(path.join(directory, 'other.js'), moduleFile)).toBe(false);
+    expect(isCompilerCommandLineEntryPoint(undefined, moduleFile)).toBe(false);
   });
 });
 

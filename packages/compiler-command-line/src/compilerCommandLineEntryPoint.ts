@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +34,21 @@ export function compileCompilerCommandLineDirectory(argv: readonly string[]): nu
           },
         },
       ).exitCode;
+}
+
+// Whether this module was the program the machine ran, rather than one it imported.
+//
+// A packaged bin is a symlink into the installed package, so the path the shell ran is not the path the
+// module lives at: comparing them unresolved makes the installed bin a silent no-op -- the guard fails, the
+// module body never runs, and the process still exits 0 with no output, which reads as a clean compile. Both
+// sides are resolved through their links, and a path that does not exist is not this module.
+export function isCompilerCommandLineEntryPoint(invoked: string | undefined, moduleFile: string): boolean {
+  if (invoked === undefined) return false;
+  try {
+    return realpathSync(invoked) === realpathSync(moduleFile);
+  } catch {
+    return false;
+  }
 }
 
 // The check edge. It hands the run the workspace to read and writes only what the caller asked for: the
@@ -107,6 +122,6 @@ function fileSystemWorkspaceSource(): WorkspaceSource {
 
 const commandLineCheckCommand = 'check';
 
-if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+if (isCompilerCommandLineEntryPoint(process.argv[1], fileURLToPath(import.meta.url))) {
   process.exitCode = compileCompilerCommandLineDirectory(process.argv.slice(2));
 }

@@ -91,6 +91,11 @@ try {
   if (readdirSync(workspace, { recursive: true }).map(String).sort().join(',') !== before.join(',')) {
     fail('check mode wrote beside the workspace it checked');
   }
+  // A report, not silence: the bin is reached through a symlink, and a guard that compares the invoked path
+  // with the module path unresolved makes the installed bin do nothing at all and still exit 0.
+  if ((check.stdout ?? '').trim().length === 0) {
+    fail('the installed bin checked nothing and said nothing');
+  }
   process.stdout.write(check.stdout ?? '');
   process.stdout.write(`Consumer smoke passed against ${tarball}.\n`);
 } finally {
@@ -138,7 +143,9 @@ const expectations = [
 for (const [actual, expected] of expectations) {
   if (actual !== expected) throw new Error(\`expected \${expected}, received \${String(actual)}\`);
 }
-if (!haxe.compilation.files[0].contents.includes('public static function clamp(v:Float, lo:Float, hi:Float):Float')) {
+// The signature is what this proves; where the module places it is the emitter's decision and the golden
+// fixtures are what pin it.
+if (!haxe.compilation.files[0].contents.includes('clamp(v:Float, lo:Float, hi:Float):Float')) {
   throw new Error('the Haxe backend emitted no clamp signature');
 }
 if (!rust.compilation.files[0].contents.includes('pub fn clamp(v: f64, lo: f64, hi: f64) -> f64')) {
