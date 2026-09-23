@@ -357,17 +357,21 @@ describe('validateCompilerCommandLineCheckRequest', () => {
   // A workspace the inventory reads: every fixture package declares the root export lane a real package
   // has, and the modules behind it are where a finding is found.
   const goodModule = 'export function doubled(value: number): number { return value * 2; }';
-  const refusedModule = 'export function bad(): RegExp { return /x/; }';
+  // What the compiler still refuses and owns: top-level await lowers to a form no target has. What a target
+  // runtime owns instead -- a `RegExp` the runtime has to supply -- is classified by its producer, so the
+  // strict policy reports it without gating on it.
+  const restrictedModule = 'export const ready = Promise.resolve(1);\nawait ready;\n';
+  const runtimeModule = 'export function bad(): RegExp { return /x/; }';
   const core: CheckPackage = {
     directory: 'core',
     name: '@flighthq/core',
-    sources: { 'bad.ts': refusedModule, 'index.ts': "export * from './bad.js';\n" },
+    sources: { 'bad.ts': restrictedModule, 'index.ts': "export * from './bad.js';\n" },
   };
   const quiet: CheckPackage = { directory: 'quiet', name: '@flighthq/quiet', sources: { 'index.ts': goodModule } };
   // The identity the check package mints for the refused module, spelled out so a baseline fixture is a
   // literal rather than something the test derives from the code it is testing.
   const refusedIdentity =
-    'flight-compiler-check-finding/1:["@flighthq/core","packages/core/src/bad.ts","Bad","emission","unsupported-ir",null]';
+    'flight-compiler-check-finding/1:["@flighthq/core","packages/core/src/bad.ts","Bad","lowering","unsupported-typescript",null]';
 
   it('reports a finding and exits 1 when a module cannot be compiled', () => {
     const run = checkRun([core]);
@@ -379,8 +383,24 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(checkOutcome(result).report.directFindings.map((finding) => finding.module.source)).toEqual([
       'packages/core/src/bad.ts',
     ]);
+    expect(checkOutcome(result).report.directFindings.map((finding) => finding.policyClass)).toEqual([
+      'compiler-restriction',
+    ]);
     expect(checkOutcome(result).comparison.introduced).toEqual(checkOutcome(result).report.directFindings);
     expect(run.out.join('')).toContain('1 gating');
+  });
+
+  it('reports a finding the target runtime owns without gating on it', () => {
+    const run = checkRun([{ directory: 'core', name: '@flighthq/core', sources: { 'index.ts': runtimeModule } }]);
+
+    const result = validateCompilerCommandLineCheckRequest({ argv: ['/ws', '--target', 'rust'] }, run.capabilities);
+
+    expect(result.exitCode).toBe(0);
+    expect(checkOutcome(result).report.directFindings.map((finding) => finding.policyClass)).toEqual([
+      'target-runtime',
+    ]);
+    expect(checkOutcome(result).comparison.introduced).toHaveLength(1);
+    expect(run.out.join('')).toContain('0 gating');
   });
 
   it('admits a workspace whose modules all compile', () => {
@@ -487,7 +507,7 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(checkOutcome(selected).eligiblePackageNames).toEqual(['@flighthq/web']);
   });
 
-  it('unites repeated environments instead of letting the last one win', () => {
+  it('checks one environment per run, because two environments are two reports', () => {
     const web: CheckPackage = {
       directory: 'web',
       environment: 'web',
@@ -512,8 +532,20 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     );
 
     expect(checkOutcome(once).eligiblePackageNames).toEqual(['@flighthq/web']);
-    expect(checkOutcome(twice).eligiblePackageNames).toEqual(['@flighthq/node', '@flighthq/web']);
-    expect(twice.exitCode).toBe(once.exitCode);
+    expect(twice.exitCode).toBe(2);
+    expect(run.err.join('')).toContain('check each environment in its own run');
+  });
+
+  it('refuses an environment name it does not know rather than checking nothing', () => {
+    const run = checkRun([quiet]);
+
+    const result = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--environment', 'playwright'] },
+      run.capabilities,
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(run.err.join('')).toContain('capacitor, electron, node, tauri, or web');
   });
 
   it('refuses an invocation that names an environment no package declares', () => {

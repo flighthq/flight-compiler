@@ -203,9 +203,9 @@ export function validateCompilerCommandLineCheckRequest(
     return refuseCompilerCommandLineCheck(
       capabilities,
       `${
-        parsed.environmentNames.length === 0
+        parsed.environment === undefined
           ? `No packages under ${parsed.workspaceDirectory}`
-          : `No package under ${parsed.workspaceDirectory} declares ${parsed.environmentNames.join(', ')}`
+          : `No package under ${parsed.workspaceDirectory} declares ${parsed.environment}`
       }\n`,
     );
   }
@@ -468,8 +468,8 @@ const unversionedRevision = 'unversioned';
 
 const commandLineCheckUsage = `Usage: flight-compile check <workspace> --target <cpp|haxe|rust>
 
-  --environment <name>    Package environment to check; repeat for several (default: unmarked packages)
-  --package <name>        Package to check by name; repeat for several (default: the workspace's unmarked
+  --environment <name>    Package environment to check (default: the workspace's unmarked packages)
+  --package <name>        Package to check by name; repeat for several (default: the workspace's compatible
                           packages). A package that declares an environment needs --environment for it
   --baseline <file>       Compare findings against a baseline; the file is never rewritten
   --format <text|json>    Report format (default: text)
@@ -479,7 +479,7 @@ const commandLineCheckUsage = `Usage: flight-compile check <workspace> --target 
 
 interface ParsedCompilerCommandLineCheckRequest {
   readonly baselinePath?: string | undefined;
-  readonly environmentNames: readonly string[];
+  readonly environment?: FlightPackageEnvironment | undefined;
   readonly format: CompilerCommandLineCheckFormat;
   readonly selectedPackageNames: readonly string[];
   readonly reportPath?: string | undefined;
@@ -494,7 +494,6 @@ function parseCompilerCommandLineCheckRequest(
 ): ParsedCompilerCommandLineCheckRequest | Readonly<{ failure: string }> {
   const positional: string[] = [];
   const named = new Map<string, string>();
-  const environmentNames: string[] = [];
   const selectedPackageNames: string[] = [];
   for (let index = 0; index < request.argv.length; index += 1) {
     const argument = request.argv[index]!;
@@ -507,9 +506,12 @@ function parseCompilerCommandLineCheckRequest(
     if (value === undefined || value.startsWith('--')) return { failure: `${argument} requires a value` };
     index += 1;
     if (argument === '--environment') {
-      if (environmentNames.includes(value)) return { failure: `--environment ${value} is supplied twice` };
-      environmentNames.push(value);
-      continue;
+      // One environment per run, deliberately: packages that target different environments have different
+      // profiles behind them, so one report over two of them would compare findings that do not belong
+      // together. Checking both means two runs, each with its own report and baseline.
+      if (named.has('environment')) {
+        return { failure: '--environment may be supplied once; check each environment in its own run' };
+      }
     }
     if (argument === '--package') {
       if (selectedPackageNames.includes(value)) return { failure: `--package ${value} is supplied twice` };
@@ -528,6 +530,10 @@ function parseCompilerCommandLineCheckRequest(
   }
   const format = named.get('format') ?? 'text';
   if (format !== 'text' && format !== 'json') return { failure: '--format must be text or json' };
+  const environmentName = named.get('environment');
+  if (environmentName !== undefined && !commandLineCheckEnvironments.has(environmentName)) {
+    return { failure: '--environment must be capacitor, electron, node, tauri, or web' };
+  }
   const reportPath = named.get('report');
   if (reportPath !== undefined && reportPath.length === 0) return { failure: '--report requires a path' };
   const runtimeProfile = named.get('runtime-profile') ?? 'flight-cpp';
@@ -540,7 +546,7 @@ function parseCompilerCommandLineCheckRequest(
   }
   return {
     ...(named.get('baseline') === undefined ? {} : { baselinePath: named.get('baseline')! }),
-    environmentNames,
+    ...(environmentName === undefined ? {} : { environment: environmentName as FlightPackageEnvironment }),
     format,
     ...(reportPath === undefined ? {} : { reportPath }),
     ...(runtimeHeader === undefined ? {} : { runtimeHeader }),
@@ -555,46 +561,40 @@ function parseCompilerCommandLineCheckRequest(
 // `flight.environment`, the narrow name selector, and what an unmarked package means -- so the CLI hands it
 // the workspace's packages and takes back names. The whole workspace goes in, not only the seeds, because
 // the plan is what pulls in the dependencies a selection needs; the seeds are only what the caller asked
-// for. Repeating `--environment` asks for each in turn and unites the answers, which is what a caller
-// naming two environments is asking for; with none named, the plan's own default applies. A refusal there
-// is an invocation failure, not a finding.
+// for. Naming packages states the selection exactly and a refusal is then the answer; naming none takes the
+// workspace's own compatible default, which is the packages that carry no environment. A refusal from the
+// plan is an invocation failure, not a finding.
 function selectCompilerCommandLinePackageNames(
   manifests: readonly Readonly<FlightPackageManifest>[],
   parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
 ): readonly string[] | Readonly<{ failure: string }> {
-  const requested: readonly (FlightPackageEnvironment | undefined)[] =
-    parsed.environmentNames.length === 0
-      ? [undefined]
-      : (parsed.environmentNames as readonly FlightPackageEnvironment[]);
-  const eligible = new Set<string>();
-  for (const environment of requested) {
-    // Naming packages states the selection; naming none selects the workspace's own default, which is the
-    // packages that carry no environment.
-    const selectedPackageNames = manifests
-      .filter((manifest) =>
-        parsed.selectedPackageNames.length === 0
-          ? manifest.environment === environment
-          : parsed.selectedPackageNames.includes(manifest.name),
-      )
-      .map((manifest) => manifest.name);
-    try {
-      const plan = createFlightPackageEligibilityPlan({
-        packages: manifests.map((manifest) => ({
-          dependencies: manifest.dependencies,
-          ...(manifest.environment === undefined ? {} : { environment: manifest.environment }),
-          name: manifest.name,
-        })),
-        selectedPackageNames,
-        ...(environment === undefined ? {} : { environment }),
-      });
-      for (const name of plan.eligiblePackageNames) eligible.add(name);
-    } catch (error) {
-      if (isFlightPackageEligibilityFailure(error)) return { failure: error.message };
-      throw error;
-    }
+  const selectedPackageNames = manifests
+    .filter((manifest) =>
+      parsed.selectedPackageNames.length === 0
+        ? manifest.environment === parsed.environment
+        : parsed.selectedPackageNames.includes(manifest.name),
+    )
+    .map((manifest) => manifest.name);
+  try {
+    const plan = createFlightPackageEligibilityPlan({
+      packages: manifests.map((manifest) => ({
+        dependencies: manifest.dependencies,
+        ...(manifest.environment === undefined ? {} : { environment: manifest.environment }),
+        name: manifest.name,
+      })),
+      selectedPackageNames,
+      ...(parsed.environment === undefined ? {} : { environment: parsed.environment }),
+    });
+    return [...plan.eligiblePackageNames].sort(compareTextCodeUnits);
+  } catch (error) {
+    if (isFlightPackageEligibilityFailure(error)) return { failure: error.message };
+    throw error;
   }
-  return [...eligible].sort(compareTextCodeUnits);
 }
+
+// The environment names `--environment` accepts, spelled here the way `--target` spells its own values: the
+// flag is this package's, so the message a typo earns is this package's too.
+const commandLineCheckEnvironments = new Set(['capacitor', 'electron', 'node', 'tauri', 'web']);
 
 const commandLineCheckValueOptions = new Set([
   '--baseline',

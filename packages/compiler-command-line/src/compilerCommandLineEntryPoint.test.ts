@@ -113,7 +113,7 @@ describe('validateCompilerCommandLineCheckDirectory', () => {
   // the check's record at all, so the strongest statement the test can make is the tree it started with.
   it('checks a workspace without writing a generated source beside it', () => {
     const workspace = createWorkspace({
-      'bad.ts': 'export function bad(): RegExp { return /x/; }',
+      'bad.ts': 'export const ready = Promise.resolve(1);\nawait ready;\n',
       'index.ts': "export * from './bad.js';\n",
     });
     const before = readdirSync(workspace, { recursive: true }).map(String).sort();
@@ -134,7 +134,7 @@ describe('validateCompilerCommandLineCheckDirectory', () => {
 
   it('writes the report it was asked for and nothing else', () => {
     const workspace = createWorkspace({
-      'bad.ts': 'export function bad(): RegExp { return /x/; }',
+      'bad.ts': 'export const ready = Promise.resolve(1);\nawait ready;\n',
       'index.ts': "export * from './bad.js';\n",
     });
     const report = path.join(workspace, 'check-report.json');
