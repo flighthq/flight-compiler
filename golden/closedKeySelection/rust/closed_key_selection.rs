@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Signals {
   pub on_complete: Rc<dyn Fn() -> ()>,
   pub on_loop: Rc<dyn Fn() -> ()>,
@@ -20,6 +20,6 @@ pub type SignalName = String;
 
 pub fn emits_signal(signals: Option<Signals>, name: SignalName) -> () {
   if signals.is_some() {
-    invoke(signals.clone().unwrap()[name as usize]);
+    invoke({ let selection_receiver = &signals.clone().unwrap(); let selection_key = &name; match selection_key.as_str() { "onComplete" => selection_receiver.on_complete.clone(), "onLoop" => selection_receiver.on_loop.clone(), "onPause" => selection_receiver.on_pause.clone(), "onPlay" => selection_receiver.on_play.clone(), "onStop" => selection_receiver.on_stop.clone(), _ => unreachable!("Flight finite-key selection reached no member"), } });
   }
 }

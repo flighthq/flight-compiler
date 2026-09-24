@@ -514,7 +514,10 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   const structVisibility =
     declaration.exported || context.apiReferencedBindingIds.has(declaration.binding.id) ? 'pub ' : '';
   const lines = [
-    '#[derive(Clone, Debug)]',
+    emitRustRecordDerive(
+      [...instanceFields.map((field) => field.type), ...(declaration.extends ? [declaration.extends] : [])],
+      context,
+    ),
     `${structVisibility}struct ${getBindingTargetNameRust(declaration.binding, context)}${emitTypeParameters(declaration.typeParameters, context)} {`,
   ];
   if (concreteBase) {
@@ -1348,6 +1351,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return `if ${emitExpression(expression.condition, context)} { ${emitExpression(expression.whenTrue, context)} } else { ${emitExpression(expression.whenFalse, context)} }`;
     case 'element':
       if (expression.optional) return emitOptionalElementExpressionRust(expression, context);
+      {
+        const closedSelection = emitClosedKeyElementSelectionRust(expression, context);
+        if (closedSelection) return closedSelection;
+      }
       if (expression.semantics.receivers.includes('object')) {
         emissionError(context, 'computed object access requires JavaScript property-key coercion lowering');
       }
@@ -2198,6 +2205,8 @@ function emitRequiredElementExpressionRust(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
 ): string {
+  const closedSelection = emitClosedKeyElementSelectionRust(expression, context);
+  if (closedSelection) return closedSelection;
   if (expression.semantics.receivers.includes('object')) {
     emissionError(context, 'computed object access requires JavaScript property-key coercion lowering');
   }
@@ -2206,6 +2215,62 @@ function emitRequiredElementExpressionRust(
     return `${emitExpression(expression.object, context)}.${String(index)}`;
   }
   return `${emitExpression(expression.object, context)}[${emitExpression(expression.index, context)} as usize]`;
+}
+
+// A finite string-key domain identifies every field this access can reach. Rust records have no
+// string subscript, so select the represented field explicitly while evaluating the receiver and key
+// once, in source order. Borrowing the receiver keeps the selection from moving a source binding; the
+// selected field is cloned into the expression's owned result.
+function emitClosedKeyElementSelectionRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): string | undefined {
+  const keys = expression.semantics.closedKeys;
+  if (!keys) return undefined;
+
+  let objectType = inferIrExpressionTypeRust(expression.object, context);
+  if (
+    objectType?.kind === 'union' &&
+    'presence' in expression.object &&
+    expression.object.presence === 'narrowedPresent'
+  ) {
+    const present = objectType.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    if (present.length === 1) objectType = present[0];
+  }
+  const properties = objectType ? getIrObjectTypePropertiesRust(objectType, context) : undefined;
+  if (!objectType || !properties) {
+    emissionError(context, 'closed-key element access requires represented Rust object storage');
+  }
+
+  const members = new Map(
+    properties
+      .filter((property) => !property.computedKey && !property.phantom)
+      .map((property) => [property.name, property] as const),
+  );
+  const selections = keys.map((key) => ({ key, property: members.get(key) }));
+  const absent = selections.find((selection) => !selection.property);
+  if (absent) {
+    emissionError(context, `closed key ${absent.key} is not a represented Rust object member`);
+  }
+
+  const memberTypes = selections.map(({ property }) => {
+    const emitted = emitType(property!.type, context);
+    return property!.optional ? `Option<${emitted}>` : emitted;
+  });
+  const distinctTypes = [...new Set(memberTypes)];
+  if (distinctTypes.length !== 1) {
+    emissionError(
+      context,
+      `closed-key selection over ${String(distinctTypes.length)} member types requires one Rust representation`,
+    );
+  }
+
+  const receiver = getGeneratedTargetNameRust('selection_receiver', context);
+  const selectionKey = getGeneratedTargetNameRust('selection_key', context);
+  const branches = selections.map(
+    ({ key, property }) => `${JSON.stringify(key)} => ${receiver}.${safeRustValueName(property!.name)}.clone(),`,
+  );
+  return `{ let ${receiver} = &${emitExpression(expression.object, context)}; let ${selectionKey} = &${emitExpression(expression.index, context)}; match ${selectionKey}.as_str() { ${branches.join(' ')} _ => unreachable!("Flight finite-key selection reached no member"), } }`;
 }
 
 function getIrTypeOptionalPayloadRust(type: Readonly<IrType>, subject: string, context: EmitContext): Readonly<IrType> {
@@ -3169,7 +3234,13 @@ function emitRecord(
   // private-interface warning. What leaves the crate is the crate root's decision, not this module's.
   void exported;
   const typeContext: EmitContext = { ...context, activeTypeParameters: typeParameters };
-  const lines = ['#[derive(Clone, Debug)]', `pub struct ${targetName}${emitTypeParameters(typeParameters, context)} {`];
+  const lines = [
+    emitRustRecordDerive(
+      properties.map((property) => property.type),
+      typeContext,
+    ),
+    `pub struct ${targetName}${emitTypeParameters(typeParameters, context)} {`,
+  ];
   for (const property of properties) {
     const type = emitType(property.type, typeContext);
     lines.push(`  pub ${safeRustValueName(property.name)}: ${property.optional ? `Option<${type}>` : type},`);
@@ -4583,6 +4654,100 @@ function isIrTypeCloneSafeRust(type: Readonly<IrType>): boolean {
   }
 }
 
+// `Rc<dyn Fn>` is cloneable but the callable trait object does not implement `Debug`. Deriving
+// `Debug` for a record that contains one directly, through a container, or through a resolved source
+// type therefore makes otherwise valid generated Rust fail to compile. Retain the useful derive for
+// every record where no callable is proven, and omit only the unsupported bound.
+function emitRustRecordDerive(types: readonly Readonly<IrType>[], context: EmitContext): string {
+  return types.some((type) => containsIrFunctionTypeRust(type, context))
+    ? '#[derive(Clone)]'
+    : '#[derive(Clone, Debug)]';
+}
+
+function containsIrFunctionTypeRust(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  module: Readonly<IrModule> = context.module,
+  resolving: ReadonlySet<string> = new Set(),
+): boolean {
+  switch (type.kind) {
+    case 'function':
+      return true;
+    case 'array':
+      return containsIrFunctionTypeRust(type.element, context, module, resolving);
+    case 'tuple':
+      return type.elements.some((element) => containsIrFunctionTypeRust(element.type, context, module, resolving));
+    case 'intersection':
+    case 'union':
+      return type.types.some((member) => containsIrFunctionTypeRust(member, context, module, resolving));
+    case 'object':
+      return type.properties.some((property) => containsIrFunctionTypeRust(property.type, context, module, resolving));
+    case 'named': {
+      if (type.typeArguments.some((argument) => containsIrFunctionTypeRust(argument, context, module, resolving))) {
+        return true;
+      }
+      if (
+        type.reference.kind !== 'binding' ||
+        type.reference.path.length > 0 ||
+        type.reference.binding.space !== 'type' ||
+        type.reference.binding.kind === 'typeParameter'
+      ) {
+        return false;
+      }
+      const binding = type.reference.binding;
+      const location = getIrNamedTypeDeclarationLocationRust(binding, context, module);
+      if (location) {
+        const key = `${location.module.packageName}\0${location.module.source}\0${location.declaration.binding.id}`;
+        if (resolving.has(key)) return false;
+        const active = new Set(resolving).add(key);
+        if (location.declaration.kind === 'typeAlias') {
+          try {
+            const plan = createIrTypeParameterSubstitutionPlan(location.declaration.typeParameters, type.typeArguments);
+            return containsIrFunctionTypeRust(
+              resolveIrTypeStructuralSubstitution(location.declaration.type, plan),
+              context,
+              location.module,
+              active,
+            );
+          } catch (error) {
+            if (isCompilerStructuralTypeSubstitutionFailure(error)) return false;
+            throw error;
+          }
+        }
+        const properties = getIrObjectTypePropertiesRust(type, context, module, resolving);
+        return (
+          properties?.some((property) => containsIrFunctionTypeRust(property.type, context, location.module, active)) ??
+          false
+        );
+      }
+      const classDeclaration = [module, ...context.sourceModules]
+        .flatMap((candidate) => candidate.declarations)
+        .find((candidate) => candidate.kind === 'class' && candidate.binding.id === binding.id);
+      if (classDeclaration?.kind !== 'class') return false;
+      const key = `${module.packageName}\0${module.source}\0${classDeclaration.binding.id}`;
+      if (resolving.has(key)) return false;
+      const active = new Set(resolving).add(key);
+      return (
+        classDeclaration.fields.some((field) => containsIrFunctionTypeRust(field.type, context, module, active)) ||
+        (classDeclaration.extends
+          ? containsIrFunctionTypeRust(classDeclaration.extends, context, module, active)
+          : false)
+      );
+    }
+    case 'conditionalFacet':
+    case 'indexedAccess':
+    case 'keyof':
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'typeOf':
+    case 'undefined':
+    case 'unknown':
+      return false;
+  }
+}
+
 function opaqueHostType(context: EmitContext): string {
   return context.options.opaqueHostType ?? recordRuntimeTypeRust('OpaqueHostValue', context);
 }
@@ -5092,7 +5257,7 @@ function emitTaggedUnionRust(
   const members = getIrUnionTypeMemberRecordsRust(type, context);
   if (!members) emissionError(context, 'non-nullable unions require Rust tagged-union lowering');
   const visibility = exported ? 'pub ' : '';
-  const lines = ['#[derive(Clone, Debug)]', `${visibility}enum ${targetName} {`];
+  const lines = [emitRustRecordDerive(type.types, context), `${visibility}enum ${targetName} {`];
   for (const member of members) {
     lines.push(`  ${pascalCase(member.name)}(${member.targetName}),`);
   }

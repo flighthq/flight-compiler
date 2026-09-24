@@ -128,6 +128,74 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('return AnonymousObjectRecord { value: 2.0, label: None, };');
   });
 
+  it('omits Debug from records with callable trait-object fields while retaining it for ordinary records', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'callable-record-derive.ts',
+        `type Handler = () => void;
+         export interface Signals { callback: Handler; label: string }
+         export interface Details { count: number; label: string }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('#[derive(Clone)]\npub struct Signals');
+    expect(output).not.toContain('#[derive(Clone, Debug)]\npub struct Signals');
+    expect(output).toContain('#[derive(Clone, Debug)]\npub struct Details');
+  });
+
+  it('selects a represented member for a finite string key while evaluating receiver and key once', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'closed-key-selection.ts',
+        `type SignalName = 'onLoop' | 'onStop';
+         export interface Signals { onLoop: () => void; onStop: () => void }
+         function use(signal: () => void): void { signal(); }
+         export function selected(load: () => Signals, next: () => SignalName): void {
+           use(load()[next()]);
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('let selection_receiver = &load(); let selection_key = &next();');
+    expect(output).toContain('match selection_key.as_str()');
+    expect(output).toContain('"onLoop" => selection_receiver.on_loop.clone()');
+    expect(output).toContain('"onStop" => selection_receiver.on_stop.clone()');
+    expect(output).toContain('_ => unreachable!("Flight finite-key selection reached no member")');
+    expect(output.match(/\bload\(\)/gu)).toHaveLength(1);
+    expect(output.match(/\bnext\(\)/gu)).toHaveLength(1);
+    expect(output).not.toContain('load()[next() as usize]');
+  });
+
+  it('keeps absent, open, and heterogeneous object-key selections outside the finite selection lowering', () => {
+    const emitOnly = (source: string): string =>
+      emitIrModuleRust(lower('closed-key-refusal.ts', source).module).contents;
+
+    expect(() =>
+      emitOnly(
+        `interface Signals { onLoop: () => void }
+         function use(signal: () => void): void { signal(); }
+         export function absent(signals: Signals, name: 'onLoop' | 'onMissing'): void {
+           use(signals[name]);
+         }`,
+      ),
+    ).toThrow('closed key onMissing is not a represented Rust object member');
+    expect(() =>
+      emitOnly(
+        `interface Signals { onLoop: () => void }
+         function use(signal: () => void): void { signal(); }
+         export function open(signals: Signals, name: string): void { use(signals[name]); }`,
+      ),
+    ).toThrow('computed object access requires JavaScript property-key coercion lowering');
+    expect(() =>
+      emitOnly(
+        `interface Values { count: number; label: string }
+         export function mixed(values: Values, name: 'count' | 'label'): number | string {
+           return values[name];
+         }`,
+      ),
+    ).toThrow('closed-key selection over 2 member types requires one Rust representation');
+  });
+
   it('requires closed object construction evidence before choosing a record shape', () => {
     const computed = lower(
       'computed-object.ts',
