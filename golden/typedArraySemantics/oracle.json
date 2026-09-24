@@ -1,5 +1,11 @@
 [
-  { "call": "signedRangeConstruction", "arguments": [], "returns": "numbers", "targets": ["cpp", "rust"] },
+  {
+    "call": "signedRangeConstruction",
+    "arguments": [],
+    "returns": "numbers",
+    "targets": ["cpp", "rust"],
+    "rustOptional": [0]
+  },
   { "call": "unsignedModuloWrites", "arguments": [], "returns": "numbers", "targets": ["cpp", "rust"] },
   { "call": "clampedTies", "arguments": [], "returns": "numbers", "targets": ["cpp", "rust"] },
   { "call": "float32Overflow", "arguments": [], "returns": "numbers", "targets": ["cpp", "rust"] },
