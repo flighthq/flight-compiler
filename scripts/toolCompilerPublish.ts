@@ -154,11 +154,18 @@ function describeProcessStatus(result: Readonly<ToolCompilerPublishProcessResult
 }
 
 function isNpmPackageAbsent(result: Readonly<ToolCompilerPublishProcessResult>): boolean {
-  return (
-    result.status !== 0 &&
-    result.stdout.trim().length === 0 &&
-    /(?:^|\r?\n)npm (?:ERR!|error) code E404(?:\r?\n|$)/u.test(result.stderr)
-  );
+  if (result.status === null || result.status === 0 || result.errorMessage !== undefined) return false;
+  const stdout = result.stdout.trim();
+  if (stdout.length === 0) {
+    return /(?:^|\r?\n)npm (?:ERR!|error) code E404(?:\r?\n|$)/u.test(result.stderr);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    return false;
+  }
+  return isRecord(value) && isRecord(value.error) && value.error.code === 'E404';
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

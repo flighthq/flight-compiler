@@ -99,6 +99,29 @@ describe('publishToolCompilerPackage', () => {
     expect(fixture.manifestText).toBe(`${JSON.stringify(publishedManifest)}\n`);
   });
 
+  it('publishes the first version when npm --json reports package absence on stdout', () => {
+    const fixture = createFixture([
+      processResult(
+        1,
+        JSON.stringify({
+          error: {
+            code: 'E404',
+            detail: "'@flighthq/tool-compiler@*' is not in this registry.",
+            summary: 'Not Found',
+          },
+        }),
+        'npm error code E404\nnpm error 404 Not Found',
+      ),
+      processResult(0),
+    ]);
+
+    expect(publishToolCompilerPackage({ dryRun: false, tag: 'latest' }, fixture.capabilities)).toMatchObject({
+      kind: 'published',
+      version: '1.2.3',
+    });
+    expect(fixture.invocations).toHaveLength(2);
+  });
+
   it('skips an exact version already present on the registry without packing or publishing', () => {
     const fixture = createFixture([processResult(0, '["1.2.2","1.2.3"]')]);
 
@@ -154,6 +177,38 @@ describe('publishToolCompilerPackage', () => {
 
     expect(() => publishToolCompilerPackage({ dryRun: false, tag: 'latest' }, fixture.capabilities)).toThrow(
       'npm registry query failed (exit 1)',
+    );
+    expect(fixture.invocations).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'authentication JSON',
+      processResult(
+        1,
+        JSON.stringify({ error: { code: 'E401', summary: 'Unable to authenticate' } }),
+        'npm error code E401',
+      ),
+    ],
+    [
+      'network JSON',
+      processResult(
+        1,
+        JSON.stringify({ error: { code: 'EAI_AGAIN', summary: 'getaddrinfo EAI_AGAIN registry.npmjs.org' } }),
+        'npm error code EAI_AGAIN',
+      ),
+    ],
+    ['near-match JSON', processResult(1, JSON.stringify({ error: { code: 'E404X' } }), 'npm error code E404X')],
+    ['unstructured JSON', processResult(1, JSON.stringify({ code: 'E404' }), 'npm error code E404')],
+    [
+      'process launch failure',
+      { ...processResult(null, JSON.stringify({ error: { code: 'E404' } })), errorMessage: 'spawn npm ENOENT' },
+    ],
+  ])('does not treat %s as first-publication package absence', (_label, registryResult) => {
+    const fixture = createFixture([registryResult]);
+
+    expect(() => publishToolCompilerPackage({ dryRun: false, tag: 'latest' }, fixture.capabilities)).toThrow(
+      'npm registry query failed',
     );
     expect(fixture.invocations).toHaveLength(1);
   });
