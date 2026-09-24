@@ -56,11 +56,39 @@ describe('collectCiWorkflowIssues', () => {
     );
   });
 
-  it('reports a missing C++ oracle job', () => {
+  it('reports a missing C++ job', () => {
     const contents = mutated('  cpp-conformance:', '  renamed-cpp-conformance:');
 
     expect(collectCiWorkflowIssues(ciFile, contents)).toContain(
-      `${ciFile}: required C++ oracle job cpp-conformance is missing`,
+      `${ciFile}: required C++ job cpp-conformance is missing`,
+    );
+  });
+
+  // The compile lane defaults to every installed target for the same reason the oracle does, so it has
+  // to be named for the same reason: otherwise a runner with a Haxe or Rust toolchain turns a C++
+  // compile job into a cross-target one.
+  it('reports every C++ job that lets installed non-C++ targets enter its compile lane', () => {
+    const contents = mutated(/npm run compile:check -- --target cpp/gu, 'npm run compile:check');
+
+    expect(collectCiWorkflowIssues(ciFile, contents)).toEqual([
+      `${ciFile}: C++ job cpp-conformance selects all installed compile targets, expected exactly cpp`,
+      `${ciFile}: C++ job cpp-generated-corpus selects all installed compile targets, expected exactly cpp`,
+    ]);
+  });
+
+  it('reports a crossed compile target', () => {
+    const contents = mutated('npm run compile:check -- --target cpp', 'npm run compile:check -- --target haxe');
+
+    expect(collectCiWorkflowIssues(ciFile, contents)).toContain(
+      `${ciFile}: C++ job cpp-conformance selects haxe, expected exactly cpp`,
+    );
+  });
+
+  it('reports a C++ job whose compile step was removed', () => {
+    const contents = mutated('npm run compile:check -- --target cpp', 'npm run typecheck');
+
+    expect(collectCiWorkflowIssues(ciFile, contents)).toContain(
+      `${ciFile}: C++ job cpp-conformance has 0 compile steps, expected 1`,
     );
   });
 });

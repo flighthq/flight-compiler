@@ -64,7 +64,7 @@ jobs:
         if: always()
       - run: npm run cpp:exceptions:check
         if: always()
-      - run: npm run compile:check
+      - run: npm run compile:check -- --target cpp
         if: always()
       - run: npm run oracle:check -- --target cpp
         if: always()
@@ -109,7 +109,7 @@ jobs:
           FLIGHT_CPP_CXX: ${{ matrix.compiler_command }}
           FLIGHT_CPP_CXX_FAMILY: ${{ matrix.compiler_family }}
           FLIGHT_CPP_REQUIRE_CXX: 1
-        run: npm run compile:check
+        run: npm run compile:check -- --target cpp
       - name: Run every eligible C++ source oracle
         env:
           FLIGHT_CPP_CXX: ${{ matrix.compiler_command }}

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createCppSyntaxOnlyArguments, findCppCompilerToolchain } from './cppToolchain.js';
 import { resolveDependency } from './dependencyLock.js';
+import { getSourceCompileTargets, parseSourceCompileFilters } from './sourceCompileFilters.js';
 
 // Does the emitted source actually compile?
 //
@@ -22,8 +23,14 @@ import { resolveDependency } from './dependencyLock.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const goldenDirectory = path.join(root, 'golden');
+// No arguments means every target, which is what a person running this by hand wants; a CI job that
+// names one target gets exactly that target.
+const filters = parseSourceCompileFilters(process.argv.slice(2));
+const haxeSelected = filters.targets.has('haxe');
+const rustSelected = filters.targets.has('rust');
+const cppSelected = filters.targets.has('cpp');
 const supportDirectory = path.join(goldenDirectory, 'support');
-const cppRuntime = resolveDependency(root, 'flight-cpp');
+const cppRuntime = cppSelected ? resolveDependency(root, 'flight-cpp') : undefined;
 
 interface TargetCompileFailure {
   readonly fixture: string;
@@ -39,7 +46,11 @@ const failures: TargetCompileFailure[] = [];
 const reports: string[] = [];
 let checked = 0;
 
-if (hasCommand('haxe', ['--version'])) {
+if (!haxeSelected && !rustSelected && !cppSelected) {
+  // Not reachable through the parser, which always selects something; kept so a future edit cannot
+  // silently turn "selected nothing" into "everything looked fine".
+  reports.push('no target selected');
+} else if (haxeSelected && hasCommand('haxe', ['--version'])) {
   const haxeFixtures = fixtures.filter((fixture) => existsSync(path.join(goldenDirectory, fixture, 'haxe')));
   for (const fixture of haxeFixtures) {
     const emitted = path.join(goldenDirectory, fixture, 'haxe');
@@ -57,11 +68,11 @@ if (hasCommand('haxe', ['--version'])) {
     if (output.length > 0) failures.push({ fixture: `haxe/${fixture}`, output });
   }
   reports.push(`haxe ${String(haxeFixtures.length)} fixtures`);
-} else {
+} else if (haxeSelected) {
   reports.push('haxe not installed (skipped)');
 }
 
-if (hasCommand('rustc', ['--version'])) {
+if (rustSelected && hasCommand('rustc', ['--version'])) {
   const rustFixtures = fixtures.filter((fixture) => existsSync(path.join(goldenDirectory, fixture, 'rust')));
   const workspace = mkdtempSync(path.join(tmpdir(), 'flight-compile-'));
   try {
@@ -113,12 +124,12 @@ if (hasCommand('rustc', ['--version'])) {
     rmSync(workspace, { force: true, recursive: true });
   }
   reports.push(`rust ${String(rustFixtures.length)} fixtures`);
-} else {
+} else if (rustSelected) {
   reports.push('rustc not installed (skipped)');
 }
 
-const cppRuntimeInclude = path.join(cppRuntime.directory, 'include');
-const cppRuntimeAvailable = existsSync(cppRuntimeInclude);
+const cppRuntimeInclude = cppRuntime === undefined ? '' : path.join(cppRuntime.directory, 'include');
+const cppRuntimeAvailable = cppRuntimeInclude.length > 0 && existsSync(cppRuntimeInclude);
 const cppToolchain = cppRuntimeAvailable ? findCppCompilerToolchain() : undefined;
 if (cppToolchain) {
   const cppFixtures = fixtures.filter((fixture) => existsSync(path.join(goldenDirectory, fixture, 'cpp')));
@@ -144,9 +155,9 @@ if (cppToolchain) {
     }
   }
   reports.push(`cpp ${String(cppFixtures.length)} fixtures (${cppToolchain.command}, ${cppToolchain.family})`);
-} else if (cppRuntimeAvailable) {
+} else if (cppSelected && cppRuntimeAvailable) {
   reports.push('C++ compiler not installed (skipped)');
-} else {
+} else if (cppSelected) {
   reports.push('flight-cpp not rehydrated (skipped)');
 }
 
@@ -154,11 +165,19 @@ if (failures.length > 0) {
   for (const failure of failures) {
     process.stderr.write(`\n### ${failure.fixture}\n${failure.output}\n`);
   }
-  process.stderr.write(`\n${String(failures.length)} emitted fixture(s) do not compile (${reports.join(', ')}).\n`);
+  process.stderr.write(
+    `\n${String(failures.length)} emitted fixture(s) do not compile (targets ${getSourceCompileTargets(filters).join(', ')}${
+      reports.length === 0 ? '' : `; ${reports.join(', ')}`
+    }).\n`,
+  );
   process.exit(1);
 }
 
-process.stdout.write(`Emitted source compiles: ${String(checked)} files (${reports.join(', ')}).\n`);
+process.stdout.write(
+  `Emitted source compiles: ${String(checked)} files (targets ${getSourceCompileTargets(filters).join(', ')}${
+    reports.length === 0 ? '' : `; ${reports.join(', ')}`
+  }).\n`,
+);
 
 function collectSourceFiles(directory: string, extension: string): string[] {
   const entries = readdirSync(directory, { recursive: true, withFileTypes: true });
