@@ -3,11 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { collectCiWorkflowIssues } from './ciWorkflow.js';
-import {
-  collectReleaseBridgeIssues,
-  collectReleaseWorkflowIssues,
-  getReleaseConcurrencyGroup,
-} from './releaseWorkflow.js';
+import { collectReleaseBridgeIssues, collectReleaseWorkflowIssues } from './releaseWorkflow.js';
 
 // Reports the structural workflow invariants that no other gate reads. `docs:check` resolves links inside
 // workflow files and `license:check` reads their text, but neither checks which target a CI lane executes,
@@ -30,7 +26,6 @@ const workflows = [
 ] as const;
 
 const errors: string[] = [];
-const groups = new Map<string, string>();
 let checked = 0;
 let receivers = 0;
 if (!existsSync(path.join(root, ciFile))) {
@@ -50,18 +45,7 @@ for (const workflow of workflows) {
   const contents = readFileSync(path.join(root, workflow.file), 'utf8');
   checked += 1;
   if (workflow.receiver) receivers += 1;
-  const group = getReleaseConcurrencyGroup(workflow.file, contents);
-  if (group !== undefined) groups.set(workflow.file, group);
   errors.push(...workflow.collect(workflow.file, contents));
-}
-
-// The two publishing workflows must queue behind each other, which they can only do under one group.
-if (new Set(groups.values()).size > 1) {
-  errors.push(
-    `the publishing workflows hold different concurrency groups: ${[...groups]
-      .map(([file, group]) => `${file} is ${group}`)
-      .join(', ')}`,
-  );
 }
 
 if (errors.length > 0) {

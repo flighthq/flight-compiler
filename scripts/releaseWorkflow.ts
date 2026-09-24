@@ -24,42 +24,25 @@ export function collectReleaseBridgeIssues(name: string, contents: string): read
   const issues: string[] = [];
   collectTriggerIssues(issues, name, document);
   collectPayloadIssues(issues, name, document);
+  collectCheckoutIssues(issues, name, document);
+  collectDistributionTagPolicyIssues(issues, name, document);
   collectRegistryIssues(issues, name, document);
-  collectConcurrencyIssues(issues, name, document);
+  collectReleaseBridgeConcurrencyIssues(issues, name, document);
   collectPermissionIssues(issues, name, document);
   collectPublishOrderIssues(issues, name, document);
   collectTokenIssues(issues, name, document);
   return issues;
 }
 
-// The manual release and the bridge publish the same package, so they share one concurrency group: a group
-// name is repository-wide, and two workflows that publish may not hold different ones.
+// The direct workflow is the stable lane. Its literal group must collide with both manual bridge runs and
+// stable dispatches, while prerelease tags retain independent lanes.
 export function collectReleaseWorkflowIssues(name: string, contents: string): readonly string[] {
   const document = parseWorkflow(name, contents);
   if (document === undefined) return [`${name}: the workflow is not readable YAML`];
   const issues: string[] = [];
-  collectConcurrencyIssues(issues, name, document);
-  collectDirectPublisherIssues(issues, name, document);
+  collectStableConcurrencyIssues(issues, name, document);
+  collectStablePublisherIssues(issues, name, document);
   return issues;
-}
-
-// The direct release publishes the same package as the receiver, so it reaches the registry the same way: the
-// root publisher owns the idempotency read, the distribution tag, and the version validation, and a raw
-// `npm publish` beside it would bypass all three.
-function collectDirectPublisherIssues(
-  issues: string[],
-  name: string,
-  document: Readonly<Record<string, unknown>>,
-): void {
-  const steps = getWorkflowSteps(document);
-  for (const [index, step] of steps.entries()) {
-    if (/\bnpm publish\b/u.test(getStepRun(step))) {
-      issues.push(`${name}: step ${String(index + 1)} publishes with a raw npm publish`);
-    }
-  }
-  if (!steps.some((step) => /\bnpm run release(?:\s|$)/u.test(getStepRun(step)))) {
-    issues.push(`${name}: no step publishes through the root release publisher`);
-  }
 }
 
 export function collectWorkflowJobs(document: Readonly<Record<string, unknown>>): readonly WorkflowJob[] {
@@ -69,16 +52,6 @@ export function collectWorkflowJobs(document: Readonly<Record<string, unknown>>)
     const job = asRecord(value);
     return job === undefined ? [] : [{ job, name, steps: asRecords(job.steps) }];
   });
-}
-
-// The concurrency group a workflow publishes under, for the caller that compares two of them. Two workflows
-// that publish the same package may not hold different groups, and that equality -- not the spelling -- is the
-// invariant; the accepted names below are one transition apart.
-export function getReleaseConcurrencyGroup(name: string, contents: string): string | undefined {
-  const document = parseWorkflow(name, contents);
-  if (document === undefined) return undefined;
-  const group = asRecord(document.concurrency)?.group;
-  return typeof group === 'string' ? group : undefined;
 }
 
 export function getStepRun(step: Readonly<Record<string, unknown>>): string {
@@ -106,18 +79,76 @@ export function getWorkflowSteps(
   return collectWorkflowJobs(document).flatMap((job) => job.steps);
 }
 
-function collectConcurrencyIssues(issues: string[], name: string, document: Readonly<Record<string, unknown>>): void {
+function collectReleaseBridgeConcurrencyIssues(
+  issues: string[],
+  name: string,
+  document: Readonly<Record<string, unknown>>,
+): void {
   const concurrency = asRecord(document.concurrency);
   if (concurrency === undefined) {
     issues.push(`${name}: the workflow declares no concurrency group`);
     return;
   }
-  if (concurrency.group !== releaseConcurrencyGroup) {
-    issues.push(`${name}: concurrency group is ${String(concurrency.group)} rather than ${releaseConcurrencyGroup}`);
+  const group = concurrency.group;
+  const distributionTag = getDispatchedFact(document, distributionTagVariable);
+  const expected = typeof distributionTag === 'string' ? `${releaseConcurrencyPrefix}-${distributionTag}` : undefined;
+  if (group !== expected) {
+    issues.push(
+      `${name}: concurrency must use the same effective ${distributionTagVariable} expression as the release job`,
+    );
   }
   if (concurrency['cancel-in-progress'] !== false) {
     issues.push(`${name}: a running release must not be cancelled by the next one`);
   }
+}
+
+function collectStableConcurrencyIssues(
+  issues: string[],
+  name: string,
+  document: Readonly<Record<string, unknown>>,
+): void {
+  const concurrency = asRecord(document.concurrency);
+  if (concurrency === undefined) {
+    issues.push(`${name}: the workflow declares no concurrency group`);
+    return;
+  }
+  if (concurrency.group !== stableReleaseConcurrencyGroup) {
+    issues.push(
+      `${name}: concurrency group is ${String(concurrency.group)} rather than ${stableReleaseConcurrencyGroup}`,
+    );
+  }
+  if (concurrency['cancel-in-progress'] !== false) {
+    issues.push(`${name}: a running release must not be cancelled by the next one`);
+  }
+}
+
+function collectStablePublisherIssues(
+  issues: string[],
+  name: string,
+  document: Readonly<Record<string, unknown>>,
+): void {
+  const steps = getWorkflowSteps(document);
+  collectRawPublishIssues(issues, name, steps);
+  const publishing = steps.filter((step) => isPublishStep(step));
+  const commands = publishing.flatMap((step) => getPublisherCommands(step));
+  if (commands.length === 0) {
+    issues.push(`${name}: no step publishes through the root release publisher`);
+    return;
+  }
+  if (commands.some((command) => !stablePublisherTagPattern.test(command))) {
+    issues.push(`${name}: the direct release publisher must use the stable latest tag`);
+  }
+  if (
+    !publishing.some(
+      (step) =>
+        typeof step.if === 'string' &&
+        step.if.includes("github.event_name == 'workflow_dispatch'") &&
+        step.if.includes('inputs.publish'),
+    )
+  ) {
+    issues.push(`${name}: the stable publish must remain gated by the manual publish input`);
+  }
+  collectMisplacedTokenIssues(issues, name, steps);
 }
 
 function collectPayloadIssues(issues: string[], name: string, document: Readonly<Record<string, unknown>>): void {
@@ -131,6 +162,72 @@ function collectPayloadIssues(issues: string[], name: string, document: Readonly
     if (typeof value !== 'string' || !value.includes('github.event.client_payload.') || !value.includes('inputs.')) {
       issues.push(`${name}: ${variable} is not derived from the dispatch and the manual inputs`);
     }
+  }
+  const distributionTag = getDispatchedFact(document, distributionTagVariable);
+  if (typeof distributionTag !== 'string' || !distributionTag.includes(dispatchDistributionTag)) {
+    issues.push(`${name}: ${distributionTagVariable} is not read from the authoritative dispatch dist_tag`);
+  }
+  if (typeof distributionTag !== 'string' || referencedInput(distributionTag, 'inputs.') === undefined) {
+    issues.push(`${name}: ${distributionTagVariable} is not read from a manual input for recovery`);
+  }
+}
+
+// The Flight commit is provenance, not the source of this repository. A receiver that checks out that commit
+// either fails or, worse, runs a same-named compiler commit instead of the compiler's default branch.
+function collectCheckoutIssues(issues: string[], name: string, document: Readonly<Record<string, unknown>>): void {
+  const checkoutSteps = getWorkflowSteps(document).filter(
+    (step) => typeof step.uses === 'string' && step.uses.startsWith('actions/checkout@'),
+  );
+  if (checkoutSteps.length !== 1) {
+    issues.push(
+      `${name}: exactly one step must check out the compiler repository, found ${String(checkoutSteps.length)}`,
+    );
+    return;
+  }
+  if (asRecord(checkoutSteps[0]!.with)?.ref !== compilerDefaultBranchExpression) {
+    issues.push(
+      `${name}: checkout must use the compiler repository default branch, not the informational Flight commit`,
+    );
+  }
+  for (const [index, step] of getWorkflowSteps(document).entries()) {
+    const run = getStepRun(step);
+    const nonRunFields = JSON.stringify({ ...step, run: undefined });
+    const usesCommitOutsideSummary =
+      nonRunFields.includes(dispatchedCommitVariable) ||
+      nonRunFields.includes(dispatchCommit) ||
+      ((run.includes(dispatchedCommitVariable) || run.includes(dispatchCommit)) &&
+        !run.includes('$GITHUB_STEP_SUMMARY'));
+    if (usesCommitOutsideSummary) {
+      issues.push(`${name}: step ${String(index + 1)} uses the informational Flight commit outside the run summary`);
+    }
+  }
+}
+
+// The workflow rejects a malformed dispatch before it stamps or queries the registry. The publisher repeats
+// this policy at the final boundary; keeping the receiver check means a bad dispatch fails with its own facts.
+function collectDistributionTagPolicyIssues(
+  issues: string[],
+  name: string,
+  document: Readonly<Record<string, unknown>>,
+): void {
+  const runs = getWorkflowSteps(document).map((step) => getStepRun(step));
+  const allowlist = runs.some(
+    (run) =>
+      /case\s+"\$\{?FLIGHT_DIST_TAG\}?"\s+in/u.test(run) &&
+      /latest\s*\|\s*edge\s*\|\s*next\s*\)/u.test(run) &&
+      /\*\s*\)[\s\S]*?exit\s+1/u.test(run),
+  );
+  if (!allowlist) {
+    issues.push(`${name}: no guard restricts ${distributionTagVariable} to latest, edge, or next`);
+  }
+  const prereleaseLatest = runs.some(
+    (run) =>
+      /"\$\{?FLIGHT_DIST_TAG\}?"\s*=\s*latest/u.test(run) &&
+      /"\$\{?FLIGHT_VERSION\}?"\s*==\s*\*-\*/u.test(run) &&
+      /exit\s+1/u.test(run),
+  );
+  if (!prereleaseLatest) {
+    issues.push(`${name}: no guard prevents a prerelease version from using the latest tag`);
   }
 }
 
@@ -273,25 +370,55 @@ function collectRegistryIssues(issues: string[], name: string, document: Readonl
   }
 }
 
-function collectTokenIssues(issues: string[], name: string, document: Readonly<Record<string, unknown>>): void {
-  const steps = getWorkflowSteps(document);
-  // A raw `npm publish` reaches the registry without the idempotency read, the tag, or the ordering the root
-  // publisher owns. The workflow is allowed exactly one way in.
-  for (const [index, step] of steps.entries()) {
-    if (/\bnpm publish\b/u.test(getStepRun(step))) {
-      issues.push(`${name}: step ${String(index + 1)} publishes with a raw npm publish`);
-    }
-  }
+function collectMisplacedTokenIssues(
+  issues: string[],
+  name: string,
+  steps: readonly Readonly<Record<string, unknown>>[],
+): void {
   for (const [index, step] of steps.entries()) {
     if (typeof asRecord(step.env)?.NODE_AUTH_TOKEN !== 'string') continue;
     if (!isPublishStep(step)) {
       issues.push(`${name}: step ${String(index + 1)} carries the registry token without publishing`);
     }
   }
+}
+
+function collectRawPublishIssues(
+  issues: string[],
+  name: string,
+  steps: readonly Readonly<Record<string, unknown>>[],
+): void {
+  for (const [index, step] of steps.entries()) {
+    if (/\bnpm publish\b/u.test(getStepRun(step))) {
+      issues.push(`${name}: step ${String(index + 1)} publishes with a raw npm publish`);
+    }
+  }
+}
+
+function getPublisherCommands(step: Readonly<Record<string, unknown>>): readonly string[] {
+  return getStepRun(step)
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => publishStepPattern.test(line));
+}
+
+function collectTokenIssues(issues: string[], name: string, document: Readonly<Record<string, unknown>>): void {
+  const steps = getWorkflowSteps(document);
+  // A raw `npm publish` reaches the registry without the idempotency read, the tag, or the ordering the root
+  // publisher owns. The workflow is allowed exactly one way in.
+  collectRawPublishIssues(issues, name, steps);
+  collectMisplacedTokenIssues(issues, name, steps);
   const publishing = steps.filter((step) => isPublishStep(step));
   if (publishing.length === 0) {
     issues.push(`${name}: no step publishes through the root release publisher`);
     return;
+  }
+  const commands = publishing.flatMap((step) => getPublisherCommands(step));
+  if (commands.some((command) => !environmentPublisherTagPattern.test(command))) {
+    issues.push(`${name}: every root release publisher invocation must receive --tag from ${distributionTagVariable}`);
+  }
+  if (!commands.some((command) => !/--dry[_-]run\b/u.test(command))) {
+    issues.push(`${name}: no root release publisher invocation can perform the release`);
   }
   // A rehearsal must be possible without the registry token. Either route proves it: the publisher is invoked
   // in a rehearsal mode, or the step that would publish is conditioned on the rehearsal input. What is not
@@ -312,8 +439,8 @@ function collectTriggerIssues(issues: string[], name: string, document: Readonly
     return;
   }
   const types = asRecord(on.repository_dispatch)?.types;
-  if (!Array.isArray(types) || types.length !== 1 || types[0] !== releaseEventType) {
-    issues.push(`${name}: repository_dispatch types must be exactly [${releaseEventType}]`);
+  if (!isExactStringSet(types, releaseEventTypes)) {
+    issues.push(`${name}: repository_dispatch types must be exactly [${releaseEventTypes.join(', ')}]`);
   }
   const manual = asRecord(asRecord(on.workflow_dispatch)?.inputs);
   if (manual === undefined) {
@@ -338,6 +465,30 @@ function collectTriggerIssues(issues: string[], name: string, document: Readonly
   const commitInput = referencedInput(getDispatchedFact(document, 'FLIGHT_COMMIT'), 'inputs.');
   if (commitInput === undefined || asRecord(manual[commitInput]) === undefined) {
     issues.push(`${name}: the commit is not read from a declared manual input`);
+  }
+  const distributionTagInput = referencedInput(getDispatchedFact(document, distributionTagVariable), 'inputs.');
+  if (distributionTagInput === undefined) {
+    issues.push(`${name}: the distribution tag is not read from a manual input, so recovery cannot supply it`);
+    return;
+  }
+  const distributionTagDeclaration = asRecord(manual[distributionTagInput]);
+  if (distributionTagDeclaration === undefined) {
+    issues.push(`${name}: manual input ${distributionTagInput} is not declared`);
+    return;
+  }
+  if (distributionTagDeclaration.required !== true) {
+    issues.push(`${name}: manual input ${distributionTagInput} must be required`);
+  }
+  if (distributionTagDeclaration.type !== 'choice') {
+    issues.push(`${name}: manual input ${distributionTagInput} must be a choice`);
+  }
+  if (!isExactStringSet(distributionTagDeclaration.options, allowedDistributionTags)) {
+    issues.push(
+      `${name}: manual input ${distributionTagInput} options must be exactly [${allowedDistributionTags.join(', ')}]`,
+    );
+  }
+  if (Object.hasOwn(distributionTagDeclaration, 'default')) {
+    issues.push(`${name}: manual input ${distributionTagInput} must not silently default a recovery tag`);
   }
 }
 
@@ -365,10 +516,24 @@ function asRecords(value: unknown): readonly Readonly<Record<string, unknown>>[]
   });
 }
 
-// The one event type Flight dispatches, the two facts every run needs, and the rehearsal default. These
-// names are the sending contract: changing one here changes what Flight has to send.
-const releaseConcurrencyGroup = 'release';
-const releaseEventType = 'flight-release';
+function isExactStringSet(value: unknown, expected: readonly string[]): boolean {
+  if (!Array.isArray(value) || value.length !== expected.length || !value.every((entry) => typeof entry === 'string')) {
+    return false;
+  }
+  return new Set(value).size === expected.length && expected.every((entry) => value.includes(entry));
+}
+
+// The event types Flight dispatches and the facts every run needs. These names are the sending contract:
+// changing one here changes what Flight has to send.
+const allowedDistributionTags = ['latest', 'edge', 'next'] as const;
+const compilerDefaultBranchExpression = '${{ github.event.repository.default_branch }}';
+const dispatchCommit = 'github.event.client_payload.commit';
+const dispatchDistributionTag = 'github.event.client_payload.dist_tag';
+const dispatchedCommitVariable = 'FLIGHT_COMMIT';
+const distributionTagVariable = 'FLIGHT_DIST_TAG';
+const releaseConcurrencyPrefix = 'release';
+const releaseEventTypes = ['flight-release', 'flight-snapshot'] as const;
+const stableReleaseConcurrencyGroup = 'release-latest';
 const publicRegistry = 'https://registry.npmjs.org';
 const dispatchedFacts = ['FLIGHT_VERSION', 'FLIGHT_COMMIT'] as const;
 
@@ -379,4 +544,6 @@ const preStampCommands = ['npm run check', 'npm run test:packages'] as const;
 const stampCommand = 'npm run version:tool-compiler';
 const postStampCommands = ['npm run pack:check', 'npm run smoke'] as const;
 const forbiddenPipelineCommands = ['npm run ci'] as const;
+const environmentPublisherTagPattern = /--tag(?:=|\s+)["']?\$\{?FLIGHT_DIST_TAG\}?["']?(?:\s|$)/u;
 const publishStepPattern = /\bnpm run release(?:\s|$)/u;
+const stablePublisherTagPattern = /--tag(?:=|\s+)["']?latest["']?(?:\s|$)/u;

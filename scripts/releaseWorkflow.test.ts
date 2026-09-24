@@ -41,9 +41,9 @@ describe('collectReleaseBridgeIssues', () => {
   it.each([
     [
       'an event type the sender no longer dispatches',
+      'types: [flight-release, flight-snapshot]',
       'types: [flight-release]',
-      'types: [flight_release]',
-      'repository_dispatch types must be exactly [flight-release]',
+      'repository_dispatch types must be exactly [flight-release, flight-snapshot]',
     ],
     [
       'a recovery version that may be omitted',
@@ -64,10 +64,10 @@ describe('collectReleaseBridgeIssues', () => {
       'no step points setup-node at https://registry.npmjs.org',
     ],
     [
-      'a per-ref concurrency group',
-      'group: release',
-      'group: release-per-ref',
-      'concurrency group is release-per-ref rather than release',
+      'concurrency derived from a different recovery fact',
+      "group: release-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.dist_tag || inputs.dist_tag }}",
+      "group: release-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.dist_tag || inputs.version }}",
+      'concurrency must use the same effective FLIGHT_DIST_TAG expression as the release job',
     ],
     [
       'a cancellable release',
@@ -125,31 +125,111 @@ describe('collectReleaseBridgeIssues', () => {
     ],
     [
       'a publish that bypasses the root release publisher',
-      '            npm run release -- --tag latest',
-      '            npm publish --access public --tag latest',
-      'step 11 publishes with a raw npm publish',
+      '            npm run release -- --tag "$FLIGHT_DIST_TAG"',
+      '            npm publish --access public --tag "$FLIGHT_DIST_TAG"',
+      'step 12 publishes with a raw npm publish',
     ],
     [
       'a workflow that publishes no other way',
-      '          if [ "$release_intent" = dry-run ]; then\n            npm run release -- --dry-run --tag latest\n          else\n            npm run release -- --tag latest\n          fi\n',
-      '          npm publish --access public --tag latest\n',
+      '          if [ "$release_intent" = dry-run ]; then\n            npm run release -- --dry-run --tag "$FLIGHT_DIST_TAG"\n          else\n            npm run release -- --tag "$FLIGHT_DIST_TAG"\n          fi\n',
+      '          npm publish --access public --tag "$FLIGHT_DIST_TAG"\n',
       'no step publishes through the root release publisher',
     ],
     [
       'a release that cannot rehearse',
-      '            npm run release -- --dry-run --tag latest',
-      '            npm run release -- --tag latest',
+      '            npm run release -- --dry-run --tag "$FLIGHT_DIST_TAG"',
+      '            npm run release -- --tag "$FLIGHT_DIST_TAG"',
       'nothing rehearses: the publisher is neither invoked with --dry-run nor conditional',
     ],
     [
       'a registry token on a step that does not publish',
       '      - name: Stamp the compiler version\n',
       '      - name: Stamp the compiler version\n        env:\n          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n',
-      'step 8 carries the registry token without publishing',
+      'step 9 carries the registry token without publishing',
     ],
   ])('reports %s', (_description, replace, replacement, expected) => {
     expect(collectReleaseBridgeIssues(receiverFile, mutated(receiverFile, replace, replacement))).toContain(
       `${receiverFile}: ${expected}`,
+    );
+  });
+
+  it('requires the authoritative dispatch distribution tag', () => {
+    const contents = mutated(
+      receiverFile,
+      "FLIGHT_DIST_TAG: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.dist_tag || inputs.dist_tag }}",
+      "FLIGHT_DIST_TAG: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.channel || inputs.dist_tag }}",
+    );
+
+    expect(collectReleaseBridgeIssues(receiverFile, contents)).toContain(
+      `${receiverFile}: FLIGHT_DIST_TAG is not read from the authoritative dispatch dist_tag`,
+    );
+  });
+
+  it('requires an explicit three-tag choice for manual recovery without a silent default', () => {
+    const optional = mutated(receiverFile, /( {6}dist_tag:[\s\S]*? {8}required:) true/u, '$1 false');
+    const incomplete = mutated(receiverFile, '          - next\n', '');
+    const defaulted = mutated(
+      receiverFile,
+      '        type: choice\n        options:',
+      '        type: choice\n        default: latest\n        options:',
+    );
+
+    expect(collectReleaseBridgeIssues(receiverFile, optional)).toContain(
+      `${receiverFile}: manual input dist_tag must be required`,
+    );
+    expect(collectReleaseBridgeIssues(receiverFile, incomplete)).toContain(
+      `${receiverFile}: manual input dist_tag options must be exactly [latest, edge, next]`,
+    );
+    expect(collectReleaseBridgeIssues(receiverFile, defaulted)).toContain(
+      `${receiverFile}: manual input dist_tag must not silently default a recovery tag`,
+    );
+  });
+
+  it('requires the receiver-side tag allowlist and prerelease latest guard', () => {
+    const widened = mutated(receiverFile, 'latest | edge | next) ;;', 'latest | edge | beta) ;;');
+    const unguarded = mutated(
+      receiverFile,
+      'if [ "$FLIGHT_DIST_TAG" = latest ] && [[ "$FLIGHT_VERSION" == *-* ]]; then',
+      'if [ "$FLIGHT_DIST_TAG" = edge ] && [[ "$FLIGHT_VERSION" == *-* ]]; then',
+    );
+
+    expect(collectReleaseBridgeIssues(receiverFile, widened)).toContain(
+      `${receiverFile}: no guard restricts FLIGHT_DIST_TAG to latest, edge, or next`,
+    );
+    expect(collectReleaseBridgeIssues(receiverFile, unguarded)).toContain(
+      `${receiverFile}: no guard prevents a prerelease version from using the latest tag`,
+    );
+  });
+
+  it('passes the effective distribution tag to every idempotent publisher invocation', () => {
+    const contents = mutated(
+      receiverFile,
+      'npm run release -- --dry-run --tag "$FLIGHT_DIST_TAG"',
+      'npm run release -- --dry-run --tag latest',
+    );
+
+    expect(collectReleaseBridgeIssues(receiverFile, contents)).toContain(
+      `${receiverFile}: every root release publisher invocation must receive --tag from FLIGHT_DIST_TAG`,
+    );
+  });
+
+  it('checks out this repository default branch instead of the informational Flight commit', () => {
+    const wrongCheckout = mutated(
+      receiverFile,
+      'ref: ${{ github.event.repository.default_branch }}',
+      'ref: ${{ github.event.client_payload.commit }}',
+    );
+    const operationalCommit = mutated(
+      receiverFile,
+      '      - name: Check the compiler repository\n        run: npm run check\n',
+      '      - name: Check the compiler repository\n        run: npm run check "$FLIGHT_COMMIT"\n',
+    );
+
+    expect(collectReleaseBridgeIssues(receiverFile, wrongCheckout)).toContain(
+      `${receiverFile}: checkout must use the compiler repository default branch, not the informational Flight commit`,
+    );
+    expect(collectReleaseBridgeIssues(receiverFile, operationalCommit)).toContain(
+      `${receiverFile}: step 7 uses the informational Flight commit outside the run summary`,
     );
   });
 
@@ -161,7 +241,7 @@ describe('collectReleaseBridgeIssues', () => {
     );
 
     expect(collectReleaseBridgeIssues(receiverFile, contents)).toContain(
-      `${receiverFile}: step 7 interpolates an expression into a shell body`,
+      `${receiverFile}: step 8 interpolates an expression into a shell body`,
     );
   });
 
@@ -183,43 +263,37 @@ describe('collectReleaseBridgeIssues', () => {
 });
 
 describe('collectReleaseWorkflowIssues', () => {
-  // The manual release publishes the same package as the receiver, so a different group would let the two run
-  // at once. This is the concrete overlap between them, and the reason both name the same group.
-  // The direct publisher holds the stable lane. Until the receiver takes a per-dist-tag lane, the gate reports
-  // the mismatch, and that is the intended state of this commit: the two land together, and the landing moves
-  // this expectation to an empty report.
-  it('reports the direct publisher as sharing no lane until the receiver takes a dist-tag lane', () => {
-    expect(collectReleaseWorkflowIssues(releaseFile, read(releaseFile))).toEqual([
-      `${releaseFile}: concurrency group is release-latest rather than release`,
-    ]);
-  });
-
-  // A tag release and a bridged release publish the same package, so both go through the one command that owns
-  // the idempotency read, the tag, and the version validation.
-  it('reports a direct release that reaches the registry without the root publisher', () => {
-    const contents = mutated(releaseFile, 'run: npm run release -- --tag latest', 'run: npm publish --provenance');
-
-    expect(collectReleaseWorkflowIssues(releaseFile, contents)).toContain(
-      `${releaseFile}: step 7 publishes with a raw npm publish`,
-    );
-    expect(collectReleaseWorkflowIssues(releaseFile, contents)).toContain(
-      `${releaseFile}: no step publishes through the root release publisher`,
-    );
-  });
-
-  it('reports a direct release that publishes no other way', () => {
-    const contents = mutated(releaseFile, 'run: npm run release -- --tag latest', 'run: npm run smoke');
-
-    expect(collectReleaseWorkflowIssues(releaseFile, contents)).toContain(
-      `${releaseFile}: no step publishes through the root release publisher`,
-    );
+  // The direct workflow is the stable lane: its literal group collides with a latest receiver dispatch, and
+  // its explicit tag routes through the same guarded, idempotent publisher.
+  it('accepts the manual release this repository ships', () => {
+    expect(collectReleaseWorkflowIssues(releaseFile, read(releaseFile))).toEqual([]);
   });
 
   it('reports a manual release that could publish concurrently with the receiver', () => {
     const contents = mutated(releaseFile, 'group: release-latest', 'group: release-${{ github.ref }}');
 
     expect(collectReleaseWorkflowIssues(releaseFile, contents)).toContain(
-      `${releaseFile}: concurrency group is release-\${{ github.ref }} rather than release`,
+      `${releaseFile}: concurrency group is release-\${{ github.ref }} rather than release-latest`,
+    );
+  });
+
+  it('requires the guarded root publisher with the explicit stable tag', () => {
+    const unstable = mutated(releaseFile, 'npm run release -- --tag latest', 'npm run release -- --tag next');
+    const bypassed = mutated(releaseFile, 'npm run release -- --tag latest', 'npm publish --access public');
+    const unconditional = mutated(
+      releaseFile,
+      "if: github.event_name == 'workflow_dispatch' && inputs.publish",
+      "if: github.event_name == 'workflow_dispatch'",
+    );
+
+    expect(collectReleaseWorkflowIssues(releaseFile, unstable)).toContain(
+      `${releaseFile}: the direct release publisher must use the stable latest tag`,
+    );
+    expect(collectReleaseWorkflowIssues(releaseFile, bypassed)).toContain(
+      `${releaseFile}: step 7 publishes with a raw npm publish`,
+    );
+    expect(collectReleaseWorkflowIssues(releaseFile, unconditional)).toContain(
+      `${releaseFile}: the stable publish must remain gated by the manual publish input`,
     );
   });
 });
