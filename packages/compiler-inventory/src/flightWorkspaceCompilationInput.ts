@@ -19,7 +19,7 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { createFileSystemWorkspaceSource } from './fileSystemWorkspaceSource.js';
 import { readPackageExportManifest } from './flightPackageExportManifest.js';
-import { analyzeFlightPackageImports } from './flightPackageImport.js';
+import { analyzeFlightSourceImports } from './flightPackageImport.js';
 import { readFlightPackageManifests } from './flightPackageManifest.js';
 
 interface FlightWorkspaceCompilationPackage {
@@ -37,7 +37,12 @@ interface FlightWorkspaceCompilationSource {
 interface FlightWorkspaceCompilationImports {
   readonly dependencies: readonly CompilerModuleLinkDependency[];
   readonly resolutionEdges: readonly CompilerModuleResolutionEdge[];
+  readonly sources: readonly FlightWorkspaceCompilationSource[];
 }
+
+type FlightWorkspaceImportResolution =
+  | { readonly kind: 'external'; readonly resolvedFileName: string }
+  | { readonly kind: 'workspace'; readonly target: FlightWorkspaceCompilationSource };
 
 export function createFlightWorkspaceCompilationInput(
   options: Readonly<CreateFlightWorkspaceCompilationInputOptions>,
@@ -95,7 +100,7 @@ export function createFlightWorkspaceCompilationInput(
       target: { packageName: target.identity.packageName, source: target.identity.source },
     }),
   );
-  const sources = packages.flatMap((package_) => package_.sources.map(({ input }) => input));
+  const sources = imports.sources.map(({ input }) => input);
   return freezeFlightWorkspaceCompilationInput({
     graph: {
       entries,
@@ -214,18 +219,29 @@ function createFlightWorkspaceModuleDependencies(
 ): FlightWorkspaceCompilationImports {
   const dependencies = new Map<string, CompilerModuleLinkDependency>();
   const resolutionEdges = new Map<string, CompilerModuleResolutionEdge>();
-  for (const package_ of packages) {
-    const imports = analyzeFlightPackageImports({ manifest: package_.manifest, upstreamDirectory }, workspace);
-    for (const imported of imports) {
-      const importer = sourcesByPath.get(normalizePathPortable(imported.source));
-      if (!importer || importer.identity.packageName !== package_.manifest.name) {
-        throw createFlightWorkspaceCompilationFailure(
-          'invalid-source-path',
-          imported.source,
-          `Package import names an unknown production source: ${imported.source}`,
-        );
-      }
-      const target = resolveFlightWorkspaceImport(imported, importer, sourcesByPath, exportTargets);
+  const packagesByName = new Map(packages.map((package_) => [package_.manifest.name, package_] as const));
+  const reachableSources = new Map<string, FlightWorkspaceCompilationSource>();
+  const pending = [...exportTargets.values()].sort((left, right) =>
+    compareFlightWorkspaceModuleIdentities(left.identity, right.identity),
+  );
+  for (let index = 0; index < pending.length; index += 1) {
+    const importer = pending[index]!;
+    if (reachableSources.has(importer.identity.source)) continue;
+    reachableSources.set(importer.identity.source, importer);
+    const package_ = packagesByName.get(importer.identity.packageName)!;
+    for (const imported of analyzeFlightSourceImports(importer.input.sourceFile, importer.identity.source)) {
+      const resolution = resolveFlightWorkspaceImport(
+        imported,
+        importer,
+        sourcesByPath,
+        exportTargets,
+        upstreamDirectory,
+        workspace,
+      );
+      // Resolved package declarations inform semantic analysis but never become Flight modules.
+      // The backend must provide a runtime mapping or report its normal external-import refusal.
+      if (resolution.kind === 'external') continue;
+      const { target } = resolution;
       if (
         target.identity.packageName !== importer.identity.packageName &&
         !package_.manifest.dependencies.includes(target.identity.packageName)
@@ -252,22 +268,24 @@ function createFlightWorkspaceModuleDependencies(
         ]),
         resolutionEdge,
       );
-      if (imported.kind === 'dynamic') continue;
-      const dependency: CompilerModuleLinkDependency = {
-        importer: cloneFlightWorkspaceModuleIdentity(importer.identity),
-        specifier: imported.specifier,
-        target: cloneFlightWorkspaceModuleIdentity(target.identity),
-      };
-      const key = JSON.stringify([
-        dependency.importer.packageName,
-        dependency.importer.source,
-        dependency.importer.name,
-        dependency.specifier,
-        dependency.target.packageName,
-        dependency.target.source,
-        dependency.target.name,
-      ]);
-      dependencies.set(key, dependency);
+      if (imported.kind !== 'dynamic') {
+        const dependency: CompilerModuleLinkDependency = {
+          importer: cloneFlightWorkspaceModuleIdentity(importer.identity),
+          specifier: imported.specifier,
+          target: cloneFlightWorkspaceModuleIdentity(target.identity),
+        };
+        const key = JSON.stringify([
+          dependency.importer.packageName,
+          dependency.importer.source,
+          dependency.importer.name,
+          dependency.specifier,
+          dependency.target.packageName,
+          dependency.target.source,
+          dependency.target.name,
+        ]);
+        dependencies.set(key, dependency);
+      }
+      pending.push(target);
     }
   }
   return {
@@ -278,6 +296,9 @@ function createFlightWorkspaceModuleDependencies(
         compareFlightWorkspaceModuleIdentities(left.target, right.target),
     ),
     resolutionEdges: [...resolutionEdges.values()].sort(compareFlightWorkspaceModuleResolutionEdges),
+    sources: [...reachableSources.values()].sort((left, right) =>
+      compareFlightWorkspaceModuleIdentities(left.identity, right.identity),
+    ),
   };
 }
 
@@ -396,18 +417,48 @@ function resolveFlightWorkspaceImport(
   importer: Readonly<FlightWorkspaceCompilationSource>,
   sourcesByPath: ReadonlyMap<string, Readonly<FlightWorkspaceCompilationSource>>,
   exportTargets: ReadonlyMap<string, Readonly<FlightWorkspaceCompilationSource>>,
-): FlightWorkspaceCompilationSource {
+  upstreamDirectory: string,
+  workspace: WorkspaceSource,
+): FlightWorkspaceImportResolution {
   const target = imported.specifier.startsWith('.')
     ? resolveFlightWorkspaceRelativeImport(imported, importer, sourcesByPath)
     : exportTargets.get(imported.specifier);
-  if (!target) {
-    throw createFlightWorkspaceCompilationFailure(
-      'unresolved-import',
-      `${imported.source}:${imported.specifier}`,
-      `Cannot resolve workspace import ${imported.specifier} from ${imported.source}`,
-    );
+  if (target) return { kind: 'workspace', target };
+  if (!imported.specifier.startsWith('.')) {
+    const resolvedExternal = resolveFlightWorkspaceExternalImport(imported, importer, upstreamDirectory, workspace);
+    if (resolvedExternal) return { kind: 'external', resolvedFileName: resolvedExternal };
   }
-  return target;
+  throw createFlightWorkspaceCompilationFailure(
+    'unresolved-import',
+    `${imported.source}:${imported.specifier}`,
+    `Cannot resolve workspace import ${imported.specifier} from ${imported.source}`,
+  );
+}
+
+function resolveFlightWorkspaceExternalImport(
+  imported: Readonly<PackageImportRecord>,
+  importer: Readonly<FlightWorkspaceCompilationSource>,
+  upstreamDirectory: string,
+  workspace: WorkspaceSource,
+): string | undefined {
+  const options: ts.CompilerOptions = {
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    target: ts.ScriptTarget.ESNext,
+  };
+  const host: ts.ModuleResolutionHost = {
+    directoryExists: workspace.isDirectory,
+    fileExists: workspace.isFile,
+    getCurrentDirectory: () => upstreamDirectory,
+    readFile: (file) => (workspace.isFile(file) ? workspace.readTextFile(file) : undefined),
+  };
+  const resolved = ts.resolveModuleName(
+    imported.specifier,
+    importer.input.sourceFile.fileName,
+    options,
+    host,
+  ).resolvedModule;
+  return resolved?.isExternalLibraryImport === true ? normalizePathPortable(resolved.resolvedFileName) : undefined;
 }
 
 function resolveFlightWorkspaceRelativeImport(

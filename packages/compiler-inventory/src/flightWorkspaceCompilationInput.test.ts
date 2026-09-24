@@ -112,6 +112,67 @@ describe('createFlightWorkspaceCompilationInput', () => {
       }),
     );
   });
+
+  it('builds the production graph from export reachability without compiling hoisted test helpers', () => {
+    const files = createWorkspaceFiles({
+      '/flight/node_modules/vitest/index.d.ts': 'export declare function expect(value: unknown): void;',
+      '/flight/node_modules/vitest/package.json': JSON.stringify({
+        name: 'vitest',
+        types: './index.d.ts',
+        version: '1.0.0',
+      }),
+      '/flight/package.json': JSON.stringify({ devDependencies: { vitest: '1.0.0' }, private: true }),
+      '/flight/packages/app/src/glTestHelper.ts':
+        "import { expect } from 'vitest'; export function expectReady(value: unknown): void { expect(value); void import(String(value)); }",
+    });
+
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/app', '@flighthq/base'],
+      source: createMemoryWorkspaceSource(files),
+      upstreamDirectory: '/flight',
+    });
+
+    expect(input.sources.map((source) => source.sourceFile.fileName)).not.toContain(
+      '/flight/packages/app/src/glTestHelper.ts',
+    );
+    expect(input.sources.every((source) => !source.sourceFile.fileName.includes('/node_modules/'))).toBe(true);
+    expect(input.graph.moduleDependencies.every((dependency) => dependency.specifier !== 'vitest')).toBe(true);
+  });
+
+  it('keeps a reachable hoisted external import outside the Flight module graph', () => {
+    const files = createWorkspaceFiles({
+      '/flight/node_modules/vitest/index.d.ts': 'export declare function expect(value: unknown): void;',
+      '/flight/node_modules/vitest/package.json': JSON.stringify({
+        name: 'vitest',
+        types: './index.d.ts',
+        version: '1.0.0',
+      }),
+      '/flight/package.json': JSON.stringify({ devDependencies: { vitest: '1.0.0' }, private: true }),
+      '/flight/packages/app/src/glTestHelper.ts':
+        "import { expect } from 'vitest'; export function expectReady(value: unknown): void { expect(value); }",
+      '/flight/packages/app/src/index.ts': "export { expectReady } from './glTestHelper.js';",
+    });
+
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/app', '@flighthq/base'],
+      source: createMemoryWorkspaceSource(files),
+      upstreamDirectory: '/flight',
+    });
+
+    expect(input.sources.map((source) => source.sourceFile.fileName)).toContain(
+      '/flight/packages/app/src/glTestHelper.ts',
+    );
+    expect(input.sources.every((source) => !source.sourceFile.fileName.includes('/node_modules/'))).toBe(true);
+    expect(input.graph.moduleDependencies).toContainEqual(
+      expect.objectContaining({
+        importer: expect.objectContaining({ source: 'packages/app/src/index.ts' }),
+        specifier: './glTestHelper.js',
+        target: expect.objectContaining({ source: 'packages/app/src/glTestHelper.ts' }),
+      }),
+    );
+    expect(input.graph.moduleDependencies.every((dependency) => dependency.specifier !== 'vitest')).toBe(true);
+    expect(input.moduleResolution.edges.every((edge) => edge.specifier !== 'vitest')).toBe(true);
+  });
 });
 
 describe('isFlightWorkspaceCompilationFailure', () => {
