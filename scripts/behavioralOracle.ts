@@ -6,13 +6,13 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
+import { splitBehavioralOracleOutput } from './behavioralOracleOutput.js';
 import {
   createCppExecutableArguments,
   findCppCompilerToolchain,
   getCppExecutableName,
   type CppCompilerToolchain,
 } from './cppToolchain.js';
-import { splitBehavioralOracleOutput } from './behavioralOracleOutput.js';
 import { resolveDependency } from './dependencyLock.js';
 
 // Does the emitted source do what the source language does?
