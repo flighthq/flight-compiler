@@ -358,6 +358,38 @@ describe('emitIrModuleRust', () => {
     );
   });
 
+  // Element writes are where a typed array's aliasing is observable: the receiver is borrowed for the
+  // write, and a compound assignment reads the element back through the same view before writing it, so a
+  // second view over the same storage sees the result. Only construction, subarray and DataView were
+  // covered before.
+  it('emits typed-array element writes through the borrowed view', () => {
+    const result = lower(
+      'typed-array-element-write.ts',
+      `export function writes(): Uint8Array {
+         const values: Uint8Array = new Uint8Array(5);
+         values[0] = 300;
+         values[1] = -1;
+         values[2] = 1;
+         values[2] += 257;
+         values[3] %= 64;
+         return values;
+       }`,
+    );
+
+    const output = emitIrModuleRust(result.module).contents;
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('let typed_array = &values;');
+    expect(output).toContain('let typed_index = 0.0; let typed_value = 300.0;');
+    expect(output).toContain('.set_index(typed_index, typed_value)');
+    expect(output).toContain('let typed_value_2 = -1.0;');
+    // A compound assignment reads through the view it writes to, rather than assuming the element is
+    // independent of the value being computed.
+    expect(output).toContain('let typed_right = 257.0;');
+    expect(output).toContain('= typed_current + typed_right;');
+    expect(output).toContain('let typed_right_2 = 64.0;');
+    expect(output).toContain('= typed_current_2 % typed_right_2;');
+  });
+
   it('emits DataView construction and access over shared ArrayBuffer storage', () => {
     const result = lower(
       'data-view.ts',

@@ -47,6 +47,27 @@ describe('compareCompilerPackageCheckBaseline', () => {
     expect(JSON.stringify(baseline)).toBe(baselineSnapshot);
     expect(JSON.stringify(current)).toBe(currentSnapshot);
   });
+
+  it('refuses a report that is not a check report rather than comparing against it', () => {
+    const report = createCompilerPackageCheckReport(createCompilation(createModules()), createOptions());
+    const foreign = { ...report, schema: 'flight-compiler-check-report/2' } as unknown as typeof report;
+
+    expect(() => compareCompilerPackageCheckBaseline(foreign, createCompilerPackageCheckBaseline(report))).toThrow(
+      'Unsupported check report flight-compiler-check-report/2',
+    );
+  });
+
+  it('refuses a baseline that is not a check baseline rather than treating it as empty', () => {
+    const report = createCompilerPackageCheckReport(createCompilation(createModules()), createOptions());
+    const foreign = {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/2',
+    } as unknown as Parameters<typeof compareCompilerPackageCheckBaseline>[1];
+
+    expect(() => compareCompilerPackageCheckBaseline(report, foreign)).toThrow(
+      'Unsupported check baseline flight-compiler-check-baseline/2',
+    );
+  });
 });
 
 describe('createCompilerPackageCheckBaseline', () => {
@@ -62,6 +83,15 @@ describe('createCompilerPackageCheckBaseline', () => {
     });
     expect(baseline.findingIdentities.some((identity) => identity.includes('dependency-refused'))).toBe(false);
     expect(JSON.stringify(report)).toBe(snapshot);
+  });
+
+  it('refuses a report that is not a check report rather than recording identities from it', () => {
+    const report = createCompilerPackageCheckReport(createCompilation(createModules()), createOptions());
+    const foreign = { ...report, schema: 'flight-compiler-check-report/2' } as unknown as typeof report;
+
+    expect(() => createCompilerPackageCheckBaseline(foreign)).toThrow(
+      'Unsupported check report flight-compiler-check-report/2',
+    );
   });
 });
 
@@ -95,6 +125,29 @@ describe('createCompilerPackageCheckPolicyResult', () => {
     expect(strict.failingFindingIdentities).not.toContain('target-runtime');
     expect(runtimeOnly.failingFindingIdentities).toEqual(['target-runtime']);
     expect(JSON.stringify(comparison)).toBe(snapshot);
+  });
+
+  it('refuses a comparison or policy that is not the versioned record it reads', () => {
+    const comparison: CompilerPackageCheckComparison = {
+      introduced: [],
+      resolvedFindingIdentities: [],
+      schema: 'flight-compiler-check-comparison/1',
+      unchanged: [],
+    };
+    const strict = createCompilerPackageCheckPolicyStrict();
+
+    expect(() =>
+      createCompilerPackageCheckPolicyResult(
+        { ...comparison, schema: 'flight-compiler-check-comparison/2' } as unknown as typeof comparison,
+        strict,
+      ),
+    ).toThrow('Unsupported check comparison flight-compiler-check-comparison/2');
+    expect(() =>
+      createCompilerPackageCheckPolicyResult(comparison, {
+        ...strict,
+        schema: 'flight-compiler-check-policy/2',
+      } as unknown as typeof strict),
+    ).toThrow('Unsupported check policy flight-compiler-check-policy/2');
   });
 });
 
@@ -278,6 +331,135 @@ describe('createCompilerPackageCheckReport', () => {
       'unknown module @flight/a/src/missing.ts',
     );
   });
+
+  it('refuses a compilation report that is not the versioned record it reads', () => {
+    const compilation = createCompilation(createModules());
+
+    expect(() =>
+      createCompilerPackageCheckReport(
+        { ...compilation, schema: 'flight-compiler-package-report/2' } as unknown as typeof compilation,
+        createOptions(),
+      ),
+    ).toThrow('Unsupported package compilation report flight-compiler-package-report/2');
+  });
+
+  // A report is a summary of exactly one outcome per module and exactly one identity per finding, so the
+  // shapes that would make it ambiguous are refused rather than averaged into the counts.
+  it('refuses a compilation whose modules or refusals cannot be read as one outcome each', () => {
+    const duplicateSubject = [
+      directModule('@flight/a', 'src/alpha.ts', 'alpha', [refusal('portable-call', 'one', 1, 1)]),
+      emittedModule('@flight/a', 'src/alpha.ts', 'ignored'),
+    ];
+    const mixedRefusals = [
+      {
+        ...directModule('@flight/a', 'src/alpha.ts', 'alpha', [refusal('portable-call', 'one', 1, 1)]),
+        refusals: [
+          refusal('portable-call', 'one', 1, 1),
+          {
+            code: 'dependency-refused' as const,
+            message: 'blocked',
+            refusedDependencies: ['@flight/b/src/b.ts'],
+            stage: 'dependency' as const,
+          },
+        ],
+      },
+    ];
+    const refusalWithDependencyStage = [
+      directModule('@flight/a', 'src/alpha.ts', 'alpha', [
+        { ...refusal('portable-call', 'one', 1, 1), stage: 'dependency' },
+      ]),
+    ];
+    const emittedWithRefusals = [
+      { ...emittedModule('@flight/a', 'src/alpha.ts', 'alpha'), refusals: [refusal('portable-call', 'one', 1, 1)] },
+    ];
+    const refusedWithoutRefusals = [
+      {
+        module: { name: 'alpha', packageName: '@flight/a', source: 'src/alpha.ts' },
+        outputFiles: [],
+        refusals: [],
+        status: 'refused' as const,
+      },
+    ];
+
+    expect(() => createCompilerPackageCheckReport(createCompilation(duplicateSubject), createOptions())).toThrow(
+      'Duplicate compiler package module @flight/a/src/alpha.ts',
+    );
+    expect(() => createCompilerPackageCheckReport(createCompilation(mixedRefusals), createOptions())).toThrow(
+      'mixes direct and dependency refusals',
+    );
+    expect(() =>
+      createCompilerPackageCheckReport(createCompilation(refusalWithDependencyStage), createOptions()),
+    ).toThrow('uses dependency stage');
+    expect(() => createCompilerPackageCheckReport(createCompilation(emittedWithRefusals), createOptions())).toThrow(
+      'has refusals',
+    );
+    expect(() => createCompilerPackageCheckReport(createCompilation(refusedWithoutRefusals), createOptions())).toThrow(
+      'has no refusals',
+    );
+  });
+
+  it('refuses a cascade that cannot be resolved to the findings that blocked it', () => {
+    const unknownModule = [cascadeModule('@flight/a', 'src/beta.ts', 'beta', ['@flight/a/src/absent.ts'])];
+    const throughEmitted = [
+      emittedModule('@flight/a', 'src/alpha.ts', 'alpha'),
+      cascadeModule('@flight/a', 'src/beta.ts', 'beta', ['@flight/a/src/alpha.ts']),
+    ];
+    const cycle = [
+      cascadeModule('@flight/a', 'src/beta.ts', 'beta', ['@flight/a/src/gamma.ts']),
+      cascadeModule('@flight/a', 'src/gamma.ts', 'gamma', ['@flight/a/src/beta.ts']),
+    ];
+    const withoutDependencies = [
+      {
+        ...cascadeModule('@flight/a', 'src/beta.ts', 'beta', ['@flight/a/src/alpha.ts']),
+        refusals: [{ code: 'dependency-refused' as const, message: 'blocked', stage: 'dependency' as const }],
+      },
+    ];
+
+    expect(() => createCompilerPackageCheckReport(createCompilation(unknownModule), createOptions())).toThrow(
+      'references unknown module @flight/a/src/absent.ts',
+    );
+    expect(() => createCompilerPackageCheckReport(createCompilation(throughEmitted), createOptions())).toThrow(
+      'references emitted module @flight/a/src/alpha.ts',
+    );
+    expect(() => createCompilerPackageCheckReport(createCompilation(cycle), createOptions())).toThrow(
+      'Dependency refusal cycle at @flight/a/src/beta.ts',
+    );
+    expect(() => createCompilerPackageCheckReport(createCompilation(withoutDependencies), createOptions())).toThrow(
+      'has no refused dependencies',
+    );
+  });
+
+  it('refuses a classification table it cannot read or reconcile', () => {
+    const compilation = createCompilation(createModules());
+
+    expect(() =>
+      createCompilerPackageCheckReport(compilation, {
+        classification: { codes: {}, rules: {}, schema: 'flight-compiler-check-classification/2' } as never,
+        provenance: createOptions().provenance,
+      }),
+    ).toThrow('Unsupported check classification flight-compiler-check-classification/2');
+    expect(() =>
+      createCompilerPackageCheckReport(compilation, {
+        classification: {
+          codes: {},
+          rules: { 'portable-call': 'not-a-class' as never },
+          schema: 'flight-compiler-check-classification/1',
+        },
+        provenance: createOptions().provenance,
+      }),
+    ).toThrow('Unknown compiler check policy class not-a-class');
+    // Two spellings a canonical form reads as one rule may not disagree about who owns it.
+    expect(() =>
+      createCompilerPackageCheckReport(compilation, {
+        classification: {
+          codes: {},
+          rules: { 'caf\u00e9': 'source-portability', 'cafe\u0301': 'compiler-defect' },
+          schema: 'flight-compiler-check-classification/1',
+        },
+        provenance: createOptions().provenance,
+      }),
+    ).toThrow('Conflicting classifications for caf\u00e9');
+  });
 });
 
 describe('getCompilerPackageCheckReportJson', () => {
@@ -308,6 +490,37 @@ describe('getCompilerPackageCheckReportText', () => {
     expect(rendered).toContain('Dependency cascades: 2\n  Package: @flight/a');
     expect(rendered.indexOf('Policy: source-portability')).toBeLessThan(rendered.indexOf('Policy: unclassified'));
     expect(rendered.endsWith('\n')).toBe(true);
+  });
+
+  it('refuses a report that is not a check report rather than serializing it', () => {
+    const report = createCompilerPackageCheckReport(createCompilation(createModules()), createOptions());
+    const foreign = { ...report, schema: 'flight-compiler-check-report/2' } as unknown as typeof report;
+
+    expect(() => getCompilerPackageCheckReportJson(foreign)).toThrow(
+      'Unsupported check report flight-compiler-check-report/2',
+    );
+    expect(() => getCompilerPackageCheckReportText(foreign)).toThrow(
+      'Unsupported check report flight-compiler-check-report/2',
+    );
+  });
+
+  // A finding with no rule is identified by its code, and an occurrence without a position prints none:
+  // both are the renderer's own decisions, not gaps in the data.
+  it('prints a finding by code when it carries no rule and an occurrence without a position', () => {
+    const report = createCompilerPackageCheckReport(
+      createCompilation([
+        directModule('@flight/a', 'src/alpha.ts', 'alpha', [
+          { code: 'unsupported-ir', message: 'no rule to group by', stage: 'emission' },
+        ]),
+      ]),
+      createOptions(),
+    );
+
+    const rendered = getCompilerPackageCheckReportText(report);
+
+    expect(rendered).toContain('Code: unsupported-ir');
+    expect(rendered).toContain('no rule to group by');
+    expect(rendered).not.toContain('Rule: undefined');
   });
 });
 
