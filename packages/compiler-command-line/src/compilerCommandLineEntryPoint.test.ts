@@ -123,7 +123,9 @@ describe('validateCompilerCommandLineCheckDirectory', () => {
       }),
     );
     for (const [moduleName, contents] of Object.entries(sources)) {
-      writeFileSync(path.join(root, 'src', moduleName), contents);
+      const source = path.join(root, 'src', moduleName);
+      mkdirSync(path.dirname(source), { recursive: true });
+      writeFileSync(source, contents);
     }
     return workspace;
   };
@@ -175,6 +177,90 @@ describe('validateCompilerCommandLineCheckDirectory', () => {
         .map(String)
         .sort(),
     ).toEqual(['bad.ts', 'index.ts']);
+  });
+
+  it('reports through unreachable hoisted test tooling and a non-runtime type cycle', () => {
+    const workspace = createWorkspace({
+      'bad.ts': 'export interface Bad { ready: boolean }\nexport const ready = Promise.resolve(1);\nawait ready;\n',
+      'index.ts': "export { doubled } from './internal/doubled.js';\nexport type { App } from './types/App.js';\n",
+      'internal/doubled.ts': 'export function doubled(value: number): number { return value * 2; }\n',
+      'render/gl.test.ts': "import { expectReady } from './glTestHelper.js';\nexpectReady({});\n",
+      'render/glTestHelper.ts':
+        "import { expect } from 'vitest';\nexport function expectReady(value: unknown): void { expect(value).toBeDefined(); }\n",
+      'types/App.ts':
+        "import type { Bad } from '../bad.js';\nimport type { Child } from './Child.js';\nexport interface App { bad: Bad; child: Child }\n",
+      'types/Child.ts': "import type { App } from './App.js';\nexport interface Child { app?: App }\n",
+    });
+    writeFileSync(
+      path.join(workspace, 'package.json'),
+      JSON.stringify({ devDependencies: { vitest: '1.0.0' }, name: 'fixture', private: true, version: '1.0.0' }),
+    );
+    const hoistedVitest = path.join(workspace, 'node_modules', 'vitest');
+    mkdirSync(hoistedVitest, { recursive: true });
+    writeFileSync(
+      path.join(hoistedVitest, 'package.json'),
+      JSON.stringify({ exports: './index.js', name: 'vitest', types: './index.d.ts', version: '1.0.0' }),
+    );
+    writeFileSync(path.join(hoistedVitest, 'index.d.ts'), 'export declare function expect(value: unknown): unknown;\n');
+    const reportFile = path.join(workspace, 'check-report.json');
+
+    const exitCode = validateCompilerCommandLineCheckDirectory([
+      workspace,
+      '--target',
+      'rust',
+      '--format',
+      'json',
+      '--report',
+      reportFile,
+    ]);
+
+    expect(exitCode).toBe(1);
+    const result = JSON.parse(readFileSync(reportFile, 'utf8')) as {
+      readonly exitCode: number;
+      readonly report: {
+        readonly cascades: readonly {
+          readonly directFindingIdentities: readonly string[];
+          readonly module: { readonly source: string };
+        }[];
+        readonly directFindings: readonly { readonly identity: string; readonly module: { readonly source: string } }[];
+        readonly schema: string;
+        readonly totals: {
+          readonly dependencyCascades: number;
+          readonly directFindings: number;
+          readonly modules: {
+            readonly dependencyRefused: number;
+            readonly directlyRefused: number;
+            readonly emitted: number;
+            readonly total: number;
+          };
+        };
+      };
+      readonly schema: string;
+    };
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      report: {
+        schema: 'flight-compiler-check-report/1',
+        totals: {
+          dependencyCascades: 3,
+          directFindings: 1,
+          modules: { dependencyRefused: 3, directlyRefused: 1, emitted: 1, total: 5 },
+        },
+      },
+      schema: 'flight-compiler-check-run/1',
+    });
+    expect(result.report.directFindings.map((finding) => finding.module.source)).toEqual(['packages/core/src/bad.ts']);
+    expect(result.report.cascades.map((cascade) => cascade.module.source)).toEqual([
+      'packages/core/src/index.ts',
+      'packages/core/src/types/App.ts',
+      'packages/core/src/types/Child.ts',
+    ]);
+    expect(result.report.cascades.map((cascade) => cascade.directFindingIdentities)).toEqual(
+      result.report.cascades.map(() => [result.report.directFindings[0]!.identity]),
+    );
+    expect(JSON.stringify(result.report)).not.toContain('gl.test');
+    expect(JSON.stringify(result.report)).not.toContain('glTestHelper');
   });
 
   it('checks the roots the workspace manifest declares', () => {
