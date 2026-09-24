@@ -23,11 +23,12 @@ on:
 permissions:
   contents: read
 
-# One publishing lane for the whole repository, shared with the Release bridge: a concurrency group is
-# repository-wide, and two workflows that publish the same package may not hold different ones. A tag push
-# and a dispatched release therefore queue behind each other rather than racing.
+# The stable publishing lane. A tag release publishes the `latest` dist-tag, so it holds the same lane the
+# Release bridge takes for a `latest` payload: a concurrency group is repository-wide, and the two producers
+# of that one dist-tag may not hold different ones. A tag push and a dispatched stable release therefore queue
+# behind each other rather than racing, while a dispatched `next` release gets a lane of its own.
 concurrency:
-  group: release
+  group: release-latest
   cancel-in-progress: false
 
 jobs:

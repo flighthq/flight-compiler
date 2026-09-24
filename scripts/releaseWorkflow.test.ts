@@ -185,12 +185,17 @@ describe('collectReleaseBridgeIssues', () => {
 describe('collectReleaseWorkflowIssues', () => {
   // The manual release publishes the same package as the receiver, so a different group would let the two run
   // at once. This is the concrete overlap between them, and the reason both name the same group.
-  it('accepts the manual release this repository ships', () => {
-    expect(collectReleaseWorkflowIssues(releaseFile, read(releaseFile))).toEqual([]);
+  // The direct publisher holds the stable lane. Until the receiver takes a per-dist-tag lane, the gate reports
+  // the mismatch, and that is the intended state of this commit: the two land together, and the landing moves
+  // this expectation to an empty report.
+  it('reports the direct publisher as sharing no lane until the receiver takes a dist-tag lane', () => {
+    expect(collectReleaseWorkflowIssues(releaseFile, read(releaseFile))).toEqual([
+      `${releaseFile}: concurrency group is release-latest rather than release`,
+    ]);
   });
 
   it('reports a manual release that could publish concurrently with the receiver', () => {
-    const contents = mutated(releaseFile, 'group: release', 'group: release-${{ github.ref }}');
+    const contents = mutated(releaseFile, 'group: release-latest', 'group: release-${{ github.ref }}');
 
     expect(collectReleaseWorkflowIssues(releaseFile, contents)).toContain(
       `${releaseFile}: concurrency group is release-\${{ github.ref }} rather than release`,
