@@ -24,7 +24,7 @@ inline Value unwrap(flight::Ref<Box<Value>> box) {
 template <typename Value>
 inline Value first_of(flight::Array<Value> values, Value fallback) {
   std::optional<Value> first = values.get(0.0);
-  return first.value_or(fallback);
+  return (first.has_value() ? first.value() : fallback);
 }
 
 inline flight::String second_name(flight::Array<flight::String> pair) {

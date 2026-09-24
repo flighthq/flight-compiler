@@ -9,11 +9,11 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 namespace flighthq_golden {
 
 inline double at(flight::Array<double> values, double index) {
-  return values.get(index).value_or(0.0);
+  return ([&]() -> double { auto nullish_coalesce_left = values.get(index); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0; }());
 }
 
 inline double head(flight::Array<double> values) {
-  return values.get(0.0).value_or(0.0);
+  return ([&]() -> double { auto nullish_coalesce_left = values.get(0.0); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0; }());
 }
 
 } // namespace flighthq_golden

@@ -4,7 +4,7 @@ package flighthq.golden;
 import Reflect as HaxeReflect;
 
 function csvToList(csv:String):Array<String> {
-  return (cast flighthq._internal._StringTools.split(csv, ",") : Array<String>);
+  return flighthq._internal._StringTools.split(csv, ",");
 }
 
 function listToCsv(items:Array<String>):String {
@@ -12,12 +12,12 @@ function listToCsv(items:Array<String>):String {
 }
 
 function wordCount(text:String):Float {
-  final words:Array<String> = (cast flighthq._internal._StringTools.split(text, " ") : Array<String>);
+  final words:Array<String> = flighthq._internal._StringTools.split(text, " ");
   return words.length;
 }
 
 function reverseWords(text:String):String {
-  final words:Array<String> = (cast flighthq._internal._StringTools.split(text, " ") : Array<String>);
+  final words:Array<String> = flighthq._internal._StringTools.split(text, " ");
   (function() { final reversedArray = words; reversedArray.reverse(); return reversedArray; })();
   return words.join(" ");
 }

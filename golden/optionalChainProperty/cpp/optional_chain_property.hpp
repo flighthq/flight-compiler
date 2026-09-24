@@ -16,16 +16,16 @@ struct Point : public flight::ReferenceEnabled {
 };
 
 inline double safe_x(std::optional<flight::Ref<Point>> point) {
-  return ([&]() -> std::optional<double> { auto optional_chain_receiver = point; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->x; }()).value_or(0.0);
+  return ([&]() -> double { auto nullish_coalesce_left = ([&]() -> std::optional<double> { auto optional_chain_receiver = point; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->x; }()); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0; }());
 }
 
 inline double safe_y(std::optional<flight::Ref<Point>> point) {
-  return ([&]() -> std::optional<double> { auto optional_chain_receiver = point; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->y; }()).value_or(0.0);
+  return ([&]() -> double { auto nullish_coalesce_left = ([&]() -> std::optional<double> { auto optional_chain_receiver = point; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->y; }()); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0; }());
 }
 
 inline double safe_sum(std::optional<flight::Ref<Point>> point) {
-  const double x = ([&]() -> std::optional<double> { auto optional_chain_receiver = point; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->x; }()).value_or(0.0);
-  const double y = ([&]() -> std::optional<double> { auto optional_chain_receiver = point; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->y; }()).value_or(0.0);
+  const double x = ([&]() -> double { auto nullish_coalesce_left = ([&]() -> std::optional<double> { auto optional_chain_receiver = point; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->x; }()); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0; }());
+  const double y = ([&]() -> double { auto nullish_coalesce_left = ([&]() -> std::optional<double> { auto optional_chain_receiver = point; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->y; }()); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0; }());
   return (x + y);
 }
 

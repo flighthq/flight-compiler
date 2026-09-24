@@ -28,7 +28,7 @@ using SignalName = flight::String;
 
 inline void emits_signal(std::optional<flight::Ref<Signals>> signals, SignalName name) {
   if (signals.has_value()) {
-    invoke(([&]() -> std::function<void()> { const auto& selection_receiver = signals.value(); if (name == flight::String("onComplete")) return selection_receiver->on_complete; if (name == flight::String("onLoop")) return selection_receiver->on_loop; if (name == flight::String("onPause")) return selection_receiver->on_pause; if (name == flight::String("onPlay")) return selection_receiver->on_play; if (name == flight::String("onStop")) return selection_receiver->on_stop; throw std::logic_error("Flight finite-key selection reached no member"); }()));
+    invoke(([&]() -> std::function<void()> { const auto& selection_receiver = signals.value(); const auto selection_key = name; if (selection_key == flight::String("onComplete")) return selection_receiver->on_complete; if (selection_key == flight::String("onLoop")) return selection_receiver->on_loop; if (selection_key == flight::String("onPause")) return selection_receiver->on_pause; if (selection_key == flight::String("onPlay")) return selection_receiver->on_play; if (selection_key == flight::String("onStop")) return selection_receiver->on_stop; throw std::logic_error("Flight finite-key selection reached no member"); }()));
   }
 }
 

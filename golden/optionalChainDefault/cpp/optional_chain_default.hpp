@@ -15,7 +15,7 @@ struct Entry : public flight::ReferenceEnabled {
 };
 
 inline flight::String first_key(flight::Array<flight::Ref<Entry>> entries) {
-  return ([&]() -> std::optional<flight::String> { auto optional_chain_receiver = entries.get(0.0); if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->key; }()).value_or(flight::String("none"));
+  return ([&]() -> flight::String { auto nullish_coalesce_left = ([&]() -> std::optional<flight::String> { auto optional_chain_receiver = entries.get(0.0); if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->key; }()); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return flight::String("none"); }());
 }
 
 } // namespace flighthq_golden

@@ -4,11 +4,11 @@ package flighthq.golden;
 import Reflect as HaxeReflect;
 
 function trimLower(text:String):String {
-  return (cast StringTools.trim(text) : String).toLowerCase();
+  return StringTools.trim(text).toLowerCase();
 }
 
 function trimUpper(text:String):String {
-  return (cast StringTools.trim(text) : String).toUpperCase();
+  return StringTools.trim(text).toUpperCase();
 }
 
 function measureTrimmed(text:String):Float {

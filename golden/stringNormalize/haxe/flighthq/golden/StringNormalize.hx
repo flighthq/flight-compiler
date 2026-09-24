@@ -4,7 +4,7 @@ package flighthq.golden;
 import Reflect as HaxeReflect;
 
 function trimAndLower(text:String):String {
-  return (cast StringTools.trim(text) : String).toLowerCase();
+  return StringTools.trim(text).toLowerCase();
 }
 
 function isPalindrome(text:String):Bool {

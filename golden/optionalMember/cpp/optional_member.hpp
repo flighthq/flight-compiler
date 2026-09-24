@@ -17,7 +17,7 @@ struct Options : public flight::ReferenceEnabled {
 };
 
 inline flight::String summarize(flight::Ref<Options> options) {
-  const double retries = options->retries.value_or(0.0);
+  const double retries = ([&]() -> double { auto nullish_coalesce_left = options->retries; if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0; }());
   return flight::String("") + flight::to_string(options->label) + flight::String(":") + flight::to_string(retries) + flight::String("");
 }
 

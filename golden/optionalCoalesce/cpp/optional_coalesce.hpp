@@ -15,7 +15,7 @@ struct Holder : public flight::ReferenceEnabled {
 };
 
 inline double read(std::optional<flight::Ref<Holder>> holder) {
-  return ([&]() -> std::optional<double> { auto optional_chain_receiver = holder; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->value; }()).value_or(0.0);
+  return ([&]() -> double { auto nullish_coalesce_left = ([&]() -> std::optional<double> { auto optional_chain_receiver = holder; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value()->value; }()); if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value(); return 0.0; }());
 }
 
 } // namespace flighthq_golden
