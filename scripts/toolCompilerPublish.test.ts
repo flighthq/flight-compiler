@@ -18,8 +18,9 @@ const publishedManifest = {
 };
 
 describe('parseToolCompilerPublishArguments', () => {
-  it('defaults to the latest tag and accepts the explicit workflow forms', () => {
-    expect(parseToolCompilerPublishArguments([])).toEqual({ dryRun: false, tag: 'latest' });
+  it('accepts every explicit receiver tag and the dry-run form', () => {
+    expect(parseToolCompilerPublishArguments(['--tag', 'latest'])).toEqual({ dryRun: false, tag: 'latest' });
+    expect(parseToolCompilerPublishArguments(['--tag', 'edge'])).toEqual({ dryRun: false, tag: 'edge' });
     expect(parseToolCompilerPublishArguments(['--tag', 'next'])).toEqual({ dryRun: false, tag: 'next' });
     expect(parseToolCompilerPublishArguments(['--dry-run', '--tag', 'latest'])).toEqual({
       dryRun: true,
@@ -28,6 +29,8 @@ describe('parseToolCompilerPublishArguments', () => {
   });
 
   it.each([
+    [[], 'option --tag is required'],
+    [['--dry-run'], 'option --tag is required'],
     [['--dry-run', '--dry-run'], 'Duplicate tool-compiler publish option --dry-run'],
     [['--tag', 'next', '--tag', 'latest'], 'Duplicate tool-compiler publish option --tag'],
     [['--tag'], 'option --tag requires a value'],
@@ -39,10 +42,12 @@ describe('parseToolCompilerPublishArguments', () => {
     expect(() => parseToolCompilerPublishArguments(arguments_)).toThrow(message);
   });
 
-  it.each(['../latest', '-next', 'Next', 'next/latest', 'next latest', '1.2.3', 'next;echo'])(
-    'rejects unsafe distribution tag %s',
+  it.each(['beta', 'canary', '../latest', '-next', 'Next', 'next/latest', 'next latest', '1.2.3', 'next;echo'])(
+    'rejects unsupported distribution tag %s',
     (tag) => {
-      expect(() => parseToolCompilerPublishArguments(['--tag', tag])).toThrow('Unsafe npm distribution tag');
+      expect(() => parseToolCompilerPublishArguments(['--tag', tag])).toThrow(
+        'Unsupported tool-compiler npm distribution tag',
+      );
     },
   );
 
@@ -158,6 +163,30 @@ describe('publishToolCompilerPackage', () => {
     const result = publishToolCompilerPackage({ dryRun: false, tag: 'next' }, fixture.capabilities);
 
     expect(result).toMatchObject({ kind: 'published', tag: 'next', version: '1.2.3-next.1' });
+  });
+
+  it('publishes a prerelease on the explicit edge channel', () => {
+    const fixture = createFixture([processResult(0, '[]'), processResult(0)], {
+      ...publishedManifest,
+      version: '1.2.3-edge.4',
+    });
+
+    const result = publishToolCompilerPackage({ dryRun: false, tag: 'edge' }, fixture.capabilities);
+
+    expect(result).toMatchObject({ kind: 'published', tag: 'edge', version: '1.2.3-edge.4' });
+    expect(fixture.invocations[1]?.arguments_).toEqual(['publish', '--access', 'public', '--tag', 'edge']);
+  });
+
+  it('hard-refuses a prerelease on latest before reading or writing the registry', () => {
+    const fixture = createFixture([], {
+      ...publishedManifest,
+      version: '1.2.3-next.1',
+    });
+
+    expect(() => publishToolCompilerPackage({ dryRun: false, tag: 'latest' }, fixture.capabilities)).toThrow(
+      'Refusing to publish prerelease @flighthq/tool-compiler@1.2.3-next.1 with tag latest',
+    );
+    expect(fixture.invocations).toEqual([]);
   });
 
   it('accepts a SemVer prerelease identifier that starts with digits and contains a letter', () => {

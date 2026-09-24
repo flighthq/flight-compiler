@@ -21,7 +21,7 @@ export interface ToolCompilerPublishCapabilities {
 
 export interface ToolCompilerPublishOptions {
   readonly dryRun: boolean;
-  readonly tag: string;
+  readonly tag: ToolCompilerDistributionTag;
 }
 
 export interface ToolCompilerPublishProcessResult {
@@ -39,10 +39,11 @@ export interface ToolCompilerPublishResult {
   readonly version: string;
 }
 
+export type ToolCompilerDistributionTag = (typeof toolCompilerDistributionTags)[number];
+
 export function parseToolCompilerPublishArguments(arguments_: readonly string[]): ToolCompilerPublishOptions {
   let dryRun = false;
-  let tag = 'latest';
-  let hasTag = false;
+  let tag: ToolCompilerDistributionTag | undefined;
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     if (argument === '--dry-run') {
@@ -51,19 +52,19 @@ export function parseToolCompilerPublishArguments(arguments_: readonly string[])
       continue;
     }
     if (argument === '--tag') {
-      if (hasTag) throw new TypeError('Duplicate tool-compiler publish option --tag.');
+      if (tag !== undefined) throw new TypeError('Duplicate tool-compiler publish option --tag.');
       const value = arguments_[index + 1];
       if (value === undefined || value.startsWith('--')) {
         throw new TypeError('Tool-compiler publish option --tag requires a value.');
       }
-      assertSafeDistributionTag(value);
+      assertToolCompilerDistributionTag(value);
       tag = value;
-      hasTag = true;
       index += 1;
       continue;
     }
     throw new TypeError(`Unknown tool-compiler publish option ${argument ?? '<missing>'}.`);
   }
+  if (tag === undefined) throw new TypeError('Tool-compiler publish option --tag is required.');
   return { dryRun, tag };
 }
 
@@ -71,11 +72,14 @@ export function publishToolCompilerPackage(
   options: Readonly<ToolCompilerPublishOptions>,
   capabilities: Readonly<ToolCompilerPublishCapabilities>,
 ): ToolCompilerPublishResult {
-  assertSafeDistributionTag(options.tag);
+  assertToolCompilerDistributionTag(options.tag);
   const packageDirectory = path.join(capabilities.rootDirectory, 'packages', 'tool-compiler');
   const manifestPath = path.join(packageDirectory, 'package.json');
   const manifest = readToolCompilerManifest(manifestPath, capabilities.readTextFile);
   const version = assertToolCompilerManifest(manifest);
+  if (options.tag === 'latest' && version.includes('-')) {
+    throw new TypeError(`Refusing to publish prerelease ${toolCompilerPackageName}@${version} with tag latest.`);
+  }
   const registry = runNpm(['view', toolCompilerPackageName, 'versions', '--json'], packageDirectory, capabilities);
   const versions = readRegistryVersions(registry);
   if (versions.includes(version)) {
@@ -120,9 +124,11 @@ interface ToolCompilerManifest {
   readonly version?: unknown;
 }
 
-function assertSafeDistributionTag(tag: string): void {
-  if (!/^[a-z][a-z0-9._-]{0,63}$/u.test(tag)) {
-    throw new TypeError(`Unsafe npm distribution tag ${JSON.stringify(tag)}.`);
+function assertToolCompilerDistributionTag(tag: string): asserts tag is ToolCompilerDistributionTag {
+  if (!toolCompilerDistributionTags.includes(tag as ToolCompilerDistributionTag)) {
+    throw new TypeError(
+      `Unsupported tool-compiler npm distribution tag ${JSON.stringify(tag)}; expected ${toolCompilerDistributionTags.join(', ')}.`,
+    );
   }
 }
 
@@ -217,6 +223,7 @@ function runNpm(
 }
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const toolCompilerDistributionTags = ['latest', 'edge', 'next'] as const;
 const entryPath = process.argv[1] === undefined ? undefined : path.resolve(process.argv[1]);
 if (entryPath === fileURLToPath(import.meta.url)) {
   try {
