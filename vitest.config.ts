@@ -18,8 +18,8 @@ export default defineConfig({
       // the versions are identical to 0127cd4f, and the coverage lane itself only gained a longer timeout --
       // so this records the drift rather than papering over a tooling fault. The floors still sit immediately
       // below the measured baseline, so a regression from here still fails promptly. Spending the gap down
-      // again is a worklist, not a cliff: the uncovered mass is broad rather than deep, and the typed-array
-      // refusals the golden corpus now pins removed whole emitter lanes from cover at once.
+      // again is a worklist, not a cliff: the uncovered mass is broad rather than deep. This baseline predates
+      // the typed-array semantic fix that restored two emitter lanes, so the next measurement may support a raise.
       thresholds: {
         branches: 89.8,
         functions: 97.2,
