@@ -169,7 +169,6 @@ export function createCompilerPackageCheckReport(
         getModuleSubject(module.module),
         modulesBySubject,
         directIdentitiesBySubject,
-        new Set(),
       ),
       module: cloneModuleIdentity(module.module),
     }))
@@ -514,21 +513,29 @@ function resolveCascadeFindingIdentities(
   subject: string,
   modulesBySubject: ReadonlyMap<string, Readonly<CompilerPackageCompilationModuleReport>>,
   directIdentitiesBySubject: ReadonlyMap<string, readonly string[]>,
-  visiting: ReadonlySet<string>,
 ): string[] {
-  if (visiting.has(subject)) throw new TypeError(`Dependency refusal cycle at ${subject}`);
-  const module = modulesBySubject.get(subject);
-  if (!module) throw new TypeError(`Dependency refusal references unknown module ${subject}`);
-  const direct = directIdentitiesBySubject.get(subject);
-  if (direct) return [...direct];
-  if (getModuleDisposition(module) !== 'cascade') {
-    throw new TypeError(`Dependency refusal references emitted module ${subject}`);
+  const identities: string[] = [];
+  const pending = [subject];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    const module = modulesBySubject.get(current);
+    if (!module) throw new TypeError(`Dependency refusal references unknown module ${current}`);
+    const direct = directIdentitiesBySubject.get(current);
+    if (direct) {
+      identities.push(...direct);
+      continue;
+    }
+    if (getModuleDisposition(module) !== 'cascade') {
+      throw new TypeError(`Dependency refusal references emitted module ${current}`);
+    }
+    const dependencies = getDependencySubjects(module);
+    for (let index = dependencies.length - 1; index >= 0; index -= 1) {
+      pending.push(dependencies[index]!);
+    }
   }
-  const nextVisiting = new Set(visiting);
-  nextVisiting.add(subject);
-  const identities = getDependencySubjects(module).flatMap((dependency) =>
-    resolveCascadeFindingIdentities(dependency, modulesBySubject, directIdentitiesBySubject, nextVisiting),
-  );
-  if (identities.length === 0) throw new TypeError(`Dependency refusal for ${subject} resolves to no direct findings`);
+  if (identities.length === 0) throw new TypeError(`Dependency refusal cycle at ${subject}`);
   return [...new Set(identities)].sort(compareTextCodeUnits);
 }

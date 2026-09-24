@@ -122,6 +122,60 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(observedOptions).toEqual([['Bad'], ['Bad', 'NewBad']]);
     expect(files).toEqual(snapshot);
   });
+
+  it('attributes a type-only interface cycle through the direct refusal reached by its broad fan-in', () => {
+    const files = createCyclicTypesWorkspaceFiles();
+    const source = createMemoryWorkspaceSource(files);
+    const manifests = readFlightPackageManifests({ upstreamDirectory: '/flight' }, source);
+    const eligibility = createFlightPackageEligibilityPlan({
+      environment: 'web',
+      packages: manifests,
+      selectedPackageNames: ['@flighthq/types'],
+    });
+    const backend: CompilerBackend = {
+      emitModule(module) {
+        if (module.name === 'Bad') {
+          throw createBackendEmissionFailure(
+            'acceptance',
+            module,
+            'Bad is unsupported by the fixture target',
+            'fixture-unsupported',
+          );
+        }
+        return [{ contents: module.name, path: `${module.name}.txt` }];
+      },
+      name: 'acceptance',
+    };
+    const compilation = compileFlightWorkspace({
+      backend,
+      backendOptions: {},
+      eligiblePackageNames: eligibility.eligiblePackageNames,
+      source,
+      upstreamDirectory: '/flight',
+    });
+
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      classification: {
+        rules: { 'fixture-unsupported': 'compiler-restriction' },
+        schema: 'flight-compiler-check-classification/1',
+      },
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+    });
+    const directIdentity = report.directFindings[0]?.identity;
+    const app = compilation.report.modules.find((module) => module.module.name === 'App');
+
+    expect(app?.refusals[0]?.refusedDependencies).toEqual([
+      '@flighthq/types/packages/types/src/Bad.ts',
+      '@flighthq/types/packages/types/src/Child.ts',
+    ]);
+    expect(report.directFindings.map((finding) => finding.module.name)).toEqual(['Bad']);
+    expect(report.cascades.map((cascade) => cascade.module.name)).toEqual(['App', 'Child', 'Index']);
+    expect(report.cascades.every((cascade) => cascade.directFindingIdentities[0] === directIdentity)).toBe(true);
+  });
 });
 
 function createPackageManifest(name: string, dependencies: Readonly<Record<string, string>> = {}): string {
@@ -145,5 +199,17 @@ function createWorkspaceFiles(): Record<string, string> {
     '/flight/packages/base/src/bad.ts': 'export const bad = 1;',
     '/flight/packages/base/src/index.ts': "export { bad } from './bad.js'; export { newBad } from './newBad.js';",
     '/flight/packages/base/src/newBad.ts': 'export const newBad = 2;',
+  };
+}
+
+function createCyclicTypesWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/App.ts':
+      "import type { Bad } from './Bad.js'; import type { Child } from './Child.js'; export interface App { bad: Bad; child: Child; }",
+    '/flight/packages/types/src/Bad.ts': 'export interface Bad { reason: string; }',
+    '/flight/packages/types/src/Child.ts': "import type { App } from './App.js'; export interface Child { app: App; }",
+    '/flight/packages/types/src/index.ts':
+      "export type { App } from './App.js'; export type { Bad } from './Bad.js'; export type { Child } from './Child.js';",
   };
 }

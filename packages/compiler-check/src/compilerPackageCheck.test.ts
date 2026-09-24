@@ -429,6 +429,50 @@ describe('createCompilerPackageCheckReport', () => {
     );
   });
 
+  it('resolves mutual, self, and long refusal cycles through their reachable direct finding', () => {
+    const bad = directModule('@flighthq/types', 'packages/types/src/Bad.ts', 'Bad', [
+      refusal('unsupported-interface', 'unsupported interface', 1, 1),
+    ]);
+    const modules = [
+      bad,
+      cascadeModule('@flighthq/types', 'packages/types/src/App.ts', 'App', [
+        '@flighthq/types/packages/types/src/Bad.ts',
+        '@flighthq/types/packages/types/src/Child.ts',
+      ]),
+      cascadeModule('@flighthq/types', 'packages/types/src/Child.ts', 'Child', [
+        '@flighthq/types/packages/types/src/App.ts',
+      ]),
+      cascadeModule('@flighthq/types', 'packages/types/src/Self.ts', 'Self', [
+        '@flighthq/types/packages/types/src/Bad.ts',
+        '@flighthq/types/packages/types/src/Self.ts',
+      ]),
+      cascadeModule('@flighthq/types', 'packages/types/src/LongA.ts', 'LongA', [
+        '@flighthq/types/packages/types/src/LongB.ts',
+      ]),
+      cascadeModule('@flighthq/types', 'packages/types/src/LongB.ts', 'LongB', [
+        '@flighthq/types/packages/types/src/LongC.ts',
+      ]),
+      cascadeModule('@flighthq/types', 'packages/types/src/LongC.ts', 'LongC', [
+        '@flighthq/types/packages/types/src/Bad.ts',
+        '@flighthq/types/packages/types/src/LongA.ts',
+      ]),
+    ];
+
+    const report = createCompilerPackageCheckReport(createCompilation(modules), createOptions());
+    const directIdentity = report.directFindings[0]?.identity;
+
+    expect(report.directFindings.map((finding) => finding.module.name)).toEqual(['Bad']);
+    expect(report.cascades.map((cascade) => cascade.module.name)).toEqual([
+      'App',
+      'Child',
+      'LongA',
+      'LongB',
+      'LongC',
+      'Self',
+    ]);
+    expect(report.cascades.every((cascade) => cascade.directFindingIdentities[0] === directIdentity)).toBe(true);
+  });
+
   it('refuses a classification table it cannot read or reconcile', () => {
     const compilation = createCompilation(createModules());
 
