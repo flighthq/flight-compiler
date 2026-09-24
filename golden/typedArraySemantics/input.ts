@@ -1,5 +1,9 @@
-export function signedRangeConstruction(): Int8Array {
-  const zero: number = 0;
+// The divisor is a defaulted parameter rather than a literal-bound `const`, so the emitted C++
+// divides a runtime value: a constant zero divisor is a constant expression the compiler folds and
+// diagnoses, which is a property of the folder rather than of the typed-array conversion this
+// fixture is here to pin. The oracle still calls it with no arguments, so the values are the same.
+export function signedRangeConstruction(divisor: number = 0): Int8Array {
+  const zero: number = divisor;
   const values: Int8Array = new Int8Array([130, -129, zero / zero, 1 / zero]);
   return values;
 }
