@@ -691,9 +691,10 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('flight::Any erased = values.fill(0.0);');
   });
 
-  // ECMAScript defines what an out-of-range write to a typed-array element becomes; C++ does not, and
-  // assigning a double into element storage is undefined behaviour where the two disagree (GCC wraps
-  // 300 to 44, MSVC saturates it to 255, and the typedArraySemantics oracle sees exactly that). The
+  // ECMAScript defines what an out-of-range write to a typed-array element becomes; C++ does not, so
+  // assigning a double into element storage is undefined behaviour there and each toolchain answers
+  // differently (GCC 14 and MSVC saturate 300 to 255, Clang 18 gives 0, and this checkout's GCC wraps
+  // it to 44, where ECMAScript requires the wrap). The
   // conversion therefore belongs to the runtime, in the accessor the write goes through - the Rust
   // target already writes through set_index for this reason. This pins the compiler's side of that
   // boundary: the write names the runtime accessor and carries no conversion arithmetic of its own.
