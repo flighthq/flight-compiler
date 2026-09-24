@@ -18,8 +18,10 @@ export default defineConfig({
       // the versions are identical to 0127cd4f, and the coverage lane itself only gained a longer timeout --
       // so this records the drift rather than papering over a tooling fault. The floors still sit immediately
       // below the measured baseline, so a regression from here still fails promptly. Spending the gap down
-      // again is a worklist, not a cliff: the uncovered mass is broad rather than deep. This baseline predates
-      // the typed-array semantic fix that restored two emitter lanes, so the next measurement may support a raise.
+      // again is a worklist, not a cliff: the uncovered mass is broad rather than deep. This baseline was
+      // measured at 6ae7e3a9, so the typed-array fix that restored two emitter lanes is already in it, and it
+      // predates the twelve focused coverage tests in e5a92259 for the Rust element-write and check
+      // failure-path lanes, so the next measurement may support a raise.
       thresholds: {
         branches: 89.8,
         functions: 97.2,
