@@ -10,19 +10,19 @@ Two decisions, two owners.
 
 **The Flight version is authoritative.** The compiler is stamped to the version Flight just published, because a compiler release exists to describe an SDK release: `@flighthq/tool-compiler` at `x.y.z` is the compiler that was built for Flight `x.y.z`, and nothing else. The checkout's own `0.0.0` development version is a placeholder and is never what reaches the registry.
 
-**Flight decides when.** The dispatch is a statement that the SDK graph it names is published. The bridge does not poll, does not infer, and does not release on its own schedule.
+**Flight decides when and on which channel.** The dispatch names both the SDK graph that was published and its npm distribution tag. The bridge does not infer either fact or release on its own schedule; it only waits boundedly for the named SDK version to become visible after the dispatch.
 
 A dispatched run publishes, because that is what the dispatch means. A manual run takes the same path with the same facts, and the receiver decides between rehearsing and publishing **by whether the registry token is available to it**: with no `NPM_TOKEN` it invokes the publisher in its rehearsal mode and publishes nothing, and with the token it publishes. So the token is the arming, and a recovery run that must not publish is run before the secret is in place — or rehearsed from a fork where it cannot be.
 
 ## Ordering
 
 1. Flight publishes its npm graph.
-2. Flight dispatches `flight-release` with `{version, commit}`.
+2. Flight dispatches `flight-release` or `flight-snapshot` with `{version, dist_tag, commit}`. The tag is explicitly one of `latest`, `edge`, or `next`; `latest` refuses prerelease versions.
 3. The bridge validates the dispatched version (`npm run version:tool-compiler -- --check "$FLIGHT_VERSION"`) and waits until that version is visible on the public npm registry.
 4. The static sweep (`npm run check`) and the isolated package tests (`npm run test:packages`) run.
 5. The compiler version is stamped to the dispatched Flight version (`npm run version:tool-compiler`, which validates the version as strict SemVer and rewrites the manifest's own version token exactly).
 6. The packed-consumer proofs (`npm run pack:check` and `npm run smoke`) run against the stamped tree.
-7. The root release publisher (`npm run release -- --tag latest`) publishes the stamped artifact, with provenance.
+7. The root release publisher (`npm run release -- --tag "$FLIGHT_DIST_TAG"`) publishes the stamped artifact on the dispatched channel, with provenance.
 
 The stamp is checkable on its own: the same command with `--check` validates that the manifest already carries the dispatched version, which is how a rehearsal can prove the stamp would be a no-op or a real change without writing anything.
 
@@ -38,20 +38,21 @@ npm's own refusal to republish a version is the second line of the same defence.
 
 ## Recovery
 
-A dispatch can be lost (a token that expired, a Flight workflow that failed after publishing, an outage). The receiver takes the same two facts manually:
+A dispatch can be lost (a token that expired, a Flight workflow that failed after publishing, an outage). The receiver takes the same three facts manually:
 
 ```sh
 gh workflow run flight-release.yml \
   --repo flighthq/flight-compiler \
   --field version=<version> \
+  --field dist_tag=<latest|edge|next> \
   --field commit=<commit>
 ```
 
-The version is a required input, because it drives the stamp: a recovery run that omitted it would release nothing or release the wrong thing. The commit is informational — it reaches the run summary as the Flight revision the release is being made against, and the artifact is identical whether it is supplied or not — so it is optional, and a recovery run can proceed from the version alone. Recovery is the same pipeline as a dispatched run, only with the facts typed instead of delivered, so there is no second release path to keep correct.
+The version is required because it drives the stamp. The distribution tag is a required choice with no default because it selects both the registry channel and the concurrency lane; recovery must not silently turn a snapshot into `latest`. The commit is informational — it reaches the run summary as the Flight revision the release is being made against, and the artifact is identical whether it is supplied or not — so it is optional. Recovery is the same pipeline as a dispatched run, only with the facts typed instead of delivered, so there is no second release path to keep correct.
 
 ## Dry-run rehearsal
 
-A rehearsal is the whole pipeline with the publisher invoked in its rehearsal mode (`npm run release -- --dry-run --tag latest`), which reads the registry, reports what it would publish, and publishes nothing. It needs **no registry token at all** — that is not a convenience but the mechanism: the token's absence is what selects the rehearsal. So the rehearsal is also the way to exercise the bridge before the token exists, and the way to answer "what would this release do" without arming anything.
+A rehearsal is the whole pipeline with the publisher invoked in its rehearsal mode (`npm run release -- --dry-run --tag "$FLIGHT_DIST_TAG"`), which reads the registry, reports what it would publish on the selected channel, and publishes nothing. It needs **no registry token at all** — that is not a convenience but the mechanism: the token's absence is what selects the rehearsal. So the rehearsal is also the way to exercise the bridge before the token exists, and the way to answer "what would this release do" without arming anything.
 
 ## Provenance
 
@@ -80,10 +81,11 @@ In the Flight release workflow, immediately after the step that publishes the np
   env:
     FLIGHT_COMPILER_DISPATCH_TOKEN: ${{ secrets.FLIGHT_COMPILER_DISPATCH_TOKEN }}
     FLIGHT_COMMIT: ${{ github.sha }}
+    FLIGHT_DIST_TAG: latest
     FLIGHT_VERSION: ${{ steps.publish.outputs.version }}
   run: |
-    jq -n --arg version "$FLIGHT_VERSION" --arg commit "$FLIGHT_COMMIT" \
-      '{event_type: "flight-release", client_payload: {version: $version, commit: $commit}}' |
+    jq -n --arg version "$FLIGHT_VERSION" --arg dist_tag "$FLIGHT_DIST_TAG" --arg commit "$FLIGHT_COMMIT" \
+      '{event_type: "flight-release", client_payload: {version: $version, dist_tag: $dist_tag, commit: $commit}}' |
       curl --fail-with-body --request POST \
         --header "Accept: application/vnd.github+json" \
         --header "Authorization: Bearer $FLIGHT_COMPILER_DISPATCH_TOKEN" \
@@ -93,13 +95,13 @@ In the Flight release workflow, immediately after the step that publishes the np
 
 Four things about that step are the contract, not style:
 
-- **`event_type` is `flight-release`.** The receiver triggers on exactly that string; anything else is a run that never happens, with no error anywhere.
-- **The payload is `{version, commit}`**, both as strings: the version Flight published, and the Flight commit it published from. The receiver validates both and stamps the version onto the release.
+- **`event_type` is `flight-release` or `flight-snapshot`.** Stable publication uses the former; snapshot publication uses the latter. Any other string is a run that never happens, with no error anywhere.
+- **The payload is `{version, dist_tag, commit}`**, all as strings: the version Flight published, its explicit `latest`, `edge`, or `next` channel, and the Flight commit it published from. The receiver validates the version and channel, stamps the version, and passes the channel unchanged to the publisher. A prerelease may not use `latest`.
 - **The facts go through the environment** and reach `curl` as JSON built by `jq`. Interpolating `${{ github.sha }}` into a shell body — or hand-building the JSON with a heredoc — is the injection surface this repository refuses inside its own workflows, and it is no safer when the string comes from Flight.
 - **`--fail-with-body`.** A dispatch that failed must fail the Flight release job. A silent 403 is how a release ends up published upstream and never bridged.
 
 ## Concurrency
 
-The receiver and the manual [Release workflow](../.github/workflows/release.yml) both publish the same package, so they share one repository-wide concurrency group, `release`, and neither cancels the other. A concurrency group name is repository-wide, which is exactly why two publishing workflows can share one: a tag push and a dispatched release queue behind each other instead of racing. A running release is never cancelled: a publish that has begun is not safely resumable from the middle, and a cancelled gate is not a passed gate.
+The receiver serializes each channel independently under `release-<dist_tag>`. The manual [Release workflow](../.github/workflows/release.yml) publishes explicitly to `latest`, so it holds the literal `release-latest` lane and queues behind a dispatched stable release while `edge` and `next` remain independent. No lane cancels an in-progress run: a publish that has begun is not safely resumable from the middle, and a cancelled gate is not a passed gate.
 
-`npm run workflows:check` reads both workflows structurally and fails when either group moves. It also pins the invariant list above — the event type, the required recovery inputs, the registry, the permissions, the stamp-between-the-gates order, the tokenless rehearsal, and the ban on interpolating a payload into a shell body — because each of them fails silently rather than loudly when it is lost.
+`npm run workflows:check` reads both workflows structurally and proves that the receiver derives its lane from the same effective tag it publishes, while the direct workflow holds the compatible `latest` lane. It also pins the invariant list above — both event types, the required recovery inputs and exact tag choices, the registry, the permissions, the stamp-between-the-gates order, explicit publisher tags, the tokenless rehearsal, and the ban on interpolating a payload into a shell body — because each of them fails silently rather than loudly when it is lost.
