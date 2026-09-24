@@ -2,10 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import ts from 'typescript';
+
 import type { FlightPackageManifest } from '../../compiler-types/src/index.js';
 import { isCompilerInventoryFailure } from './compilerInventoryFailure.js';
 import { createFileSystemWorkspaceSource } from './fileSystemWorkspaceSource.js';
-import { analyzeFlightPackageImports } from './flightPackageImport.js';
+import { analyzeFlightPackageImports, analyzeFlightSourceImports } from './flightPackageImport.js';
 
 describe('analyzeFlightPackageImports', () => {
   it('collects deterministic production import, re-export, import-equals, and dynamic-import facts', () => {
@@ -126,6 +128,33 @@ describe('analyzeFlightPackageImports', () => {
     } finally {
       rmSync(upstream, { force: true, recursive: true });
     }
+  });
+});
+
+describe('analyzeFlightSourceImports', () => {
+  it('analyzes one reachable source without walking the package directory', () => {
+    const source = ts.createSourceFile(
+      '/flight/packages/math/src/index.ts',
+      "import type { Shape } from './shape.js';\nexport * from '@flighthq/base';\n",
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+
+    expect(analyzeFlightSourceImports(source, 'packages/math/src/index.ts')).toEqual([
+      {
+        kind: 'import',
+        source: 'packages/math/src/index.ts',
+        specifier: './shape.js',
+        typeOnly: true,
+      },
+      {
+        kind: 'reexport',
+        source: 'packages/math/src/index.ts',
+        specifier: '@flighthq/base',
+        typeOnly: false,
+      },
+    ]);
   });
 });
 
