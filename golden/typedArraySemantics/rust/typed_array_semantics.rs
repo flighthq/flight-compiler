@@ -3,9 +3,8 @@
 
 use flight_runtime::{FlightArrayBuffer, FlightDataView, FlightFloat32Array, FlightInt8Array, FlightUint8Array, FlightUint8ClampedArray};
 
-pub fn signed_range_construction(divisor: Option<f64>) -> FlightInt8Array {
-  let divisor = divisor.unwrap_or_else(|| 0.0);
-  let zero: f64 = divisor;
+pub fn signed_range_construction() -> FlightInt8Array {
+  let zero: f64 = 0.0;
   let values: FlightInt8Array = FlightInt8Array::from_source(vec![130.0, -129.0, (zero / zero), (1.0 / zero)]);
   return values;
 }

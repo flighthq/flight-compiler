@@ -3,9 +3,8 @@ package flighthq.golden;
 
 import Reflect as HaxeReflect;
 
-function signedRangeConstruction(?divisor:Float):flighthq._internal._Int8Array {
-  final divisorDefault:Float = js.Syntax.strictEq(divisor, js.Syntax.code("undefined")) ? 0 : (cast divisor : Float);
-  final zero:Float = divisorDefault;
+function signedRangeConstruction():flighthq._internal._Int8Array {
+  final zero:Float = 0;
   final values:flighthq._internal._Int8Array = (cast new flighthq._internal._Int8Array([(cast 130 : Float), - 129, (zero / zero), (1 / zero)]) : flighthq._internal._Int8Array);
   return (cast values : flighthq._internal._Int8Array);
 }

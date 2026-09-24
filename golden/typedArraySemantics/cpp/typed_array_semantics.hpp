@@ -3,7 +3,6 @@
 #include <cmath>
 #include <flight/array_buffer.hpp>
 #include <flight/data_view.hpp>
-#include <optional>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
@@ -11,9 +10,8 @@ static_assert(flight::runtime_contract.cpp_abi == 1, "Flight C++ runtime ABI mis
 
 namespace flighthq_golden {
 
-inline flight::Int8Array signed_range_construction(std::optional<double> divisor = std::nullopt) {
-  divisor = divisor.value_or(0.0);
-  const double zero = divisor.value();
+inline flight::Int8Array signed_range_construction() {
+  const double zero = 0.0;
   flight::Int8Array values = flight::Int8Array(flight::Array{130.0, -129.0, (zero / zero), (1.0 / zero)});
   return values;
 }
