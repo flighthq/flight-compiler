@@ -64,9 +64,11 @@ jobs:
       # Proves the artifact a consumer would install, before the registry has a copy of it.
       - run: npm run smoke
 
+      # The same root publisher the Release bridge uses, so a tag release inherits its idempotency read, its
+      # distribution tag, and the version validation it applies, instead of reaching the registry on its own.
       - name: Publish
         if: github.event_name == 'workflow_dispatch' && inputs.publish
-        run: npm publish --access public --provenance
-        working-directory: packages/tool-compiler
+        run: npm run release -- --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: ${{ vars.NPM_PROVENANCE != 'false' }}

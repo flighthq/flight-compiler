@@ -194,6 +194,27 @@ describe('collectReleaseWorkflowIssues', () => {
     ]);
   });
 
+  // A tag release and a bridged release publish the same package, so both go through the one command that owns
+  // the idempotency read, the tag, and the version validation.
+  it('reports a direct release that reaches the registry without the root publisher', () => {
+    const contents = mutated(releaseFile, 'run: npm run release -- --tag latest', 'run: npm publish --provenance');
+
+    expect(collectReleaseWorkflowIssues(releaseFile, contents)).toContain(
+      `${releaseFile}: step 7 publishes with a raw npm publish`,
+    );
+    expect(collectReleaseWorkflowIssues(releaseFile, contents)).toContain(
+      `${releaseFile}: no step publishes through the root release publisher`,
+    );
+  });
+
+  it('reports a direct release that publishes no other way', () => {
+    const contents = mutated(releaseFile, 'run: npm run release -- --tag latest', 'run: npm run smoke');
+
+    expect(collectReleaseWorkflowIssues(releaseFile, contents)).toContain(
+      `${releaseFile}: no step publishes through the root release publisher`,
+    );
+  });
+
   it('reports a manual release that could publish concurrently with the receiver', () => {
     const contents = mutated(releaseFile, 'group: release-latest', 'group: release-${{ github.ref }}');
 

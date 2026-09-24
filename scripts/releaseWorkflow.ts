@@ -39,7 +39,27 @@ export function collectReleaseWorkflowIssues(name: string, contents: string): re
   if (document === undefined) return [`${name}: the workflow is not readable YAML`];
   const issues: string[] = [];
   collectConcurrencyIssues(issues, name, document);
+  collectDirectPublisherIssues(issues, name, document);
   return issues;
+}
+
+// The direct release publishes the same package as the receiver, so it reaches the registry the same way: the
+// root publisher owns the idempotency read, the distribution tag, and the version validation, and a raw
+// `npm publish` beside it would bypass all three.
+function collectDirectPublisherIssues(
+  issues: string[],
+  name: string,
+  document: Readonly<Record<string, unknown>>,
+): void {
+  const steps = getWorkflowSteps(document);
+  for (const [index, step] of steps.entries()) {
+    if (/\bnpm publish\b/u.test(getStepRun(step))) {
+      issues.push(`${name}: step ${String(index + 1)} publishes with a raw npm publish`);
+    }
+  }
+  if (!steps.some((step) => /\bnpm run release(?:\s|$)/u.test(getStepRun(step)))) {
+    issues.push(`${name}: no step publishes through the root release publisher`);
+  }
 }
 
 export function collectWorkflowJobs(document: Readonly<Record<string, unknown>>): readonly WorkflowJob[] {
