@@ -691,6 +691,37 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('flight::Any erased = values.fill(0.0);');
   });
 
+  // ECMAScript defines what an out-of-range write to a typed-array element becomes; C++ does not, and
+  // assigning a double into element storage is undefined behaviour where the two disagree (GCC wraps
+  // 300 to 44, MSVC saturates it to 255, and the typedArraySemantics oracle sees exactly that). The
+  // conversion therefore belongs to the runtime, in the accessor the write goes through - the Rust
+  // target already writes through set_index for this reason. This pins the compiler's side of that
+  // boundary: the write names the runtime accessor and carries no conversion arithmetic of its own.
+  // See agents/flight-cpp-adoption.md for the requested write spelling.
+  it('writes typed-array elements through the runtime accessor without converting in emitted source', () => {
+    const module = lower(
+      'typed-array-element-write.ts',
+      `export function writes(): Uint8Array {
+         const values: Uint8Array = new Uint8Array(3);
+         values[0] = 300;
+         values[1] = -1;
+         values[1] += 257;
+         return values;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('(values.element(0.0) = 300.0);');
+    expect(emitted).toContain('(values.element(1.0) = -1.0);');
+    expect(emitted).toContain('(values.element(1.0) += 257.0);');
+    // No cast, wrap, or clamp in generated source: duplicating the runtime's conversion here would
+    // drift from it the moment the runtime's rules change.
+    expect(emitted).not.toContain('static_cast<');
+    expect(emitted).not.toContain('std::fmod');
+    expect(emitted).not.toContain('Uint8Clamped(');
+  });
+
   it('emits bare typed-array subarrays without hiding authored shared storage', () => {
     const bare = lower(
       'typed-array-subarray.ts',
