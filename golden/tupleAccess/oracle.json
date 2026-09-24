@@ -3,18 +3,21 @@
     "call": "first",
     "arguments": [[10, "hello"]],
     "returns": "number",
+    "cppTypes": ["std::tuple<double, flight::String>"],
     "rustTypes": ["(f64, String)"]
   },
   {
     "call": "second",
     "arguments": [[10, "hello"]],
     "returns": "string",
+    "cppTypes": ["std::tuple<double, flight::String>"],
     "rustTypes": ["(f64, String)"]
   },
   {
     "call": "sum_pair",
     "arguments": [[3, 7]],
     "returns": "number",
+    "cppTypes": ["flight::Array<double>"],
     "rustTypes": ["(f64, f64)"]
   }
 ]

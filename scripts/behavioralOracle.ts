@@ -6,6 +6,15 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
+import {
+  isDateArgument,
+  isPlainRecord,
+  isRecordArgument,
+  isRejectedTaskArgument,
+  isStringEnumArgument,
+  isTaskArgument,
+} from './behavioralOracleArgument.js';
+import { inferCppValueType, renderCppValue, toCppName } from './behavioralOracleCpp.js';
 import { splitBehavioralOracleOutput } from './behavioralOracleOutput.js';
 import {
   createCppExecutableArguments,
@@ -68,43 +77,6 @@ interface OracleCase {
   readonly targets?: readonly OracleTarget[];
 }
 
-// A settled task argument. Async is the machinery with the most moving parts and the least chance of
-// being right by inspection, so the oracle has to be able to hand a function something to await.
-function isTaskArgument(value: unknown): value is { task: unknown } {
-  return typeof value === 'object' && value !== null && 'task' in value;
-}
-
-// A task that settles the other way. A handler and a cleanup are only reached by a rejection, so
-// without one the whole `catch`/`finally` lowering is untested however many cases succeed.
-function isRejectedTaskArgument(value: unknown): value is { rejects: unknown } {
-  return typeof value === 'object' && value !== null && 'rejects' in value;
-}
-
-function isDateArgument(value: unknown): value is { date: number } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'date' in value &&
-    typeof (value as Readonly<{ date?: unknown }>).date === 'number'
-  );
-}
-
-function isRecordArgument(value: unknown): value is Readonly<Record<string, unknown>> & { $type: string } {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !Array.isArray(value) &&
-    '$type' in value &&
-    !('$stringEnum' in value)
-  );
-}
-
-function isStringEnumArgument(value: unknown): value is { $stringEnum: string; variant: string; value: string } {
-  return (
-    typeof value === 'object' && value !== null && '$stringEnum' in value && 'variant' in value && 'value' in value
-  );
-}
-
 interface OracleDivergence {
   readonly actual: string;
   readonly expected: string;
@@ -120,101 +92,6 @@ interface OracleFilters {
 }
 
 const rustPrimitiveTypes = new Set(['bool', 'f64', 'String']);
-
-const cppKeywords = new Set([
-  'alignas',
-  'alignof',
-  'and',
-  'and_eq',
-  'asm',
-  'auto',
-  'bitand',
-  'bitor',
-  'bool',
-  'break',
-  'case',
-  'catch',
-  'char',
-  'char8_t',
-  'char16_t',
-  'char32_t',
-  'class',
-  'co_await',
-  'co_return',
-  'co_yield',
-  'compl',
-  'concept',
-  'const',
-  'const_cast',
-  'consteval',
-  'constexpr',
-  'constinit',
-  'continue',
-  'decltype',
-  'default',
-  'delete',
-  'do',
-  'double',
-  'dynamic_cast',
-  'else',
-  'enum',
-  'explicit',
-  'export',
-  'extern',
-  'false',
-  'float',
-  'for',
-  'friend',
-  'goto',
-  'if',
-  'inline',
-  'int',
-  'long',
-  'mutable',
-  'namespace',
-  'new',
-  'noexcept',
-  'not',
-  'not_eq',
-  'nullptr',
-  'operator',
-  'or',
-  'or_eq',
-  'private',
-  'protected',
-  'public',
-  'register',
-  'reinterpret_cast',
-  'requires',
-  'return',
-  'short',
-  'signed',
-  'sizeof',
-  'static',
-  'static_assert',
-  'static_cast',
-  'struct',
-  'switch',
-  'template',
-  'this',
-  'thread_local',
-  'throw',
-  'true',
-  'try',
-  'typedef',
-  'typeid',
-  'typename',
-  'union',
-  'unsigned',
-  'using',
-  'virtual',
-  'void',
-  'volatile',
-  'wchar_t',
-  'while',
-  'xor',
-  'xor_eq',
-]);
 
 const filters = parseOracleFilters(process.argv.slice(2));
 const fixtures = readdirSync(goldenDirectory, { withFileTypes: true })
@@ -294,7 +171,7 @@ if (buildFailures.length > 0) {
   const summary = [...byTarget.entries()]
     .map(([target, failedFixtures]) => `${target}: ${String(failedFixtures.length)} (${failedFixtures.join(', ')})`)
     .join('; ');
-  process.stderr.write(`\n${String(buildFailures.length)} fixture(s) failed to build (${summary}), skipped.\n`);
+  process.stderr.write(`\n${String(buildFailures.length)} fixture(s) failed to build or run (${summary}).\n`);
   if (filters.verbose) {
     for (const failure of buildFailures) {
       process.stderr.write(`\n${failure.target}/${failure.fixture}\n${failure.message}\n`);
@@ -309,8 +186,9 @@ if (divergences.length > 0) {
     );
   }
   process.stderr.write(`\n${String(divergences.length)} behavioral divergence(s) from the source language.\n`);
-  process.exit(1);
 }
+
+if (buildFailures.length > 0 || divergences.length > 0) process.exit(1);
 
 const skipped = [
   ...(!haxeSelected || haxeAvailable ? [] : ['haxe']),
@@ -588,8 +466,11 @@ function runCppOracle(
       '#include <cmath>',
       '#include <iomanip>',
       '#include <iostream>',
+      '#include <optional>',
       '#include <sstream>',
       '#include <string>',
+      '#include <tuple>',
+      '#include <variant>',
       '',
       'std::string say(double value) {',
       '  if (std::isnan(value)) return "NaN";',
@@ -605,6 +486,30 @@ function runCppOracle(
       '}',
       'std::string say(bool value) { return value ? "true" : "false"; }',
       'std::string say(const flight::String& value) { return value.to_utf8(); }',
+      'template <typename Value>',
+      'std::string say(const std::optional<Value>& value) {',
+      '  return value.has_value() ? say(value.value()) : "undefined";',
+      '}',
+      'template <typename... Values>',
+      'std::string say(const std::variant<Values...>& value) {',
+      '  return std::visit([](const auto& alternative) { return say(alternative); }, value);',
+      '}',
+      'template <typename... Values>',
+      'std::string say(const std::tuple<Values...>& values) {',
+      '  std::string rendered = "[";',
+      '  bool first = true;',
+      '  std::apply(',
+      '      [&](const auto&... value) {',
+      '        const auto append = [&](const auto& item) {',
+      '          if (!first) rendered += ", ";',
+      '          rendered += say(item);',
+      '          first = false;',
+      '        };',
+      '        (append(value), ...);',
+      '      },',
+      '      values);',
+      '  return rendered + "]";',
+      '}',
       'template <typename Value>',
       'std::string say(const flight::Array<Value>& values) {',
       '  std::string rendered = "[";',
@@ -642,7 +547,7 @@ function runCppOracle(
           : `flighthq_golden::${cppName}(${arguments_.join(', ')})`;
         const value = oracleCase.awaits ? `${invocation}.get()` : invocation;
         const cppField = oracleCase.returnField ? toCppName(oracleCase.returnField) : '';
-        const cppAccess = cppField ? `(${value}).${cppField}` : value;
+        const cppAccess = cppField ? `(${value})->${cppField}` : value;
         return `  std::cout << say(${cppAccess}) << '\\n';`;
       }),
       '}',
@@ -672,60 +577,6 @@ function collectCppArrayHints(cases: readonly OracleCase[]): ReadonlyMap<string,
     });
   }
   return hints;
-}
-
-function inferCppValueType(value: unknown): string | undefined {
-  if (Array.isArray(value)) {
-    const element = value.map(inferCppValueType).find((candidate) => candidate !== undefined);
-    return element ? `flight::Array<${element}>` : undefined;
-  }
-  if (typeof value === 'boolean') return 'bool';
-  if (isDateArgument(value)) return 'flight::Date';
-  if (typeof value === 'number') return 'double';
-  if (typeof value === 'string') return 'flight::String';
-  if (isTaskArgument(value)) return inferCppValueType(value.task);
-  if (isRejectedTaskArgument(value)) return inferCppValueType(value.rejects);
-  return undefined;
-}
-
-function renderCppValue(value: unknown, hint?: string | null): string {
-  if (isDateArgument(value)) return `flight::Date(${renderCppValue(value.date)})`;
-  if (isStringEnumArgument(value)) {
-    return `flighthq_golden::${value.$stringEnum}::${value.variant}`;
-  }
-  if (isRecordArgument(value)) {
-    const fields = Object.entries(value)
-      .filter(([key]) => key !== '$type')
-      .map(([key, fieldValue]) => `.${toCppName(key)} = ${renderCppValue(fieldValue)}`);
-    return `flighthq_golden::${value.$type}{${fields.join(', ')}}`;
-  }
-  if (isTaskArgument(value)) {
-    const type = unwrapCppTaskType(hint) ?? inferCppValueType(value.task);
-    if (!type) throw new Error('C++ oracle task argument needs a scalar settled type');
-    return `flight::Task<${type}>::ready(${renderCppValue(value.task)})`;
-  }
-  if (isRejectedTaskArgument(value)) {
-    const type = unwrapCppTaskType(hint) ?? inferCppValueType(value.rejects);
-    if (!type) throw new Error('C++ oracle rejection argument needs a scalar rejection type');
-    return `flight::Task<${type}>::reject(${renderCppValue(value.rejects)})`;
-  }
-  if (Array.isArray(value)) {
-    const arrayType = inferCppValueType(value) ?? hint;
-    if (!arrayType?.startsWith('flight::Array<')) {
-      throw new Error('C++ oracle empty array needs a same-call nonempty type example');
-    }
-    const elementType = arrayType.slice('flight::Array<'.length, -1);
-    return `${arrayType}{${value.map((item) => renderCppValue(item, elementType)).join(', ')}}`;
-  }
-  if (typeof value === 'string') return `flight::String(${JSON.stringify(value)})`;
-  if (typeof value === 'number') return Number.isInteger(value) ? `${String(value)}.0` : String(value);
-  if (typeof value === 'boolean') return String(value);
-  throw new Error(`C++ oracle cannot render ${JSON.stringify(value)}`);
-}
-
-function unwrapCppTaskType(type: string | null | undefined): string | undefined {
-  const match = /^flight::Task<(?<value>.+)>$/u.exec(type ?? '');
-  return match?.groups?.value;
 }
 
 function runLines(command: string, args: readonly string[], cwd: string, subject: string): readonly string[] {
@@ -820,10 +671,6 @@ function renderRustPrimitive(value: unknown): string | undefined {
   return undefined;
 }
 
-function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function splitRustTupleTypes(value: string): readonly string[] {
   const types: string[] = [];
   let depth = 0;
@@ -851,11 +698,6 @@ function collectRustTraitUses(cases: readonly OracleCase[], rustModule: string):
 
 function toSnakeCase(value: string): string {
   return value.replaceAll(/([a-z0-9])([A-Z])/gu, '$1_$2').toLowerCase();
-}
-
-function toCppName(value: string): string {
-  const name = toSnakeCase(value);
-  return cppKeywords.has(name) ? `${name}_` : name;
 }
 
 function hasCommand(command: string): boolean {

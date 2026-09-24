@@ -3,13 +3,13 @@
     "call": "busiestCount",
     "arguments": [[]],
     "returns": "number",
-    "cppTypes": ["flight::Array<flighthq_golden::Item>"]
+    "cppTypes": ["flight::Array<flight::Ref<flighthq_golden::Item>>"]
   },
   {
     "call": "busiestCount",
     "arguments": [[{ "$type": "Item", "name": "a", "count": 5 }]],
     "returns": "number",
-    "cppTypes": ["flight::Array<flighthq_golden::Item>"]
+    "cppTypes": ["flight::Array<flight::Ref<flighthq_golden::Item>>"]
   },
   {
     "call": "busiestCount",
@@ -20,6 +20,6 @@
       ]
     ],
     "returns": "number",
-    "cppTypes": ["flight::Array<flighthq_golden::Item>"]
+    "cppTypes": ["flight::Array<flight::Ref<flighthq_golden::Item>>"]
   }
 ]

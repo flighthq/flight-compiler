@@ -3,30 +3,35 @@
     "call": "safe_x",
     "arguments": [{ "x": 3, "y": 4 }],
     "returns": "number",
+    "cppTypes": ["std::optional<flight::Ref<flighthq_golden::Point>>"],
     "rustTypes": ["Option<Point>"]
   },
   {
     "call": "safe_x",
     "arguments": [null],
     "returns": "number",
+    "cppTypes": ["std::optional<flight::Ref<flighthq_golden::Point>>"],
     "rustTypes": ["Option<Point>"]
   },
   {
     "call": "safe_y",
     "arguments": [{ "x": 3, "y": 4 }],
     "returns": "number",
+    "cppTypes": ["std::optional<flight::Ref<flighthq_golden::Point>>"],
     "rustTypes": ["Option<Point>"]
   },
   {
     "call": "safe_sum",
     "arguments": [{ "x": 3, "y": 4 }],
     "returns": "number",
+    "cppTypes": ["std::optional<flight::Ref<flighthq_golden::Point>>"],
     "rustTypes": ["Option<Point>"]
   },
   {
     "call": "safe_sum",
     "arguments": [null],
     "returns": "number",
+    "cppTypes": ["std::optional<flight::Ref<flighthq_golden::Point>>"],
     "rustTypes": ["Option<Point>"]
   }
 ]

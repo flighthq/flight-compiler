@@ -8,19 +8,19 @@
       ]
     ],
     "returns": "string",
-    "cppTypes": ["flight::Array<flighthq_golden::Entry>"]
+    "cppTypes": ["flight::Array<flight::Ref<flighthq_golden::Entry>>"]
   },
   {
     "call": "firstKey",
     "arguments": [[]],
     "returns": "string",
-    "cppTypes": ["flight::Array<flighthq_golden::Entry>"],
+    "cppTypes": ["flight::Array<flight::Ref<flighthq_golden::Entry>>"],
     "targets": ["cpp", "haxe"]
   },
   {
     "call": "firstKey",
     "arguments": [[{ "$type": "Entry", "key": "" }]],
     "returns": "string",
-    "cppTypes": ["flight::Array<flighthq_golden::Entry>"]
+    "cppTypes": ["flight::Array<flight::Ref<flighthq_golden::Entry>>"]
   }
 ]

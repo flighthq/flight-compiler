@@ -3,13 +3,13 @@
     "call": "tailSize",
     "arguments": [[], 0],
     "returns": "number",
-    "cppTypes": ["flight::Array<flighthq_golden::Entry>", null]
+    "cppTypes": ["flight::Array<flight::Ref<flighthq_golden::Entry>>", null]
   },
   {
     "call": "tailSize",
     "arguments": [[{ "$type": "Entry", "key": "a", "value": 1 }], 0],
     "returns": "number",
-    "cppTypes": ["flight::Array<flighthq_golden::Entry>", null]
+    "cppTypes": ["flight::Array<flight::Ref<flighthq_golden::Entry>>", null]
   },
   {
     "call": "tailSize",
@@ -21,6 +21,6 @@
       1
     ],
     "returns": "number",
-    "cppTypes": ["flight::Array<flighthq_golden::Entry>", null]
+    "cppTypes": ["flight::Array<flight::Ref<flighthq_golden::Entry>>", null]
   }
 ]
