@@ -12,6 +12,7 @@ import {
   getCppExecutableName,
   type CppCompilerToolchain,
 } from './cppToolchain.js';
+import { splitBehavioralOracleOutput } from './behavioralOracleOutput.js';
 import { resolveDependency } from './dependencyLock.js';
 
 // Does the emitted source do what the source language does?
@@ -730,9 +731,7 @@ function unwrapCppTaskType(type: string | null | undefined): string | undefined 
 function runLines(command: string, args: readonly string[], cwd: string, subject: string): readonly string[] {
   const result = spawnSync(command, [...args], { cwd, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`${subject} run failed:\n${result.stderr ?? ''}`);
-  const lines = (result.stdout ?? '').split('\n');
-  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-  return lines;
+  return splitBehavioralOracleOutput(result.stdout ?? '');
 }
 
 function haxeModuleType(fixture: string): string {
