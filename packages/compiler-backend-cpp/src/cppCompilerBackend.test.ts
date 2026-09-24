@@ -691,6 +691,30 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('flight::Any erased = values.fill(0.0);');
   });
 
+  it('emits bare typed-array subarrays without hiding authored shared storage', () => {
+    const bare = lower(
+      'typed-array-subarray.ts',
+      'export function view(bytes: Uint8Array): Uint8Array { return bytes.subarray(1); }',
+    );
+    const shared = lower(
+      'shared-typed-array-subarray.ts',
+      'export function view(bytes: Uint8Array<SharedArrayBuffer>): Uint8Array<SharedArrayBuffer> { return bytes.subarray(1); }',
+    );
+
+    expect(bare.diagnostics).toEqual([]);
+    expect(emitIrModuleCpp(bare.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'return bytes.subarray(1.0);',
+    );
+    expect(shared.diagnostics).toEqual([]);
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(shared.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: SharedArrayBuffer[type])',
+    );
+  });
+
   it('stores exact Flight references in erased dynamic values without treating structural rows as objects', () => {
     const emitted = emitIrModuleCpp(
       lower(

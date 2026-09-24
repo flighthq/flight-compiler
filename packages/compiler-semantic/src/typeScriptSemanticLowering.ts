@@ -2227,6 +2227,20 @@ function getTypeScriptKnownAmbientCallResultTypeEvidence(
     if (reference.kind === 'ambient' && reference.name === 'Math') return { kind: 'primitive', name: 'number' };
   }
   const receiver = getTypeScriptExpressionBindingTypeEvidence(node.expression.expression, context);
+  const receiverShape = getIrTypeConstructionTargetShape(receiver, context) ?? receiver;
+  // `subarray` preserves a typed array's backing-buffer domain. The checker-owned library default
+  // widens an omitted buffer argument to `ArrayBufferLike`, which would invent
+  // `SharedArrayBuffer[type]` reachability for a source that only wrote `Uint8Array`. Keep the
+  // receiver evidence the compiler already owns; unlike `slice`, this is not a fresh
+  // ArrayBuffer-backed result.
+  if (
+    !node.questionDotToken &&
+    !node.expression.questionDotToken &&
+    node.expression.name.text === 'subarray' &&
+    getIrResolvedMemberReceiver(receiverShape) === 'typedArray'
+  ) {
+    return receiverShape;
+  }
   const first = node.arguments[0];
   if (
     receiver?.kind === 'named' &&

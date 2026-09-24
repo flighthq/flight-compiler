@@ -4539,6 +4539,68 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     }
   });
 
+  it('keeps typed-array subarray results in the authored backing-buffer domain', () => {
+    const result = lower(
+      'typed-array-subarray-result.ts',
+      `export function views(source: Uint8Array, shared: Uint8Array<SharedArrayBuffer>): void {
+         const view = source.subarray(0);
+         const copy = source.slice(0);
+         const buffer = shared.buffer;
+         const sharedView = shared.subarray(0);
+         void view; void copy; void buffer; void sharedView;
+       }`,
+    );
+    const fn = result.module.declarations[0];
+    if (
+      fn?.kind !== 'function' ||
+      fn.body[0]?.kind !== 'variable' ||
+      fn.body[1]?.kind !== 'variable' ||
+      fn.body[2]?.kind !== 'variable' ||
+      fn.body[3]?.kind !== 'variable'
+    ) {
+      throw new Error('Expected typed-array result bindings');
+    }
+    const view = fn.body[0].declarations[0];
+    const copy = fn.body[1].declarations[0];
+    const buffer = fn.body[2].declarations[0];
+    const sharedView = fn.body[3].declarations[0];
+    if (
+      view?.initializer?.kind !== 'call' ||
+      copy?.initializer?.kind !== 'call' ||
+      sharedView?.initializer?.kind !== 'call'
+    ) {
+      throw new Error('Expected typed-array calls');
+    }
+
+    const uint8Array = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Uint8Array' },
+      typeArguments: [],
+    };
+    const arrayBuffer = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'ArrayBuffer' },
+      typeArguments: [],
+    };
+    const sharedArrayBuffer = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'SharedArrayBuffer' },
+      typeArguments: [],
+    };
+
+    expect(result.diagnostics).toEqual([]);
+    expect(view.type).toEqual(uint8Array);
+    expect(view.initializer.semantics.resultType).toEqual(uint8Array);
+    expect(copy.type).toEqual(uint8Array);
+    expect(copy.initializer.semantics.resultType).toEqual(uint8Array);
+    expect(buffer?.type).toEqual(arrayBuffer);
+    expect(sharedView.type).toEqual({ ...uint8Array, typeArguments: [sharedArrayBuffer] });
+    expect(sharedView.initializer.semantics.resultType).toEqual({
+      ...uint8Array,
+      typeArguments: [sharedArrayBuffer],
+    });
+  });
+
   it('preserves ambient collection identity in inferred values instead of expanding implementation members', () => {
     const result = lower(
       'inferred-ambient.ts',
@@ -4785,9 +4847,19 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
           providedArgumentCount: 0,
         },
         resultType: {
-          kind: 'named',
-          reference: { kind: 'ambient', name: 'Uint8Array' },
-          typeArguments: [],
+          kind: 'union',
+          types: [
+            {
+              kind: 'named',
+              reference: { kind: 'ambient', name: 'Uint8Array' },
+              typeArguments: [],
+            },
+            {
+              kind: 'named',
+              reference: { kind: 'ambient', name: 'Float32Array' },
+              typeArguments: [],
+            },
+          ],
         },
         signature: { parameterCount: 2, providedArgumentCount: 0 },
       },

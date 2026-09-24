@@ -340,6 +340,24 @@ describe('emitIrModuleRust', () => {
     expect(output).toContain('(view.byte_offset() as f64)');
   });
 
+  it('emits bare typed-array subarrays without hiding authored shared storage', () => {
+    const bare = lower(
+      'typed-array-subarray.ts',
+      'export function view(bytes: Uint8Array): Uint8Array { return bytes.subarray(1); }',
+    );
+    const shared = lower(
+      'shared-typed-array-subarray.ts',
+      'export function view(bytes: Uint8Array<SharedArrayBuffer>): Uint8Array<SharedArrayBuffer> { return bytes.subarray(1); }',
+    );
+
+    expect(bare.diagnostics).toEqual([]);
+    expect(emitIrModuleRust(bare.module).contents).toContain('return bytes.subarray(1.0);');
+    expect(shared.diagnostics).toEqual([]);
+    expect(() => emitIrModuleRust(shared.module)).toThrow(
+      'runtime external symbol binding plan is incomplete (missing: SharedArrayBuffer[type])',
+    );
+  });
+
   it('emits DataView construction and access over shared ArrayBuffer storage', () => {
     const result = lower(
       'data-view.ts',

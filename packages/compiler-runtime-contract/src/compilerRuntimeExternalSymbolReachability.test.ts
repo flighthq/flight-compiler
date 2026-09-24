@@ -378,6 +378,32 @@ describe('collectIrModulesRuntimeExternalSymbolIdentities', () => {
     ]);
   });
 
+  it('does not invent shared-memory reachability for a bare typed-array subarray result', () => {
+    const lower = (file: string, source: string) =>
+      lowerTypeScriptSource(
+        ts.createSourceFile(`/flight/packages/runtime/src/${file}`, source, ts.ScriptTarget.Latest, true),
+        { packageName: '@flighthq/runtime', upstreamDirectory: '/flight' },
+      );
+    const bare = lower(
+      'typed-array-subarray.ts',
+      'export function view(bytes: Uint8Array): Uint8Array { return bytes.subarray(1); }',
+    );
+    const shared = lower(
+      'shared-typed-array-subarray.ts',
+      'export function view(bytes: Uint8Array<SharedArrayBuffer>): Uint8Array<SharedArrayBuffer> { return bytes.subarray(1); }',
+    );
+
+    expect(bare.diagnostics).toEqual([]);
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([bare.module])).toEqual([
+      { sourceName: 'Uint8Array', space: 'type' },
+    ]);
+    expect(shared.diagnostics).toEqual([]);
+    expect(collectIrModulesRuntimeExternalSymbolIdentities([shared.module])).toEqual([
+      { sourceName: 'SharedArrayBuffer', space: 'type' },
+      { sourceName: 'Uint8Array', space: 'type' },
+    ]);
+  });
+
   it('collects an ambient value referenced only from a type query', () => {
     const lowered = lowerTypeScriptSource(
       ts.createSourceFile(
