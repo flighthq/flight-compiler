@@ -170,8 +170,8 @@ describe('collectReleaseBridgeIssues', () => {
     const incomplete = mutated(receiverFile, '          - next\n', '');
     const defaulted = mutated(
       receiverFile,
-      '        type: choice\n        options:',
-      '        type: choice\n        default: latest\n        options:',
+      '        description: npm distribution tag for the compiler package\n        options:',
+      '        description: npm distribution tag for the compiler package\n        default: latest\n        options:',
     );
 
     expect(collectReleaseBridgeIssues(receiverFile, optional)).toContain(
