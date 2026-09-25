@@ -6951,6 +6951,20 @@ function inferInitializerType(node: ts.Expression, context: LoweringContext): Ir
     return { kind: 'primitive', name: 'string' };
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
     const left = removeIrTypeAbsentMembersSemantic(inferInitializerType(node.left, context));
+    const fallback = unwrapTypeScriptParenthesizedExpression(node.right);
+    if (left && ts.isArrayLiteralExpression(fallback) && fallback.elements.length === 0) {
+      const present = left.kind === 'union' ? left.types : [left];
+      const arrayDomains = present.filter(
+        (member) => getIrTypeConstructionTargetShape(member, context)?.kind === 'array',
+      );
+      // An empty literal contributes no element domain of its own. When the present branch names
+      // exactly one array domain, that domain is the literal's complete contextual type as well as
+      // the merge result. Retaining the generic `any[]` placeholder here instead invents a second
+      // runtime alternative and makes the target choose between a stated array and a type the source
+      // never populated. Multiple array domains stay unresolved: choosing one for the empty branch
+      // would be a guess the source can make explicit with an annotation or assertion.
+      if (arrayDomains.length === 1) return left;
+    }
     const right = inferInitializerType(node.right, context);
     return left ? commonType([left, right]) : right;
   }

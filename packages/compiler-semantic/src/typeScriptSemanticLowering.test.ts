@@ -10867,6 +10867,40 @@ it('infers initializer type for empty array', () => {
   expect(variable).toBeDefined();
 });
 
+it('uses the sole present array domain for an empty nullish fallback initializer', () => {
+  const result = lower(
+    'infer-empty-array-fallback.ts',
+    `export function count(values?: (number | string)[]): number {
+       const items = values ?? [];
+       return items.length;
+     }`,
+  );
+  const fn = result.module.declarations.find((declaration) => declaration.kind === 'function');
+  const statement = fn?.kind === 'function' ? fn.body.find((candidate) => candidate.kind === 'variable') : undefined;
+  const variable = statement?.kind === 'variable' ? statement.declarations[0] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(variable?.type).toEqual({
+    element: {
+      kind: 'union',
+      types: [
+        { kind: 'primitive', name: 'number' },
+        { kind: 'primitive', name: 'string' },
+      ],
+    },
+    kind: 'array',
+    readonly: false,
+  });
+  const fallback = variable?.initializer?.kind === 'binary' ? variable.initializer.right : undefined;
+  const fallbackType = fallback?.kind === 'array' ? fallback.type : undefined;
+  expect(fallbackType?.kind).toBe('array');
+  expect(
+    fallbackType?.element.kind === 'union'
+      ? fallbackType.element.types.map((member) => (member.kind === 'primitive' ? member.name : member.kind)).sort()
+      : [],
+  ).toEqual(['number', 'string']);
+});
+
 it('resolves common type for mixed initializer array', () => {
   const result = lower('common-type-array.ts', `export const items = [1, 'two', true];`);
   const variable = result.module.declarations.find(

@@ -12420,6 +12420,19 @@ function emitContextualUnionExpressionInContextCpp(
   const expressionType = getIrExpressionTypeForUnionConstructionCpp(expression, plan.valueSlots, context);
   if (!expressionType) {
     if (plan.kind === 'singleValue') return undefined;
+    if (
+      expression.kind === 'binary' &&
+      expression.operator === '??' &&
+      expression.right.kind === 'array' &&
+      expression.right.elements.length === 0 &&
+      plan.valueSlots.filter((slot) => getIrArrayTypeCpp(slot.runtimeType, context, new Set())).length > 1
+    ) {
+      emissionError(
+        context,
+        'an empty nullish fallback cannot select one of multiple array element domains; add an explicit T[] annotation or T[] assertion to the empty array',
+        'cpp-empty-array-element-type-unproven',
+      );
+    }
     emissionError(
       context,
       `contextual ${plan.kind} construction requires expression type evidence`,

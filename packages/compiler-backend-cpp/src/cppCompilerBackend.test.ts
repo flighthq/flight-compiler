@@ -1,9 +1,17 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
+import {
+  collectCppRuntimeIncludeDirectories,
+  createCppSyntaxOnlyArguments,
+  findCppCompilerToolchain,
+} from '../../../scripts/cppToolchain.js';
+import { resolveDependency } from '../../../scripts/dependencyLock.js';
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
 import { analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
@@ -17,6 +25,12 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
 import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const cppRuntime = resolveDependency(repositoryRoot, 'flight-cpp');
+const cppRuntimeIncludeDirectories = collectCppRuntimeIncludeDirectories(cppRuntime.directory);
+const cppToolchain = findCppCompilerToolchain();
+const canCompileCpp = cppToolchain !== undefined && cppRuntimeIncludeDirectories.length > 0;
 
 // Returns the refusal rather than asserting a throw, so a probe that stops refusing leaves the
 // caller comparing against a subject that was never produced instead of passing silently.
@@ -21947,6 +21961,62 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('flight::Array<double> values = flight::Array<double>{};');
     expect(emitted).toContain('values.push(1.0)');
     expect(emitted).not.toContain('flight::Array<flight::Any>');
+  });
+
+  it('retains one present array domain through an empty nullish fallback', () => {
+    const result = lower(
+      'empty-array-nullish-fallback.ts',
+      `export function count(values?: (number | string)[]): number {
+         const items = values ?? [];
+         return items.length;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('flight::Array<std::variant<double, flight::String>> items');
+    expect(emitted).toContain('return static_cast<double>(items.size());');
+    expect(emitted).not.toContain('flight::Array<flight::Any>');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles an empty nullish fallback in its sole present array domain', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const result = lower(
+      'compile-empty-array-nullish-fallback.ts',
+      `export function count(values?: (number | string)[]): number {
+         const items = values ?? [];
+         return items.length;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-nullish-array-fallback-'));
+    const header = path.join(directory, 'nullish_array_fallback.hpp');
+
+    try {
+      writeFileSync(header, emitted, 'utf8');
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('attributes an empty nullish fallback across multiple array domains to source portability', () => {
+    const result = lower(
+      'ambiguous-empty-array-nullish-fallback.ts',
+      `export function count(values?: number[] | string[]): number {
+         const items = values ?? [];
+         return items.length;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-empty-array-element-type-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('add an explicit T[] annotation or T[] assertion');
   });
 
   it('attributes an empty flight-cpp array with no element evidence to source portability', () => {
