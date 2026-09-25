@@ -2991,6 +2991,43 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  it('names only the members the source declaration lacks and not the ones it carries', () => {
+    const result = lower(
+      'structural-assertion-partial-declaration.ts',
+      `interface Base { id: string; width: number }
+       interface Derived extends Base { width: number; height: string }
+       export function widen(node: Base): Readonly<Derived> { return node as Readonly<Derived>; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(failure.message).toContain('reads height, which the source type does not declare');
+    expect(failure.message).not.toContain('width');
+  });
+
+  it('still refuses when flow evidence narrows the referent, because the declaration binds the cells', () => {
+    const result = lower(
+      'structural-assertion-narrowed-referent.ts',
+      `interface Base { kind: 'base' | 'derived'; id: string }
+       interface Derived extends Base { kind: 'derived'; extra: number }
+       export function widen(node: Base): string | undefined {
+         if (node.kind !== 'derived') return undefined;
+         return (node as Readonly<Derived>).id;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // A guard can establish the referent; nothing local can establish the owner's cells, because the
+    // object may have been reached as the base type anywhere in the program before it arrived here.
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('reads extra, which the source type does not declare');
+  });
+
   it('constructs a named record property through its foreign writable row without inventing a helper', () => {
     const model = ts.createSourceFile(
       '/flight/packages/types/src/model.ts',
@@ -13999,9 +14036,16 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     // The refusal is the emission's, where the view would have been built: nothing is emitted that binds
     // a base-typed owner and then reads a derived-only cell through it.
-    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'the asserted row reads members the source type does not declare',
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
     );
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    // Which cells the owner carries is a fact about where the object was first reached, which may be
+    // anywhere in the program, so it is not the emitter's to recover: the report attributes the fix to
+    // the source and names the member to declare.
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('reads data, which the source type does not declare');
+    expect(failure.message).toContain('Declare the source as a type that declares data');
   });
 
   it('views an assertion subject that declares every member its asserted row reads', () => {
@@ -14056,6 +14100,15 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(widened).toContain(
       'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<TextureSource>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<Bitmap>>>>(bitmap))',
     );
+
+    // Each subject is its own expression, viewed and then widened, so all three read the object the
+    // source named: no materialized row, and no new object, appears anywhere in the emission. The
+    // emitted headers for these pairs syntax-check against the pinned runtime with the generated row
+    // table on the include path.
+    for (const emitted of [identical, exact, widened]) {
+      expect(emitted).not.toContain('make_shared');
+      expect(emitted).not.toContain('materialize');
+    }
   });
 
   it('names a selected arm as the declaration its union holds, and only when exactly one holds it', () => {

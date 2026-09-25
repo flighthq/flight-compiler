@@ -3529,9 +3529,18 @@ function emitExpression(
             !projectionTargetObject ||
             getCppStructuralRowObjectWideningProofCpp(projectionSource, projectionTargetObject, context) !== 'proven'
           ) {
+            const absent = collectCppStructuralRowAssertionAbsentMembersCpp(
+              projectionSource,
+              projectionTargetObject,
+              context,
+            );
+            const missing =
+              absent.length === 0
+                ? 'members the source type does not declare'
+                : `${renderCppSubjectNameListCpp(absent)}, which the source type does not declare`;
             emissionError(
               context,
-              'the asserted row reads members the source type does not declare, and a structural owner binds the members of the type the object was first reached as, so a derived-only read has no cell to answer it',
+              `the asserted row reads ${missing}, and a structural owner binds the members of the type the object was first reached as, so a member the source's own declaration lacks has no cell to answer the read. Declare the source as a type that declares ${absent.length === 0 ? 'them' : renderCppSubjectNameListCpp(absent)} -- convert it where the concrete type is known -- rather than asserting past it.`,
               'cpp-structural-assertion-owner-unproven',
             );
           }
@@ -4926,6 +4935,50 @@ function getCppStructuralRowObjectWideningProofCpp(
   })
     ? 'proven'
     : 'unproven';
+}
+
+// The members the asserted row reads that the source's own declaration cannot answer, in canonical order.
+//
+// A structural owner binds the members of the type the object was FIRST REACHED as, so a member the
+// source's declaration does not carry has no cell to answer the read, wherever and whenever the object
+// was reached. Narrowing the source's type at the assertion does not change that: flow evidence can
+// establish the referent, but it cannot establish which cells the owner was built with. Only the
+// source's declaration does, which is why these names are the actionable half of the refusal -- they
+// are exactly what the author has to give the source.
+function collectCppStructuralRowAssertionAbsentMembersCpp(
+  source: Readonly<IrType> | undefined,
+  target: Readonly<IrType> | undefined,
+  context: EmitContext,
+): readonly string[] {
+  if (source === undefined || target === undefined) return [];
+  const sourceProperties = context.referenceRepresentationPlanner.resolveObjectShape(source, context.module);
+  const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(target, context.module);
+  if (!sourceProperties || !targetProperties) return [];
+  const sourceFields = new Map(
+    sourceProperties
+      .filter((property) => !property.phantom)
+      .map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
+  );
+  const absent = new Set<string>();
+  for (const property of targetProperties) {
+    if (property.phantom) continue;
+    const sourceProperty = sourceFields.get(getCppStructuralRowPropertyIdentityCpp(property, context));
+    if (
+      sourceProperty !== undefined &&
+      sourceProperty.optional === property.optional &&
+      emitType(sourceProperty.type, context) === emitType(property.type, context)
+    ) {
+      continue;
+    }
+    absent.add(property.name);
+  }
+  return [...absent].sort(compareTextCodeUnits);
+}
+
+function renderCppSubjectNameListCpp(names: readonly string[]): string {
+  const last = names[names.length - 1] ?? '';
+  if (names.length < 2) return last;
+  return `${names.slice(0, -1).join(', ')} and ${last}`;
 }
 
 function getCppStructuralRowPropertyIdentityCpp(
@@ -21261,6 +21314,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
 // fix is an explicit source conversion and the check report says which one.
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-contextual-structural-array-nominal-recovery-unproven',
+  'cpp-structural-assertion-owner-unproven',
 ]);
 
 // The lib.d.ts type utilities this emitter cannot lower unconditionally. Each names a type-level
