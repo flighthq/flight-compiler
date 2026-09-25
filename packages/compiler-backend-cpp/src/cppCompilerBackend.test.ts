@@ -713,14 +713,45 @@ describe('createCppCompilerBackend', () => {
 
     const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
 
-    expect(emitted).toContain('(values.element(0.0) = 300.0);');
-    expect(emitted).toContain('(values.element(1.0) = -1.0);');
-    expect(emitted).toContain('(values.element(1.0) += 257.0);');
+    expect(emitted).toContain('return typed_array.set_index(typed_index, typed_value)');
+    expect(emitted).toContain('return typed_array_2.set_index(typed_index_2, typed_value_2)');
+    expect(emitted).toContain('const auto typed_current = typed_array_3.get_index(typed_index_3)');
+    expect(emitted).toContain('const auto typed_value_3 = typed_current + typed_right');
+    expect(emitted).toContain('return typed_array_3.set_index(typed_index_3, typed_value_3)');
+    expect(emitted).not.toContain('.element(');
     // No cast, wrap, or clamp in generated source: duplicating the runtime's conversion here would
     // drift from it the moment the runtime's rules change.
     expect(emitted).not.toContain('static_cast<');
     expect(emitted).not.toContain('std::fmod');
     expect(emitted).not.toContain('Uint8Clamped(');
+  });
+
+  it('evaluates typed-array assignment receivers, indexes, and values once before runtime conversion', () => {
+    const module = lower(
+      'typed-array-assignment-order.ts',
+      `export function plain(receiver: () => Uint8Array, index: () => number, rhs: () => number): number {
+         return receiver()[index()] = rhs();
+       }
+       export function compound(receiver: () => Uint8Array, index: () => number, rhs: () => number): number {
+         return receiver()[index()] += rhs();
+       }
+       export function modulo(receiver: () => Uint8Array, index: () => number, rhs: () => number): number {
+         return receiver()[index()] %= rhs();
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted.match(/receiver\(\)/gu)).toHaveLength(3);
+    expect(emitted.match(/index\(\)/gu)).toHaveLength(3);
+    expect(emitted.match(/rhs\(\)/gu)).toHaveLength(3);
+    expect(emitted).toContain('return typed_array.set_index(typed_index, typed_value)');
+    expect(emitted).toContain('const auto typed_current = typed_array_2.get_index(typed_index_2)');
+    expect(emitted).toContain('const auto typed_value_2 = typed_current + typed_right');
+    expect(emitted).toContain('return typed_array_2.set_index(typed_index_2, typed_value_2)');
+    expect(emitted).toContain('const auto typed_value_3 = std::fmod(typed_current_2, typed_right_2)');
+    expect(emitted).toContain('return typed_array_3.set_index(typed_index_3, typed_value_3)');
+    expect(emitted).not.toContain('.element(');
   });
 
   it('emits bare typed-array subarrays without hiding authored shared storage', () => {
@@ -7201,7 +7232,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('return levels.element(index)');
+    expect(emitted.contents).toContain('return levels.get_index(index)');
     expect(emitted.contents).not.toContain('levels[static_cast<size_t>');
   });
 
@@ -7216,8 +7247,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       { runtimeProfile: 'flight-cpp' },
     ).contents;
 
-    expect(output).toContain('static_cast<double>(values.element(index)) > fallback');
-    expect(output).toContain('? static_cast<double>(values.element(index)) : fallback');
+    expect(output).toContain('values.get_index(index) > fallback');
+    expect(output).toContain('? values.get_index(index) : fallback');
   });
 
   it('projects readonly clamped typed-array reads into the source numeric domain', () => {
@@ -7232,7 +7263,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       { runtimeProfile: 'flight-cpp' },
     ).contents;
 
-    expect(output).toContain('? static_cast<double>(values.element(index)) : 0.0');
+    expect(output).toContain('? values.get_index(index) : 0.0');
   });
 
   it('emits string element access through the UTF-16 character contract', () => {
@@ -13329,14 +13360,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
   it('visits represented collection unions for indexed reads and writes', () => {
     const result = lower(
       'variant-index.ts',
-      'export function write(out: number[] | Float32Array, index: number, value: number): number { out[index] = value; return out[index]; }',
+      'export function write(out: number[] | Float32Array, index: number, value: number): number { out[index] = value; out[index] += value; return out[index]; }',
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('std::variant<flight::Array<double>, flight::Float32Array> out');
     expect(emitted.contents).toContain('std::visit([&](auto& indexed_receiver)');
+    expect(emitted.contents).toContain('indexed_receiver.set_index(indexed_index, indexed_value)');
     expect(emitted.contents).toContain('indexed_receiver.element(indexed_index) = indexed_value');
-    expect(emitted.contents).toContain('std::visit([&](const auto& indexed_receiver_2) -> double');
+    expect(emitted.contents).toContain('indexed_receiver_2.get_index(indexed_index_2)');
+    expect(emitted.contents).toContain('indexed_receiver_2.element(indexed_index_2)');
+    expect(emitted.contents).toContain('indexed_receiver_3.get_index(indexed_index_3)');
   });
 
   it('emits conditional expression as ternary', () => {
@@ -19471,7 +19505,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).contents;
 
     expect(output).toContain('std::visit');
-    expect(output).toContain(', values.value())');
+    expect(output).toContain('auto&& indexed_source = values.value()');
+    expect(output).toContain('indexed_receiver.get_index(indexed_index)');
     expect(output).not.toContain('values[index]');
   });
 
@@ -19490,8 +19525,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       { runtimeProfile: 'flight-cpp' },
     ).contents;
 
-    expect(output).toContain(', required.value())');
-    expect(output).toContain(', optional.value().value())');
+    expect(output).toContain('auto&& indexed_source = required.value()');
+    expect(output).toContain('auto&& indexed_source_2 = optional.value().value()');
+    expect(output).toContain('indexed_receiver.get_index(indexed_index)');
   });
 
   it('materializes an object literal returned through an imported optional referent', () => {

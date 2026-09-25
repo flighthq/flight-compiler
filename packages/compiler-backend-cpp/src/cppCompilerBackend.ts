@@ -66,6 +66,7 @@ import type {
   IrExpression,
   IrFunctionDeclaration,
   IrFunctionTypeParameter,
+  IrIndexedReceiver,
   IrBindingIdentity,
   IrInterfaceDeclaration,
   IrModule,
@@ -2907,6 +2908,8 @@ function emitExpression(
           ? emitCppVariantIndexedAssignmentCpp(expression.left, expression.operator, right, context)
           : undefined;
       if (variantIndexedAssignment) return variantIndexedAssignment;
+      const typedArrayIndexedAssignment = emitCppTypedArrayIndexedAssignmentCpp(expression, right, context);
+      if (typedArrayIndexedAssignment) return typedArrayIndexedAssignment;
       const left = emitAssignmentTargetCpp(expression.left, context);
       if (expression.operator === '**=') {
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
@@ -3722,12 +3725,8 @@ function emitExpression(
         !isCppObjectEntriesTupleStorageExpressionCpp(expression.object, context) &&
         hasIndexedRuntimeReceiverCpp(expression, context)
       ) {
-        const access = `${emitExpression(expression.object, context)}.element(${emitExpression(expression.index, context)})`;
-        return expectedType?.kind === 'primitive' &&
-          expectedType.name === 'number' &&
-          isCppUint8ClampedArrayElementCpp(expression, context)
-          ? `static_cast<double>(${access})`
-          : access;
+        const accessor = hasOnlyCppTypedArrayIndexedReceiversCpp(expression, context) ? 'get_index' : 'element';
+        return `${emitExpression(expression.object, context)}.${accessor}(${emitExpression(expression.index, context)})`;
       }
       if (expression.semantics.receivers.includes('tuple')) {
         context.includes.add('tuple');
@@ -17549,6 +17548,70 @@ function emitAssignmentTargetCpp(expression: Readonly<IrExpression>, context: Em
   return emitExpression(expression, context);
 }
 
+function emitCppTypedArrayIndexedAssignmentCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  right: string,
+  context: EmitContext,
+): string | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    expression.left.kind !== 'element' ||
+    !hasOnlyCppTypedArrayIndexedReceiversCpp(expression.left, context)
+  ) {
+    return undefined;
+  }
+  if (
+    expression.semantics.right.flow !== 'number' ||
+    (expression.operator !== '=' && expression.semantics.left.flow !== 'number')
+  ) {
+    emissionError(context, `operator ${expression.operator} on a typed-array element requires numeric C++ lowering`);
+  }
+
+  const receiver = getGeneratedTargetName('typedArray', context);
+  const index = getGeneratedTargetName('typedIndex', context);
+  const value = getGeneratedTargetName('typedValue', context);
+  const receiverExpression = emitExpression(expression.left.object, context);
+  const indexExpression = emitExpression(expression.left.index, context);
+  if (expression.operator === '=') {
+    return `([&]() { auto&& ${receiver} = ${receiverExpression}; const auto ${index} = ${indexExpression}; const auto ${value} = ${right}; return ${receiver}.set_index(${index}, ${value}); }())`;
+  }
+
+  const current = getGeneratedTargetName('typedCurrent', context);
+  if (expression.operator === '??=') {
+    emissionError(context, 'operator ??= on a typed-array element requires absent-index lowering');
+  }
+  if (expression.operator === '&&=' || expression.operator === '||=') {
+    context.includes.add('flight/boolean.hpp');
+    const condition =
+      expression.operator === '&&=' ? `flight::to_boolean(${current})` : `!flight::to_boolean(${current})`;
+    return `([&]() { auto&& ${receiver} = ${receiverExpression}; const auto ${index} = ${indexExpression}; const auto ${current} = ${receiver}.get_index(${index}); if (${condition}) { const auto ${value} = ${right}; return ${receiver}.set_index(${index}, ${value}); } return ${current}; }())`;
+  }
+
+  const rightValue = getGeneratedTargetName('typedRight', context);
+  const operation = emitCppTypedArrayAssignmentOperationCpp(expression.operator, current, rightValue, context);
+  return `([&]() { auto&& ${receiver} = ${receiverExpression}; const auto ${index} = ${indexExpression}; const auto ${current} = ${receiver}.get_index(${index}); const auto ${rightValue} = ${right}; const auto ${value} = ${operation}; return ${receiver}.set_index(${index}, ${value}); }())`;
+}
+
+function emitCppTypedArrayAssignmentOperationCpp(
+  operator: Exclude<Extract<IrExpression, { kind: 'assignment' }>['operator'], '=' | '&&=' | '??=' | '||='>,
+  current: string,
+  right: string,
+  context: EmitContext,
+): string {
+  if (operator === '**=') return `flight::power(${current}, ${right})`;
+  if (operator === '%=') {
+    context.includes.add('cmath');
+    return `std::fmod(${current}, ${right})`;
+  }
+  if (operator === '>>>=') return `flight::unsigned_right_shift(${current}, ${right})`;
+  const bitwiseOperator = getCppBitwiseAssignmentOperator(operator);
+  if (bitwiseOperator) return emitBitwiseOperationCpp(bitwiseOperator, current, right);
+  if (operator === '+=' || operator === '-=' || operator === '*=' || operator === '/=') {
+    return `${current} ${operator.slice(0, -1)} ${right}`;
+  }
+  return emissionError(context, `operator ${operator} on a typed-array element requires numeric C++ lowering`);
+}
+
 function emitCppDenseArraySequentialAppendAssignmentCpp(
   expression: Readonly<IrExpression>,
   right: string,
@@ -17622,8 +17685,10 @@ function emitCppVariantIndexedElementAccessCpp(
     emissionError(context, 'variant indexed access requires concrete common element type evidence');
   }
   context.includes.add('variant');
+  const sourceName = getGeneratedTargetName('indexedSource', context);
+  const index = getGeneratedTargetName('indexedIndex', context);
   const receiver = getGeneratedTargetName('indexedReceiver', context);
-  return `std::visit([&](const auto& ${receiver}) -> ${emitType(valueType, context)} { return ${receiver}.element(${emitExpression(expression.index, context)}); }, ${source})`;
+  return `([&]() -> ${emitType(valueType, context)} { auto&& ${sourceName} = ${source}; const auto ${index} = ${emitExpression(expression.index, context)}; return std::visit([&](const auto& ${receiver}) -> ${emitType(valueType, context)} { if constexpr (requires { ${receiver}.get_index(${index}); }) return ${receiver}.get_index(${index}); else return ${receiver}.element(${index}); }, ${sourceName}); }())`;
 }
 
 function getCppVariantIndexedElementTypeCpp(
@@ -17654,21 +17719,34 @@ function getCppVariantIndexedElementTypeCpp(
 
 function emitCppVariantIndexedAssignmentCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
-  operator: string,
+  operator: Extract<IrExpression, { kind: 'assignment' }>['operator'],
   right: string,
   context: EmitContext,
 ): string | undefined {
   const receiverSource = getCppVariantIndexedReceiverCpp(expression, context);
   if (!receiverSource) return undefined;
-  if (operator !== '=') {
-    emissionError(context, 'compound assignment through a variant indexed receiver requires coercion-aware lowering');
-  }
   context.includes.add('variant');
   const source = getGeneratedTargetName('indexedSource', context);
   const index = getGeneratedTargetName('indexedIndex', context);
   const value = getGeneratedTargetName('indexedValue', context);
   const receiver = getGeneratedTargetName('indexedReceiver', context);
-  return `([&]() { auto&& ${source} = ${receiverSource}; const auto ${index} = ${emitExpression(expression.index, context)}; const auto ${value} = ${right}; std::visit([&](auto& ${receiver}) { ${receiver}.element(${index}) = ${value}; }, ${source}); return ${value}; }())`;
+  const store = `std::visit([&](auto& ${receiver}) { if constexpr (requires { ${receiver}.set_index(${index}, ${value}); }) ${receiver}.set_index(${index}, ${value}); else ${receiver}.element(${index}) = ${value}; }, ${source});`;
+  if (operator === '=') {
+    return `([&]() { auto&& ${source} = ${receiverSource}; const auto ${index} = ${emitExpression(expression.index, context)}; const auto ${value} = ${right}; ${store} return ${value}; }())`;
+  }
+  if (operator === '??=') {
+    emissionError(context, 'operator ??= through a variant indexed receiver requires absent-index lowering');
+  }
+  const current = getGeneratedTargetName('indexedCurrent', context);
+  const read = `std::visit([&](const auto& ${receiver}) -> double { if constexpr (requires { ${receiver}.get_index(${index}); }) return ${receiver}.get_index(${index}); else return ${receiver}.element(${index}); }, ${source})`;
+  if (operator === '&&=' || operator === '||=') {
+    context.includes.add('flight/boolean.hpp');
+    const condition = operator === '&&=' ? `flight::to_boolean(${current})` : `!flight::to_boolean(${current})`;
+    return `([&]() { auto&& ${source} = ${receiverSource}; const auto ${index} = ${emitExpression(expression.index, context)}; const auto ${current} = ${read}; if (${condition}) { const auto ${value} = ${right}; ${store} return ${value}; } return ${current}; }())`;
+  }
+  const rightValue = getGeneratedTargetName('indexedRight', context);
+  const operation = emitCppTypedArrayAssignmentOperationCpp(operator, current, rightValue, context);
+  return `([&]() { auto&& ${source} = ${receiverSource}; const auto ${index} = ${emitExpression(expression.index, context)}; const auto ${current} = ${read}; const auto ${rightValue} = ${right}; const auto ${value} = ${operation}; ${store} return ${value}; }())`;
 }
 
 function emitCppStructuralWriteProxyConstructionCpp(
@@ -19034,6 +19112,17 @@ function hasIndexedRuntimeReceiverCpp(
   if (!type) return false;
   const plan = context.referenceRepresentationPlanner.plan(type, context.module);
   return plan.kind === 'represented' && (plan.category === 'array' || plan.category === 'typedArray');
+}
+
+function hasOnlyCppTypedArrayIndexedReceiversCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): boolean {
+  if (expression.semantics.receivers.every((receiver) => cppTypedArrayReceiverNames.has(receiver))) return true;
+  const type = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  if (!type) return false;
+  const plan = context.referenceRepresentationPlanner.plan(type, context.module);
+  return plan.kind === 'represented' && plan.category === 'typedArray';
 }
 
 function hasCppRegExpExecArrayIndexedReceiverCpp(
@@ -21036,6 +21125,18 @@ const cppUnexpandedTypeScriptUtilityAliases = new Set([
 const cppOptionalArrayMethods = new Set(['find', 'shift', 'pop']);
 
 const cppArraySelfReturningMethods = new Set(['fill', 'reverse', 'sort']);
+
+const cppTypedArrayReceiverNames = new Set<IrIndexedReceiver>([
+  'float32Array',
+  'float64Array',
+  'int8Array',
+  'int16Array',
+  'int32Array',
+  'uint8Array',
+  'uint8ClampedArray',
+  'uint16Array',
+  'uint32Array',
+]);
 
 const cppMathSpreadFoldTargets: Readonly<Record<string, { algorithm: string; identity: string; runtime: string }>> = {
   max: {

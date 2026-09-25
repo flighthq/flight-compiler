@@ -20,48 +20,48 @@ inline flight::Int8Array signed_range_construction(std::optional<double> divisor
 
 inline flight::Uint8Array unsigned_modulo_writes() {
   flight::Uint8Array values = flight::Uint8Array(5.0);
-  (values.element(0.0) = 300.0);
-  (values.element(1.0) = -1.0);
-  (values.element(2.0) = 1.0);
-  (values.element(2.0) += 257.0);
-  (values.element(3.0) = 255.0);
-  (values.element(3.0) += 2.0);
-  (values.element(4.0) = 250.0);
-  ([&]() { auto&& assignment_target = values.element(4.0); assignment_target = std::fmod(assignment_target, 64.0); return assignment_target; }());
+  ([&]() { auto&& typed_array = values; const auto typed_index = 0.0; const auto typed_value = 300.0; return typed_array.set_index(typed_index, typed_value); }());
+  ([&]() { auto&& typed_array_2 = values; const auto typed_index_2 = 1.0; const auto typed_value_2 = -1.0; return typed_array_2.set_index(typed_index_2, typed_value_2); }());
+  ([&]() { auto&& typed_array_3 = values; const auto typed_index_3 = 2.0; const auto typed_value_3 = 1.0; return typed_array_3.set_index(typed_index_3, typed_value_3); }());
+  ([&]() { auto&& typed_array_4 = values; const auto typed_index_4 = 2.0; const auto typed_current = typed_array_4.get_index(typed_index_4); const auto typed_right = 257.0; const auto typed_value_4 = typed_current + typed_right; return typed_array_4.set_index(typed_index_4, typed_value_4); }());
+  ([&]() { auto&& typed_array_5 = values; const auto typed_index_5 = 3.0; const auto typed_value_5 = 255.0; return typed_array_5.set_index(typed_index_5, typed_value_5); }());
+  ([&]() { auto&& typed_array_6 = values; const auto typed_index_6 = 3.0; const auto typed_current_2 = typed_array_6.get_index(typed_index_6); const auto typed_right_2 = 2.0; const auto typed_value_6 = typed_current_2 + typed_right_2; return typed_array_6.set_index(typed_index_6, typed_value_6); }());
+  ([&]() { auto&& typed_array_7 = values; const auto typed_index_7 = 4.0; const auto typed_value_7 = 250.0; return typed_array_7.set_index(typed_index_7, typed_value_7); }());
+  ([&]() { auto&& typed_array_8 = values; const auto typed_index_8 = 4.0; const auto typed_current_3 = typed_array_8.get_index(typed_index_8); const auto typed_right_3 = 64.0; const auto typed_value_8 = std::fmod(typed_current_3, typed_right_3); return typed_array_8.set_index(typed_index_8, typed_value_8); }());
   return values;
 }
 
 inline flight::Uint8ClampedArray clamped_ties() {
   flight::Uint8ClampedArray values = flight::Uint8ClampedArray(6.0);
-  (values.element(0.0) = 0.5);
-  (values.element(1.0) = 1.5);
-  (values.element(2.0) = 2.5);
-  (values.element(3.0) = 3.5);
-  (values.element(4.0) = 254.5);
-  (values.element(5.0) = 255.5);
+  ([&]() { auto&& typed_array_9 = values; const auto typed_index_9 = 0.0; const auto typed_value_9 = 0.5; return typed_array_9.set_index(typed_index_9, typed_value_9); }());
+  ([&]() { auto&& typed_array_10 = values; const auto typed_index_10 = 1.0; const auto typed_value_10 = 1.5; return typed_array_10.set_index(typed_index_10, typed_value_10); }());
+  ([&]() { auto&& typed_array_11 = values; const auto typed_index_11 = 2.0; const auto typed_value_11 = 2.5; return typed_array_11.set_index(typed_index_11, typed_value_11); }());
+  ([&]() { auto&& typed_array_12 = values; const auto typed_index_12 = 3.0; const auto typed_value_12 = 3.5; return typed_array_12.set_index(typed_index_12, typed_value_12); }());
+  ([&]() { auto&& typed_array_13 = values; const auto typed_index_13 = 4.0; const auto typed_value_13 = 254.5; return typed_array_13.set_index(typed_index_13, typed_value_13); }());
+  ([&]() { auto&& typed_array_14 = values; const auto typed_index_14 = 5.0; const auto typed_value_14 = 255.5; return typed_array_14.set_index(typed_index_14, typed_value_14); }());
   return values;
 }
 
 inline flight::Float32Array float32_overflow() {
   flight::Float32Array values = flight::Float32Array(2.0);
-  (values.element(0.0) = 3.5e+38);
-  (values.element(1.0) = -3.5e+38);
+  ([&]() { auto&& typed_array_15 = values; const auto typed_index_15 = 0.0; const auto typed_value_15 = 3.5e+38; return typed_array_15.set_index(typed_index_15, typed_value_15); }());
+  ([&]() { auto&& typed_array_16 = values; const auto typed_index_16 = 1.0; const auto typed_value_16 = -3.5e+38; return typed_array_16.set_index(typed_index_16, typed_value_16); }());
   return values;
 }
 
 inline flight::Uint8Array subarray_aliases_storage() {
   flight::Uint8Array source = flight::Uint8Array(flight::Array{1.0, 2.0, 3.0, 4.0});
   flight::Uint8Array view = source.subarray(1.0, 3.0);
-  (view.element(0.0) = 9.0);
-  (source.element(2.0) = 8.0);
+  ([&]() { auto&& typed_array_17 = view; const auto typed_index_17 = 0.0; const auto typed_value_17 = 9.0; return typed_array_17.set_index(typed_index_17, typed_value_17); }());
+  ([&]() { auto&& typed_array_18 = source; const auto typed_index_18 = 2.0; const auto typed_value_18 = 8.0; return typed_array_18.set_index(typed_index_18, typed_value_18); }());
   return source;
 }
 
 inline flight::Uint8Array slice_copies_storage() {
   flight::Uint8Array source = flight::Uint8Array(flight::Array{1.0, 2.0, 3.0, 4.0});
   flight::Uint8Array copy = source.slice(1.0, 3.0);
-  (copy.element(0.0) = 9.0);
-  (source.element(2.0) = 8.0);
+  ([&]() { auto&& typed_array_19 = copy; const auto typed_index_19 = 0.0; const auto typed_value_19 = 9.0; return typed_array_19.set_index(typed_index_19, typed_value_19); }());
+  ([&]() { auto&& typed_array_20 = source; const auto typed_index_20 = 2.0; const auto typed_value_20 = 8.0; return typed_array_20.set_index(typed_index_20, typed_value_20); }());
   return copy;
 }
 
@@ -74,8 +74,8 @@ inline flight::Uint8Array buffer_backed_views_share_storage() {
   flight::ArrayBuffer buffer = flight::ArrayBuffer(4.0);
   flight::Uint8Array whole = flight::Uint8Array(buffer);
   flight::Uint8Array middle = flight::Uint8Array(buffer, 1.0, 2.0);
-  (middle.element(0.0) = 9.0);
-  (middle.element(1.0) = 8.0);
+  ([&]() { auto&& typed_array_21 = middle; const auto typed_index_21 = 0.0; const auto typed_value_21 = 9.0; return typed_array_21.set_index(typed_index_21, typed_value_21); }());
+  ([&]() { auto&& typed_array_22 = middle; const auto typed_index_22 = 1.0; const auto typed_value_22 = 8.0; return typed_array_22.set_index(typed_index_22, typed_value_22); }());
   return whole;
 }
 
@@ -85,7 +85,7 @@ inline flight::Uint8Array data_view_aliases_typed_array() {
   view.set_uint32(0.0, 16909060.0);
   view.set_uint16(4.0, 1286.0, true);
   const bool matches = (((((view.get_uint32(0.0) == 16909060.0) && (view.get_uint16(4.0, true) == 1286.0)) && (static_cast<double>(view.byte_length) == 6.0)) && (static_cast<double>(view.byte_offset) == 1.0)) && (view.buffer == bytes.buffer));
-  (bytes.element(7.0) = (matches ? 1.0 : 0.0));
+  ([&]() { auto&& typed_array_23 = bytes; const auto typed_index_23 = 7.0; const auto typed_value_23 = (matches ? 1.0 : 0.0); return typed_array_23.set_index(typed_index_23, typed_value_23); }());
   return bytes;
 }
 
