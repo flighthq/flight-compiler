@@ -103,7 +103,8 @@ export function createCppUnionRepresentationPlan(
         targetType: slot.targetType,
       };
     });
-  const collisions = createCppUnionTargetCollisions(mergeCppTupleArrayRuntimeSlots(valueSlots));
+  const mergedValueSlots = mergeCppTupleArrayRuntimeSlots(valueSlots);
+  const collisions = createCppUnionTargetCollisions(mergedValueSlots);
   if (collisions.length > 0) {
     return cloneCppUnionRepresentationPlan({
       collisions,
@@ -112,7 +113,7 @@ export function createCppUnionRepresentationPlan(
     });
   }
 
-  const plan = createCppUnionRepresentationSuccess(valueSlots, inventory.hasNull, inventory.hasUndefined);
+  const plan = createCppUnionRepresentationSuccess(mergedValueSlots, inventory.hasNull, inventory.hasUndefined);
   return cloneCppUnionRepresentationPlan(plan);
 }
 
