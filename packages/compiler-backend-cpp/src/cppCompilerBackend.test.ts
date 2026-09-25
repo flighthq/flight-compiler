@@ -113,6 +113,21 @@ function lower(file: string, source: string) {
   return lowerPackage('@flighthq/math', file, source);
 }
 
+// The plan a star re-export needs: one edge per module the chain names, under the specifier the module
+// that wrote the import used, so a barrel resolves from the module that wrote it rather than from the
+// module being emitted.
+function cppStarResolution(
+  edges: readonly Readonly<{ module: IrModule; specifier: string }>[],
+): CompilerModuleResolutionPlan {
+  return {
+    edges: edges.map((edge) => ({
+      specifier: edge.specifier,
+      target: { packageName: edge.module.packageName, source: edge.module.source },
+    })),
+    schema: 'flight-compiler-module-resolution/1',
+  };
+}
+
 function lowerPackage(packageName: string, file: string, source: string) {
   const packageDirectory = packageName.slice(packageName.lastIndexOf('/') + 1);
   const sourceFile = ts.createSourceFile(
@@ -22963,6 +22978,184 @@ describe('emitIrModuleCpp reexport emission', () => {
     });
     const emitted = session.emitModule(facade);
     expect(emitted[0]?.contents).toContain('using');
+  });
+
+  it('brings a cross-package export-all in by name through the target package namespace', () => {
+    const target = lowerPackage(
+      '@flighthq/types',
+      'shape.ts',
+      'export interface Shape { area: number }\nexport function area(shape: Shape): number { return shape.area; }',
+    ).module;
+    const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/types/shape';").module;
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/shape',
+          target: { packageName: '@flighthq/types', source: target.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules: [facade, target],
+      options: {},
+    });
+
+    const contents = session.emitModule(facade)[0]?.contents ?? '';
+
+    // One using per discovered name, in the namespace the target package owns.
+    expect(contents).toContain('using flighthq_types::Shape;');
+    expect(contents).toContain('using flighthq_types::area;');
+    // The barrel has to include the module it re-exports from.
+    expect(contents).toContain('shape.hpp');
+  });
+
+  it('reaches through a same-package barrel to the module that declares the name', () => {
+    const vector = lowerPackage('@flighthq/math', 'vector.ts', 'export interface Vector { x: number }').module;
+    const barrel = lowerPackage('@flighthq/math', 'index.ts', "export * from './vector.js';").module;
+    const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/math';").module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: cppStarResolution([
+        { module: vector, specifier: './vector.js' },
+        { module: barrel, specifier: '@flighthq/math' },
+      ]),
+      modules: [facade, barrel, vector],
+      options: {},
+    });
+
+    const contents = session.emitModule(facade)[0]?.contents ?? '';
+
+    // The name is declared in vector.ts, so the using-declaration names the package namespace once.
+    expect(contents).toContain('using flighthq_math::Vector;');
+    // The barrel has no header of its own -- an index module folds into its package aggregate -- so the
+    // include names that aggregate, which is what carries the declaration transitively.
+    expect(contents).toContain('#include "_internal_index.hpp"');
+  });
+
+  it('crosses a second package boundary when the target barrel re-exports from it', () => {
+    const vector = lowerPackage('@flighthq/math', 'vector.ts', 'export interface Vector { x: number }').module;
+    const facadeOfTypes = lowerPackage('@flighthq/types', 'index.ts', "export * from '@flighthq/math/vector';").module;
+    const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/types';").module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: cppStarResolution([
+        { module: vector, specifier: '@flighthq/math/vector' },
+        { module: facadeOfTypes, specifier: '@flighthq/types' },
+      ]),
+      modules: [facade, facadeOfTypes, vector],
+      options: {},
+    });
+
+    const contents = session.emitModule(facade)[0]?.contents ?? '';
+
+    // The declaring package owns the namespace, whichever package is named in the source.
+    expect(contents).toContain('using flighthq_math::Vector;');
+    expect(contents).not.toContain('flighthq_types::Vector');
+    // Reachability is carried by includes rather than by re-declaration: the intermediate barrel includes
+    // the declaring module, and the facade's include of that barrel reaches it transitively.
+    expect(session.emitModule(facadeOfTypes)[0]?.contents ?? '').toContain('vector.hpp');
+    expect(contents).toContain('#include "_internal_index.hpp"');
+  });
+
+  it('emits nothing for a same-package export-all, which needs no declaration', () => {
+    const other = lowerPackage('@flighthq/core', 'other.ts', 'export interface Shape { area: number }').module;
+    const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from './other.js';").module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: cppStarResolution([{ module: other, specifier: './other.js' }]),
+      modules: [facade, other],
+      options: {},
+    });
+
+    const contents = session.emitModule(facade)[0]?.contents ?? '';
+
+    // One package is one C++ namespace, so a name the target exports is already spelled the way this
+    // module's consumers spell it.
+    expect(contents).not.toContain('using flighthq_');
+    expect(contents).toContain('other.hpp');
+  });
+
+  it('refuses a name two star targets both export', () => {
+    const first = lowerPackage('@flighthq/other', 'first.ts', 'export function area(): number { return 1; }').module;
+    const second = lowerPackage('@flighthq/other', 'second.ts', 'export function area(): number { return 2; }').module;
+    const barrel = lowerPackage(
+      '@flighthq/types',
+      'index.ts',
+      "export * from '@flighthq/other/first';\nexport * from '@flighthq/other/second';",
+    ).module;
+    const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/types';").module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: cppStarResolution([
+        { module: first, specifier: '@flighthq/other/first' },
+        { module: second, specifier: '@flighthq/other/second' },
+        { module: barrel, specifier: '@flighthq/types' },
+      ]),
+      modules: [facade, barrel, first, second],
+      options: {},
+    });
+
+    const failure = captureBackendEmissionFailure(() => session.emitModule(facade));
+
+    expect(failure.rule).toBe('cpp-export-all-ambiguous');
+    expect(failure.message).toContain('area');
+  });
+
+  it('refuses a renamed re-export it cannot reproduce as a using-declaration', () => {
+    const vector = lowerPackage('@flighthq/math', 'vector.ts', 'export function area(): number { return 1; }').module;
+    const barrel = lowerPackage(
+      '@flighthq/types',
+      'index.ts',
+      "export { area as measure } from '@flighthq/math/vector';",
+    ).module;
+    const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/types';").module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: cppStarResolution([
+        { module: vector, specifier: '@flighthq/math/vector' },
+        { module: barrel, specifier: '@flighthq/types' },
+      ]),
+      modules: [facade, barrel, vector],
+      options: {},
+    });
+
+    const failure = captureBackendEmissionFailure(() => session.emitModule(facade));
+
+    // Naming the declaration behind the alias would publish `area` where the source published `measure`.
+    expect(failure.rule).toBe('cpp-export-all-renamed');
+  });
+
+  it('refuses a namespace export a using-declaration cannot carry across the boundary', () => {
+    const vector = lowerPackage('@flighthq/math', 'vector.ts', 'export interface Vector { x: number }').module;
+    const barrel = lowerPackage(
+      '@flighthq/types',
+      'index.ts',
+      "export * as vectorNamespace from '@flighthq/math/vector';",
+    ).module;
+    const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/types';").module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: cppStarResolution([
+        { module: vector, specifier: '@flighthq/math/vector' },
+        { module: barrel, specifier: '@flighthq/types' },
+      ]),
+      modules: [facade, barrel, vector],
+      options: {},
+    });
+
+    const failure = captureBackendEmissionFailure(() => session.emitModule(facade));
+
+    expect(failure.rule).toBe('cpp-export-all-namespace');
+  });
+
+  it('names the namespace the profile installs for the target package', () => {
+    const vector = lowerPackage('@flighthq/math', 'vector.ts', 'export interface Vector { x: number }').module;
+    const facade = lowerPackage('@flighthq/core', 'index.ts', "export * from '@flighthq/math/vector';").module;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: cppStarResolution([{ module: vector, specifier: '@flighthq/math/vector' }]),
+      modules: [facade, vector],
+      options: { packageTargets: { '@flighthq/math': { includePrefix: 'flight/math', namespace: 'flight::math' } } },
+    });
+
+    const contents = session.emitModule(facade)[0]?.contents ?? '';
+
+    expect(contents).toContain('using flight::math::Vector;');
   });
 });
 

@@ -19524,10 +19524,10 @@ function emitReexportsCpp(module: Readonly<IrModule>, context: EmitContext): str
     }
     if (exported.kind === 'all') {
       const targetModule = getCppResolvedImportModule(exported.specifier, context);
-      if (targetModule && targetModule.packageName !== module.packageName) {
-        emissionError(context, 'cross-package export-all requires explicit named reexports for C++');
-      }
-      return [];
+      // A same-package star re-export needs no declaration: every module of a package shares one C++ namespace,
+      // so a name the target exports is already spelled the way this module's consumers will spell it.
+      if (!targetModule || targetModule.packageName === module.packageName) return [];
+      return emitCppCrossPackageStarReexports(targetModule, context);
     }
     if (exported.kind !== 'reexport') return [];
     const targetModule = getCppResolvedImportModule(exported.specifier, context);
@@ -20717,6 +20717,156 @@ function getCppNamespaceImportMemberTargetNameCpp(
     return `${namespaceName}::${targetName}`;
   }
   return undefined;
+}
+
+// A star re-export that leaves its package has to name what it re-exports.
+//
+// A C++ namespace boundary is unforgiving: a name declared in another package's namespace is reachable in this
+// one only by naming it, so `export *` becomes one using-declaration per name. Discovery is generic -- it walks
+// the target's own exports, follows the target's star re-exports transitively through the module-resolution
+// plan, and resolves every name to the declaration that provides it -- so no package name is written here and
+// no source is rewritten. The resolved chain decides the namespaces and the spellings.
+interface CppStarReexportOrigin {
+  readonly bindingId: string;
+  readonly declaration: Readonly<IrDeclaration> | undefined;
+  readonly module: Readonly<IrModule>;
+  readonly name: string;
+}
+
+function emitCppCrossPackageStarReexports(target: Readonly<IrModule>, context: EmitContext): string[] {
+  const origins = collectCppStarReexportOrigins(target, context, new Set([getCppModuleIdentityKey(context.module)]));
+  const lines: string[] = [];
+  for (const name of [...origins.keys()].sort(compareTextCodeUnits)) {
+    lines.push(...emitCppStarReexportLines(getCppSingleStarReexportOrigin(origins.get(name), name, context), context));
+  }
+  return lines;
+}
+
+// A using-declaration may only name a spelling the target actually has, so it is written once per lane the
+// declaration occupies: a class or enum is one name usable as both type and value, an interface or type alias
+// exists only as a type, and a function or constant only as a value. The two lanes can name one declaration
+// differently, which is why the spellings are collected rather than assumed equal.
+function emitCppStarReexportLines(origin: Readonly<CppStarReexportOrigin>, context: EmitContext): string[] {
+  const namespace = getCppCompilerPackageNamespace(origin.module.packageName, context.options.packageTargets);
+  const spaces: readonly ('type' | 'value')[] =
+    origin.declaration === undefined
+      ? ['type', 'value']
+      : origin.declaration.kind === 'class' || origin.declaration.kind === 'enum'
+        ? ['type', 'value']
+        : origin.declaration.kind === 'function' || origin.declaration.kind === 'variable'
+          ? ['value']
+          : ['type'];
+  const spellings = new Set(
+    spaces.map((space) => getCppResolvedExportTargetName(origin.module, origin.name, space, context)),
+  );
+  return [...spellings].sort(compareTextCodeUnits).map((spelling) => `using ${namespace}::${spelling};`);
+}
+
+function getCppSingleStarReexportOrigin(
+  declarations: ReadonlyMap<string, Readonly<CppStarReexportOrigin>> | undefined,
+  name: string,
+  context: EmitContext,
+): Readonly<CppStarReexportOrigin> {
+  const resolved = declarations === undefined ? [] : [...declarations.values()];
+  const first = resolved[0];
+  if (first === undefined) {
+    emissionError(
+      context,
+      `cross-package export-all re-exports ${name}, which no resolved module declares`,
+      'cpp-export-all-unresolved',
+    );
+  }
+  // Two declarations of one name is the ambiguity a star re-export cannot resolve: C++ would have to
+  // choose, and the source did not.
+  if (resolved.length > 1) {
+    emissionError(
+      context,
+      `cross-package export-all re-exports ${name} from more than one declaration`,
+      'cpp-export-all-ambiguous',
+    );
+  }
+  return first;
+}
+
+// Every name the module's own exports put on its public surface, mapped to the declarations that provide
+// them. A name reached from two declarations keeps both, so the caller can refuse rather than pick.
+function collectCppStarReexportOrigins(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+  visiting: ReadonlySet<string>,
+): Map<string, Map<string, CppStarReexportOrigin>> {
+  const origins = new Map<string, Map<string, CppStarReexportOrigin>>();
+  const moduleKey = getCppModuleIdentityKey(module);
+  if (visiting.has(moduleKey)) return origins;
+  const nextVisiting = new Set(visiting);
+  nextVisiting.add(moduleKey);
+  // A relative specifier resolves against the module that wrote it, so the walking context follows the walk.
+  const moduleContext = module === context.module ? context : { ...context, module };
+  const record = (name: string, origin: Readonly<CppStarReexportOrigin>): void => {
+    const declarations = origins.get(name) ?? new Map<string, CppStarReexportOrigin>();
+    declarations.set(origin.bindingId, origin);
+    origins.set(name, declarations);
+  };
+  for (const exported of module.exports) {
+    // `export *` never carries a default export, so a star re-export does not either.
+    if (exported.kind === 'default') continue;
+    if (exported.kind === 'all') {
+      const starTarget = getCppResolvedImportModule(exported.specifier, moduleContext);
+      // An unresolvable specifier names no known export, so there is nothing here to lower or to refuse:
+      // the module-resolution plan owns that gap.
+      if (starTarget === undefined) continue;
+      for (const [name, declarations] of collectCppStarReexportOrigins(starTarget, context, nextVisiting)) {
+        for (const origin of declarations.values()) record(name, origin);
+      }
+      continue;
+    }
+    if (exported.kind === 'namespace') {
+      // This compiler publishes a namespace export as a namespace alias, which is not a member of the
+      // namespace that owns it, so no using-declaration can carry it across the boundary.
+      emissionError(
+        context,
+        `cross-package export-all re-exports the namespace ${exported.exported}`,
+        'cpp-export-all-namespace',
+      );
+    }
+    if (exported.kind === 'local') {
+      record(exported.exported, {
+        bindingId: exported.binding.id,
+        declaration: module.declarations.find(
+          (candidate) => 'binding' in candidate && candidate.binding.id === exported.binding.id,
+        ),
+        module,
+        name: exported.exported,
+      });
+      continue;
+    }
+    // A rename would have to be reproduced as an alias in the exporter's namespace, and naming the
+    // declaration behind it instead would publish a different spelling than the source did.
+    if (exported.exported !== exported.imported) {
+      emissionError(
+        context,
+        `cross-package export-all re-exports ${exported.imported} under the name ${exported.exported}, which a using-declaration cannot reproduce`,
+        'cpp-export-all-renamed',
+      );
+    }
+    const namedTarget = getCppResolvedImportModule(exported.specifier, moduleContext);
+    if (namedTarget === undefined) {
+      emissionError(
+        context,
+        `cross-package export-all re-exports ${exported.exported}, whose module did not resolve`,
+        'cpp-export-all-unresolved',
+      );
+    }
+    record(
+      exported.exported,
+      getCppSingleStarReexportOrigin(
+        collectCppStarReexportOrigins(namedTarget, context, nextVisiting).get(exported.imported),
+        exported.imported,
+        context,
+      ),
+    );
+  }
+  return origins;
 }
 
 function getCppResolvedExportTargetName(
