@@ -21733,6 +21733,35 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
   return context.targetNames.get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
 }
 
+// The members more than one conjunct declares at different representations, in canonical order. An
+// intersection has one type per member and two disagreements have none at all, so a member named here is
+// what the source has to reconcile.
+//
+// Compared as alias-resolved value representations, because two spellings of one type are one type: the
+// planner accepts those conjuncts, and a diagnostic that called them a conflict would send a reader to
+// rewrite a declaration that is already correct. Optionality is deliberately not compared -- `a?: T` and
+// `a: T` intersect to `a: T`, which the planner merges -- so only the member's type decides.
+function collectCppIntersectionConflictingMemberNamesCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  context: EmitContext,
+): readonly string[] {
+  const spellingContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set() };
+  const declared = new Map<string, string>();
+  const conflicting = new Set<string>();
+  for (const member of type.types) {
+    const properties = context.referenceRepresentationPlanner.resolveObjectShape(member, context.module);
+    if (!properties) continue;
+    for (const property of properties) {
+      if (property.phantom) continue;
+      const emitted = emitCppAliasResolvedValueTypeCpp(property.type, spellingContext);
+      const existing = declared.get(property.name);
+      if (existing === undefined) declared.set(property.name, emitted);
+      else if (existing !== emitted) conflicting.add(property.name);
+    }
+  }
+  return [...conflicting].sort(compareTextCodeUnits);
+}
+
 // Why a `Partial<T>` has no C++ shape to build, in the terms the author can act on. The subject is named
 // by what it IS rather than by the spelling it arrived in: an alias or an import resolves before this, so
 // a reader who expects to see their own type name here is looking at the resolved form, which is the one
