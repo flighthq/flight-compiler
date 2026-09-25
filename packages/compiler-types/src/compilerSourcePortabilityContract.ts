@@ -1,5 +1,5 @@
-import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 import type { CompilerSourceFingerprint } from './compilerSourceFingerprint.js';
+import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 
 export interface CompilerSourcePortabilityFinding {
   readonly column: number;

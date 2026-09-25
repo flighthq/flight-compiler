@@ -70,6 +70,7 @@ const packageRules: Readonly<Record<string, PackageRule>> = {
       'compiler-check',
       'compiler-inventory',
       'compiler-orchestration',
+      'compiler-semantic',
       'compiler-types',
     ],
     description: 'Pointing the compiler at a directory of TypeScript',
