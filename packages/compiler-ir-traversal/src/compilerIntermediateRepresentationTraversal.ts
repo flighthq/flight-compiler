@@ -339,6 +339,9 @@ function analyzeIrExpressionTraversal(
       break;
     case 'property':
       analyzeIrExpressionTraversal(expression.object, observer, createIrTraversalPath(path, 'object'));
+      if (expression.narrowedType) {
+        analyzeIrTypeTraversal(expression.narrowedType, observer, createIrTraversalPath(path, 'narrowedType'));
+      }
       if (expression.type) {
         analyzeIrTypeTraversal(expression.type, observer, createIrTraversalPath(path, 'type'));
       }
@@ -393,6 +396,10 @@ function analyzeIrExpressionTraversal(
       analyzeIrTypeTraversal(expression.type, observer, createIrTraversalPath(path, 'type'));
       break;
     case 'identifier':
+      if (expression.narrowedType) {
+        analyzeIrTypeTraversal(expression.narrowedType, observer, createIrTraversalPath(path, 'narrowedType'));
+      }
+      break;
     case 'literal':
     case 'regexp':
       break;

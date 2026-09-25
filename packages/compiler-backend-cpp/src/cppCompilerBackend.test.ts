@@ -1442,6 +1442,123 @@ describe('createCppCompilerBackend', () => {
     expect(agreed).toContain('std::visit([](const auto& value) { return value->value; }, input);');
   });
 
+  it('carries union member proof through anonymous aliases, guards, switches, and dotted names', () => {
+    const module = lower(
+      'union-flow-member.ts',
+      `type Outcome =
+         | { readonly reason: 'ok'; readonly value: number }
+         | { readonly reason: 'operation-failed'; readonly releaseFailed: boolean };
+       type Shape =
+         | { readonly kind: 'circle'; readonly radius: number }
+         | { readonly kind: 'polygon'; readonly points: number };
+       type Binding =
+         | { readonly kind: 'color'; readonly color: number }
+         | { readonly kind: 'line'; readonly line: number }
+         | { readonly kind: 'gradient'; readonly commandKey: string }
+         | { readonly kind: 'texture'; readonly commandKey: string };
+       interface Camera {
+         readonly projection:
+           | { readonly kind: 'perspective'; readonly aspect: number }
+           | { readonly kind: 'orthographic'; readonly width: number };
+       }
+       export function readIn(outcome: Outcome): number {
+         if ('value' in outcome) return outcome.value;
+         return outcome.releaseFailed ? 1 : 0;
+       }
+       export function readShortCircuit(outcome: Outcome): boolean {
+         return outcome.reason === 'operation-failed' && outcome.releaseFailed;
+       }
+       export function readSwitch(shape: Shape): number {
+         switch (shape.kind) {
+           case 'circle': return shape.radius;
+           case 'polygon': return shape.points;
+         }
+       }
+       export function readPriorGuard(shape: Shape): number {
+         if (shape.kind !== 'circle') return shape.points;
+         return shape.radius;
+       }
+       export function readAlias(input: Shape): number {
+         const shape = input;
+         if (shape.kind === 'circle') return shape.radius;
+         return shape.points;
+       }
+       export function readDotted(camera: Camera): number {
+         return camera.projection.kind === 'perspective' ? camera.projection.aspect : 1;
+       }
+       export function readRemainingCommon(binding: Binding): string {
+         if (binding.kind === 'color') return 'color';
+         if (binding.kind === 'line') return 'line';
+         return binding.commandKey;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('release_failed');
+    expect(emitted).toContain('radius');
+    expect(emitted).toContain('points');
+    expect(emitted).toContain('aspect');
+    expect(emitted).toContain('command_key');
+    expect(emitted).not.toContain('cpp-union-member-access-unguarded');
+  });
+
+  it('widens required, optional, and sentinel common properties through one variant visit', () => {
+    const module = lower(
+      'union-common-widened.ts',
+      `type Resolution =
+         | { readonly kind: 'ok'; readonly reason: null }
+         | { readonly kind: 'failed'; readonly reason: 'invalid' | 'unsupported' };
+       type ShareContent =
+         | { readonly kind: 'title'; readonly title: string }
+         | { readonly kind: 'text'; readonly title?: string; readonly text: string }
+         | { readonly kind: 'url'; readonly title?: string; readonly url: string };
+       export function failureReason(resolution: Resolution): null | string {
+         return resolution.reason;
+       }
+       export function title(content: ShareContent): string | undefined {
+         return content.title;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted.match(/std::visit/gu)).toHaveLength(2);
+    expect(emitted).toContain('std::remove_cvref_t<decltype(value)>');
+    expect(emitted).toContain('std::nullopt');
+  });
+
+  it('attributes an unproved asserted union member to source portability only for assertion syntax', () => {
+    const source = `interface Left { readonly tag: string }
+       interface Right { readonly tag: number }`;
+    const plain = lower(
+      'plain-union-member.ts',
+      `${source}
+       export function read(value: Left | Right): string | number { return value.tag; }`,
+    ).module;
+    const asserted = lower(
+      'asserted-union-member.ts',
+      `${source}
+       export function read(value: Left | Right): string | number {
+         return (value as Left | Right).tag;
+       }`,
+    ).module;
+
+    const plainFailure = captureBackendEmissionFailure(() => emitIrModuleCpp(plain, { runtimeProfile: 'flight-cpp' }));
+    const assertedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(asserted, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(plainFailure).toMatchObject({
+      classification: 'compiler-restriction',
+      rule: 'cpp-union-member-access-unguarded',
+    });
+    expect(assertedFailure).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-type-assertion-unidentified',
+    });
+  });
+
   it('stores an optional property that also admits null through one plan, and refuses two value domains', () => {
     // The real shape: `onFinished?: Signal<() => void> | null` from @flighthq/types. A `?` marker and a
     // `null` in the same type are two spellings of one three-state question, so the declaration and every
@@ -2524,13 +2641,23 @@ describe('createCppCompilerBackend', () => {
     const declaration = result.module.declarations.find(
       (candidate) => candidate.kind === 'function' && candidate.binding.name === 'firstName',
     );
-    const parameter = declaration?.kind === 'function' ? declaration.parameters[0] : undefined;
+    if (declaration?.kind !== 'function') throw new Error('Expected firstName function');
+    const parameter = declaration.parameters[0];
     if (parameter?.type.kind !== 'array' || parameter.type.element.kind !== 'union') {
       throw new Error('Expected union array parameter');
     }
     Object.assign(parameter.type, {
       element: { kind: 'union', types: [...parameter.type.element.types, { kind: 'null' }] },
     });
+    const forOf = declaration.body[0];
+    const returned = forOf?.kind === 'forOf' && forOf.body.kind === 'block' ? forOf.body.statements[1] : undefined;
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'property') {
+      throw new Error('Expected returned for-of member');
+    }
+    // This probe deliberately leaves only the legacy name after mutating the source union behind the
+    // lowerer's back. Exact flow evidence would correctly identify the original alternative, so remove
+    // it to keep the test scoped to the ambiguous name-only fallback.
+    delete (returned.expression.object as { narrowedType?: IrType }).narrowedType;
 
     expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrow(
       'narrowed member XmlElement must identify one C++ variant alternative',

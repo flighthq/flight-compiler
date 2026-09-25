@@ -7,6 +7,7 @@ import {
   createCompilerAmbientSurfaceSource,
 } from '../../compiler-ambient/src/index.js';
 import {
+  compareTextCodeUnits,
   normalizeCompilerStructuralValueCanonical,
   normalizePathPortable,
 } from '../../compiler-canonical-form/src/index.js';
@@ -1062,6 +1063,7 @@ function lowerExpression(
       kind: 'property',
       ...absent,
       ...member,
+      ...getTypeScriptPropertyNarrowedType(node, context),
       ...getTypeScriptAccessPresence(node, context),
       ...getTypeScriptNarrowedStructuralPropertyAccess(node, context),
       ...getTypeScriptValueNamespaceMemberReference(node, context),
@@ -7079,6 +7081,9 @@ function getTypeScriptUnionMemberTestEvidence(
   if (node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
     return getTypeScriptInstanceofUnionMemberTestEvidence(node.left, node.right, context);
   }
+  if (node.operatorToken.kind === ts.SyntaxKind.InKeyword) {
+    return getTypeScriptInUnionMemberTestEvidence(node.left, node.right, context);
+  }
   const whenResult =
     node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
     node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
@@ -7094,6 +7099,28 @@ function getTypeScriptUnionMemberTestEvidence(
     getTypeScriptDiscriminantUnionMemberTestEvidence(node.left, node.right, whenResult, context) ??
     getTypeScriptDiscriminantUnionMemberTestEvidence(node.right, node.left, whenResult, context)
   );
+}
+
+function getTypeScriptInUnionMemberTestEvidence(
+  property: ts.Expression,
+  test: ts.Expression,
+  context: LoweringContext,
+): IrUnionMemberTestEvidence | undefined {
+  if (!ts.isStringLiteralLike(property)) return undefined;
+  const subject = unwrapTypeScriptParenthesizedExpression(test);
+  if (!ts.isIdentifier(subject)) return undefined;
+  const source = getTypeScriptUnionBindingEvidence(subject, context);
+  if (!source) return undefined;
+  const matches = source.type.types.filter((member) => {
+    const shape = getIrTypeConstructionTargetShape(member, context);
+    const candidate =
+      shape?.kind === 'object'
+        ? shape.properties.find((memberProperty) => memberProperty.name === property.text)
+        : undefined;
+    // An optional declaration may be absent at runtime, so a false `in` result cannot exclude its arm.
+    return candidate !== undefined && !candidate.optional;
+  });
+  return matches.length === 1 ? { binding: source.binding, member: matches[0]!, whenResult: true } : undefined;
 }
 
 function getTypeScriptInstanceofUnionMemberTestEvidence(
@@ -7919,17 +7946,28 @@ function getIrTypeAbsentKindsSemantic(type: Readonly<IrType> | undefined): Reado
   return kinds;
 }
 
-// Which alternative of a union-typed binding this reference was proved to hold. The proof is the
-// checker's, not this compiler's: the declared type is a union of alternatives and the flow type
-// at this reference is exactly one of them. Named alternatives carry the type's own name;
-// primitive alternatives carry the primitive name the typeof operator would return. A union of
-// literals or of anonymous shapes has no member name to carry, so it is left unnarrowed rather
-// than described by a name a target cannot resolve.
+// Which part of a union-typed binding this reference was proved to hold. The full flow type carries
+// anonymous alternatives and a remaining subset; the older member name stays beside it for targets
+// whose closed-union projection is name based.
 function getTypeScriptReferenceNarrowedMember(
   node: ts.Identifier,
   reference: Readonly<IrIdentifierReference>,
   context: LoweringContext,
-): { narrowedMember?: string } {
+): { narrowedMember?: string; narrowedType?: IrType } {
+  const evidence = getTypeScriptReferenceNarrowingEvidence(node, reference, context);
+  const parent = node.parent;
+  const carriesExactType =
+    (ts.isPropertyAccessExpression(parent) && parent.expression === node) ||
+    (ts.isElementAccessExpression(parent) && parent.expression === node) ||
+    (ts.isCallExpression(parent) && parent.expression === node);
+  return carriesExactType ? evidence : evidence.narrowedMember ? { narrowedMember: evidence.narrowedMember } : {};
+}
+
+function getTypeScriptReferenceNarrowingEvidence(
+  node: ts.Identifier,
+  reference: Readonly<IrIdentifierReference>,
+  context: LoweringContext,
+): { narrowedMember?: string; narrowedType?: IrType } {
   if (reference.kind !== 'binding') return {};
   const symbol = getTypeScriptIdentifierValueSymbol(node, context);
   const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
@@ -7937,24 +7975,89 @@ function getTypeScriptReferenceNarrowedMember(
   const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
   if (!declared.isUnion()) return getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
   const flow = context.checker.getTypeAtLocation(node);
+  const syntactic = getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
+  const narrowedType =
+    syntactic.narrowedType ?? getTypeScriptCheckerFlowNarrowedTypeEvidence(declared, flow, node, context);
+  if (!narrowedType) {
+    if (flow.isUnion()) return syntactic;
+    const narrowed = getTypeScriptNamedTypeMemberName(flow) ?? getTypeScriptPrimitiveTypeName(flow);
+    if (!narrowed) return syntactic;
+    const members = declared.types.map(
+      (member) => getTypeScriptNamedTypeMemberName(member) ?? getTypeScriptPrimitiveTypeName(member),
+    );
+    return syntactic.narrowedMember
+      ? syntactic
+      : members.filter((member) => member === narrowed).length === 1
+        ? { narrowedMember: narrowed }
+        : {};
+  }
   if (flow.isUnion()) {
-    if (
+    const booleanMember =
       flow.types.length === 2 &&
-      flow.types.every((t) => t.flags & ts.TypeFlags.BooleanLiteral) &&
-      declared.types.some((t) => t.flags & ts.TypeFlags.BooleanLiteral) &&
-      declared.types.some((t) => !(t.flags & ts.TypeFlags.BooleanLiteral))
-    )
-      return { narrowedMember: 'boolean' };
-    return getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
+      flow.types.every((type) => type.flags & ts.TypeFlags.BooleanLiteral) &&
+      declared.types.some((type) => type.flags & ts.TypeFlags.BooleanLiteral) &&
+      declared.types.some((type) => !(type.flags & ts.TypeFlags.BooleanLiteral));
+    return {
+      ...(booleanMember ? { narrowedMember: 'boolean' } : syntactic.narrowedMember ? syntactic : {}),
+      narrowedType,
+    };
   }
   const narrowed = getTypeScriptNamedTypeMemberName(flow) ?? getTypeScriptPrimitiveTypeName(flow);
-  if (!narrowed) return getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
+  if (!narrowed) return { ...syntactic, narrowedType };
   const members = declared.types.map(
     (member) => getTypeScriptNamedTypeMemberName(member) ?? getTypeScriptPrimitiveTypeName(member),
   );
-  const syntactic = getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
-  if (syntactic.narrowedMember) return syntactic;
-  return members.filter((member) => member === narrowed).length === 1 ? { narrowedMember: narrowed } : {};
+  return {
+    ...(syntactic.narrowedMember
+      ? { narrowedMember: syntactic.narrowedMember }
+      : members.filter((member) => member === narrowed).length === 1
+        ? { narrowedMember: narrowed }
+        : {}),
+    narrowedType,
+  };
+}
+
+function getTypeScriptCheckerFlowNarrowedTypeEvidence(
+  declared: ts.Type,
+  flow: ts.Type,
+  lexicalSite: ts.Node,
+  context: LoweringContext,
+): IrType | undefined {
+  if (!declared.isUnion()) return undefined;
+  const flowMembers = flow.isUnion() ? flow.types : [flow];
+  if (flowMembers.length >= declared.types.length) return undefined;
+  const declaredPresent = declared.types.filter(
+    (member) => !(member.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)),
+  );
+  const names = (types: readonly ts.Type[]): string[] =>
+    types.map((type) => context.checker.typeToString(type)).sort(compareTextCodeUnits);
+  const declaredPresentNames = names(declaredPresent);
+  const flowNames = names(flowMembers);
+  if (
+    declaredPresent.length === flowMembers.length &&
+    declaredPresentNames.every((name, index) => name === flowNames[index])
+  ) {
+    // Presence has its own IR lane because optional storage may exist even when the value type is not
+    // written as a union. Do not duplicate that proof as a variant selection and unwrap it twice.
+    return undefined;
+  }
+  const evidence = getTypeScriptCheckerTypeEvidence(flow, context, 0, true, lexicalSite);
+  return evidence?.kind === 'unknown' || evidence?.kind === 'never' ? undefined : evidence;
+}
+
+function getTypeScriptPropertyNarrowedType(
+  node: ts.PropertyAccessExpression,
+  context: LoweringContext,
+): { narrowedType?: IrType } {
+  const declared = getTypeScriptExpressionDeclaredType(node, context);
+  if (!declared) return {};
+  const narrowedType = getTypeScriptCheckerFlowNarrowedTypeEvidence(
+    declared,
+    context.checker.getTypeAtLocation(node),
+    node,
+    context,
+  );
+  return narrowedType ? { narrowedType } : {};
 }
 
 // The deliberately small compiler ambient surface can leave the project checker with `any` for a
@@ -7967,10 +8070,11 @@ function getTypeScriptSyntacticReferenceNarrowedMember(
   reference: Readonly<Extract<IrIdentifierReference, { kind: 'binding' }>>,
   symbol: ts.Symbol,
   context: LoweringContext,
-): { narrowedMember?: string } {
+): { narrowedMember?: string; narrowedType?: IrType } {
   const recorded = context.bindingTypes.get(symbol);
   const alternatives = recorded ? getTypeScriptNarrowingAlternatives(recorded, context, new Set()) : [];
   if (alternatives.length < 2) return {};
+  let remaining = alternatives;
   for (let child: ts.Node = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
     if (ts.isBlock(parent)) {
       const statementIndex = parent.statements.findIndex((statement) => isTypeScriptNodeWithin(child, statement));
@@ -7987,19 +8091,20 @@ function getTypeScriptSyntacticReferenceNarrowedMember(
         }
         const evidence = getTypeScriptUnionMemberTestEvidence(statement.expression, context);
         if (!evidence || evidence.binding.id !== reference.binding.id) continue;
-        const tested = getIrNarrowedMemberNameSemantic(evidence.member);
-        if (!tested) continue;
-        const remaining = alternatives.filter((member) => {
-          const name = getIrNarrowedMemberNameSemantic(member);
-          return evidence.whenResult ? name !== tested : name === tested;
-        });
-        const narrowed = remaining.length === 1 ? getIrNarrowedMemberNameSemantic(remaining[0]!) : undefined;
-        return narrowed ? { narrowedMember: narrowed } : {};
+        const tested = normalizeCompilerStructuralValueCanonical(evidence.member);
+        remaining = remaining.filter((member) =>
+          evidence.whenResult
+            ? normalizeCompilerStructuralValueCanonical(member) !== tested
+            : normalizeCompilerStructuralValueCanonical(member) === tested,
+        );
       }
     }
     if (ts.isFunctionLike(parent)) break;
   }
-  return {};
+  if (remaining.length === 0 || remaining.length === alternatives.length) return {};
+  const narrowedType = remaining.length === 1 ? remaining[0]! : commonType([remaining[0]!, ...remaining.slice(1)]);
+  const narrowedMember = remaining.length === 1 ? getIrNarrowedMemberNameSemantic(remaining[0]!) : undefined;
+  return { ...(narrowedMember ? { narrowedMember } : {}), narrowedType };
 }
 
 function isTypeScriptStatementPathCompleting(statement: ts.Statement): boolean {

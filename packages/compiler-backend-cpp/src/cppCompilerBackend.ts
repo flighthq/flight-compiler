@@ -169,6 +169,12 @@ interface CppVariantCommonPropertyEvidence {
   readonly memberAccess: string;
   readonly operator: '->' | '.';
   readonly payloadTargetType: string;
+  readonly widened?:
+    | Readonly<{
+        branches: readonly Readonly<{ result: string; targetType: string }>[];
+        targetType: string;
+      }>
+    | undefined;
 }
 
 interface CppWeakMapTypeArgumentPlan {
@@ -3916,6 +3922,7 @@ function emitExpression(
         context.defaultedParameterIds.has(expression.reference.binding.id) &&
         !context.sharedCaptureTargetNames.has(expression.reference.binding.id) &&
         !expression.narrowedMember &&
+        !expression.narrowedType &&
         !context.narrowedBindingTypes.has(expression.reference.binding.id)
       ) {
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
@@ -3986,7 +3993,9 @@ function emitExpression(
       }
       if (
         expression.reference.kind === 'binding' &&
-        (expression.narrowedMember || context.narrowedBindingTypes.has(expression.reference.binding.id))
+        (expression.narrowedMember ||
+          expression.narrowedType ||
+          context.narrowedBindingTypes.has(expression.reference.binding.id))
       ) {
         const narrowed = emitNarrowedUnionMemberCpp(expression, context);
         if (narrowed) return narrowed;
@@ -4424,6 +4433,8 @@ function emitExpression(
     case 'property': {
       const enumMember = emitCppEnumMemberReferenceCpp(expression, context);
       if (enumMember) return enumMember;
+      const narrowedUnion = emitCppNarrowedPropertyUnionValueCpp(expression, context);
+      if (narrowedUnion) return narrowedUnion;
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
       if (narrowedPresent) return narrowedPresent;
       const optionalErasedDynamicProperty = emitCppErasedDynamicOptionalPropertyReadCpp(expression, context);
@@ -4480,6 +4491,7 @@ function emitExpression(
           context,
           `property ${expression.name} on a C++ variant requires proven union member access`,
           'cpp-union-member-access-unguarded',
+          hasCppReceiverAssertionSyntaxCpp(expression.object) ? 'source-portability' : undefined,
         );
       }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
@@ -10770,6 +10782,7 @@ function emitUnionMemberAssertionCpp(
         .map((slot) => slot.targetType)
         .join(', ')}]`,
       'cpp-type-assertion-unidentified',
+      'source-portability',
     );
   }
   // This path owns projection out of the binding's declared union carrier. An identifier can also
@@ -11255,6 +11268,8 @@ function emitCppVariantCommonPropertyExpression(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
 ): string | undefined {
+  const narrowedReceiver = emitCppNarrowedVariantCommonPropertyExpressionCpp(expression, context);
+  if (narrowedReceiver) return narrowedReceiver;
   const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
   // The union is asked of the runtime domain, which is the same question the refusal below asks: a union
   // reached through an intersection distribution (`BuiltIn & Entity` merges Entity into each alternative)
@@ -11268,7 +11283,64 @@ function emitCppVariantCommonPropertyExpression(
   const evidence = getCppVariantCommonPropertyEvidenceCpp(representation, expression.name, context);
   if (!evidence) return undefined;
   context.includes.add('variant');
+  if (evidence.widened) {
+    context.includes.add('type_traits');
+    const branches = evidence.widened.branches
+      .map(
+        (branch, index) =>
+          `${index === 0 ? 'if' : 'else if'} constexpr (std::is_same_v<Value, ${branch.targetType}>) return ${branch.result};`,
+      )
+      .join(' ');
+    return `std::visit([](const auto& value) -> ${evidence.widened.targetType} { using Value = std::remove_cvref_t<decltype(value)>; ${branches} else { static_assert(!sizeof(Value), "unproved variant property alternative"); } }, ${emitExpression(expression.object, context)})`;
+  }
   return `std::visit([](const auto& value) { return ${emitCppVariantCommonPropertyProjectionCpp(evidence, 'value')}; }, ${emitExpression(expression.object, context)})`;
+}
+
+function emitCppNarrowedVariantCommonPropertyExpressionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const receiver = expression.object;
+  if (
+    receiver.kind !== 'identifier' ||
+    receiver.reference.kind !== 'binding' ||
+    !receiver.narrowedType ||
+    receiver.narrowedType.kind !== 'union'
+  ) {
+    return undefined;
+  }
+  const declared = getCppBindingTypeCpp(receiver.reference.binding.id, context);
+  const declaredUnion = declared ? getIrVariantUnionTypeCpp(declared, context, new Set()) : undefined;
+  const narrowedUnion = getIrVariantUnionTypeCpp(receiver.narrowedType, context, new Set());
+  if (!declaredUnion || !narrowedUnion) return undefined;
+  const declaredRepresentation = getCppVariantRepresentationForInspection(declaredUnion, context);
+  if (declaredRepresentation.direct) return undefined;
+  const selected = narrowedUnion.types.map((narrowedAlternative) => {
+    const matches = declaredRepresentation.alternatives.filter(
+      (declaredAlternative) =>
+        declaredAlternative.members.some((member) => isDeepStrictEqual(member, narrowedAlternative)) ||
+        areCppUnionMemberDiscriminantsEquivalent(declaredAlternative.runtimeType, narrowedAlternative, context) ||
+        areCppUnionMemberObjectRepresentationsEquivalent(declaredAlternative.runtimeType, narrowedAlternative, context),
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  });
+  if (selected.some((alternative) => alternative === undefined)) return undefined;
+  const narrowedRepresentation: CppVariantRepresentation = {
+    alternatives: narrowedUnion.types.map((member) => ({
+      members: [member],
+      runtimeType: member,
+      targetType: emitType(member, { ...context, anonymousStructs: new Map(), includes: new Set() }),
+    })),
+    direct: false,
+  };
+  const evidence = getCppVariantCommonPropertyEvidenceCpp(narrowedRepresentation, expression.name, context);
+  if (!evidence || evidence.widened) return undefined;
+  const projection = emitCppVariantCommonPropertyProjectionCpp(evidence, 'value');
+  const conditions = selected.map((alternative) => `std::is_same_v<Value, ${alternative!.targetType}>`).join(' || ');
+  context.includes.add('stdexcept');
+  context.includes.add('type_traits');
+  context.includes.add('variant');
+  return `std::visit([](const auto& value) -> ${evidence.payloadTargetType} { using Value = std::remove_cvref_t<decltype(value)>; if constexpr (${conditions}) return ${projection}; else throw std::logic_error("control-flow-excluded variant property alternative"); }, ${emitInitializedBindingValueCpp(receiver.reference.binding, context)})`;
 }
 
 function getCppVariantCommonPropertyEvidenceCpp(
@@ -11284,16 +11356,11 @@ function getCppVariantCommonPropertyEvidenceCpp(
   const mergedEvidence = mergedType ? getCppPayloadRepresentationEvidenceCpp(mergedType, context) : undefined;
   if (!mergedEvidence) return undefined;
   const branchEvidence = propertyTypes.map((type) => getCppPayloadRepresentationEvidenceCpp(type!, context));
-  if (
-    branchEvidence.some(
-      (evidence) =>
-        !evidence ||
-        evidence.representationKey !== mergedEvidence.representationKey ||
-        evidence.targetType !== mergedEvidence.targetType,
-    )
-  ) {
-    return undefined;
-  }
+  const uniformPayload = branchEvidence.every(
+    (evidence) =>
+      evidence?.representationKey === mergedEvidence.representationKey &&
+      evidence.targetType === mergedEvidence.targetType,
+  );
   const referenceModes = new Set(
     representation.alternatives.map((alternative) =>
       hasFlightReferenceRepresentationCpp(alternative.runtimeType, context) ? 'reference' : 'value',
@@ -11328,12 +11395,75 @@ function getCppVariantCommonPropertyEvidenceCpp(
       : namedBindings[0]?.kind === 'method'
         ? `${memberName}()`
         : memberName;
+  let widened: CppVariantCommonPropertyEvidence['widened'];
+  if (!uniformPayload) {
+    const mergedUnion = mergedType ? getIrUnionTypeCpp(mergedType, context, new Set()) : undefined;
+    if (!mergedUnion) return undefined;
+    const mergedPlan = getCppUnionRepresentationPlan(mergedUnion, context);
+    // A sentinel or optionality difference can widen into one shared payload slot. Distinct present
+    // payloads still require a selected alternative; accepting them here would turn an unguarded
+    // `string | number` member into a second variant and hide the missing receiver proof.
+    if (mergedPlan.valueSlots.length !== 1) return undefined;
+    const projected = `${referenceModes.has('reference') ? 'value->' : 'value.'}${memberAccess}`;
+    const branches = propertyTypes.flatMap((propertyType, index) => {
+      const result = emitCppVariantCommonPropertyWideningCpp(
+        propertyType!,
+        projected,
+        mergedUnion,
+        mergedPlan,
+        context,
+      );
+      return result ? [{ result, targetType: representation.alternatives[index]!.targetType }] : [];
+    });
+    if (branches.length !== representation.alternatives.length) return undefined;
+    widened = { branches, targetType: emitUnionTypeCpp(mergedUnion, context) };
+  }
   return {
     castSizeProperty: namedBindings[0]?.kind === 'sizeProperty',
     memberAccess,
     operator: referenceModes.has('reference') ? '->' : '.',
     payloadTargetType: mergedEvidence.targetType,
+    ...(widened ? { widened } : {}),
   };
+}
+
+function emitCppVariantCommonPropertyWideningCpp(
+  propertyType: Readonly<IrType>,
+  projected: string,
+  mergedUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  mergedPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (propertyType.kind === 'null' || propertyType.kind === 'undefined') {
+    return emitCppUnionSentinelConstruction(propertyType.kind, mergedUnion, mergedPlan.kind, context);
+  }
+  const sourceUnion = getIrUnionTypeCpp(propertyType, context, new Set());
+  if (sourceUnion) {
+    const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, context);
+    if (hasEquivalentCppUnionRepresentation(sourcePlan, mergedPlan)) return projected;
+    if (sourcePlan.kind !== 'singleValue' || sourcePlan.valueSlots.length !== 1) return undefined;
+    const sourceSlot = sourcePlan.valueSlots[0]!;
+    const targetSlot = mergedPlan.valueSlots.find(
+      (slot) => slot.representationKey === sourceSlot.representationKey || slot.targetType === sourceSlot.targetType,
+    );
+    return targetSlot
+      ? emitCppUnionValueConstruction(projected, targetSlot.targetType, mergedUnion, mergedPlan.kind, context)
+      : undefined;
+  }
+  const runtimeType = getIrTypeRuntimeDomainCpp(propertyType, context, new Set()) ?? propertyType;
+  const targetType = emitType(runtimeType, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set(),
+  });
+  const targetSlot = mergedPlan.valueSlots.find(
+    (slot) =>
+      slot.targetType === targetType ||
+      slot.sourceAlternatives.some((alternative) => isDeepStrictEqual(alternative, propertyType)),
+  );
+  return targetSlot
+    ? emitCppUnionValueConstruction(projected, targetSlot.targetType, mergedUnion, mergedPlan.kind, context)
+    : undefined;
 }
 
 // A shared member can cross a visitor only when every branch and their merged result name the same
@@ -11459,17 +11589,39 @@ function emitNarrowedUnionMemberCpp(
   context: EmitContext,
 ): string | undefined {
   if (expression.reference.kind !== 'binding') return undefined;
-  const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
+  const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id) ?? expression.narrowedType;
   if (!expression.narrowedMember && !narrowedType) return undefined;
   const bindingType = getCppBindingTypeCpp(expression.reference.binding.id, context);
   const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
   if (!union) return undefined;
+  const binding = emitInitializedBindingValueCpp(expression.reference.binding, context);
+  return emitCppNarrowedUnionValueCpp(binding, union, narrowedType, expression.narrowedMember, context);
+}
+
+function emitCppNarrowedPropertyUnionValueCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (!expression.narrowedType) return undefined;
+  const declaredType = expression.type?.kind === 'unknown' ? undefined : expression.type;
+  const union = declaredType ? getIrUnionTypeCpp(declaredType, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const storage = emitExpression({ ...expression, narrowedType: undefined }, context);
+  return emitCppNarrowedUnionValueCpp(storage, union, expression.narrowedType, undefined, context);
+}
+
+function emitCppNarrowedUnionValueCpp(
+  binding: string,
+  union: Readonly<Extract<IrType, { kind: 'union' }>>,
+  narrowedType: Readonly<IrType> | undefined,
+  narrowedMember: string | undefined,
+  context: EmitContext,
+): string | undefined {
   const plan = getCppUnionRepresentationPlan(union, {
     ...context,
     anonymousStructs: new Map(),
     includes: new Set<string>(),
   });
-  const binding = emitInitializedBindingValueCpp(expression.reference.binding, context);
   const nestedOptionalMember = narrowedType
     ? emitCppNarrowedNestedUnionMemberCpp(binding, plan, narrowedType, context)
     : undefined;
@@ -11502,8 +11654,50 @@ function emitNarrowedUnionMemberCpp(
   const variantUnion = getIrVariantUnionTypeCpp(union, context, new Set());
   if (!variantUnion) return undefined;
   const representation = getCppVariantRepresentationForInspection(variantUnion, context);
+  if (representation.direct && narrowedType) return binding;
   const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
   if (narrowedUnion) {
+    const selectedAlternatives = narrowedUnion.types.map((member) => {
+      const matches = representation.alternatives.filter(
+        (alternative) =>
+          alternative.members.some((candidate) => isDeepStrictEqual(candidate, member)) ||
+          areCppUnionMemberDiscriminantsEquivalent(alternative.runtimeType, member, context) ||
+          areCppUnionMemberObjectRepresentationsEquivalent(alternative.runtimeType, member, context),
+      );
+      return matches.length === 1 ? matches[0] : undefined;
+    });
+    const uniqueAlternatives = new Set(selectedAlternatives);
+    if (
+      selectedAlternatives.every(
+        (alternative): alternative is CppVariantRepresentation['alternatives'][number] => alternative !== undefined,
+      ) &&
+      uniqueAlternatives.size === selectedAlternatives.length &&
+      selectedAlternatives.length < representation.alternatives.length
+    ) {
+      const selectedType = createIrTypeEvidenceUnionCpp(
+        selectedAlternatives.map((alternative) => alternative.runtimeType),
+      );
+      const selectedUnion = selectedType?.kind === 'union' ? selectedType : undefined;
+      const selectedPlan = selectedUnion ? getCppUnionRepresentationPlan(selectedUnion, context) : undefined;
+      if (selectedUnion && selectedPlan?.kind === 'multiVariant') {
+        const expressions = selectedAlternatives.map((alternative) => {
+          const sourceIndex = representation.alternatives.indexOf(alternative);
+          return emitCppUnionValueConstruction(
+            `std::get<${String(sourceIndex)}>(${binding})`,
+            alternative.targetType,
+            selectedUnion,
+            selectedPlan.kind,
+            context,
+          );
+        });
+        let emitted = expressions.at(-1)!;
+        for (let index = selectedAlternatives.length - 2; index >= 0; index -= 1) {
+          const sourceIndex = representation.alternatives.indexOf(selectedAlternatives[index]!);
+          emitted = `(${binding}.index() == ${String(sourceIndex)} ? ${expressions[index]!} : ${emitted})`;
+        }
+        return emitted;
+      }
+    }
     const narrowedPlan = getCppUnionRepresentationPlan(narrowedUnion, context);
     const mapped = narrowedPlan.valueSlots.map((slot) => ({
       sourceIndex: representation.alternatives.findIndex((alternative) => alternative.targetType === slot.targetType),
@@ -11543,8 +11737,8 @@ function emitNarrowedUnionMemberCpp(
   const targetMatches = narrowedTargetType
     ? sourceAlternatives.filter(({ alternative }) => alternative.targetType === narrowedTargetType)
     : [];
-  const namedMatches = expression.narrowedMember
-    ? sourceAlternatives.filter(({ member }) => getIrUnionMemberNameCpp(member) === expression.narrowedMember)
+  const namedMatches = narrowedMember
+    ? sourceAlternatives.filter(({ member }) => getIrUnionMemberNameCpp(member) === narrowedMember)
     : [];
   const discriminantMatches = narrowedType
     ? sourceAlternatives.filter(({ alternative }) =>
@@ -11562,10 +11756,9 @@ function emitNarrowedUnionMemberCpp(
   if (matches.length !== 1) {
     emissionError(
       context,
-      `narrowed member ${expression.narrowedMember ?? 'structural switch case'} must identify one C++ variant alternative`,
+      `narrowed member ${narrowedMember ?? 'structural switch case'} must identify one C++ variant alternative`,
     );
   }
-  if (representation.direct) return binding;
   return `std::get<${String(representation.alternatives.indexOf(matches[0]!.alternative))}>(${binding})`;
 }
 
@@ -12751,6 +12944,7 @@ function isCppStableOptionalBindingIdentifierCpp(expression: Readonly<IrExpressi
   return (
     expression.presence !== 'narrowedPresent' &&
     !expression.narrowedMember &&
+    !expression.narrowedType &&
     !context.narrowedBindingTypes.has(bindingId) &&
     !context.sharedCaptureTargetNames.has(bindingId) &&
     !context.defaultedParameterIds.has(bindingId)
@@ -16393,7 +16587,7 @@ function getIrIdentifierTypeEvidenceCpp(
   if (expression.reference.kind !== 'binding') return undefined;
   const bindingId = expression.reference.binding.id;
   const declaredType = getCppBindingTypeCpp(bindingId, context);
-  const narrowedType = context.narrowedBindingTypes.get(bindingId);
+  const narrowedType = context.narrowedBindingTypes.get(bindingId) ?? expression.narrowedType;
   if (narrowedType) return narrowedType;
   if (!declaredType || declaredType.kind === 'unknown') {
     const initializer = context.bindingInitializers.get(bindingId);
@@ -16421,6 +16615,7 @@ function getIrIdentifierTypeEvidenceCpp(
   if (expression.presence !== 'narrowedPresent' && !union && context.nullableBindingIds.has(bindingId)) {
     return { kind: 'union', types: [declaredType, { kind: 'undefined' }] };
   }
+  if (expression.narrowedType) return expression.narrowedType;
   if (!expression.narrowedMember) return declaredType;
   return union?.types.find((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember) ?? declaredType;
 }
@@ -16429,6 +16624,7 @@ function getIrPropertyExpressionTypeEvidenceCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
+  if (expression.narrowedType) return expression.narrowedType;
   const recordedType = expression.type?.kind === 'unknown' ? undefined : expression.type;
   const reconstructedType = expression.optional
     ? getIrOptionalChainValueTypeEvidenceCpp(expression, context)
@@ -19076,7 +19272,7 @@ function emitCppOptionalVariantCommonPropertyExpressionCpp(
     direct: false,
   };
   const evidence = getCppVariantCommonPropertyEvidenceCpp(representation, expression.name, context);
-  if (!evidence) return undefined;
+  if (!evidence || evidence.widened) return undefined;
   const receiver = emitOptionalChainReceiverCpp(expression.object, context);
   const projected = emitCppVariantCommonPropertyProjectionCpp(evidence, 'value');
   context.includes.add('optional');
@@ -21572,10 +21768,23 @@ function isSuperCallStatement(statement: Readonly<IrStatement>): boolean {
   );
 }
 
-function emissionError(context: EmitContext, message: string, rule?: string): never {
-  const classification = getCppRefusalRuleClassification(rule);
+function emissionError(
+  context: EmitContext,
+  message: string,
+  rule?: string,
+  classificationOverride?: 'source-portability' | 'target-runtime',
+): never {
+  const classification = classificationOverride ?? getCppRefusalRuleClassification(rule);
   const metadata = classification === undefined ? context.currentOrigin : { ...context.currentOrigin, classification };
   throw createBackendEmissionFailure('cpp', context.module, message, rule, metadata);
+}
+
+function hasCppReceiverAssertionSyntaxCpp(expression: Readonly<IrExpression>): boolean {
+  if (expression.kind === 'cast') return true;
+  if (expression.kind === 'property' || expression.kind === 'element') {
+    return hasCppReceiverAssertionSyntaxCpp(expression.object);
+  }
+  return false;
 }
 
 // Attribution the check report reads as the producer default: a rule whose cause is a runtime contract or

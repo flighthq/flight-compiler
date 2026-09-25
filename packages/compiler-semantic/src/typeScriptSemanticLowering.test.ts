@@ -6877,6 +6877,46 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     });
   });
 
+  it('records exact anonymous alternatives selected by property-presence flow', () => {
+    const result = lower(
+      'anonymous-union.ts',
+      `type Outcome =
+         | { readonly kind: 'ok'; readonly value: number }
+         | { readonly kind: 'failed'; readonly reason: string };
+       export function read(outcome: Outcome): string | number {
+         if ('reason' in outcome) return outcome.reason;
+         return outcome.value;
+       }`,
+    );
+    const read = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+    );
+    const body = read?.kind === 'function' ? read.body : [];
+    const guarded = body[0];
+    const condition = guarded?.kind === 'if' ? guarded.condition : undefined;
+    const selected =
+      guarded?.kind === 'if' && guarded.consequent.kind === 'return' ? guarded.consequent.expression : undefined;
+    const remaining = body[1]?.kind === 'return' ? body[1].expression : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(condition?.kind === 'binary' ? condition.semantics.unionMemberTest : undefined).toMatchObject({
+      binding: { name: 'outcome' },
+      member: {
+        kind: 'object',
+        properties: expect.arrayContaining([expect.objectContaining({ name: 'reason' })]),
+      },
+      whenResult: true,
+    });
+    expect(selected).toMatchObject({
+      kind: 'property',
+      object: { kind: 'identifier', narrowedType: { kind: 'object' } },
+    });
+    expect(remaining).toMatchObject({
+      kind: 'property',
+      object: { kind: 'identifier', narrowedType: { kind: 'object' } },
+    });
+  });
+
   it('expands nested type aliases when recording typeof union-member evidence', () => {
     const result = lower(
       'nested-alias-narrowing.ts',

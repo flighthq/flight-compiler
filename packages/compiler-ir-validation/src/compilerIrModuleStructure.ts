@@ -539,12 +539,13 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
           expression.operator !== '===' &&
           expression.operator !== '!=' &&
           expression.operator !== '!==' &&
-          expression.operator !== 'instanceof'
+          expression.operator !== 'instanceof' &&
+          expression.operator !== 'in'
         ) {
           addFailure(
             'invalid-node-shape',
             testPath,
-            'union member test evidence requires an equality or instanceof operator',
+            'union member test evidence requires equality, instanceof, or property-presence syntax',
             state,
           );
         }
@@ -661,6 +662,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
       if (expression.reference.kind === 'binding') {
         addBindingReference(expression.reference.binding, `${path}.reference.binding`, state);
       }
+      if (expression.narrowedType) visitType(expression.narrowedType, `${path}.narrowedType`, state);
       break;
     case 'literal':
     case 'regexp':
@@ -691,6 +693,7 @@ function visitExpression(expression: Readonly<IrExpression>, path: string, state
     case 'property':
       validateIrOptionalChainEvidence(expression.optional, expression.optionalChain, path, state);
       visitExpression(expression.object, `${path}.object`, state);
+      if (expression.narrowedType) visitType(expression.narrowedType, `${path}.narrowedType`, state);
       if (expression.type) visitType(expression.type, `${path}.type`, state);
       break;
     case 'template':

@@ -63,6 +63,10 @@ export interface IrResolvedMember {
 
 export interface IrIdentifierExpression {
   readonly kind: 'identifier';
+  // The exact type control flow proved for this reference. Unlike narrowedMember, this also carries
+  // anonymous alternatives and a remaining subset of a larger union, so a target need not recover
+  // checker evidence from a type name that may not exist.
+  readonly narrowedType?: IrType | undefined;
   // Which member of a union-typed binding control flow has proved this reference to hold, named by
   // the member type. A target that represents a union as one open shape ignores it; a target that
   // represents it as a closed set of alternatives cannot reach the member's own fields without it.
@@ -195,6 +199,9 @@ export type IrExpression =
       // the namespace root and full member path so a backend need not infer namespace semantics
       // from capitalization or from a property name that could equally be an object field.
       namespaceMember?: IrValueNameReference | undefined;
+      // The exact flow type of a repeated property receiver. TypeScript narrows dotted names as well as
+      // local bindings, and a closed-union target needs that proof to unwrap the stored alternative.
+      narrowedType?: IrType | undefined;
       object: IrExpression;
       optional: boolean;
       optionalChain?: IrOptionalChainSemantics | undefined;
