@@ -8,3 +8,8 @@ export function read(holder: Holder): Pattern {
 export function pass(failure: Failure): Failure {
   return failure;
 }
+
+// The runtime exposes an error's message through an accessor, so the read is the call.
+export function describe(failure: Failure): string {
+  return failure.message;
+}

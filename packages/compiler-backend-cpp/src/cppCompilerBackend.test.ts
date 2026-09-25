@@ -1542,6 +1542,21 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::nullopt');
   });
 
+  it('reads an ambient error message through the accessor the runtime exposes', () => {
+    const result = lower(
+      'error-message-accessor.ts',
+      `export function direct(error: Error): string { return error.message; }
+       export function chained(error: Error | null): string | undefined { return error?.message; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The runtime exposes the message through a zero-argument accessor, so the read is a call: at the
+    // member's own position, and inside the optional chain that reads it from a present receiver.
+    expect(contents).toContain('return error.message();');
+    expect(contents).toContain('.value().message();');
+    expect(contents).not.toContain('error.message;');
+  });
+
   it('resolves an imported alias of a runtime-bound ambient type', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [

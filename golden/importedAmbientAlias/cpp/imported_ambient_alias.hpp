@@ -19,4 +19,8 @@ inline flighthq_golden::Failure pass(flighthq_golden::Failure failure) {
   return failure;
 }
 
+inline flight::String describe(flighthq_golden::Failure failure) {
+  return failure.message();
+}
+
 } // namespace flighthq_golden

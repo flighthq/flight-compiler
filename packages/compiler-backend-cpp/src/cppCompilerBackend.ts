@@ -4481,6 +4481,11 @@ function emitExpression(
         if (binding && binding.kind === 'property') {
           return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${binding.targetName}`;
         }
+        // A property the target exposes through an accessor: the read IS the call, so the operator and the
+        // empty argument list both belong to the member's rendering rather than to the source's syntax.
+        if (binding && binding.kind === 'propertyMethod') {
+          return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${binding.targetName}()`;
+        }
       }
       const namespaceMember = getCppNamespaceImportMemberTargetNameCpp(expression, context);
       if (namespaceMember) return namespaceMember;
@@ -19405,7 +19410,7 @@ function emitOptionalExpressionCpp(
     const payload = emitType(expectedType, context);
     const receiver = `${emitExpression(expression.object.object, context)}.get(${emitExpression(expression.object.index, context)})`;
     context.includes.add('optional');
-    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().${getCppProjectedMemberNameCpp(expression, context)}; }())`;
+    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return optional_chain_receiver.value().${getCppOptionalChainMemberAccessCpp(expression, context)}; }())`;
   }
   return emitExpression(
     expression,
@@ -19710,6 +19715,8 @@ function emitOptionalPropertyExpressionCpp(
       projected = `static_cast<double>(${receiverProjection.value}${memberOperator}${binding.targetName})`;
     } else if (binding?.kind === 'property') {
       projected = `${receiverProjection.value}${memberOperator}${binding.targetName}`;
+    } else if (binding?.kind === 'propertyMethod') {
+      projected = `${receiverProjection.value}${memberOperator}${binding.targetName}()`;
     } else {
       projected = `${receiverProjection.value}${memberOperator}${safeCppName(expression.name)}`;
     }
@@ -22025,6 +22032,22 @@ function getCppStableIdentifierHash(value: string): string {
 // resolved it against, so its target spelling comes from the binding table rather than from the source
 // name. `toLowerCase` is `to_lower` in the runtime, and deriving `to_lower_case` from the source name
 // produces a member that does not exist. The fallback stays for members no table decides.
+// The member an optional chain reads from its present receiver. A property the target exposes through an
+// accessor reads as a call, so the accessor's argument list belongs here rather than at the call site --
+// which is why this is not the member-name helper's answer: that one names a member for a CALL, and the
+// two positions append different things.
+function getCppOptionalChainMemberAccessCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string {
+  const binding = expression.member
+    ? getCompilerCppAmbientMemberBinding(expression.member, getCppRuntimeProfile(context.options))
+    : undefined;
+  return binding?.kind === 'propertyMethod'
+    ? `${binding.targetName}()`
+    : getCppProjectedMemberNameCpp(expression, context);
+}
+
 function getCppProjectedMemberNameCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,

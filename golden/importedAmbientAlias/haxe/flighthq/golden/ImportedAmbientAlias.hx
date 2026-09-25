@@ -13,3 +13,7 @@ function read(holder:Holder):Pattern {
 function pass(failure:Failure):Failure {
   return failure;
 }
+
+function describe(failure:Failure):String {
+  return failure.message;
+}

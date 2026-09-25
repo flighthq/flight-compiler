@@ -67,6 +67,7 @@ const cppFlightRuntimeAmbientMemberBindings: Readonly<Record<string, CompilerCpp
   'date.getTime': { kind: 'method', targetName: 'get_time' },
   'date.toISOString': { kind: 'method', targetName: 'to_isostring' },
   'date.toString': { kind: 'method', targetName: 'to_string' },
+  'error.message': { kind: 'propertyMethod', targetName: 'message' },
   'map.clear': { kind: 'method', targetName: 'clear' },
   'map.delete': { kind: 'method', targetName: 'erase' },
   'map.forEach': { kind: 'method', targetName: 'for_each' },

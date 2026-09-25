@@ -16,6 +16,9 @@ export type CompilerCppAmbientMemberBinding =
   // where the target value returns to the source numeric representation; runtime indexing and
   // length bookkeeping remain native-sized behind the member.
   | Readonly<{ kind: 'sizeProperty'; targetName: string }>
+  // A source property the target exposes through a zero-argument accessor: the read is a call. The
+  // accessor's name is the target's, so a table entry names it rather than the member.
+  | Readonly<{ kind: 'propertyMethod'; targetName: string }>
   | Readonly<{ algorithm: string; kind: 'algorithm'; targetName: string }>
   | Readonly<{ kind: 'sizeMethod'; targetName: string }>;
 
