@@ -10300,8 +10300,20 @@ function isCppErasedDynamicPropertyReadCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): expression is Readonly<Extract<IrExpression, { kind: 'property' }>> {
-  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || expression.kind !== 'property' || expression.optional) {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    expression.kind !== 'property' ||
+    expression.optional ||
+    expression.member !== undefined ||
+    (expression.type !== undefined && expression.type.kind !== 'unknown')
+  ) {
     return false;
+  }
+  if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'binding') {
+    const bindingId = expression.object.reference.binding.id;
+    const retainedType =
+      context.contextualBindingStorageTargetTypes.get(bindingId) ?? context.preservedInitializerTypes.get(bindingId);
+    if (retainedType && !isCppAliasResolvedErasedDynamicValueTypeCpp(retainedType, context)) return false;
   }
   const objectType = getCppNullishComparisonOperandTypeCpp(expression.object, context);
   return hasCppErasedDynamicTestOperandCpp(expression.object, objectType, context);

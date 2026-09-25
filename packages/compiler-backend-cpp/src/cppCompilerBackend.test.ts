@@ -14823,12 +14823,17 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       emitCase(`export function f(obj: unknown): number { return typeof obj === 'array' ? 1 : 0; }`),
     ).toThrow(/cannot report the tag 'array'/u);
 
-    // The member read: the shape all four SDK probes write, which needs a property set the erased value
-    // does not carry.
-    expect(() =>
-      emitCase(`function isRec(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null; }
-        export function f(obj: unknown, def: number): number { if (isRec(obj)) { return typeof obj.low === 'number' ? obj.low : def; } return def; }`),
-    ).toThrow();
+    // A predicate-introduced property remains an erased named-property read. The same captured carrier
+    // answers its tag and primitive extraction without granting dynamic access to declared references.
+    const property = emitCase(
+      `function isRec(v: unknown): v is Record<string, unknown> { return typeof v === 'object' && v !== null; }
+       export function f(obj: unknown, def: number): number {
+         if (isRec(obj)) return typeof obj.low === 'number' ? obj.low : def;
+         return def;
+       }`,
+    );
+    expect(property).toContain('flight::named_properties(obj).get(flight::String("low"))');
+    expect(property).toContain('.as_number()');
   });
 
   it('answers a number-or-string tag question on an imported meta-reading property', () => {
