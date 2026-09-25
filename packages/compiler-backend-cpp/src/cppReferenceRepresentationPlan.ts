@@ -18,12 +18,16 @@ import type {
   CompilerModuleResolutionPlan,
   CompilerTypeValueIdentityAnalysis,
   CppCompilerExternalBindingManifest,
+  CppCompilerRuntimeProfile,
   IrDeclaration,
   IrModule,
   IrObjectTypeProperty,
   IrType,
 } from '../../compiler-types/src/index.js';
-import { getCompilerExternalBindingEvidenceCpp } from './cppRuntimeExternalSymbolBinding.js';
+import {
+  getCompilerExternalBindingEvidenceCpp,
+  isCompilerRuntimeExternalSymbolProvidedCpp,
+} from './cppRuntimeExternalSymbolBinding.js';
 import { getIrHomogeneousTupleElementTypeCpp } from './cppTupleRepresentation.js';
 
 type ReferenceDeclaration = Readonly<Extract<IrDeclaration, { kind: 'class' | 'interface' | 'typeAlias' }>>;
@@ -70,6 +74,11 @@ interface ReferencePlanningContext {
   readonly externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined;
   readonly moduleSet: ReferenceModuleSet;
   readonly resolutionCache: ReferenceResolutionCache;
+  /**
+   * Which runtime binding table answers for an ambient type. The tables are per profile, and the ambient
+   * surface a profile supplies is what decides whether a reference to it has a representation at all.
+   */
+  readonly runtimeProfile: CppCompilerRuntimeProfile;
 }
 
 interface ReferenceResolutionCache {
@@ -83,14 +92,21 @@ export function createIrTypeReferenceRepresentationPlanCpp(
   modules: readonly Readonly<IrModule>[] = [module],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlanCpp,
   externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
 ): CompilerCppReferenceRepresentationPlan {
-  return createIrTypeReferenceRepresentationPlannerCpp(modules, moduleResolution, externalBindings).plan(type, module);
+  return createIrTypeReferenceRepresentationPlannerCpp(
+    modules,
+    moduleResolution,
+    externalBindings,
+    runtimeProfile,
+  ).plan(type, module);
 }
 
 export function createIrTypeReferenceRepresentationPlannerCpp(
   modules: readonly Readonly<IrModule>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlanCpp,
   externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
 ): CompilerCppReferenceRepresentationPlanner {
   const moduleSnapshot = structuredClone(modules);
   const resolutionSnapshot = structuredClone(moduleResolution);
@@ -104,6 +120,7 @@ export function createIrTypeReferenceRepresentationPlannerCpp(
     ...(externalBindingSnapshot ? { externalBindings: externalBindingSnapshot } : {}),
     moduleSet,
     resolutionCache,
+    runtimeProfile,
   };
   return Object.freeze({
     isStructurallyAssignable(source: Readonly<IrType>, target: Readonly<IrType>, module: Readonly<IrModule>) {
@@ -1724,6 +1741,32 @@ function createNamedReferenceRepresentationPlanCpp(
     }
     const category = getCppRuntimeReferenceCategory(type.reference.name);
     if (!category) {
+      // The reference categories cover the ambient types with a shape of their own -- the containers, the
+      // typed arrays, Date, the task and weak-map forms. The runtime binds more than that, and the binding
+      // table is the authority for which: a type it supplies is a runtime-managed object reference exactly
+      // as an external binding is, spelled and headered from the same entry the emitter already reads.
+      // Asking it rather than a second list is what keeps an ambient type the runtime provides from being
+      // refused for not appearing in a category table that was never meant to enumerate it.
+      // Only a reference with no type arguments: an ambient utility applied to arguments -- `Record<K, V>`,
+      // `Partial<T>`, the rest of the type-level operators -- is computed rather than represented, and it
+      // has its own lane above or refuses on its own terms. A bare name is the type itself.
+      if (
+        type.typeArguments.length === 0 &&
+        isCompilerRuntimeExternalSymbolProvidedCpp(
+          type.reference.name,
+          'type',
+          context.runtimeProfile,
+          context.externalBindings,
+        )
+      ) {
+        return createCompilerCppReferenceRepresentationSuccessCpp(
+          identity,
+          'external',
+          'object',
+          'runtimeManaged',
+          'runtimeReference',
+        );
+      }
       return createCompilerCppReferenceRepresentationRefusalCpp(identity, 'unsupportedAmbientReference');
     }
     return createCompilerCppReferenceRepresentationSuccessCpp(

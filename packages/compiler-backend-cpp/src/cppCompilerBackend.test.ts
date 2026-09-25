@@ -1542,6 +1542,155 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::nullopt');
   });
 
+  it('resolves an imported alias of a runtime-bound ambient type', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './provider',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/provider.ts',
+            `export type Pattern = RegExp;
+             export interface Holder { readonly pattern: Pattern }
+             export type Failure = Error;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/consumer.ts',
+            `import type { Failure, Holder, Pattern } from './provider';
+             export function read(holder: Holder): Pattern { return holder.pattern; }
+             export function pass(failure: Failure): Failure { return failure; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    ).map((lowered) => lowered.module);
+    const emitted = emitCppModuleCppSession(
+      modules.map((module) => ({ module })),
+      resolution,
+      1,
+    );
+
+    // The runtime binds these ambient types, so an alias of one names a reference the target has: the
+    // binding table decides it rather than a category list that never meant to enumerate them.
+    expect(emitted).toContain('flighthq_types::Pattern read(flight::Ref<flighthq_types::Holder> holder)');
+    expect(emitted).toContain('flighthq_types::Failure pass(flighthq_types::Failure failure)');
+  });
+
+  it('resolves an imported union whose alternative is a runtime-bound ambient type', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './provider',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/provider.ts',
+            'export type Scope = RegExp | null;',
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/consumer.ts',
+            `import type { Scope } from './provider';
+             export function read(value: Scope): RegExp | null { return value; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    ).map((lowered) => lowered.module);
+    const emitted = emitCppModuleCppSession(
+      modules.map((module) => ({ module })),
+      resolution,
+      1,
+    );
+
+    expect(emitted).toContain('std::optional<flight::RegExp> read(flighthq_types::Scope value)');
+  });
+
+  it('attributes an unresolved imported type to the source that left it unresolved', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './provider',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/provider.ts',
+            `export type First = Second;
+             export type Second = First;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/consumer.ts',
+            `import type { First } from './provider';
+             export function read(value: First): number { return 1; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    ).map((lowered) => lowered.module);
+    const failure = captureBackendEmissionFailure(() =>
+      emitCppModuleCppSession(
+        modules.map((module) => ({ module })),
+        resolution,
+        1,
+      ),
+    );
+
+    // Nothing about the target decides a cycle: the source has to state the type it means, and the report
+    // says which declaration to write rather than naming the planner's reason alone.
+    expect(failure.rule).toBe('cpp-imported-type-unsupported:indeterminateIdentity');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('does not resolve to one declaration');
+    expect(failure.message).toContain('break an alias cycle');
+  });
+
   it('attributes an unproved asserted union member to source portability only for assertion syntax', () => {
     const source = `interface Left { readonly tag: string }
        interface Right { readonly tag: number }`;

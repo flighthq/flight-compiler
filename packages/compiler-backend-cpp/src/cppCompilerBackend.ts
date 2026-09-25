@@ -50,6 +50,7 @@ import type {
   CompilerCppStructuralRowPlan,
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
+  CompilerTypeValueIdentityAnalysis,
   IrResolvedMemberReceiver,
   CppCompilerBackendOptions,
   CppCompilerExternalBindingManifest,
@@ -376,6 +377,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
         modules,
         moduleResolution,
         options.externalBindings,
+        options.runtimeProfile ?? 'standard-library',
       );
       const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritanceCpp(modules, moduleResolution);
       const directBindingOwners = createCppDirectBindingOwners(modules);
@@ -535,7 +537,12 @@ function emitIrModuleCppWithContext(
     preservedInitializerTypes,
     referenceRepresentationPlanner:
       referenceRepresentationPlanner ??
-      createIrTypeReferenceRepresentationPlannerCpp(sourceModules, moduleResolution, options.externalBindings),
+      createIrTypeReferenceRepresentationPlannerCpp(
+        sourceModules,
+        moduleResolution,
+        options.externalBindings,
+        options.runtimeProfile ?? 'standard-library',
+      ),
     recursiveTypeAliasBindingIds,
     resolvingInitializerBindingIds: new Set(),
     returnsAbsent: false,
@@ -7457,10 +7464,12 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       ) {
         const plan = context.referenceRepresentationPlanner.plan(type, context.module);
         if (plan.kind === 'refused') {
+          const refusal = createCppImportedTypeRefusalCpp(type, plan);
           emissionError(
             context,
-            `imported type ${type.reference.binding.name} has ${plan.reason}`,
+            refusal.message,
             `cpp-imported-type-unsupported:${plan.reason}`,
+            refusal.classification,
           );
         }
       }
@@ -11710,6 +11719,31 @@ function emitCppVariantCommonPropertyProjectionCpp(
 ): string {
   const projected = `${value}${evidence.operator}${evidence.memberAccess}`;
   return evidence.castSizeProperty ? `static_cast<double>(${projected})` : projected;
+}
+
+// Who owns an imported type the C++ backend cannot represent, and what the report should say about it.
+//
+// A reference the analyzer could not resolve to one declaration is a fact about the source's own type
+// graph: an alias cycle, a type parameter its use site never supplies, a name that resolves to nothing, or
+// a type operator over an open form. Nothing about the target decides any of those -- the source has to
+// state the type it means. An ambient type is the other way round: the runtime contract is what binds it,
+// so a name the profile's binding table does not supply is the runtime's to add, and no declaration the
+// source could write would make the target represent it.
+function createCppImportedTypeRefusalCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  plan: Readonly<{ identity: Readonly<CompilerTypeValueIdentityAnalysis>; reason: string }>,
+): Readonly<{ classification: 'source-portability' | 'target-runtime'; message: string }> {
+  const name = type.reference.kind === 'binding' ? type.reference.binding.name : type.reference.name;
+  if (plan.reason === 'unsupportedAmbientReference') {
+    return {
+      classification: 'target-runtime',
+      message: `imported type ${name} names an ambient type this runtime profile does not bind, so the target has no representation for it. Add the binding to the runtime contract, or declare the value with a type the target provides.`,
+    };
+  }
+  return {
+    classification: 'source-portability',
+    message: `imported type ${name} does not resolve to one declaration (${plan.identity.reason}), so the target cannot name the type it holds. Declare the type it should be -- break an alias cycle, supply the type arguments a generic needs, or point the import at a declaration -- rather than leaving the reference unresolved.`,
+  };
 }
 
 // The ambient member binding the emitter would use for a LONE access on one alternative, or undefined
