@@ -3997,6 +3997,8 @@ function emitExpression(
           expression.narrowedType ||
           context.narrowedBindingTypes.has(expression.reference.binding.id))
       ) {
+        const erasedPrimitive = emitCppNarrowedErasedPrimitiveIdentifierCpp(expression, context);
+        if (erasedPrimitive) return erasedPrimitive;
         const narrowed = emitNarrowedUnionMemberCpp(expression, context);
         if (narrowed) return narrowed;
       }
@@ -4878,8 +4880,26 @@ function emitCppStructuralReferenceValueConversionCpp(
       }
       return undefined;
     }
+    if (hasCppStructuralRowObjectProjectionCpp(sourceRow, targetObject, context)) {
+      if (isCppStructuralRowReadonlyCpp(sourceRow) && !isCppStructuralRowReadonlyCpp(targetRow)) {
+        emissionError(
+          context,
+          'a readonly structural row cannot be converted to a writable structural row',
+          'cpp-structural-row-widening-unproven',
+        );
+      }
+      context.includes.add('flight/structural_ref.hpp');
+      return `flight::structural_ref_cast<${emitType(expectedType, context)}>(${source})`;
+    }
     const wideningProof = getCppStructuralRowObjectWideningProofCpp(sourceObject, targetObject, context);
-    if (!wideningProof) return undefined;
+    const erasedAnyReadConversion =
+      isCppStructuralRowReadonlyCpp(targetRow) &&
+      hasCppStructuralRowErasedAnyReadConversionCpp(sourceObject, targetObject, context);
+    if (!wideningProof) {
+      return erasedAnyReadConversion
+        ? `${emitType(expectedType, context)}::from_owner(${source}.shared_owner())`
+        : undefined;
+    }
     if (isCppStructuralRowReadonlyCpp(sourceRow) && !isCppStructuralRowReadonlyCpp(targetRow)) {
       emissionError(
         context,
@@ -4888,6 +4908,13 @@ function emitCppStructuralReferenceValueConversionCpp(
       );
     }
     if (wideningProof === 'unproven') {
+      // An explicit `any` in the source subject is TypeScript's request to cross this otherwise
+      // incompatible generic cell boundary. Keep that boundary dynamic: share the row owner under
+      // the readonly contextual schema instead of registering a false generated-row widening.
+      // Writable rows stay refused because a concrete write cannot be stored in an `Any`-typed cell.
+      if (erasedAnyReadConversion) {
+        return `${emitType(expectedType, context)}::from_owner(${source}.shared_owner())`;
+      }
       emissionError(
         context,
         'structural row conversion requires a resolved source shape that contains every target member',
@@ -4949,20 +4976,20 @@ function getCppStructuralRowObjectWideningProofCpp(
   const sourceProperties = context.referenceRepresentationPlanner.resolveObjectShape(source, context.module);
   const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(target, context.module);
   if (!sourceProperties || !targetProperties) return undefined;
+  const sourceRuntimeProperties = sourceProperties.filter((property) => !property.phantom);
+  const targetRuntimeProperties = targetProperties.filter((property) => !property.phantom);
   if (
     analyzeIrTypeStructuralAssignability(
-      { kind: 'object', properties: sourceProperties },
-      { kind: 'object', properties: targetProperties },
+      { kind: 'object', properties: sourceRuntimeProperties },
+      { kind: 'object', properties: targetRuntimeProperties },
     ).status !== 'compatible'
   ) {
     return undefined;
   }
   const sourceFields = new Map(
-    sourceProperties
-      .filter((property) => !property.phantom)
-      .map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
+    sourceRuntimeProperties.map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
   );
-  const targetFields = targetProperties.filter((property) => !property.phantom);
+  const targetFields = targetRuntimeProperties;
   if (targetFields.length === 0) return undefined;
   return targetFields.every((property) => {
     const sourceProperty = sourceFields.get(getCppStructuralRowPropertyIdentityCpp(property, context));
@@ -5085,6 +5112,99 @@ function renderCppSubjectNameListCpp(names: readonly string[]): string {
   const last = names[names.length - 1] ?? '';
   if (names.length < 2) return last;
   return `${names.slice(0, -1).join(', ')} and ${last}`;
+}
+
+// A readonly row may cross a field-representation mismatch only when every mismatch was introduced
+// by an explicit `any` in the source subject. This is narrower than structural assignability: names,
+// optionality, and every non-any field still have to use the exact target storage. The result is used
+// only to re-view the existing owner; it never advertises a static widening to the runtime.
+function hasCppStructuralRowErasedAnyReadConversionCpp(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const sourceProperties = context.referenceRepresentationPlanner
+    .resolveObjectShape(source, context.module)
+    ?.filter((property) => !property.phantom);
+  const targetProperties = context.referenceRepresentationPlanner
+    .resolveObjectShape(target, context.module)
+    ?.filter((property) => !property.phantom);
+  if (!sourceProperties || !targetProperties || targetProperties.length === 0) return false;
+  const sourceFields = new Map(
+    sourceProperties.map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
+  );
+  let crossedAny = false;
+  for (const property of targetProperties) {
+    const sourceProperty = sourceFields.get(getCppStructuralRowPropertyIdentityCpp(property, context));
+    if (!sourceProperty || sourceProperty.optional !== property.optional) return false;
+    if (emitType(sourceProperty.type, context) === emitType(property.type, context)) continue;
+    if (!hasCppExplicitAnyTypeCpp(sourceProperty.type, context, new Set())) return false;
+    crossedAny = true;
+  }
+  return crossedAny;
+}
+
+function hasCppExplicitAnyTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): boolean {
+  switch (type.kind) {
+    case 'array':
+      return hasCppExplicitAnyTypeCpp(type.element, context, resolvingAliases);
+    case 'conditionalFacet':
+      return (
+        hasCppExplicitAnyTypeCpp(type.check, context, resolvingAliases) ||
+        hasCppExplicitAnyTypeCpp(type.facet, context, resolvingAliases)
+      );
+    case 'function':
+      return (
+        type.parameters.some((parameter) => hasCppExplicitAnyTypeCpp(parameter.type, context, resolvingAliases)) ||
+        hasCppExplicitAnyTypeCpp(type.returns, context, resolvingAliases)
+      );
+    case 'indexedAccess':
+      return (
+        hasCppExplicitAnyTypeCpp(type.object, context, resolvingAliases) ||
+        hasCppExplicitAnyTypeCpp(type.index, context, resolvingAliases)
+      );
+    case 'intersection':
+    case 'union':
+      return type.types.some((member) => hasCppExplicitAnyTypeCpp(member, context, resolvingAliases));
+    case 'keyof':
+      return hasCppExplicitAnyTypeCpp(type.type, context, resolvingAliases);
+    case 'named': {
+      if (type.typeArguments.some((argument) => hasCppExplicitAnyTypeCpp(argument, context, resolvingAliases))) {
+        return true;
+      }
+      if (
+        type.reference.kind !== 'binding' ||
+        type.reference.binding.kind === 'typeParameter' ||
+        resolvingAliases.has(type.reference.binding.id)
+      ) {
+        return false;
+      }
+      const alias = resolveCppTypeAliasTarget(type, context);
+      return Boolean(
+        alias && hasCppExplicitAnyTypeCpp(alias, context, new Set(resolvingAliases).add(type.reference.binding.id)),
+      );
+    }
+    case 'object':
+      return type.properties.some((property) => hasCppExplicitAnyTypeCpp(property.type, context, resolvingAliases));
+    case 'tuple':
+      return type.elements.some((element) => hasCppExplicitAnyTypeCpp(element.type, context, resolvingAliases));
+    case 'typeOf': {
+      const valueType = getCppTypeOfValueType(type, context);
+      return Boolean(valueType && hasCppExplicitAnyTypeCpp(valueType, context, resolvingAliases));
+    }
+    case 'unknown':
+      return type.source === 'any';
+    case 'literal':
+    case 'never':
+    case 'null':
+    case 'primitive':
+    case 'undefined':
+      return false;
+  }
 }
 
 function getCppStructuralRowPropertyIdentityCpp(
@@ -5869,13 +5989,38 @@ function hasCppStructuralRowObjectProjectionCpp(
   row: Readonly<CompilerCppStructuralRowPlan>,
   target: Readonly<IrType>,
   context: EmitContext,
+  resolvingAliases: ReadonlySet<string> = new Set(),
 ): boolean {
   // A merged row can recover only an object explicitly carried by one of its RowOf branches. A
   // target that merely happens to compile to a reference spelling is not projection evidence.
-  if (row.kind === 'rowOf') return emitType(row.type, context) === emitType(target, context);
+  if (row.kind === 'rowOf') {
+    return hasCppTypeObjectProjectionCpp(row.type, target, context, resolvingAliases);
+  }
   if (row.kind === 'merge')
-    return row.rows.some((member) => hasCppStructuralRowObjectProjectionCpp(member, target, context));
-  return hasCppStructuralRowObjectProjectionCpp(row.row, target, context);
+    return row.rows.some((member) => hasCppStructuralRowObjectProjectionCpp(member, target, context, resolvingAliases));
+  return hasCppStructuralRowObjectProjectionCpp(row.row, target, context, resolvingAliases);
+}
+
+function hasCppTypeObjectProjectionCpp(
+  type: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): boolean {
+  if (emitType(type, context) === emitType(target, context)) return true;
+  if (type.kind === 'intersection') {
+    return type.types.some((member) => hasCppTypeObjectProjectionCpp(member, target, context, resolvingAliases));
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || resolvingAliases.has(type.reference.binding.id)) {
+    return false;
+  }
+  const aliasModule = getCppNamedTypeBindingModuleCpp(type, context);
+  const aliasContext = aliasModule === context.module ? context : { ...context, module: aliasModule };
+  const alias = resolveCppTypeAliasTarget(type, aliasContext);
+  return Boolean(
+    alias &&
+    hasCppTypeObjectProjectionCpp(alias, target, context, new Set(resolvingAliases).add(type.reference.binding.id)),
+  );
 }
 
 function emitArrayExpressionCpp(
@@ -7809,7 +7954,38 @@ function getCppNominalTypeIdentityCpp(
 ): string | undefined {
   const owner = getCppNominalTypeDeclarationOwnerCpp(type, module, context);
   if (!owner || type.kind !== 'named') return undefined;
-  return `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}\0${normalizeCompilerStructuralValueCanonical(type.typeArguments)}`;
+  const argumentsIdentity = type.typeArguments.map((argument) =>
+    getCppNominalTypeArgumentIdentityCpp(argument, context, new Set()),
+  );
+  return `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}\0${JSON.stringify(argumentsIdentity)}`;
+}
+
+// A closed generic base can spell the same argument through a declaration in its own module and an
+// import in the consumer. Binding ids describe those two references, not the declaration identity
+// they both name, so normalize named arguments through their resolved owners before comparing a
+// derived type with a contextual union arm. Unresolved and non-named arguments retain their exact IR
+// identity; this must not turn structural lookalikes into nominal matches.
+function getCppNominalTypeArgumentIdentityCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolving: ReadonlySet<string>,
+): string {
+  if (type.kind !== 'named') return normalizeCompilerStructuralValueCanonical(type);
+  if (type.reference.kind === 'ambient') {
+    return `ambient:${type.reference.name}:${JSON.stringify(
+      type.typeArguments.map((argument) => getCppNominalTypeArgumentIdentityCpp(argument, context, resolving)),
+    )}`;
+  }
+  if (type.reference.binding.kind === 'typeParameter') return normalizeCompilerStructuralValueCanonical(type);
+  const referenceModule = getCppNamedTypeBindingModuleCpp(type, context);
+  const owner = getCppNamedTypeDeclarationOwnerCpp(type, referenceModule, context);
+  if (!owner || !('binding' in owner.declaration)) return normalizeCompilerStructuralValueCanonical(type);
+  const ownerIdentity = `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}`;
+  if (resolving.has(ownerIdentity)) return ownerIdentity;
+  const nextResolving = new Set(resolving).add(ownerIdentity);
+  return `${ownerIdentity}:${JSON.stringify(
+    type.typeArguments.map((argument) => getCppNominalTypeArgumentIdentityCpp(argument, context, nextResolving)),
+  )}`;
 }
 
 function getCppNamedTypeDeclarationIdentityCpp(
@@ -12648,37 +12824,100 @@ function getCppCallableUnionValueSlotCpp(
   if (source.kind !== 'function' || source.typeParameters.length > 0) return undefined;
   const matches = valueSlots.flatMap((slot, index) => {
     const target = getCppClosedCallableType(slot.runtimeType, context, new Set());
-    if (!target || target.typeParameters.length > 0 || source.parameters.length > target.parameters.length) {
+    if (
+      !target ||
+      target.typeParameters.length > 0 ||
+      source.parameters.slice(target.parameters.length).some((parameter) => !parameter.optional || parameter.rest)
+    ) {
       return [];
     }
-    const parametersAgree = source.parameters.every((parameter, parameterIndex) => {
+    const parametersAgree = source.parameters.slice(0, target.parameters.length).every((parameter, parameterIndex) => {
       const targetParameter = target.parameters[parameterIndex]!;
       return (
         parameter.optional === targetParameter.optional &&
         parameter.rest === targetParameter.rest &&
-        emitCppParameterTypeCpp(parameter.type, parameter.rest, context) ===
-          emitCppParameterTypeCpp(targetParameter.type, targetParameter.rest, context)
+        emitCppCallableParameterValueConversionCpp('argument', targetParameter.type, parameter.type, parameter.rest, {
+          ...context,
+          anonymousStructs: new Map(),
+          includes: new Set<string>(),
+        }) !== undefined
       );
     });
     if (!parametersAgree) return [];
-    if (emitType(source.returns, context) === emitType(target.returns, context)) return [index];
-    // A nominal reference returned through its own structural row is the same object with a
-    // read-only call surface. Keep the slot's one declared std::function type and prove the
-    // callable against it from the same emitType spellings used to write both signatures.
-    const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(target.returns, context.module);
-    const targetObject = targetRow ? getCppStructuralRowObjectTypeCpp(targetRow) : undefined;
-    return targetObject && emitType(source.returns, context) === emitType(targetObject, context) ? [index] : [];
+    return hasCppCompatibleCallableReturnRepresentationCpp(source.returns, target.returns, context) ? [index] : [];
   });
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-// TypeScript callables may ignore trailing arguments: a `() => Value` is valid wherever a
-// `(options?: Options) => Value` is expected, and the caller still invokes the contextual signature.
-// `std::function` does not perform that adaptation -- a zero-argument target is not invocable with one
-// argument -- so retain the contextual signature in a small wrapper and call the source with only the
-// prefix it declares. The matcher above has already proved that every retained prefix parameter has the
-// same optional/rest mode and C++ representation and that the return representation agrees. Binding the
-// source in the lambda capture also preserves one evaluation for a call or property that produces it.
+function hasCppCompatibleCallableReturnRepresentationCpp(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (emitType(source, context) === emitType(target, context)) return true;
+  // A nominal reference returned through its own structural row is the same object with a
+  // read-only call surface. Keep the slot's one declared std::function type and prove the
+  // callable against it from the same emitType spellings used to write both signatures.
+  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(target, context.module);
+  const targetObject = targetRow ? getCppStructuralRowObjectTypeCpp(targetRow) : undefined;
+  if (targetObject && emitType(source, context) === emitType(targetObject, context)) return true;
+
+  const sourceUnion = getIrUnionTypeCpp(source, context, new Set());
+  const targetUnion = getIrUnionTypeCpp(target, context, new Set());
+  if (!sourceUnion || !targetUnion) return false;
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, isolatedContext);
+  const targetPlan = getCppUnionRepresentationPlan(targetUnion, isolatedContext);
+  if (
+    sourcePlan.kind !== 'optionalSingle' ||
+    targetPlan.kind !== 'optionalSingle' ||
+    sourcePlan.sentinels.null !== targetPlan.sentinels.null ||
+    sourcePlan.sentinels.undefined !== targetPlan.sentinels.undefined ||
+    sourcePlan.valueSlots.length !== 1 ||
+    targetPlan.valueSlots.length !== 1
+  ) {
+    return false;
+  }
+  const sourceType = sourcePlan.valueSlots[0]!.runtimeType;
+  const targetType = targetPlan.valueSlots[0]!.runtimeType;
+  if (sourceType.kind !== 'named' || targetType.kind !== 'named') return false;
+  return isCppNominalTypeDerivedFromCpp(
+    sourceType,
+    getCppNamedTypeBindingModuleCpp(sourceType, context),
+    targetType,
+    getCppNamedTypeBindingModuleCpp(targetType, context),
+    context,
+    new Set(),
+  );
+}
+
+function emitCppCallableParameterValueConversionCpp(
+  value: string,
+  provided: Readonly<IrType>,
+  accepted: Readonly<IrType>,
+  rest: boolean,
+  context: EmitContext,
+): string | undefined {
+  if (emitCppParameterTypeCpp(provided, rest, context) === emitCppParameterTypeCpp(accepted, rest, context)) {
+    return value;
+  }
+  const providedRuntime = getIrTypeRuntimeDomainCpp(provided, context, new Set());
+  const acceptedRuntime = getIrTypeRuntimeDomainCpp(accepted, context, new Set());
+  if (!providedRuntime || !acceptedRuntime) return undefined;
+  if (
+    emitCppParameterTypeCpp(providedRuntime, rest, context) === emitCppParameterTypeCpp(acceptedRuntime, rest, context)
+  ) {
+    return value;
+  }
+  if (rest) return undefined;
+  return emitCppStructuralReferenceValueConversionCpp(value, providedRuntime, acceptedRuntime, context);
+}
+
+// TypeScript callables may ignore trailing contextual arguments or add optional trailing source
+// parameters, and a source parameter may accept a wider structural domain than the contextual one.
+// `std::function` requires one exact signature, so retain the contextual signature in a wrapper,
+// convert shared arguments to the source domains, and supply absence for source-only optional
+// parameters. Binding the source in the capture also preserves one evaluation for a producer call.
 function emitCppContextualCallableUnionValueCpp(
   expression: Readonly<IrExpression>,
   sourceType: Readonly<IrType>,
@@ -12687,9 +12926,22 @@ function emitCppContextualCallableUnionValueCpp(
 ): string {
   if (sourceType.kind !== 'function') return emitExpression(expression, context, sourceType, false);
   const target = getCppClosedCallableType(targetType, context, new Set());
-  if (!target || sourceType.parameters.length === target.parameters.length) {
-    return emitExpression(expression, context, sourceType, false);
-  }
+  if (!target) return emitExpression(expression, context, sourceType, false);
+  const needsAdapter =
+    sourceType.parameters.length !== target.parameters.length ||
+    sourceType.parameters.some((parameter, index) => {
+      const targetParameter = target.parameters[index];
+      if (!targetParameter) return true;
+      const probe = emitCppCallableParameterValueConversionCpp(
+        'argument',
+        targetParameter.type,
+        parameter.type,
+        parameter.rest,
+        { ...context, anonymousStructs: new Map(), includes: new Set<string>() },
+      );
+      return probe !== 'argument';
+    });
+  if (!needsAdapter) return emitExpression(expression, context, sourceType, false);
   const sourceName = getGeneratedTargetName('contextualCallable', context);
   const parameterNames = target.parameters.map((_, index) =>
     getGeneratedTargetName(`contextualCallableArgument${String(index)}`, context),
@@ -12702,7 +12954,19 @@ function emitCppContextualCallableUnionValueCpp(
     );
     return `${type} ${parameterNames[index]!}`;
   });
-  const arguments_ = parameterNames.slice(0, sourceType.parameters.length);
+  const arguments_ = sourceType.parameters.map((parameter, index) => {
+    const targetParameter = target.parameters[index];
+    if (!targetParameter) return 'std::nullopt';
+    return (
+      emitCppCallableParameterValueConversionCpp(
+        parameterNames[index]!,
+        targetParameter.type,
+        parameter.type,
+        parameter.rest,
+        context,
+      ) ?? parameterNames[index]!
+    );
+  });
   const invocation = `${sourceName}(${arguments_.join(', ')})`;
   const returns = emitType(target.returns, context);
   const body =
@@ -13300,8 +13564,7 @@ function getCppConcreteNamedUnionValueSlotCpp(
         if (
           alternative.kind !== 'named' ||
           alternative.reference.kind !== 'binding' ||
-          alternative.reference.binding.kind === 'typeParameter' ||
-          alternative.typeArguments.length !== 0
+          alternative.reference.binding.kind === 'typeParameter'
         ) {
           return [];
         }
@@ -13332,6 +13595,13 @@ function getCppNamedTypeBindingModuleCpp(
 ): Readonly<IrModule> {
   if (type.reference.kind !== 'binding') return context.module;
   const binding = type.reference.binding;
+  // Interface-inheritance lowering can introduce imports while producing the current module. The
+  // session's sourceModules retain the pre-lowering module, so prefer the active copy when the
+  // binding names it; otherwise a synthetic inherited reference is looked up in imports that did
+  // not exist yet and its declaration owner cannot be recovered.
+  if (context.module.packageName === binding.packageName && context.module.source === binding.source) {
+    return context.module;
+  }
   return (
     context.sourceModules.find(
       (module) => module.packageName === binding.packageName && module.source === binding.source,
@@ -13413,7 +13683,7 @@ function getIrTypeRuntimeDomainCpp(
   ) {
     return createCppPropertyKeyTypeCpp();
   }
-  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.typeArguments.length > 0) return type;
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return type;
   const bindingId = type.reference.binding.id;
   if (resolvingAliases.has(bindingId)) return type;
   if (type.reference.binding.kind === 'typeParameter') {
@@ -13432,7 +13702,19 @@ function resolveCppTypeAliasTarget(
   type: Readonly<Extract<IrType, { kind: 'named' }>>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  return context.referenceRepresentationPlanner.resolveAlias(type, context.module);
+  const direct = context.referenceRepresentationPlanner.resolveAlias(type, context.module);
+  if (direct) return direct;
+  if (type.reference.kind !== 'binding' || type.reference.binding.kind === 'typeParameter') return undefined;
+  // A checker-inferred import through a contract barrel is present in IR imports, but the reference
+  // planner may not own the re-export hop itself. Resolve the exported declaration through the package
+  // graph and substitute its arguments exactly as a direct alias application would.
+  const module = getCppNamedTypeBindingModuleCpp(type, context);
+  const owner = getCppNamedTypeDeclarationOwnerCpp(type, module, context);
+  if (owner?.declaration.kind !== 'typeAlias') return undefined;
+  return resolveIrTypeStructuralSubstitution(
+    owner.declaration.type,
+    createIrTypeParameterSubstitutionPlan(owner.declaration.typeParameters, type.typeArguments),
+  );
 }
 
 function getSingleIrTypeKindCpp<Kind extends IrType['kind']>(
@@ -16601,6 +16883,8 @@ function getIrIdentifierTypeEvidenceCpp(
   const declaredType = getCppBindingTypeCpp(bindingId, context);
   const narrowedType = context.narrowedBindingTypes.get(bindingId) ?? expression.narrowedType;
   if (narrowedType) return narrowedType;
+  const narrowedPrimitive = getCppNarrowedPrimitiveTypeCpp(expression.narrowedMember);
+  if (narrowedPrimitive && isCppErasedDynamicValueTypeCpp(declaredType)) return narrowedPrimitive;
   if (!declaredType || declaredType.kind === 'unknown') {
     const initializer = context.bindingInitializers.get(bindingId);
     let inferred: Readonly<IrType> | undefined;
@@ -16630,6 +16914,40 @@ function getIrIdentifierTypeEvidenceCpp(
   if (expression.narrowedType) return expression.narrowedType;
   if (!expression.narrowedMember) return declaredType;
   return union?.types.find((member) => getIrUnionMemberNameCpp(member) === expression.narrowedMember) ?? declaredType;
+}
+
+function getCppNarrowedPrimitiveTypeCpp(name: string | undefined): Readonly<IrType> | undefined {
+  return name === 'boolean' || name === 'number' || name === 'string' || name === 'symbol'
+    ? { kind: 'primitive', name }
+    : undefined;
+}
+
+// A checker-proved primitive read of an erased binding remains stored as `flight::Any`; narrowing
+// changes the value domain, not the binding's storage. Use the runtime's checked alternative accessor
+// at the read so a contextual primitive union sees the proven domain without reinterpreting the carrier.
+function emitCppNarrowedErasedPrimitiveIdentifierCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    expression.reference.kind !== 'binding' ||
+    !isCppErasedDynamicValueTypeCpp(getCppBindingTypeCpp(expression.reference.binding.id, context))
+  ) {
+    return undefined;
+  }
+  const primitive = getCppNarrowedPrimitiveTypeCpp(expression.narrowedMember);
+  if (primitive?.kind !== 'primitive') return undefined;
+  const accessors: Readonly<Record<string, string>> = {
+    boolean: 'as_boolean',
+    number: 'as_number',
+    string: 'as_string',
+    symbol: 'as_symbol',
+  };
+  const accessor = accessors[primitive.name];
+  if (!accessor) return undefined;
+  context.includes.add('flight/any.hpp');
+  return `${emitIdentifierReference(expression.reference, context)}.${accessor}()`;
 }
 
 function getIrPropertyExpressionTypeEvidenceCpp(

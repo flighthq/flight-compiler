@@ -25559,6 +25559,166 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(incompatibleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('constructs a coalesced literal union from an equality-narrowed erased record member', () => {
+    const result = lower(
+      'literal-union-narrowing.ts',
+      `type Encoding = 'msdf' | 'raster' | 'sdf';
+       function isObject(value: unknown): value is Record<string, unknown> {
+         return typeof value === 'object' && value !== null;
+       }
+       export function readEncoding(value: unknown): Encoding {
+         if (isObject(value)) {
+           const fieldType = value.fieldType;
+           if (fieldType === 'msdf' || fieldType === 'sdf') return fieldType;
+         }
+         return 'raster';
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('.as_string()');
+    expect(emitted).toContain('return field_type.as_string();');
+  });
+
+  it('matches a contextual nullable callable through an equivalent Parameters projection alias', () => {
+    const result = lower(
+      'callable-parameter-projection.ts',
+      `type Release = 'one' | 'two';
+       type Guard = (release: Release) => void;
+       let guard: Guard | null = null;
+       function setGuard(value: Guard | null): void { guard = value; }
+       type ProjectedRelease = Parameters<NonNullable<typeof guard>>[0];
+       function warn(release: ProjectedRelease): void { void release; }
+       export function enable(): void { setGuard(warn); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('set_guard(std::optional<std::function<void(Release)>>{warn});');
+  });
+
+  it('selects a closed generic nominal union arm across an imported type argument spelling', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/types.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/types.ts',
+            `export interface Binding { readonly name: string }
+             export interface KeyedTable<T> { readonly entry: T }
+             export interface SlotTable<T> { readonly slot: T }
+             export type RegistryTable<T> = KeyedTable<T> | SlotTable<T>;
+             export interface BindingTable extends KeyedTable<Binding> {}`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/consumer',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/consumer/src/consumer.ts',
+            `import type { Binding, BindingTable, RegistryTable } from '@flighthq/types';
+             function accept(table: Readonly<RegistryTable<Binding>>): void { void table; }
+             export function forward(table: BindingTable): void { accept(table); }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    );
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const emitted = emitCppModuleCppSession(results, resolution, 1);
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flighthq_types::KeyedTable<');
+    expect(emitted).toContain('>, table}');
+  });
+
+  it('matches a contextual optional callable with one covariant nullable nominal return', () => {
+    const result = lower(
+      'callable-covariant-return.ts',
+      `interface Command { readonly label: string }
+       interface SpecificCommand extends Command { readonly value: number }
+       interface Handler { readonly merge?: (command: Readonly<Command>) => Command | null }
+       function createSpecific(): SpecificCommand { throw new Error('stub'); }
+       export const handler: Handler = {
+         merge: (command: Readonly<Command>) => command.label.length > 0 ? createSpecific() : null,
+       };`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('std::optional<std::function<std::optional<flight::Ref<Command>>');
+    expect(emitted).toContain('create_specific()');
+  });
+
+  it('adapts a callable with optional trailing source parameters', () => {
+    const result = lower(
+      'callable-optional-source-parameters.ts',
+      `type Reader = (text: string) => number;
+       function read(text: string, offset?: number): number { return text.length + (offset ?? 0); }
+       function setReader(reader: Reader | null): void { void reader; }
+       export function install(): void { setReader(read); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('contextual_callable(contextual_callable_argument0, std::nullopt)');
+  });
+
+  it('adapts a callable parameter from a narrower structural view to its accepted base view', () => {
+    const result = lower(
+      'callable-structural-parameter-view.ts',
+      `export const RuntimeKey = Symbol('RuntimeKey');
+       interface NodeTraits { readonly name: string }
+       interface NodeRuntime<Traits extends object> { readonly traits: Traits }
+       interface Node<Traits extends object = NodeTraits> {
+         readonly name: string;
+         readonly runtime: NodeRuntime<Traits> | undefined;
+         readonly [RuntimeKey]: NodeRuntime<Traits> | undefined;
+       }
+       type NodeAny = Node<any>;
+       interface Bounded { readonly width: number }
+       type BoundsNodeAny = NodeAny & Bounded;
+       type Compute = (source: Readonly<BoundsNodeAny>) => void;
+       function compute(source: Readonly<Node>): void { void source; }
+       function setCompute(value: Compute | null): void { void value; }
+       export function install(): void { setCompute(compute); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('::from_owner(contextual_callable_argument0.shared_owner())');
+    expect(emitted).toContain('contextual_callable_argument0');
+  });
+
+  it('constructs an optional branded-symbol domain from its symbol carrier', () => {
+    const result = lower(
+      'branded-symbol.ts',
+      `declare const Brand: unique symbol;
+       type TraitKey<T> = symbol & { readonly [Brand]?: T };
+       type RuntimeKey = TraitKey<{ readonly name: string }>;
+       interface Runtime { readonly key?: RuntimeKey }
+       export function create(key: symbol): Runtime { return { key }; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('.key = std::optional<flight::Symbol>{key}');
+  });
+
   it('constructs one declared reference union arm and refuses unproven competitors', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [

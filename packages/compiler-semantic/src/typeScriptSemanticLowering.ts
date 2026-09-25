@@ -4646,6 +4646,8 @@ function getIrTypeRuntimeRepresentationSemantic(type: IrType): IrType {
 
 function lowerConcreteIndexedAccessType(node: ts.IndexedAccessTypeNode, context: LoweringContext): IrType | undefined {
   if (hasExternalTypeScriptTypeParameter(node, context)) return undefined;
+  const callableParameter = lowerTypeScriptCallableParameterIndexedAccessEvidence(node, context);
+  if (callableParameter) return callableParameter;
   const checkerType = getTypeScriptCheckerTypeEvidence(
     context.checker.getTypeFromTypeNode(node),
     context,
@@ -4655,6 +4657,91 @@ function lowerConcreteIndexedAccessType(node: ts.IndexedAccessTypeNode, context:
   );
   if (checkerType?.kind !== 'unknown' || checkerType.source !== 'any') return checkerType;
   return getTypeScriptIndexedAccessPropertyEvidence(node, context) ?? checkerType;
+}
+
+// The deliberately small ambient surface does not define the standard utility aliases. The checker can
+// therefore collapse `Parameters<NonNullable<typeof callback>>[0]` to `any` even though every part of the
+// projection is authored in the module: the callback binding has a recorded type, NonNullable removes
+// only its sentinel, and Parameters selects its written signature. Preserve that closed evidence before
+// consulting the degraded checker result. Open/generic callables and non-literal indexes still take the
+// ordinary conservative path.
+function lowerTypeScriptCallableParameterIndexedAccessEvidence(
+  node: ts.IndexedAccessTypeNode,
+  context: LoweringContext,
+): IrType | undefined {
+  if (
+    !ts.isLiteralTypeNode(node.indexType) ||
+    !ts.isNumericLiteral(node.indexType.literal) ||
+    !Number.isSafeInteger(Number(node.indexType.literal.text))
+  ) {
+    return undefined;
+  }
+  const index = Number(node.indexType.literal.text);
+  if (index < 0) return undefined;
+  const parameters = lowerType(node.objectType, context);
+  if (
+    parameters.kind !== 'named' ||
+    parameters.reference.kind !== 'ambient' ||
+    parameters.reference.name !== 'Parameters' ||
+    parameters.typeArguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const callable = getTypeScriptClosedCallableIrEvidence(parameters.typeArguments[0]!, context, new Set());
+  if (!callable || callable.typeParameters.length > 0 || callable.parameters.some((parameter) => parameter.rest)) {
+    return undefined;
+  }
+  const parameter = callable.parameters[index];
+  if (!parameter) return undefined;
+  return parameter.optional ? addIrTypeBindingPatternUndefined(parameter.type) : parameter.type;
+}
+
+function getTypeScriptClosedCallableIrEvidence(
+  type: Readonly<IrType>,
+  context: LoweringContext,
+  resolving: ReadonlySet<string>,
+): Readonly<Extract<IrType, { kind: 'function' }>> | undefined {
+  if (type.kind === 'function') return type;
+  if (type.kind === 'union') {
+    const present = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    return present.length === 1 ? getTypeScriptClosedCallableIrEvidence(present[0]!, context, resolving) : undefined;
+  }
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'NonNullable' &&
+    type.typeArguments.length === 1
+  ) {
+    return getTypeScriptClosedCallableIrEvidence(type.typeArguments[0]!, context, resolving);
+  }
+  if (type.kind === 'typeOf' && type.reference.kind === 'binding' && type.reference.path.length === 0) {
+    const bindingId = type.reference.binding.id;
+    const binding = [...context.bindings].find(([, identity]) => identity.id === bindingId)?.[0];
+    const recorded = binding ? context.bindingTypes.get(binding) : undefined;
+    return recorded ? getTypeScriptClosedCallableIrEvidence(recorded, context, resolving) : undefined;
+  }
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.path.length > 0 ||
+    type.typeArguments.length > 0 ||
+    resolving.has(type.reference.binding.id)
+  ) {
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  const symbol = [...context.typeBindings].find(([, identity]) => identity.id === bindingId)?.[0];
+  const declaration = symbol?.declarations?.find(ts.isTypeAliasDeclaration);
+  if (!declaration || declaration.typeParameters?.length) return undefined;
+  const declarationSource = declaration.getSourceFile();
+  const declarationOptions = context.analysisModuleOptions.get(declarationSource.fileName);
+  if (!declarationOptions) return undefined;
+  const resolved = lowerType(declaration.type, {
+    ...context,
+    options: declarationOptions,
+    sourceFile: declarationSource,
+  });
+  return getTypeScriptClosedCallableIrEvidence(resolved, context, new Set(resolving).add(bindingId));
 }
 
 // An unresolved external property type collapses the checker's indexed-access answer to `any`, even
@@ -7973,7 +8060,23 @@ function getTypeScriptReferenceNarrowingEvidence(
   const declaration = symbol?.valueDeclaration ?? symbol?.declarations?.[0];
   if (!symbol || !declaration) return {};
   const declared = context.checker.getTypeOfSymbolAtLocation(symbol, declaration);
-  if (!declared.isUnion()) return getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
+  if (!declared.isUnion()) {
+    const syntactic = getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
+    if (syntactic.narrowedMember) return syntactic;
+    const declaredDomain = lowerTypeScriptTypeOperatorValueDomain(declared, context.checker);
+    const flowDomain = lowerTypeScriptTypeOperatorValueDomain(context.checker.getTypeAtLocation(node), context.checker);
+    // Equality and typeof guards can refine an erased value to one primitive runtime domain even when
+    // the exact flow type is a union of literals (for example, `'msdf' | 'sdf'`). Record the common
+    // primitive domain already proved by the checker; targets still have to use a checked extraction
+    // from their erased carrier rather than treating the binding as that primitive unconditionally.
+    if (
+      declaredDomain === 'unknown' &&
+      (flowDomain === 'boolean' || flowDomain === 'number' || flowDomain === 'string' || flowDomain === 'symbol')
+    ) {
+      return { narrowedMember: flowDomain };
+    }
+    return {};
+  }
   const flow = context.checker.getTypeAtLocation(node);
   const syntactic = getTypeScriptSyntacticReferenceNarrowedMember(node, reference, symbol, context);
   const narrowedType =
@@ -8072,6 +8175,10 @@ function getTypeScriptSyntacticReferenceNarrowedMember(
   context: LoweringContext,
 ): { narrowedMember?: string; narrowedType?: IrType } {
   const recorded = context.bindingTypes.get(symbol);
+  if (recorded?.kind === 'unknown') {
+    const equalityDomain = getTypeScriptEnclosingLiteralEqualityNarrowingDomain(node, symbol, context.checker);
+    if (equalityDomain) return { narrowedMember: equalityDomain };
+  }
   const alternatives = recorded ? getTypeScriptNarrowingAlternatives(recorded, context, new Set()) : [];
   if (alternatives.length < 2) return {};
   let remaining = alternatives;
@@ -8105,6 +8212,55 @@ function getTypeScriptSyntacticReferenceNarrowedMember(
   const narrowedType = remaining.length === 1 ? remaining[0]! : commonType([remaining[0]!, ...remaining.slice(1)]);
   const narrowedMember = remaining.length === 1 ? getIrNarrowedMemberNameSemantic(remaining[0]!) : undefined;
   return { ...(narrowedMember ? { narrowedMember } : {}), narrowedType };
+}
+
+function getTypeScriptEnclosingLiteralEqualityNarrowingDomain(
+  node: ts.Identifier,
+  symbol: ts.Symbol,
+  checker: ts.TypeChecker,
+): 'boolean' | 'number' | 'string' | undefined {
+  for (let child: ts.Node = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isIfStatement(parent) && isTypeScriptNodeWithin(child, parent.thenStatement)) {
+      const domain = getTypeScriptLiteralEqualityConditionDomain(parent.expression, symbol, checker);
+      if (domain) return domain;
+    }
+    if (ts.isFunctionLike(parent)) break;
+  }
+  return undefined;
+}
+
+// A truthy disjunction of exact comparisons such as `kind === 'left' || kind === 'right'` proves one
+// primitive storage domain without claiming one literal member. Every disjunct must test the same
+// binding and agree on the literal domain; a mixed or partial condition supplies no evidence.
+function getTypeScriptLiteralEqualityConditionDomain(
+  expression: ts.Expression,
+  symbol: ts.Symbol,
+  checker: ts.TypeChecker,
+): 'boolean' | 'number' | 'string' | undefined {
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+    const left = getTypeScriptLiteralEqualityConditionDomain(expression.left, symbol, checker);
+    const right = getTypeScriptLiteralEqualityConditionDomain(expression.right, symbol, checker);
+    return left && left === right ? left : undefined;
+  }
+  if (
+    !ts.isBinaryExpression(expression) ||
+    (expression.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsToken &&
+      expression.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken)
+  ) {
+    return undefined;
+  }
+  const literalDomain = (candidate: ts.Expression): 'boolean' | 'number' | 'string' | undefined => {
+    if (candidate.kind === ts.SyntaxKind.TrueKeyword || candidate.kind === ts.SyntaxKind.FalseKeyword) return 'boolean';
+    if (ts.isNumericLiteral(candidate)) return 'number';
+    if (ts.isStringLiteral(candidate) || ts.isNoSubstitutionTemplateLiteral(candidate)) return 'string';
+    return undefined;
+  };
+  const bindingMatches = (candidate: ts.Expression): boolean =>
+    ts.isIdentifier(candidate) && checker.getSymbolAtLocation(candidate) === symbol;
+  if (bindingMatches(expression.left)) return literalDomain(expression.right);
+  if (bindingMatches(expression.right)) return literalDomain(expression.left);
+  return undefined;
 }
 
 function isTypeScriptStatementPathCompleting(statement: ts.Statement): boolean {

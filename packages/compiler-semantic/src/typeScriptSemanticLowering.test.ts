@@ -2955,6 +2955,24 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(parameters.get('unsupported')).toEqual({ kind: 'unknown', source: 'any' });
   });
 
+  it('recovers one closed Parameters projection through NonNullable typeof evidence', () => {
+    const result = lower(
+      'callable-parameter-projection.ts',
+      `type Release = 'one' | 'two';
+       type Guard = (release: Release) => void;
+       let guard: Guard | null = null;
+       export type ProjectedRelease = Parameters<NonNullable<typeof guard>>[0];`,
+    );
+    const projected = result.module.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'ProjectedRelease',
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(projected).toMatchObject({
+      type: { kind: 'named', reference: { binding: { name: 'Release' }, kind: 'binding' } },
+    });
+  });
+
   it('preserves closed callable-object indexed provenance through NonNullable', () => {
     const model = ts.createSourceFile(
       '/flight/packages/model/src/runtime.ts',
@@ -6915,6 +6933,25 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
       kind: 'property',
       object: { kind: 'identifier', narrowedType: { kind: 'object' } },
     });
+  });
+
+  it('records the common primitive domain of literal-equality-narrowed erased values', () => {
+    const result = lower(
+      'erased-literal-narrowing.ts',
+      `export function read(value: unknown): string {
+         if (value === 'left' || value === 'right') return value;
+         return '';
+       }`,
+    );
+    const read = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'read',
+    );
+    const guard = read?.kind === 'function' ? read.body[0] : undefined;
+    const returned =
+      guard?.kind === 'if' && guard.consequent.kind === 'return' ? guard.consequent.expression : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(returned).toMatchObject({ kind: 'identifier', narrowedMember: 'string' });
   });
 
   it('expands nested type aliases when recording typeof union-member evidence', () => {
