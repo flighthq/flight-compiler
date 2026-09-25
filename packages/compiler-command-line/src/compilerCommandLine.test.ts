@@ -413,6 +413,50 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(run.out.join('')).toContain('0 gating');
   });
 
+  it('reports source portability findings alongside target results in text and JSON', () => {
+    const portable: CheckPackage = {
+      directory: 'portable',
+      name: '@flighthq/portable',
+      sources: {
+        'index.ts': 'export function coerce(value: number): number { return value as unknown as number; }',
+      },
+    };
+    const textRun = checkRun([portable]);
+    const jsonRun = checkRun([portable]);
+
+    const textResult = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust'] },
+      textRun.capabilities,
+    );
+    const jsonResult = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--format', 'json'] },
+      jsonRun.capabilities,
+    );
+    const textFinding = checkOutcome(textResult).report.directFindings.find(
+      (finding) => finding.code === 'source-portability',
+    );
+    const json = JSON.parse(jsonRun.out.join('')) as {
+      readonly report: { readonly directFindings: readonly Record<string, unknown>[] };
+    };
+
+    expect(textFinding).toMatchObject({
+      code: 'source-portability',
+      policyClass: 'source-portability',
+      rule: 'unchecked-double-assertion',
+      stage: 'source',
+    });
+    expect(textFinding?.occurrences[0]).toMatchObject({ line: 1, message: expect.stringContaining('through unknown') });
+    expect(textResult.exitCode).toBe(1);
+    expect(textRun.out.join('')).toContain('Rule: unchecked-double-assertion');
+    expect(textRun.out.join('')).toContain('[source/source-portability]');
+    expect(jsonResult.exitCode).toBe(1);
+    expect(json.report.directFindings.find((finding) => finding['code'] === 'source-portability')).toMatchObject({
+      code: 'source-portability',
+      rule: 'unchecked-double-assertion',
+      stage: 'source',
+    });
+  });
+
   it('admits a finding the baseline already carried and still reports it', () => {
     const baseline = JSON.stringify({
       findingIdentities: [refusedIdentity],

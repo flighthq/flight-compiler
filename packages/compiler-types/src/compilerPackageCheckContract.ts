@@ -1,6 +1,7 @@
 import type { CompilerPackageCompilationRefusalCode } from './compilerPackageCompilationContract.js';
 import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
 import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
+import type { CompilerSourcePortabilityReport } from './compilerSourcePortabilityContract.js';
 import type { CompilerTypeScriptAnalysisIdentity } from './compilerTypeScriptContract.js';
 
 export interface CompilerPackageCheckArtifactProvenance {
@@ -40,10 +41,14 @@ export interface CompilerPackageCheckFinding {
   readonly occurrences: readonly CompilerPackageCheckFindingOccurrence[];
   readonly policyClass: CompilerPackageCheckPolicyClass;
   readonly rule?: string | undefined;
-  readonly stage: 'emission' | 'initialization' | 'lowering';
+  /** Source-analysis findings retain the stable site identity that made them baseline-addressable. */
+  readonly sourceFindingIdentity?: string | undefined;
+  readonly stage: 'emission' | 'initialization' | 'lowering' | 'source';
 }
 
-export type CompilerPackageCheckFindingCode = Exclude<CompilerPackageCompilationRefusalCode, 'dependency-refused'>;
+export type CompilerPackageCheckFindingCode =
+  | Exclude<CompilerPackageCompilationRefusalCode, 'dependency-refused'>
+  | 'source-portability';
 
 export interface CompilerPackageCheckFindingOccurrence {
   readonly column?: number | undefined;
@@ -61,6 +66,7 @@ export interface CompilerPackageCheckModuleTotals {
 export interface CompilerPackageCheckOptions {
   readonly classification?: Readonly<CompilerPackageCheckClassificationTable> | undefined;
   readonly provenance: Readonly<CompilerPackageCheckProvenance>;
+  readonly sourcePortability?: Readonly<CompilerSourcePortabilityReport> | undefined;
 }
 
 export interface CompilerPackageCheckPackageSummary {

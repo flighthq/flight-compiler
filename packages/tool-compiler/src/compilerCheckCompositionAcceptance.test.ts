@@ -1,13 +1,16 @@
 import type { CompilerBackend, CompilerPackageCheckReport } from './index.js';
 import {
+  analyzeTypeScriptSourcePortability,
   compareCompilerPackageCheckBaseline,
   compileFlightWorkspace,
+  compileTypeScriptPackageGraph,
   createBackendEmissionFailure,
   createCompilerPackageCheckBaseline,
   createCompilerPackageCheckPolicyResult,
   createCompilerPackageCheckPolicyStrict,
   createCompilerPackageCheckReport,
   createFlightPackageEligibilityPlan,
+  createFlightWorkspaceCompilationInput,
   createMemoryWorkspaceSource,
   readFlightPackageManifests,
 } from './index.js';
@@ -17,6 +20,55 @@ interface AcceptanceBackendOptions {
 }
 
 describe('@flighthq/tool-compiler programmatic check composition', () => {
+  it('composes source portability analysis into a check without changing compilation status', () => {
+    const source = createMemoryWorkspaceSource({
+      '/flight/packages/app/package.json': createPackageManifest('@flighthq/app'),
+      '/flight/packages/app/src/index.ts':
+        'export function coerce(value: number): number { return value as unknown as number; }',
+    });
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/app'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const comparison = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+
+    expect(compilation.report.modules).toMatchObject([{ refusals: [], status: 'emitted' }]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(report.directFindings).toMatchObject([
+      {
+        code: 'source-portability',
+        policyClass: 'source-portability',
+        rule: 'unchecked-double-assertion',
+        stage: 'source',
+      },
+    ]);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+  });
+
   it('admits an unchanged direct finding and rejects a newly introduced one without writing the workspace', () => {
     const files = createWorkspaceFiles();
     const snapshot = structuredClone(files);

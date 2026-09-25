@@ -12,14 +12,12 @@ import {
 import {
   createFlightPackageEligibilityPlan,
   createFlightPackageEligibilitySubsetPlan,
+  createFlightWorkspaceCompilationInput,
   isFlightPackageEligibilityFailure,
   readFlightPackageManifests,
 } from '../../compiler-inventory/src/index.js';
-import {
-  compileFlightWorkspace,
-  compileTypeScriptPackageGraph,
-  parseTypeScriptSource,
-} from '../../compiler-orchestration/src/index.js';
+import { compileTypeScriptPackageGraph, parseTypeScriptSource } from '../../compiler-orchestration/src/index.js';
+import { analyzeTypeScriptSourcePortability } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerCommandLineCapabilities,
   CompilerCommandLineCheckCapabilities,
@@ -229,15 +227,20 @@ export function validateCompilerCommandLineCheckRequest(
     // One compilation of the whole selected closure, not one per package: the module graph, the export
     // lanes, and the identity a baseline records are all graph facts, and a per-package run would answer
     // "what is wrong with this module" with what a dependency could not do.
-    const compilation = compileFlightWorkspace({
-      backend: createCompilerCommandLineBackend(parsed),
-      backendOptions: createCompilerCommandLineCheckBackendOptions(parsed),
+    const input = createFlightWorkspaceCompilationInput({
       eligiblePackageNames: selectedPackageNames,
       source: capabilities.workspaceSource,
       upstreamDirectory: parsed.workspaceDirectory,
     });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: createCompilerCommandLineBackend(parsed),
+      backendOptions: createCompilerCommandLineCheckBackendOptions(parsed),
+      ...input,
+    });
     report = createCompilerPackageCheckReport(compilation.report, {
       provenance: capabilities.readProvenance?.() ?? createCompilerCommandLineCheckProvenance(parsed, capabilities),
+      sourcePortability,
     });
   } catch (error) {
     return refuseCompilerCommandLineCheck(capabilities, `${describeCompilerCommandLineFailure(error)}\n`);

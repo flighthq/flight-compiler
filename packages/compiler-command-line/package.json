@@ -20,6 +20,7 @@
     "@flighthq/compiler-check": "*",
     "@flighthq/compiler-inventory": "*",
     "@flighthq/compiler-orchestration": "*",
+    "@flighthq/compiler-semantic": "*",
     "@flighthq/compiler-types": "*"
   },
   "scripts": {

@@ -6,6 +6,8 @@ import type {
   CompilerPackageCompilationModuleReport,
   CompilerPackageCompilationRefusal,
   CompilerPackageCompilationReport,
+  CompilerSourceFingerprint,
+  CompilerSourcePortabilityReport,
 } from '../../compiler-types/src/index.js';
 import {
   compareCompilerPackageCheckBaseline,
@@ -168,6 +170,70 @@ describe('createCompilerPackageCheckPolicyStrict', () => {
 });
 
 describe('createCompilerPackageCheckReport', () => {
+  it('adds versioned source findings without changing successful compilation outcomes', () => {
+    const compilation = createCompilation([emittedModule('@flight/a', 'src/value.ts', 'Value')]);
+    const sourcePortability = sourcePortabilityReport(12, 7);
+    const report = createCompilerPackageCheckReport(compilation, { ...createOptions(), sourcePortability });
+    const baseline = createCompilerPackageCheckBaseline(report);
+    const relocated = createCompilerPackageCheckReport(compilation, {
+      ...createOptions(),
+      sourcePortability: sourcePortabilityReport(30, 2),
+    });
+    const comparison = compareCompilerPackageCheckBaseline(relocated, baseline);
+    const policy = createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict());
+
+    expect(compilation.modules[0]).toMatchObject({ refusals: [], status: 'emitted' });
+    expect(report.totals).toMatchObject({ directFindings: 1, directOccurrences: 1 });
+    expect(report.totals.modules).toEqual({ dependencyRefused: 0, directlyRefused: 0, emitted: 1, total: 1 });
+    expect(report.directFindings[0]).toMatchObject({
+      code: 'source-portability',
+      occurrences: [{ column: 7, line: 12, message: 'Value.payload exposes unknown' }],
+      policyClass: 'source-portability',
+      rule: 'opaque-value-domain',
+      sourceFindingIdentity: 'source-site-identity',
+      stage: 'source',
+    });
+    expect(report.cascades).toEqual([]);
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.unchanged[0]?.occurrences).toEqual([
+      { column: 2, line: 30, message: 'Value.payload exposes unknown' },
+    ]);
+    expect(policy).toMatchObject({ failingFindingIdentities: [], passed: true });
+
+    const introduced = compareCompilerPackageCheckBaseline(
+      report,
+      createCompilerPackageCheckBaseline(createCompilerPackageCheckReport(compilation, createOptions())),
+    );
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+  });
+
+  it('rejects source analysis with a foreign schema or module', () => {
+    const compilation = createCompilation([emittedModule('@flight/a', 'src/value.ts', 'Value')]);
+    const sourcePortability = sourcePortabilityReport(1, 1);
+
+    expect(() =>
+      createCompilerPackageCheckReport(compilation, {
+        ...createOptions(),
+        sourcePortability: { ...sourcePortability, schema: 'flight-compiler-source-portability/2' } as never,
+      }),
+    ).toThrow('Unsupported source portability report flight-compiler-source-portability/2');
+    expect(() =>
+      createCompilerPackageCheckReport(compilation, {
+        ...createOptions(),
+        sourcePortability: {
+          ...sourcePortability,
+          findings: sourcePortability.findings.map((finding) => ({
+            ...finding,
+            module: { ...finding.module, source: 'src/missing.ts' },
+          })),
+        },
+      }),
+    ).toThrow('Source portability finding references unknown module @flight/a/src/missing.ts');
+  });
+
   it('uses producer classifications by default while strict policy ignores runtime findings and cascades', () => {
     const provenance = createOptions().provenance;
     const runtime = directModule('@flight/a', 'src/runtime.ts', 'runtime', [
@@ -698,4 +764,23 @@ function finding(policyClass: CompilerPackageCheckPolicyClass): CompilerPackageC
 
 function refusal(rule: string, message: string, line: number, column: number): CompilerPackageCompilationRefusal {
   return { code: 'internal-error', column, line, message, rule, stage: 'lowering' };
+}
+
+function sourcePortabilityReport(line: number, column: number): CompilerSourcePortabilityReport {
+  return {
+    acceptedExceptions: [],
+    findings: [
+      {
+        column,
+        fingerprint: 'sha256:source-site' as CompilerSourceFingerprint,
+        identity: 'source-site-identity',
+        line,
+        message: 'Value.payload exposes unknown',
+        module: { name: 'Value', packageName: '@flight/a', source: 'src/value.ts' },
+        rule: 'opaque-value-domain',
+        subject: 'interface:Value/property:payload',
+      },
+    ],
+    schema: 'flight-compiler-source-portability/1',
+  };
 }

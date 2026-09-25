@@ -19,6 +19,7 @@ import type {
   CompilerPackageCompilationModuleReport,
   CompilerPackageCompilationRefusal,
   CompilerPackageCompilationReport,
+  CompilerSourcePortabilityFinding,
 } from '../../compiler-types/src/index.js';
 
 export function compareCompilerPackageCheckBaseline(
@@ -154,6 +155,40 @@ export function createCompilerPackageCheckReport(
       identities.push(identity);
     }
     directIdentitiesBySubject.set(getModuleSubject(module.module), [...new Set(identities)].sort(compareTextCodeUnits));
+  }
+  if (options.sourcePortability !== undefined) {
+    if (options.sourcePortability.schema !== 'flight-compiler-source-portability/1') {
+      throw new TypeError(`Unsupported source portability report ${options.sourcePortability.schema}`);
+    }
+    for (const sourceFinding of [...options.sourcePortability.findings].sort(compareSourcePortabilityFindings)) {
+      const subject = getModuleSubject(sourceFinding.module);
+      if (!modulesBySubject.has(subject)) {
+        throw new TypeError(`Source portability finding references unknown module ${subject}`);
+      }
+      const identity = createSourcePortabilityFindingIdentity(sourceFinding);
+      const occurrence: CompilerPackageCheckFindingOccurrence = {
+        column: sourceFinding.column,
+        line: sourceFinding.line,
+        message: normalizeText(sourceFinding.message),
+      };
+      const existing = findingBuilders.get(identity);
+      if (existing) {
+        existing.occurrences.set(createOccurrenceIdentity(occurrence), occurrence);
+        continue;
+      }
+      findingBuilders.set(identity, {
+        finding: {
+          code: 'source-portability',
+          identity,
+          module: cloneModuleIdentity(sourceFinding.module),
+          policyClass: 'source-portability',
+          rule: sourceFinding.rule,
+          sourceFindingIdentity: normalizeText(sourceFinding.identity),
+          stage: 'source',
+        },
+        occurrences: new Map([[createOccurrenceIdentity(occurrence), occurrence]]),
+      });
+    }
   }
 
   const directFindings = [...findingBuilders.values()]
@@ -302,6 +337,7 @@ function cloneFinding(finding: Readonly<CompilerPackageCheckFinding>): CompilerP
     occurrences: finding.occurrences.map((occurrence) => ({ ...occurrence })),
     policyClass: finding.policyClass,
     ...(finding.rule === undefined ? {} : { rule: finding.rule }),
+    ...(finding.sourceFindingIdentity === undefined ? {} : { sourceFindingIdentity: finding.sourceFindingIdentity }),
     stage: finding.stage,
   };
 }
@@ -348,6 +384,13 @@ function compareOccurrences(
   right: Readonly<CompilerPackageCheckFindingOccurrence>,
 ): number {
   return compareTextCodeUnits(createOccurrenceIdentity(left), createOccurrenceIdentity(right));
+}
+
+function compareSourcePortabilityFindings(
+  left: Readonly<CompilerSourcePortabilityFinding>,
+  right: Readonly<CompilerSourcePortabilityFinding>,
+): number {
+  return compareTextCodeUnits(left.identity, right.identity);
 }
 
 function createClassificationLookup(classification: Readonly<CompilerPackageCheckClassificationTable> | undefined): {
@@ -419,6 +462,21 @@ function createModuleTotals(
 
 function createOccurrenceIdentity(occurrence: Readonly<CompilerPackageCheckFindingOccurrence>): string {
   return JSON.stringify([occurrence.message, occurrence.line ?? null, occurrence.column ?? null]);
+}
+
+function createSourcePortabilityFindingIdentity(finding: Readonly<CompilerSourcePortabilityFinding>): string {
+  const module = cloneModuleIdentity(finding.module);
+  const sourceIdentity = normalizeText(finding.identity);
+  if (sourceIdentity.length === 0) throw new TypeError('Source portability finding identity is empty');
+  return `flight-compiler-check-finding/1:${JSON.stringify([
+    module.packageName,
+    module.source,
+    module.name,
+    'source',
+    'source-portability',
+    normalizeText(finding.rule),
+    sourceIdentity,
+  ])}`;
 }
 
 function createPackageSummaries(
