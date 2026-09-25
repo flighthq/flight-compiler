@@ -15,6 +15,12 @@ import {
   isTaskArgument,
 } from './behavioralOracleArgument.js';
 import { inferCppValueType, renderCppValue, toCppName } from './behavioralOracleCpp.js';
+import {
+  assertBehavioralOracleProcessSucceeded,
+  createBehavioralOracleFailureRecord,
+  getBehavioralOracleFailureSummaries,
+  type BehavioralOracleFailureRecord,
+} from './behavioralOracleFailure.js';
 import { splitBehavioralOracleOutput } from './behavioralOracleOutput.js';
 import {
   createCppExecutableArguments,
@@ -111,7 +117,7 @@ const cppRuntimeInclude = cppSelected ? path.join(resolveDependency(root, 'fligh
 const cppRuntimeAvailable = cppSelected && existsSync(cppRuntimeInclude);
 const cppToolchain = cppRuntimeAvailable ? findCppCompilerToolchain() : undefined;
 const divergences: OracleDivergence[] = [];
-const buildFailures: Array<{ fixture: string; target: string; message: string }> = [];
+const failures: BehavioralOracleFailureRecord[] = [];
 const workspace = mkdtempSync(path.join(tmpdir(), 'flight-oracle-'));
 let compared = 0;
 let cppExcluded = 0;
@@ -127,11 +133,7 @@ try {
       try {
         compare(fixture, 'haxe', haxeCases.expected, runHaxeOracle(fixture, haxeCases.cases));
       } catch (error) {
-        buildFailures.push({
-          fixture,
-          message: error instanceof Error ? error.message : String(error),
-          target: 'haxe',
-        });
+        failures.push(createBehavioralOracleFailureRecord(fixture, 'haxe', error));
       }
     }
     const rustCases = selectOracleCases(cases, expected, 'rust');
@@ -139,11 +141,7 @@ try {
       try {
         compare(fixture, 'rust', rustCases.expected, runRustOracle(fixture, rustCases.cases));
       } catch (error) {
-        buildFailures.push({
-          fixture,
-          message: error instanceof Error ? error.message : String(error),
-          target: 'rust',
-        });
+        failures.push(createBehavioralOracleFailureRecord(fixture, 'rust', error));
       }
     }
     const cppCases = selectOracleCases(cases, expected, 'cpp');
@@ -151,7 +149,7 @@ try {
       try {
         compare(fixture, 'cpp', cppCases.expected, runCppOracle(fixture, cppCases.cases, cppToolchain));
       } catch (error) {
-        buildFailures.push({ fixture, message: error instanceof Error ? error.message : String(error), target: 'cpp' });
+        failures.push(createBehavioralOracleFailureRecord(fixture, 'cpp', error));
       }
     } else if (cppToolchain && cppCases.cases.length > 0) {
       cppExcluded += 1;
@@ -161,20 +159,11 @@ try {
   rmSync(workspace, { force: true, recursive: true });
 }
 
-if (buildFailures.length > 0) {
-  const byTarget = new Map<string, string[]>();
-  for (const failure of buildFailures) {
-    const fixturesForTarget = byTarget.get(failure.target) ?? [];
-    fixturesForTarget.push(failure.fixture);
-    byTarget.set(failure.target, fixturesForTarget);
-  }
-  const summary = [...byTarget.entries()]
-    .map(([target, failedFixtures]) => `${target}: ${String(failedFixtures.length)} (${failedFixtures.join(', ')})`)
-    .join('; ');
-  process.stderr.write(`\n${String(buildFailures.length)} fixture(s) failed to build or run (${summary}).\n`);
+if (failures.length > 0) {
+  for (const summary of getBehavioralOracleFailureSummaries(failures)) process.stderr.write(`\n${summary}\n`);
   if (filters.verbose) {
-    for (const failure of buildFailures) {
-      process.stderr.write(`\n${failure.target}/${failure.fixture}\n${failure.message}\n`);
+    for (const failure of failures) {
+      process.stderr.write(`\n${failure.target}/${failure.fixture} [${failure.stage}]\n${failure.message}\n`);
     }
   }
 }
@@ -188,7 +177,7 @@ if (divergences.length > 0) {
   process.stderr.write(`\n${String(divergences.length)} behavioral divergence(s) from the source language.\n`);
 }
 
-if (buildFailures.length > 0 || divergences.length > 0) process.exit(1);
+if (failures.length > 0 || divergences.length > 0) process.exit(1);
 
 const skipped = [
   ...(!haxeSelected || haxeAvailable ? [] : ['haxe']),
@@ -340,7 +329,11 @@ function runHaxeOracle(fixture: string, cases: readonly OracleCase[]): readonly 
     cwd: directory,
     encoding: 'utf8',
   });
-  if (built.status !== 0) throw new Error(`${fixture} haxe oracle build failed:\n${built.stderr ?? ''}`);
+  assertBehavioralOracleProcessSucceeded(
+    'build',
+    built.status,
+    `${fixture} haxe oracle build failed:\n${built.error?.message ?? ''}${built.stderr ?? ''}`,
+  );
   return runLines('node', ['oracle.js'], directory, `${fixture} haxe`);
 }
 
@@ -357,7 +350,11 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
     ['--edition', '2021', '--crate-name', 'flight_runtime', '--crate-type=lib', '-o', runtime, 'flight_runtime.rs'],
     { cwd: directory, encoding: 'utf8' },
   );
-  if (builtRuntime.status !== 0) throw new Error(`${fixture} rust runtime build failed:\n${builtRuntime.stderr ?? ''}`);
+  assertBehavioralOracleProcessSucceeded(
+    'build',
+    builtRuntime.status,
+    `${fixture} rust runtime build failed:\n${builtRuntime.error?.message ?? ''}${builtRuntime.stderr ?? ''}`,
+  );
   writeFileSync(
     path.join(directory, 'main.rs'),
     [
@@ -441,7 +438,11 @@ function runRustOracle(fixture: string, cases: readonly OracleCase[]): readonly 
     ['--edition', '2021', '--extern', `flight_runtime=${runtime}`, '-o', 'oracle', 'main.rs'],
     { cwd: directory, encoding: 'utf8' },
   );
-  if (built.status !== 0) throw new Error(`${fixture} rust oracle build failed:\n${built.stderr ?? ''}`);
+  assertBehavioralOracleProcessSucceeded(
+    'build',
+    built.status,
+    `${fixture} rust oracle build failed:\n${built.error?.message ?? ''}${built.stderr ?? ''}`,
+  );
   return runLines(path.join(directory, 'oracle'), [], directory, `${fixture} rust`);
 }
 
@@ -559,11 +560,11 @@ function runCppOracle(
     createCppExecutableArguments(toolchain, 'main.cpp', executable, [cppRuntimeInclude, directory]),
     { cwd: directory, encoding: 'utf8' },
   );
-  if (built.status !== 0) {
-    throw new Error(
-      `${fixture} C++ oracle build failed with ${toolchain.command} (${toolchain.family}):\n${built.stdout ?? ''}${built.stderr ?? ''}`,
-    );
-  }
+  assertBehavioralOracleProcessSucceeded(
+    'build',
+    built.status,
+    `${fixture} C++ oracle build failed with ${toolchain.command} (${toolchain.family}):\n${built.error?.message ?? ''}${built.stdout ?? ''}${built.stderr ?? ''}`,
+  );
   return runLines(path.join(directory, executable), [], directory, `${fixture} C++`);
 }
 
@@ -581,7 +582,11 @@ function collectCppArrayHints(cases: readonly OracleCase[]): ReadonlyMap<string,
 
 function runLines(command: string, args: readonly string[], cwd: string, subject: string): readonly string[] {
   const result = spawnSync(command, [...args], { cwd, encoding: 'utf8' });
-  if (result.status !== 0) throw new Error(`${subject} run failed:\n${result.stderr ?? ''}`);
+  assertBehavioralOracleProcessSucceeded(
+    'run',
+    result.status,
+    `${subject} run failed:\n${result.error?.message ?? ''}${result.stderr ?? ''}`,
+  );
   return splitBehavioralOracleOutput(result.stdout ?? '');
 }
 
