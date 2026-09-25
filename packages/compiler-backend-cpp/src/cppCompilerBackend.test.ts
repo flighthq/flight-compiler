@@ -13654,7 +13654,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(emitted.contents).toContain('flight::Array<double>');
-    expect(emitted.contents).toContain('flight::Array<double> identity(flight::Array<double> value)');
+    expect(emitted.contents).toContain('using Values = flight::Array<double>;');
+    expect(emitted.contents).toContain('inline Values identity(Values value)');
     expect(emitted.contents).not.toContain('std::variant<flight::Array<double>');
     expect(emitted.contents).not.toContain('cpp-union-runtime-domains-erased');
   });
