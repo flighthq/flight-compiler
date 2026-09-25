@@ -27162,6 +27162,58 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(failure.rule).toBe('cpp-structural-open-row-construction-unproven');
   });
 
+  it('merges a sound intersection into one shape and keeps each member once', () => {
+    const result = lower(
+      'intersection-merge.ts',
+      `interface A { a?: number; shared: string }
+       interface B { b: string; shared: string }
+       type BAlias = B;
+       export function read(value: A & BAlias): number | undefined { return value.a; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Every conjunct resolves, so the intersection is one minted shape: the optional member stays
+    // optional, the member both conjuncts declare appears once, and an alias spelling is its conjunct.
+    const merged =
+      /struct a_shared_b_[0-9a-f]+ : public flight::ReferenceEnabled \{(?<body>[^}]*)\}/u.exec(contents)?.groups
+        ?.body ?? '';
+    // The conjuncts keep their own declarations, so the assertions below are about the MERGED shape:
+    // every member once, at the optionality the intersection gives it.
+    expect(merged.match(/shared;/gu)).toHaveLength(1);
+    expect(merged).toContain('std::optional<double> a;');
+    expect(merged).toContain('flight::String b;');
+  });
+
+  it('refuses an intersection whose conjuncts disagree and names the member they disagree about', () => {
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('intersection-negative.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    const conflict = refusal(
+      `interface A { a: number; x: string }
+       interface B { b: string }
+       interface C { a: string; c: boolean }
+       export function read(value: A & B & C): number { return 1; }`,
+    );
+    expect(conflict.rule).toBe('cpp-intersection-member-shapeless');
+    // No member set exists at one type, so the source is what has to change: the report names the member
+    // the conjuncts disagree about rather than the whole type.
+    expect(conflict.classification).toBe('source-portability');
+    expect(conflict.message).toContain('a declared at different types by more than one conjunct');
+    expect(conflict.message).toContain('Declare one shape that holds each member once');
+    expect(conflict.message).not.toContain(' x ');
+
+    const primitive = refusal(
+      `interface A { a: number }
+       export function read(value: A & string): number { return 1; }`,
+    );
+    expect(primitive.rule).toBe('cpp-intersection-member-shapeless');
+    expect(primitive.classification).toBe('source-portability');
+    expect(primitive.message).toContain('no shape for primitive');
+    expect(primitive.message).toContain('Declare the object shape the code reads');
+  });
+
   it('refuses a concrete trait whose fixed field conflicts with the Node row', () => {
     const result = lower(
       'incompatible-node-trait.ts',

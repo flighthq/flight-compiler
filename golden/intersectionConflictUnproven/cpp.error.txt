@@ -1,0 +1,1 @@
+cpp emission failed for @flighthq/golden/packages/golden/src/intersectionConflictUnproven.ts: intersection types require C++ multiple-inheritance lowering: a declared at different types by more than one conjunct. Declare one shape that holds each member once, at the type the code reads, rather than intersecting shapes that disagree

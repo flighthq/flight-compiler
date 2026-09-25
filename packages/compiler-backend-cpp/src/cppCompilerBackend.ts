@@ -7446,19 +7446,35 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         context.module,
       );
       if (!distributed) {
-        // This refusal is reached by several unrelated causes -- a union with no shape arm, an exclusion
-        // with no arm, a member that is not an object at all -- and the message is the only thing they
-        // share, so it cannot tell them apart. Naming the members that had no shape is what turns a
-        // bisect into a read: a caller sees which conjunct failed rather than that the whole type did.
+        // This refusal is reached by several unrelated causes -- a conjunct that is not an object at all,
+        // a conjunction that disagrees about a member -- and the message is the only thing they share, so
+        // it cannot tell them apart. Naming the cause is what turns a bisect into a read, and the two
+        // causes need different things written, so they are named separately rather than as one list.
         const shapeless = type.types.filter(
           (member) => !context.referenceRepresentationPlanner.resolveObjectShape(member, context.module),
         );
+        const conflicting =
+          shapeless.length === 0 ? collectCppIntersectionConflictingMemberNamesCpp(type, context) : [];
+        const cause =
+          shapeless.length > 0
+            ? `no shape for ${shapeless
+                .map((member) => describeShapelessIntersectionMemberCpp(member, context))
+                .join(', ')}`
+            : conflicting.length > 0
+              ? `${renderCppSubjectNameListCpp(conflicting)} declared at different types by more than one conjunct`
+              : 'no conjunct contributes a shape';
+        const remedy =
+          shapeless.length > 0
+            ? 'Declare the object shape the code reads rather than intersecting a conjunct that has none'
+            : 'Declare one shape that holds each member once, at the type the code reads, rather than intersecting shapes that disagree';
+        // The source is what has to change either way: an intersection of a non-object or of two
+        // declarations that disagree has no member set at one type, so the target has nothing to
+        // represent rather than something it lacks.
         emissionError(
           context,
-          `intersection types require C++ multiple-inheritance lowering: no shape for ${shapeless
-            .map((member) => describeShapelessIntersectionMemberCpp(member, context))
-            .join(', ')}`,
+          `intersection types require C++ multiple-inheritance lowering: ${cause}. ${remedy}`,
           'cpp-intersection-member-shapeless',
+          'source-portability',
         );
       }
       return emitType(distributed, context, representation);
@@ -21721,6 +21737,35 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
 // by what it IS rather than by the spelling it arrived in: an alias or an import resolves before this, so
 // a reader who expects to see their own type name here is looking at the resolved form, which is the one
 // the target would have to represent.
+// The members more than one conjunct declares at different representations, in canonical order. An
+// intersection has one type per member and two disagreements have none at all, so a member named here is
+// what the source has to reconcile.
+//
+// Compared as alias-resolved value representations, because two spellings of one type are one type: the
+// planner accepts those conjuncts, and a diagnostic that called them a conflict would send a reader to
+// rewrite a declaration that is already correct. Optionality is deliberately not compared -- `a?: T` and
+// `a: T` intersect to `a: T`, which the planner merges -- so only the member's type decides.
+function collectCppIntersectionConflictingMemberNamesCpp(
+  type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
+  context: EmitContext,
+): readonly string[] {
+  const spellingContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set() };
+  const declared = new Map<string, string>();
+  const conflicting = new Set<string>();
+  for (const member of type.types) {
+    const properties = context.referenceRepresentationPlanner.resolveObjectShape(member, context.module);
+    if (!properties) continue;
+    for (const property of properties) {
+      if (property.phantom) continue;
+      const emitted = emitCppAliasResolvedValueTypeCpp(property.type, spellingContext);
+      const existing = declared.get(property.name);
+      if (existing === undefined) declared.set(property.name, emitted);
+      else if (existing !== emitted) conflicting.add(property.name);
+    }
+  }
+  return [...conflicting].sort(compareTextCodeUnits);
+}
+
 function getCppPartialShapeRefusalCpp(subject: Readonly<IrType>): string {
   if (subject.kind === 'union') {
     return 'Partial<T> over a union has no single C++ shape: apply Partial to each member and union the results, or declare one shape holding the members the code reads';
