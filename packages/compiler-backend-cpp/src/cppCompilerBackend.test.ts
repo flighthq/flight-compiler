@@ -13645,6 +13645,18 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.message).toContain('flight::Same');
   });
 
+  it('normalizes a homogeneous tuple and array union to the shared flight-cpp array domain', () => {
+    const result = lower(
+      'homogeneous-tuple-array-union.ts',
+      `type Values = readonly [number, number] | readonly number[];
+       export function identity(value: Values): Values { return value; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('flight::Array<double>');
+    expect(emitted.contents).not.toContain('cpp-union-runtime-domains-erased');
+  });
+
   it('uses stable source-identity spelling for colliding public C++ names', () => {
     const result = lower(
       'collision.ts',

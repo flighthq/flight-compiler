@@ -3,6 +3,7 @@ import {
   normalizeCompilerStructuralValueCanonical,
 } from '../../compiler-canonical-form/src/index.js';
 import type { IrType, IrTypeReference } from '../../compiler-types/src/index.js';
+import { getIrHomogeneousTupleElementTypeCpp } from './cppTupleRepresentation.js';
 
 type CppUnionConstruction =
   | Readonly<{ kind: 'direct'; valueSlot: number }>
@@ -102,7 +103,7 @@ export function createCppUnionRepresentationPlan(
         targetType: slot.targetType,
       };
     });
-  const collisions = createCppUnionTargetCollisions(valueSlots);
+  const collisions = createCppUnionTargetCollisions(mergeCppTupleArrayRuntimeSlots(valueSlots));
   if (collisions.length > 0) {
     return cloneCppUnionRepresentationPlan({
       collisions,
@@ -113,6 +114,35 @@ export function createCppUnionRepresentationPlan(
 
   const plan = createCppUnionRepresentationSuccess(valueSlots, inventory.hasNull, inventory.hasUndefined);
   return cloneCppUnionRepresentationPlan(plan);
+}
+
+function mergeCppTupleArrayRuntimeSlots(valueSlots: readonly CppUnionRuntimeSlot[]): readonly CppUnionRuntimeSlot[] {
+  const result = [...valueSlots];
+  const byTarget = new Map<string, CppUnionRuntimeSlot[]>();
+  for (const slot of valueSlots) {
+    byTarget.set(slot.targetType, [...(byTarget.get(slot.targetType) ?? []), slot]);
+  }
+  for (const slots of byTarget.values()) {
+    const arrays = slots.filter((slot) => slot.runtimeType.kind === 'array');
+    if (arrays.length !== 1) continue;
+    const array = arrays[0]!;
+    const tuples = slots.filter(
+      (slot) =>
+        slot.runtimeType.kind === 'tuple' && getIrHomogeneousTupleElementTypeCpp(slot.runtimeType) !== undefined,
+    );
+    if (tuples.length === 0) continue;
+    const merged: CppUnionRuntimeSlot = {
+      ...array,
+      sourceAlternatives: [...array.sourceAlternatives, ...tuples.flatMap((slot) => slot.sourceAlternatives)],
+    };
+    const tupleSet = new Set(tuples);
+    const index = result.indexOf(array);
+    result.splice(index, 1, merged);
+    for (let i = result.length - 1; i >= 0; i--) {
+      if (tupleSet.has(result[i]!)) result.splice(i, 1);
+    }
+  }
+  return result;
 }
 
 function cloneCppUnionRepresentationPlan<T extends CppUnionRepresentationPlan>(plan: T): T {
