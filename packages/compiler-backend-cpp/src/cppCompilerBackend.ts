@@ -3411,6 +3411,9 @@ function emitExpression(
         context,
       );
       if (erasedDynamicConversion) return erasedDynamicConversion;
+      if (isCppErasedDynamicObjectViewAssertionCpp(expression, context)) {
+        return emitExpression(expression.expression, context);
+      }
       const namedPropertiesSource = getCppNamedPropertiesViewSourceCpp(expression, context);
       if (
         isCppUnknownRecordTypeCpp(expression.type, 'PropertyKey') &&
@@ -3659,6 +3662,8 @@ function emitExpression(
     case 'conditional': {
       const numericPropertyTypeof = emitCppNumericPropertyTypeofConditionalCpp(expression, context, expectedType);
       if (numericPropertyTypeof) return numericPropertyTypeof;
+      const primitiveErasedTypeof = emitCppPrimitiveErasedTypeofConditionalCpp(expression, context, expectedType);
+      if (primitiveErasedTypeof) return primitiveErasedTypeof;
       const erasedTypeof = emitCppErasedTypeofConditionalCpp(expression, context, expectedType);
       if (erasedTypeof) return erasedTypeof;
       const evidence =
@@ -4413,7 +4418,11 @@ function emitExpression(
       if (enumMember) return enumMember;
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
       if (narrowedPresent) return narrowedPresent;
+      const optionalErasedDynamicProperty = emitCppErasedDynamicOptionalPropertyReadCpp(expression, context);
+      if (optionalErasedDynamicProperty) return optionalErasedDynamicProperty;
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context, expectedType);
+      const erasedDynamicProperty = emitCppErasedDynamicPropertyReadCpp(expression, context);
+      if (erasedDynamicProperty) return erasedDynamicProperty;
       if (expression.member) assertCppPresentOptionalStorageMemberReceiverCpp(expression, context);
       if (getCppStructuralRowExpressionPlanCpp(expression.object, context)) {
         context.includes.add('flight/structural_ref.hpp');
@@ -4618,11 +4627,17 @@ function emitExpression(
         // reports `object`. Answering it at run time is what the value is for; folding it would be
         // claiming a shape the source did not state.
         const typeofOperandType = getCppNullishComparisonOperandTypeCpp(expression.operand, context);
+        const optionalErasedTypeof = emitCppOptionalErasedTypeofCpp(expression.operand, typeofOperandType, context);
+        if (optionalErasedTypeof) return optionalErasedTypeof;
         if (hasCppErasedDynamicTestOperandCpp(expression.operand, typeofOperandType, context)) {
           context.includes.add('flight/any.hpp');
           return `${emitExpression(expression.operand, context)}.type_of()`;
         }
-        emissionError(context, 'typeof requires closed runtime type evidence');
+        emissionError(
+          context,
+          'typeof requires closed runtime type evidence: preserve the value in an unknown/any carrier, use a closed union with distinguishable alternatives, or test an explicit discriminator',
+          'cpp-typeof-runtime-domain-unrepresented',
+        );
       }
       const sharedCaptureTargetName = getSharedCaptureTargetNameCpp(expression.operand, context);
       if (
@@ -9370,7 +9385,7 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
     if (!getCppErasedTypeofTagSupportCpp(comparison.tag)) {
       emissionError(
         context,
-        `the runtime's erased value cannot report the tag '${comparison.tag}': it carries undefined, boolean, number, string, symbol, function, object and no bigint`,
+        `the runtime's erased value cannot report the tag '${comparison.tag}': it carries undefined, boolean, number, string, symbol, function, object and no bigint; preserve bigint in a statically typed branch or test a supported runtime tag`,
         'cpp-erased-tag-unreportable',
       );
     }
@@ -9482,6 +9497,59 @@ function emitCppNumericPropertyTypeofConditionalCpp(
   return `([&]() -> double { auto optional_chain_receiver = ${receiver}; if (${projection.absent}) return ${fallback}; const auto ${key} = ${keyValue}; const auto ${lookup} = ${read}; if (!${lookup}.has_value()) return ${fallback}; return ${read}.value(); }())`;
 }
 
+// A checked erased value can leave its dynamic carrier only through the primitive extraction named by
+// the same `typeof` test. Keep the tested value in one local so an optional chain, named-property read,
+// or other effectful expression is evaluated once. This path deliberately accepts only the primitive
+// domains the erased carrier can extract and only when the true branch reads that same stable carrier;
+// object and callable tests need a destination identity/signature that a tag alone does not prove.
+function emitCppPrimitiveErasedTypeofConditionalCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'conditional' }>>,
+  context: EmitContext,
+  expectedType: Readonly<IrType> | undefined,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || !expectedType) return undefined;
+  const guard =
+    expression.condition.kind === 'binary' && expression.condition.operator === '&&'
+      ? expression.condition.left
+      : undefined;
+  const test = guard && expression.condition.kind === 'binary' ? expression.condition.right : expression.condition;
+  if (test.kind !== 'binary' || (test.operator !== '==' && test.operator !== '===')) return undefined;
+  const comparison = getCppTypeofTagComparisonCpp(test.left, test.right);
+  const extraction: Readonly<Record<string, string>> = {
+    boolean: 'as_boolean',
+    number: 'as_number',
+    string: 'as_string',
+    symbol: 'as_symbol',
+  };
+  const method = comparison ? extraction[comparison.tag] : undefined;
+  if (
+    !comparison ||
+    !method ||
+    getIrUnionTypeCpp(expectedType, context, new Set()) ||
+    getCppStaticTypeofTypeCpp(expectedType, context, new Set()) !== comparison.tag ||
+    !isCppStableErasedTypeofCarrierCpp(comparison.operand, expression.whenTrue, context)
+  ) {
+    return undefined;
+  }
+  const operandType = getCppNullishComparisonOperandTypeCpp(comparison.operand, context);
+  const operandUnion = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
+  const operandPlan = operandUnion ? getCppUnionRepresentationPlan(operandUnion, context) : undefined;
+  const optionalErased =
+    operandPlan?.kind === 'optionalSingle' && operandPlan.valueSlots[0]?.targetType === 'flight::Any';
+  const directErased = hasCppErasedDynamicTestOperandCpp(comparison.operand, operandType, context);
+  if (!optionalErased && !directErased) return undefined;
+
+  const carrier = getGeneratedTargetName('erasedTypeofCarrier', context);
+  const source = emitExpression(comparison.operand, context, operandType);
+  const fallback = emitExpression(expression.whenFalse, context, expectedType);
+  const guarded = guard ? `if (!(${emitCppTruthinessExpression(guard, context)})) return ${fallback}; ` : '';
+  const value = optionalErased ? `${carrier}.value()` : carrier;
+  const present = optionalErased ? `${carrier}.has_value() && ` : '';
+  context.includes.add('flight/any.hpp');
+  if (optionalErased) context.includes.add('optional');
+  return `([&]() -> ${emitType(expectedType, context)} { ${guarded}const auto& ${carrier} = ${source}; if (${present}${value}.type_of() == ${emitLiteral(comparison.tag, context)}) return ${value}.${method}(); return ${fallback}; }())`;
+}
+
 function emitCppErasedTypeofConditionalCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'conditional' }>>,
   context: EmitContext,
@@ -9566,17 +9634,17 @@ function isCppStableErasedTypeofCarrierCpp(
   }
   return (
     tested.kind === 'property' &&
-    !tested.optional &&
-    tested.absent === undefined &&
     tested.object.kind === 'identifier' &&
     tested.object.reference.kind === 'binding' &&
     narrowed.kind === 'property' &&
     !narrowed.optional &&
-    narrowed.absent === undefined &&
     narrowed.object.kind === 'identifier' &&
     narrowed.object.reference.kind === 'binding' &&
     tested.name === narrowed.name &&
     tested.object.reference.binding.id === narrowed.object.reference.binding.id &&
+    (tested.optional
+      ? tested.optionalChain !== undefined && narrowed.object.presence === 'narrowedPresent'
+      : tested.absent === narrowed.absent) &&
     !getIrExpressionClassAccessorCpp(tested.object, tested.name, 'get', context)
   );
 }
@@ -9626,6 +9694,32 @@ function getCppErasedTypeofTagSupportCpp(tag: string): boolean {
     default:
       return false;
   }
+}
+
+// Optional erased storage has one additional `undefined` state outside its payload. Preserve that
+// state in the reported tag, bind the expression once, and let the erased payload answer every present
+// case itself. A null-only optional does not qualify: its storage collapsed null to absence and can no
+// longer distinguish JavaScript's `object` result from `undefined`.
+function emitCppOptionalErasedTypeofCpp(
+  operand: Readonly<IrExpression>,
+  operandType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || !operandType) return undefined;
+  const union = getIrUnionTypeCpp(operandType, context, new Set());
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (
+    plan?.kind !== 'optionalSingle' ||
+    plan.valueSlots[0]?.targetType !== 'flight::Any' ||
+    plan.sentinels.null !== 'absent' ||
+    plan.sentinels.undefined !== 'optionalAbsence'
+  ) {
+    return undefined;
+  }
+  const value = getGeneratedTargetName('typeofValue', context);
+  context.includes.add('flight/any.hpp');
+  context.includes.add('optional');
+  return `([&]() -> flight::String { const auto& ${value} = ${emitExpression(operand, context)}; if (!${value}.has_value()) return flight::String("undefined"); return ${value}.value().type_of(); }())`;
 }
 
 // The operand of a `typeof X === tag` comparison, and the tag: one side a `typeof` of anything and the
@@ -10064,10 +10158,91 @@ function hasCppErasedDynamicTestOperandCpp(
   operandType: Readonly<IrType> | undefined,
   context: EmitContext,
 ): boolean {
-  if (!isCppAliasResolvedErasedDynamicValueTypeCpp(operandType, context)) return false;
-  return operand.kind === 'identifier' && operand.reference.kind === 'binding'
-    ? context.erasedDynamicStorageBindingIds.has(operand.reference.binding.id)
-    : true;
+  if (isCppErasedDynamicPropertyReadCpp(operand, context)) return true;
+  if (operand.kind === 'identifier' && operand.reference.kind === 'binding') {
+    const bindingId = operand.reference.binding.id;
+    if (context.erasedDynamicStorageBindingIds.has(bindingId)) return true;
+    // A const inferred from a dynamic property or an erased object-view assertion emits `auto`, so its
+    // declaration type can disagree with its storage. The initializer still proves the exact emitted
+    // value: both forms retain the erased carrier.
+    const initializer = context.bindingInitializers.get(bindingId);
+    return (
+      initializer !== undefined &&
+      (isCppErasedDynamicPropertyReadCpp(initializer, context) ||
+        (initializer.kind === 'cast' && isCppErasedDynamicObjectViewAssertionCpp(initializer, context)))
+    );
+  }
+  return isCppAliasResolvedErasedDynamicValueTypeCpp(operandType, context);
+}
+
+// An assertion from an erased value to a nullish object whose fields are themselves erased changes only
+// what TypeScript permits the source to read; JavaScript keeps the original value. Preserve that carrier
+// so its nullish tag and named-property owner remain available instead of emitting an impossible cast to
+// a materialized object variant. A concrete field does not qualify because the assertion would then ask
+// the target to manufacture typed storage the erased value does not contain.
+function isCppErasedDynamicObjectViewAssertionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'cast' }>>,
+  context: EmitContext,
+): boolean {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  const sourceType = getCppNullishComparisonOperandTypeCpp(expression.expression, context);
+  if (!hasCppErasedDynamicTestOperandCpp(expression.expression, sourceType, context)) return false;
+  const union = getIrUnionTypeCpp(expression.type, context, new Set());
+  if (!union) return false;
+  const objects = union.types.filter(
+    (member): member is Extract<IrType, { kind: 'object' }> => member.kind === 'object',
+  );
+  if (
+    objects.length !== 1 ||
+    !union.types.some((member) => member.kind === 'null') ||
+    !union.types.some((member) => member.kind === 'undefined') ||
+    union.types.some((member) => member.kind !== 'object' && member.kind !== 'null' && member.kind !== 'undefined')
+  ) {
+    return false;
+  }
+  return objects[0]!.properties.every((property) =>
+    isCppAliasResolvedErasedDynamicValueTypeCpp(property.type, context),
+  );
+}
+
+// A property read from erased storage is a dynamic own-name lookup. The TypeScript checker exposes this
+// after an object guard as `Record<string, unknown>`, while the emitted value remains `Any`; the runtime's
+// named-property view is therefore the operation that preserves the erased owner's identity and yields
+// the field as another erased value. Chained reads recurse through the same rule.
+function isCppErasedDynamicPropertyReadCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): expression is Readonly<Extract<IrExpression, { kind: 'property' }>> {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || expression.kind !== 'property' || expression.optional) {
+    return false;
+  }
+  const objectType = getCppNullishComparisonOperandTypeCpp(expression.object, context);
+  return hasCppErasedDynamicTestOperandCpp(expression.object, objectType, context);
+}
+
+function emitCppErasedDynamicPropertyReadCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (!isCppErasedDynamicPropertyReadCpp(expression, context)) return undefined;
+  context.includes.add('flight/any.hpp');
+  context.includes.add('flight/structural_ref.hpp');
+  return `flight::named_properties(${emitExpression(expression.object, context)}).get(${emitLiteral(expression.name, context)})`;
+}
+
+function emitCppErasedDynamicOptionalPropertyReadCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || !expression.optional) return undefined;
+  const objectType = getCppNullishComparisonOperandTypeCpp(expression.object, context);
+  if (!hasCppErasedDynamicTestOperandCpp(expression.object, objectType, context)) return undefined;
+  const receiver = getGeneratedTargetName('optionalChainReceiver', context);
+  const property = getGeneratedTargetName('optionalChainProperty', context);
+  context.includes.add('flight/any.hpp');
+  context.includes.add('flight/structural_ref.hpp');
+  context.includes.add('optional');
+  return `([&]() -> std::optional<flight::Any> { const auto& ${receiver} = ${emitExpression(expression.object, context)}; if (${receiver}.is_nullish()) return std::nullopt; const auto ${property} = flight::named_properties(${receiver}).get(${emitLiteral(expression.name, context)}); if (${property}.is_undefined()) return std::nullopt; return ${property}; }())`;
 }
 
 function isCppAliasResolvedErasedDynamicValueTypeCpp(
@@ -21346,6 +21521,7 @@ const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial
 
 const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-array-length-sparse-runtime-required',
+  'cpp-erased-tag-unreportable',
   'cpp-external-object-field-contract-missing',
   'cpp-external-record-conversion-incomplete',
   'cpp-external-record-conversion-missing',
@@ -21353,6 +21529,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-number-to-fixed-runtime-helper-required',
   'cpp-runtime-external-symbol-binding-incomplete',
   'cpp-sparse-array-literal-runtime-required',
+  'cpp-typeof-runtime-domain-unrepresented',
 ]);
 
 // Refusals whose cause is a source declaration the emitter cannot invent and the runtime cannot supply:

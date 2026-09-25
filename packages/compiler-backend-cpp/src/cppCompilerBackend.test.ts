@@ -3514,7 +3514,7 @@ describe('createCppCompilerBackend', () => {
   });
 
   it('refuses typeof selection across heterogeneous or open property keys', () => {
-    const emit = (key: string): void => {
+    const failure = (key: string) => {
       const module = lower(
         'indexed-typeof-domain.ts',
         `interface Backend { callback?: () => void; label: string }
@@ -3522,11 +3522,28 @@ describe('createCppCompilerBackend', () => {
            return typeof backend[key] === 'function';
          }`,
       ).module;
-      emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' });
+      return captureBackendEmissionFailure(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }));
     };
 
-    expect(() => emit('keyof Backend')).toThrow('typeof requires closed runtime type evidence');
-    expect(() => emit('string')).toThrow('typeof requires closed runtime type evidence');
+    for (const key of ['keyof Backend', 'string']) {
+      const refusal = failure(key);
+      expect(refusal.rule).toBe('cpp-typeof-runtime-domain-unrepresented');
+      expect(refusal.classification).toBe('target-runtime');
+      expect(refusal.message).toContain('preserve the value in an unknown/any carrier');
+    }
+
+    const bigint = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'erased-bigint-typeof.ts',
+          `export function isBigint(value: unknown): boolean { return typeof value === 'bigint'; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(bigint.rule).toBe('cpp-erased-tag-unreportable');
+    expect(bigint.classification).toBe('target-runtime');
+    expect(bigint.message).toContain('preserve bigint in a statically typed branch');
   });
 
   // The `guardedProgress` shape from @flighthq/net, where the annotation asks for a member of a carrier
@@ -14748,6 +14765,46 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     expect(number).toContain('.as_number()');
     expect(number).not.toContain('erased_typeof_carrier');
+  });
+
+  it('answers typeof for dynamic and nullish optional property values from one captured read', () => {
+    const result = lower(
+      'dynamic-property-typeof.ts',
+      `function isRecord(value: unknown): value is Record<string, unknown> {
+         return typeof value === 'object' && value !== null;
+       }
+       export function nested(root: unknown): boolean {
+         if (!isRecord(root)) return false;
+         const common = root.common;
+         return isRecord(common) && typeof common.lineHeight === 'number';
+       }
+       export function numberOr(value: unknown, fallback: number): number {
+         if (!isRecord(value)) return fallback;
+         return typeof value.low === 'number' ? value.low : fallback;
+       }
+       export function stringOr(
+         source: unknown,
+         fallback: string,
+       ): string {
+         const value = source as { value?: unknown } | null | undefined;
+         return typeof value?.value === 'string' ? value.value : fallback;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('flight::named_properties(root).get(flight::String("common"))');
+    expect(emitted).toContain('flight::named_properties(common).get(flight::String("lineHeight")).type_of()');
+    const numberOr = /double number_or[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(numberOr?.match(/named_properties\(value\)\.get\(flight::String\("low"\)\)/gu)).toHaveLength(1);
+    expect(numberOr).toContain('erased_typeof_carrier.as_number()');
+    const stringOr = /flight::String string_or[^]*?\n\}/u.exec(emitted)?.[0];
+    expect(stringOr).toContain('auto value = source;');
+    expect(stringOr?.match(/optional_chain_receiver = value;/gu)).toHaveLength(1);
+    expect(stringOr).toContain('flight::named_properties(optional_chain_receiver).get(flight::String("value"))');
+    expect(stringOr).not.toContain('static_cast<std::variant');
+    expect(stringOr).toMatch(/erased_typeof_carrier(?:_\d+)?\.value\(\)\.type_of\(\)/u);
+    expect(stringOr).toMatch(/erased_typeof_carrier(?:_\d+)?\.value\(\)\.as_string\(\)/u);
   });
 
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
