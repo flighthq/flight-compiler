@@ -16528,8 +16528,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
     expect(consumer).toContain('entry.has_value()');
     expect(consumer).toContain('entry.value().index()');
-    expect(consumer).toContain('std::get<');
-    expect(consumer).toContain('->value');
+    expect(consumer).toMatch(/std::get<flight::Ref<state_value_[a-f0-9]+>>\(entry\.value\(\)\)->value/u);
     expect(consumer).not.toContain('flight::Any');
     expect(sibling).toContain(
       'std::visit([](const auto& value) { return value->state; }, optional_chain_receiver.value())',
@@ -24363,6 +24362,45 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
 
     expect(result.diagnostics).toEqual([]);
     expect(emitted.contents).toContain('flight::structural_ref_cast<Transform3DNode<Traits>>(runtime->parent.value())');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles structural alias narrowing and a discriminated optional registry read', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const result = lower(
+      'compile-structural-alias-registry.ts',
+      `export interface Node<Traits extends object> { readonly name: string }
+       export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+       export interface NodeRuntime<Traits extends object> { parent: NodeOf<Traits> | null }
+       export interface HasTransform3D { position: number; rotation: number; scale: number }
+       export type Transform3DNode<Traits extends object> = NodeOf<Traits> & HasTransform3D;
+       export function getParent<Traits extends object>(
+         runtime: NodeRuntime<Traits>,
+       ): Transform3DNode<Traits> | null {
+         return runtime.parent as Transform3DNode<Traits> | null;
+       }
+       export const RegistryEntryState = { Bound: 'bound', Tombstoned: 'tombstoned' } as const;
+       export type RegistryTableEntry<T> =
+         | { readonly state: typeof RegistryEntryState.Bound; readonly value: T }
+         | { readonly state: typeof RegistryEntryState.Tombstoned };
+       export function readEntry(entry: RegistryTableEntry<number> | undefined): number | null {
+         return entry?.state === RegistryEntryState.Bound ? entry.value : null;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-structural-alias-registry-'));
+    const header = path.join(directory, 'structural_alias_registry.hpp');
+
+    expect(emitted).toContain('flight::structural_ref_cast<Transform3DNode<Traits>>(runtime->parent.value())');
+    expect(emitted).toMatch(/std::get<flight::Ref<state_value_[a-f0-9]+>>\(entry\.value\(\)\)->value/u);
+    try {
+      writeFileSync(header, emitted, 'utf8');
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it('refuses a nullable foreign row as a transform extension', () => {

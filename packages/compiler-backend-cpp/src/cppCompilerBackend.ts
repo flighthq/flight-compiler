@@ -3953,7 +3953,8 @@ function emitExpression(
         const bindingType = getCppBindingTypeCpp(expression.reference.binding.id, context);
         const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
         const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
-        const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
+        const narrowedType =
+          context.narrowedBindingTypes.get(expression.reference.binding.id) ?? expression.narrowedType;
         const nestedOptionalMember =
           plan && narrowedType
             ? emitCppNarrowedNestedUnionMemberCpp(
@@ -3976,7 +3977,6 @@ function emitExpression(
           return `std::get<${matchingSlots[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
         }
         if (plan?.kind === 'optionalVariant') {
-          const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
           const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
           const narrowedPresentMembers = (narrowedUnion?.types ?? (narrowedType ? [narrowedType] : [])).filter(
             (member) => member.kind !== 'null' && member.kind !== 'undefined',
@@ -3987,7 +3987,9 @@ function emitExpression(
             const matchingSlots = plan.valueSlots.filter(
               (slot) =>
                 slot.targetType === narrowedTarget ||
-                slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, narrowedPresentMembers[0]!)),
+                slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, narrowedPresentMembers[0]!)) ||
+                areCppUnionMemberDiscriminantsEquivalent(slot.runtimeType, narrowedPresentMembers[0]!, context) ||
+                areCppUnionMemberObjectRepresentationsEquivalent(slot.runtimeType, narrowedPresentMembers[0]!, context),
             );
             if (matchingSlots.length === 1) {
               context.includes.add('variant');
@@ -9472,7 +9474,8 @@ function emitUnionTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, co
     context.includes.add('optional');
     return `std::optional<${emitType(importedValueAlias, context)}>`;
   }
-  const valueTypes = plan.valueSlots.map((slot) => slot.targetType);
+  const structuralAlias = getCppSingleStructuralAliasUnionTargetTypeCpp(plan, context);
+  const valueTypes = plan.valueSlots.map((slot) => structuralAlias ?? slot.targetType);
   switch (plan.kind) {
     case 'singleValue':
       return valueTypes[0]!;
@@ -9492,6 +9495,35 @@ function emitUnionTypeCpp(type: Readonly<Extract<IrType, { kind: 'union' }>>, co
       return `std::variant<${[...valueTypes, sentinels.null, sentinels.undefined].join(', ')}>`;
     }
   }
+}
+
+// Runtime-domain planning deliberately opens aliases so equivalent source alternatives share one
+// slot. A union with one structural payload does not need that expanded spelling in its C++ carrier:
+// the authored alias is the public ABI and is exactly the StructuralRef type its declaration emits.
+// Keep expansion for identity and matching, then restore the alias only when one slot and one target
+// spelling remain. An alias that itself names a union is excluded because wrapping that carrier in a
+// second optional would change its representation.
+function getCppSingleStructuralAliasUnionTargetTypeCpp(
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (plan.valueSlots.length !== 1) return undefined;
+  const targets = new Set(
+    plan.valueSlots[0]!.sourceAlternatives.flatMap((source): readonly string[] => {
+      if (
+        source.kind !== 'named' ||
+        source.reference.kind !== 'binding' ||
+        source.reference.binding.kind === 'typeParameter' ||
+        source.reference.path.length > 0 ||
+        getIrUnionTypeCpp(source, context, new Set()) ||
+        !context.referenceRepresentationPlanner.resolveStructuralRow(source, context.module)
+      ) {
+        return [];
+      }
+      return [emitType(source, context)];
+    }),
+  );
+  return targets.size === 1 ? [...targets][0] : undefined;
 }
 
 function getCppDualSentinelTargetTypes(context: EmitContext): Readonly<{ null: string; undefined: string }> {
@@ -10965,11 +10997,7 @@ function emitUnionMemberAssertionCpp(
       : undefined;
   const structuralNarrowing =
     plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
-      ? isCppExplicitStructuralRowExtensionCpp(
-          plan.valueSlots[0]!.runtimeType,
-          assertedPlan.valueSlots[0]!.runtimeType,
-          context,
-        )
+      ? isCppExplicitStructuralUnionSlotExtensionCpp(plan.valueSlots[0]!, assertedPlan.valueSlots[0]!, context)
       : false;
   const alternatives = plan.valueSlots.filter(
     (slot) =>
@@ -11018,7 +11046,8 @@ function emitUnionMemberAssertionCpp(
   const narrowed = (inner: string): string => {
     if (structuralNarrowing) {
       context.includes.add('flight/structural_ref.hpp');
-      return `flight::structural_ref_cast<${assertedPlan!.valueSlots[0]!.targetType}>(${inner})`;
+      const target = getCppSingleStructuralAliasUnionTargetTypeCpp(assertedPlan!, context);
+      return `flight::structural_ref_cast<${target ?? assertedPlan!.valueSlots[0]!.targetType}>(${inner})`;
     }
     if (cast === undefined) return inner;
     context.includes.add('memory');
@@ -11041,6 +11070,20 @@ function isCppExplicitStructuralRowExtensionCpp(
   const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(source, context.module);
   const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(target, context.module);
   return Boolean(sourceRow && targetRow && cppStructuralRowContainsPlanCpp(targetRow, sourceRow, context));
+}
+
+function isCppExplicitStructuralUnionSlotExtensionCpp(
+  source: Readonly<ReturnType<typeof getCppUnionRepresentationPlan>['valueSlots'][number]>,
+  target: Readonly<ReturnType<typeof getCppUnionRepresentationPlan>['valueSlots'][number]>,
+  context: EmitContext,
+): boolean {
+  if (isCppExplicitStructuralRowExtensionCpp(source.runtimeType, target.runtimeType, context)) return true;
+  if (source.sourceAlternatives.length === 0 || target.sourceAlternatives.length === 0) return false;
+  return source.sourceAlternatives.every((sourceAlternative) =>
+    target.sourceAlternatives.some((targetAlternative) =>
+      isCppExplicitStructuralRowExtensionCpp(sourceAlternative, targetAlternative, context),
+    ),
+  );
 }
 
 function cppStructuralRowContainsPlanCpp(
