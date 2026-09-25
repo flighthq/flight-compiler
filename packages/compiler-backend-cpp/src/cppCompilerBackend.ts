@@ -7591,13 +7591,15 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           context.module,
         );
         if (!properties) {
-          // Naming what `T` turned out to be is what separates "the shape walker has not reached
-          // this form yet" from "this is not an object at all": `Partial<TextureLike>` holds an
-          // alias, so a reader who expects a union here is looking in the wrong place.
+          // A subject with no object shape is the source's to state: what it wrote either has no fixed
+          // member set (an open string index), has no single member set (a union), or has no members at
+          // all (a primitive or an array). The refusal names which of those it is and what to write, and
+          // is attributed to the source because no target representation is missing -- the source is.
           emissionError(
             context,
-            `Partial<T> requires a statically resolvable C++ object shape; T is ${type.typeArguments[0].kind}`,
+            getCppPartialShapeRefusalCpp(type.typeArguments[0]),
             'cpp-partial-shape-unresolvable',
+            'source-portability',
           );
         }
         return emitType(
@@ -21713,6 +21715,26 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
     return `${getCppCompilerPackageNamespace(owner.module.packageName, context.options.packageTargets)}::${targetName}`;
   }
   return context.targetNames.get(type.reference.binding.id) ?? pascalCase(type.reference.binding.name);
+}
+
+// Why a `Partial<T>` has no C++ shape to build, in the terms the author can act on. The subject is named
+// by what it IS rather than by the spelling it arrived in: an alias or an import resolves before this, so
+// a reader who expects to see their own type name here is looking at the resolved form, which is the one
+// the target would have to represent.
+function getCppPartialShapeRefusalCpp(subject: Readonly<IrType>): string {
+  if (subject.kind === 'union') {
+    return 'Partial<T> over a union has no single C++ shape: apply Partial to each member and union the results, or declare one shape holding the members the code reads';
+  }
+  if (subject.kind === 'array' || subject.kind === 'tuple') {
+    return 'Partial<T> over a sequence has no object shape to build: declare the object whose members are optional, or drop the Partial and keep the sequence';
+  }
+  if (subject.kind === 'primitive' || subject.kind === 'literal') {
+    return 'Partial<T> over a primitive has no members to make optional: drop the Partial, the value already admits absence where it is declared';
+  }
+  if (subject.kind === 'named' && subject.reference.kind === 'ambient' && subject.reference.name === 'Record') {
+    return 'Partial<Record<K, V>> has an open member set with no fixed shape: declare the members the code reads, or use the record directly through its key';
+  }
+  return `Partial<T> requires a statically resolvable C++ object shape; T is ${subject.kind}`;
 }
 
 function refuseCppUnexpandedTypeScriptUtilityAlias(name: string, context: EmitContext): never {

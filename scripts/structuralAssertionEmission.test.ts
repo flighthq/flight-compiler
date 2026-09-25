@@ -36,6 +36,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'structuralAssertionOwner', header: 'structural_assertion_owner.hpp' },
   { fixture: 'unionMemberAliasAssertion', header: 'union_member_alias_assertion.hpp' },
   { fixture: 'importedAmbientAlias', header: 'imported_ambient_alias.hpp' },
+  { fixture: 'partialNamedShape', header: 'partial_named_shape.hpp' },
 ];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
 const runtime = resolveDependency(root, 'flight-cpp');

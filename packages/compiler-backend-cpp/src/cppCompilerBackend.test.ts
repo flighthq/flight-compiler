@@ -1542,6 +1542,94 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::nullopt');
   });
 
+  it('resolves a named Partial through aliases and imports as one writable shape', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './provider',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/provider.ts',
+            `export interface Info { readonly value: number }
+             export type InfoAlias = Info;
+             export type NestedAlias = InfoAlias;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/consumer.ts',
+            `import type { Info, InfoAlias, NestedAlias } from './provider';
+             export function direct(values: Partial<Info>): number | undefined { return values.value; }
+             export function aliased(values: Partial<InfoAlias>): number | undefined { return values.value; }
+             export function nested(values: Partial<NestedAlias>): number | undefined { return values.value; }
+             export function write(values: Partial<Info>): void { values.value = 1; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    ).map((lowered) => lowered.module);
+    const emitted = emitCppModuleCppSession(
+      modules.map((module) => ({ module })),
+      resolution,
+      1,
+    );
+
+    // An alias or an import names the shape the Partial makes optional, so every spelling reaches the
+    // same minted shape -- the identity the source wrote is the identity emitted -- and the members stay
+    // writable through it.
+    const shape = /struct (?<shape>value_[0-9a-f]+)/u.exec(emitted)?.groups?.shape;
+    expect(shape).toBeDefined();
+    expect(emitted.match(new RegExp(`flight::Ref<${shape}>`, 'gu'))).toHaveLength(4);
+    expect(emitted).toContain('std::optional<double> value;');
+    expect(emitted).toContain('(values->value = std::optional<double>{1.0});');
+  });
+
+  it('refuses a Partial whose subject has no fixed member set and names what to write', () => {
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('partial-subject-negative.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    const union = refusal(
+      `interface Left { a: number }
+       interface Right { b: number }
+       export function read(values: Partial<Left | Right>): number | undefined { return 1; }`,
+    );
+    expect(union.rule).toBe('cpp-partial-shape-unresolvable');
+    expect(union.classification).toBe('source-portability');
+    expect(union.message).toContain('Partial<T> over a union has no single C++ shape');
+
+    expect(
+      refusal(
+        `interface Info { readonly value: number }
+         export function lookup(values: Partial<Record<string, Info>>, key: string): Info | undefined { return values[key]; }`,
+      ).message,
+    ).toContain('Partial<Record<K, V>> has an open member set with no fixed shape');
+
+    expect(
+      refusal(`export function read(values: Partial<number[]>): number | undefined { return 1; }`).message,
+    ).toContain('Partial<T> over a sequence has no object shape to build');
+
+    expect(
+      refusal(`export function read(values: Partial<string>): number | undefined { return 1; }`).message,
+    ).toContain('Partial<T> over a primitive has no members to make optional');
+  });
+
   it('reads an ambient error message through the accessor the runtime exposes', () => {
     const result = lower(
       'error-message-accessor.ts',
