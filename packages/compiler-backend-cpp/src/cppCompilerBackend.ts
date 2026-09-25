@@ -10927,11 +10927,14 @@ function emitUnionMemberAssertionCpp(
   const union = sourceType ? getIrUnionTypeCpp(sourceType, context, new Set()) : undefined;
   if (!union) return undefined;
   const plan = getCppUnionRepresentationPlan(union, context);
-  const assertedTarget = emitType(assertedType, {
-    ...context,
-    anonymousStructs: new Map(),
-    includes: new Set(),
-  });
+  // The comparison below is between VALUE representations, and a TypeScript alias does not introduce
+  // one: `type Slot = string | Runtime` and `type First = Second = Runtime` name the same alternative
+  // the union already stores, so an assertion spelled through either has to match the slot it names.
+  // Resolving the aliases first is what the alias-resolved value-type spelling exists for; comparing
+  // the surface names would call the alias and its target two different alternatives.
+  const assertionContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set() };
+  const assertedTarget = emitCppAliasResolvedValueTypeCpp(assertedType, assertionContext);
+  const sourceTarget = sourceType ? emitCppAliasResolvedValueTypeCpp(sourceType, assertionContext) : undefined;
   // An assertion that names the union's own value type with a marker around it -- `mesh[key] as
   // MeshRuntime | undefined` against a slot holding `Ref<EntityRuntime>` -- cannot match a slot by
   // spelling, because the asserted target is the whole optional and the slot is the value inside it.
@@ -10960,6 +10963,10 @@ function emitUnionMemberAssertionCpp(
       slot.targetType === assertedTarget ||
       slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)),
   );
+  // An assertion that names the value's own union type selects no alternative: `value as Slot` where the
+  // value already is a `Slot` asks for a projection the source did not describe, and the refusal has to
+  // say so rather than list the alternatives as though one of them had been meant.
+  const namesSourceUnion = sourceTarget !== undefined && sourceTarget === assertedTarget;
   if (alternatives.length !== 1) {
     // The alternatives are matched by target type, so naming the target and the types it was
     // compared against is what makes the refusal readable without a debugger: the asserted target
@@ -10968,7 +10975,9 @@ function emitUnionMemberAssertionCpp(
       context,
       `type assertion target must identify exactly one C++ variant alternative: target ${assertedTarget} against [${plan.valueSlots
         .map((slot) => slot.targetType)
-        .join(', ')}]`,
+        .join(
+          ', ',
+        )}]${namesSourceUnion ? "; the assertion names the value's own union type, which selects no alternative, so narrow it to an alternative the value can hold" : ''}`,
       'cpp-type-assertion-unidentified',
       'source-portability',
     );

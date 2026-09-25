@@ -22,12 +22,19 @@ import { resolveDependency } from './dependencyLock.js';
 //
 // The runtime reaches its generated table itself, through `__has_include`, so the compile needs the
 // runtime's generated include directory on the search path and the emitted header needs no include of its
-// own. A toolchain that is not installed, or a runtime that is not rehydrated, is reported and skipped
+// own. Naming that header from the emitter does not work: it would be included before `structural_ref.hpp`
+// declares the names it provides, and `#pragma once` makes the nested include a no-op. A toolchain that is not installed, or a runtime that is not rehydrated, is reported and skipped
 // rather than failed, exactly as the emitted-source lane does.
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const goldenDirectory = path.join(root, 'golden');
-const fixture = 'structuralAssertionOwner';
+// The fixtures that exercise an assertion whose validity the runtime decides, and the header each one
+// emits. A fixture that pins a refusal instead has no header to compile and is asserted here by what it
+// pinned; the emitted-source lane compiles everything else.
+const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[] = [
+  { fixture: 'structuralAssertionOwner', header: 'structural_assertion_owner.hpp' },
+  { fixture: 'unionMemberAliasAssertion', header: 'union_member_alias_assertion.hpp' },
+];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
 const runtime = resolveDependency(root, 'flight-cpp');
 const includeDirectories = runtime === undefined ? [] : collectCppRuntimeIncludeDirectories(runtime.directory);
@@ -35,11 +42,10 @@ const toolchain = findCppCompilerToolchain();
 const compilable = toolchain !== undefined && includeDirectories.length > 0;
 
 describe('structural assertion emission', () => {
-  it.skipIf(!compilable)('compiles the fixture whose owner answers every member its asserted row reads', () => {
+  it.skipIf(!compilable).each(compiledFixtures)('compiles the emitted assertion of $fixture', ({ fixture, header }) => {
     if (toolchain === undefined) throw new Error('the C++ toolchain was not found');
     const emitted = path.join(goldenDirectory, fixture, 'cpp');
-    const header = path.join(emitted, 'structural_assertion_owner.hpp');
-    const arguments_ = createCppSyntaxOnlyArguments(toolchain, header, [
+    const arguments_ = createCppSyntaxOnlyArguments(toolchain, path.join(emitted, header), [
       ...includeDirectories,
       path.join(goldenDirectory, 'support', 'cpp'),
     ]);

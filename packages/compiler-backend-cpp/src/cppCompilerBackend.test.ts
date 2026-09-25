@@ -1559,6 +1559,54 @@ describe('createCppCompilerBackend', () => {
     });
   });
 
+  it('identifies an asserted alternative spelled through an alias chain', () => {
+    const result = lower(
+      'aliased-union-member.ts',
+      `interface Runtime { kind: string }
+       type RuntimeAlias = Runtime;
+       type NestedAlias = RuntimeAlias;
+       export function narrow(value: string | Runtime): NestedAlias { return value as NestedAlias; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // An alias does not introduce a distinct value representation, so it names the alternative the union
+    // already stores and the assertion identifies that slot. The comparison is between representations,
+    // which is what keeps a chain of names from reading as three different alternatives.
+    expect(contents).toContain('std::get<flight::Ref<Runtime>>(value)');
+    expect(contents).toContain('using NestedAlias = RuntimeAlias;');
+  });
+
+  it('identifies an asserted alternative when the union itself is spelled through an alias', () => {
+    const result = lower(
+      'aliased-union-source.ts',
+      `interface Runtime { kind: string }
+       type Slot = string | Runtime;
+       export function narrow(value: Slot): Runtime { return value as Runtime; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(contents).toContain('std::get<flight::Ref<Runtime>>(value)');
+  });
+
+  it('refuses an assertion that names the union the value already is, and says what to narrow to', () => {
+    const result = lower(
+      'own-union-assertion.ts',
+      `interface Runtime { kind: string }
+       type Slot = string | Runtime;
+       export function narrow(value: Slot): Slot { return value as Slot; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // Re-asserting the union selects no alternative, so the refusal says that rather than listing the
+    // alternatives as though one of them had been named.
+    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('names the value');
+    expect(failure.message).toContain('own union type, which selects no alternative');
+  });
+
   it('stores an optional property that also admits null through one plan, and refuses two value domains', () => {
     // The real shape: `onFinished?: Signal<() => void> | null` from @flighthq/types. A `?` marker and a
     // `null` in the same type are two spellings of one three-state question, so the declaration and every
