@@ -723,18 +723,28 @@ function propagateCompilerPackageGraphRefusals(
   }
 }
 
+// A collision is a collision inside one package.
+//
+// An emitted path is relative to the package that produced it, so two packages each writing `contract.hpp`
+// is the ordinary shape of a workspace rather than a defect: the SDK emits 146 of them, one per package, and
+// treating those as collisions refuses every module in the run. The key therefore carries the package, and
+// the comparison still folds case and Unicode, because a case-only or canonically equivalent pair inside one
+// package is exactly the kind of collision this refuses.
 function refuseCompilerPackageGraphOutputCollisions(records: Map<string, ModuleEmissionRecord>): void {
-  const owners = new Map<string, ModuleEmissionRecord[]>();
+  const owners = new Map<string, Readonly<{ label: string; records: ModuleEmissionRecord[] }>>();
   for (const record of records.values()) {
     if (record.refusals.length > 0) continue;
     for (const file of record.files) {
-      const key = file.path.normalize('NFC').toLowerCase();
-      owners.set(key, [...(owners.get(key) ?? []), record]);
+      const label = `${record.module.packageName}/${file.path}`;
+      const key = label.normalize('NFC').toLowerCase();
+      const existing = owners.get(key);
+      if (existing === undefined) owners.set(key, { label, records: [record] });
+      else existing.records.push(record);
     }
   }
-  for (const [path, colliding] of owners) {
+  for (const { label, records: colliding } of owners.values()) {
     if (colliding.length < 2) continue;
-    const message = `Backend emitted colliding package file path: ${path}`;
+    const message = `Backend emitted colliding package file path: ${label}`;
     for (const record of colliding) {
       record.refusals.push({
         classification: 'compiler-defect',

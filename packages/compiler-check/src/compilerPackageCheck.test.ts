@@ -504,6 +504,24 @@ describe('createCompilerPackageCheckReport', () => {
       }),
     ).toThrow('Conflicting classifications for caf\u00e9');
   });
+
+  // A collision is judged where it happens: the producer refuses a path emitted twice inside one package, and
+  // two packages emitting the same package-local name is the ordinary shape of a workspace. This pins that the
+  // check does not re-derive a collision from file names, which would turn an SDK's 146 per-package
+  // `contract.hpp` files into findings.
+  it('reports no finding for two packages that emit the same package-local file name', () => {
+    const report = createCompilerPackageCheckReport(
+      createCompilation([
+        emittedModule('@flight/alpha', 'src/alpha.ts', 'contract'),
+        emittedModule('@flight/beta', 'src/beta.ts', 'contract'),
+      ]),
+      createOptions(),
+    );
+
+    expect(report.directFindings).toEqual([]);
+    expect(report.totals.directFindings).toBe(0);
+    expect(report.packages.map((entry) => entry.name)).toEqual(['@flight/alpha', '@flight/beta']);
+  });
 });
 
 describe('getCompilerPackageCheckReportJson', () => {

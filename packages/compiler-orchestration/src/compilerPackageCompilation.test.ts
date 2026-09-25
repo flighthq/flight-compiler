@@ -418,6 +418,45 @@ describe('compileTypeScriptPackageGraph', () => {
     ]);
   });
 
+  // An emitted path is package-relative, so the same name in two packages is the ordinary workspace shape and
+  // the same name twice in one package is the defect. The SDK emits 146 `contract.hpp`, one per package, and
+  // refusing those refused every module in the run.
+  it('keeps a package-local name distinct across packages while still refusing it twice in one package', () => {
+    const alpha = source('@flight/alpha', 'alpha', 'index.ts', 'export const alphaValue = 1;');
+    const beta = source('@flight/beta', 'beta', 'index.ts', 'export const betaValue = 2;');
+    const betaTwin = source('@flight/beta', 'beta', 'twin.ts', 'export const betaTwin = 3;');
+    const backend: CompilerBackend = {
+      emitModule: (module) => [{ contents: module.name, path: 'contract.hpp' }],
+      name: 'fixture',
+    };
+    const result = compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph(
+        [],
+        [],
+        [
+          { dependencies: [], name: '@flight/alpha', root: alpha.packageRoot },
+          { dependencies: [], name: '@flight/beta', root: beta.packageRoot },
+        ],
+      ),
+      sources: [alpha, beta, betaTwin],
+    });
+
+    // Alpha's file survives, because nothing else in alpha emits that path.
+    expect(result.compilation.files).toEqual([{ contents: 'Index\n', path: 'contract.hpp' }]);
+    expect(
+      result.report.modules.map((module) => [module.module.packageName, module.module.name, module.refusals[0]?.code]),
+    ).toEqual([
+      ['@flight/alpha', 'Index', undefined],
+      ['@flight/beta', 'Index', 'duplicate-emitted-path'],
+      ['@flight/beta', 'Twin', 'duplicate-emitted-path'],
+    ]);
+    expect(result.report.modules[1]?.refusals[0]?.message).toBe(
+      'Backend emitted colliding package file path: @flight/beta/contract.hpp',
+    );
+  });
+
   it('preserves controlled unsupported lowering failures as unsupported IR refusals', () => {
     const unsupported = source('@local/source', 'source', 'unsupported.ts', 'export const unsupported = 1;');
     const backend: CompilerBackend = {
