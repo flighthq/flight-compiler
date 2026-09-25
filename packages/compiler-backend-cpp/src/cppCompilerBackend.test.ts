@@ -18626,7 +18626,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('return total(rectangles)');
   });
 
-  it('refuses to narrow a readonly structural sequence into an owning nominal-reference array', () => {
+  it('refuses a discarded nominal referent as a source-portability change with the declaration to write', () => {
     const declarations = `const EntityRuntimeKey = Symbol.for('EntityRuntime');
       interface Entity { [EntityRuntimeKey]: object | undefined }
       type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
@@ -18646,7 +18646,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
 
     expect(failure.rule).toBe('cpp-contextual-structural-array-nominal-recovery-unproven');
+    // The view's element is the projected row, so the referent is not recoverable from it and the
+    // emitter cannot invent one: the report has to attribute the fix to the source, not to itself.
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('readonly RiveCoreObject[] rather than readonly Readonly<RiveCoreObject>[]');
+  });
 
+  it('stores the array the caller owns when the source names the nominal element type', () => {
+    const declarations = `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+      interface Entity { [EntityRuntimeKey]: object | undefined }
+      type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
+      interface RiveProperty { key: number; value: number }
+      interface RiveCoreObject { properties: RiveProperty[]; typeKey: number }
+      interface ImportContext extends Entity { objects: readonly RiveCoreObject[] }`;
     const compatible = emitIrModuleCpp(
       lower(
         'nominal-sequence-row-write.ts',
@@ -18658,9 +18670,42 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       ).module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
-    expect(compatible).toContain('flight::row_set<flight::RowKey<"objects">>(out, objects);');
+
+    // One owning array handle, stored as it arrived: the identity the source keeps is the identity the
+    // C++ keeps, and every element is the nominal reference the declaration states.
     expect(compatible).toContain('flight::Array<flight::Ref<RiveCoreObject>> objects');
+    expect(compatible).toContain('flight::row_set<flight::RowKey<"objects">>(out, objects);');
     expect(compatible).not.toContain('flight::SequenceView');
+  });
+
+  it('refuses the same readonly structural sequence write that names no nominal element type', () => {
+    const declarations = `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+      interface Entity { [EntityRuntimeKey]: object | undefined }
+      type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
+      interface RiveProperty { key: number; value: number }
+      interface RiveCoreObject { properties: RiveProperty[]; typeKey: number }
+      interface ImportContext extends Entity { objects: readonly Readonly<RiveCoreObject>[] }`;
+    const contents = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'structural-sequence-view-write.ts',
+          `${declarations}
+         export function initialize(
+           out: EntityConstruction<ImportContext>,
+           objects: readonly Readonly<RiveCoreObject>[],
+         ): void { out.objects = objects; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    // The refusal keys on the representations rather than on the two type spellings matching: the
+    // parameter position is an owner-preserving view and the field position is an owning array, so the
+    // write needs an element conversion this declaration gives no type for.
+    expect(contents.rule).toBe('cpp-contextual-structural-array-nominal-recovery-unproven');
+    expect(contents.message).toContain('nominal element type');
+    // No spelling is invented when the target names no nominal type of its own.
+    expect(contents.message).not.toContain('readonly RiveCoreObject[]');
   });
 
   it('keeps erased index-signature parameters generic over indexable carriers', () => {

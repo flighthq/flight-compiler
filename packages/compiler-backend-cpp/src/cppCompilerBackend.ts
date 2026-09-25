@@ -15933,11 +15933,24 @@ function emitCppContextualErasedDynamicValueCpp(
   return `flight::Any::object(${emitExpression(expression, context, source)})`;
 }
 
-// A readonly structural sequence parameter is an owner-preserving view: it can accept any compatible
-// row without pretending that the rows have one nominal element type. Writing that view into an owning
-// array of one nominal reference would need either a clone (which loses the source array's identity) or
-// an unchecked nominal recovery. Neither is the assignment TypeScript wrote, so stop before row_set's
-// constructibility assertion has to diagnose the representation mismatch in generated C++.
+// The nominal type the target array element names, as the source spelled it: the actionable half of the
+// refusal is the declaration the author has to write instead of the projection.
+function getCppNominalReferenceNameCpp(type: Readonly<IrType>): string | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind === 'typeParameter') {
+    return undefined;
+  }
+  return type.reference.binding.name;
+}
+
+// A readonly structural sequence parameter is an owner-preserving view: it accepts any owner whose
+// elements convert to the projected row, so it never names one nominal element type. Storing that view
+// as an owning array of one nominal reference is therefore not merely unemitted but unrepresentable.
+// The view keeps the source array's identity as an opaque handle beside a projected element, so the
+// nominal referent of an element is not recoverable from the view at all -- converting one would assume
+// exactly what the parameter's type declined to state -- and materializing a fresh array would publish
+// a different array object than the one the assignment stored, which the source can observe. What is
+// missing is the element type the source dropped when it wrote the projection, so this refusal belongs
+// to the source to fix and is attributed source-portability rather than compiler-restriction.
 function refuseCppContextualStructuralArrayNominalRecoveryCpp(
   expression: Readonly<IrExpression>,
   target: Readonly<IrType>,
@@ -15964,9 +15977,14 @@ function refuseCppContextualStructuralArrayNominalRecoveryCpp(
   if (!sourceShape || !targetShape || !areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context)) {
     return;
   }
+  const nominalName = getCppNominalReferenceNameCpp(targetArray.element);
+  const conversion =
+    nominalName === undefined
+      ? 'Declare both the target and the source with the nominal element type rather than its Readonly projection, so the array the caller owns is the one stored.'
+      : `Declare the source as readonly ${nominalName}[] rather than readonly Readonly<${nominalName}>[], so the array the caller owns is the one stored.`;
   emissionError(
     context,
-    'a readonly structural sequence cannot be stored as an owning array of nominal references without cloning its array identity or assuming an unproven referent type',
+    `a readonly structural sequence cannot be stored as an owning array of nominal references: the view keeps only the source array's identity and a projected element, so neither the owner's element type nor each nominal referent can be recovered from it. ${conversion}`,
     'cpp-contextual-structural-array-nominal-recovery-unproven',
   );
 }
@@ -21208,11 +21226,20 @@ function isSuperCallStatement(statement: Readonly<IrStatement>): boolean {
 }
 
 function emissionError(context: EmitContext, message: string, rule?: string): never {
-  const metadata =
-    rule !== undefined && cppTargetRuntimeRefusalRules.has(rule)
-      ? { ...context.currentOrigin, classification: 'target-runtime' as const }
-      : context.currentOrigin;
+  const classification = getCppRefusalRuleClassification(rule);
+  const metadata = classification === undefined ? context.currentOrigin : { ...context.currentOrigin, classification };
   throw createBackendEmissionFailure('cpp', context.module, message, rule, metadata);
+}
+
+// Attribution the check report reads as the producer default: a rule whose cause is a runtime contract or
+// a source declaration the emitter cannot invent says so here rather than defaulting to the compiler.
+function getCppRefusalRuleClassification(
+  rule: string | undefined,
+): 'source-portability' | 'target-runtime' | undefined {
+  if (rule === undefined) return undefined;
+  if (cppTargetRuntimeRefusalRules.has(rule)) return 'target-runtime';
+  if (cppSourcePortabilityRefusalRules.has(rule)) return 'source-portability';
+  return undefined;
 }
 
 // The ambient wrappers that change a member's optionality or mutability but never WHICH members exist, so
@@ -21227,6 +21254,13 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-external-record-conversion-wrong-space',
   'cpp-number-to-fixed-runtime-helper-required',
   'cpp-runtime-external-symbol-binding-incomplete',
+]);
+
+// Refusals whose cause is a source declaration the emitter cannot invent and the runtime cannot supply:
+// the value the source wrote discards identity or type evidence the target representation needs, so the
+// fix is an explicit source conversion and the check report says which one.
+const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
+  'cpp-contextual-structural-array-nominal-recovery-unproven',
 ]);
 
 // The lib.d.ts type utilities this emitter cannot lower unconditionally. Each names a type-level
