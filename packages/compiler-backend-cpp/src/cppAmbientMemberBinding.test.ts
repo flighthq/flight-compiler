@@ -95,6 +95,13 @@ describe('getCompilerCppAmbientMemberBinding', () => {
     });
   });
 
+  it('maps the Flight Error message field to its runtime accessor', () => {
+    expect(getCompilerCppAmbientMemberBinding({ name: 'message', receiver: 'error' }, 'flight-cpp')).toEqual({
+      kind: 'propertyMethod',
+      targetName: 'message',
+    });
+  });
+
   it('maps typed-array length in both profiles and runtime methods in the flight-cpp profile', () => {
     for (const runtimeProfile of ['flight-cpp', 'standard-library'] as const) {
       expect(getCompilerCppAmbientMemberBinding({ name: 'length', receiver: 'typedArray' }, runtimeProfile)).toEqual({

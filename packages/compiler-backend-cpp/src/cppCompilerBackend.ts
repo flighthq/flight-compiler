@@ -4440,6 +4440,7 @@ function emitExpression(
       return construction(initializer);
     }
     case 'property': {
+      refuseCppUnsupportedErrorPropertyReadCpp(expression, context);
       const enumMember = emitCppEnumMemberReferenceCpp(expression, context);
       if (enumMember) return enumMember;
       const narrowedUnion = emitCppNarrowedPropertyUnionValueCpp(expression, context);
@@ -12472,6 +12473,13 @@ function emitContextualUnionExpressionInContextCpp(
         'cpp-empty-array-element-type-unproven',
       );
     }
+    if (plan.kind === 'optionalSingle' && expression.kind === 'binary' && expression.operator === '||') {
+      emissionError(
+        context,
+        'an optional logical-OR result requires concrete type evidence for every value-bearing operand; narrow or assert an erased operand before applying ||',
+        'cpp-logical-or-present-domain-unproven',
+      );
+    }
     emissionError(
       context,
       `contextual ${plan.kind} construction requires expression type evidence`,
@@ -13365,8 +13373,9 @@ function getIrExpressionTypeForUnionConstructionCpp(
       return getIrExpressionTypeEvidenceCpp(expression, context);
     case 'binary':
       return (
-        getIrOperatorValueDomainTypeCpp(expression.semantics.result) ??
-        getIrNullishCoalesceTypeEvidenceCpp(expression, context)
+        getIrLogicalOrTypeEvidenceCpp(expression, context) ??
+        getIrNullishCoalesceTypeEvidenceCpp(expression, context) ??
+        getIrOperatorValueDomainTypeCpp(expression.semantics.result)
       );
     case 'call':
       return getIrCallReturnTypeCpp(expression, context);
@@ -13809,6 +13818,29 @@ function getIrNullishCoalesceTypeEvidenceCpp(
   const right =
     getIrExpressionTypeEvidenceCpp(expression.right, context) ??
     getIrExpressionTypeForUnionConstructionCpp(expression.right, [], context);
+  if (!left || !right || left.kind === 'unknown' || right.kind === 'unknown') return undefined;
+  const leftUnion = getIrUnionTypeCpp(left, context, new Set());
+  const rightUnion = getIrUnionTypeCpp(right, context, new Set());
+  return createIrTypeEvidenceUnionCpp([
+    ...(leftUnion?.types ?? [left]).filter((member) => member.kind !== 'null' && member.kind !== 'undefined'),
+    ...(rightUnion?.types ?? [right]),
+  ]);
+}
+
+// A value logical OR returns the first truthy operand or its final operand. Null and undefined from
+// a preceding branch therefore cannot reach the result, while every concrete present domain can.
+// Keeping those domains is deliberately conservative for other falsy values: a broad string,
+// number, or boolean type can also contain truthy values, so its domain remains part of the result.
+// An erased branch supplies no domain and stays unproven instead of being selected from context.
+function getIrLogicalOrTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.operator !== '||') return undefined;
+  const branchType = (branch: Readonly<IrExpression>): Readonly<IrType> | undefined =>
+    getIrExpressionTypeEvidenceCpp(branch, context) ?? getIrExpressionTypeForUnionConstructionCpp(branch, [], context);
+  const left = branchType(expression.left);
+  const right = branchType(expression.right);
   if (!left || !right || left.kind === 'unknown' || right.kind === 'unknown') return undefined;
   const leftUnion = getIrUnionTypeCpp(left, context, new Set());
   const rightUnion = getIrUnionTypeCpp(right, context, new Set());
@@ -16685,6 +16717,7 @@ function getIrExpressionTypeEvidenceCpp(
       return expression.type;
     case 'binary':
       return (
+        getIrLogicalOrTypeEvidenceCpp(expression, context) ??
         getIrNullishCoalesceTypeEvidenceCpp(expression, context) ??
         getIrOperatorValueDomainTypeCpp(expression.semantics.result)
       );
@@ -17011,6 +17044,38 @@ function emitCppNarrowedErasedPrimitiveIdentifierCpp(
   return `${emitIdentifierReference(expression.reference, context)}.${accessor}()`;
 }
 
+// `Error.name` is a dynamic source property, while Flight currently exposes one static name() per
+// class; calling it through an Error-typed value would answer "Error" after a RangeError was sliced.
+// An `instanceof Error` view over flight::Any has a second missing seam: no checked Error projection
+// that preserves those subclasses. Assign both gaps to the runtime rather than emitting a plausible
+// member access with the wrong semantics.
+function refuseCppUnsupportedErrorPropertyReadCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): void {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || expression.member?.receiver !== 'error') {
+    return;
+  }
+  if (expression.name === 'name') {
+    emissionError(
+      context,
+      'reading Error.name requires a dynamic runtime accessor that preserves RangeError and TypeError names; flight::Error currently exposes only a static name()',
+      'cpp-error-name-runtime-required',
+    );
+  }
+  if (
+    expression.structuralAccess !== 'narrowed' ||
+    !isCppErasedDynamicValueTypeCpp(getIrExpressionTypeEvidenceCpp(expression.object, context))
+  ) {
+    return;
+  }
+  emissionError(
+    context,
+    `reading Error.${expression.name} after narrowing an erased value requires flight::Any to expose a checked Error view that accepts Error subclasses; keep the value typed as Error before erasure or add that runtime contract`,
+    'cpp-erased-error-view-runtime-required',
+  );
+}
+
 function getIrPropertyExpressionTypeEvidenceCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
@@ -17035,9 +17100,28 @@ function getIrPropertyExpressionTypeEvidenceCpp(
       : undefined;
   const recordedAliasedMemberType = receiverInitializer?.kind === 'property' ? recordedType : undefined;
   const recordedNarrowedType = expression.presence === 'narrowedPresent' ? recordedType : undefined;
-  const valueType = recordedNarrowedType ?? reconstructedType ?? recordedLiteralType ?? recordedAliasedMemberType;
+  const runtimeMemberType = getCppRuntimeMemberPropertyTypeEvidenceCpp(expression, context);
+  const valueType =
+    recordedNarrowedType ?? reconstructedType ?? recordedLiteralType ?? recordedAliasedMemberType ?? runtimeMemberType;
   if (!valueType || !expression.optional || expression.optionalChain?.receiverNullish !== 'possible') return valueType;
   return createIrTypeEvidenceUnionCpp([valueType, { kind: 'undefined' }]);
+}
+
+// The lean package-graph checker can report `any` for a standard runtime field even after retaining
+// the exact resolved receiver. Flight's Error contract fixes both fields to String, so that resolved
+// receiver is closed evidence; a lookalike user property never enters this path.
+function getCppRuntimeMemberPropertyTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    expression.member?.receiver === 'error' &&
+    (expression.name === 'message' || expression.name === 'name')
+  ) {
+    return { kind: 'primitive', name: 'string' };
+  }
+  return undefined;
 }
 
 function getIrOptionalChainValueTypeEvidenceCpp(
@@ -22214,7 +22298,9 @@ const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial
 
 const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-array-length-sparse-runtime-required',
+  'cpp-erased-error-view-runtime-required',
   'cpp-erased-tag-unreportable',
+  'cpp-error-name-runtime-required',
   'cpp-external-object-field-contract-missing',
   'cpp-external-record-conversion-incomplete',
   'cpp-external-record-conversion-missing',
@@ -22231,6 +22317,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-contextual-structural-array-nominal-recovery-unproven',
   'cpp-empty-array-element-type-unproven',
+  'cpp-logical-or-present-domain-unproven',
   'cpp-structural-assertion-owner-unproven',
 ]);
 

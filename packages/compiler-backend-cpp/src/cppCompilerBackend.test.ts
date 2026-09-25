@@ -13348,6 +13348,98 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain(' || ');
   });
 
+  it('retains an optional-chain present domain through a logical-OR sentinel fallback', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'logical-or-optional.ts',
+        `interface Entry { text: string }
+         export function text(entry?: Entry): string | null {
+           return entry?.text.trim() || null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('([&]() -> std::optional<flight::String>');
+    expect(output).toContain('if (flight::to_boolean(logical_or_value)) return logical_or_value.value();');
+    expect(output).toContain('return std::nullopt;');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles a contextual optional logical-OR result', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const output = emitIrModuleCpp(
+      lower(
+        'compile-logical-or-optional.ts',
+        `interface Entry { text: string }
+         export function text(entry?: Entry): string | null {
+           return entry?.text.trim() || null;
+         }
+         export function errorMessage(error: Error): string { return error.message; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-logical-or-optional-'));
+    const header = path.join(directory, 'logical_or_optional.hpp');
+
+    try {
+      writeFileSync(header, output, 'utf8');
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('attributes an erased logical-OR operand with no present domain to source portability', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower('logical-or-erased.ts', 'export function text(value: any): string | null { return value || null; }')
+          .module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    expect(failure.rule).toBe('cpp-logical-or-present-domain-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('narrow or assert an erased operand');
+  });
+
+  it('attributes Error properties with missing runtime views to the runtime contract', () => {
+    const name = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'erased-error-property.ts',
+          `export function name(cause: unknown): string | null {
+             if (cause instanceof Error) return cause.name;
+             return null;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    const message = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'erased-error-message.ts',
+          `export function message(cause: unknown): string | null {
+             if (cause instanceof Error) return cause.message;
+             return null;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    expect(name.rule).toBe('cpp-error-name-runtime-required');
+    expect(name.classification).toBe('target-runtime');
+    expect(name.message).toContain('dynamic runtime accessor');
+    expect(message.rule).toBe('cpp-erased-error-view-runtime-required');
+    expect(message.classification).toBe('target-runtime');
+    expect(message.message).toContain('checked Error view that accepts Error subclasses');
+  });
+
   it('preserves a nullish fallback nested as the last logical-OR operand', () => {
     const output = emitIrModuleCpp(
       lower(

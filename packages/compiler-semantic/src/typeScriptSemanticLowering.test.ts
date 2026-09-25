@@ -4797,6 +4797,36 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     });
   });
 
+  it('retains the concrete member path inside a value logical-OR optional chain', () => {
+    const result = lower(
+      'optional-chain-logical-or.ts',
+      `interface Entry { text: string }
+       export function text(entry?: Entry): string | null {
+         return entry?.text.trim() || null;
+       }`,
+    );
+    const text = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'text',
+    );
+    const returned = text?.kind === 'function' ? text.body[0] : undefined;
+    const logicalOr = returned?.kind === 'return' ? returned.expression : undefined;
+    const call = logicalOr?.kind === 'binary' ? logicalOr.left : undefined;
+    const callee = call?.kind === 'call' && call.callee.kind === 'property' ? call.callee : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(logicalOr).toMatchObject({ kind: 'binary', operator: '||', semantics: { result: 'unknown' } });
+    expect(callee).toMatchObject({
+      member: { name: 'trim', receiver: 'string' },
+      optionalChain: {
+        receiverNullish: 'possible',
+        receiverType: {
+          kind: 'union',
+          types: [{ kind: 'primitive', name: 'string' }, { kind: 'undefined' }],
+        },
+      },
+    });
+  });
+
   it('substitutes caller type parameters through asserted optional method calls', () => {
     const result = lower(
       'generic-optional-method.ts',
