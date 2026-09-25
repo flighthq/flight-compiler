@@ -4075,7 +4075,11 @@ function emitExpression(
         !denseArrayLengthInitialized &&
         !(expression.arguments.length === 1 && getNonnegativeIntegerLiteralCpp(expression.arguments[0]!) === 0)
       ) {
-        emissionError(context, 'Array length construction is outside the dense flight-cpp array profile');
+        emissionError(
+          context,
+          'Array length construction is outside the dense flight-cpp array profile because its runtime contract cannot represent holes; use an explicit fill value, build the array with push, or use Array.from when every element should be present',
+          'cpp-array-length-sparse-runtime-required',
+        );
       }
       if (getCppRuntimeProfile(context.options) === 'flight-cpp' && ambientConstructorName === 'Promise') {
         if (expression.typeArguments.length !== 1) {
@@ -5782,17 +5786,32 @@ function emitArrayExpressionCpp(
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
     expression.elements.some((element) => element === undefined)
   ) {
-    emissionError(context, 'sparse array literals are outside the dense flight-cpp array profile');
+    emissionError(
+      context,
+      'sparse array literals are outside the dense flight-cpp array profile because its runtime contract cannot represent an omitted element; write undefined explicitly only when the element is present, otherwise a sparse-array runtime carrier is required',
+      'cpp-sparse-array-literal-runtime-required',
+    );
   }
   if (!expression.elements.some((element) => element?.kind === 'spread')) {
+    // Empty literals cannot deduce a C++ template argument from an element, but the semantic IR retains
+    // the checker-selected construction type precisely for this case. Assertions and nested nullish
+    // fallbacks may arrive without an emitter-supplied expected type, so the expression's own evidence
+    // is the fallback rather than manufacturing `Any` or dropping the element type.
+    const constructionArray = expectedArray ?? (expression.elements.length === 0 ? expression.type : undefined);
     const elements = expression.elements.map((element) =>
-      element ? emitExpression(element, context, expectedArray?.element) : '{}',
+      element ? emitExpression(element, context, constructionArray?.element) : '{}',
     );
     if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
-      if (elements.length === 0 && !expectedArray) {
-        emissionError(context, 'an empty array requires contextual element type in C++ emission');
+      if (elements.length === 0 && !constructionArray) {
+        emissionError(
+          context,
+          'an empty array has no concrete element type; add an explicit T[] annotation or T[] assertion at the construction site',
+          'cpp-empty-array-element-type-unproven',
+        );
       }
-      const target = expectedArray ? `flight::Array<${emitType(expectedArray.element, context)}>` : 'flight::Array';
+      const target = constructionArray
+        ? `flight::Array<${emitType(constructionArray.element, context)}>`
+        : 'flight::Array';
       return `${target}{${elements.join(', ')}}`;
     }
     context.includes.add('vector');
@@ -14602,7 +14621,8 @@ function isCppEmptyArrayAssignmentStorageTargetCpp(
     sourceArray?.element.kind !== 'unknown' ||
     sourceArray.element.source !== 'any' ||
     !targetArray ||
-    !hasFlightReferenceRepresentationCpp(targetArray.element, context) ||
+    targetArray.element.kind === 'unknown' ||
+    targetArray.element.kind === 'never' ||
     initializer?.kind !== 'array' ||
     initializer.elements.length !== 0
   ) {
@@ -14651,6 +14671,30 @@ function isCppEmptyArrayAssignmentStorageTargetCpp(
       }
     },
   });
+  // A returned evolving empty array adopts the declaration's result element type just as one assigned
+  // into a typed field does. Count only returns owned by a function with this exact array target and do
+  // not descend into nested closures; every other reference still prevents the refinement below.
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'function') continue;
+    if (normalizeCompilerStructuralValueCanonical(declaration.returns) !== targetIdentity) continue;
+    for (const statement of declaration.body) {
+      analyzeIrStatementSubtreeTraversal(statement, {
+        expression(expression) {
+          if (expression.kind === 'function') return false;
+          return undefined;
+        },
+        statement(candidate) {
+          if (
+            candidate.kind === 'return' &&
+            candidate.expression &&
+            isIrBindingIdentifierCpp(candidate.expression, bindingId)
+          ) {
+            representedUses += 1;
+          }
+        },
+      });
+    }
+  }
   return !incompatibleWrite && references > 0 && references === representedUses;
 }
 
@@ -21301,12 +21345,14 @@ function getCppRefusalRuleClassification(
 const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial', 'Readonly', 'Required']);
 
 const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
+  'cpp-array-length-sparse-runtime-required',
   'cpp-external-object-field-contract-missing',
   'cpp-external-record-conversion-incomplete',
   'cpp-external-record-conversion-missing',
   'cpp-external-record-conversion-wrong-space',
   'cpp-number-to-fixed-runtime-helper-required',
   'cpp-runtime-external-symbol-binding-incomplete',
+  'cpp-sparse-array-literal-runtime-required',
 ]);
 
 // Refusals whose cause is a source declaration the emitter cannot invent and the runtime cannot supply:
@@ -21314,6 +21360,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
 // fix is an explicit source conversion and the check report says which one.
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-contextual-structural-array-nominal-recovery-unproven',
+  'cpp-empty-array-element-type-unproven',
   'cpp-structural-assertion-owner-unproven',
 ]);
 

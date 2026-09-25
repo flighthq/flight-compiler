@@ -10588,17 +10588,39 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
 
   it('refuses hole-producing arrays in the dense flight-cpp runtime profile', () => {
     const sparse = lower('sparse-flight.ts', 'export function values(): number[] { return [1, , 3]; }');
-    expect(() => emitIrModuleCpp(sparse.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'sparse array literals are outside the dense flight-cpp array profile',
+    const sparseFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(sparse.module, { runtimeProfile: 'flight-cpp' }),
     );
+    expect(sparseFailure.rule).toBe('cpp-sparse-array-literal-runtime-required');
+    expect(sparseFailure.classification).toBe('target-runtime');
+    expect(sparseFailure.message).toContain('a sparse-array runtime carrier is required');
 
     const sized = lower(
       'array-length-flight.ts',
       'export function values(length: number): number[] { return new Array<number>(length); }',
     );
-    expect(() => emitIrModuleCpp(sized.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'Array length construction is outside the dense flight-cpp array profile',
+    const sizedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(sized.module, { runtimeProfile: 'flight-cpp' }),
     );
+    expect(sizedFailure.rule).toBe('cpp-array-length-sparse-runtime-required');
+    expect(sizedFailure.classification).toBe('target-runtime');
+    expect(sizedFailure.message).toContain('build the array with push');
+
+    // Holes are observable even when the final length is the only dense-looking fact: array iteration
+    // callbacks skip them, while a default-filled C++ vector would invoke the callback for every slot.
+    const observed = lower(
+      'array-length-observed-holes-flight.ts',
+      `export function visits(length: number): number {
+         let count = 0;
+         new Array<number>(length).forEach(() => { count += 1; });
+         return count;
+       }`,
+    );
+    const observedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(observed.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(observedFailure.rule).toBe('cpp-array-length-sparse-runtime-required');
+    expect(observedFailure.classification).toBe('target-runtime');
 
     const partiallyFilled = lower(
       'array-length-partial-fill-flight.ts',
@@ -21635,16 +21657,34 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(() => emitIrModuleCpp(module)).toThrow('requires concrete binding type evidence');
   });
 
-  it('refuses empty flight-cpp array without contextual element type', () => {
+  it('uses retained and sole-use inferred element evidence for empty flight-cpp arrays', () => {
+    const result = lower(
+      'empty-array-evidence.ts',
+      `export function typed(): number[] { const values: number[] = []; return values; }
+       export function asserted(): number[] { return [] as number[]; }
+       export function fallback(values?: number[]): number[] { return values ?? []; }
+       export function inferred(): number[] { const values = []; values.push(1); return values; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted.match(/flight::Array<double>\{\}/gu)).toHaveLength(4);
+    expect(emitted).toContain('flight::Array<double> values = flight::Array<double>{};');
+    expect(emitted).toContain('values.push(1.0)');
+    expect(emitted).not.toContain('flight::Array<flight::Any>');
+  });
+
+  it('attributes an empty flight-cpp array with no element evidence to source portability', () => {
     const result = lower('empty-arr.ts', 'export const items: number[] = [];');
     const module = structuredClone(result.module);
     const decl = module.declarations[0];
     if (decl?.kind === 'variable' && !('pattern' in decl)) {
       (decl as any).type = undefined;
+      if (decl.initializer?.kind === 'array') (decl.initializer as any).type = undefined;
     }
-    expect(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'an empty array requires contextual element type',
-    );
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }));
+    expect(failure.rule).toBe('cpp-empty-array-element-type-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('add an explicit T[] annotation or T[] assertion');
   });
 
   it('emits standard-library array with std::vector', () => {
