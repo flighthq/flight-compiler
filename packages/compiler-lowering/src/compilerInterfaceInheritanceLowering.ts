@@ -203,6 +203,7 @@ function lowerIrInterfaceDeclarationInheritance(
   return {
     ...declaration,
     extends: [],
+    heritageEvidence: [],
     properties: inherited
       ? properties.map((property, index) =>
           rebindIrInterfacePropertyTypeParameters(property, declaration, index, context),
@@ -237,7 +238,7 @@ function getIrInterfaceDeclarationPropertiesFlattened(
     );
   }
   const properties: IrObjectTypeProperty[] = [];
-  for (const reference of declaration.extends) {
+  for (const [heritageIndex, reference] of declaration.extends.entries()) {
     const utilityProperties = getIrInterfaceUtilityHeritagePropertiesFlattened(
       reference,
       location,
@@ -251,7 +252,24 @@ function getIrInterfaceDeclarationPropertiesFlattened(
       }
       continue;
     }
-    const base = getIrInterfaceDeclarationBase(reference, location, context);
+    const evidence = declaration.heritageEvidence?.find(
+      (candidate) => candidate.index === heritageIndex && isDeepStrictEqual(candidate.reference, reference),
+    );
+    const base = getIrInterfaceDeclarationBase(reference, location, context, evidence !== undefined);
+    if (!base) {
+      for (const property of evidence!.properties) {
+        addIrInterfacePropertyFlattened(
+          {
+            ...property,
+            type: resolveIrTypeStructuralSubstitution(property.type, substitutions),
+          },
+          declaration,
+          properties,
+          context,
+        );
+      }
+      continue;
+    }
     const baseSubstitutions = getIrInterfaceTypeSubstitutionPlan(reference, base.declaration, substitutions, context);
     for (const property of getIrInterfaceDeclarationPropertiesFlattened(
       base,
@@ -493,12 +511,25 @@ function getIrInterfaceDeclarationBase(
   reference: Readonly<IrTypeReference>,
   location: Readonly<InterfaceInheritanceDeclarationLocation>,
   context: InterfaceInheritanceLoweringContext,
-): Readonly<InterfaceInheritanceDeclarationLocation> {
+): Readonly<InterfaceInheritanceDeclarationLocation>;
+function getIrInterfaceDeclarationBase(
+  reference: Readonly<IrTypeReference>,
+  location: Readonly<InterfaceInheritanceDeclarationLocation>,
+  context: InterfaceInheritanceLoweringContext,
+  allowMissing: boolean,
+): Readonly<InterfaceInheritanceDeclarationLocation> | undefined;
+function getIrInterfaceDeclarationBase(
+  reference: Readonly<IrTypeReference>,
+  location: Readonly<InterfaceInheritanceDeclarationLocation>,
+  context: InterfaceInheritanceLoweringContext,
+  allowMissing = false,
+): Readonly<InterfaceInheritanceDeclarationLocation> | undefined {
   return getIrInterfaceDeclarationBaseFromModule(
     reference,
     location.module,
     location.declaration.binding.name,
     context,
+    allowMissing,
   );
 }
 
@@ -507,8 +538,10 @@ function getIrInterfaceDeclarationBaseFromModule(
   module: Readonly<InterfaceInheritanceModuleRecord>,
   subjectName: string,
   context: InterfaceInheritanceLoweringContext,
-): Readonly<InterfaceInheritanceDeclarationLocation> {
+  allowMissing = false,
+): Readonly<InterfaceInheritanceDeclarationLocation> | undefined {
   if (reference.reference.kind !== 'binding') {
+    if (allowMissing) return undefined;
     return failIrInterfaceInheritanceLowering(
       context.subject,
       `interface ${subjectName} inherits a nonlocal interface that cannot be structurally resolved`,
@@ -517,6 +550,7 @@ function getIrInterfaceDeclarationBaseFromModule(
   const bindingReference = reference.reference;
   if (bindingReference.binding.kind !== 'import') {
     if (bindingReference.path.length > 0) {
+      if (allowMissing) return undefined;
       return failIrInterfaceInheritanceLowering(
         context.subject,
         `interface ${subjectName} inherits a nonlocal interface that cannot be structurally resolved`,
@@ -524,6 +558,7 @@ function getIrInterfaceDeclarationBaseFromModule(
     }
     const base = module.declarations.get(bindingReference.binding.id);
     if (base) return base;
+    if (allowMissing) return undefined;
     return failIrInterfaceInheritanceLowering(
       context.subject,
       `interface ${subjectName} inherits unavailable interface ${bindingReference.binding.name}`,
@@ -560,6 +595,7 @@ function getIrInterfaceDeclarationBaseFromModule(
       `interface ${subjectName} inherits ambiguous interface ${bindingReference.binding.name}`,
     );
   }
+  if (allowMissing) return undefined;
   return failIrInterfaceInheritanceLowering(
     context.subject,
     `interface ${subjectName} inherits unavailable interface ${bindingReference.binding.name}`,
@@ -621,6 +657,7 @@ function addIrInterfacePropertyFlattened(
     (!property.optional || existing.optional) &&
     (propertyToExisting.status === 'compatible' ||
       (directOverride && propertyToExisting.status === 'indeterminate') ||
+      (directOverride && isIrInterfaceIntersectionOverrideCompatible(propertyType, existingType)) ||
       (directOverride && isIrInterfaceMethodOverrideCompatible(propertyType, existingType)))
   ) {
     properties[existingIndex] = property;
@@ -724,6 +761,16 @@ function isIrInterfaceMethodOverrideCompatible(source: Readonly<IrType>, target:
   const targetRequired = target.parameters.filter((parameter) => !parameter.optional && !parameter.rest).length;
   if (sourceRequired !== targetRequired) return false;
   return analyzeIrTypeStructuralAssignability(source.returns, target.returns).status !== 'incompatible';
+}
+
+// A direct property may narrow `Node<any>` to a structural intersection such as
+// `Node<Node2DTraits> & Node2DTraits`. The intersection satisfies the inherited slot when any one
+// constituent already does; the remaining constituents only add constraints to the source value.
+function isIrInterfaceIntersectionOverrideCompatible(source: Readonly<IrType>, target: Readonly<IrType>): boolean {
+  return (
+    source.kind === 'intersection' &&
+    source.types.some((member) => analyzeIrTypeStructuralAssignability(member, target).status === 'compatible')
+  );
 }
 
 function resolveIrTypeInterfaceInheritance(

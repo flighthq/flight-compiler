@@ -54,6 +54,7 @@ import type {
   IrImportBinding,
   IrIdentifierReference,
   IrInterfaceDeclaration,
+  IrInterfaceHeritageEvidence,
   IrIndexedReceiver,
   IrInvocationSemantics,
   IrObjectMember,
@@ -2607,17 +2608,21 @@ function lowerImportBindingIdentity(
 
 function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext): IrInterfaceDeclaration {
   const ownProperties = lowerTypeProperties(node.members, context);
+  const heritage = node.heritageClauses?.flatMap((clause) => clause.types) ?? [];
+  const heritageReferences = heritage.map((type) => lowerExpressionWithTypeArguments(type, context));
+  const heritageEvidence = heritage.flatMap((type, index): IrInterfaceHeritageEvidence[] => {
+    const properties = lowerTypeScriptInterfaceHeritageEvidence(type, context);
+    return properties ? [{ index, properties, reference: heritageReferences[index]! }] : [];
+  });
   const properties: IrObjectTypeProperty[] = [];
-  for (const clause of node.heritageClauses ?? []) {
-    for (const heritage of clause.types) {
-      const materialized =
-        lowerTypeScriptClosedAmbientPickHeritageProperties(heritage, context) ??
-        (ts.isIdentifier(heritage.expression) && heritage.expression.text === 'ReturnType'
-          ? lowerTypeScriptUnresolvedUtilityHeritageProperties(heritage, context, new Set(), new Map())
-          : undefined);
-      for (const property of materialized ?? []) {
-        if (!properties.some((candidate) => candidate.name === property.name)) properties.push(property);
-      }
+  for (const type of heritage) {
+    const materialized =
+      lowerTypeScriptClosedAmbientPickHeritageProperties(type, context) ??
+      (ts.isIdentifier(type.expression) && type.expression.text === 'ReturnType'
+        ? lowerTypeScriptUnresolvedUtilityHeritageProperties(type, context, new Set(), new Map())
+        : undefined);
+    for (const property of materialized ?? []) {
+      if (!properties.some((candidate) => candidate.name === property.name)) properties.push(property);
     }
   }
   for (const property of ownProperties) {
@@ -2628,15 +2633,36 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
   return {
     binding: lowerTypeBindingIdentity(node.name, context),
     exported: isExported(node),
-    extends:
-      node.heritageClauses?.flatMap((clause) =>
-        clause.types.map((type) => lowerExpressionWithTypeArguments(type, context)),
-      ) ?? [],
+    extends: heritageReferences,
+    ...(heritageEvidence.length > 0 ? { heritageEvidence } : {}),
     kind: 'interface',
     origin: origin(node, context),
     properties,
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
+}
+
+// Heritage outside the explicit compiler module graph still has a checker-resolved structural
+// shape. Keep one complete shape per edge: the backend-elected inheritance pass remains responsible
+// for combining branches, applying authored refinements, and reporting incompatible properties.
+function lowerTypeScriptInterfaceHeritageEvidence(
+  heritage: ts.ExpressionWithTypeArguments,
+  context: LoweringContext,
+): readonly IrObjectTypeProperty[] | undefined {
+  try {
+    return lowerTypeScriptCheckerObjectProperties(
+      context.checker.getTypeAtLocation(heritage),
+      context,
+      0,
+      undefined,
+      heritage,
+      true,
+      true,
+    );
+  } catch (error) {
+    if (isUnsupportedSyntaxFailure(error)) return undefined;
+    throw error;
+  }
 }
 
 // A deliberately unresolved ambient Pick still proves a finite structural surface when its target
@@ -8560,12 +8586,13 @@ function lowerTypeScriptCheckerObjectProperties(
   mapped?: ts.MappedTypeNode,
   lexicalSite?: ts.Node,
   preserveWrittenTypes = false,
+  omitIndexSignatures = false,
 ): readonly IrObjectTypeProperty[] | undefined {
   if (!(type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection)) || depth > 4) return undefined;
   if (
     context.checker.getSignaturesOfType(type, ts.SignatureKind.Call).length > 0 ||
     context.checker.getSignaturesOfType(type, ts.SignatureKind.Construct).length > 0 ||
-    context.checker.getIndexInfosOfType(type).length > 0
+    (!omitIndexSignatures && context.checker.getIndexInfosOfType(type).length > 0)
   ) {
     return undefined;
   }

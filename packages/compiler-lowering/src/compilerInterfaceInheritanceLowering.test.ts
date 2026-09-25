@@ -1,6 +1,6 @@
 import ts from 'typescript';
 
-import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerModuleResolutionPlan,
   IrInterfaceDeclaration,
@@ -168,6 +168,24 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
         { name: 'optional', optional: false, type: { kind: 'primitive', name: 'number' } },
         { name: 'type', type: { kind: 'literal', value: 'specific' } },
       ],
+    });
+  });
+
+  it('accepts a Node2D intersection as a refinement of Node<any>', () => {
+    const module = lower(
+      'render-proxy-2d.ts',
+      `interface Node<Traits> { readonly traits: Traits; }
+       type NodeAny = Node<any>;
+       interface Node2DTraits { readonly x: number; }
+       type Node2D = Node<Node2DTraits> & Node2DTraits;
+       interface RenderProxy { source: NodeAny; }
+       export interface RenderProxy2D extends RenderProxy { source: Node2D; }`,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'RenderProxy2D')).toMatchObject({
+      extends: [],
+      properties: [{ name: 'source', type: { kind: 'named', reference: { binding: { name: 'Node2D' } } } }],
     });
   });
 
@@ -387,6 +405,82 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     expect(getInterface(output, 'Style')).toMatchObject({ extends: [], properties: [{ name: 'accent' }] });
   });
 
+  it('flattens transitive ambient heritage from checker evidence', () => {
+    const module = lower(
+      'ambient-transitive.ts',
+      `declare interface AmbientRoot<Value> {
+         [index: number]: string;
+         root: Value;
+       }
+       declare interface AmbientMiddle<Value> extends AmbientRoot<Value> { middle: Value[]; }
+       export interface Derived extends AmbientMiddle<number> { own: boolean; }`,
+    );
+    const output = lowerIrModuleWithCompilerPasses(module, [createCompilerLoweringPassInterfaceInheritance([module])]);
+
+    expect(getInterface(output, 'Derived')).toMatchObject({
+      extends: [],
+      heritageEvidence: [],
+      properties: [
+        { name: 'middle', type: { element: { kind: 'primitive', name: 'number' }, kind: 'array' } },
+        { name: 'root', type: { kind: 'primitive', name: 'number' } },
+        { name: 'own', type: { kind: 'primitive', name: 'boolean' } },
+      ],
+    });
+  });
+
+  it('flattens an imported transitive alias when its declaration module is absent from the pass', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/contracts',
+          target: { packageName: '@flighthq/contracts', source: 'packages/contracts/src/index.d.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [, result] = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/contracts',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/contracts/src/index.d.ts',
+            `export interface Root<Value> { root: Value; }
+             export interface Middle<Value> extends Root<Value> { middle: Value[]; }
+             export type PublicBase<Value> = Middle<Value>;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/app',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/app/src/derived.ts',
+            `import type { PublicBase as ImportedBase } from '@flighthq/contracts';
+             export interface Derived extends ImportedBase<number> { own: boolean; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const output = lowerIrModuleWithCompilerPasses(result!.module, [
+      createCompilerLoweringPassInterfaceInheritance([result!.module], moduleResolution),
+    ]);
+
+    expect(result!.diagnostics).toEqual([]);
+    expect(getInterface(output, 'Derived')).toMatchObject({
+      extends: [],
+      properties: [
+        { name: 'middle', type: { element: { kind: 'primitive', name: 'number' }, kind: 'array' } },
+        { name: 'root', type: { kind: 'primitive', name: 'number' } },
+        { name: 'own', type: { kind: 'primitive', name: 'boolean' } },
+      ],
+    });
+  });
+
   it('flattens Partial heritage over a local generic structure', () => {
     const module = lower(
       'partial-heritage.ts',
@@ -499,6 +593,7 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     const incompatibleRight = {
       ...right,
       extends: [],
+      heritageEvidence: [],
       properties: [{ ...root.properties[0]!, type: { kind: 'primitive', name: 'string' } as const }],
     };
     const incompatible = replaceInterface(module, right, incompatibleRight);

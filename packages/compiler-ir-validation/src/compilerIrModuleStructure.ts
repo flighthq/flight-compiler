@@ -438,6 +438,34 @@ function visitDeclaration(declaration: Readonly<IrDeclaration>, path: string, st
       visitLexicalScope('declaration', path, state, () => {
         visitTypeParameters(declaration.typeParameters, `${path}.typeParameters`, 'declaration', state);
         declaration.extends.forEach((type, index) => visitType(type, `${path}.extends[${String(index)}]`, state));
+        const heritageIndices = new Set<number>();
+        declaration.heritageEvidence?.forEach((evidence, evidenceIndex) => {
+          const evidencePath = `${path}.heritageEvidence[${String(evidenceIndex)}]`;
+          if (
+            !Number.isSafeInteger(evidence.index) ||
+            evidence.index < 0 ||
+            evidence.index >= declaration.extends.length
+          ) {
+            addFailure(
+              'invalid-node-shape',
+              `${evidencePath}.index`,
+              'interface heritage evidence index must identify an extends edge',
+              state,
+            );
+          } else if (heritageIndices.has(evidence.index)) {
+            addFailure(
+              'invalid-node-shape',
+              `${evidencePath}.index`,
+              'interface heritage evidence index must be unique',
+              state,
+            );
+          }
+          heritageIndices.add(evidence.index);
+          visitType(evidence.reference, `${evidencePath}.reference`, state);
+          evidence.properties.forEach((property, propertyIndex) =>
+            visitType(property.type, `${evidencePath}.properties[${String(propertyIndex)}].type`, state),
+          );
+        });
         declaration.properties.forEach((property, index) =>
           visitType(property.type, `${path}.properties[${String(index)}].type`, state),
         );

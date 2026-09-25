@@ -68,10 +68,20 @@ export interface IrInterfaceDeclaration {
   readonly binding: IrTypeBindingIdentity;
   readonly exported: boolean;
   readonly extends: readonly IrTypeReference[];
+  // TypeScript's checker can resolve structural heritage declared outside the explicit compiler
+  // module graph. Keep that proof per authored edge so a structural lowering pass can still merge
+  // each branch independently and retain its own compatibility diagnostics.
+  readonly heritageEvidence?: readonly IrInterfaceHeritageEvidence[] | undefined;
   readonly kind: 'interface';
   readonly origin: CompilerSourceOrigin;
   readonly properties: readonly IrObjectTypeProperty[];
   readonly typeParameters: readonly IrTypeParameter[];
+}
+
+export interface IrInterfaceHeritageEvidence {
+  readonly index: number;
+  readonly properties: readonly IrObjectTypeProperty[];
+  readonly reference: IrTypeReference;
 }
 
 export interface IrEnumMember {

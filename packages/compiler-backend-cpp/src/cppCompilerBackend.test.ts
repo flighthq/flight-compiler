@@ -200,6 +200,51 @@ describe('createCppCompilerBackend', () => {
     }
   });
 
+  it('emits checker-resolved ambient interface inheritance', () => {
+    const result = lower(
+      'ambient-interface-heritage.ts',
+      `declare interface HostRoot<Value> { root: Value; }
+       declare interface HostMiddle<Value> extends HostRoot<Value> { middle: Value[]; }
+       export interface Derived extends HostMiddle<number> { own: boolean; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('double root;');
+    expect(emitted).toContain('std::vector<double> middle;');
+    expect(emitted).toContain('bool own;');
+  });
+
+  it('attributes incompatible checker-resolved heritage to the C++ lowering refusal rule', () => {
+    const result = lower(
+      'ambient-interface-conflict.ts',
+      `declare interface TextSource { source: string; }
+       declare interface NumericSource { source: number; }
+       export interface Broken extends TextSource, NumericSource {}`,
+    );
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(result.module));
+
+    expect(failure).toMatchObject({ code: 'unsupported-ir', rule: 'cpp-lowering-pass-refused' });
+    expect(failure.message).toContain('interface Broken inherits incompatible property source');
+  });
+
+  it('accepts the RenderProxy2D source refinement from Node<any> to the Node2D intersection', () => {
+    const result = lower(
+      'render-proxy-2d.ts',
+      `interface Node<Traits> { readonly traits: Traits; }
+       type NodeAny = Node<any>;
+       interface Node2DTraits { readonly x: number; }
+       type Node2D = Node<Node2DTraits> & Node2DTraits;
+       interface RenderProxy { source: NodeAny; }
+       export interface RenderProxy2D extends RenderProxy { source: Node2D; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('struct RenderProxy2D');
+    expect(emitted).toMatch(/source;/u);
+  });
+
   it('emits imported function and tuple aliases through their inline C++ representations', () => {
     const types = lowerPackage(
       '@flighthq/types',

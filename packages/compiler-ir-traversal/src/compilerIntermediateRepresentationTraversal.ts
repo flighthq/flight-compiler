@@ -175,6 +175,17 @@ function analyzeIrDeclarationTraversal(
       declaration.extends.forEach((type, index) =>
         analyzeIrTypeTraversal(type, observer, createIrTraversalPath(path, 'extends', index)),
       );
+      declaration.heritageEvidence?.forEach((evidence, evidenceIndex) => {
+        const evidencePath = createIrTraversalPath(path, 'heritageEvidence', evidenceIndex);
+        analyzeIrTypeTraversal(evidence.reference, observer, createIrTraversalPath(evidencePath, 'reference'));
+        evidence.properties.forEach((property, propertyIndex) =>
+          analyzeIrTypeTraversal(
+            property.type,
+            observer,
+            createIrTraversalPath(evidencePath, 'properties', propertyIndex, 'type'),
+          ),
+        );
+      });
       declaration.properties.forEach((property, index) =>
         analyzeIrTypeTraversal(property.type, observer, createIrTraversalPath(path, 'properties', index, 'type')),
       );
