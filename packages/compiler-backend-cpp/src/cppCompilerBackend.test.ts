@@ -26251,8 +26251,119 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     const incompatibleFailure = captureBackendEmissionFailure(() => session.emitModule(modules[8]!));
     expect(anonymousFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
     expect(nullableFailure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(nullableFailure.classification).toBe('source-portability');
+    expect(nullableFailure.message).toContain(
+      'Narrow or convert the source expression so each of its alternatives names exactly one destination union alternative.',
+    );
     expect(multipleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
     expect(incompatibleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
+  it('remaps an imported intersection union through Readonly without losing its exact arms', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/shapes.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/shapes.ts',
+            `export interface Circle { radius: number }
+             export interface Aabb { min: number; max: number }
+             export interface Obb { center: number; rotation: number }
+             export interface Capsule { start: number; end: number; radius: number }
+             export type Shape =
+               | (Circle & { kind: 'circle' })
+               | (Aabb & { kind: 'aabb' })
+               | (Obb & { kind: 'obb' })
+               | (Capsule & { kind: 'capsule' });`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/consumer',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/consumer/src/consumer.ts',
+            `import type { Aabb, Capsule, Circle, Obb, Shape } from '@flighthq/types';
+             type ReadonlyShape =
+               | Readonly<Circle & { kind: 'circle' }>
+               | Readonly<Aabb & { kind: 'aabb' }>
+               | Readonly<Obb & { kind: 'obb' }>
+               | Readonly<Capsule & { kind: 'capsule' }>;
+             export function readonlyShape(value: Shape): ReadonlyShape { return value; }
+             export function readonlyOptionalShape(value: Shape | null): ReadonlyShape | null { return value; }
+             export function readonlyMaybeShape(
+               value: Shape | null | undefined,
+             ): ReadonlyShape | null | undefined { return value; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/consumer': { includePrefix: 'flight/consumer', namespace: 'flight::consumer' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted.match(/std::visit/gu)).toHaveLength(3);
+    expect(emitted).toContain('std::is_same_v<contextual_union_value_type');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::');
+    expect(emitted).toContain('.has_value()) return std::nullopt');
+    expect(emitted).toContain('flight::Null');
+    expect(emitted).toContain('flight::Undefined');
+  });
+
+  it('keeps an annotated nullable reference when flow expands its assigned object literal', () => {
+    const result = lower(
+      'contextual-union-flow-object.ts',
+      `export function decode(): Subpath[] {
+         const subpaths: Subpath[] = [];
+         let current: Subpath | null = null;
+         const ensureCurrent = (): Subpath => {
+           if (current === null) {
+             current = { points: [{ x: 0, y: 0, kind: 'move' }], closed: false };
+             subpaths.push(current);
+           }
+           return current;
+         };
+         ensureCurrent();
+         return subpaths;
+       }
+       interface Subpath { closed: boolean; points: Point[] }
+       type Point =
+         | { kind: 'move'; x: number; y: number }
+         | { kind: 'line'; x: number; y: number }
+         | { kind: 'quad'; x: number; y: number; cx: number; cy: number }
+         | { kind: 'cubic'; x: number; y: number; c1x: number; c1y: number; c2x: number; c2y: number };`,
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('flight::make_binding_cell(std::optional<flight::Ref<Subpath>>{std::nullopt})');
+    expect(emitted).toContain('subpaths.push(current_capture.read_binding().value())');
+    expect(emitted).toContain('return current_capture.read_binding().value();');
   });
 
   it('preserves one declared structural-row interface alias across contextual nullable unions', () => {
@@ -26364,6 +26475,8 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       'cpp-contextual-union-inequivalent',
       'cpp-contextual-union-inequivalent',
     ]);
+    expect(refusals[0]?.classification).toBe('target-runtime');
+    expect(refusals[0]?.message).toContain('no checked target-runtime conversion exists');
   });
 
   it('coalesces one proven optional identity into one multi-variant arm', () => {

@@ -6616,6 +6616,48 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
       kind: 'return',
     });
   });
+  it('retains the declared nullable identity beside a flow-expanded object assignment', () => {
+    const result = lower(
+      'nullable-object-assignment.ts',
+      `type Point = { kind: 'move'; x: number; y: number } | { kind: 'line'; x: number; y: number };
+       interface Subpath { closed: boolean; points: Point[] }
+       export function decode(): Subpath {
+         let current: Subpath | null = null;
+         if (current === null) {
+           current = { points: [{ x: 0, y: 0, kind: 'move' }], closed: false };
+         }
+         return current;
+       }`,
+    );
+    let declared: Readonly<IrType> | undefined;
+    let assigned: Readonly<IrType> | undefined;
+    analyzeIrModuleTraversal(result.module, {
+      expression(expression) {
+        if (
+          expression.kind === 'assignment' &&
+          expression.left.kind === 'identifier' &&
+          expression.left.reference.kind === 'binding' &&
+          expression.left.reference.binding.name === 'current' &&
+          expression.right.kind === 'object'
+        ) {
+          assigned = expression.right.type;
+        }
+      },
+      variable(variable) {
+        if ('binding' in variable && variable.binding.name === 'current') declared = variable.type;
+      },
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(declared).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'named', reference: { binding: { name: 'Subpath' } } }, { kind: 'null' }],
+    });
+    expect(assigned).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'object' }, { kind: 'null' }],
+    });
+  });
   it('preserves checker presence on shorthand object reads after a terminating null guard', () => {
     const result = lower(
       'shorthand-presence.ts',

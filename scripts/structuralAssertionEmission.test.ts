@@ -32,6 +32,7 @@ const goldenDirectory = path.join(root, 'golden');
 // emits. A fixture that pins a refusal instead has no header to compile and is asserted here by what it
 // pinned; the emitted-source lane compiles everything else.
 const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[] = [
+  { fixture: 'contextualUnionRemap', header: 'contextual_union_remap.hpp' },
   { fixture: 'structuralAssertionOwner', header: 'structural_assertion_owner.hpp' },
   { fixture: 'unionMemberAliasAssertion', header: 'union_member_alias_assertion.hpp' },
   { fixture: 'importedAmbientAlias', header: 'imported_ambient_alias.hpp' },

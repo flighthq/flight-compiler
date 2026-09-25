@@ -2721,15 +2721,21 @@ function areCppTypesRepresentationEquivalent(
   ) {
     return true;
   }
+  const leftArray = getIrArrayTypeCpp(left, context, new Set());
+  const rightArray = getIrArrayTypeCpp(right, context, new Set());
+  if (leftArray || rightArray) {
+    return Boolean(
+      leftArray && rightArray && areCppTypesRepresentationEquivalent(leftArray.element, rightArray.element, context),
+    );
+  }
   const leftUnion = getIrUnionTypeCpp(left, context, new Set());
   const rightUnion = getIrUnionTypeCpp(right, context, new Set());
-  return Boolean(
-    leftUnion &&
-    rightUnion &&
-    hasEquivalentCppUnionRepresentation(
-      getCppUnionRepresentationPlan(leftUnion, isolatedContext),
-      getCppUnionRepresentationPlan(rightUnion, isolatedContext),
-    ),
+  if (!leftUnion || !rightUnion) return false;
+  const leftPlan = getCppUnionRepresentationPlan(leftUnion, isolatedContext);
+  const rightPlan = getCppUnionRepresentationPlan(rightUnion, isolatedContext);
+  return (
+    hasEquivalentCppUnionRepresentation(leftPlan, rightPlan) ||
+    (leftPlan.kind === rightPlan.kind && haveSameCppUnionValueSlotTypesCpp(leftPlan, rightPlan))
   );
 }
 
@@ -12500,7 +12506,10 @@ function emitContextualUnionExpressionInContextCpp(
       context,
     );
   }
-  const expressionType = getIrExpressionTypeForUnionConstructionCpp(expression, plan.valueSlots, context);
+  const inferredExpressionType = getIrExpressionTypeForUnionConstructionCpp(expression, plan.valueSlots, context);
+  const expressionType = inferredExpressionType
+    ? getCppContextualUnionSourceTypeEvidenceCpp(expression, inferredExpressionType, plan, context)
+    : undefined;
   if (!expressionType) {
     if (plan.kind === 'singleValue') return undefined;
     if (
@@ -12535,6 +12544,15 @@ function emitContextualUnionExpressionInContextCpp(
     if (hasEquivalentCppUnionRepresentation(expressionPlan, plan)) {
       return undefined;
     }
+    const equivalentConversion = emitCppEquivalentUnionRepresentationConversionCpp(
+      expression,
+      expressionType,
+      expressionPlan,
+      union,
+      plan,
+      context,
+    );
+    if (equivalentConversion) return equivalentConversion;
     if (expressionPlan.kind === 'singleValue' && expressionPlan.valueSlots[0]) {
       const targetSlot = plan.valueSlots.find(
         (slot) => slot.representationKey === expressionPlan.valueSlots[0]!.representationKey,
@@ -12682,17 +12700,19 @@ function emitContextualUnionExpressionInContextCpp(
         return `([&]() -> ${resultType} { auto ${source} = ${value}; if (!${source}.has_value()) return std::nullopt; return ${present}; }())`;
       }
     }
-    // The two plans are compared slot by slot, so naming the slots is what makes a refusal
-    // reproducible from the message alone: the reader sees which alternative the source union
-    // represents and which slot it has no counterpart for.
+    const runtimeConversionGap = hasUniqueCppSemanticUnionSlotMappingCpp(expressionPlan, plan, context);
+    const action = runtimeConversionGap
+      ? 'The alternatives match uniquely, but no checked target-runtime conversion exists between their C++ carriers; keep both sides on the same declared union alias or add a runtime conversion contract.'
+      : 'Narrow or convert the source expression so each of its alternatives names exactly one destination union alternative.';
     emissionError(
       context,
       `contextual C++ union conversion requires equivalent source union evidence: target ${plan.kind} [${plan.valueSlots
         .map((slot) => slot.representationKey)
         .join(', ')}] from source ${expressionPlan.kind} [${expressionPlan.valueSlots
         .map((slot) => slot.representationKey)
-        .join(', ')}]`,
+        .join(', ')}]. ${action}`,
       'cpp-contextual-union-inequivalent',
+      runtimeConversionGap ? 'target-runtime' : 'source-portability',
     );
   }
   if (expressionType.kind === 'null' || expressionType.kind === 'undefined') {
@@ -12769,6 +12789,97 @@ function emitContextualUnionExpressionInContextCpp(
     plan.kind,
     context,
   );
+}
+
+// A presence-proved primitive read carries an optional storage type in its checker flow evidence even
+// though the expression itself has already excluded absence. Remove that sentinel only when the
+// remaining value slot is exactly the destination slot. Ordinary identifier reads retain the full
+// carrier evidence needed by assertions and member projection.
+function getCppContextualUnionSourceTypeEvidenceCpp(
+  expression: Readonly<IrExpression>,
+  inferredType: Readonly<IrType>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): Readonly<IrType> {
+  if (
+    expression.kind === 'identifier' &&
+    expression.presence === 'narrowedPresent' &&
+    targetPlan.kind === 'singleValue' &&
+    targetPlan.valueSlots[0]?.runtimeType.kind === 'primitive'
+  ) {
+    const presentType = getCppNonNullableType(inferredType, context, new Set());
+    if (presentType && hasEquivalentCppContextualUnionValueSlotsCpp(presentType, targetPlan, context)) {
+      return presentType;
+    }
+  }
+  return inferredType;
+}
+
+function hasEquivalentCppContextualUnionValueSlotsCpp(
+  sourceType: Readonly<IrType>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): boolean {
+  const inspectionContext = {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set<string>(),
+    unionArmIdentities: new Map(context.unionArmIdentities),
+  };
+  const sourceUnion = getIrUnionTypeCpp(sourceType, context, new Set());
+  if (sourceUnion) {
+    const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, inspectionContext);
+    return (
+      sourcePlan.sentinels.null === 'absent' &&
+      sourcePlan.sentinels.undefined === 'absent' &&
+      haveSameCppUnionValueSlotTypesCpp(sourcePlan, targetPlan)
+    );
+  }
+  const runtimeType = getIrTypeRuntimeDomainCpp(sourceType, context, new Set());
+  return Boolean(
+    runtimeType &&
+    targetPlan.valueSlots.length === 1 &&
+    targetPlan.sentinels.null === 'absent' &&
+    targetPlan.sentinels.undefined === 'absent' &&
+    targetPlan.valueSlots[0]!.targetType === emitType(runtimeType, inspectionContext),
+  );
+}
+
+function haveSameCppUnionValueSlotTypesCpp(
+  left: ReturnType<typeof getCppUnionRepresentationPlan>,
+  right: ReturnType<typeof getCppUnionRepresentationPlan>,
+): boolean {
+  if (left.valueSlots.length !== right.valueSlots.length) return false;
+  const remaining = new Set(right.valueSlots.keys());
+  for (const leftSlot of left.valueSlots) {
+    const matches = [...remaining].filter((index) => right.valueSlots[index]!.targetType === leftSlot.targetType);
+    if (matches.length !== 1) return false;
+    remaining.delete(matches[0]!);
+  }
+  return remaining.size === 0;
+}
+
+function hasUniqueCppSemanticUnionSlotMappingCpp(
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): boolean {
+  if (sourcePlan.valueSlots.length !== targetPlan.valueSlots.length) return false;
+  const unmatched = new Set(targetPlan.valueSlots.keys());
+  for (const source of sourcePlan.valueSlots) {
+    const matches = [...unmatched].filter((index) => {
+      const target = targetPlan.valueSlots[index]!;
+      return (
+        source.targetType === target.targetType ||
+        hasCppSameDeclaredUnionRuntimeTypeCpp(source.runtimeType, target.runtimeType, context) ||
+        areCppUnionMemberDiscriminantsEquivalent(source.runtimeType, target.runtimeType, context) ||
+        areCppUnionMemberObjectRepresentationsEquivalent(source.runtimeType, target.runtimeType, context)
+      );
+    });
+    if (matches.length !== 1) return false;
+    unmatched.delete(matches[0]!);
+  }
+  return unmatched.size === 0;
 }
 
 // Widen a represented source union into a nullable destination only when every present source slot
@@ -13363,6 +13474,85 @@ function hasEquivalentCppUnionRepresentation(
   );
 }
 
+// Canonical source spelling orders variant slots by the source IR. Wrapping the same imported union in
+// Readonly, or reaching its intersection arms through a barrel, can therefore produce the same set of
+// C++ alternatives in a different order. Those variants are not implicitly convertible even though
+// every value domain is identical. Rebuild the destination carrier by exact target type; the planner's
+// collision check guarantees each type names one source and one destination slot.
+function emitCppEquivalentUnionRepresentationConversionCpp(
+  expression: Readonly<IrExpression>,
+  expressionType: Readonly<IrType>,
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  targetUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (sourcePlan.kind !== targetPlan.kind || sourcePlan.valueSlots.length !== targetPlan.valueSlots.length) {
+    return undefined;
+  }
+  const mappings = sourcePlan.valueSlots.map((source) => {
+    const targets = targetPlan.valueSlots.filter((target) => target.targetType === source.targetType);
+    return targets.length === 1 ? { source, target: targets[0]! } : undefined;
+  });
+  if (mappings.some((mapping) => mapping === undefined)) return undefined;
+  const exactMappings = mappings.filter((mapping) => mapping !== undefined);
+  if (exactMappings.every((mapping, index) => mapping.target === targetPlan.valueSlots[index])) return undefined;
+  if (
+    sourcePlan.kind !== 'multiVariant' &&
+    sourcePlan.kind !== 'optionalVariant' &&
+    sourcePlan.kind !== 'dualSentinelVariant'
+  ) {
+    return undefined;
+  }
+
+  const resultType = emitUnionTypeCpp(targetUnion, context);
+  const value = getGeneratedTargetName('contextualUnionValue', context);
+  const valueType = getGeneratedTargetName('contextualUnionValueType', context);
+  const valueBranches = exactMappings.map((mapping) => {
+    const result = emitCppUnionValueConstruction(
+      value,
+      mapping.target.targetType,
+      targetUnion,
+      targetPlan.kind,
+      context,
+    );
+    return { result, sourceType: mapping.source.targetType };
+  });
+  const emitValueBranches = (exhaustive: boolean): string =>
+    valueBranches
+      .map((branch, index) => {
+        if (index === 0) {
+          return `if constexpr (std::is_same_v<${valueType}, ${branch.sourceType}>) return ${branch.result};`;
+        }
+        if (exhaustive && index === valueBranches.length - 1) return `else return ${branch.result};`;
+        return `else if constexpr (std::is_same_v<${valueType}, ${branch.sourceType}>) return ${branch.result};`;
+      })
+      .join(' ');
+  context.includes.add('type_traits');
+  context.includes.add('variant');
+
+  if (sourcePlan.kind === 'multiVariant') {
+    return `std::visit([&](const auto& ${value}) -> ${resultType} { using ${valueType} = std::decay_t<decltype(${value})>; ${emitValueBranches(true)} }, ${emitExpression(expression, context, expressionType, false)})`;
+  }
+  if (sourcePlan.kind === 'optionalVariant') {
+    const source = getGeneratedTargetName('contextualUnionSource', context);
+    context.includes.add('optional');
+    return `([&]() -> ${resultType} { auto ${source} = ${emitExpression(expression, context, expressionType, false)}; if (!${source}.has_value()) return std::nullopt; return std::visit([&](const auto& ${value}) -> ${resultType} { using ${valueType} = std::decay_t<decltype(${value})>; ${emitValueBranches(true)} }, ${source}.value()); }())`;
+  }
+  if (sourcePlan.kind === 'dualSentinelVariant') {
+    const nullResult = emitCppUnionSentinelConstruction('null', targetUnion, targetPlan.kind, context);
+    const undefinedResult = emitCppUnionSentinelConstruction('undefined', targetUnion, targetPlan.kind, context);
+    const sentinels = getCppDualSentinelTargetTypes(context);
+    const branches = [
+      emitValueBranches(false),
+      `else if constexpr (std::is_same_v<${valueType}, ${sentinels.null}>) return ${nullResult};`,
+      `else return ${undefinedResult};`,
+    ];
+    return `std::visit([&](const auto& ${value}) -> ${resultType} { using ${valueType} = std::decay_t<decltype(${value})>; ${branches.join(' ')} }, ${emitExpression(expression, context, expressionType, false)})`;
+  }
+  return undefined;
+}
+
 function emitCppUnionSentinelConstruction(
   sentinel: 'null' | 'undefined',
   union: Readonly<Extract<IrType, { kind: 'union' }>>,
@@ -13473,7 +13663,11 @@ function getIrExpressionTypeForUnionConstructionCpp(
         : getIrNewExpressionTypeEvidenceCpp(expression, context);
     }
     case 'object':
-      return getCppContextualObjectUnionRuntimeTypeCpp(expression, valueSlots, context) ?? expression.type;
+      return (
+        getCppContextualObjectUnionRuntimeTypeCpp(expression, valueSlots, context) ??
+        getCppContextualFlowExpandedObjectRuntimeTypeCpp(expression, valueSlots, context) ??
+        expression.type
+      );
     case 'template':
       // A template expression's value is a string, and it is one whatever its parts are: each part is
       // stringified and concatenated, so no part can make the result anything else. What the parts
@@ -13489,6 +13683,26 @@ function getIrExpressionTypeForUnionConstructionCpp(
     default:
       return undefined;
   }
+}
+
+// A contextually typed object literal can retain the checker's expanded nullable target as its own
+// `expression.type`: `{ ... }` assigned to `Named | null` is reported as the anonymous object shape
+// plus null. The literal itself is present, and the destination's one value slot is its actual storage.
+// Recover that slot only when the complete expanded object representation is equivalent; a partial or
+// ambiguous literal continues through the ordinary contextual matcher and refusal paths.
+function getCppContextualFlowExpandedObjectRuntimeTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (valueSlots.length !== 1) return undefined;
+  const expandedUnion = getIrUnionTypeCpp(expression.type, context, new Set());
+  if (!expandedUnion) return undefined;
+  const present = expandedUnion.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (present.length !== 1 || present[0]!.kind !== 'object') return undefined;
+  return areCppUnionMemberObjectRepresentationsEquivalent(present[0]!, valueSlots[0]!.runtimeType, context)
+    ? valueSlots[0]!.runtimeType
+    : undefined;
 }
 
 function getCppContextualObjectUnionRuntimeTypeCpp(
