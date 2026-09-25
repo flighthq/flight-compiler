@@ -6820,6 +6820,170 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('[object]() -> decltype(auto) { return (object->custom_key); }');
   });
 
+  it('erases an imported ambient unique-symbol brand through interface inheritance', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Brand',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Brand.ts' },
+        },
+        {
+          specifier: './Branch',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Branch.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(`/flight/packages/types/src/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source('Brand.ts', `export declare const DimensionKey: unique symbol;`),
+        source(
+          'Branch.ts',
+          `import type { DimensionKey } from './Brand';
+           export interface Branch { readonly [DimensionKey]?: 'branch' }`,
+        ),
+        source(
+          'Leaf.ts',
+          `import type { Branch } from './Branch';
+           export interface Leaf extends Branch { ready: boolean }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const branch = results[1]!.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Branch',
+    );
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: {
+        packageTargets: {
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(results[2]!.module)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(branch?.kind === 'interface' ? branch.properties[0] : undefined).toMatchObject({
+      computedKey: {
+        binding: {
+          name: 'DimensionKey',
+          packageName: '@flighthq/types',
+          source: 'packages/types/src/Brand.ts',
+        },
+      },
+      phantom: true,
+    });
+    expect(emitted).toContain('struct Leaf : public flight::ReferenceEnabled {\n  bool ready;\n};');
+    expect(emitted).not.toContain('dimension_key');
+    expect(emitted).not.toContain('GeneratedSymbolBindings<flight::types::Leaf>');
+  });
+
+  it('refuses an imported ambient computed key when the source graph uses its value', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Brand',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Brand.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(`/flight/packages/types/src/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source('Brand.ts', `export declare const DimensionKey: unique symbol;`),
+        source(
+          'Branch.ts',
+          `import type { DimensionKey } from './Brand';
+           export interface Branch { readonly [DimensionKey]?: 'branch' }`,
+        ),
+        source(
+          'Runtime.ts',
+          `import { DimensionKey } from './Brand';
+           export function dimensionKey(): symbol { return DimensionKey }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const branch = results[1]!.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Branch',
+    );
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(branch?.kind === 'interface' ? branch.properties[0]?.phantom : undefined).toBeUndefined();
+    expect(() => session.emitModule(results[1]!.module)).toThrow(
+      expect.objectContaining({ rule: 'cpp-generated-symbol-binding-key-unreferencable' }),
+    );
+  });
+
+  it('refuses an inherited computed key whose declaration owner is ambiguous', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Key',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Key.ts' },
+        },
+        {
+          specifier: './Base',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Base.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(`/flight/packages/types/src/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source('Key.ts', `export const CustomKey: unique symbol = Symbol('Custom');`),
+        source(
+          'Base.ts',
+          `import type { CustomKey } from './Key';
+           export interface Base { readonly [CustomKey]?: object }`,
+        ),
+        source(
+          'Derived.ts',
+          `import type { Base } from './Base';
+           export interface Derived extends Base { ready: boolean }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const duplicateOwner = {
+      ...structuredClone(results[0]!.module),
+      packageName: '@flighthq/duplicate',
+      source: 'packages/duplicate/src/Key.ts',
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [...results.map((result) => result.module), duplicateOwner],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(() => session.emitModule(results[2]!.module)).toThrow(
+      expect.objectContaining({ rule: 'cpp-generated-symbol-binding-key-ambiguous' }),
+    );
+  });
+
   it('erases generic phantom symbol brands only from C++ storage and runtime bindings', () => {
     const result = lower(
       'generic-phantom-symbol.ts',

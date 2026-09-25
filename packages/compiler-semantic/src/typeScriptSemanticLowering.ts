@@ -460,8 +460,11 @@ function getTypeScriptModuleInitializationVar(statement: ts.Statement): ts.Varia
 }
 
 function isErasableTypeScriptUniqueSymbolDeclaration(node: ts.VariableStatement): boolean {
+  return !isExported(node) && isTypeScriptAmbientUniqueSymbolDeclaration(node);
+}
+
+function isTypeScriptAmbientUniqueSymbolDeclaration(node: ts.VariableStatement): boolean {
   return (
-    !isExported(node) &&
     hasModifier(node, ts.SyntaxKind.DeclareKeyword) &&
     node.declarationList.declarations.length > 0 &&
     node.declarationList.declarations.every(
@@ -5129,28 +5132,57 @@ function lowerTypeScriptTypePropertyKey(
     : undefined;
 }
 
+// An ambient unique symbol can be declared in one module and reach a computed type member through a
+// chain of type-only aliases. Resolve that alias to the declaration symbol, then prove over the whole
+// analyzed source graph that the one declaration owner has no value use. Requiring one owner keeps a
+// merged or otherwise ambiguous symbol on the runtime path, where targets can refuse it rather than
+// erasing a member whose identity is uncertain.
 function isTypeScriptPhantomUniqueSymbolKey(node: ts.Expression, context: LoweringContext): boolean {
-  const symbol = context.checker.getSymbolAtLocation(node);
-  const declaration = symbol?.valueDeclaration;
-  const statement = declaration?.parent?.parent;
-  if (
-    !symbol ||
-    !declaration ||
-    !ts.isVariableDeclaration(declaration) ||
-    !statement ||
-    !ts.isVariableStatement(statement) ||
-    !isErasableTypeScriptUniqueSymbolDeclaration(statement)
-  ) {
+  const referenced = context.checker.getSymbolAtLocation(node);
+  const symbol =
+    referenced?.flags && referenced.flags & ts.SymbolFlags.Alias
+      ? context.checker.getAliasedSymbol(referenced)
+      : referenced;
+  if (!symbol) return false;
+  const declarations = symbol.declarations ?? [];
+  if (declarations.length !== 1) return false;
+  const declaration = declarations[0]!;
+  if (!ts.isVariableDeclaration(declaration)) return false;
+  const statement = declaration.parent.parent;
+  if (!ts.isVariableStatement(statement) || !isTypeScriptAmbientUniqueSymbolDeclaration(statement)) {
     return false;
   }
   let typeOnly = true;
   const visit = (candidate: ts.Node): void => {
     if (!typeOnly) return;
-    if (ts.isIdentifier(candidate) && context.checker.getSymbolAtLocation(candidate) === symbol) {
+    if (ts.isIdentifier(candidate)) {
+      const candidateSymbol = context.checker.getSymbolAtLocation(candidate);
+      const resolvedCandidate =
+        candidateSymbol?.flags && candidateSymbol.flags & ts.SymbolFlags.Alias
+          ? context.checker.getAliasedSymbol(candidateSymbol)
+          : candidateSymbol;
+      if (resolvedCandidate !== symbol) return;
       if (candidate === declaration.name) return;
       if (
         ts.isComputedPropertyName(candidate.parent) &&
         (ts.isPropertySignature(candidate.parent.parent) || ts.isMethodSignature(candidate.parent.parent))
+      ) {
+        return;
+      }
+      if (
+        (ts.isImportClause(candidate.parent) ||
+          ts.isImportSpecifier(candidate.parent) ||
+          ts.isNamespaceImport(candidate.parent)) &&
+        isTypeOnlyImportBindingDeclaration(candidate.parent)
+      ) {
+        return;
+      }
+      if (
+        ts.isExportSpecifier(candidate.parent) &&
+        (candidate.parent.isTypeOnly ||
+          (ts.isNamedExports(candidate.parent.parent) &&
+            ts.isExportDeclaration(candidate.parent.parent.parent) &&
+            candidate.parent.parent.parent.isTypeOnly))
       ) {
         return;
       }
@@ -5159,7 +5191,7 @@ function isTypeScriptPhantomUniqueSymbolKey(node: ts.Expression, context: Loweri
     }
     ts.forEachChild(candidate, visit);
   };
-  visit(context.sourceFile);
+  for (const statement of context.symbolReferenceStatements().get(symbol) ?? []) visit(statement);
   return typeOnly;
 }
 

@@ -18,7 +18,7 @@ export interface IrObjectTypeProperty {
   readonly computedKey?: IrValueNameReference | undefined;
   readonly name: string;
   readonly optional: boolean;
-  // A non-exported ambient unique-symbol key used only by type declarations carries no runtime
+  // An ambient unique-symbol key with one declaration owner and only type uses carries no runtime
   // slot. Targets may use it as nominal/tag evidence, but must not silently erase its type gate.
   readonly phantom?: true | undefined;
   readonly readonly: boolean;
