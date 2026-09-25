@@ -1,6 +1,11 @@
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectCppRuntimeIncludeDirectories,
   createCppCompilerToolchain,
   createCppExecutableArguments,
   createCppSyntaxOnlyArguments,
@@ -69,5 +74,28 @@ describe('C++ toolchain invocation', () => {
     expect(() => findCppCompilerToolchain({ FLIGHT_CPP_CXX_FAMILY: 'unknown' }, 'linux', () => false)).toThrow(
       'FLIGHT_CPP_CXX_FAMILY must be gnu or msvc',
     );
+  });
+});
+
+describe('collectCppRuntimeIncludeDirectories', () => {
+  it('reports the runtime headers and the generated SDK glue that exists beside them', () => {
+    const runtime = mkdtempSync(path.join(tmpdir(), 'flight-cpp-runtime-'));
+    try {
+      expect(collectCppRuntimeIncludeDirectories(runtime)).toEqual([]);
+
+      mkdirSync(path.join(runtime, 'include'));
+      expect(collectCppRuntimeIncludeDirectories(runtime)).toEqual([path.join(runtime, 'include')]);
+
+      // The generated table proves a structural widening and binds an owner's members. It is a build
+      // output, so a checkout that materialized the runtime without it is still a checkout to compile
+      // against -- the emitted header names neither, and the runtime reaches the table itself.
+      mkdirSync(path.join(runtime, 'generated', 'include'), { recursive: true });
+      expect(collectCppRuntimeIncludeDirectories(runtime)).toEqual([
+        path.join(runtime, 'include'),
+        path.join(runtime, 'generated', 'include'),
+      ]);
+    } finally {
+      rmSync(runtime, { force: true, recursive: true });
+    }
   });
 });

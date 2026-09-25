@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createCppSyntaxOnlyArguments, findCppCompilerToolchain } from './cppToolchain.js';
+import {
+  collectCppRuntimeIncludeDirectories,
+  createCppSyntaxOnlyArguments,
+  findCppCompilerToolchain,
+} from './cppToolchain.js';
 import { resolveDependency } from './dependencyLock.js';
 import { getSourceCompileTargets, parseSourceCompileFilters } from './sourceCompileFilters.js';
 
@@ -128,8 +132,8 @@ if (rustSelected && hasCommand('rustc', ['--version'])) {
   reports.push('rustc not installed (skipped)');
 }
 
-const cppRuntimeInclude = cppRuntime === undefined ? '' : path.join(cppRuntime.directory, 'include');
-const cppRuntimeAvailable = cppRuntimeInclude.length > 0 && existsSync(cppRuntimeInclude);
+const cppRuntimeIncludes = cppRuntime === undefined ? [] : collectCppRuntimeIncludeDirectories(cppRuntime.directory);
+const cppRuntimeAvailable = cppRuntimeIncludes.length > 0;
 const cppToolchain = cppRuntimeAvailable ? findCppCompilerToolchain() : undefined;
 if (cppToolchain) {
   const cppFixtures = fixtures.filter((fixture) => existsSync(path.join(goldenDirectory, fixture, 'cpp')));
@@ -142,7 +146,7 @@ if (cppToolchain) {
       const result = spawnSync(
         cppToolchain.command,
         createCppSyntaxOnlyArguments(cppToolchain, path.join(emitted, header), [
-          cppRuntimeInclude,
+          ...cppRuntimeIncludes,
           path.join(supportDirectory, 'cpp'),
         ]),
         {

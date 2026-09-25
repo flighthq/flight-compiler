@@ -3527,27 +3527,35 @@ function emitExpression(
           const projectionTargetObject = getCppStructuralRowObjectTypeCpp(
             structuralProjectionTarget ?? structuralTarget!,
           );
+          const assertedRow = structuralProjectionTarget ?? structuralTarget!;
           if (
             !projectionSource ||
             !projectionTargetObject ||
-            getCppStructuralRowObjectWideningProofCpp(projectionSource, projectionTargetObject, context) !== 'proven'
+            (getCppStructuralRowObjectWideningProofCpp(projectionSource, projectionTargetObject, context) !==
+              'proven' &&
+              !isCppStructuralRowOwnerProofExemptCpp(assertedRow))
           ) {
-            const absent = collectCppStructuralRowAssertionAbsentMembersCpp(
-              projectionSource,
-              projectionTargetObject,
-              context,
-            );
-            const missing =
-              absent.length === 0
-                ? 'members the source type does not declare'
-                : `${renderCppSubjectNameListCpp(absent)}, which the source type does not declare`;
-            emissionError(
-              context,
-              `the asserted row reads ${missing}, and a structural owner binds the members of the type the object was first reached as, so a member the source's own declaration lacks has no cell to answer the read. Declare the source as a type that declares ${absent.length === 0 ? 'them' : renderCppSubjectNameListCpp(absent)} -- convert it where the concrete type is known -- rather than asserting past it.`,
-              'cpp-structural-assertion-owner-unproven',
-            );
+            refuseCppStructuralAssertionOwnerUnprovenCpp(context, projectionSource, projectionTargetObject);
           }
           return `flight::structural_ref_cast<${target}>(${emitCppStructuralRowReferenceTypeCpp(sourceProjection, context)}(${subject}))`;
+        }
+        // A source that is already a structural reference takes the same rule as a native one: a
+        // `structural_ref_cast` over a row re-views the SAME owner, and that owner answers exactly the
+        // members it was bound with, whichever door the assertion came through. The object type the
+        // source's row names is what the owner was reached as here, so it is the evidence the proof has,
+        // and an asserted row that reaches past it is refused below rather than emitted as a read that
+        // finds no cell. A merged source row names no object, and the proof has nothing to weigh, so it
+        // keeps the projection path the runtime requires of it.
+        const assertedRow = structuralProjectionTarget ?? structuralTarget!;
+        const assertedObject = getCppStructuralRowObjectTypeCpp(assertedRow);
+        const reachedObject = structuralSource ? getCppStructuralRowObjectTypeCpp(structuralSource) : undefined;
+        if (
+          reachedObject &&
+          assertedObject &&
+          getCppStructuralRowObjectWideningProofCpp(reachedObject, assertedObject, context) !== 'proven' &&
+          !isCppStructuralRowOwnerProofExemptCpp(assertedRow)
+        ) {
+          refuseCppStructuralAssertionOwnerUnprovenCpp(context, reachedObject, assertedObject);
         }
         return `flight::structural_ref_cast<${target}>(${subject})`;
       }
@@ -4954,6 +4962,73 @@ function getCppStructuralRowObjectWideningProofCpp(
   })
     ? 'proven'
     : 'unproven';
+}
+
+// Whether the asserted row itself answers a member its source never bound a cell for, in which case the
+// owner proof is asking about a read that cannot happen.
+//
+// A partial row answers with an empty value, which is exactly what `Partial<T>` promises the reader; the
+// runtime's own `schema_partial` trait decides it, propagating through the readonly/writable wrappers and
+// through a merge of rows. A writable row is the row-construction carrier instead: its absent cells are
+// what the writes that follow create, so it is the bag the runtime mints the object from rather than a read
+// of a cell nobody bound. A readonly or required row is neither, and that is where a derived-only read
+// finds no cell and throws, far from the assertion that asked for it.
+function isCppStructuralRowOwnerProofExemptCpp(row: Readonly<CompilerCppStructuralRowPlan>): boolean {
+  if (isCppStructuralRowPartialPlanCpp(row)) return true;
+  // A readonly view of a writable row is still a read, so the exemption is for the OUTERMOST writable
+  // row only -- the row-construction carrier the writes that follow fill in.
+  return row.kind === 'writable' && !hasCppStructuralRowReadonlyPlanCpp(row.row);
+}
+
+function isCppStructuralRowPartialPlanCpp(row: Readonly<CompilerCppStructuralRowPlan>): boolean {
+  switch (row.kind) {
+    case 'partial':
+      return true;
+    case 'readonly':
+    case 'required':
+    case 'writable':
+      return isCppStructuralRowPartialPlanCpp(row.row);
+    case 'merge':
+      return row.rows.some((member) => isCppStructuralRowPartialPlanCpp(member));
+    default:
+      return false;
+  }
+}
+
+function hasCppStructuralRowReadonlyPlanCpp(row: Readonly<CompilerCppStructuralRowPlan>): boolean {
+  switch (row.kind) {
+    case 'readonly':
+      return true;
+    case 'partial':
+    case 'required':
+    case 'writable':
+      return hasCppStructuralRowReadonlyPlanCpp(row.row);
+    case 'merge':
+      return row.rows.some((member) => hasCppStructuralRowReadonlyPlanCpp(member));
+    default:
+      return false;
+  }
+}
+
+// One refusal for both doors an assertion can come through: the native reference that needs a view built
+// over it, and the structural reference that is already a view. Both re-view the owner the object was
+// first reached as, so both answer only the members that owner was bound with, and both name the members
+// the source's own declaration cannot answer.
+function refuseCppStructuralAssertionOwnerUnprovenCpp(
+  context: EmitContext,
+  source: Readonly<IrType> | undefined,
+  target: Readonly<IrType> | undefined,
+): never {
+  const absent = collectCppStructuralRowAssertionAbsentMembersCpp(source, target, context);
+  const missing =
+    absent.length === 0
+      ? 'members the source type does not declare'
+      : `${renderCppSubjectNameListCpp(absent)}, which the source type does not declare`;
+  emissionError(
+    context,
+    `the asserted row reads ${missing}, and a structural owner binds the members of the type the object was first reached as, so a member the source's own declaration lacks has no cell to answer the read. Declare the source as a type that declares ${absent.length === 0 ? 'them' : renderCppSubjectNameListCpp(absent)} -- convert it where the concrete type is known -- rather than asserting past it.`,
+    'cpp-structural-assertion-owner-unproven',
+  );
 }
 
 // The members the asserted row reads that the source's own declaration cannot answer, in canonical order.

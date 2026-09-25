@@ -14087,6 +14087,45 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.message).toContain('Declare the source as a type that declares data');
   });
 
+  it('refuses a structural source asserted to a derived row its owner cannot answer', () => {
+    const result = lower(
+      'structural-assertion-row-to-derived-row.ts',
+      `interface Base { id: string }
+       interface Derived extends Base { extra: number }
+       export function widen(node: Readonly<Base>): Readonly<Derived> { return node as Readonly<Derived>; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // A source that is already a structural reference takes the same rule as a native one: the cast
+    // re-views the owner the object was first reached as, so an asserted row that reaches past that
+    // owner's cells is refused at both doors rather than emitted as a read that finds no cell.
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('reads extra, which the source type does not declare');
+  });
+
+  it('keeps a structural source asserted to a derived partial row, which answers an unbound member', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'structural-assertion-partial-target.ts',
+        `interface Base { id: string }
+         interface Derived extends Base { extra: number }
+         export function widen(node: Readonly<Base>): number | undefined {
+           return (node as Readonly<Partial<Derived>>).extra;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // A partial row reads an unbound member as an empty one, which is what `Partial<T>` promises, so the
+    // proof has nothing to refuse: the emitted cast and read are the row the source asked for.
+    expect(contents).toContain(
+      'flight::row_get<flight::RowKey<"extra">>(flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowPartial<flight::RowOf<flight::Ref<Derived>>>>>>(node))',
+    );
+  });
+
   it('views an assertion subject that declares every member its asserted row reads', () => {
     // The subjects that may be viewed: one whose type IS the asserted row's type, and one whose type
     // derives from it. Both carry every member the row reads, so the view built from the subject's own

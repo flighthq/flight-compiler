@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 export type CppCompilerFamily = 'gnu' | 'msvc';
@@ -44,6 +45,19 @@ export function findCppCompilerToolchain(
     throw new Error(`required C++ compiler ${configured ?? '<auto>'} is not available`);
   }
   return resolved;
+}
+
+// The directories a C++ compile of emitted output needs from the runtime checkout.
+//
+// `include` holds the runtime itself. `generated/include` holds the SDK glue the runtime proves a
+// structural widening through and binds a structural owner's members with: a specialization or a table
+// only applies where its header is reachable, so an emission that leans on either names it. Both are
+// reported when present, because a checkout that materialized one and not the other is a setup a
+// compile can still be attempted on and diagnosed.
+export function collectCppRuntimeIncludeDirectories(runtimeDirectory: string): readonly string[] {
+  return [path.join(runtimeDirectory, 'include'), path.join(runtimeDirectory, 'generated', 'include')].filter(
+    (directory) => existsSync(directory),
+  );
 }
 
 export function createCppSyntaxOnlyArguments(
