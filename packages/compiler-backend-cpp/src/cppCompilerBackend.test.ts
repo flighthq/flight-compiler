@@ -793,7 +793,7 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
-  it('stores exact Flight references in erased dynamic values without treating structural rows as objects', () => {
+  it('stores exact Flight references in erased dynamic values', () => {
     const emitted = emitIrModuleCpp(
       lower(
         'erased-object-reference.ts',
@@ -810,18 +810,36 @@ describe('createCppCompilerBackend', () => {
     expect(emitted.match(/flight::Any::object\(value\)/gu)).toHaveLength(2);
     expect(emitted).toMatch(/flight::Any::object\(flight::make_ref<height_width_[a-f0-9]+>/u);
     expect(emitted).not.toContain('static_cast<flight::Any>(value)');
+  });
 
-    const structuralFailure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(
-        lower(
-          'erased-structural-row.ts',
-          `interface Widget { value: number }
-           export function erase(value: Readonly<Widget>): unknown { return value as unknown; }`,
-        ).module,
-        { runtimeProfile: 'flight-cpp' },
-      ),
-    );
-    expect(structuralFailure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+  it('requires an owner-preserving runtime carrier to erase structural rows', () => {
+    const cases = [
+      `interface Widget { value: number }
+       export function erase(value: Readonly<Widget>): unknown { return value; }`,
+      `interface Widget { value: number }
+       function pass(value: unknown): unknown { return value; }
+       export function erase(value: Readonly<Widget>): unknown { return pass(value); }`,
+      `interface Widget { value: number }
+       function pass(value: unknown): unknown { return value; }
+       export function read(value: Readonly<Widget>, name: string): unknown {
+         return (pass(value) as Record<string, unknown>)[name];
+       }`,
+      `interface Core { value: number }
+       export function erase<Traits extends object>(value: Readonly<Core & NoInfer<Traits>>): unknown {
+         return value;
+       }`,
+    ];
+
+    for (const [index, source] of cases.entries()) {
+      const result = lower(`erased-structural-row-${index}.ts`, source);
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+      );
+      expect(failure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+      expect(failure.message).toContain(
+        'runtime contract needs an erased structural object carrier that retains the source row owner, native object, and checked native type',
+      );
+    }
   });
 
   it('compares an exactly owned structural row through explicit erased reference identity', () => {
@@ -11135,7 +11153,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
   });
 
-  it('pins the exact host explanation on its missing dynamic named-row runtime ABI', () => {
+  it('reads nested erased host capabilities through the retained named-row owner', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',
       `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
@@ -11230,15 +11248,12 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
 
     // `explainHost` enumerates a host and then enumerates each capability group it finds. The second
-    // enumeration reads through the value the first one produced, and that value is erased: the runtime
-    // view takes a typed reference or a row and has no overload for `flight::Any`, so the type it was
-    // stored as is not recoverable from it. That is a runtime gap rather than a lowering one, and the
-    // refusal names it.
-    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
-    expect(failure.rule).toBe('cpp-named-properties-source-unproven');
-    expect(failure.message).toContain(
-      'a dynamic named view needs an object whose properties the runtime can enumerate, and an erased value has no recoverable property set',
-    );
+    // enumeration reads through the `Any` returned by the first view. `Any::object` retained the concrete
+    // object's row-owner factory, so `named_properties(Any)` reaches the same owner without a cast or a
+    // materialised record.
+    const emitted = session.emitModule(modules[1]!)[0]!.contents;
+    expect(emitted).toContain('flight::named_properties(value)');
+    expect(emitted).toContain('flight::named_properties(capabilities).get(slot)');
 
     // The first level lowers, and it pins the exact include and expressions it reaches for.
     const firstLevel = lower(

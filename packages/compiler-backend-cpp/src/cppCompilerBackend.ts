@@ -3449,39 +3449,6 @@ function emitExpression(
       }
       const structuralCloneRecovery = emitCppStructuralCloneRecordRecoveryCpp(expression, context);
       if (structuralCloneRecovery) return structuralCloneRecovery;
-      if (
-        !namedPropertiesSource &&
-        isCppUnknownRecordTypeCpp(expression.type, 'string') &&
-        getCppRuntimeProfile(context.options) === 'flight-cpp'
-      ) {
-        // The view idiom over something that is neither a `Record` nor an object the runtime can
-        // enumerate. An erased value is the case that matters: it holds an object, but the type it was
-        // stored as is not recoverable from it, and `named_properties` takes a typed reference or a row
-        // and has no overload for the erased value. Refusing keeps the read honest rather than emitting
-        // a cast that cannot compile.
-        const inner = expression.expression;
-        const refusedSource =
-          inner.kind === 'cast' && inner.type.kind === 'unknown' && inner.type.source === 'unknown'
-            ? inner.expression
-            : inner;
-        const refusedType = getIrExpressionTypeEvidenceCpp(refusedSource, context);
-        const refusedRuntime = refusedType ? getIrTypeRuntimeDomainCpp(refusedType, context, new Set()) : undefined;
-        // Only the erased value is claimed here. Other unenumerable sources reach lanes of their own --
-        // a clone projection among them -- and a refusal from this lane would take their question away
-        // from them.
-        if (
-          refusedRuntime &&
-          isCppErasedDynamicValueTypeCpp(refusedRuntime) &&
-          !getCppRecordTypeArgumentsCpp(refusedType, context, new Set())
-        ) {
-          emissionError(
-            context,
-            'a dynamic named view needs an object whose properties the runtime can enumerate, and an erased value has no recoverable property set',
-            'cpp-named-properties-source-unproven',
-          );
-        }
-      }
-
       if (isCppUnprovenGenericRecordAssertionCpp(expression, context)) {
         emissionError(
           context,
@@ -5565,11 +5532,12 @@ function isCppUnknownRecordTypeCpp(type: Readonly<IrType>, key: 'PropertyKey' | 
 }
 
 // Whether a type is one whose named properties the runtime can enumerate and read: a generated object
-// held by reference, or a structural row. It is the same question `flight::named_properties` answers,
-// asked before emitting so an unproven receiver is refused rather than handed to an overload that will
-// not accept it.
+// held by reference, a structural row, or an erased value whose object alternative retained its row
+// owner. It is the same question `flight::named_properties` answers. A non-object `Any` produces the
+// runtime's empty view; it is not reinterpreted as storage of some asserted type.
 function isCppNamedPropertiesSourceCpp(type: Readonly<IrType>, context: EmitContext): boolean {
   if (context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module)) return true;
+  if (isCppErasedDynamicValueTypeCpp(type)) return true;
   const runtime = getIrTypeRuntimeDomainCpp(type, context, new Set());
   return Boolean(runtime && hasFlightReferenceRepresentationCpp(runtime, context));
 }
@@ -5580,7 +5548,8 @@ function isCppNamedPropertiesSourceCpp(type: Readonly<IrType>, context: EmitCont
 // The cast is how the SDK makes a dynamic named read type-check, and the inner `as unknown` is the
 // compiler's own erased marker rather than something the source wrote, so both are seen through. The
 // result is the view the runtime builds, not a `Record`: `Record<string, unknown>` here names a set of
-// properties to read by name, and only a structural object has those.
+// properties to read by name. A typed reference, structural row, or `Any` object alternative can supply
+// that view without materialising a record.
 function getCppNamedPropertiesViewSourceCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -15934,8 +15903,14 @@ function getIrExpressionTypeEvidenceCpp(
 
 // An unconstrained position is a value, not an erased object pointer. A Flight reference therefore
 // enters it through the runtime's object alternative, which retains both the shared identity and the
-// concrete referent type. Structural rows are deliberately excluded: `Any` has no row alternative,
-// and boxing the projection handle would not store the concrete Flight reference its schema describes.
+// concrete referent type. A structural row cannot use that path even when its schema names one object:
+// a widened row retains the derived owner while `shared_object()` is deliberately null for its base
+// schema. Supporting it requires a row alternative that retains `shared_owner()`,
+// `shared_native_object()`, and the owner's native type. Identity must use the native object when present
+// and otherwise the row owner; named reads must reuse that owner; checked nominal recovery must compare
+// the native type before casting. Boxing the projection handle as an external value, storing a
+// `Ref<void>`, or materializing its projected fields would respectively invent an identity, discard the
+// checked type, or copy a view into a different object.
 function emitCppContextualErasedDynamicValueCpp(
   expression: Readonly<IrExpression>,
   target: Readonly<IrType>,
@@ -15949,7 +15924,7 @@ function emitCppContextualErasedDynamicValueCpp(
   if (context.referenceRepresentationPlanner.resolveStructuralRow(source, context.module)) {
     emissionError(
       context,
-      'a structural row has no erased dynamic value because its projected schema is not one concrete Flight reference type',
+      'the flight-cpp runtime contract needs an erased structural object carrier that retains the source row owner, native object, and checked native type without materializing projected members',
       'cpp-erased-structural-row-construction-unrepresented',
     );
   }

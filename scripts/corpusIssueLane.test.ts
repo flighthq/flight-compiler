@@ -16,6 +16,11 @@ describe('classifyCorpusIssueLane', () => {
       'runtime',
     );
     expect(classifyCorpusIssueLane('flight-cpp WeakMap value requires a proven C++ representation')).toBe('runtime');
+    expect(
+      classifyCorpusIssueLane(
+        'the flight-cpp runtime contract needs an erased structural object carrier that retains the source row owner, native object, and checked native type without materializing projected members',
+      ),
+    ).toBe('runtime');
   });
 
   it('calls a missing lowering the compiler-emission lane', () => {
