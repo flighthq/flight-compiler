@@ -54,6 +54,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'sentinelAssertionConversion', header: 'sentinel_assertion_conversion.hpp' },
   { fixture: 'contextualOptionalEvidence', header: 'contextual_optional_evidence.hpp' },
   { fixture: 'identityAssertionConversion', header: 'identity_assertion_conversion.hpp' },
+  { fixture: 'referenceAssertionHeritage', header: 'reference_assertion_heritage.hpp' },
   { fixture: 'indexSignatureRecordCarrier', header: 'index_signature_record_carrier.hpp' },
   { fixture: 'indexSignatureRecordEnumeration', header: 'index_signature_record_enumeration.hpp' },
   { fixture: 'assertionOneAlternativeRecovery', header: 'assertion_one_alternative_recovery.hpp' },

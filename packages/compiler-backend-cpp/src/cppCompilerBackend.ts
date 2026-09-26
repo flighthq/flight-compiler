@@ -3923,6 +3923,31 @@ function emitExpression(
       if (sourceEvidence && areCppTypesRepresentationEquivalent(sourceEvidence, expression.type, context)) {
         return emitExpression(expression.expression, context, undefined, false);
       }
+      // A reference cast is only a cast the target compiler accepts when the two records are the same type
+      // or related by CLASS heritage. An interface's members flatten into an independent struct, so a
+      // reference between two of those -- a row asserted as the interface it extends, or as a sibling --
+      // has no relationship to cast along, and the `static_cast` below is a call to a conversion that does
+      // not exist (`no matching function for call to shared_ptr<Base>::shared_ptr(Ref<Derived>&)`). The
+      // assertion is one the source language accepts, so this is the compiler's gap and is refused as one:
+      // closing it needs the carrier to hold identity the flattened row does not carry, which is not a
+      // lowering this compiler can supply.
+      const referenceSource = sourceEvidence
+        ? getIrTypeRuntimeDomainCpp(sourceEvidence, context, new Set())
+        : undefined;
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        referenceSource &&
+        hasFlightReferenceRepresentationCpp(referenceSource, context) &&
+        hasFlightReferenceRepresentationCpp(expression.type, context) &&
+        emitType(referenceSource, context) !== emitType(expression.type, context) &&
+        !isCppClassHeritageRelatedCpp(referenceSource, expression.type, context)
+      ) {
+        emissionError(
+          context,
+          `a reference assertion from ${emitType(referenceSource, context)} to ${emitType(expression.type, context)} has no heritage to cast along: the two records are unrelated in C++, so the narrowing needs identity the carrier does not hold`,
+          'cpp-reference-assertion-without-heritage',
+        );
+      }
       return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
     }
     case 'conditional': {

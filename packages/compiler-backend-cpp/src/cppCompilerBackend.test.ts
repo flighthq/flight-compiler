@@ -14587,6 +14587,38 @@ Resolver make_resolver(TextureRef texture) {
     expect(sameUnion.message).toContain("names the value's own union type");
   });
 
+  it('refuses a reference assertion with no heritage to cast along', () => {
+    // Interface heritage flattens into independent structs, so a row asserted as the interface it extends
+    // has no relationship for the emitted `static_cast` to follow: g++ rejects it with "no matching
+    // function for call to shared_ptr<Base>::shared_ptr(Ref<Derived>&)". The assertion is refused and named
+    // instead of emitted, and nothing is materialized to make it work.
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'structural-reference-assertion.ts',
+          `interface Named { readonly name: string }
+           interface Item extends Named { readonly extra: number }
+           export function f(value: Item): Named { return value as Named; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(failure.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('has no heritage to cast along');
+    expect(failure.message).toContain('needs identity the carrier does not hold');
+
+    // CLASS heritage is untouched: the emitted C++ inheritance is real, so the conversion is real.
+    const heritage = lower(
+      'class-heritage-assertion.ts',
+      `class Base { readonly id: string = ''; }
+       class Derived extends Base { readonly extra: number = 1; }
+       export function f(value: Derived): Base { return value as Base; }`,
+    );
+    const contents = emitIrModuleCpp(heritage.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(contents).toContain('return static_cast<flight::Ref<Base>>(value);');
+  });
+
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>

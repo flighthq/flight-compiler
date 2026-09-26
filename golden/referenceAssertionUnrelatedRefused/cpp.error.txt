@@ -1,0 +1,1 @@
+cpp emission failed for @flighthq/golden/packages/golden/src/referenceAssertionUnrelatedRefused.ts: a reference assertion from flight::Ref<Item> to flight::Ref<Named> has no heritage to cast along: the two records are unrelated in C++, so the narrowing needs identity the carrier does not hold
