@@ -1189,21 +1189,42 @@ function getCppImportedBindingDeclarationCpp(
   const reference = type.reference;
   if (reference.kind !== 'binding' || reference.binding.kind !== 'import') return undefined;
   const bindingId = reference.binding.id;
-  for (const importItem of context.module.imports) {
+  const localImport = context.module.imports.flatMap((importItem) => {
     const binding = importItem.bindings.find((candidate) => candidate.binding.id === bindingId);
-    if (!binding) continue;
-    const importedName = binding.imported === '*' ? reference.path[0] : binding.imported;
-    if (!importedName) return undefined;
-    const matches = getCppResolvedImportModules(importItem.specifier, context).flatMap((targetModule) =>
-      targetModule.declarations.flatMap((declaration) => {
-        if (!('binding' in declaration) || declaration.binding.name !== importedName) return [];
-        if (!hasCppDirectExportName(targetModule, importedName)) return [];
-        return [{ declaration, module: targetModule }];
-      }),
-    );
-    return matches.length === 1 ? matches[0] : undefined;
-  }
-  return undefined;
+    return binding ? [{ specifier: importItem.specifier, imported: binding.imported }] : [];
+  })[0];
+  const indexedImport = context.importBindingOwners.get(bindingId);
+  const importOwner = localImport
+    ? { module: context.module, specifier: localImport.specifier, imported: localImport.imported }
+    : indexedImport;
+  if (!importOwner) return undefined;
+  const importedName = importOwner.imported === '*' ? reference.path[0] : importOwner.imported;
+  if (!importedName) return undefined;
+  const resolutionContext =
+    importOwner.module === context.module ? context : { ...context, module: importOwner.module };
+  const targets = getCppResolvedImportModules(importOwner.specifier, resolutionContext);
+  const matches = targets.flatMap((targetModule) =>
+    targetModule.declarations.flatMap((declaration) => {
+      if (!('binding' in declaration) || declaration.binding.name !== importedName) return [];
+      if (!hasCppDirectExportName(targetModule, importedName)) return [];
+      return [{ declaration, module: targetModule }];
+    }),
+  );
+  if (matches.length === 1) return matches[0];
+  // A contract barrel commonly forwards the imported declaration with `export *`. The binding
+  // still carries the importing module's identity, so looking only at the barrel's declarations
+  // loses the owner needed for object-shape and structural-row planning. Follow the same export
+  // graph used by contextual union ownership and accept only one declaration owner.
+  const forwarded = targets.flatMap((targetModule) =>
+    getCppExportedTypeDeclarationOwnersCpp(targetModule, importedName, resolutionContext, new Set()),
+  );
+  const unique = new Map(
+    forwarded.map((candidate) => [
+      `${getCppModuleIdentityKey(candidate.module)}\0${candidate.declaration.binding.id}`,
+      candidate,
+    ]),
+  );
+  return unique.size === 1 ? [...unique.values()][0] : undefined;
 }
 
 function collectCppEarlyForwardDeclarationCpp(
@@ -20552,9 +20573,17 @@ function getCppStructuralProjectionRowCpp(
   const owner =
     getCppDirectBindingOwner(type, context) ??
     (type.kind === 'named' ? getCppImportedBindingDeclarationCpp(type, context) : undefined);
-  const plan = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
+  // The planner's module argument is the module in which an import binding was written, not the
+  // declaration's owner. A type can arrive here through a re-exported helper's signature, so the
+  // binding's original importer may differ from the module currently being emitted.
+  const bindingModule =
+    type.kind === 'named' && type.reference.kind === 'binding' && type.reference.binding.kind === 'import'
+      ? context.importBindingOwners.get(type.reference.binding.id)?.module
+      : undefined;
+  const ownerModule = bindingModule ?? owner?.module ?? context.module;
+  const plan = context.referenceRepresentationPlanner.plan(type, ownerModule);
   if (
-    !context.referenceRepresentationPlanner.resolveObjectShape(type, context.module) ||
+    !context.referenceRepresentationPlanner.resolveObjectShape(type, ownerModule) ||
     plan.kind !== 'represented' ||
     plan.identityDomain !== 'object' ||
     plan.valueRepresentation !== 'flightReference'

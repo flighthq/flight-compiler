@@ -24577,6 +24577,10 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           specifier: '@flighthq/geometry/contract',
           target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/contract.ts' },
         },
+        {
+          specifier: './matrixPool',
+          target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/matrixPool.ts' },
+        },
       ],
       schema: 'flight-compiler-module-resolution/1',
     };
@@ -24599,9 +24603,20 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
         {
           packageName: '@flighthq/geometry',
           sourceFile: ts.createSourceFile(
+            '/flight/packages/geometry/src/matrixPool.ts',
+            `import type { Matrix } from '@flighthq/types/contract';
+             export function acquireMatrix(): Matrix { return { a: 1, tx: 0, runtime: undefined }; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/geometry',
+          sourceFile: ts.createSourceFile(
             '/flight/packages/geometry/src/contract.ts',
             `import type { Matrix, MatrixLike, RectangleLike } from '@flighthq/types/contract';
-             export function acquireMatrix(): Matrix { return { a: 1, tx: 0, runtime: undefined }; }
+             export { acquireMatrix } from './matrixPool';
              export function copyRectangle(out: RectangleLike, source: Readonly<RectangleLike>): void { out.x = source.x; }
              export function matrixTransformRectangle(
                out: RectangleLike,
@@ -24639,7 +24654,8 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       moduleResolution,
     );
     const modules = results.map((result) => result.module);
-    const merge = modules[2]!.declarations.find(
+    const node = modules.find((module) => module.source.endsWith('/boundsRectangle.ts'))!;
+    const merge = node.declarations.find(
       (declaration) => declaration.kind === 'function' && declaration.binding.name === 'mergeRootLocalBounds',
     );
     if (merge?.kind !== 'function') throw new Error('Expected mergeRootLocalBounds');
@@ -24676,7 +24692,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
-    }).emitModule(modules[2]!)[0]!.contents;
+    }).emitModule(node)[0]!.contents;
 
     expect(emitted).toContain('std::optional<flight::StructuralRef<');
     expect(emitted).toContain(
