@@ -72,6 +72,11 @@ export interface IrInterfaceDeclaration {
   // module graph. Keep that proof per authored edge so a structural lowering pass can still merge
   // each branch independently and retain its own compatibility diagnostics.
   readonly heritageEvidence?: readonly IrInterfaceHeritageEvidence[] | undefined;
+  // An index signature's element type. The members an index admits are not a FIXED set, so a signature is not
+  // an object property and must not make a carrier closed for the keyed lanes; it is recorded beside them
+  // because a value read through the index has this type, and a target that resolves such a read has no other
+  // declaration that names what it yields.
+  readonly indexSignature?: Readonly<{ keyKind: 'number' | 'string'; valueType: IrType }> | undefined;
   readonly kind: 'interface';
   readonly origin: CompilerSourceOrigin;
   readonly properties: readonly IrObjectTypeProperty[];

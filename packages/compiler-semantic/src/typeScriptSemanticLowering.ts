@@ -2632,16 +2632,40 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
     if (inherited < 0) properties.push(property);
     else properties[inherited] = property;
   }
+  const indexSignature = lowerInterfaceIndexSignature(node, context);
   return {
     binding: lowerTypeBindingIdentity(node.name, context),
     exported: isExported(node),
     extends: heritageReferences,
     ...(heritageEvidence.length > 0 ? { heritageEvidence } : {}),
+    ...(indexSignature === undefined ? {} : { indexSignature }),
     kind: 'interface',
     origin: origin(node, context),
     properties,
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
+}
+
+// The element type an index signature admits, lowered from the signature itself rather than from the
+// interface's members: a signature names no fixed member, so it is not one, and the type a read through it
+// yields is what a target representing the carrier as a keyed record needs.
+function lowerInterfaceIndexSignature(
+  node: ts.InterfaceDeclaration,
+  context: LoweringContext,
+): Readonly<{ keyKind: 'number' | 'string'; valueType: IrType }> | undefined {
+  for (const member of node.members) {
+    if (!ts.isIndexSignatureDeclaration(member) || !member.type) continue;
+    const keyType = member.parameters[0]?.type;
+    const keyKind =
+      keyType?.kind === ts.SyntaxKind.NumberKeyword
+        ? 'number'
+        : keyType?.kind === ts.SyntaxKind.StringKeyword
+          ? 'string'
+          : undefined;
+    if (keyKind === undefined) continue;
+    return { keyKind, valueType: lowerType(member.type, context) };
+  }
+  return undefined;
 }
 
 // Heritage outside the explicit compiler module graph still has a checker-resolved structural

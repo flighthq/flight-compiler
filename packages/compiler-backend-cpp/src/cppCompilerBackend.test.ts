@@ -1948,6 +1948,35 @@ describe('createCppCompilerBackend', () => {
     expect(failure.classification).toBe('target-runtime');
   });
 
+  it('represents an interface that states an index signature as the runtime record', () => {
+    const result = lower(
+      'index-signature-carrier.ts',
+      `type Scalar = boolean | number | string;
+       interface Fields { [name: string]: Scalar }
+       interface Counts { [index: number]: number }
+       interface Named { value: number }
+       export function read(fields: Fields, key: string): Scalar | undefined { return fields[key]; }
+       export function write(fields: Fields, key: string, value: Scalar): void { fields[key] = value; }
+       export function present(fields: Fields, key: string): boolean { return fields[key] !== undefined; }
+       export function count(values: Counts, index: number): number | undefined { return values[index]; }
+       export function readNamed(value: Named): number { return value.value; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // A carrier admitting an open member set has one representation, and it is the runtime's keyed record: the
+    // name is an alias for it, no struct is emitted for it, and a read goes through the record's own lookup.
+    // Before this, every one of these refused with `cpp-contextual-union-missing-expression-type:*`, because
+    // the declaration stated nothing about what a read through the index yields.
+    expect(contents).toContain('using Fields = flight::Record<flight::String, Scalar>;');
+    expect(contents).toContain('using Counts = flight::Record<double, double>;');
+    expect(contents).not.toContain('struct Fields');
+    expect(contents).toContain('fields.get(key)');
+    expect(contents).toContain('fields.set(key, ');
+    // A declaration with named members still emits a struct and still resolves its members as members.
+    expect(contents).toContain('struct Named');
+    expect(contents).toContain('value->value');
+  });
+
   it('refuses an array whose element union the position does not hold', () => {
     const refusal = (position: string) =>
       captureBackendEmissionFailure(() =>

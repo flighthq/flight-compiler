@@ -1148,11 +1148,35 @@ function getCppInterfaceDeclarationTypeCpp(declaration: Readonly<IrInterfaceDecl
   };
 }
 
+// The index signature a carrier's declaration states, read directly or through an import, or undefined when
+// it states none. A carrier with one is not an object with a fixed member set, so the declaration is the only
+// place that says what a read through the index yields.
+function getCppDeclaredIndexSignatureCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<{ keyKind: 'number' | 'string'; valueType: IrType }> | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const direct = context.directBindingOwners.get(type.reference.binding.id)?.declaration;
+  if (direct?.kind === 'interface') return direct.indexSignature;
+  const owner = context.importBindingOwners.get(type.reference.binding.id);
+  if (!owner) return undefined;
+  const ownerContext = owner.module === context.module ? context : { ...context, module: owner.module };
+  const module = getCppResolvedImportModule(owner.specifier, ownerContext);
+  const imported = module?.declarations.find(
+    (candidate) => candidate.kind === 'interface' && candidate.binding.name === owner.imported,
+  );
+  return imported?.kind === 'interface' ? imported.indexSignature : undefined;
+}
+
 function isCppInterfaceRepresentationAliasCpp(
   declaration: Readonly<IrInterfaceDeclaration>,
   module: Readonly<IrModule>,
   context: EmitContext,
 ): boolean {
+  // A declaration with an index signature admits an open set of members, so it is not a struct with named
+  // members at all: it is represented as the runtime's keyed record, and emitting a struct for it as well
+  // would name two different carriers for one type.
+  if (declaration.indexSignature) return true;
   const type = getCppInterfaceDeclarationTypeCpp(declaration);
   return Boolean(
     context.referenceRepresentationPlanner.resolveStructuralRow(type, module) ??
@@ -1887,6 +1911,30 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   };
   const name = getBindingTargetName(declaration.binding, context);
   const interfaceType = getCppInterfaceDeclarationTypeCpp(declaration);
+  // A declaration stating an index signature admits an open member set, so it has one representation and it
+  // is the runtime's keyed record: the name stays a name for that carrier rather than for a struct whose
+  // members would be a subset of what the type admits.
+  const indexSignature = declaration.indexSignature;
+  if (indexSignature && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const key: Readonly<IrType> = {
+      kind: 'primitive',
+      name: indexSignature.keyKind === 'number' ? 'number' : 'string',
+    };
+    const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
+    const lines: string[] = [];
+    if (typeParams) lines.push(`template ${typeParams}`);
+    lines.push(
+      `using ${name} = ${emitType(
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Record' },
+          typeArguments: [key, indexSignature.valueType],
+        },
+        context,
+      )};`,
+    );
+    return lines;
+  }
   const structuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(interfaceType, context.module);
   if (structuralRow && getCppRuntimeProfile(context.options) === 'flight-cpp') {
     const typeParams = emitTypeParameters(declaration.typeParameters, context, true);
@@ -7325,6 +7373,24 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
   if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
     const externalProjection = context.referenceRepresentationPlanner.resolveExternalProjection(type, context.module);
     if (externalProjection) return emitType(externalProjection, context, representation);
+    // A carrier whose declaration states an index signature is the runtime's keyed record: it has an open
+    // member set, so it is emitted as the record the runtime already provides rather than as a struct.
+    const declaredIndex = getCppDeclaredIndexSignatureCpp(type, context);
+    if (declaredIndex) {
+      const key: Readonly<IrType> = {
+        kind: 'primitive',
+        name: declaredIndex.keyKind === 'number' ? 'number' : 'string',
+      };
+      return emitType(
+        {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Record' },
+          typeArguments: [key, declaredIndex.valueType],
+        },
+        context,
+        representation,
+      );
+    }
     if (
       type.kind === 'named' &&
       type.reference.kind === 'binding' &&
@@ -9410,6 +9476,13 @@ function getCppRecordTypeArgumentsCpp(
       return getCppRecordTypeArgumentsCpp(type.typeArguments[0], context, resolvingAliases);
     }
     return undefined;
+  }
+  const indexSignature = getCppDeclaredIndexSignatureCpp(type, context);
+  if (indexSignature) {
+    return {
+      key: { kind: 'primitive', name: indexSignature.keyKind === 'number' ? 'number' : 'string' },
+      value: indexSignature.valueType,
+    };
   }
   if (resolvingAliases.has(type.reference.binding.id)) return undefined;
   const alias = resolveCppTypeAliasTarget(type, context);
@@ -18254,6 +18327,12 @@ function getIrIndexedElementTypeCpp(
     return createIrTypeEvidenceUnionCpp(members.map((member) => member!));
   }
   if (type.kind === 'array') return type.element;
+  // A read through an index signature has the signature's element type, and the declaration is the only thing
+  // that states it: the members the index admits are not a fixed set, so no shape could name what a read
+  // yields. The carrier itself is represented as the runtime's keyed record, which is why the read emits a
+  // `get` rather than a subscript once this type is known.
+  const indexSignature = getCppDeclaredIndexSignatureCpp(type, context);
+  if (indexSignature) return indexSignature.valueType;
   if (type.kind === 'tuple') {
     if (expression.index.kind !== 'literal' || typeof expression.index.value !== 'number') return undefined;
     return type.elements[expression.index.value]?.type;

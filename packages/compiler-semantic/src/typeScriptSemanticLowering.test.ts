@@ -106,6 +106,34 @@ describe('lowerTypeScriptSource', () => {
     ]);
   });
 
+  it('records the element type an interface index signature admits, beside its members', () => {
+    const result = lower(
+      'index-signature-interface.ts',
+      `type Scalar = boolean | number | string;
+       interface Fields { [name: string]: Scalar }
+       interface Counts { [index: number]: number }
+       interface Named { value: number }`,
+    );
+    const fields = result.module.declarations[1];
+    const counts = result.module.declarations[2];
+    const named = result.module.declarations[3];
+    if (fields?.kind !== 'interface' || counts?.kind !== 'interface' || named?.kind !== 'interface') {
+      throw new Error('Expected interface declarations');
+    }
+
+    // An index signature names no fixed member, so it is not a property -- but it is the only thing that says
+    // what a read through the index yields, and a target representing the carrier as a keyed record needs it.
+    expect(fields.indexSignature?.keyKind).toBe('string');
+    expect(
+      fields.indexSignature?.valueType.kind === 'named' && fields.indexSignature.valueType.reference.kind === 'binding'
+        ? fields.indexSignature.valueType.reference.binding.name
+        : undefined,
+    ).toBe('Scalar');
+    expect(counts.indexSignature?.keyKind).toBe('number');
+    // A declaration with no signature states none, so nothing is invented for it.
+    expect(named.indexSignature).toBeUndefined();
+  });
+
   it('records nominal object construction targets and closed inferred anonymous shapes', () => {
     const result = lower(
       'object-construction.ts',
