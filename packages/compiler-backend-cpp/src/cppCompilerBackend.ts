@@ -6041,12 +6041,13 @@ function getCppNamedPropertiesViewSourceCpp(
 // than a subscript. A binding is asked for its recorded INITIALIZER rather than its declared type,
 // because `Record<string, unknown>` is also the declared type of a real `flight::Record`, and only the
 // initializer says which storage the declaration elected.
-// `Object.keys` and `Object.entries` over an object whose properties the runtime enumerates by name.
+// `Object.keys`, `Object.values` and `Object.entries` over an object whose properties the runtime
+// enumerates by name.
 //
 // The generic binding for these is an external profile symbol, and it cannot serve this case: the
-// runtime's `object_keys`/`object_entries` take a `Record` or a container with `begin()`/`end()`, and a
-// structural object is neither. The runtime's named-property view is, and it hands the keys back in
-// source declaration order, so the emitter adds no ordering of its own.
+// runtime's `object_keys`/`object_values`/`object_entries` take a `Record`, and a structural object is not
+// one. The runtime's named-property view is, and it hands the keys back in source declaration order, so the
+// emitter adds no ordering of its own.
 function emitCppNamedPropertiesEnumerationCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
@@ -6055,9 +6056,15 @@ function emitCppNamedPropertiesEnumerationCpp(
   if (expression.arguments.length !== 1) return undefined;
   if (expression.callee.kind !== 'property' || expression.callee.optional) return undefined;
   const member = expression.callee.name;
-  if (member !== 'keys' && member !== 'entries') return undefined;
+  if (member !== 'keys' && member !== 'entries' && member !== 'values') return undefined;
   if (!isCppAmbientObjectMemberCallCpp(expression, member)) return undefined;
   const argument = expression.arguments[0]!;
+  // A `Record` is storage the program owns, and the runtime enumerates one through its own accessors. The
+  // view is a handle on an OBJECT's properties, so it is not an overload the record can be passed to: the
+  // record goes to the binding that names it, and this lane keeps the object.
+  if (getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(argument, context), context, new Set())) {
+    return undefined;
+  }
   // An argument that already IS a view is the view; one that is an object is enumerated by asking the
   // runtime for its view. Wrapping a view in `named_properties` again would be a call the runtime has no
   // overload for, because a view is not an object with properties -- it is the handle on one.
@@ -6077,6 +6084,9 @@ function emitCppNamedPropertiesEnumerationCpp(
   context.includes.add('tuple');
   const entriesName = getGeneratedTargetName('named_entries', context);
   const keyName = getGeneratedTargetName('named_key', context);
+  if (member === 'values') {
+    return `([&]() { const auto ${viewName} = ${viewExpression}; flight::Array<flight::Any> ${entriesName}; for (const auto& ${keyName} : ${viewName}.keys()) { ${entriesName}.push(${viewName}.get(${keyName})); } return ${entriesName}; }())`;
+  }
   return `([&]() { const auto ${viewName} = ${viewExpression}; flight::Array<std::tuple<flight::String, flight::Any>> ${entriesName}; for (const auto& ${keyName} : ${viewName}.keys()) { ${entriesName}.push(std::tuple<flight::String, flight::Any>(${keyName}, ${viewName}.get(${keyName}))); } return ${entriesName}; }())`;
 }
 

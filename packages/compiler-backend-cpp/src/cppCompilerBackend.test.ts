@@ -1948,6 +1948,32 @@ describe('createCppCompilerBackend', () => {
     expect(failure.classification).toBe('target-runtime');
   });
 
+  it('enumerates a record carrier through the runtime accessors and an object through its view', () => {
+    const result = lower(
+      'record-enumeration.ts',
+      `type Scalar = boolean | number | string;
+       interface Fields { [name: string]: Scalar }
+       interface Named { alpha: number; beta: string }
+       export function recordKeys(fields: Fields): string[] { return Object.keys(fields); }
+       export function recordValues(fields: Fields): Scalar[] { return Object.values(fields); }
+       export function recordEntries(fields: Fields): [string, Scalar][] { return Object.entries(fields); }
+       export function objectKeys(value: Named): string[] { return Object.keys(value); }
+       export function objectValues(value: Named): unknown[] { return Object.values(value); }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // A record is storage the program owns and the runtime enumerates it through its own accessors, typed by
+    // the record's element. The view is a handle on an object's properties and takes no record, so passing
+    // one there was a call the target compiler rejects.
+    expect(contents).toContain('return flight::object_keys(fields);');
+    expect(contents).toContain('return flight::object_values(fields);');
+    expect(contents).toContain('return flight::object_entries(fields);');
+    // The object path is unchanged: the named-property view still answers its keys and values, in the
+    // declaration order the runtime hands back.
+    expect(contents).toContain('flight::named_properties(value)');
+    expect(contents).toContain('named_view');
+  });
+
   it('represents an interface that states an index signature as the runtime record', () => {
     const result = lower(
       'index-signature-carrier.ts',

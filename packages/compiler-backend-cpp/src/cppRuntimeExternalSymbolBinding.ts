@@ -918,6 +918,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
       { sourceMember: 'entries', targetName: 'flight::object_entries' },
       { sourceMember: 'is', targetName: cppObjectIsTarget },
       { sourceMember: 'keys', targetName: 'flight::object_keys' },
+      { sourceMember: 'values', targetName: 'flight::object_values' },
     ],
     sourceName: 'Object',
     space: 'value',
