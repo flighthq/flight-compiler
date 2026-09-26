@@ -21139,7 +21139,11 @@ function emitOptionalElementExpressionCpp(
   const receiverPlan = getCppOptionalElementReceiverPlanCpp(expression, semantics.receiverType, context);
   const valueUnion = getIrUnionTypeCpp(semantics.valueType, context, new Set());
   const valuePlan = valueUnion ? getCppUnionRepresentationPlan(valueUnion, context) : undefined;
-  if (hasIrTypeAbsentMember(semantics.valueType)) {
+  if (
+    receiverPlan?.kind !== 'tuple' &&
+    receiverPlan?.kind !== 'regexpExecArray' &&
+    hasIrTypeAbsentMember(semantics.valueType)
+  ) {
     const concretePayloads = valueUnion?.types.filter(
       (member) => member.kind !== 'null' && member.kind !== 'undefined',
     );
