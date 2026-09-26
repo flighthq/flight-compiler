@@ -21137,6 +21137,27 @@ function emitOptionalElementExpressionCpp(
     return emitExpression({ ...expression, optional: false }, context);
   }
   const receiverPlan = getCppOptionalElementReceiverPlanCpp(expression, semantics.receiverType, context);
+  const valueUnion = getIrUnionTypeCpp(semantics.valueType, context, new Set());
+  const valuePlan = valueUnion ? getCppUnionRepresentationPlan(valueUnion, context) : undefined;
+  if (hasIrTypeAbsentMember(semantics.valueType)) {
+    const concretePayloads = valueUnion?.types.filter(
+      (member) => member.kind !== 'null' && member.kind !== 'undefined',
+    );
+    if (!concretePayloads || concretePayloads.length > 1) {
+      emissionError(
+        context,
+        'optional element access requires a sentinel-free present payload; nullable element values need explicit flattening',
+        'cpp-optional-element-access-without-collection-receiver',
+      );
+    }
+  }
+  if (valuePlan?.kind === 'dualSentinelVariant') {
+    emissionError(
+      context,
+      'optional element access requires a sentinel-free present payload; dual-sentinel element values need explicit flattening',
+      'cpp-optional-element-access-without-collection-receiver',
+    );
+  }
   const tupleIndex =
     receiverPlan?.kind === 'tuple' ? getElementAccessTupleIndexCpp(expression, context, receiverPlan.type) : undefined;
   const payload = emitOptionalChainPayloadTypeCpp(semantics.valueType, context);
