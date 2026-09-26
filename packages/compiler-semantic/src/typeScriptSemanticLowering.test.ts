@@ -4533,6 +4533,32 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     ]);
   });
 
+  it('preserves tuple, typed-array, and array domains for target-specific union planning', () => {
+    const result = lower(
+      'indexed-union-domains.ts',
+      `export function write(
+         out: [number, number, number] | Float32Array | number[],
+         value: number,
+       ): void {
+         out[0] = value;
+       }`,
+    );
+    const write = result.module.declarations[0];
+
+    expect(result.diagnostics).toEqual([]);
+    if (
+      write?.kind !== 'function' ||
+      write.parameters[0]?.type.kind !== 'union' ||
+      write.body[0]?.kind !== 'expression' ||
+      write.body[0].expression.kind !== 'assignment' ||
+      write.body[0].expression.left.kind !== 'element'
+    ) {
+      throw new Error('Expected an indexed assignment over the three authored union domains');
+    }
+    expect(write.parameters[0].type.types.map((type) => type.kind)).toEqual(['tuple', 'named', 'array']);
+    expect(write.body[0].expression.left.semantics.receivers).toEqual(['array', 'float32Array', 'tuple']);
+  });
+
   it('resolves array member receiver through element access expressions', () => {
     const result = lower(
       'nested-length.ts',

@@ -12929,10 +12929,17 @@ function getCppUnionRepresentationPlan(
     },
   });
   if (plan.kind === 'refused') {
-    const targetTypes = plan.collisions.map((collision) => collision.targetType).join(', ');
+    const collisions = plan.collisions
+      .map(
+        (collision) =>
+          `${collision.runtimeDomains
+            .map((domain) => describeIrTypeForDiagnosticCpp(domain.runtimeType))
+            .join(' | ')} -> ${collision.targetType}`,
+      )
+      .join('; ');
     emissionError(
       context,
-      `union has distinct runtime domains erased by C++ target type ${targetTypes}`,
+      `C++ runtime contract maps distinct union domains to one carrier without a discriminator or checked projection (${collisions}); bind each domain to a distinct target type or provide that runtime contract`,
       'cpp-union-runtime-domains-erased',
     );
   }
@@ -14773,13 +14780,28 @@ function emitCppUnionSentinelConstruction(
 
 function getIrExpressionTypeForUnionConstructionCpp(
   expression: Readonly<IrExpression>,
-  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  valueSlots: readonly Readonly<{
+    runtimeType: IrType;
+    sourceAlternatives?: readonly IrType[];
+  }>[],
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   switch (expression.kind) {
     case 'array': {
-      const arraySlot = getSingleIrTypeKindCpp(valueSlots, 'array');
-      if (arraySlot) return arraySlot;
+      const arraySlots = valueSlots.filter((slot) => slot.runtimeType.kind === 'array');
+      if (arraySlots.length === 1) {
+        const alternatives = (arraySlots[0]!.sourceAlternatives ?? [arraySlots[0]!.runtimeType]).flatMap(
+          (alternative) => getCppExpandedUnionSourceAlternativesCpp(alternative, context, new Set()),
+        );
+        const openArray = alternatives.find((alternative) => getIrArrayTypeCpp(alternative, context, new Set()));
+        if (openArray) return openArray;
+        const matchingTuple = alternatives.find((alternative) => {
+          const tuple = getIrTupleTypeCpp(alternative, context, new Set());
+          return tuple?.elements.length === expression.elements.length;
+        });
+        if (matchingTuple) return matchingTuple;
+        return undefined;
+      }
       // An array literal is also how a tuple is written at the value: `[0, 0, 0, 0]` is what a
       // `readonly [number, number, number, number]` holds, and the source says the same thing either
       // way. The slot is still identified exactly -- one slot, and one whose arity the literal itself
@@ -15170,6 +15192,42 @@ function getIrTypeRuntimeDomainCpp(
   // even though the C++ type emitter erases the wrapper and both values use the same variant.
   if (identityPreserving && getIrUnionTypeCpp(identityPreserving, context, new Set())) {
     return getIrTypeRuntimeDomainCpp(identityPreserving, context, resolvingAliases);
+  }
+  // Array mutability is compile-time only in every C++ profile. The flight-cpp profile also chooses
+  // flight::Array for a fixed, homogeneous tuple, so tuple arity is no longer a runtime discriminator.
+  // Normalize at the same target-specific boundary that made those representation decisions: the
+  // neutral IR must keep the authored tuple/array alternatives, while the C++ union planner needs the
+  // carrier identity it can actually inspect at runtime.
+  if (type.kind === 'array') {
+    return {
+      element: type.element,
+      kind: 'array',
+      readonly: false,
+    };
+  }
+  if (type.kind === 'tuple' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const element = getIrHomogeneousTupleElementTypeCpp(type);
+    if (element) {
+      return {
+        element,
+        kind: 'array',
+        readonly: false,
+      };
+    }
+  }
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Array' || type.reference.name === 'ReadonlyArray') &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    const element = type.typeArguments[0];
+    return {
+      element,
+      kind: 'array',
+      readonly: false,
+    };
   }
   if (type.kind === 'literal') {
     return {
@@ -24294,6 +24352,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-runtime-external-symbol-binding-incomplete',
   'cpp-sparse-array-literal-runtime-required',
   'cpp-typeof-runtime-domain-unrepresented',
+  'cpp-union-runtime-domains-erased',
 ]);
 
 // Refusals whose cause is a source declaration the emitter cannot invent and the runtime cannot supply:

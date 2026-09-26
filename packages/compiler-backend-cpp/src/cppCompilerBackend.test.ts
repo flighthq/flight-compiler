@@ -14936,7 +14936,63 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('flight::Any');
   });
 
-  it('refuses a lambda union whose distinct runtime domains share one external target', () => {
+  it('collapses homogeneous tuple and array alternatives to their chosen C++ runtime domain', () => {
+    const result = lower(
+      'array-union-runtime-domains.ts',
+      `type PairOrList<Type> = [Type, Type] | Type[];
+       export function retainGeneric<Type>(values: PairOrList<Type>): void { void values; }
+       export function write(
+         out: [number, number, number] | Float32Array | number[],
+         value: number,
+       ): void {
+         out[0] = value;
+       }
+       export function first(values: readonly [number, number] | readonly number[]): number {
+         return values[0];
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('using PairOrList = flight::Array<Type>;');
+    expect(output).toContain('std::variant<flight::Array<double>, flight::Float32Array> out');
+    expect(output).toContain('std::visit([&](auto& indexed_receiver)');
+    expect(output).toContain('indexed_receiver.set_index(indexed_index, indexed_value)');
+    expect(output).toContain('inline double first(flight::Array<double> values)');
+    expect(output).not.toContain('std::variant<flight::Array<double>, flight::Array<double>>');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles homogeneous tuple and array unions in their shared runtime carrier', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const output = emitIrModuleCpp(
+      lower(
+        'compile-array-union-runtime-domains.ts',
+        `export function write(
+           out: [number, number, number] | Float32Array | number[],
+           value: number,
+         ): void {
+           out[0] = value;
+         }
+         export function first(values: readonly [number, number] | readonly number[]): number {
+           return values[0];
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-array-union-domains-'));
+    const header = path.join(directory, 'array_union_domains.hpp');
+
+    try {
+      writeFileSync(header, output, 'utf8');
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('attributes indistinguishable external union domains to the runtime contract', () => {
     const result = lower(
       'erased-lambda-return.ts',
       `declare class First { readonly first: number }
@@ -14971,7 +15027,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
     );
     expect(failure.rule).toBe('cpp-union-runtime-domains-erased');
-    expect(failure.message).toContain('flight::Same');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('First | Second -> flight::Same');
+    expect(failure.message).toContain('without a discriminator or checked projection');
+    expect(failure.message).toContain('bind each domain to a distinct target type');
   });
 
   it('normalizes a homogeneous tuple and array union to the shared flight-cpp array domain', () => {
@@ -27196,7 +27255,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
 
     // An array literal is also how a tuple is written at the value: `[0, 0, 0, 0]` is what a
     // `readonly [number, number, number, number]` holds, and the source says the same thing either way.
-    expect(emitted.contents).toContain('flight::Array{0.0, 0.0, 0.0, 0.0}');
+    expect(emitted.contents).toContain('flight::Array<double>{0.0, 0.0, 0.0, 0.0}');
   });
 
   it('refuses an array literal that is not the length of the tuple it would fill', () => {
@@ -27224,7 +27283,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(failure.message).toContain('optionalSingle construction requires expression type evidence');
   });
 
-  it('refuses an array literal whose tuple alternatives were erased together', () => {
+  it('constructs an array literal after tuple arities enter their shared runtime domain', () => {
     const [result] = lowerTypeScriptSources([
       {
         packageName: '@flighthq/math',
@@ -27238,13 +27297,12 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
         upstreamDirectory: '/flight',
       },
     ]);
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' }),
-    );
+    const emitted = emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' });
 
-    // Two tuple alternatives that erase to one C++ array type are two alternatives the target cannot
-    // tell apart, so the slot is not exactly one and nothing is chosen.
-    expect(failure.message).toContain('union has distinct runtime domains erased');
+    // JavaScript tuple arity is static evidence about one Array runtime domain. flight::Array retains
+    // the value and its length, so the C++ carrier loses no runtime distinction when both arities use it.
+    expect(emitted.contents).toContain('using Color = std::optional<flight::Array<double>>;');
+    expect(emitted.contents).toContain('return std::optional<flight::Array<double>>{flight::Array<double>{0.0, 0.0}};');
   });
 
   it('reads length from the array and string bases that have it', () => {
