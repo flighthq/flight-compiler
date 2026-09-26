@@ -2886,7 +2886,11 @@ function emitCppAliasResolvedValueTypeCpp(
   context: EmitContext,
   resolvingAliases: ReadonlySet<string> = new Set(),
 ): string {
-  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind === 'typeParameter') {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind === 'typeParameter'
+  ) {
     return emitType(type, context);
   }
   const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
