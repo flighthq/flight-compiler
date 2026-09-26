@@ -15193,42 +15193,8 @@ function getIrTypeRuntimeDomainCpp(
   if (identityPreserving && getIrUnionTypeCpp(identityPreserving, context, new Set())) {
     return getIrTypeRuntimeDomainCpp(identityPreserving, context, resolvingAliases);
   }
-  // Array mutability is compile-time only in every C++ profile. The flight-cpp profile also chooses
-  // flight::Array for a fixed, homogeneous tuple, so tuple arity is no longer a runtime discriminator.
-  // Normalize at the same target-specific boundary that made those representation decisions: the
-  // neutral IR must keep the authored tuple/array alternatives, while the C++ union planner needs the
-  // carrier identity it can actually inspect at runtime.
-  if (type.kind === 'array') {
-    return {
-      element: type.element,
-      kind: 'array',
-      readonly: false,
-    };
-  }
-  if (type.kind === 'tuple' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
-    const element = getIrHomogeneousTupleElementTypeCpp(type);
-    if (element) {
-      return {
-        element,
-        kind: 'array',
-        readonly: false,
-      };
-    }
-  }
-  if (
-    type.kind === 'named' &&
-    type.reference.kind === 'ambient' &&
-    (type.reference.name === 'Array' || type.reference.name === 'ReadonlyArray') &&
-    type.typeArguments.length === 1 &&
-    type.typeArguments[0]
-  ) {
-    const element = type.typeArguments[0];
-    return {
-      element,
-      kind: 'array',
-      readonly: false,
-    };
-  }
+  const collectionDomain = getCppCollectionRuntimeDomainCpp(type, context, resolvingAliases);
+  if (collectionDomain) return collectionDomain;
   if (type.kind === 'literal') {
     return {
       kind: 'primitive',
@@ -15273,6 +15239,65 @@ function getIrTypeRuntimeDomainCpp(
   const nextResolvingAliases = new Set(resolvingAliases);
   nextResolvingAliases.add(bindingId);
   return getIrTypeRuntimeDomainCpp(alias, context, nextResolvingAliases);
+}
+
+function getCppCollectionRuntimeDomainCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string>,
+): Readonly<Extract<IrType, { kind: 'array' }>> | undefined {
+  // Array mutability is compile-time only in every C++ profile. The flight-cpp profile also chooses
+  // flight::Array for a fixed, homogeneous tuple, so tuple arity is no longer a runtime discriminator.
+  // Normalize at the same target-specific boundary that made those representation decisions: the
+  // neutral IR must keep the authored tuple/array alternatives, while the C++ union planner needs the
+  // carrier identity it can actually inspect at runtime. Normalize collection elements recursively as
+  // well: nested readonly arrays and homogeneous tuple elements use that same nested carrier.
+  const identityPreserving = getCppIdentityPreservingUtilityArgument(type);
+  if (identityPreserving) {
+    const identityDomain = getCppCollectionRuntimeDomainCpp(identityPreserving, context, resolvingAliases);
+    if (identityDomain) return identityDomain;
+  }
+  if (type.kind === 'array') {
+    return {
+      element: getCppCollectionRuntimeDomainCpp(type.element, context, resolvingAliases) ?? type.element,
+      kind: 'array',
+      readonly: false,
+    };
+  }
+  if (type.kind === 'tuple' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const element = getIrHomogeneousTupleElementTypeCpp(type);
+    if (element) {
+      return {
+        element: getCppCollectionRuntimeDomainCpp(element, context, resolvingAliases) ?? element,
+        kind: 'array',
+        readonly: false,
+      };
+    }
+  }
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Array' || type.reference.name === 'ReadonlyArray') &&
+    type.typeArguments.length === 1 &&
+    type.typeArguments[0]
+  ) {
+    const element = type.typeArguments[0];
+    return {
+      element: getCppCollectionRuntimeDomainCpp(element, context, resolvingAliases) ?? element,
+      kind: 'array',
+      readonly: false,
+    };
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind === 'typeParameter') {
+    return undefined;
+  }
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return undefined;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(bindingId);
+  return getCppCollectionRuntimeDomainCpp(alias, context, nextResolvingAliases);
 }
 
 function resolveCppTypeAliasTarget(

@@ -14949,6 +14949,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
        }
        export function first(values: readonly [number, number] | readonly number[]): number {
          return values[0];
+       }
+       export function retainNested(values: readonly (readonly number[])[] | number[][]): void { void values; }
+       export function retainTupleElements(values: Array<readonly [number, number]> | number[][]): void {
+         void values;
        }`,
     );
     const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -14958,6 +14962,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('std::visit([&](auto& indexed_receiver)');
     expect(output).toContain('indexed_receiver.set_index(indexed_index, indexed_value)');
     expect(output).toContain('inline double first(flight::Array<double> values)');
+    expect(output).toContain('inline void retain_nested(flight::Array<flight::Array<double>> values)');
+    expect(output).toContain('inline void retain_tuple_elements(flight::Array<flight::Array<double>> values)');
     expect(output).not.toContain('std::variant<flight::Array<double>, flight::Array<double>>');
   });
 
