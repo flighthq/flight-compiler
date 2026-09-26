@@ -5605,7 +5605,7 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::nullopt');
   });
 
-  it('adapts a contextual callable that ignores trailing parameters without widening parameter conversions', () => {
+  it('adapts a contextual callable that ignores trailing parameters and one that accepts a wider parameter', () => {
     const result = lower(
       'contextual-callable-trailing-parameters.ts',
       `type Factory = (value?: number) => string;
@@ -5620,18 +5620,23 @@ describe('createCppCompilerBackend', () => {
     );
     expect(emitted.match(/contextual_callable = create_factory\(\)/gu)).toHaveLength(1);
 
-    const refusal = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(
-        lower(
-          'contextual-callable-parameter-conversion.ts',
-          `type NumberConsumer = (value: number) => string;
-           function consumeNumberOrString(value: number | string): string { return String(value); }
-           export function consumer(): NumberConsumer | undefined { return consumeNumberOrString; }`,
-        ).module,
-        { runtimeProfile: 'flight-cpp' },
-      ),
+    // The other parameter mismatch the source language allows is a value that accepts a WIDER payload
+    // than the destination supplies, and it is the mirror the adapter already carries: the destination's
+    // signature is the only caller, so the argument it names is one the value's variant takes, and the
+    // variant constructs itself from it. This case was previously refused because the matcher compared
+    // payload spellings, which cannot see that a member of a union is a value the union stores.
+    const widened = emitIrModuleCpp(
+      lower(
+        'contextual-callable-wider-parameter.ts',
+        `type NumberConsumer = (value: number) => string;
+         function consumeNumberOrString(value: number | string): string { return String(value); }
+         export function consumer(): NumberConsumer | undefined { return consumeNumberOrString; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(widened).toContain(
+      'std::optional<std::function<flight::String(double)>>{[contextual_callable = consume_number_or_string](double contextual_callable_argument0) -> flight::String { return contextual_callable(contextual_callable_argument0); }}',
     );
-    expect(refusal.rule).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
   it('refuses ambient call construction without an exact matching contextual result type', () => {
@@ -13975,6 +13980,63 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     expect(missing.message).toContain('agrees with no alternative');
     expect(missing.message).not.toContain('is not a represented runtime domain');
+  });
+
+  it('stores a callable that accepts a wider payload than the destination supplies', () => {
+    const result = lower(
+      'callable-union-wider-parameter.ts',
+      `interface Point { readonly x: number }
+       type NumberOrText = number | string;
+       type HandlerSlot = ((value: number) => void) | string;
+       type PointSlot = ((value: Point) => void) | string;
+       export function storeWider(handler: (value: number | string) => void): HandlerSlot { return handler; }
+       export function storeAlias(handler: (value: NumberOrText) => void): HandlerSlot { return handler; }
+       export function storeSentinels(handler: (value: number | string | null | undefined) => void): HandlerSlot {
+         return handler;
+       }
+       export function storeReference(handler: (value: string | Point) => void): PointSlot { return handler; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The destination supplies a number, and a number is one member of what the value accepts: the variant
+    // the source stores constructs itself from the argument the destination's own signature names, which is
+    // the call the source would receive for a value of that member's type. The adapter passes the argument
+    // along -- no cast, no extraction, and nothing in the carrier but the callable itself.
+    expect(contents).toContain('std::function<void(std::variant<double, flight::String>)> handler');
+    expect(contents).toContain('std::function<void(std::variant<flight::Ref<Point>, flight::String>)> handler');
+    expect(contents).toMatch(/std::in_place_type<std::function<void\(double\)>>, \[contextual_callable/u);
+    expect(contents).toMatch(/contextual_callable(?:_[0-9]+)?\(contextual_callable_argument0(?:_[0-9]+)?\)/u);
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('std::get<');
+  });
+
+  it('keeps a callable whose payload the destination does not supply refused, attributed to the signature', () => {
+    const refusal = (file: string, slot: string, value: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            file,
+            `type Slot = (${slot}) | string;
+             export function store(handler: ${value}): Slot { return handler; }`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      );
+
+    // Wider is the only direction the source language allows: a destination that may supply a member the
+    // value does not accept, or may supply nothing, is a call the destination can make and the value
+    // cannot take. Each of these is rejected by the checker as well, and each keeps the refusal -- with
+    // the attribution to the signature, which is what actually fails.
+    for (const [file, slot, value] of [
+      ['callable-wider-mirror.ts', '(value: number | string) => void', '(value: number) => void'],
+      ['callable-wider-optional.ts', '(value?: number) => void', '(value: number | string) => void'],
+      ['callable-wider-unrelated.ts', '(value: number) => void', '(value: Date) => void'],
+    ] as const) {
+      const failure = refusal(file, slot, value);
+      expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+      expect(failure.message).toContain('agrees with no alternative');
+      expect(failure.message).not.toContain('is not a represented runtime domain');
+    }
   });
 
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {

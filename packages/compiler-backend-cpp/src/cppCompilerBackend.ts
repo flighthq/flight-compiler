@@ -13869,6 +13869,30 @@ function getCppCallableUnionValueSlotCpp(
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+// Whether the contextual argument is one member of a union the source parameter stores directly.
+//
+// A source that accepts `number | string` is called with a `number` by a signature that supplies one, and
+// the variant constructs itself from that argument -- the alternative it selects is the one the
+// destination's own parameter names. Only the two plan kinds whose storage IS the variant qualify: a
+// union with one nullable value stores `std::optional<X>`, where a bare `X` is written directly and the
+// optional rule already answers, and a union with a value plus one sentinel stores
+// `std::optional<std::variant<...>>`, which a bare value does NOT construct. Claiming either here would
+// emit a call the target compiler rejects, which is why the storage is asked rather than assumed.
+function acceptsCppContextualCallableVariantMemberCpp(
+  source: Readonly<IrFunctionTypeParameter>,
+  target: Readonly<IrFunctionTypeParameter>,
+  context: EmitContext,
+): boolean {
+  if (source.optional || target.optional) return false;
+  const union = getIrUnionTypeCpp(source.type, context, new Set());
+  if (!union) return false;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (plan.kind !== 'multiVariant' && plan.kind !== 'dualSentinelVariant') return false;
+  if (!emitUnionTypeCpp(union, context).startsWith('std::variant<')) return false;
+  const targetType = emitCppParameterTypeCpp(target.type, target.rest, context);
+  return plan.valueSlots.some((slot) => slot.targetType === targetType);
+}
+
 // Whether a source parameter accepts every argument the contextual one can supply.
 //
 // The contextual signature is the only caller this value ever has, so the question is exactly what that
@@ -13908,7 +13932,12 @@ function acceptsCppContextualCallableParameterCpp(
     // constructs that storage, exactly as it does for a parameter the source declared optional. The
     // other direction -- a contextual parameter the caller may omit -- is not symmetric, because a
     // source that requires a value is then a call the destination cannot make.
-    return !target.optional && sourceStorage === `std::optional<${targetStorage}>`;
+    if (!target.optional && sourceStorage === `std::optional<${targetStorage}>`) return true;
+    // The source accepts WIDER payloads and the contextual signature supplies one of them: the variant
+    // constructs itself from the argument the destination names, which is the same call the source would
+    // receive for a value of that member's type. Wider is the only direction the source language allows
+    // here -- a destination supplying a member the source does not accept is rejected by it.
+    return acceptsCppContextualCallableVariantMemberCpp(source, target, isolatedContext);
   }
   // A converted argument carries the source's own payload domain, so the two parameters need only agree
   // on whether the caller may supply absence.
