@@ -4095,15 +4095,32 @@ function emitExpression(
           index === 0 && mapType?.reference.name === 'Map'
             ? emitCppMapLiteralConstructorEntriesCpp(argument, mapType, context)
             : undefined;
+        const mapArgumentType: Readonly<IrType> | undefined =
+          index === 0 && mapType?.reference.name === 'Map' && mapType.typeArguments.length === 2
+            ? {
+                element: {
+                  elements: mapType.typeArguments.map((type) => ({
+                    optional: false as const,
+                    rest: false as const,
+                    type,
+                  })),
+                  kind: 'tuple' as const,
+                  readonly: true,
+                },
+                kind: 'array' as const,
+                readonly: false,
+              }
+            : undefined;
         return (
           mapEntries ??
           emitExpression(
             argument,
             context,
-            ambientConstructorName
-              ? (getIrInvocationProvidedArgumentTypeCpp(expression, index) ??
+            mapArgumentType ??
+              (ambientConstructorName
+                ? (getIrInvocationProvidedArgumentTypeCpp(expression, index) ??
                   getIrInvocationArgumentExpectedTypeCpp(expression, index))
-              : getIrInvocationArgumentExpectedTypeCpp(expression, index),
+                : getIrInvocationArgumentExpectedTypeCpp(expression, index)),
           )
         );
       });
@@ -6184,7 +6201,11 @@ function emitArrayExpressionCpp(
       );
       return `{ auto&& ${operandName} = ${emitExpression(element.expression, context)}; ${tupleAppends.join(' ')} }`;
     }
-    return `for (const auto& ${itemName} : ${emitExpression(element.expression, context)}) { ${resultName}.${append}(${itemName}); }`;
+    const spreadExpectedType =
+      element.expression.kind === 'binary' && element.expression.operator === '??'
+        ? ({ element: elementType, kind: 'array', readonly: false } as const)
+        : undefined;
+    return `for (const auto& ${itemName} : ${emitExpression(element.expression, context, spreadExpectedType)}) { ${resultName}.${append}(${itemName}); }`;
   });
   return `([&]() { ${target} ${resultName}; ${statements.join(' ')} return ${resultName}; }())`;
 }
@@ -14106,14 +14127,16 @@ function isCppExpressionRepresentableAsRuntimeTypeCpp(
   target: Readonly<IrType>,
   context: EmitContext,
 ): boolean {
-  if (expression.kind === 'new' && expression.arguments.length === 0 && expression.typeArguments.length === 0) {
+  if (expression.kind === 'new' && expression.typeArguments.length === 0) {
     const ambientConstructorName = getIrAmbientConstructorNameCpp(expression.callee);
     const contextualType = getCppNonNullableType(target, context, new Set());
     if (
       ambientConstructorName !== undefined &&
       contextualType?.kind === 'named' &&
       contextualType.reference.kind === 'ambient' &&
-      contextualType.reference.name === ambientConstructorName &&
+      (contextualType.reference.name === ambientConstructorName ||
+        (ambientConstructorName === 'Map' && contextualType.reference.name === 'ReadonlyMap') ||
+        (ambientConstructorName === 'Set' && contextualType.reference.name === 'ReadonlySet')) &&
       contextualType.typeArguments.length > 0
     ) {
       return true;

@@ -20456,6 +20456,47 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('.seen = flight::Set<flight::String>()');
   });
 
+  it('uses contextual Map and Set slots for populated constructors in optional fields', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-populated-collections.ts',
+        `interface Entry { key: string; value: number }
+         interface State { entries?: ReadonlyMap<string, number>; kinds?: ReadonlySet<string> }
+         export function merge(state: State, entries: readonly Entry[], kinds: readonly string[]): void {
+           state.entries = new Map(entries.map((entry) => [entry.key, entry.value] as const));
+           state.kinds = new Set(kinds);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('std::optional<flight::Map<flight::String, double>>');
+    expect(output).toContain('std::optional<flight::Set<flight::String>>');
+  });
+
+  it('contextualizes map merge constructors through optional readonly fields', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-map-merge.ts',
+        `type Kind = string;
+         interface Command { run: () => void }
+         interface Options { commands?: ReadonlyMap<Kind, Command> }
+         export function merge(...options: readonly Readonly<Options>[]): Options {
+           const merged: Options = {};
+           for (const fragment of options) {
+             if (fragment.commands !== undefined) {
+               merged.commands = new Map([...(merged.commands ?? []), ...fragment.commands]);
+             }
+           }
+           return merged;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('flight::Map<Kind, flight::Ref<Command>>');
+  });
+
   it('uses the represented optional Map slot for an empty constructor', () => {
     const output = emitIrModuleCpp(
       lower(
