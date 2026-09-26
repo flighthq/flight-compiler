@@ -15003,6 +15003,49 @@ function getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(
   return value?.kind === 'unknown' ? undefined : value;
 }
 
+// An optional continuation can also call a standard collection method after a nullable
+// receiver's property has been projected. The lean package-graph checker records that method as
+// `any`, but semantic lowering still records the receiver category and its concrete collection
+// type. Recover only the versioned Map/ReadonlyMap method result for a single known collection;
+// user-defined lookalikes and unresolved collections remain refused.
+function getCppOptionalCollectionPropertyCallResultTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const callee = expression.callee;
+  if (callee.kind !== 'property' || !callee.optional || callee.member?.receiver !== 'map') {
+    return undefined;
+  }
+  const receiver = getIrExpressionTypeEvidenceCpp(callee.object, context);
+  const presentReceiver = receiver ? getCppNonNullableType(receiver, context, new Set()) : undefined;
+  const collection = getIrAmbientCollectionTypeCpp(presentReceiver, context, new Set());
+  if (
+    !collection ||
+    !['Map', 'ReadonlyMap'].includes(collection.reference.name) ||
+    collection.typeArguments.length !== 2
+  ) {
+    return undefined;
+  }
+  switch (callee.name) {
+    case 'clear':
+    case 'forEach':
+      return { kind: 'primitive', name: 'void' };
+    case 'delete':
+    case 'has':
+      return { kind: 'primitive', name: 'boolean' };
+    case 'get': {
+      const value = collection.typeArguments[1];
+      return value && value.kind !== 'unknown'
+        ? createIrTypeEvidenceUnionCpp([value, { kind: 'undefined' }])
+        : undefined;
+    }
+    case 'set':
+      return presentReceiver;
+    default:
+      return undefined;
+  }
+}
+
 // A nullable receiver can retain one callable member while the lean package-graph library gives that
 // generic callable an `any` return. The call still carries the checker's instantiated result. Use that
 // result only when the member evidence identifies one callable surface, and remove only the sentinel
@@ -15030,6 +15073,7 @@ function getCppOptionalPropertyCallResultTypeEvidenceCpp(
 ): Readonly<IrType> | undefined {
   return (
     getCppOptionalCollectionPropertyCallValueTypeEvidenceCpp(expression, context) ??
+    getCppOptionalCollectionPropertyCallResultTypeEvidenceCpp(expression, context) ??
     getCppRuntimeMemberCallResultTypeEvidence(expression, context) ??
     getCppOptionalPropertyCallSemanticResultTypeEvidenceCpp(expression, context)
   );

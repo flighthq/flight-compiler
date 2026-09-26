@@ -20562,6 +20562,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).toContain('flight::Map<Kind, flight::Ref<Command>>');
   });
 
+  it('lowers an optional call through a concrete local receiver', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'optional-local-call.ts',
+        `interface Runtime { entries: Map<string, string> }
+         function getRuntime(): Runtime | null { return null; }
+         export function clear(): void { getRuntime()?.entries.clear(); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('optional_chain_receiver.value().clear()');
+  });
+
   it('uses the represented optional Map slot for an empty constructor', () => {
     const output = emitIrModuleCpp(
       lower(
