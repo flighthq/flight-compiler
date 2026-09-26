@@ -13291,6 +13291,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
        }
        export function read(payload: unknown): number | string {
          return payload as number | string;
+       }
+       export function dual(payload: unknown): number | null | undefined {
+         return payload as number | null | undefined;
        }`,
     );
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -13303,6 +13306,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(contents).toContain('erased_value.kind() == flight::AnyKind::string');
     expect(contents).toContain('erased_value.as_string()');
     expect(contents).toContain('erased_value.is_nullish()');
+    expect(contents).toMatch(/erased_value(?:_[0-9]+)?\.is_null\(\)/u);
+    expect(contents).toMatch(/erased_value(?:_[0-9]+)?\.is_undefined\(\)/u);
+    expect(contents).toContain('std::in_place_type<flight::Null>');
+    expect(contents).toContain('std::in_place_type<flight::Undefined>');
     expect(contents).toContain('erased value holds no alternative this union represents');
   });
 
