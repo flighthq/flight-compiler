@@ -13366,9 +13366,7 @@ function emitCppContextualUnionSubsetCpp(
   context.includes.add('stdexcept');
   if (admitsCppUnionAbsenceCpp(plan.kind)) context.includes.add('optional');
   const converted = getGeneratedTargetName('convertedUnion', context);
-  const carrier = admitsCppUnionAbsenceCpp(plan.kind)
-    ? `std::optional<${emitUnionTypeCpp(union, context)}>`
-    : emitUnionTypeCpp(union, context);
+  const carrier = emitUnionTypeCpp(union, context);
   const present = admitsCppUnionAbsenceCpp(plan.kind) ? `${converted}.value()` : converted;
   const branches = subsetSlots.map((slots) => {
     const sourceSlot = plan.valueSlots[slots.target]!;

@@ -1875,6 +1875,9 @@ describe('createCppCompilerBackend', () => {
        function take(_value: Alpha | Beta | Gamma): number { return 1; }
        export function pass(value: Alpha | Beta): number { return take(value); }
        export function read(value: Alpha | Beta): Alpha | Beta | Gamma { return value; }
+       export function nullable(
+         value: (Alpha | Beta) | undefined,
+       ): (Alpha | Beta | Gamma) | undefined { return value; }
        export function put(holder: Holder, value: Alpha | Beta): void { holder.slot = value; }`,
     );
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -1888,6 +1891,7 @@ describe('createCppCompilerBackend', () => {
     expect(contents).toContain('std::get_if<flight::Ref<Beta>>(&converted_union)');
     expect(contents).not.toContain('std::get_if<flight::Ref<Gamma>>');
     expect(contents).toContain('(holder->slot = ([&]() -> std::variant<flight::Ref<Alpha>');
+    expect(contents).not.toContain('std::optional<std::optional<');
     expect(contents).not.toContain('cpp-contextual-union-inequivalent');
   });
 
