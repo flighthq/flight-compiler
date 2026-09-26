@@ -9432,12 +9432,39 @@ function isCppExactCallableObjectFieldAssignmentCpp(
   const alias = resolveCppTypeAliasTarget(sourceType, context);
   const projection = alias ? getCppCallableObjectIndexedProjectionCpp(alias, context) : undefined;
   const receiverType = getIrExpressionTypeEvidenceCpp(target.object, context);
+  const projectionObject = projection?.indexedAccess.object;
+  // The receiver may carry the return type of a helper declared in another module. Its import binding
+  // is then different from the binding used by this alias even though both imports resolve to the same
+  // declaration. Resolve that declaration identity explicitly: structural equality or generated target
+  // names would also conflate unrelated callable-object fields that happen to have the same members.
+  const projectionOwner =
+    projectionObject?.kind === 'named'
+      ? getCppNamedTypeDeclarationOwnerCpp(
+          projectionObject,
+          getCppNamedTypeBindingModuleCpp(projectionObject, context),
+          context,
+        )
+      : undefined;
+  const receiverOwner =
+    receiverType?.kind === 'named'
+      ? getCppNamedTypeDeclarationOwnerCpp(
+          receiverType,
+          getCppNamedTypeBindingModuleCpp(receiverType, context),
+          context,
+        )
+      : undefined;
   return Boolean(
     projection &&
     receiverType &&
     projection.indexedAccess.index.value === target.name &&
-    normalizeCompilerStructuralValueCanonical(projection.indexedAccess.object) ===
-      normalizeCompilerStructuralValueCanonical(receiverType),
+    (normalizeCompilerStructuralValueCanonical(projection.indexedAccess.object) ===
+      normalizeCompilerStructuralValueCanonical(receiverType) ||
+      (projectionOwner &&
+        receiverOwner &&
+        'binding' in projectionOwner.declaration &&
+        'binding' in receiverOwner.declaration &&
+        projectionOwner.declaration.binding.id === receiverOwner.declaration.binding.id &&
+        getCppModuleIdentityKey(projectionOwner.module) === getCppModuleIdentityKey(receiverOwner.module))),
   );
 }
 
@@ -14129,8 +14156,21 @@ function hasCppCompatibleCallableReturnRepresentationCpp(
 
   const sourceUnion = getIrUnionTypeCpp(source, context, new Set());
   const targetUnion = getIrUnionTypeCpp(target, context, new Set());
-  if (!sourceUnion || !targetUnion) return false;
   const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  if (!sourceUnion && targetUnion) {
+    const sourceRuntimeType = getIrTypeRuntimeDomainCpp(source, isolatedContext, new Set());
+    const targetPlan = getCppUnionRepresentationPlan(targetUnion, isolatedContext);
+    // A callback that always returns the declared present alternative also satisfies a signature that
+    // admits that value or absence. `std::function` performs this exact value-to-optional conversion;
+    // accepting any other carrier here would turn return covariance into an unchecked target cast.
+    return Boolean(
+      sourceRuntimeType &&
+      targetPlan.kind === 'optionalSingle' &&
+      targetPlan.valueSlots.length === 1 &&
+      targetPlan.valueSlots[0]!.targetType === emitType(sourceRuntimeType, isolatedContext),
+    );
+  }
+  if (!sourceUnion || !targetUnion) return false;
   const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, isolatedContext);
   const targetPlan = getCppUnionRepresentationPlan(targetUnion, isolatedContext);
   if (

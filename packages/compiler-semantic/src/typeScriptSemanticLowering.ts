@@ -9090,6 +9090,11 @@ function getTypeScriptExpressionBindingTypeEvidence(
   const recorded = context.bindingTypes.get(symbol);
   if (recorded) return recorded;
   const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  // A function declaration's written `type` node is its RESULT, not the type of the function value.
+  // Inference for `{ handler: declaredFunction }` must retain the complete signature; otherwise the
+  // object property is lowered as the result union and a backend is asked to store the function in one
+  // of that union's value slots.
+  if (declaration && ts.isFunctionDeclaration(declaration)) return lowerFunctionType(declaration, context);
   if (!declaration || !ts.isVariableDeclaration(declaration)) return undefined;
   if (declaration.type) return lowerTypeScriptTypeNodeEvidence(declaration.type, context);
   return declaration.initializer

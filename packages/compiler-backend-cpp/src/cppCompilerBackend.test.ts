@@ -5637,6 +5637,95 @@ describe('createCppCompilerBackend', () => {
     expect(widened).toContain(
       'std::optional<std::function<flight::String(double)>>{[contextual_callable = consume_number_or_string](double contextual_callable_argument0) -> flight::String { return contextual_callable(contextual_callable_argument0); }}',
     );
+
+    // A concrete result is also callable through a signature that admits that exact result or absence.
+    // The target std::function performs the value-to-optional construction; no result cast or object
+    // materialization is involved.
+    const widenedReturn = emitIrModuleCpp(
+      lower(
+        'contextual-callable-wider-return.ts',
+        `class Texture2D { readonly width = 1; }
+         type Resolver = (id: number, repeat: boolean, smooth: boolean) => Texture2D | null;
+         function acquire(id: number, repeat: boolean, smooth: boolean): Texture2D {
+           void id; void repeat; void smooth;
+           return new Texture2D();
+         }
+         export function resolver(): Resolver | null {
+           return (id, repeat, smooth) => acquire(id, repeat, smooth);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(widenedReturn).toContain(
+      'std::optional<std::function<std::optional<flight::Ref<Texture2D>>(double, bool, bool)>>{',
+    );
+  });
+
+  it('retains a declared handler callback through an inferred object property', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/RiveImportRegistry.ts',
+      `export class DisplayObject { readonly name = ''; }
+       export class RiveArtboardImportContext { readonly index = 0; }
+       export interface RiveCoreObjectHandler {
+         importComponent?: (context: RiveArtboardImportContext, index: number) => DisplayObject | null;
+       }
+       export class RiveImportRegistry { readonly active = true; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const registry = ts.createSourceFile(
+      '/flight/packages/scene2d-formats/src/riveImportRegistry.ts',
+      `import type { RiveCoreObjectHandler, RiveImportRegistry } from '@flighthq/types';
+       export function registerRiveCoreObjectHandler(
+         registry: RiveImportRegistry,
+         typeKey: number,
+         handler: RiveCoreObjectHandler,
+       ): void { void registry; void typeKey; void handler; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const pathHandler = ts.createSourceFile(
+      '/flight/packages/scene2d-formats/src/riveShapePath.ts',
+      `import type { DisplayObject, RiveArtboardImportContext, RiveImportRegistry } from '@flighthq/types';
+       import { registerRiveCoreObjectHandler } from './riveImportRegistry';
+       function importRivePathComponent(
+         context: RiveArtboardImportContext,
+         index: number,
+       ): DisplayObject | null { void context; void index; return null; }
+       export function registerRivePathHandlers(registry: RiveImportRegistry): void {
+         const path = { importComponent: importRivePathComponent };
+         registerRiveCoreObjectHandler(registry, 1, path);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RiveImportRegistry.ts' },
+        },
+        {
+          specifier: './riveImportRegistry',
+          target: {
+            packageName: '@flighthq/scene2d-formats',
+            source: 'packages/scene2d-formats/src/riveImportRegistry.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/scene2d-formats', sourceFile: registry, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/scene2d-formats', sourceFile: pathHandler, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitCppModuleCppSession(results, moduleResolution, 2)).toContain('import_rive_path_component');
   });
 
   it('refuses ambient call construction without an exact matching contextual result type', () => {
@@ -13453,10 +13542,12 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const render = ts.createSourceFile(
       '/flight/packages/render/src/renderRegistrySignals.ts',
       `import type { RenderRegistrySignals, RenderStateRuntime } from '@flighthq/types';
+       import { getRenderStateRuntime } from './renderState';
        type RenderRegistryMissEmitter = NonNullable<RenderStateRuntime['registryMiss']>;
        function emitRegistryMiss(registry: number, kind: string): void { void registry; void kind; }
        function clearRegistryMiss(): void {}
-       export function enable(runtime: RenderStateRuntime, signals: RenderRegistrySignals): RenderRegistrySignals {
+       export function enable(state: RenderStateRuntime, signals: RenderRegistrySignals): RenderRegistrySignals {
+         const runtime = getRenderStateRuntime(state);
          if (runtime.registryMiss !== null) return runtime.registryMiss.signals;
          const emitter = ((registry, kind) => emitRegistryMiss(registry, kind)) as RenderRegistryMissEmitter;
          Object.assign(emitter, { clear: () => clearRegistryMiss(), signals });
@@ -13470,11 +13561,22 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       ts.ScriptTarget.Latest,
       true,
     );
+    const renderState = ts.createSourceFile(
+      '/flight/packages/render/src/renderState.ts',
+      `import type { RenderStateRuntime } from '@flighthq/types';
+       export function getRenderStateRuntime(state: RenderStateRuntime): RenderStateRuntime { return state; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
           specifier: '@flighthq/types',
           target: { packageName: '@flighthq/types', source: 'packages/types/src/RenderState.ts' },
+        },
+        {
+          specifier: './renderState',
+          target: { packageName: '@flighthq/render', source: 'packages/render/src/renderState.ts' },
         },
       ],
       schema: 'flight-compiler-module-resolution/1',
@@ -13482,6 +13584,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     const results = lowerTypeScriptSources(
       [
         { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/render', sourceFile: renderState, upstreamDirectory: '/flight' },
         { packageName: '@flighthq/render', sourceFile: render, upstreamDirectory: '/flight' },
       ],
       moduleResolution,
@@ -13493,7 +13596,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       options: { runtimeProfile: 'flight-cpp' },
     });
     const typesOutput = session.emitModule(modules[0]!)![0]!.contents;
-    const renderOutput = session.emitModule(modules[1]!)![0]!.contents;
+    const renderOutput = session.emitModule(modules[2]!)![0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(typesOutput).toContain('std::function<void(double, flight::String)> callable;');
@@ -13513,6 +13616,45 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(renderOutput).toContain('optional_chain_receiver.value()->clear()');
     expect(renderOutput).toContain('return optional_chain_receiver.value()->signals;');
     expect(renderOutput).toContain('return emitter->signals;');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles exact contextual optional payload conversions', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-contextual-optional-payload-'));
+    const source = path.join(directory, 'contextual_optional_payload.cpp');
+
+    try {
+      writeFileSync(
+        source,
+        `#include <functional>
+#include <memory>
+#include <optional>
+#include <utility>
+
+struct Emitter {
+  std::function<void()> callable;
+  void operator()() const { callable(); }
+};
+struct Runtime { std::optional<std::shared_ptr<Emitter>> emitter; };
+using IndexedEmitter = typename decltype(std::declval<Runtime&>().emitter)::value_type;
+void install(Runtime& runtime, IndexedEmitter emitter) { runtime.emitter = emitter; }
+
+struct Texture2D {};
+using TextureRef = std::shared_ptr<Texture2D>;
+using Resolver = std::function<std::optional<TextureRef>(double, bool, bool)>;
+Resolver make_resolver(TextureRef texture) {
+  return [texture](double, bool, bool) -> TextureRef { return texture; };
+}
+`,
+        'utf8',
+      );
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, source, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it('refuses incomplete and incompatible callable-object construction', () => {
