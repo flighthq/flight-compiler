@@ -2975,6 +2975,17 @@ function emitExpression(
       if (variantIndexedAssignment) return variantIndexedAssignment;
       const typedArrayIndexedAssignment = emitCppTypedArrayIndexedAssignmentCpp(expression, right, context);
       if (typedArrayIndexedAssignment) return typedArrayIndexedAssignment;
+      // A write through a finite key set names its member at runtime, exactly as a read does, so it is a
+      // dispatch rather than a subscript. It has to be taken here rather than through the assignment
+      // target: the read selection is what an element target falls back to, and it returns the member's
+      // VALUE, so assigning through it would write to a temporary.
+      const closedKeyWriteKeys =
+        expression.operator === '=' && expression.left.kind === 'element'
+          ? getCppClosedElementKeyNamesCpp(expression.left, context)
+          : undefined;
+      if (closedKeyWriteKeys && expression.left.kind === 'element') {
+        return emitCppClosedKeyElementWriteCpp(expression.left, closedKeyWriteKeys, right, rightType, context);
+      }
       const left = emitAssignmentTargetCpp(expression.left, context);
       if (expression.operator === '**=') {
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
@@ -10807,11 +10818,20 @@ function emitCppClosedKeyElementTypeofCpp(
 // a key the object does not have would select nothing, and members of different types would need a
 // result representation that can hold several, which is a question for the union planner rather than
 // for this access.
-function emitCppClosedKeyElementSelectionCpp(
+// The members a finite key set names, and how many C++ types their reads lower to. Shared by the read
+// selection and the write dispatch, because both need the same member set and the same refusals: a key the
+// object does not have would name nothing, and members of different types need a representation that can
+// hold several -- which is the union planner's question, not this access's.
+function getCppClosedKeyElementMembersCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   keys: readonly string[],
   context: EmitContext,
-): string {
+  writtenType?: Readonly<IrType> | undefined,
+): Readonly<{
+  distinct: readonly string[];
+  members: ReadonlyMap<string, Readonly<IrObjectTypeProperty>>;
+  runtime: Readonly<IrType>;
+}> {
   const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
   const runtime = objectType ? getIrTypeRuntimeDomainCpp(objectType, context, new Set()) : undefined;
   const properties = runtime
@@ -10830,27 +10850,86 @@ function emitCppClosedKeyElementSelectionCpp(
     if (!members.has(property.name)) members.set(property.name, property);
   }
   const memberTypes: string[] = [];
+  const missing: string[] = [];
+  const rejected: string[] = [];
   for (const key of keys) {
     const property = members.get(key);
     if (!property) {
-      emissionError(
-        context,
-        `closed key ${key} is not a member of ${emitType(runtime, context)}`,
-        'cpp-closed-key-absent-member',
-      );
+      missing.push(key);
+      continue;
     }
     // Select the member's read type rather than its declared payload. For an optional member this is
     // `T | undefined`, whose C++ representation is the optional cell the materialized object stores.
-    memberTypes.push(emitType(getIrObjectPropertyReadTypeCpp(property)!, context));
+    const readType = getIrObjectPropertyReadTypeCpp(property);
+    memberTypes.push(readType ? emitType(readType, context) : '');
+    // A write's value has to fit EVERY member the key set names, or the source is asking for an
+    // assignment the source language rejects: it narrows nothing and lets any of the keys take any of
+    // the value's alternatives.
+    if (
+      writtenType !== undefined &&
+      readType !== undefined &&
+      !context.referenceRepresentationPlanner.isStructurallyAssignable(writtenType, readType, context.module)
+    ) {
+      rejected.push(key);
+    }
+  }
+  if (missing.length > 0) {
+    emissionError(
+      context,
+      `closed key ${missing[0]!} is not a member of ${emitType(runtime, context)}`,
+      'cpp-closed-key-absent-member',
+    );
   }
   const distinct = [...new Set(memberTypes)];
   if (distinct.length !== 1) {
+    // A member that cannot hold the value the source wrote is an assignment the source language rejects
+    // as well -- the value would have to be assignable to every member the key set names -- so the author
+    // is the one who can narrow the key and the value together. Everything else here is the target's: the
+    // members lower to different C++ types and the result representation that would hold several of them
+    // is the union planner's question, which the read selection has not answered yet.
+    const sourceInvalid = writtenType !== undefined && rejected.length > 0;
     emissionError(
       context,
-      `closed-key selection over ${String(distinct.length)} member types requires a represented result union`,
+      `closed-key ${writtenType === undefined ? 'selection' : 'write'} over ${String(distinct.length)} member types requires a represented result union${
+        sourceInvalid
+          ? '. Narrow the key and the value together, so each assignment names one member the value fits'
+          : ''
+      }`,
       'cpp-closed-key-multiple-member-types',
+      sourceInvalid ? 'source-portability' : undefined,
     );
   }
+  return { distinct, members, runtime };
+}
+
+// A write through a finite key set is a dispatch too, for the same reason a read is: the key's value
+// chooses the member, and the object has no subscript. It cannot reuse the READ selection, which builds a
+// lambda returning the member's value -- assigning to that return value writes to a temporary and drops
+// the write silently, which is worse than refusing. Each branch assigns the member its key names.
+function emitCppClosedKeyElementWriteCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  keys: readonly string[],
+  right: string,
+  writtenType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string {
+  const { members } = getCppClosedKeyElementMembersCpp(expression, keys, context, writtenType);
+  const receiver = getGeneratedTargetName('selectionReceiver', context);
+  const selectionKey = getGeneratedTargetName('selectionKey', context);
+  const branches = keys.map((key) => {
+    const property = members.get(key)!;
+    return `if (${selectionKey} == ${emitLiteral(key, context)}) { ${receiver}->${safeCppName(property.name)} = ${right}; return; }`;
+  });
+  context.includes.add('stdexcept');
+  return `([&]() { const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${selectionKey} = ${emitExpression(expression.index, context)}; ${branches.join(' ')} throw std::logic_error("Flight finite-key write reached no member"); }())`;
+}
+
+function emitCppClosedKeyElementSelectionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  keys: readonly string[],
+  context: EmitContext,
+): string {
+  const { distinct, members } = getCppClosedKeyElementMembersCpp(expression, keys, context);
   const receiver = getGeneratedTargetName('selectionReceiver', context);
   const selectionKey = getGeneratedTargetName('selectionKey', context);
   const select = (member: string): string => `${receiver}->${safeCppName(member)}`;

@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/closedKeyWriteUnfittedValue.ts: closed-key selection over 2 member types requires one Rust representation

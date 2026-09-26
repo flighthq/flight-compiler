@@ -13226,6 +13226,67 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.match(/const auto selection_key = format;/gu)).toHaveLength(1);
   });
 
+  it('writes through a finite key set by dispatching on the key', () => {
+    const result = lower(
+      'closed-key-write.ts',
+      `interface Pairs { alpha?: number; beta?: number }
+       export function set(pairs: Pairs, key: 'alpha' | 'beta', value: number): void {
+         pairs[key] = value;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The member is named by the key's value at runtime, so the write is a dispatch and each branch assigns
+    // the member its key names. The read selection cannot serve here: it returns the member's VALUE, and
+    // assigning through it would write to a temporary and drop the write.
+    expect(contents).toContain(
+      'if (selection_key == flight::String("alpha")) { selection_receiver->alpha = value; return; }',
+    );
+    expect(contents).toContain(
+      'if (selection_key == flight::String("beta")) { selection_receiver->beta = value; return; }',
+    );
+    expect(contents).toContain('throw std::logic_error("Flight finite-key write reached no member")');
+    expect(contents).not.toContain('}()) = value');
+  });
+
+  it('attributes a closed-key write whose value fits no member to the source', () => {
+    const result = lower(
+      'closed-key-write-unfitted.ts',
+      `interface Style { fontSize?: number; color?: string }
+       export function set(style: Style, key: 'fontSize' | 'color', value: number | string): void {
+         style[key] = value;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The value would have to be assignable to every member the key set names, which the source language
+    // requires too (2322 on the same body), so the author narrows the key and the value together.
+    expect(failure.rule).toBe('cpp-closed-key-multiple-member-types');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('Narrow the key and the value together');
+  });
+
+  it('keeps a closed-key read over several member types attributed to the compiler', () => {
+    const result = lower(
+      'closed-key-read-heterogeneous.ts',
+      `interface Style { fontSize?: number; color?: string }
+       export function get(style: Style, key: 'fontSize' | 'color'): number | string | undefined {
+         return style[key];
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The source is valid; what is missing is a result representation that can hold several member types,
+    // which is the union planner's question and not the source's to answer.
+    expect(failure.rule).toBe('cpp-closed-key-multiple-member-types');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('requires a represented result union');
+  });
+
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
