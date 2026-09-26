@@ -6059,16 +6059,20 @@ function emitCppNamedPropertiesEnumerationCpp(
   if (member !== 'keys' && member !== 'entries' && member !== 'values') return undefined;
   if (!isCppAmbientObjectMemberCallCpp(expression, member)) return undefined;
   const argument = expression.arguments[0]!;
+  const argumentIsView = getCppNamedPropertiesViewExpressionCpp(argument, context);
   // A `Record` is storage the program owns, and the runtime enumerates one through its own accessors. The
   // view is a handle on an OBJECT's properties, so it is not an overload the record can be passed to: the
-  // record goes to the binding that names it, and this lane keeps the object.
-  if (getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(argument, context), context, new Set())) {
+  // record goes to the binding that names it, and this lane keeps the object. A proven view is deliberately
+  // typed as `Record<string, unknown>` in the source, so storage evidence must win over that declared type.
+  if (
+    !argumentIsView &&
+    getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(argument, context), context, new Set())
+  ) {
     return undefined;
   }
   // An argument that already IS a view is the view; one that is an object is enumerated by asking the
   // runtime for its view. Wrapping a view in `named_properties` again would be a call the runtime has no
   // overload for, because a view is not an object with properties -- it is the handle on one.
-  const argumentIsView = getCppNamedPropertiesViewExpressionCpp(argument, context);
   if (!argumentIsView) {
     const sourceType = getIrExpressionTypeEvidenceCpp(argument, context);
     if (!sourceType || !isCppNamedPropertiesSourceCpp(sourceType, context)) return undefined;

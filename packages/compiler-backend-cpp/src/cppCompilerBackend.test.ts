@@ -1958,7 +1958,10 @@ describe('createCppCompilerBackend', () => {
        export function recordValues(fields: Fields): Scalar[] { return Object.values(fields); }
        export function recordEntries(fields: Fields): [string, Scalar][] { return Object.entries(fields); }
        export function objectKeys(value: Named): string[] { return Object.keys(value); }
-       export function objectValues(value: Named): unknown[] { return Object.values(value); }`,
+       export function objectValues(value: Named): unknown[] { return Object.values(value); }
+       export function viewValues(value: Named): unknown[] {
+         return Object.values(value as unknown as Record<string, unknown>);
+       }`,
     );
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
@@ -1972,6 +1975,7 @@ describe('createCppCompilerBackend', () => {
     // declaration order the runtime hands back.
     expect(contents).toContain('flight::named_properties(value)');
     expect(contents).toContain('named_view');
+    expect(contents.match(/flight::named_properties\(value\)/gu)).toHaveLength(3);
   });
 
   it('represents an interface that states an index signature as the runtime record', () => {
