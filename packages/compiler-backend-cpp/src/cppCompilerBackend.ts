@@ -4627,6 +4627,7 @@ function emitExpression(
       if (
         expression.object.kind === 'identifier' &&
         expression.object.reference.kind === 'binding' &&
+        expression.object.presence !== 'narrowedPresent' &&
         isCppAbsenceCarryingExpressionCpp(expression.object, context)
       ) {
         emissionError(

@@ -4587,6 +4587,20 @@ describe('createCppCompilerBackend', () => {
     ).toContain('auto view = aliased.value().create_view();');
   });
 
+  it('unwraps a narrowed optional sequence before reading its length', () => {
+    const module = lower(
+      'guarded-optional-sequence-length.ts',
+      `export function count(values: readonly number[] | null): number {
+         if (values === null) return 0;
+         return values.length;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('values.value().size()');
+  });
+
   // The same boundary read as a property that can be either absent kind at once: the storage is the
   // variant that keeps null and undefined distinct, and the guard proves one value alternative remains.
   it('unwraps an optional property receiver a guard clause left present', () => {
