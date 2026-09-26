@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/unionArrayElementRead.ts: optional element receiver requires one concrete Rust Option payload

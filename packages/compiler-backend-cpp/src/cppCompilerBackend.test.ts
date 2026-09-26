@@ -14115,7 +14115,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(contents).toMatch(
       /if \(const auto keyed_value(?:_[0-9]+)? = keyed_carrier(?:_[0-9]+)?\.get\(keyed_lookup(?:_[0-9]+)?\)\)/u,
     );
-    expect(contents).toContain('return std::nullopt; }, optional_chain_receiver.value());');
+    // The receiver is bound before the key and the visit runs over that binding, which is what keeps a
+    // produced carrier alive for the whole projection.
+    expect(contents).toMatch(/return std::nullopt; \}, keyed_receiver(?:_[0-9]+)?\); \}\(\)\);/u);
     expect(contents).toMatch(
       /static_assert\(!sizeof\(keyed_carrier_type(?:_[0-9]+)?\), "unproved keyed carrier alternative"\)/u,
     );
@@ -14162,16 +14164,18 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     expect(nullableElement.rule).toBe('cpp-union-element-access-without-carrier');
 
-    // A union of arrays is the other shape the optional element lane has no projection for: an array's
-    // lookup is not a record's, and the receiver's kind is named rather than the reason invented.
-    const arrays = refusal(
-      'optional-union-array-element.ts',
-      `export function read(values: number[] | string[] | undefined, index: number): number | string | undefined {
+    // A union of arrays is no longer a refusal: an array declares its element type, so each alternative can
+    // be asked for the index and the element placed in the payload. What refuses is the union that mixes an
+    // array with a typed array, whose element type only the runtime's accessor knows -- covered where the
+    // projection's own tests are, so the shape is asserted here only by the reason it names.
+    const typedArray = refusal(
+      'optional-union-typed-array-element.ts',
+      `export function read(values: number[] | Uint8Array | undefined, index: number): number | undefined {
          return values?.[index];
        }`,
     );
-    expect(arrays.rule).toBe('cpp-optional-element-access-without-collection-receiver');
-    expect(arrays.message).toContain(
+    expect(typedArray.rule).toBe('cpp-optional-element-access-without-collection-receiver');
+    expect(typedArray.message).toContain(
       'optional element access requires one concrete nullable indexed collection receiver',
     );
 
@@ -14186,6 +14190,68 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     expect(row.rule).toBe('cpp-optional-element-access-without-collection-receiver');
     expect(row.message).toContain('a row is read by a closed set of keys');
+  });
+
+  it('reads an optional union of arrays by projecting each alternative', () => {
+    const result = lower(
+      'union-array-element.ts',
+      `interface Point { readonly x: number }
+       export function readOptional(values: number[] | string[] | undefined, index: number): number | string | undefined {
+         return values?.[index];
+       }
+       export function readReference(values: Point[] | number[] | undefined, index: number): Point | number | undefined {
+         return values?.[index];
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The array's element type is declared, so each alternative can be asked for the index and its element
+    // placed in the payload the declaration names. The receiver's sentinel stays the optional chain's own:
+    // a missing receiver and an index the array does not hold are both the `undefined` the read declares.
+    expect(contents).toMatch(
+      /if constexpr \(std::is_same_v<keyed_carrier_type(?:_[0-9]+)?, flight::Array<double>>\) \{ if \(const auto keyed_value(?:_[0-9]+)? = keyed_carrier(?:_[0-9]+)?\.get\(keyed_lookup(?:_[0-9]+)?\)\) return std::variant<double, flight::String>\{std::in_place_type<double>, \*keyed_value(?:_[0-9]+)?\}; \}/u,
+    );
+    expect(contents).toMatch(
+      /if constexpr \(std::is_same_v<keyed_carrier_type(?:_[0-9]+)?, flight::Array<flight::Ref<Point>>>\) \{ if \(const auto keyed_value(?:_[0-9]+)? = keyed_carrier(?:_[0-9]+)?\.get\(keyed_lookup(?:_[0-9]+)?\)\) return std::variant<flight::Ref<Point>, double>\{std::in_place_type<flight::Ref<Point>>, \*keyed_value(?:_[0-9]+)?\}; \}/u,
+    );
+    // The carrier is looked up, never subscripted, and the index is evaluated once for the whole visit.
+    expect(contents).not.toContain('keyed_carrier[keyed_lookup]');
+    expect(contents).not.toContain('static_cast<size_t>');
+    expect(contents).toMatch(
+      /const auto& keyed_receiver(?:_[0-9]+)? = optional_chain_receiver\.value\(\); const auto keyed_lookup(?:_[0-9]+)? = index;/u,
+    );
+  });
+
+  it('keeps a union that mixes an array with a typed array refused', () => {
+    const refusal = (file: string, source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // A typed array leaves its element type to the runtime's template argument, so the IR records no
+    // element payload a projection could name for it. Guessing the slot from the declaration would be an
+    // assumption the compiler cannot check, so the read keeps its refusal and says which alternative is
+    // the obstacle.
+    const typed = refusal(
+      'union-typed-array-element.ts',
+      `export function read(values: number[] | Uint8Array | undefined, index: number): number | undefined {
+         return values?.[index];
+       }`,
+    );
+    expect(typed.rule).toBe('cpp-optional-element-access-without-collection-receiver');
+    expect(typed.message).toContain(
+      'optional element access requires one concrete nullable indexed collection receiver',
+    );
+    expect(typed.message).toContain('a typed array leaves its element type to the runtime');
+
+    // The same union without the receiver's sentinel reaches the plain lane, which reads a typed array
+    // through the runtime's own numeric accessor and needs no element evidence for it.
+    const plainTyped = lower(
+      'union-typed-array-plain.ts',
+      `export function read(values: number[] | Uint8Array, index: number): number { return values[index]; }`,
+    );
+    const plain = emitIrModuleCpp(plainTyped.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(plain).toContain('requires { indexed_receiver.get_index(indexed_index); }');
   });
 
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {

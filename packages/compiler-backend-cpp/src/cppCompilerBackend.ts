@@ -4060,14 +4060,14 @@ function emitExpression(
         // A union of other collections is a different answer from a union of carriers whose projection did
         // not prove: the first has no keyed lookup to project at all, the second needs its alternatives
         // narrowed to one key domain and one result.
-        const everyAlternativeIsCarrier = indexedReceiverPlan.valueSlots.every(
-          (slot) => getCppRecordTypeArgumentsCpp(slot.runtimeType, context, new Set()) !== undefined,
+        const everyAlternativeHasLookup = indexedReceiverPlan.valueSlots.every(
+          (slot) => getCppUnionElementLookupCpp(slot.runtimeType, context) !== undefined,
         );
         emissionError(
           context,
-          everyAlternativeIsCarrier
-            ? 'indexed access on a union receiver needs a keyed projection: every alternative must store a keyed carrier over one key domain, and their elements must produce exactly the result the declaration names. Read through one declared carrier, or narrow the alternatives to that shape'
-            : 'indexed access on a union receiver requires one collection: the destination stores a variant, and a variant has no subscript of its own. Read through one concrete collection, or narrow the alternatives to one carrier',
+          everyAlternativeHasLookup
+            ? 'indexed access on a union receiver needs a keyed projection: every alternative must answer over one key domain, and their elements must produce exactly the result the declaration names. Read through one declared carrier, or narrow the alternatives to that shape'
+            : 'indexed access on a union receiver requires one collection: the destination stores a variant, and a variant has no subscript of its own. Every alternative must be a keyed carrier or an array that declares its element type; read through one concrete collection otherwise',
           'cpp-union-element-access-without-carrier',
         );
       }
@@ -21205,18 +21205,41 @@ function emitOptionalElementExpressionCpp(
       return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${keyedProjection}; }())`;
     }
   }
-  const everyAlternativeIsCarrier =
+  const everyAlternativeHasLookup =
     receiverUnion !== undefined &&
     getCppUnionRepresentationPlan(receiverUnion, context).valueSlots.every(
-      (slot) => getCppRecordTypeArgumentsCpp(slot.runtimeType, context, new Set()) !== undefined,
+      (slot) => getCppUnionElementLookupCpp(slot.runtimeType, context) !== undefined,
     );
   emissionError(
     context,
-    receiverUnion && everyAlternativeIsCarrier
-      ? 'optional element access needs a keyed projection: every alternative must store a keyed carrier over one key domain, and their elements must produce exactly the result the declaration names. Read through one declared carrier, or narrow the alternatives to that shape'
-      : 'optional element access requires one concrete nullable indexed collection receiver: a union receiver needs one carrier per alternative, and this receiver has no keyed carrier -- a row is read by a closed set of keys rather than by an arbitrary index',
+    receiverUnion
+      ? everyAlternativeHasLookup
+        ? 'optional element access requires one concrete nullable indexed collection receiver: every alternative answers a key, but their elements or key domains do not produce the result the declaration names'
+        : 'optional element access requires one concrete nullable indexed collection receiver: a union receiver needs one lookup per alternative, and only a keyed carrier or an array that declares its element type answers one -- a row is read by a closed set of keys, and a typed array leaves its element type to the runtime'
+      : 'optional element access requires one concrete nullable indexed collection receiver: this receiver has no keyed carrier, and a row is read by a closed set of keys rather than by an arbitrary index',
     'cpp-optional-element-access-without-collection-receiver',
   );
+}
+
+// One alternative's element lookup: the key domain its carrier answers, and the element that key yields.
+//
+// A record answers a key with its own checked lookup, and a syntax array answers an index with the element
+// itself. Both carry their element type in the IR, which is what a projection has to name. A typed array
+// does NOT: its element type is the runtime's template argument and the IR records its declaration without
+// one, so a union holding one has no explicit payload to prove a branch against and stays refused rather
+// than being asked for an element type the compiler would have to guess.
+type CppUnionElementLookup =
+  | Readonly<{ element: IrType; key: IrType; kind: 'record' }>
+  | Readonly<{ element: IrType; kind: 'array' }>;
+
+function getCppUnionElementLookupCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppUnionElementLookup> | undefined {
+  const record = getCppRecordTypeArgumentsCpp(type, context, new Set());
+  if (record) return { element: record.value, key: record.key, kind: 'record' };
+  const array = getIrArrayTypeCpp(type, context, new Set());
+  return array ? { element: array.element, kind: 'array' } : undefined;
 }
 
 // Reads one key from a union of keyed carriers by projecting each alternative's own lookup.
@@ -21250,10 +21273,22 @@ function emitCppUnionKeyedCarrierProjectionCpp(
   }
   // One carrier is the single-carrier lane's work, and it is a direct lookup rather than a visit.
   if (plan.valueSlots.length < 2) return undefined;
-  const carriers = plan.valueSlots.map((slot) => getCppRecordTypeArgumentsCpp(slot.runtimeType, context, new Set()));
-  if (carriers.some((carrier) => carrier === undefined)) return undefined;
-  const keySpelling = emitType(carriers[0]!.key, context);
-  if (carriers.some((carrier) => emitType(carrier!.key, context) !== keySpelling)) return undefined;
+  const lookups = plan.valueSlots.map((slot) => getCppUnionElementLookupCpp(slot.runtimeType, context));
+  if (lookups.some((lookup) => lookup === undefined)) return undefined;
+  const everyLookup = lookups.filter((lookup): lookup is Readonly<CppUnionElementLookup> => lookup !== undefined);
+  // The key domains must be the SAME domain: a record's key and an array's index are different questions,
+  // so a union mixing them has no one key expression to evaluate, and records whose own key types differ
+  // have no one key to pass either. Both are refused rather than asked of a carrier that cannot answer.
+  if (everyLookup.some((lookup) => lookup.kind !== everyLookup[0]!.kind)) return undefined;
+  const keyDomain = everyLookup[0]!;
+  if (
+    keyDomain.kind === 'record' &&
+    everyLookup.some(
+      (lookup) => lookup.kind !== 'record' || emitType(lookup.key, context) !== emitType(keyDomain.key, context),
+    )
+  ) {
+    return undefined;
+  }
   const valueUnion = getIrUnionTypeCpp(valueType, context, new Set());
   const valuePlan = valueUnion ? getCppUnionRepresentationPlan(valueUnion, context) : undefined;
   if (
@@ -21265,7 +21300,7 @@ function emitCppUnionKeyedCarrierProjectionCpp(
   ) {
     return undefined;
   }
-  const elementEvidence = createIrTypeEvidenceUnionCpp(carriers.map((carrier) => carrier!.value));
+  const elementEvidence = createIrTypeEvidenceUnionCpp(everyLookup.map((lookup) => lookup.element));
   const elementUnion = elementEvidence ? getIrUnionTypeCpp(elementEvidence, context, new Set()) : undefined;
   const elementPlan = elementUnion ? getCppUnionRepresentationPlan(elementUnion, context) : undefined;
   if (
@@ -21278,7 +21313,11 @@ function emitCppUnionKeyedCarrierProjectionCpp(
   ) {
     return undefined;
   }
-  const payloadType = emitOptionalChainPayloadTypeCpp(valueType, context);
+  // The payload is the present part of the declared result. `emitOptionalChainPayloadTypeCpp` answers that
+  // for one nullable member, and a read may name several -- an element read answers `undefined` as well as
+  // every element it can yield -- so the sentinel is stripped here and the remaining union emitted. Asking
+  // for a single member would refuse a result the read itself declares.
+  const payloadType = emitType(getCppNonNullableType(valueType, context, new Set()) ?? valueType, context);
   const carrierName = getGeneratedTargetName('keyedCarrier', context);
   const carrierType = getGeneratedTargetName('keyedCarrierType', context);
   const receiverName = getGeneratedTargetName('keyedReceiver', context);
@@ -21286,19 +21325,22 @@ function emitCppUnionKeyedCarrierProjectionCpp(
   const branches = plan.valueSlots.map((slot, branchIndex) => {
     const elementName = `${getGeneratedTargetName('keyedValue', context)}${branchIndex === 0 ? '' : String(branchIndex)}`;
     const body = emitCppUnionKeyedCarrierBranchCpp(
-      carriers[branchIndex]!.value,
+      everyLookup[branchIndex]!.element,
       valuePlan,
       payloadType,
       missing === 'answersAbsence' ? `*${elementName}` : elementName,
       context,
     );
     if (body === undefined) return undefined;
-    // Each carrier is asked for the key in its own domain, and only the branch that names the carrier the
-    // value really holds runs: the other bodies are discarded, not merely skipped at run time.
+    // Only the branch that names the carrier the value really holds runs, and the other bodies are
+    // discarded rather than skipped at run time. A record answers its key with a checked lookup; an array
+    // answers its index with the element itself, which is the read the source wrote.
     const lookup =
       missing === 'answersAbsence'
         ? `if (const auto ${elementName} = ${carrierName}.get(${keyName})) return ${body};`
-        : `const auto ${elementName} = ${carrierName}.get(${keyName}).value(); return ${body};`;
+        : everyLookup[branchIndex]!.kind === 'record'
+          ? `const auto ${elementName} = ${carrierName}.get(${keyName}).value(); return ${body};`
+          : `const auto ${elementName} = ${carrierName}.element(${keyName}); return ${body};`;
     return `${branchIndex === 0 ? 'if' : 'else if'} constexpr (std::is_same_v<${carrierType}, ${slot.targetType}>) { ${lookup} }`;
   });
   if (branches.some((branch) => branch === undefined)) return undefined;
@@ -21315,7 +21357,11 @@ function emitCppUnionKeyedCarrierProjectionCpp(
   const returns = missing === 'answersAbsence' ? `std::optional<${payloadType}>` : payloadType;
   // Element access evaluates its receiver before its key. Bind both once, in that order, before visiting:
   // besides preserving side effects this keeps a produced carrier alive for the whole projection.
-  return `([&]() -> ${returns} { const auto& ${receiverName} = ${receiver}; const auto ${keyName} = ${emitCppRequiredRecordKeyCpp(index, carriers[0]!.key, context)}; return std::visit([&](const auto& ${carrierName}) -> ${returns} { using ${carrierType} = std::decay_t<decltype(${carrierName})>; ${branches.join(' ')} ${tail} }, ${receiverName}); }())`;
+  const keyExpression =
+    keyDomain.kind === 'record'
+      ? emitCppRequiredRecordKeyCpp(index, keyDomain.key, context)
+      : emitExpression(index, context);
+  return `([&]() -> ${returns} { const auto& ${receiverName} = ${receiver}; const auto ${keyName} = ${keyExpression}; return std::visit([&](const auto& ${carrierName}) -> ${returns} { using ${carrierType} = std::decay_t<decltype(${carrierName})>; ${branches.join(' ')} ${tail} }, ${receiverName}); }())`;
 }
 
 // The one branch body of a keyed projection: the carrier's element, placed in the payload the declaration
