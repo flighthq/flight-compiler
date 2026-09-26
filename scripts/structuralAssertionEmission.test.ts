@@ -45,6 +45,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'erasedValueUnionSelection', header: 'erased_value_union_selection.hpp' },
   { fixture: 'assertionSubUnionNarrowing', header: 'assertion_sub_union_narrowing.hpp' },
   { fixture: 'contextualUnionSubsetConversion', header: 'contextual_union_subset_conversion.hpp' },
+  { fixture: 'contextualAliasAlternative', header: 'contextual_alias_alternative.hpp' },
   { fixture: 'indexSignatureRecordCarrier', header: 'index_signature_record_carrier.hpp' },
   { fixture: 'indexSignatureRecordEnumeration', header: 'index_signature_record_enumeration.hpp' },
   { fixture: 'assertionOneAlternativeRecovery', header: 'assertion_one_alternative_recovery.hpp' },

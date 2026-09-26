@@ -13840,6 +13840,90 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.message).toContain('requires a represented result union');
   });
 
+  it('stores a contextual value whose alternative names the type through a declared alias', () => {
+    const result = lower(
+      'contextual-alias-alternative.ts',
+      `interface Point { readonly x: number }
+       interface Box<Value> { readonly value: Value }
+       type Alias = Point;
+       type ArraySlot = readonly Alias[] | number;
+       type MapSlot = Map<string, Alias> | boolean;
+       type CallableSlot = (() => Alias) | string;
+       type GenericSlot = Box<Alias> | number;
+       export function takeArray(value: ArraySlot): number { return 1; }
+       export function passArray(values: readonly Point[]): number { return takeArray(values); }
+       export function takeMap(value: MapSlot): boolean { return true; }
+       export function passMap(values: Map<string, Point>): boolean { return takeMap(values); }
+       export function takeCallable(value: CallableSlot): number { return 1; }
+       export function passCallable(handler: () => Point): number { return takeCallable(handler); }
+       export function takeGeneric(value: GenericSlot): number { return 1; }
+       export function passGeneric(box: Box<Point>): number { return takeGeneric(box); }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // A declared alias is emitted as a C++ `using`, so an alternative naming `Alias` inside an array
+    // element, a map argument, a callable signature, or another declaration's type argument denotes
+    // exactly the type its target names -- one spelling is not the other, but the type is one. The value
+    // therefore stores through the alternative's own carrier with no cast and no materialization.
+    expect(contents).toContain('std::in_place_type<flight::Array<Alias>>, values');
+    expect(contents).toContain('std::in_place_type<flight::Map<flight::String, Alias>>, values');
+    expect(contents).toContain('std::in_place_type<std::function<Alias()>>, handler');
+    expect(contents).toContain('std::in_place_type<flight::Ref<Box<Alias>>>, box');
+  });
+
+  it('stores a contextual value that names the alternative through a declared alias', () => {
+    const result = lower(
+      'contextual-alias-value.ts',
+      `interface Point { readonly x: number }
+       interface Box<Value> { readonly value: Value }
+       type Alias = Point;
+       type ArraySlot = readonly Point[] | number;
+       type GenericSlot = Box<Point> | number;
+       export function takeArray(value: ArraySlot): number { return 1; }
+       export function passArray(values: readonly Alias[]): number { return takeArray(values); }
+       export function takeGeneric(value: GenericSlot): number { return 1; }
+       export function passGeneric(box: Box<Alias>): number { return takeGeneric(box); }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The same question with the alias on the value's side: the alternative spells the target and the
+    // value spells the name. Opening the aliases on both sides is what makes the two answers agree.
+    expect(contents).toContain('std::in_place_type<flight::Array<flight::Ref<Point>>>, values');
+    expect(contents).toContain('std::in_place_type<flight::Ref<Box<flight::Ref<Point>>>>, box');
+  });
+
+  it('keeps a contextual alternative whose declaration only resembles the value refused', () => {
+    const refusal = (file: string, source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // An alias is a name for the type it declares and never a licence to widen: an array of a derived
+    // element is not the array of its base, and an alias of one declaration is not another declaration.
+    // Both are types the destination does not hold, so both keep the refusal.
+    expect(
+      refusal(
+        'contextual-alias-element-negative.ts',
+        `interface Base { readonly id: string }
+         interface Derived extends Base { readonly extra: number }
+         type Slot = readonly Base[] | number;
+         export function take(value: Slot): number { return 1; }
+         export function pass(values: readonly Derived[]): number { return take(values); }`,
+      ).rule,
+    ).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(
+      refusal(
+        'contextual-alias-declaration-negative.ts',
+        `interface Point { readonly x: number }
+         interface Other { readonly y: number }
+         type Alias = Other;
+         type Slot = Alias | number;
+         export function take(value: Slot): number { return 1; }
+         export function pass(value: Point): number { return take(value); }`,
+      ).rule,
+    ).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>

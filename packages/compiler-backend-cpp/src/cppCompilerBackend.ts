@@ -2897,6 +2897,90 @@ function emitCppAliasResolvedValueTypeCpp(
     : emitType(type, context);
 }
 
+// Opens a declared alias wherever it occurs, not only at the head of a type.
+//
+// A declaration alias is emitted as a C++ `using`, so an alternative that names `Alias` inside an array
+// element, a map argument, a callable signature, or another declaration's type argument denotes exactly
+// the type its target names: one spelling is simply not the other. `emitCppAliasResolvedValueTypeCpp`
+// answers that for the head of a type; a value asked about an alternative needs the same answer at every
+// position, because a contextual value is compared against a whole alternative rather than a name.
+// Opening the alias where the C++ compiler would is therefore a proof of identity and never a widening --
+// the two types are one, so the value stores with no cast and no materialization. A recursive alias stops
+// at its last stable spelling, which is what the emitted `using` also does.
+function resolveCppNestedTypeAliasesCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string> = new Set(),
+): Readonly<IrType> {
+  const resolve = (inner: Readonly<IrType>): Readonly<IrType> =>
+    resolveCppNestedTypeAliasesCpp(inner, context, resolvingAliases);
+  switch (type.kind) {
+    case 'named': {
+      if (type.reference.kind === 'binding' && type.reference.binding.kind !== 'typeParameter') {
+        const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
+        if (!resolvingAliases.has(key)) {
+          const target = resolveCppTypeAliasTarget(type, context);
+          if (target) return resolveCppNestedTypeAliasesCpp(target, context, new Set(resolvingAliases).add(key));
+        }
+      }
+      // An ambient declaration such as `Map` is a type in its own right and never an alias, but its
+      // arguments are positions in which an alias may stand, so they are opened here as well.
+      return type.typeArguments.length === 0 ? type : { ...type, typeArguments: type.typeArguments.map(resolve) };
+    }
+    case 'array':
+      return { ...type, element: resolve(type.element) };
+    case 'conditionalFacet':
+      return { ...type, check: resolve(type.check), facet: resolve(type.facet) };
+    case 'function':
+      return {
+        ...type,
+        parameters: type.parameters.map((parameter) => ({ ...parameter, type: resolve(parameter.type) })),
+        returns: resolve(type.returns),
+        typeParameters: type.typeParameters.map((parameter) => ({
+          ...parameter,
+          ...(parameter.constraint === undefined ? {} : { constraint: resolve(parameter.constraint) }),
+          ...(parameter.default === undefined ? {} : { default: resolve(parameter.default) }),
+        })),
+      };
+    case 'indexedAccess':
+      return { ...type, object: resolve(type.object), index: resolve(type.index) };
+    case 'intersection':
+      return { ...type, types: type.types.map(resolve) as unknown as typeof type.types };
+    case 'keyof':
+      return { ...type, type: resolve(type.type) };
+    case 'object':
+      return {
+        ...type,
+        properties: type.properties.map((property) => ({ ...property, type: resolve(property.type) })),
+      };
+    case 'tuple':
+      return { ...type, elements: type.elements.map((element) => ({ ...element, type: resolve(element.type) })) };
+    case 'union':
+      return { ...type, types: type.types.map(resolve) as unknown as typeof type.types };
+    default:
+      return type;
+  }
+}
+
+function emitCppAliasExpandedValueTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
+  return emitType(resolveCppNestedTypeAliasesCpp(type, context), context);
+}
+
+// The one alternative a runtime value type is, when the value and the alternative spell the same C++
+// type through different alias names. `-1` for no alternative and for several: two slots the same value
+// fits are two answers, and picking one would choose the alternative the author did not.
+function getCppAliasExpandedUnionValueSlotCpp(
+  runtimeType: Readonly<IrType>,
+  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  context: EmitContext,
+): number {
+  const spelling = emitCppAliasExpandedValueTypeCpp(runtimeType, context);
+  const matches = valueSlots.flatMap((slot, index) =>
+    emitCppAliasExpandedValueTypeCpp(slot.runtimeType, context) === spelling ? [index] : [],
+  );
+  return matches.length === 1 ? matches[0]! : -1;
+}
+
 function emitExpression(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -13362,13 +13446,20 @@ function emitContextualUnionExpressionInContextCpp(
   }
   const targetType = emitType(runtimeType, context);
   const valueSlot = plan.valueSlots.findIndex((slot) => slot.targetType === targetType);
+  // The exact spelling is the first question and the answer for most values. An alternative that reaches
+  // the value's type through a declared alias spells it differently while denoting the same C++ type, so
+  // the aliases are opened as the second question -- the same alternative, one name further away.
+  const matchedValueSlot =
+    valueSlot < 0 ? getCppAliasExpandedUnionValueSlotCpp(runtimeType, plan.valueSlots, context) : valueSlot;
   const constrainedValueSlot =
-    valueSlot < 0 ? getCppConstrainedTypeParameterUnionValueSlotCpp(runtimeType, plan.valueSlots, context) : undefined;
+    matchedValueSlot < 0
+      ? getCppConstrainedTypeParameterUnionValueSlotCpp(runtimeType, plan.valueSlots, context)
+      : undefined;
   const callableValueSlot =
-    valueSlot < 0 && constrainedValueSlot === undefined
+    matchedValueSlot < 0 && constrainedValueSlot === undefined
       ? getCppCallableUnionValueSlotCpp(runtimeType, plan.valueSlots, context)
       : undefined;
-  const representedValueSlot = constrainedValueSlot ?? callableValueSlot ?? valueSlot;
+  const representedValueSlot = constrainedValueSlot ?? callableValueSlot ?? matchedValueSlot;
   if (representedValueSlot < 0) {
     const declaredValueSlot = getCppConcreteNamedUnionValueSlotCpp(runtimeType, plan.valueSlots, context);
     if (declaredValueSlot !== undefined) {
