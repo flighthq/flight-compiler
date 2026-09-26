@@ -4023,6 +4023,29 @@ function emitExpression(
           'cpp-object-index-without-closed-key-set',
         );
       }
+      // The subscript below is only an element read when the receiver IS a carrier. A receiver the emitter
+      // stores as a variant is not: no variant has a subscript, so what this would write is a subscript on
+      // the carrier's alternative type -- a member the variant does not have, and a numeric cast of a key
+      // that is not a number. A union of keyed carriers needs a projection per alternative, so it is
+      // refused here and named, rather than reaching the target as an operator it does not define.
+      const indexedReceiverUnion = referenceReceiver
+        ? getIrUnionTypeCpp(referenceReceiver, context, new Set())
+        : undefined;
+      const indexedReceiverPlan = indexedReceiverUnion
+        ? getCppUnionRepresentationPlan(indexedReceiverUnion, context)
+        : undefined;
+      if (
+        indexedReceiverPlan &&
+        (indexedReceiverPlan.kind === 'multiVariant' ||
+          indexedReceiverPlan.kind === 'optionalVariant' ||
+          indexedReceiverPlan.kind === 'dualSentinelVariant')
+      ) {
+        emissionError(
+          context,
+          'indexed access on a union receiver requires one carrier: the destination stores a variant, which has no keyed lookup of its own. Read through one declared carrier, or project the union before indexing it',
+          'cpp-union-element-access-without-carrier',
+        );
+      }
       return record || expression.semantics.receivers.every((receiver) => receiver === 'object')
         ? `${object}[${index}]`
         : `${object}[static_cast<size_t>(${index})]`;
@@ -21125,7 +21148,33 @@ function emitOptionalElementExpressionCpp(
     );
     return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${projected}; }())`;
   }
-  emissionError(context, 'optional element access requires one concrete nullable indexed collection receiver');
+  if (receiverPlan?.kind === 'record') {
+    // The carrier's own keyed lookup already answers absence, so the sentinel guard is the only thing the
+    // optional chain adds: a missing receiver and a missing key are both `undefined` in the result.
+    const projected = emitCppOptionalElementLookupCpp(
+      `optional_chain_receiver.value()`,
+      emitCppRequiredRecordKeyCpp(expression.index, receiverPlan.key, context),
+      receiverPlan.elementType,
+      semantics.valueType,
+      context,
+    );
+    return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${object}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${projected}; }())`;
+  }
+  // Two different shapes reach here and they need different guidance: a union of indexable alternatives,
+  // whose storage is a variant and therefore has no keyed lookup at all, and a single receiver the element
+  // lane has no carrier for -- a row read by a variable key, a map, anything whose lookup is not the
+  // collection surface. Naming the wrong one sends the reader after a conversion that is not theirs.
+  const receiverPayload = getCppNonNullableType(semantics.receiverType, context, new Set());
+  const receiverIsUnion = receiverPayload
+    ? getIrUnionTypeCpp(receiverPayload, context, new Set()) !== undefined
+    : false;
+  emissionError(
+    context,
+    receiverIsUnion
+      ? 'optional element access requires one concrete nullable indexed collection receiver: a union receiver stores a variant, which has no keyed lookup of its own, so read through one declared carrier or project the union before indexing it'
+      : 'optional element access requires one concrete nullable indexed collection receiver: this receiver has no keyed carrier, and a row is read by a closed set of keys rather than by an arbitrary index',
+    'cpp-optional-element-access-without-collection-receiver',
+  );
 }
 
 function emitCppOptionalElementLookupCpp(
@@ -21161,14 +21210,15 @@ function getCppOptionalElementReceiverPlanCpp(
   type: Readonly<IrType>,
   context: EmitContext,
 ):
+  | Readonly<{ kind: 'record'; elementType: IrType; key: IrType }>
   | Readonly<{ kind: 'regexpExecArray' }>
   | Readonly<{ elementType?: IrType | undefined; kind: 'runtimeIndexed' }>
   | Readonly<{ kind: 'tuple'; type: Extract<IrType, { kind: 'tuple' }> }>
   | undefined {
   // Nullability and collection identity are separate facts. Strip only the receiver sentinel, then require
   // exactly one concrete collection representation: syntax-level arrays and tuples, the regexp capture
-  // carrier's checked lookup, or a runtime-planned array. A remaining union would need a variant visitor and
-  // stays refused even when every alternative happens to be indexable.
+  // carrier's checked lookup, a declared keyed carrier, or a runtime-planned array. A remaining union would
+  // need a variant visitor and stays refused even when every alternative happens to be indexable.
   const receiver = getCppNonNullableType(type, context, new Set());
   if (!receiver || receiver.kind === 'union') return undefined;
   const tuple = getIrTupleTypeCpp(receiver, context, new Set());
@@ -21177,6 +21227,12 @@ function getCppOptionalElementReceiverPlanCpp(
   if (array) return { elementType: array.element, kind: 'runtimeIndexed' };
   if (hasCppRegExpExecArrayIndexedReceiverCpp(expression, context)) return { kind: 'regexpExecArray' };
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  // A declaration that states an index signature is carried by the runtime's keyed record, whose own
+  // lookup IS the element read -- the same `.get(key)` an ambient `Record` receiver reaches. The
+  // reference planner does not categorize this program's own declaration as a collection, so the carrier
+  // is asked directly, through the helper the non-optional element lane already uses for it.
+  const record = getCppRecordTypeArgumentsCpp(receiver, context, new Set());
+  if (record) return { elementType: record.value, key: record.key, kind: 'record' };
   const representation = context.referenceRepresentationPlanner.plan(receiver, context.module);
   return representation.kind === 'represented' &&
     (representation.category === 'array' || representation.category === 'typedArray')

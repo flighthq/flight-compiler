@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/optionalElementCarrierRead.ts: optional element access requires array or fixed-tuple receiver evidence
