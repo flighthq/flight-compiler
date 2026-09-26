@@ -16270,17 +16270,54 @@ function assertCppPresentOptionalCollectionArgumentCpp(
   }
   const storageType = getCppBindingTypeCpp(argument.reference.binding.id, context);
   const union = storageType ? getIrUnionTypeCpp(storageType, context, new Set()) : undefined;
-  if (
-    !storageType ||
-    storageType.kind === 'unknown' ||
-    (union && getCppUnionRepresentationPlan(union, context).valueSlots.length !== 1)
-  ) {
+  const member = expression.callee.kind === 'property' ? expression.callee.name : 'call';
+  if (!storageType || storageType.kind === 'unknown') {
     emissionError(
       context,
-      `collection member ${expression.callee.kind === 'property' ? expression.callee.name : 'call'} argument from optional C++ storage requires one present value domain`,
+      `collection member ${member} argument from optional C++ storage requires one present value domain`,
       'cpp-collection-argument-multiple-present-domains',
     );
   }
+  if (!union) return;
+  const storagePlan = getCppUnionRepresentationPlan(union, context);
+  if (storagePlan.valueSlots.length === 1) return;
+  // The collection's element is itself a union here, and the present value is that same union: `found`
+  // is `A | B` and the target holds `A | B`, so the call passes one variant where the element is one
+  // variant. That is what the source wrote and what the target compiles, and it is the same value
+  // crossing rather than a narrowing of it.
+  const expectedPlan = expectedUnion ? getCppUnionRepresentationPlan(expectedUnion, context) : undefined;
+  if (expectedPlan && areCppUnionValueSlotsEqualCpp(storagePlan, expectedPlan)) return;
+  // Otherwise the present value has alternatives the element cannot hold. Whether that is the source's
+  // to fix depends on whether the source language accepts it at all: when every alternative is
+  // assignable to the element, the source is valid and the target simply has no lowering for the
+  // widening yet, so the refusal keeps the compiler's attribution. When some alternative is not, the
+  // call is one the source language rejects, and the author has to narrow it.
+  const everyAlternativeFits = storagePlan.valueSlots.every((slot) =>
+    context.referenceRepresentationPlanner.isStructurallyAssignable(slot.runtimeType, expectedType, context.module),
+  );
+  emissionError(
+    context,
+    `collection member ${member} argument from optional C++ storage requires one present value domain${
+      everyAlternativeFits
+        ? '; the value and the element are not one target type, and converting between them is not lowered yet'
+        : `. Narrow the value to one alternative ${member} accepts, or declare the collection over the union the value has`
+    }`,
+    'cpp-collection-argument-multiple-present-domains',
+    everyAlternativeFits ? undefined : 'source-portability',
+  );
+}
+
+// Whether two union plans name the same alternatives in the same order. The emitted `std::variant` is
+// parameterized by that order, so two plans that hold the same alternatives in different orders are two
+// different target types and cannot be passed for one another.
+function areCppUnionValueSlotsEqualCpp(
+  left: Readonly<{ valueSlots: readonly Readonly<{ targetType: string }>[] }>,
+  right: Readonly<{ valueSlots: readonly Readonly<{ targetType: string }>[] }>,
+): boolean {
+  return (
+    left.valueSlots.length === right.valueSlots.length &&
+    left.valueSlots.every((slot, index) => slot.targetType === right.valueSlots[index]?.targetType)
+  );
 }
 
 function getIrInvocationProvidedArgumentTypeCpp(

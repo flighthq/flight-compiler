@@ -38,6 +38,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'importedAmbientAlias', header: 'imported_ambient_alias.hpp' },
   { fixture: 'partialNamedShape', header: 'partial_named_shape.hpp' },
   { fixture: 'intersectionMergedShape', header: 'intersection_merged_shape.hpp' },
+  { fixture: 'collectionArgumentMatchingDomain', header: 'collection_argument_matching_domain.hpp' },
 ];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
 const runtime = resolveDependency(root, 'flight-cpp');

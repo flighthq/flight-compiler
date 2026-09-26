@@ -7896,6 +7896,98 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toBe('cpp-collection-argument-multiple-present-domains');
   });
 
+  it('passes a present union where the collection element is that same union', () => {
+    const result = lower(
+      'collection-matching-domain.ts',
+      `interface Alpha { value: number }
+       interface Beta { other: number }
+       function pick(): Alpha | Beta | undefined { return undefined; }
+       const target = new Set<Alpha | Beta>();
+       const lookup = new Map<string, Alpha | Beta>();
+       export function add(): void {
+         const found = pick();
+         if (found === undefined) return;
+         target.add(found);
+       }
+       export function put(key: string): void {
+         const value = pick();
+         if (value === undefined) return;
+         lookup.set(key, value);
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The element is the union the value has, so the call passes the present variant and projects only the
+    // absence away: the value crossing is the one the source wrote, not a narrowed copy of it.
+    expect(contents).toContain('target.add(found.value());');
+    expect(contents).toContain('lookup.set(key, value.value());');
+  });
+
+  it('attributes a collection argument the element cannot hold to the source', () => {
+    const result = lower(
+      'collection-unrelated-domain.ts',
+      `interface Alpha { value: number }
+       interface Beta { other: number }
+       function pick(): Alpha | Beta | undefined { return undefined; }
+       const target = new Set<Alpha>();
+       export function add(): void {
+         const found = pick();
+         if (found === undefined) return;
+         target.add(found);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The source language rejects this call too (Beta is not assignable to Alpha), so the author is the one
+    // who can fix it, and the message says which alternative to narrow to.
+    expect(failure.rule).toBe('cpp-collection-argument-multiple-present-domains');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('Narrow the value to one alternative add accepts');
+  });
+
+  it('keeps a collection argument whose alternatives all fit the element attributed to the compiler', () => {
+    const subtype = lower(
+      'collection-subtype-domain.ts',
+      `interface Alpha { value: number }
+       interface Beta extends Alpha { other: number }
+       function pick(): Alpha | Beta | undefined { return undefined; }
+       const target = new Set<Alpha>();
+       export function add(): void {
+         const found = pick();
+         if (found === undefined) return;
+         target.add(found);
+       }`,
+    );
+    const subtypeFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(subtype.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // Every alternative IS assignable to the element here, so the source is valid and the gap is the
+    // lowering's: the refusal keeps the compiler's attribution rather than sending a reader to edit code
+    // the source language accepts.
+    expect(subtypeFailure.rule).toBe('cpp-collection-argument-multiple-present-domains');
+    expect(subtypeFailure.classification).toBe('compiler-restriction');
+
+    const genericRead = lower(
+      'collection-generic-read.ts',
+      `interface Alpha { value: number }
+       interface Beta { other: number }
+       const store = new Map<string, Alpha | Beta>();
+       const target = new Set<Alpha | Beta>();
+       export function add(key: string): void {
+         const found = store.get(key);
+         if (found === undefined) return;
+         target.add(found);
+       }`,
+    );
+    expect(
+      captureBackendEmissionFailure(() => emitIrModuleCpp(genericRead.module, { runtimeProfile: 'flight-cpp' }))
+        .classification,
+    ).toBe('compiler-restriction');
+  });
+
   it('widens an optional value into a nullable collection union', () => {
     const texture = lowerPackage(
       '@flighthq/types',

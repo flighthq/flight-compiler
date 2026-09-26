@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/collectionArgumentMatchingDomain.ts: contextual undefined value requires one concrete Rust Option payload
