@@ -13147,6 +13147,16 @@ function emitContextualUnionExpressionInContextCpp(
         return `([&]() -> ${resultType} { auto ${source} = ${value}; if (!${source}.has_value()) return std::nullopt; return ${present}; }())`;
       }
     }
+    // An expression whose union holds a SUBSET of the destination's alternatives is a conversion the
+    // target already has the pieces for, and one the source language accepts: every alternative the value
+    // can hold is one the destination stores at the same C++ type, so the conversion is a checked rebuild
+    // -- `get_if` per held alternative, copied into the destination carrier -- rather than a gap. A source
+    // alternative the destination does not name is a different question, and one the source language
+    // rejects, so it stays with the refusal below.
+    const subsetSlots = getCppContextualUnionSubsetSlotsCpp(expressionPlan, plan);
+    if (subsetSlots) {
+      return emitCppContextualUnionSubsetCpp(expression, expressionType, union, plan, subsetSlots, context);
+    }
     const runtimeConversionGap = hasUniqueCppSemanticUnionSlotMappingCpp(expressionPlan, plan, context);
     const action = runtimeConversionGap
       ? 'The alternatives match uniquely, but no checked target-runtime conversion exists between their C++ carriers; keep both sides on the same declared union alias or add a runtime conversion contract.'
@@ -13315,6 +13325,58 @@ function haveSameCppUnionValueSlotTypesCpp(
     remaining.delete(matches[0]!);
   }
   return remaining.size === 0;
+}
+
+// The destination slot each source alternative takes, when the source union holds fewer alternatives than
+// the destination and every one of them is a destination alternative at the same C++ type. Undefined when
+// that is not the shape: a source alternative the destination cannot hold means the source language rejects
+// the conversion too, and the refusal owns it.
+function getCppContextualUnionSubsetSlotsCpp(
+  expressionPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+): readonly Readonly<{ source: number; target: number }>[] | undefined {
+  const family = getCppUnionCarrierFamilyCpp(plan.kind);
+  if (family === undefined || family !== getCppUnionCarrierFamilyCpp(expressionPlan.kind)) return undefined;
+  if (expressionPlan.valueSlots.length >= plan.valueSlots.length) return undefined;
+  // Absence is its own dimension with its own lanes: a source that admits absence and a destination that
+  // does not is a conversion the source language rejects, and the reverse already widens through `visit`.
+  if (admitsCppUnionAbsenceCpp(expressionPlan.kind) !== admitsCppUnionAbsenceCpp(plan.kind)) return undefined;
+  const mapped: { source: number; target: number }[] = [];
+  expressionPlan.valueSlots.forEach((sourceSlot, source) => {
+    const target = plan.valueSlots.findIndex((slot) => slot.targetType === sourceSlot.targetType);
+    if (target < 0) return;
+    mapped.push({ source, target });
+  });
+  return mapped.length === expressionPlan.valueSlots.length ? mapped : undefined;
+}
+
+function admitsCppUnionAbsenceCpp(kind: ReturnType<typeof getCppUnionRepresentationPlan>['kind']): boolean {
+  return kind === 'optionalSingle' || kind === 'optionalVariant';
+}
+
+function emitCppContextualUnionSubsetCpp(
+  expression: Readonly<IrExpression>,
+  expressionType: Readonly<IrType>,
+  union: Readonly<Extract<IrType, { kind: 'union' }>>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  subsetSlots: readonly Readonly<{ source: number; target: number }>[],
+  context: EmitContext,
+): string {
+  context.includes.add('variant');
+  context.includes.add('stdexcept');
+  if (admitsCppUnionAbsenceCpp(plan.kind)) context.includes.add('optional');
+  const converted = getGeneratedTargetName('convertedUnion', context);
+  const carrier = admitsCppUnionAbsenceCpp(plan.kind)
+    ? `std::optional<${emitUnionTypeCpp(union, context)}>`
+    : emitUnionTypeCpp(union, context);
+  const present = admitsCppUnionAbsenceCpp(plan.kind) ? `${converted}.value()` : converted;
+  const branches = subsetSlots.map((slots) => {
+    const sourceSlot = plan.valueSlots[slots.target]!;
+    const constructed = emitCppUnionValueConstruction('*alternative', sourceSlot.targetType, union, plan.kind, context);
+    return `if (const auto* alternative = std::get_if<${sourceSlot.targetType}>(&${present})) return ${constructed};`;
+  });
+  const absence = admitsCppUnionAbsenceCpp(plan.kind) ? [`if (!${converted}.has_value()) return std::nullopt;`] : [];
+  return `([&]() -> ${carrier} { const auto& ${converted} = ${emitExpression(expression, context, expressionType, false)}; ${[...absence, ...branches].join(' ')} throw std::logic_error("source union alternative is not one the destination stores"); }())`;
 }
 
 function hasUniqueCppSemanticUnionSlotMappingCpp(

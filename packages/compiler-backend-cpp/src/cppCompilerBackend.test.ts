@@ -1865,6 +1865,52 @@ describe('createCppCompilerBackend', () => {
     });
   });
 
+  it('converts a union holding a subset of the destination alternatives in every position', () => {
+    const result = lower(
+      'contextual-union-subset.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       interface Gamma { c: number }
+       interface Holder { slot: Alpha | Beta | Gamma }
+       function take(_value: Alpha | Beta | Gamma): number { return 1; }
+       export function pass(value: Alpha | Beta): number { return take(value); }
+       export function read(value: Alpha | Beta): Alpha | Beta | Gamma { return value; }
+       export function put(holder: Holder, value: Alpha | Beta): void { holder.slot = value; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Every alternative the value can hold is one the destination stores at the same C++ type, so the
+    // conversion is a checked rebuild: `get_if` per held alternative, copied into the destination carrier,
+    // and an alternative the value cannot hold gets no branch. The source language accepts the conversion,
+    // so it is the target's to make rather than the source's to restate.
+    expect(contents).toContain('([&]() -> std::variant<flight::Ref<Alpha>, flight::Ref<Gamma>, flight::Ref<Beta>>');
+    expect(contents).toContain('std::get_if<flight::Ref<Alpha>>(&converted_union)');
+    expect(contents).toContain('std::get_if<flight::Ref<Beta>>(&converted_union)');
+    expect(contents).not.toContain('std::get_if<flight::Ref<Gamma>>');
+    expect(contents).toContain('(holder->slot = ([&]() -> std::variant<flight::Ref<Alpha>');
+    expect(contents).not.toContain('cpp-contextual-union-inequivalent');
+  });
+
+  it('keeps a union holding an alternative the destination cannot take attributed to the source', () => {
+    const result = lower(
+      'contextual-union-unheld.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       interface Delta { d: number }
+       function take(_value: Alpha | Beta): number { return 1; }
+       export function pass(value: Alpha | Delta): number { return take(value as Alpha | Delta); }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // Delta is not one the destination stores, and the source language rejects the conversion too, so the
+    // author is the one who narrows or converts the expression.
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('Narrow or convert the source expression');
+  });
+
   it('narrows a union carrier to the alternatives the value holds', () => {
     const result = lower(
       'sub-union-assertion.ts',
