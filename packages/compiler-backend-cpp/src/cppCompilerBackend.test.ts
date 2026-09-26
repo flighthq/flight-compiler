@@ -14090,6 +14090,11 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
        }
        export function readReference(points: Points | Other, key: string): Point | number {
          return points[key];
+       }
+       function nextCarrier(value: Fields | Other): Fields | Other { return value; }
+       function nextKey(): string { return 'key'; }
+       export function readOrdered(fields: Fields | Other): Scalar | number {
+         return nextCarrier(fields)[nextKey()];
        }`,
     );
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -14118,6 +14123,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(contents).not.toContain('static_cast<size_t>');
     expect(contents).not.toContain('.get(keyed_lookup).value()[');
     expect(contents).not.toContain('keyed_carrier[keyed_lookup]');
+    expect(contents).toMatch(
+      /const auto& keyed_receiver(?:_[0-9]+)? = next_carrier\(fields\); const auto keyed_lookup(?:_[0-9]+)? = next_key\(\);/u,
+    );
   });
 
   it('keeps a union of carriers that disagree on the key domain refused', () => {
@@ -14140,6 +14148,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(keyDomain.rule).toBe('cpp-union-element-access-without-carrier');
     expect(keyDomain.classification).toBe('compiler-restriction');
     expect(keyDomain.message).toContain('over one key domain');
+
+    // A nullable element uses optional storage rather than a directly visitable variant. Until the
+    // projection has a sentinel-flattening proof, it stays refused instead of sending std::optional to
+    // std::visit and producing invalid C++.
+    const nullableElement = refusal(
+      'union-carrier-nullable-element.ts',
+      `interface Maybe { [name: string]: number | undefined }
+       interface Text { [name: string]: string }
+       export function read(value: Maybe | Text, key: string): number | string | undefined {
+         return value[key];
+       }`,
+    );
+    expect(nullableElement.rule).toBe('cpp-union-element-access-without-carrier');
 
     // A union of arrays is the other shape the optional element lane has no projection for: an array's
     // lookup is not a record's, and the receiver's kind is named rather than the reason invented.

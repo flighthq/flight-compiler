@@ -21281,6 +21281,7 @@ function emitCppUnionKeyedCarrierProjectionCpp(
   const payloadType = emitOptionalChainPayloadTypeCpp(valueType, context);
   const carrierName = getGeneratedTargetName('keyedCarrier', context);
   const carrierType = getGeneratedTargetName('keyedCarrierType', context);
+  const receiverName = getGeneratedTargetName('keyedReceiver', context);
   const keyName = getGeneratedTargetName('keyedLookup', context);
   const branches = plan.valueSlots.map((slot, branchIndex) => {
     const elementName = `${getGeneratedTargetName('keyedValue', context)}${branchIndex === 0 ? '' : String(branchIndex)}`;
@@ -21312,7 +21313,9 @@ function emitCppUnionKeyedCarrierProjectionCpp(
       : `else { static_assert(!sizeof(${carrierType}), "unproved keyed carrier alternative"); }`;
   if (missing === 'answersAbsence') context.includes.add('optional');
   const returns = missing === 'answersAbsence' ? `std::optional<${payloadType}>` : payloadType;
-  return `([&]() -> ${returns} { const auto ${keyName} = ${emitCppRequiredRecordKeyCpp(index, carriers[0]!.key, context)}; return std::visit([&](const auto& ${carrierName}) -> ${returns} { using ${carrierType} = std::decay_t<decltype(${carrierName})>; ${branches.join(' ')} ${tail} }, ${receiver}); }())`;
+  // Element access evaluates its receiver before its key. Bind both once, in that order, before visiting:
+  // besides preserving side effects this keeps a produced carrier alive for the whole projection.
+  return `([&]() -> ${returns} { const auto& ${receiverName} = ${receiver}; const auto ${keyName} = ${emitCppRequiredRecordKeyCpp(index, carriers[0]!.key, context)}; return std::visit([&](const auto& ${carrierName}) -> ${returns} { using ${carrierType} = std::decay_t<decltype(${carrierName})>; ${branches.join(' ')} ${tail} }, ${receiverName}); }())`;
 }
 
 // The one branch body of a keyed projection: the carrier's element, placed in the payload the declaration
@@ -21328,7 +21331,12 @@ function emitCppUnionKeyedCarrierBranchCpp(
 ): string | undefined {
   const elementUnion = getIrUnionTypeCpp(element, context, new Set());
   if (elementUnion) {
-    const elementSlots = getCppUnionRepresentationPlan(elementUnion, context).valueSlots;
+    const elementPlan = getCppUnionRepresentationPlan(elementUnion, context);
+    // Only carriers whose storage itself is a variant can be opened directly. Optional union plans wrap
+    // that variant (or one value) in std::optional, so visiting the storage would be invalid C++ and their
+    // sentinel mapping needs a separate flattening proof.
+    if (elementPlan.kind !== 'multiVariant' && elementPlan.kind !== 'dualSentinelVariant') return undefined;
+    const elementSlots = elementPlan.valueSlots;
     if (
       elementSlots.length === 0 ||
       !elementSlots.every((slot) => valuePlan.valueSlots.some((target) => target.targetType === slot.targetType))
