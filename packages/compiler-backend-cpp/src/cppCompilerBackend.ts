@@ -11472,6 +11472,18 @@ function emitUnionMemberAssertionCpp(
     if (subUnion && assertedUnion) {
       return emitCppSubUnionAssertionCpp(assertedUnion, plan, assertedPlan!, subUnion, expression, context);
     }
+    // The same alternatives with the sentinel spelled differently is not a narrowing of an alternative but
+    // a move of the absence marker, and it is exact in both directions.
+    if (assertedUnion) {
+      const sentinelConversion = emitCppSentinelAssertionConversionCpp(
+        expression,
+        plan,
+        assertedUnion,
+        assertedPlan!,
+        context,
+      );
+      if (sentinelConversion) return sentinelConversion;
+    }
   }
   if (alternatives.length !== 1) {
     // A refusal here is not automatically the source's. An assertion naming a type the value could hold
@@ -11516,6 +11528,11 @@ function emitUnionMemberAssertionCpp(
     // The alternatives are matched by target type, so naming the target and the types it was
     // compared against is what makes the refusal readable without a debugger: the asserted target
     // is often the whole optional the union already spells, compared against a slot's stored value.
+    // The projected-implementor case is asked FIRST: a class that implements an alternative is also
+    // structurally assignable to it, so the generic clause below would claim the narrowing is merely not
+    // lowered yet when what actually blocks it is identity the carrier never held.
+    const projectedImplementor =
+      !namesSourceUnion && isCppProjectedInterfaceImplementorAssertionCpp(assertedType, assertedPlan, plan, context);
     emissionError(
       context,
       `type assertion target must identify exactly one C++ variant alternative: target ${assertedTarget} against [${plan.valueSlots
@@ -11523,9 +11540,11 @@ function emitUnionMemberAssertionCpp(
         .join(', ')}]${
         namesSourceUnion
           ? "; the assertion names the value's own union type, which selects no alternative, so narrow it to an alternative the value can hold"
-          : relatedToAnAlternative
-            ? '; the value can hold the target through an alternative the target cannot narrow from, and that narrowing is not lowered yet'
-            : ''
+          : projectedImplementor
+            ? "; the value reaches this slot as an interface row projected from the instance, so the instance's own identity is not carried and no cast can recover it -- narrowing back needs identity the carrier does not hold"
+            : relatedToAnAlternative
+              ? '; the value can hold the target through an alternative the target cannot narrow from, and that narrowing is not lowered yet'
+              : ''
       }`,
       'cpp-type-assertion-unidentified',
       // No override for the compiler's own gap: the failure's default attribution IS compiler-restriction,
@@ -13939,6 +13958,102 @@ function acceptsCppContextualCallableVariantMemberCpp(
   if (!emitUnionTypeCpp(union, context).startsWith('std::variant<')) return false;
   const targetType = emitCppParameterTypeCpp(target.type, target.rest, context);
   return plan.valueSlots.some((slot) => slot.targetType === targetType);
+}
+
+// An assertion whose alternatives are the value's own, with the sentinel spelled differently.
+//
+// `Slot | undefined` asserted as `Slot` claims the value is present: the carrier's optional is unwrapped
+// and an absence that reaches it throws, which is the same checked selection the alternative narrowings
+// make rather than a reinterpretation. The other direction asserts the presence the value already has, so
+// the variant is wrapped and nothing is invented. Both are exact -- every alternative keeps its own C++
+// type, in the same order, so nothing is converted, copied, or materialized -- and neither involves a cast.
+//
+// Only plans with several alternatives are handled here: a single alternative already has a direct
+// presence spelling, and this conversion would otherwise restate it.
+function emitCppSentinelAssertionConversionCpp(
+  expression: Readonly<IrExpression>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  assertedUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (plan.valueSlots.length < 2 || plan.valueSlots.length !== assertedPlan.valueSlots.length) return undefined;
+  if (!plan.valueSlots.every((slot, index) => slot.targetType === assertedPlan.valueSlots[index]?.targetType)) {
+    return undefined;
+  }
+  // A value the flow already proved present is unwrapped where it is read, so unwrapping it again here
+  // would ask an ordinary variant for an optional's member. That narrowing is the source's own claim and
+  // is not restated; the refusal below keeps it.
+  if (
+    (expression.kind === 'identifier' || expression.kind === 'element' || expression.kind === 'property') &&
+    expression.presence === 'narrowedPresent'
+  ) {
+    return undefined;
+  }
+  // Only the direction between a present-only carrier and an optional one is exact. A dual-sentinel
+  // carrier stores its sentinels as variant alternatives, so an absence crossing that boundary is a
+  // mapping the assertion asks for and this conversion does not make; it keeps its refusal.
+  const storesAbsenceAsOptional = (kind: ReturnType<typeof getCppUnionRepresentationPlan>['kind']): boolean =>
+    kind === 'optionalSingle' || kind === 'optionalVariant';
+  const sourceIsPresentOnly = plan.kind === 'multiVariant';
+  const assertsAbsenceFree = assertedPlan.kind === 'multiVariant';
+  if (sourceIsPresentOnly === assertsAbsenceFree) return undefined;
+  if (!sourceIsPresentOnly && !storesAbsenceAsOptional(plan.kind)) return undefined;
+  if (!assertsAbsenceFree && !storesAbsenceAsOptional(assertedPlan.kind)) return undefined;
+  context.includes.add('optional');
+  const assertedTarget = emitUnionTypeCpp(assertedUnion, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set(),
+  });
+  const emitted = emitExpression(expression, context, undefined, false);
+  if (sourceIsPresentOnly) {
+    // The value is present and the assertion says so more widely: the variant becomes the optional's
+    // payload. Nothing about the alternatives changes, so this is the carrier's own conversion.
+    return `static_cast<${assertedTarget}>(${emitted})`;
+  }
+  const sourceName = getGeneratedTargetName('assertedSource', context);
+  context.includes.add('stdexcept');
+  return `([&]() -> ${assertedTarget} { auto ${sourceName} = ${emitted}; if (!${sourceName}.has_value()) throw std::logic_error("asserted union alternative is not present in the value"); return ${sourceName}.value(); }())`;
+}
+
+// Whether the value reaches this slot as a class instance PROJECTED into an interface row.
+//
+// An interface's members are emitted as an independent struct, so a class instance stored in an interface
+// slot is not the instance any more: the emitter builds a fresh row from its members, and the instance's
+// own identity is gone before an assertion runs. Narrowing back to the class would need a type tag that
+// carrier does not hold, which is why this case is named apart from a narrowing the lowering merely lacks.
+function isCppProjectedInterfaceImplementorAssertionCpp(
+  assertedType: Readonly<IrType>,
+  assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan> | undefined,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): boolean {
+  // The asserted spelling is often the whole optional -- `ConcreteRuntime | undefined` -- so the class is
+  // read from the asserted plan's slots when there is one, and from the type itself otherwise.
+  const assertedAlternatives = assertedPlan ? assertedPlan.valueSlots.map((slot) => slot.runtimeType) : [assertedType];
+  return assertedAlternatives.some((asserted) => {
+    if (asserted.kind !== 'named' || asserted.reference.kind !== 'binding') return false;
+    const owner = getCppNamedTypeDeclarationOwnerCpp(
+      asserted,
+      getCppNamedTypeBindingModuleCpp(asserted, context),
+      context,
+    );
+    if (owner?.declaration.kind !== 'class' || owner.declaration.implements.length === 0) return false;
+    const implemented = new Set(
+      owner.declaration.implements.flatMap((declared) =>
+        declared.reference.kind === 'binding' ? [declared.reference.binding.id] : [],
+      ),
+    );
+    return plan.valueSlots.some((slot) =>
+      slot.sourceAlternatives.some(
+        (alternative) =>
+          alternative.kind === 'named' &&
+          alternative.reference.kind === 'binding' &&
+          implemented.has(alternative.reference.binding.id),
+      ),
+    );
+  });
 }
 
 // Whether a source parameter accepts every argument the contextual one can supply.
@@ -21164,7 +21279,13 @@ function emitOptionalElementExpressionCpp(
   }
   const tupleIndex =
     receiverPlan?.kind === 'tuple' ? getElementAccessTupleIndexCpp(expression, context, receiverPlan.type) : undefined;
-  const payload = emitOptionalChainPayloadTypeCpp(semantics.valueType, context);
+  // The present part of the declared result: a read may name several present members as well as the
+  // `undefined` it answers, so the sentinel is stripped here rather than asking for one member. Asking for
+  // one would refuse the result the read itself declares, before any carrier has been considered.
+  const payload = emitType(
+    getCppNonNullableType(semantics.valueType, context, new Set()) ?? semantics.valueType,
+    context,
+  );
   const object = emitOptionalChainReceiverCpp(expression.object, context);
   const index = emitExpression(expression.index, context);
   context.includes.add('optional');
@@ -21264,7 +21385,12 @@ function getCppUnionElementLookupCpp(
   const record = getCppRecordTypeArgumentsCpp(type, context, new Set());
   if (record) return { element: record.value, key: record.key, kind: 'record' };
   const array = getIrArrayTypeCpp(type, context, new Set());
-  return array ? { element: array.element, kind: 'array' } : undefined;
+  if (!array) return undefined;
+  // An array whose element carries its own absence -- `Array<number | null | undefined>` -- stores a
+  // variant per element, and its sentinels are not members of the payload the read declares. Landing one
+  // there needs a flattening proof this projection does not make, so the read is refused and the row above
+  // says why rather than emitting an element into an alternative it does not have.
+  return hasIrTypeAbsentMember(array.element) ? undefined : { element: array.element, kind: 'array' };
 }
 
 // Reads one key from a union of keyed carriers by projecting each alternative's own lookup.

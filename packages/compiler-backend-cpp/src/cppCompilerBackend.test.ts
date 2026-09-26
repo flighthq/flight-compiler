@@ -14268,6 +14268,79 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(plain).toContain('requires { indexed_receiver.get_index(indexed_index); }');
   });
 
+  it('moves the absence marker when an assertion names the value own alternatives', () => {
+    const result = lower(
+      'sentinel-assertion-conversion.ts',
+      `type Slot = string | number;
+       interface Point { readonly x: number }
+       type PointSlot = Point | number;
+       export function present(value: Slot | undefined): Slot { return value as Slot; }
+       export function widen(value: Slot): Slot | undefined { return value as Slot | undefined; }
+       export function presentRecord(value: PointSlot | undefined): PointSlot { return value as PointSlot; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The alternatives are the value's own and only the absence marker moves. Claiming presence unwraps the
+    // carrier's optional and throws if an absence reaches it -- the same checked selection the alternative
+    // narrowings make -- while asserting the presence the value already has wraps it and invents nothing.
+    expect(contents).toMatch(
+      /if \(!asserted_source(?:_[0-9]+)?\.has_value\(\)\) throw std::logic_error\("asserted union alternative is not present in the value"\)/u,
+    );
+    expect(contents).toContain('return static_cast<std::optional<std::variant<double, flight::String>>>(value);');
+    // No alternative is converted, nothing is copied, and no cast is involved.
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('structural_ref_cast');
+    expect(contents).not.toContain('make_ref');
+  });
+
+  it('keeps a class that implements an interface alternative refused, and names the obstacle', () => {
+    const refusal = (file: string, source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // A class instance reaches an interface slot as a PROJECTED row -- the emitter builds a fresh interface
+    // value from the instance's members -- so the instance's own identity is gone before an assertion runs.
+    // The refusal says that rather than claiming a narrowing that is merely not lowered yet, because a
+    // lowering is not what is missing: the carrier holds no identity for a cast to follow.
+    const implementor = refusal(
+      'interface-implementor-assertion.ts',
+      `interface EntityRuntime { readonly kind: string }
+       interface Other { readonly tag: number }
+       class ConcreteRuntime implements EntityRuntime { readonly kind: string = 'c'; }
+       export function narrow(value: EntityRuntime | Other): ConcreteRuntime {
+         return value as ConcreteRuntime;
+       }`,
+    );
+    expect(implementor.rule).toBe('cpp-type-assertion-unidentified');
+    expect(implementor.classification).toBe('compiler-restriction');
+    expect(implementor.message).toContain(
+      'the value reaches this slot as an interface row projected from the instance',
+    );
+    expect(implementor.message).not.toContain('that narrowing is not lowered yet');
+
+    // The same obstacle named through the optional spelling.
+    const optionalImplementor = refusal(
+      'interface-implementor-optional-assertion.ts',
+      `interface EntityRuntime { readonly kind: string }
+       class ConcreteRuntime implements EntityRuntime { readonly kind: string = 'c'; }
+       export function narrow(value: EntityRuntime | undefined): ConcreteRuntime | undefined {
+         return value as ConcreteRuntime | undefined;
+       }`,
+    );
+    expect(optionalImplementor.message).toContain('identity the carrier does not hold');
+
+    // A dual-sentinel carrier stores its sentinels as variant alternatives, so an absence crossing that
+    // boundary is a mapping the assertion asks for; it keeps its refusal rather than unwrapping a variant
+    // as though it were an optional.
+    const dualSentinel = refusal(
+      'dual-sentinel-assertion.ts',
+      `type Slot = string | number;
+       export function present(value: Slot | null | undefined): Slot { return value as Slot; }`,
+    );
+    expect(dualSentinel.rule).toBe('cpp-type-assertion-unidentified');
+  });
+
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
