@@ -9453,6 +9453,15 @@ function isCppExactCallableObjectFieldAssignmentCpp(
           context,
         )
       : undefined;
+  const ownerTypeArgumentsAgree =
+    projectionObject?.kind === 'named' &&
+    receiverType?.kind === 'named' &&
+    projectionObject.typeArguments.length === receiverType.typeArguments.length &&
+    projectionObject.typeArguments.every(
+      (argument, index) =>
+        normalizeCompilerStructuralValueCanonical(argument) ===
+        normalizeCompilerStructuralValueCanonical(receiverType.typeArguments[index]!),
+    );
   return Boolean(
     projection &&
     receiverType &&
@@ -9464,7 +9473,8 @@ function isCppExactCallableObjectFieldAssignmentCpp(
         'binding' in projectionOwner.declaration &&
         'binding' in receiverOwner.declaration &&
         projectionOwner.declaration.binding.id === receiverOwner.declaration.binding.id &&
-        getCppModuleIdentityKey(projectionOwner.module) === getCppModuleIdentityKey(receiverOwner.module))),
+        getCppModuleIdentityKey(projectionOwner.module) === getCppModuleIdentityKey(receiverOwner.module) &&
+        ownerTypeArgumentsAgree)),
   );
 }
 
