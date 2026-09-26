@@ -1865,6 +1865,74 @@ describe('createCppCompilerBackend', () => {
     });
   });
 
+  it('identifies the one class alternative the asserted type inherits from', () => {
+    const result = lower(
+      'class-heritage-assertion.ts',
+      `class BaseShape { id = ''; }
+       class DerivedShape extends BaseShape { extra = 0; }
+       interface Other { tag: number }
+       export function narrow(value: BaseShape | Other): DerivedShape { return value as DerivedShape; }
+       export function widen(value: DerivedShape | Other): BaseShape { return value as BaseShape; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // A class that extends a class becomes C++ inheritance, so the cast between them is the one the emitter
+    // already performs for a one-value union -- and only the one related alternative is selected.
+    expect(contents).toContain('std::static_pointer_cast<DerivedShape>(std::get<flight::Ref<BaseShape>>(value))');
+    expect(contents).toContain('std::static_pointer_cast<BaseShape>(std::get<flight::Ref<DerivedShape>>(value))');
+  });
+
+  it('refuses an interface heritage narrowing the target has no cast for, as the compiler gap it is', () => {
+    const result = lower(
+      'interface-heritage-assertion.ts',
+      `interface BaseShape { id: string }
+       interface DerivedShape extends BaseShape { extra: number }
+       interface Other { tag: number }
+       export function narrow(value: BaseShape | Other): DerivedShape { return value as DerivedShape; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // Heritage between interfaces is emitted as independent structs, so a pointer cast between them does not
+    // compile. The source is valid, so the refusal says the narrowing is not lowered rather than sending a
+    // reader to restate a type the source language accepts.
+    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('the value can hold the target through an alternative');
+    expect(failure.message).toContain('that narrowing is not lowered yet');
+  });
+
+  it('keeps an assertion that relates to no alternative attributed to the source', () => {
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('unrelated-assertion.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // The value cannot hold the target at all, in the source language either, so the source has to restate
+    // the type it means.
+    const unrelated = refusal(
+      `interface Alpha { a: number }
+       interface Beta { b: string }
+       interface Gamma { g: boolean }
+       export function narrow(value: Alpha | Beta): Gamma { return value as Gamma; }`,
+    );
+    expect(unrelated.rule).toBe('cpp-type-assertion-unidentified');
+    expect(unrelated.classification).toBe('source-portability');
+
+    // Two slots that both relate to the target cannot be told apart without a runtime test the source did
+    // not write, so the assertion stays refused -- even though the source language accepts it, which is why
+    // this one keeps the compiler's attribution.
+    const ambiguous = refusal(
+      `class Root { id = ''; }
+       class Middle extends Root { mid = 0; }
+       class Leaf extends Middle { leaf = false; }
+       export function narrow(value: Root | Middle): Leaf { return value as Leaf; }`,
+    );
+    expect(ambiguous.rule).toBe('cpp-type-assertion-unidentified');
+    expect(ambiguous.classification).toBe('compiler-restriction');
+  });
+
   it('identifies an asserted alternative spelled through an alias chain', () => {
     const result = lower(
       'aliased-union-member.ts',

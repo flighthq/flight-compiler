@@ -1,0 +1,1 @@
+cpp emission failed for @flighthq/golden/packages/golden/src/assertionInterfaceHeritageUnlowered.ts: type assertion target must identify exactly one C++ variant alternative: target flight::Ref<DerivedShape> against [flight::Ref<BaseShape>, flight::Ref<Other>]; the value can hold the target through an alternative the target cannot narrow from, and that narrowing is not lowered yet

@@ -51,6 +51,7 @@ import type {
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
   CompilerTypeValueIdentityAnalysis,
+  IrTypeReference,
   IrResolvedMemberReceiver,
   CppCompilerBackendOptions,
   CppCompilerExternalBindingManifest,
@@ -11077,13 +11078,37 @@ function emitUnionMemberAssertionCpp(
       narrowing !== undefined ||
       structuralNarrowing ||
       slot.targetType === assertedTarget ||
-      slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)),
+      slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)) ||
+      isCppNominalHeritageUnionSlotCpp(slot, assertedType, context),
   );
   // An assertion that names the value's own union type selects no alternative: `value as Slot` where the
   // value already is a `Slot` asks for a projection the source did not describe, and the refusal has to
   // say so rather than list the alternatives as though one of them had been meant.
   const namesSourceUnion = sourceTarget !== undefined && sourceTarget === assertedTarget;
   if (alternatives.length !== 1) {
+    // A refusal here is not automatically the source's. An assertion naming a type the value could hold
+    // through one of its alternatives is one the source language accepts, and the target has no lowering
+    // for the narrowing -- which is the compiler's gap and is reported as one. Only an assertion whose
+    // target relates to no alternative at all, or one that names the value's own union type, is a claim
+    // about the source's own types that the source has to restate.
+    const relatedToAnAlternative =
+      !namesSourceUnion &&
+      plan.valueSlots.some(
+        (slot) =>
+          slot.sourceAlternatives.some(
+            (alternative) =>
+              context.referenceRepresentationPlanner.isStructurallyAssignable(
+                assertedType,
+                alternative,
+                context.module,
+              ) ||
+              context.referenceRepresentationPlanner.isStructurallyAssignable(
+                alternative,
+                assertedType,
+                context.module,
+              ),
+          ) || isCppNominalHeritageUnionSlotCpp(slot, assertedType, context),
+      );
     // The alternatives are matched by target type, so naming the target and the types it was
     // compared against is what makes the refusal readable without a debugger: the asserted target
     // is often the whole optional the union already spells, compared against a slot's stored value.
@@ -11091,11 +11116,17 @@ function emitUnionMemberAssertionCpp(
       context,
       `type assertion target must identify exactly one C++ variant alternative: target ${assertedTarget} against [${plan.valueSlots
         .map((slot) => slot.targetType)
-        .join(
-          ', ',
-        )}]${namesSourceUnion ? "; the assertion names the value's own union type, which selects no alternative, so narrow it to an alternative the value can hold" : ''}`,
+        .join(', ')}]${
+        namesSourceUnion
+          ? "; the assertion names the value's own union type, which selects no alternative, so narrow it to an alternative the value can hold"
+          : relatedToAnAlternative
+            ? '; the value can hold the target through an alternative the target cannot narrow from, and that narrowing is not lowered yet'
+            : ''
+      }`,
       'cpp-type-assertion-unidentified',
-      'source-portability',
+      // No override for the compiler's own gap: the failure's default attribution IS compiler-restriction,
+      // and only the source-portability cases say so explicitly.
+      relatedToAnAlternative ? undefined : 'source-portability',
     );
   }
   // This path owns projection out of the binding's declared union carrier. An identifier can also
@@ -11188,6 +11219,99 @@ function cppStructuralRowContainsPlanCpp(
 // holding `Ref<Base>` states the same one. The first needs a cast, the second does not, and both are the
 // same slot. A side that is not a reference spelling -- a type parameter, a scalar -- has no pointer
 // cast and no answer here, so those still refuse rather than emitting something that cannot compile.
+// Whether the asserted type is related to this slot by the heritage the source declares: the slot's
+// alternative is a base the asserted type derives from (`value as Derived` over a `Base` alternative) or a
+// type that derives from the asserted one (`value as Base` over a `Derived` alternative). Both directions
+// are the pointer cast this emitter already performs for a one-value union, so the same lane answers.
+//
+// The proof is NOMINAL and taken from `extends` rather than from a structural resemblance: two interfaces
+// with identical members are not related, and casting between them would reinterpret one object as another.
+// Two related slots are also refused, by the caller: which alternative is active at runtime is a question
+// the source did not answer with a test, and the target does not have one to answer it with.
+//
+// Every link must be a CLASS. A class that extends a class is emitted as real C++ inheritance, so the
+// pointer cast between the two is a cast the target compiler accepts; heritage between interfaces is
+// emitted as independent structs that repeat their bases' members, and a cast between those does not
+// compile at all. The check therefore asks the declarations, not the shape.
+function isCppNominalHeritageUnionSlotCpp(
+  slot: ReturnType<typeof getCppUnionRepresentationPlan>['valueSlots'][number],
+  assertedType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  // Only a reference can be pointer-cast, and only a reference's alternative can be another reference: a
+  // structural slot has its own proven extension lane, and reinterpreting a minted shape as a named type is
+  // not a cast this backend makes.
+  if (getCppReferenceElementTypeNameCpp(slot.targetType) === undefined) return false;
+  if (
+    getCppReferenceElementTypeNameCpp(
+      emitCppAliasResolvedValueTypeCpp(assertedType, {
+        ...context,
+        anonymousStructs: new Map(),
+        includes: new Set(),
+      }),
+    ) === undefined
+  ) {
+    return false;
+  }
+  if (!isCppClassDeclarationCpp(assertedType, context)) return false;
+  const assertedBases = collectCppDeclaredBaseBindingIdsCpp(assertedType, context);
+  return slot.sourceAlternatives.some((alternative) => {
+    if (!isCppClassDeclarationCpp(alternative, context)) return false;
+    const alternativeId = getCppNamedBindingIdCpp(alternative);
+    return (
+      assertedBases.has(alternativeId ?? '') ||
+      collectCppDeclaredBaseBindingIdsCpp(alternative, context).has(getCppNamedBindingIdCpp(assertedType) ?? '')
+    );
+  });
+}
+
+// The binding identities a type's own declaration names as its bases, transitively, by the heritage the
+// source wrote. A base reached through an import contributes the id the import binding has, which is the id
+// a union alternative spelled from the same import also carries; a base this walk cannot resolve -- a
+// re-export barrel, a declaration outside the module graph -- contributes only what its own reference
+// names, so an unresolvable chain refuses rather than guesses.
+function collectCppDeclaredBaseBindingIdsCpp(type: Readonly<IrType>, context: EmitContext): ReadonlySet<string> {
+  const bases = new Set<string>();
+  const visited = new Set<string>();
+  const queue: Readonly<IrTypeReference>[] = [...getCppClassHeritageReferencesCpp(type, context)];
+  while (queue.length > 0) {
+    const reference = queue.pop();
+    if (reference === undefined) continue;
+    const id = getCppReferenceBindingIdCpp(reference);
+    if (id === undefined || visited.has(id)) continue;
+    visited.add(id);
+    bases.add(id);
+    queue.push(...getCppClassHeritageReferencesCpp(reference, context));
+  }
+  return bases;
+}
+
+// The class bases a declaration names. An interface in the chain ends it: heritage between interfaces is
+// emitted as independent structs, so a chain that passes through one is not a chain of casts.
+function getCppClassHeritageReferencesCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): readonly Readonly<IrTypeReference>[] {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return [];
+  const declaration = context.directBindingOwners.get(type.reference.binding.id)?.declaration;
+  if (declaration?.kind !== 'class') return [];
+  return declaration.extends ? [declaration.extends] : [];
+}
+
+function isCppClassDeclarationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  const declaration = context.directBindingOwners.get(type.reference.binding.id)?.declaration;
+  return declaration?.kind === 'class';
+}
+
+function getCppNamedBindingIdCpp(type: Readonly<IrType>): string | undefined {
+  return type.kind === 'named' && type.reference.kind === 'binding' ? type.reference.binding.id : undefined;
+}
+
+function getCppReferenceBindingIdCpp(reference: Readonly<IrTypeReference>): string | undefined {
+  return reference.reference.kind === 'binding' ? reference.reference.binding.id : undefined;
+}
+
 function getCppReferenceNarrowingCpp(fromTarget: string, toTarget: string): Readonly<{ cast?: string }> | undefined {
   const from = getCppReferenceElementTypeNameCpp(fromTarget);
   const to = getCppReferenceElementTypeNameCpp(toTarget);
