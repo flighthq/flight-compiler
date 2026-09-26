@@ -11629,6 +11629,7 @@ function getCppSubUnionAssertionSlotsCpp(
     return undefined;
   }
   const mapped: { cast?: string | undefined; source: number; target: number }[] = [];
+  let ambiguous = false;
   plan.valueSlots.forEach((sourceSlot, source) => {
     // The asserted alternative the value stores is the one its branch answers directly.
     const exact = assertedPlan.valueSlots.findIndex((slot) => slot.targetType === sourceSlot.targetType);
@@ -11653,17 +11654,24 @@ function getCppSubUnionAssertionSlotsCpp(
     // One inherited alternative per stored one: with two, the branch cast would have to choose which of them
     // the value is, and the variant index it tests cannot tell a deeper class from the one it derives from.
     // Refusing keeps the assertion where it was rather than casting to the wrong one of the two.
-    if (inherited.length !== 1) return;
+    if (inherited.length === 0) return;
+    if (inherited.length > 1) {
+      ambiguous = true;
+      return;
+    }
     const target = inherited[0]!;
     const cast = getCppReferenceElementTypeNameCpp(assertedPlan.valueSlots[target]!.targetType);
-    if (cast === undefined) return;
+    if (cast === undefined) {
+      ambiguous = true;
+      return;
+    }
     mapped.push({ cast, source, target });
   });
   // A source alternative the asserted union does not name is one the assertion claims cannot be active: it
   // gets no branch, and a value that is holding it falls through to the throw. An assertion naming NO
   // alternative the value can hold is a claim the source recants rather than a carrier to rebuild, and that
   // stays with the refusal.
-  return mapped.length > 0 ? mapped : undefined;
+  return !ambiguous && mapped.length > 0 ? mapped : undefined;
 }
 
 function emitCppSubUnionAssertionCpp(

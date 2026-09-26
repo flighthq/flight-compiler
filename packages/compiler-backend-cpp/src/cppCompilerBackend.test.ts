@@ -2173,8 +2173,8 @@ describe('createCppCompilerBackend', () => {
        class DerivedShape extends BaseShape { extra = 0; }
        class DeeperShape extends DerivedShape { deep = 0; }
        interface Other { tag: number }
-       export function narrow(value: BaseShape | Other): DerivedShape | DeeperShape {
-         return value as DerivedShape | DeeperShape;
+       export function narrow(value: BaseShape | Other): DerivedShape | DeeperShape | Other {
+         return value as DerivedShape | DeeperShape | Other;
        }`,
     );
     expect(ambiguous.rule).toBe('cpp-type-assertion-unidentified');
