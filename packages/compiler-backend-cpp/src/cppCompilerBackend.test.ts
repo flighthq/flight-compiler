@@ -14548,6 +14548,9 @@ Resolver make_resolver(TextureRef texture) {
        }
        export function readonlyNumbers(values: number[] | undefined): readonly number[] | undefined {
          return values as readonly number[] | undefined;
+       }
+       export function readonlyPlain(values: Point[]): readonly Point[] {
+         return values as readonly Point[];
        }`,
     );
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -14561,7 +14564,11 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).toMatch(
       /inline std::optional<flight::Array<double>> readonly_numbers\([^)]*\) \{\s*return values;\s*\}/u,
     );
+    expect(contents).toMatch(
+      /inline flight::Array<flight::Ref<Point>> readonly_plain\([^)]*\) \{\s*return values;\s*\}/u,
+    );
     expect(contents).not.toContain('static_cast<std::optional<flight::Array');
+    expect(contents).not.toContain('static_cast<flight::Array');
     expect(contents).not.toContain('static_pointer_cast');
 
     // An assertion that states nothing at all still refuses: `value as Slot` where the value already is a

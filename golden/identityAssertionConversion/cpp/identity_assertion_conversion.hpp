@@ -23,7 +23,7 @@ inline std::optional<flight::Array<double>> readonly_numbers(std::optional<fligh
 }
 
 inline flight::Array<flight::Ref<Point>> readonly_plain(flight::Array<flight::Ref<Point>> values) {
-  return static_cast<flight::Array<flight::Ref<Point>>>(values);
+  return values;
 }
 
 } // namespace flighthq_golden

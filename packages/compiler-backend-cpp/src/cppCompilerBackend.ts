@@ -3917,6 +3917,12 @@ function emitExpression(
           'cpp-erased-value-assertion-unrepresented',
         );
       }
+      // A non-union assertion can state the same source-only distinction as the union lane above. A
+      // mutable and readonly array have one C++ carrier, so emitting the value itself is the complete
+      // conversion and avoids a redundant cast (and copy) of an already exact target representation.
+      if (sourceEvidence && areCppTypesRepresentationEquivalent(sourceEvidence, expression.type, context)) {
+        return emitExpression(expression.expression, context, undefined, false);
+      }
       return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
     }
     case 'conditional': {
