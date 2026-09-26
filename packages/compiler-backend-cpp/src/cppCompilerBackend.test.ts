@@ -1865,6 +1865,98 @@ describe('createCppCompilerBackend', () => {
     });
   });
 
+  it('narrows a union carrier to the alternatives the value holds', () => {
+    const result = lower(
+      'sub-union-assertion.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       interface Gamma { c: number }
+       export function read(value: Alpha | Beta | Gamma): Alpha | Beta {
+         return value as Alpha | Beta;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Which alternative is active is a runtime question the source answered with an assertion, so the target
+    // answers it with `get_if` per held alternative and rebuilds the narrower carrier -- the copy is exact
+    // because a source slot and its asserted slot are the same C++ type -- and a value whose active
+    // alternative is outside the asserted union throws rather than becoming one it is not.
+    expect(contents).toContain('([&]() -> std::variant<flight::Ref<Alpha>, flight::Ref<Beta>>');
+    expect(contents).toContain('std::get_if<flight::Ref<Alpha>>(&narrowed_union)');
+    expect(contents).toContain('std::get_if<flight::Ref<Beta>>(&narrowed_union)');
+    expect(contents).toContain('std::in_place_type<flight::Ref<Beta>>');
+    expect(contents).not.toContain('std::get_if<flight::Ref<Gamma>>');
+    expect(contents).toContain('throw std::logic_error("asserted union alternative is not present in the value")');
+  });
+
+  it('carries absence across a union carrier narrowing and refuses to invent it where the target has none', () => {
+    const result = lower(
+      'sub-union-nullable-assertion.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       interface Gamma { c: number }
+       export function nullable(value: (Alpha | Beta | Gamma) | undefined): (Alpha | Beta) | undefined {
+         return value as (Alpha | Beta) | undefined;
+       }
+       export function present(value: (Alpha | Beta | Gamma) | undefined): Alpha | Beta {
+         return value as Alpha | Beta;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Absence crosses when the asserted union admits it. Where it does not, the source is claiming a value
+    // where there may be none, so the absent case fails the same way an alternative outside the asserted
+    // union does rather than reading through an empty optional.
+    // The generated carrier names are allocated per function, so the assertions name what each absence
+    // branch does rather than the local it reads.
+    expect(contents).toContain('has_value()) return std::nullopt;');
+    expect(contents).toContain(
+      'has_value()) throw std::logic_error("asserted union alternative is not present in the value");',
+    );
+  });
+
+  it('carries the alternatives an overlapping asserted union shares and throws for the rest', () => {
+    const result = lower(
+      'sub-union-overlapping-assertion.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       interface Gamma { c: number }
+       export function read(value: Alpha | Beta): Alpha | Gamma {
+         return value as Alpha | Gamma;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Alpha is held by both carriers, so it is carried. Beta is one the assertion claims cannot be active,
+    // so it gets no branch and falls through to the throw. Gamma is named by the assertion and named in the
+    // carrier, but the value can never hold it, so no branch constructs it -- the assertion's own claim.
+    expect(contents).toContain('([&]() -> std::variant<flight::Ref<Alpha>, flight::Ref<Gamma>>');
+    expect(contents).toContain('std::get_if<flight::Ref<Alpha>>(');
+    expect(contents).not.toContain('std::get_if<flight::Ref<Beta>>(');
+    expect(contents).not.toContain('std::in_place_type<flight::Ref<Gamma>>');
+  });
+
+  it('keeps an assertion naming no alternative the value can hold attributed to the source', () => {
+    const result = lower(
+      'sub-union-disjoint-assertion.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       interface Gamma { c: number }
+       interface Delta { d: number }
+       export function read(value: Alpha | Beta): Gamma | Delta {
+         return value as Gamma | Delta;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // Neither alternative is one the value could be, so there is no carrier to rebuild and no alternative to
+    // carry: the source has to restate the type it means.
+    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
+    expect(failure.classification).toBe('source-portability');
+  });
+
   it('identifies the one class alternative the asserted type inherits from', () => {
     const result = lower(
       'class-heritage-assertion.ts',

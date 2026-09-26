@@ -11198,6 +11198,18 @@ function emitUnionMemberAssertionCpp(
   // value already is a `Slot` asks for a projection the source did not describe, and the refusal has to
   // say so rather than list the alternatives as though one of them had been meant.
   const namesSourceUnion = sourceTarget !== undefined && sourceTarget === assertedTarget;
+  if (alternatives.length !== 1 && !namesSourceUnion) {
+    // Asserting a union of alternatives the value already holds narrows the CARRIER rather than an
+    // alternative: the target admits fewer values than the source, so which one is active is a runtime
+    // question the source answered with an assertion and the target answers with `get_if`. The copy
+    // between the two carriers is exact -- a target slot names the same C++ type the source stores -- so
+    // nothing is reinterpreted or rebuilt, and a value whose active alternative is outside the asserted
+    // union throws rather than becoming one it is not.
+    const subUnion = getCppSubUnionAssertionSlotsCpp(plan, assertedPlan);
+    if (subUnion && assertedUnion) {
+      return emitCppSubUnionAssertionCpp(assertedUnion, plan, assertedPlan!, subUnion, expression, context);
+    }
+  }
   if (alternatives.length !== 1) {
     // A refusal here is not automatically the source's. An assertion naming a type the value could hold
     // through one of its alternatives is one the source language accepts, and the target has no lowering
@@ -11442,6 +11454,118 @@ function getCppNamedBindingIdCpp(type: Readonly<IrType>): string | undefined {
 
 function getCppReferenceBindingIdCpp(reference: Readonly<IrTypeReference>): string | undefined {
   return reference.reference.kind === 'binding' ? reference.reference.binding.id : undefined;
+}
+
+// The slot each alternative of the VALUE takes in the asserted carrier, when the assertion relates two
+// carriers rather than one alternative: every alternative the value can hold is one the asserted union
+// stores, at the same C++ type, and the two carriers are not the same union. Undefined when that is not the
+// shape -- an asserted alternative the value cannot hold is a different question, answered by the refusal
+// below.
+// Which family of carrier a union plan builds: one alternative or several. The absence dimension is
+// orthogonal, and an assertion may change it in either direction.
+function getCppUnionCarrierFamilyCpp(
+  kind: ReturnType<typeof getCppUnionRepresentationPlan>['kind'],
+): 'many' | 'one' | undefined {
+  if (kind === 'multiVariant' || kind === 'optionalVariant') return 'many';
+  if (kind === 'singleValue' || kind === 'optionalSingle') return 'one';
+  return undefined;
+}
+
+function getCppSubUnionAssertionSlotsCpp(
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan> | undefined,
+): readonly Readonly<{ source: number; target: number }>[] | undefined {
+  // The two carriers have to be the same SHAPE of carrier -- a variant of alternatives either way -- while
+  // the absence dimension may differ, because dropping or adding absence is part of what an assertion
+  // states and each direction is answered below.
+  if (
+    !assertedPlan ||
+    getCppUnionCarrierFamilyCpp(assertedPlan.kind) === undefined ||
+    getCppUnionCarrierFamilyCpp(assertedPlan.kind) !== getCppUnionCarrierFamilyCpp(plan.kind) ||
+    plan.valueSlots.length === 0
+  ) {
+    return undefined;
+  }
+  // The same carrier is not a narrowing: `value as Slot` where the value already is a `Slot` selects no
+  // alternative, and its own refusal says so.
+  if (
+    assertedPlan.valueSlots.length === plan.valueSlots.length &&
+    assertedPlan.valueSlots.every((slot, index) => slot.targetType === plan.valueSlots[index]?.targetType)
+  ) {
+    return undefined;
+  }
+  const mapped: { source: number; target: number }[] = [];
+  plan.valueSlots.forEach((sourceSlot, source) => {
+    const target = assertedPlan.valueSlots.findIndex((slot) => slot.targetType === sourceSlot.targetType);
+    if (target >= 0) mapped.push({ source, target });
+  });
+  // A source alternative the asserted union does not name is one the assertion claims cannot be active: it
+  // gets no branch, and a value that is holding it falls through to the throw. An assertion naming NO
+  // alternative the value can hold is a claim the source recants rather than a carrier to rebuild, and that
+  // stays with the refusal.
+  return mapped.length > 0 ? mapped : undefined;
+}
+
+function emitCppSubUnionAssertionCpp(
+  assertedUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  sourceSlots: readonly Readonly<{ source: number; target: number }>[],
+  subject: Readonly<IrExpression>,
+  context: EmitContext,
+): string {
+  context.includes.add(plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant' ? 'optional' : 'variant');
+  context.includes.add('variant');
+  context.includes.add('stdexcept');
+  const value =
+    subject.kind === 'identifier' && subject.reference.kind === 'binding'
+      ? emitIdentifierReference(subject.reference, context)
+      : emitExpression(subject, context);
+  const narrowed = getGeneratedTargetName('narrowedUnion', context);
+  const carrier = emitCppAssertedUnionCarrierCpp(assertedPlan, assertedUnion, context);
+  const presentValue =
+    plan.kind === 'optionalVariant' || plan.kind === 'optionalSingle' ? `${narrowed}.value()` : narrowed;
+  const branches = sourceSlots.map((slots) => {
+    const sourceSlot = plan.valueSlots[slots.source]!;
+    const assertedSlot = assertedPlan.valueSlots[slots.target]!;
+    const constructed = emitCppUnionValueConstruction(
+      '*alternative',
+      assertedSlot.targetType,
+      assertedUnion,
+      assertedPlan.kind,
+      context,
+    );
+    return `if (const auto* alternative = std::get_if<${sourceSlot.targetType}>(&${presentValue})) return ${constructed};`;
+  });
+  // Absence crosses when the asserted union admits it. A value that holds absence and an asserted union
+  // that does not is the source claiming there is a value where there is none, so it fails the same way an
+  // alternative outside the asserted union does rather than reading through an empty optional.
+  const admitsAbsence = (kind: ReturnType<typeof getCppUnionRepresentationPlan>['kind']): boolean =>
+    kind === 'optionalSingle' || kind === 'optionalVariant';
+  const assertedAdmitsAbsence = admitsAbsence(assertedPlan.kind);
+  const sourceAdmitsAbsence = admitsAbsence(plan.kind);
+  const absence =
+    sourceAdmitsAbsence && assertedAdmitsAbsence
+      ? [`if (!${narrowed}.has_value()) return std::nullopt;`]
+      : sourceAdmitsAbsence
+        ? [
+            `if (!${narrowed}.has_value()) throw std::logic_error("asserted union alternative is not present in the value");`,
+          ]
+        : [];
+  return `([&]() -> ${carrier} { const auto& ${narrowed} = ${value}; ${[...absence, ...branches].join(' ')} throw std::logic_error("asserted union alternative is not present in the value"); }())`;
+}
+
+function emitCppAssertedUnionCarrierCpp(
+  assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  assertedUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  context: EmitContext,
+): string {
+  if (assertedPlan.kind === 'singleValue') return assertedPlan.valueSlots[0]!.targetType;
+  if (assertedPlan.kind === 'optionalSingle') {
+    context.includes.add('optional');
+    return `std::optional<${assertedPlan.valueSlots[0]!.targetType}>`;
+  }
+  return emitUnionTypeCpp(assertedUnion, context);
 }
 
 function getCppReferenceNarrowingCpp(fromTarget: string, toTarget: string): Readonly<{ cast?: string }> | undefined {

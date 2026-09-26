@@ -43,6 +43,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'assertionClassOneValueNarrowing', header: 'assertion_class_one_value_narrowing.hpp' },
   { fixture: 'closedKeyWriteDispatch', header: 'closed_key_write_dispatch.hpp' },
   { fixture: 'erasedValueUnionSelection', header: 'erased_value_union_selection.hpp' },
+  { fixture: 'assertionSubUnionNarrowing', header: 'assertion_sub_union_narrowing.hpp' },
 ];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
 const runtime = resolveDependency(root, 'flight-cpp');
