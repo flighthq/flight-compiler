@@ -17694,6 +17694,14 @@ function getIrExpressionTypeEvidenceCpp(
       if (getCppExternalNumericPropertyViewAccessPlanCpp(expression, context)) {
         return getCppExternalNumericPropertyViewTypeCpp();
       }
+      const enumDeclaration = getCppEnumDeclarationForObjectCpp(expression.object, context);
+      if (enumDeclaration?.members.some((member) => member.name === expression.name)) {
+        return {
+          kind: 'named',
+          reference: { binding: enumDeclaration.binding, kind: 'binding', path: [] },
+          typeArguments: [],
+        };
+      }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'this') {
         const memberType =
           context.currentClass?.fields.find((field) => field.name === expression.name)?.type ??
@@ -21895,31 +21903,72 @@ function emitCppEnumMemberReferenceCpp(
   context: EmitContext,
 ): string | undefined {
   const object = expression.object;
-  if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return undefined;
-  const bindingId = object.reference.binding.id;
-  const declaration =
-    context.module.declarations.find(
-      (candidate): candidate is Extract<IrDeclaration, { kind: 'enum' }> =>
-        candidate.kind === 'enum' && candidate.binding.id === bindingId,
-    ) ??
-    context.module.imports
-      .flatMap((importItem) =>
-        importItem.bindings.flatMap((binding) =>
-          binding.binding.id === bindingId && binding.imported !== '*'
-            ? getCppResolvedImportModules(importItem.specifier, context).flatMap((module) =>
-                module.declarations.filter(
-                  (candidate): candidate is Extract<IrDeclaration, { kind: 'enum' }> =>
-                    candidate.kind === 'enum' && candidate.binding.name === binding.imported,
-                ),
-              )
-            : [],
-        ),
-      )
-      .at(0);
+  const declaration = getCppEnumDeclarationForObjectCpp(object, context);
   // A NAME the enum declares. `Flags.any(…)` is a namespace function merged onto the enum, not a member, and
   // it keeps whatever lane already emits it.
   if (!declaration?.members.some((member) => member.name === expression.name)) return undefined;
   return `${emitExpression(object, context)}::${pascalCase(expression.name)}`;
+}
+
+function getCppEnumDeclarationForObjectCpp(
+  object: Readonly<IrExpression>,
+  context: EmitContext,
+): Extract<IrDeclaration, { kind: 'enum' }> | undefined {
+  if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return undefined;
+  const bindingId = object.reference.binding.id;
+  const local = context.module.declarations.find(
+    (candidate): candidate is Extract<IrDeclaration, { kind: 'enum' }> =>
+      candidate.kind === 'enum' && candidate.binding.id === bindingId,
+  );
+  if (local) return local;
+  return context.module.imports
+    .flatMap((importItem) =>
+      importItem.bindings.flatMap((binding) =>
+        binding.binding.id === bindingId && binding.imported !== '*'
+          ? getCppResolvedImportModules(importItem.specifier, context).flatMap((module) =>
+              getCppImportedEnumDeclarationsCpp(module, binding.imported, context, new Set()),
+            )
+          : [],
+      ),
+    )
+    .at(0);
+}
+
+function getCppImportedEnumDeclarationsCpp(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): readonly Extract<IrDeclaration, { kind: 'enum' }>[] {
+  const key = `${module.packageName}\0${module.source}\0${exportedName}`;
+  if (visited.has(key)) return [];
+  const nextVisited = new Set(visited).add(key);
+  const direct = module.declarations.filter(
+    (candidate): candidate is Extract<IrDeclaration, { kind: 'enum' }> =>
+      candidate.kind === 'enum' && candidate.exported && candidate.binding.name === exportedName,
+  );
+  if (direct.length > 0) return direct;
+  const local = module.exports.flatMap((exported) => {
+    if (exported.kind !== 'local' || exported.typeOnly || exported.exported !== exportedName) return [];
+    return module.declarations.filter(
+      (candidate): candidate is Extract<IrDeclaration, { kind: 'enum' }> =>
+        candidate.kind === 'enum' && candidate.binding.id === exported.binding.id,
+    );
+  });
+  if (local.length > 0) return local;
+  return module.exports.flatMap((exported) => {
+    if (exported.kind === 'all' && !exported.typeOnly) {
+      return getCppResolvedImportModules(exported.specifier, { ...context, module }).flatMap((target) =>
+        getCppImportedEnumDeclarationsCpp(target, exportedName, context, nextVisited),
+      );
+    }
+    if (exported.kind === 'reexport' && !exported.typeOnly && exported.exported === exportedName) {
+      return getCppResolvedImportModules(exported.specifier, { ...context, module }).flatMap((target) =>
+        getCppImportedEnumDeclarationsCpp(target, exported.imported, context, nextVisited),
+      );
+    }
+    return [];
+  });
 }
 
 function memberOp(object: Readonly<IrExpression>, context: EmitContext): string {

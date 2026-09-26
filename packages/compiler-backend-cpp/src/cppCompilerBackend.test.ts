@@ -8447,6 +8447,34 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('flighthq_types::TextureAtlasRotation::Counterclockwise90');
     expect(emitted).not.toContain('TextureAtlasRotation.counterclockwise90');
 
+    const rotation = lowerPackage(
+      '@flighthq/types',
+      'rotation.ts',
+      "export enum TextureAtlasRotation { clockwise90 = 'cw', counterclockwise90 = 'ccw' }",
+    ).module;
+    const contract = lowerPackage('@flighthq/types', 'contract.ts', "export * from './rotation';").module;
+    const barrelConsumer = lowerPackage(
+      '@flighthq/scene2d-canvas',
+      'barrelCanvasAtlasRegion.ts',
+      `import { TextureAtlasRotation } from '@flighthq/types/contract';
+       export function pick(): string { return TextureAtlasRotation.counterclockwise90; }`,
+    ).module;
+    const barrelEmitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: {
+        edges: [
+          {
+            specifier: '@flighthq/types/contract',
+            target: { packageName: contract.packageName, source: contract.source },
+          },
+          { specifier: './rotation', target: { packageName: rotation.packageName, source: rotation.source } },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      modules: [barrelConsumer, contract, rotation],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(barrelConsumer)[0]!.contents;
+    expect(barrelEmitted).toContain('flighthq_types::TextureAtlasRotation::Counterclockwise90');
+
     // The second failure is the runtime's boundary, and the compiler's part of it is to say so instead of
     // emitting a cast to a conversion that does not exist: an element read out of an `any[]` is the erased
     // value, and `flight::Array` is not something `Any` can carry. The primitives it CAN carry still read
