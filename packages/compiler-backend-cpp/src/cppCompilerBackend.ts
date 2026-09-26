@@ -17947,10 +17947,14 @@ function refuseCppContextualArrayElementUnionNarrowingCpp(
 // union. Used to compare two element positions by what their values would be, not by how they were written.
 function getCppUnionAlternativeSpellingsCpp(type: Readonly<IrType>, context: EmitContext): readonly string[] {
   const union = getIrUnionTypeCpp(type, context, new Set());
-  if (!union) return [emitCppAliasResolvedValueTypeCpp(type, context)];
-  return union.types
-    .filter((member) => member.kind !== 'null' && member.kind !== 'undefined')
-    .map((member) => emitCppAliasResolvedValueTypeCpp(member, context));
+  const spelling = (member: Readonly<IrType>): string => {
+    // Null and undefined can share optional storage, but they remain distinct source alternatives. Keeping
+    // that identity here prevents a source that admits one from looking like a subset of a target that
+    // admits only the other.
+    if (member.kind === 'null' || member.kind === 'undefined') return member.kind;
+    return emitCppAliasResolvedValueTypeCpp(member, context);
+  };
+  return [...new Set((union?.types ?? [type]).map(spelling))];
 }
 
 function refuseCppContextualStructuralArrayNominalRecoveryCpp(
