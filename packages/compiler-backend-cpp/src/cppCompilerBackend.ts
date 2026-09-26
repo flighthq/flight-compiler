@@ -1189,32 +1189,40 @@ function getCppImportedBindingDeclarationCpp(
   const reference = type.reference;
   if (reference.kind !== 'binding' || reference.binding.kind !== 'import') return undefined;
   const bindingId = reference.binding.id;
-  const localImport = context.module.imports.flatMap((importItem) => {
+  for (const importItem of context.module.imports) {
     const binding = importItem.bindings.find((candidate) => candidate.binding.id === bindingId);
-    return binding ? [{ specifier: importItem.specifier, imported: binding.imported }] : [];
-  })[0];
-  const indexedImport = context.importBindingOwners.get(bindingId);
-  const importOwner = localImport
-    ? { module: context.module, specifier: localImport.specifier, imported: localImport.imported }
-    : indexedImport;
+    if (!binding) continue;
+    const importedName = binding.imported === '*' ? reference.path[0] : binding.imported;
+    if (!importedName) return undefined;
+    const matches = getCppResolvedImportModules(importItem.specifier, context).flatMap((targetModule) =>
+      targetModule.declarations.flatMap((declaration) => {
+        if (!('binding' in declaration) || declaration.binding.name !== importedName) return [];
+        if (!hasCppDirectExportName(targetModule, importedName)) return [];
+        return [{ declaration, module: targetModule }];
+      }),
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+  return undefined;
+}
+
+// A structural projection may be reached through a helper's signature, where the imported binding
+// was written in that helper's module rather than the module currently being emitted. Resolve that
+// original import owner through the export graph, but keep this fallback local to structural-row
+// conversion so nominal union matching retains its conservative, context-local behavior.
+function getCppStructuralImportedBindingDeclarationCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  context: EmitContext,
+): Readonly<{ declaration: Readonly<IrDeclaration>; module: Readonly<IrModule> }> | undefined {
+  const reference = type.reference;
+  if (reference.kind !== 'binding' || reference.binding.kind !== 'import') return undefined;
+  const importOwner = context.importBindingOwners.get(reference.binding.id);
   if (!importOwner) return undefined;
   const importedName = importOwner.imported === '*' ? reference.path[0] : importOwner.imported;
   if (!importedName) return undefined;
   const resolutionContext =
     importOwner.module === context.module ? context : { ...context, module: importOwner.module };
   const targets = getCppResolvedImportModules(importOwner.specifier, resolutionContext);
-  const matches = targets.flatMap((targetModule) =>
-    targetModule.declarations.flatMap((declaration) => {
-      if (!('binding' in declaration) || declaration.binding.name !== importedName) return [];
-      if (!hasCppDirectExportName(targetModule, importedName)) return [];
-      return [{ declaration, module: targetModule }];
-    }),
-  );
-  if (matches.length === 1) return matches[0];
-  // A contract barrel commonly forwards the imported declaration with `export *`. The binding
-  // still carries the importing module's identity, so looking only at the barrel's declarations
-  // loses the owner needed for object-shape and structural-row planning. Follow the same export
-  // graph used by contextual union ownership and accept only one declaration owner.
   const forwarded = targets.flatMap((targetModule) =>
     getCppExportedTypeDeclarationOwnersCpp(targetModule, importedName, resolutionContext, new Set()),
   );
@@ -8670,7 +8678,10 @@ function hasProvenWeakMapValueRepresentationCpp(type: Readonly<IrType>, context:
   if (getCppOpenTypeParameterName(type)) return false;
   const owner =
     getCppDirectBindingOwner(type, context) ??
-    (type.kind === 'named' ? getCppImportedBindingDeclarationCpp(type, context) : undefined);
+    (type.kind === 'named'
+      ? (getCppImportedBindingDeclarationCpp(type, context) ??
+        getCppStructuralImportedBindingDeclarationCpp(type, context))
+      : undefined);
   const value = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   return value.kind === 'represented' && value.identity.identity !== 'indeterminate';
 }
