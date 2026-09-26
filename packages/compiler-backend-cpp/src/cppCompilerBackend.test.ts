@@ -14244,6 +14244,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     expect(typed.message).toContain('a typed array leaves its element type to the runtime');
 
+    // A dual-sentinel element is variant-backed, but its null and undefined alternatives are not members
+    // of the present payload. Keep it out of the direct visitor until those sentinels have an explicit
+    // flattening proof rather than emitting constructions into payload alternatives that do not exist.
+    const sentinelElement = refusal(
+      'union-array-sentinel-element.ts',
+      `export function read(
+         values: Array<number | null | undefined> | string[] | undefined,
+         index: number,
+       ): number | string | null | undefined {
+         return values?.[index];
+       }`,
+    );
+    expect(sentinelElement.rule).toBe('cpp-optional-element-access-without-collection-receiver');
+
     // The same union without the receiver's sentinel reaches the plain lane, which reads a typed array
     // through the runtime's own numeric accessor and needs no element evidence for it.
     const plainTyped = lower(

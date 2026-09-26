@@ -21378,10 +21378,10 @@ function emitCppUnionKeyedCarrierBranchCpp(
   const elementUnion = getIrUnionTypeCpp(element, context, new Set());
   if (elementUnion) {
     const elementPlan = getCppUnionRepresentationPlan(elementUnion, context);
-    // Only carriers whose storage itself is a variant can be opened directly. Optional union plans wrap
-    // that variant (or one value) in std::optional, so visiting the storage would be invalid C++ and their
-    // sentinel mapping needs a separate flattening proof.
-    if (elementPlan.kind !== 'multiVariant' && elementPlan.kind !== 'dualSentinelVariant') return undefined;
+    // Only a sentinel-free variant can be opened directly. Optional union plans wrap that variant (or one
+    // value) in std::optional, while a dual-sentinel variant contains null and undefined alternatives that
+    // the present payload deliberately omits. Both shapes need a separate sentinel-flattening proof.
+    if (elementPlan.kind !== 'multiVariant') return undefined;
     const elementSlots = elementPlan.valueSlots;
     if (
       elementSlots.length === 0 ||
