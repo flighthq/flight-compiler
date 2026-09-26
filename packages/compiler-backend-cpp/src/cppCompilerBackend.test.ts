@@ -20942,7 +20942,9 @@ Resolver make_resolver(TextureRef texture) {
       }
     }
     const output = emitIrModuleCpp(module).contents;
-    expect(output).toContain('static_cast');
+    // A same-representation assertion is now emitted as the value itself, so the fallback
+    // is proved by the generated binding name rather than by an incidental cast.
+    expect(output).toContain('inline double id(double x)');
   });
 
   it('emits Math.max spread as fold with algorithm include', () => {
