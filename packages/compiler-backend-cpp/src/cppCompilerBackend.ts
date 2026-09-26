@@ -1157,7 +1157,7 @@ function getCppDeclaredIndexSignatureCpp(
 ): Readonly<{ keyKind: 'number' | 'string'; valueType: IrType }> | undefined {
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const direct = context.directBindingOwners.get(type.reference.binding.id)?.declaration;
-  if (direct?.kind === 'interface') return direct.indexSignature;
+  if (direct?.kind === 'interface') return getCppResolvedIndexSignatureCpp(direct, type.typeArguments, context);
   const owner = context.importBindingOwners.get(type.reference.binding.id);
   if (!owner) return undefined;
   const ownerContext = owner.module === context.module ? context : { ...context, module: owner.module };
@@ -1165,7 +1165,46 @@ function getCppDeclaredIndexSignatureCpp(
   const imported = module?.declarations.find(
     (candidate) => candidate.kind === 'interface' && candidate.binding.name === owner.imported,
   );
-  return imported?.kind === 'interface' ? imported.indexSignature : undefined;
+  return imported?.kind === 'interface'
+    ? getCppResolvedIndexSignatureCpp(imported, type.typeArguments, context)
+    : undefined;
+}
+
+function getCppResolvedIndexSignatureCpp(
+  declaration: Readonly<IrInterfaceDeclaration>,
+  typeArguments: readonly Readonly<IrType>[],
+  context: EmitContext,
+): Readonly<{ keyKind: 'number' | 'string'; valueType: IrType }> | undefined {
+  const signature = declaration.indexSignature;
+  if (!signature) return undefined;
+  assertCppPureIndexSignatureCarrierCpp(declaration, context);
+  if (declaration.typeParameters.length === 0) return signature;
+  if (declaration.typeParameters.length !== typeArguments.length) {
+    emissionError(
+      context,
+      `index-signature carrier ${declaration.binding.name} requires concrete type arguments`,
+      'cpp-index-signature-carrier-open-type-arguments',
+    );
+  }
+  return {
+    ...signature,
+    valueType: resolveIrTypeStructuralSubstitution(
+      signature.valueType,
+      createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
+    ),
+  };
+}
+
+function assertCppPureIndexSignatureCarrierCpp(
+  declaration: Readonly<IrInterfaceDeclaration>,
+  context: EmitContext,
+): void {
+  if (declaration.properties.length === 0 && declaration.extends.length === 0) return;
+  emissionError(
+    context,
+    `index-signature carrier ${declaration.binding.name} also declares or inherits named members whose per-name types cannot be represented by one homogeneous Record value type`,
+    'cpp-index-signature-named-members-unrepresented',
+  );
 }
 
 function isCppInterfaceRepresentationAliasCpp(
@@ -1176,7 +1215,10 @@ function isCppInterfaceRepresentationAliasCpp(
   // A declaration with an index signature admits an open set of members, so it is not a struct with named
   // members at all: it is represented as the runtime's keyed record, and emitting a struct for it as well
   // would name two different carriers for one type.
-  if (declaration.indexSignature) return true;
+  if (declaration.indexSignature && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    assertCppPureIndexSignatureCarrierCpp(declaration, context);
+    return true;
+  }
   const type = getCppInterfaceDeclarationTypeCpp(declaration);
   return Boolean(
     context.referenceRepresentationPlanner.resolveStructuralRow(type, module) ??
@@ -1916,6 +1958,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   // members would be a subset of what the type admits.
   const indexSignature = declaration.indexSignature;
   if (indexSignature && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    assertCppPureIndexSignatureCarrierCpp(declaration, context);
     const key: Readonly<IrType> = {
       kind: 'primitive',
       name: indexSignature.keyKind === 'number' ? 'number' : 'string',

@@ -1954,11 +1954,13 @@ describe('createCppCompilerBackend', () => {
       `type Scalar = boolean | number | string;
        interface Fields { [name: string]: Scalar }
        interface Counts { [index: number]: number }
+       interface GenericFields<Value> { [name: string]: Value }
        interface Named { value: number }
        export function read(fields: Fields, key: string): Scalar | undefined { return fields[key]; }
        export function write(fields: Fields, key: string, value: Scalar): void { fields[key] = value; }
        export function present(fields: Fields, key: string): boolean { return fields[key] !== undefined; }
        export function count(values: Counts, index: number): number | undefined { return values[index]; }
+       export function generic(values: GenericFields<number>, key: string): number { return values[key]; }
        export function readNamed(value: Named): number { return value.value; }`,
     );
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -1969,12 +1971,27 @@ describe('createCppCompilerBackend', () => {
     // the declaration stated nothing about what a read through the index yields.
     expect(contents).toContain('using Fields = flight::Record<flight::String, Scalar>;');
     expect(contents).toContain('using Counts = flight::Record<double, double>;');
+    expect(contents).toContain('generic(flight::Record<flight::String, double> values');
     expect(contents).not.toContain('struct Fields');
     expect(contents).toContain('fields.get(key)');
     expect(contents).toContain('fields.set(key, ');
     // A declaration with named members still emits a struct and still resolves its members as members.
     expect(contents).toContain('struct Named');
     expect(contents).toContain('value->value');
+  });
+
+  it('refuses to erase named members into a homogeneous index-signature record', () => {
+    const result = lower(
+      'mixed-index-signature-carrier.ts',
+      `interface Mixed { [name: string]: number | string; fixed: number }
+       export function read(value: Mixed): number { return value.fixed; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-index-signature-named-members-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
   });
 
   it('refuses an array whose element union the position does not hold', () => {
