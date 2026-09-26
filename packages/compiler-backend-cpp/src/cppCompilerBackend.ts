@@ -11336,7 +11336,7 @@ function emitUnionMemberAssertionCpp(
     // between the two carriers is exact -- a target slot names the same C++ type the source stores -- so
     // nothing is reinterpreted or rebuilt, and a value whose active alternative is outside the asserted
     // union throws rather than becoming one it is not.
-    const subUnion = getCppSubUnionAssertionSlotsCpp(plan, assertedPlan);
+    const subUnion = getCppSubUnionAssertionSlotsCpp(plan, assertedPlan, context);
     if (subUnion && assertedUnion) {
       return emitCppSubUnionAssertionCpp(assertedUnion, plan, assertedPlan!, subUnion, expression, context);
     }
@@ -11605,7 +11605,8 @@ function getCppUnionCarrierFamilyCpp(
 function getCppSubUnionAssertionSlotsCpp(
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
   assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan> | undefined,
-): readonly Readonly<{ source: number; target: number }>[] | undefined {
+  context: EmitContext,
+): readonly Readonly<{ cast?: string | undefined; source: number; target: number }>[] | undefined {
   // The value has to be a variant of alternatives, and the asserted carrier may hold several or only one:
   // `value as A | undefined` over `A | B | C` names the one alternative the assertion claims is active, which
   // is the same question this lane already answers for a subset of several. The absence dimension may differ
@@ -11627,10 +11628,36 @@ function getCppSubUnionAssertionSlotsCpp(
   ) {
     return undefined;
   }
-  const mapped: { source: number; target: number }[] = [];
+  const mapped: { cast?: string | undefined; source: number; target: number }[] = [];
   plan.valueSlots.forEach((sourceSlot, source) => {
-    const target = assertedPlan.valueSlots.findIndex((slot) => slot.targetType === sourceSlot.targetType);
-    if (target >= 0) mapped.push({ source, target });
+    // The asserted alternative the value stores is the one its branch answers directly.
+    const exact = assertedPlan.valueSlots.findIndex((slot) => slot.targetType === sourceSlot.targetType);
+    if (exact >= 0) {
+      mapped.push({ source, target: exact });
+      return;
+    }
+    // An asserted alternative the value does not store but INHERITS from one it does is the same
+    // class-heritage proof the multi-alternative lane already uses: the branch tests which alternative is
+    // really present, and the value narrows to the asserted class along that same nominal chain. The cast is
+    // named here so the branch builds its carrier from the asserted type rather than from what the union
+    // stores, and nothing is selected when no such chain exists.
+    const inherited = assertedPlan.valueSlots.flatMap((assertedSlot, target) =>
+      assertedSlot.sourceAlternatives.some((assertedAlternative) =>
+        sourceSlot.sourceAlternatives.some((sourceAlternative) =>
+          isCppClassHeritageRelatedCpp(assertedAlternative, sourceAlternative, context),
+        ),
+      )
+        ? [target]
+        : [],
+    );
+    // One inherited alternative per stored one: with two, the branch cast would have to choose which of them
+    // the value is, and the variant index it tests cannot tell a deeper class from the one it derives from.
+    // Refusing keeps the assertion where it was rather than casting to the wrong one of the two.
+    if (inherited.length !== 1) return;
+    const target = inherited[0]!;
+    const cast = getCppReferenceElementTypeNameCpp(assertedPlan.valueSlots[target]!.targetType);
+    if (cast === undefined) return;
+    mapped.push({ cast, source, target });
   });
   // A source alternative the asserted union does not name is one the assertion claims cannot be active: it
   // gets no branch, and a value that is holding it falls through to the throw. An assertion naming NO
@@ -11643,7 +11670,7 @@ function emitCppSubUnionAssertionCpp(
   assertedUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
   assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
-  sourceSlots: readonly Readonly<{ source: number; target: number }>[],
+  sourceSlots: readonly Readonly<{ cast?: string | undefined; source: number; target: number }>[],
   subject: Readonly<IrExpression>,
   context: EmitContext,
 ): string {
@@ -11658,11 +11685,16 @@ function emitCppSubUnionAssertionCpp(
   const carrier = emitCppAssertedUnionCarrierCpp(assertedPlan, assertedUnion, context);
   const presentValue =
     plan.kind === 'optionalVariant' || plan.kind === 'optionalSingle' ? `${narrowed}.value()` : narrowed;
+  if (sourceSlots.some((slots) => slots.cast !== undefined)) context.includes.add('memory');
   const branches = sourceSlots.map((slots) => {
     const sourceSlot = plan.valueSlots[slots.source]!;
     const assertedSlot = assertedPlan.valueSlots[slots.target]!;
+    // A branch whose asserted alternative is inherited narrows the held value to the asserted class first:
+    // that cast is the class-heritage proof, and the branch's own test is what decided it is the one present.
+    const selected =
+      slots.cast === undefined ? '*alternative' : `std::static_pointer_cast<${slots.cast}>(*alternative)`;
     const constructed = emitCppUnionValueConstruction(
-      '*alternative',
+      selected,
       assertedSlot.targetType,
       assertedUnion,
       assertedPlan.kind,

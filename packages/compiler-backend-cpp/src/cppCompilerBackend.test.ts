@@ -2128,6 +2128,59 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('Narrow or convert the source expression');
   });
 
+  it('narrows an inherited alternative through the branch that proved it is the one present', () => {
+    const result = lower(
+      'inherited-alternative-assertion.ts',
+      `class BaseShape { id = ''; }
+       class DerivedShape extends BaseShape { extra = 0; }
+       interface Other { tag: number }
+       export function narrow(value: BaseShape | Other): DerivedShape | undefined {
+         return value as DerivedShape | undefined;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The class-heritage proof reaches the assertion with absence: the branch tests which alternative the
+    // value holds through the variant index, and only inside that branch does the held value narrow to the
+    // asserted class along the nominal chain. Before this, the shape refused even though the same assertion
+    // without absence lowered.
+    expect(contents).toContain('([&]() -> std::optional<flight::Ref<DerivedShape>>');
+    expect(contents).toContain('std::get_if<flight::Ref<BaseShape>>(&narrowed_union)');
+    expect(contents).toContain('std::static_pointer_cast<DerivedShape>(*alternative)');
+  });
+
+  it('keeps an inherited alternative refused where the proof does not reach', () => {
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('inherited-alternative-negative.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // Interfaces are emitted as independent structs, so there is no nominal chain for the cast to follow.
+    const iface = refusal(
+      `interface BaseShape { id: string }
+       interface DerivedShape extends BaseShape { extra: number }
+       interface Other { tag: number }
+       export function narrow(value: BaseShape | Other): DerivedShape | undefined {
+         return value as DerivedShape | undefined;
+       }`,
+    );
+    expect(iface.rule).toBe('cpp-type-assertion-unidentified');
+
+    // Two inherited alternatives cannot both be the value, and the variant index cannot tell a deeper class
+    // from the one it derives from, so neither may be chosen.
+    const ambiguous = refusal(
+      `class BaseShape { id = ''; }
+       class DerivedShape extends BaseShape { extra = 0; }
+       class DeeperShape extends DerivedShape { deep = 0; }
+       interface Other { tag: number }
+       export function narrow(value: BaseShape | Other): DerivedShape | DeeperShape {
+         return value as DerivedShape | DeeperShape;
+       }`,
+    );
+    expect(ambiguous.rule).toBe('cpp-type-assertion-unidentified');
+    expect(ambiguous.classification).toBe('compiler-restriction');
+  });
+
   it('identifies the one alternative an assertion names, and carries absence across it', () => {
     const result = lower(
       'one-alternative-assertion.ts',
