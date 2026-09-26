@@ -14341,6 +14341,56 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(dualSentinel.rule).toBe('cpp-type-assertion-unidentified');
   });
 
+  it('recovers optional-single evidence the syntax itself supplies', () => {
+    const result = lower(
+      'contextual-optional-evidence.ts',
+      `export function pattern(): RegExp | undefined { return /\\d+/gu; }
+       export function patternIf(flag: boolean): RegExp | undefined { return flag ? /a/ : undefined; }
+       export function size(value: any): number | undefined { return value.size; }
+       export function label(value: any): string | undefined { return value.label; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // A regex literal is a RegExp whatever its pattern and flags are, so the destination's one value slot is
+    // named by the syntax rather than by a recording the expression never carried -- the same argument the
+    // template case makes for a string. It is emitted as the runtime's own carrier, constructed once.
+    expect(contents).toContain(
+      'return std::optional<flight::RegExp>{flight::RegExp(flight::String("\\\\d+"), flight::String("gu"))};',
+    );
+    expect(contents).toContain(
+      'return (flag ? std::optional<flight::RegExp>{flight::RegExp(flight::String("a"), flight::String(""))} : std::nullopt);',
+    );
+    // A property read through an erased receiver answers a dynamic value, so the destination takes its own
+    // checked selection: each alternative tests the kind it needs and extracts it through the runtime's
+    // accessor, and a value of another kind answers absence rather than becoming an alternative it is not.
+    expect(contents).toMatch(
+      /if \(erased_value(?:_[0-9]+)?\.kind\(\) == flight::AnyKind::number\) return std::optional<double>\{erased_value(?:_[0-9]+)?\.as_number\(\)\};/u,
+    );
+    expect(contents).toMatch(/if \(erased_value(?:_[0-9]+)?\.kind\(\) == flight::AnyKind::string\)/u);
+    expect(contents).toContain('flight::named_properties(value)');
+    // Nothing is cast, reinterpreted, or materialized: the regexp is constructed and the erased value is
+    // asked what it holds.
+    expect(contents).not.toContain('static_cast<flight::RegExp>');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
+  it('keeps an element read through an erased receiver refused', () => {
+    // The property spelling is lowered through the runtime's erased object view, but the element spelling is
+    // not: claiming the same evidence there would emit a subscript on an erased value, which the target
+    // compiler rejects (`no match for 'operator[]'` on flight::Any). The read keeps its refusal until that
+    // access has a lowered form of its own.
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'erased-element-evidence.ts',
+          `export function f(value: any, key: string): number | undefined { return value[key]; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(failure.rule).toBe('cpp-contextual-union-missing-expression-type:optionalSingle');
+  });
+
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>

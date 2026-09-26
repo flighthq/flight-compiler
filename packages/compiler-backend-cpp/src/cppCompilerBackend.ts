@@ -2886,11 +2886,7 @@ function emitCppAliasResolvedValueTypeCpp(
   context: EmitContext,
   resolvingAliases: ReadonlySet<string> = new Set(),
 ): string {
-  if (
-    type.kind !== 'named' ||
-    type.reference.kind !== 'binding' ||
-    type.reference.binding.kind === 'typeParameter'
-  ) {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind === 'typeParameter') {
     return emitType(type, context);
   }
   const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
@@ -14832,8 +14828,19 @@ function getIrExpressionTypeForUnionConstructionCpp(
       return expression.type;
     case 'element':
       return getIrExpressionTypeEvidenceCpp(expression, context);
-    case 'property':
-      return getIrExpressionTypeEvidenceCpp(expression, context);
+    case 'property': {
+      const evidence = getIrExpressionTypeEvidenceCpp(expression, context);
+      if (evidence) return evidence;
+      // A PROPERTY read through an erased receiver answers a dynamic value: the emitter reaches it
+      // through the runtime's own object view, which is what makes the read's result an erased value
+      // rather than a value of no stated type. Naming that here lets the destination take its checked
+      // selection -- the same conversion the assertion door takes for an erased value -- instead of
+      // refusing for want of a type the syntax never had. The ELEMENT spelling is deliberately left out:
+      // its read is not lowered through an erased view, so claiming the same evidence there would emit an
+      // access the target compiler rejects.
+      const receiver = getIrExpressionTypeEvidenceCpp(expression.object, context);
+      return receiver && isCppAnySourcedDynamicValueCpp(receiver) ? receiver : undefined;
+    }
     case 'function':
       return {
         kind: 'function',
@@ -14884,6 +14891,19 @@ function getIrExpressionTypeForUnionConstructionCpp(
         getCppContextualFlowExpandedObjectRuntimeTypeCpp(expression, valueSlots, context) ??
         expression.type
       );
+    case 'regexp': {
+      // A regex literal's value is a RegExp whatever its pattern and flags are -- the same argument the
+      // template case below makes for a string: the syntax decides the type, so this is evidence rather
+      // than a guess about an expression whose type was never recorded. The slot is still identified
+      // exactly: one value slot, and one whose runtime type is the regexp carrier.
+      const regexpSlots = valueSlots.filter(
+        (slot) =>
+          slot.runtimeType.kind === 'named' &&
+          slot.runtimeType.reference.kind === 'ambient' &&
+          slot.runtimeType.reference.name === 'RegExp',
+      );
+      return regexpSlots.length === 1 ? regexpSlots[0]!.runtimeType : undefined;
+    }
     case 'template':
       // A template expression's value is a string, and it is one whatever its parts are: each part is
       // stringified and concatenated, so no part can make the result anything else. What the parts
