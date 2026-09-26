@@ -14074,45 +14074,88 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(contents).not.toContain('static_cast<size_t>');
   });
 
-  it('refuses an indexed read on a union of carriers instead of subscripting the variant', () => {
+  it('reads a union of keyed carriers by projecting each alternative', () => {
+    const result = lower(
+      'union-carrier-element.ts',
+      `type Scalar = boolean | number | string;
+       interface Point { readonly x: number }
+       interface Fields { [name: string]: Scalar }
+       interface Other { [name: string]: number }
+       interface Points { [name: string]: Point }
+       export function read(fields: Fields | Other, key: string): Scalar | number {
+         return fields[key];
+       }
+       export function readOptional(fields: Fields | Other | undefined, key: string): Scalar | number | undefined {
+         return fields?.[key];
+       }
+       export function readReference(points: Points | Other, key: string): Point | number {
+         return points[key];
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Each carrier is asked for the key in its own domain, and only the alternative the value really holds
+    // runs. An element that is itself a union is opened by the target's own visitor, so it reaches the
+    // payload as one of its members; an element of one type goes straight to the slot that names it.
+    // Generated names carry a disambiguating suffix, so the shapes are matched rather than spelled.
+    expect(contents).toMatch(
+      /if constexpr \(std::is_same_v<keyed_carrier_type(?:_[0-9]+)?, flight::Record<flight::String, double>>\) \{ const auto keyed_value(?:_[0-9]+)? = keyed_carrier(?:_[0-9]+)?\.get\(keyed_lookup(?:_[0-9]+)?\)\.value\(\); return std::variant<bool, double, flight::String>\{std::in_place_type<double>, keyed_value(?:_[0-9]+)?\}; \}/u,
+    );
+    expect(contents).toMatch(/std::in_place_type<std::decay_t<decltype\(keyed_alternative(?:_[0-9]+)?\)>>/u);
+    expect(contents).toMatch(
+      /return std::variant<flight::Ref<Point>, double>\{std::in_place_type<flight::Ref<Point>>, keyed_value(?:_[0-9]+)?\}/u,
+    );
+    // The optional spelling answers absence from the carrier itself, which is the `undefined` the read
+    // declares; the plain spelling asserts the key exactly as a single-carrier read does.
+    expect(contents).toMatch(
+      /if \(const auto keyed_value(?:_[0-9]+)? = keyed_carrier(?:_[0-9]+)?\.get\(keyed_lookup(?:_[0-9]+)?\)\)/u,
+    );
+    expect(contents).toContain('return std::nullopt; }, optional_chain_receiver.value());');
+    expect(contents).toMatch(
+      /static_assert\(!sizeof\(keyed_carrier_type(?:_[0-9]+)?\), "unproved keyed carrier alternative"\)/u,
+    );
+    // Nothing is subscripted, cast, or materialized: the carrier's own lookup answers the read.
+    expect(contents).not.toContain('static_cast<size_t>');
+    expect(contents).not.toContain('.get(keyed_lookup).value()[');
+    expect(contents).not.toContain('keyed_carrier[keyed_lookup]');
+  });
+
+  it('keeps a union of carriers that disagree on the key domain refused', () => {
     const refusal = (file: string, source: string) =>
       captureBackendEmissionFailure(() =>
         emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
       );
 
-    // A union of keyed carriers stores a variant, and no variant has a keyed lookup: the emission this
-    // replaces wrote `fields[static_cast<size_t>(key)]`, which g++ rejects twice over -- a subscript on a
-    // variant, and a numeric cast of a string key. The read needs a projection per alternative, so it is
-    // refused and named until that projection exists.
-    const union = refusal(
-      'union-carrier-element.ts',
-      `type Scalar = boolean | number | string;
-       interface Fields { [name: string]: Scalar }
-       interface Other { [name: string]: number }
-       export function read(fields: Fields | Other, key: string): Scalar | number | undefined {
-         return fields[key];
+    // One key expression reaches every carrier, so the alternatives must agree on the key's domain: a
+    // string key is not the lookup of a carrier keyed by number, and a projection that ignored that would
+    // ask one of them for a key it cannot have.
+    const keyDomain = refusal(
+      'union-carrier-key-domain.ts',
+      `interface Counts { [index: number]: number }
+       interface Fields { [name: string]: string }
+       export function read(value: Counts | Fields, key: string): number | string | undefined {
+         return value[key];
        }`,
     );
-    expect(union.rule).toBe('cpp-union-element-access-without-carrier');
-    expect(union.classification).toBe('compiler-restriction');
-    expect(union.message).toContain('stores a variant, which has no keyed lookup of its own');
+    expect(keyDomain.rule).toBe('cpp-union-element-access-without-carrier');
+    expect(keyDomain.classification).toBe('compiler-restriction');
+    expect(keyDomain.message).toContain('over one key domain');
 
-    // The optional spelling of the same receiver reaches the optional element lane, which refuses it with
-    // its own rule and names the variant rather than blaming the receiver's kind.
-    const optionalUnion = refusal(
-      'optional-union-carrier-element.ts',
-      `type Scalar = boolean | number | string;
-       interface Fields { [name: string]: Scalar }
-       interface Other { [name: string]: number }
-       export function read(fields: Fields | Other | undefined, key: string): Scalar | number | undefined {
-         return fields?.[key];
+    // A union of arrays is the other shape the optional element lane has no projection for: an array's
+    // lookup is not a record's, and the receiver's kind is named rather than the reason invented.
+    const arrays = refusal(
+      'optional-union-array-element.ts',
+      `export function read(values: number[] | string[] | undefined, index: number): number | string | undefined {
+         return values?.[index];
        }`,
     );
-    expect(optionalUnion.rule).toBe('cpp-optional-element-access-without-collection-receiver');
-    expect(optionalUnion.message).toContain('a union receiver stores a variant');
+    expect(arrays.rule).toBe('cpp-optional-element-access-without-collection-receiver');
+    expect(arrays.message).toContain(
+      'optional element access requires one concrete nullable indexed collection receiver',
+    );
 
-    // A row read by a variable key is the other shape that reaches the same refusal, and the message tells
-    // it apart from the union: its keys are closed, so no keyed carrier can answer an arbitrary index.
+    // A row read by a variable key is the third: its keys are closed, so no keyed carrier can answer an
+    // arbitrary index, and the message says so instead of blaming a variant.
     const row = refusal(
       'optional-row-variable-key.ts',
       `interface Style { fontSize: number; color: string }
@@ -14122,7 +14165,6 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     expect(row.rule).toBe('cpp-optional-element-access-without-collection-receiver');
     expect(row.message).toContain('a row is read by a closed set of keys');
-    expect(row.message).not.toContain('a union receiver stores a variant');
   });
 
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {

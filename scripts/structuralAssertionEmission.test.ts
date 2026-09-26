@@ -49,6 +49,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'callableUnionParameterity', header: 'callable_union_parameterity.hpp' },
   { fixture: 'callableUnionWiderParameter', header: 'callable_union_wider_parameter.hpp' },
   { fixture: 'optionalElementCarrierRead', header: 'optional_element_carrier_read.hpp' },
+  { fixture: 'unionCarrierElementRead', header: 'union_carrier_element_read.hpp' },
   { fixture: 'indexSignatureRecordCarrier', header: 'index_signature_record_carrier.hpp' },
   { fixture: 'indexSignatureRecordEnumeration', header: 'index_signature_record_enumeration.hpp' },
   { fixture: 'assertionOneAlternativeRecovery', header: 'assertion_one_alternative_recovery.hpp' },

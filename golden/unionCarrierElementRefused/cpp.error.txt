@@ -1,1 +1,0 @@
-cpp emission failed for @flighthq/golden/packages/golden/src/unionCarrierElementRefused.ts: indexed access on a union receiver requires one carrier: the destination stores a variant, which has no keyed lookup of its own. Read through one declared carrier, or project the union before indexing it
