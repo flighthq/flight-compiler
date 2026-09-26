@@ -13235,10 +13235,22 @@ function emitContextualUnionExpressionInContextCpp(
       ? emitCppErasedValueUnionConstructionCpp(expression, union, plan, context)
       : undefined;
     if (erasedConstruction) return erasedConstruction;
+    // Who owns a value the destination cannot hold. The runtime can carry an erased value's kinds and the
+    // target can view a projection of a declared type, so what reaches here is either a kind the runtime
+    // does not represent at all, or a value whose type is not the declaration any alternative names --
+    // a structural shape, a partial projection, or a record that merely LOOKS like one. The first is the
+    // runtime's to add; the rest are declarations the source has to state, because no checked conversion
+    // exists between two nominal types that are not the same type.
+    const cause = getCppUnrepresentedUnionValueCauseCpp(runtimeType, plan, context);
     emissionError(
       context,
-      `contextual union value type ${targetType} is not a represented runtime domain`,
+      cause === 'partial-value'
+        ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, so it is not the shape an alternative declares. Pass the declared type, or make the member required where the value is declared`
+        : cause === 'nominal-mismatch'
+          ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
+          : `contextual union value type ${targetType} is not a represented runtime domain`,
       'cpp-contextual-union-value-type-unrepresented',
+      cause === 'erased-kind' ? 'target-runtime' : cause === 'partial-value' ? 'source-portability' : undefined,
     );
   }
   const emitted =
@@ -13787,6 +13799,41 @@ interface CppErasedValueUnionExtraction {
 // object reference is recovered at the exact type it was stored as, which is what `object_if` exists for.
 // Any alternative without such a test -- a structural row, an external binding, a typed array -- leaves the
 // whole conversion to the refusal, because a branch that cannot test is a branch that would guess.
+// Why the destination union has no domain for this value's runtime type.
+//
+// `erased-kind` is the runtime's: an erased value carries the ECMAScript kinds it represents, and one it
+// does not represent -- a typed array, a host reference -- has no alternative a carrier can hold until the
+// runtime supplies it. `shape` and `nominal-mismatch` are the source's: a value whose C++ type is a minted
+// structural shape, or a declaration that merely resembles the alternative, is not the type that
+// alternative names, and no checked conversion exists between two nominal types that are not the same type.
+function getCppUnrepresentedUnionValueCauseCpp(
+  runtimeType: Readonly<IrType>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): 'erased-kind' | 'nominal-mismatch' | 'partial-value' | undefined {
+  if (isCppErasedDynamicValueTypeCpp(runtimeType)) return 'erased-kind';
+  const shape = context.referenceRepresentationPlanner.resolveObjectShape(runtimeType, context.module);
+  if (!shape) return undefined;
+  // One alternative that accepts the value is enough for the source language, and it accepts it when every
+  // member that alternative requires is a member the value has and does not make optional. This is the same
+  // question the checker asks; it answers with `undefined is not assignable to`, and the shape answers with
+  // the member's own optionality.
+  const satisfies = (alternative: Readonly<IrType>): boolean => {
+    const declared = context.referenceRepresentationPlanner.resolveObjectShape(alternative, context.module);
+    if (!declared) return false;
+    return declared.every(
+      (property) =>
+        property.optional ||
+        property.phantom ||
+        shape.some((member) => member.name === property.name && !member.optional),
+    );
+  };
+  if (!plan.valueSlots.some((slot) => slot.sourceAlternatives.some(satisfies))) return 'partial-value';
+  // Some alternative accepts the value, so the source language accepts the conversion and the barrier is
+  // the target's: a declared reference is nominally its own type, and a shape that resembles one is not it.
+  return 'nominal-mismatch';
+}
+
 function emitCppErasedValueUnionConstructionCpp(
   expression: Readonly<IrExpression>,
   union: Readonly<Extract<IrType, { kind: 'union' }>>,

@@ -1865,6 +1865,77 @@ describe('createCppCompilerBackend', () => {
     });
   });
 
+  it('attributes a partial value the destination cannot hold to the source', () => {
+    const result = lower(
+      'union-value-partial.ts',
+      `interface Alpha { a: number; extra: number }
+       interface Beta { b: number }
+       function take(_value: Alpha | Beta): number { return 1; }
+       export function pass(value: Partial<Alpha>): number { return take(value); }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // No alternative accepts the value -- `a` is optional where Alpha requires it, and Beta declares no
+    // members the value has -- which is the same call the checker rejects (2345), so the author is the one
+    // who can state the type.
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('leaves a member the destination requires optional or absent');
+  });
+
+  it('keeps a value whose type merely resembles an alternative attributed to the compiler', () => {
+    const shape = lower(
+      'union-value-resembling.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       function take(_value: Alpha | Beta): number { return 1; }
+       export function pass(value: { a: number }): number { return take(value); }`,
+    );
+    const shapeFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(shape.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The checker accepts this conversion: the value satisfies Alpha structurally. What stops the target is
+    // its own representation -- a declared reference is nominally its own type -- so the refusal keeps the
+    // compiler's attribution, and the message names the shape the destination would have to be declared
+    // over as the other way out.
+    expect(shapeFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(shapeFailure.classification).toBe('compiler-restriction');
+    expect(shapeFailure.message).toContain('resembles an alternative but is not the declaration it names');
+
+    const widened = lower(
+      'union-value-widened.ts',
+      `interface Alpha { a: number }
+       interface Larger { a: number; c: string }
+       interface Beta { b: number }
+       function take(_value: Alpha | Beta): number { return 1; }
+       export function pass(value: Larger): number { return take(value); }`,
+    );
+    expect(
+      captureBackendEmissionFailure(() => emitIrModuleCpp(widened.module, { runtimeProfile: 'flight-cpp' }))
+        .classification,
+    ).toBe('compiler-restriction');
+  });
+
+  it('keeps an erased value whose kind the runtime does not represent attributed to the runtime', () => {
+    const result = lower(
+      'union-value-erased-kind.ts',
+      `function accept(_value: Uint8Array | number): void {}
+       export function pass(payload: any): void { accept(payload); }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // `flight::Any` carries the ECMAScript kinds the runtime represents and no typed-array kind, so an
+    // alternative that would need one is the runtime's to supply -- no source declaration can make the
+    // conversion exist.
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+  });
+
   it('converts a union holding a subset of the destination alternatives in every position', () => {
     const result = lower(
       'contextual-union-subset.ts',
