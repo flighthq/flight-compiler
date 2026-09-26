@@ -14415,7 +14415,19 @@ function emitCppErasedValueUnionConstructionCpp(
             `if (${erased}.is_nullish()) return ${emitCppUnionSentinelConstruction(admitsNull ? 'null' : 'undefined', union, plan.kind, context)};`,
           ]
         : [];
-  return `([&]() -> ${carrier} { const auto& ${erased} = ${emitExpression(expression, context)}; ${[...branches, ...absence].join(' ')} throw std::logic_error("erased value holds no alternative this union represents"); }())`;
+  let source: string;
+  if (isCppErasedDynamicPropertyReadCpp(expression, context) && expression.object.kind !== 'identifier') {
+    // A property read returns a reference into its erased receiver. Retain a produced receiver for the
+    // whole checked selection; otherwise `factory().member` leaves the reference dangling after the
+    // initializer's full expression. An identifier already owns stable storage and keeps the direct
+    // zero-copy spelling.
+    const receiver = getGeneratedTargetName('erasedReceiver', context);
+    context.includes.add('flight/structural_ref.hpp');
+    source = `const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto& ${erased} = flight::named_properties(${receiver}).get(${emitLiteral(expression.name, context)});`;
+  } else {
+    source = `const auto& ${erased} = ${emitExpression(expression, context)};`;
+  }
+  return `([&]() -> ${carrier} { ${source} ${[...branches, ...absence].join(' ')} throw std::logic_error("erased value holds no alternative this union represents"); }())`;
 }
 
 function getCppErasedValueUnionExtractionCpp(targetType: string): Readonly<CppErasedValueUnionExtraction> | undefined {

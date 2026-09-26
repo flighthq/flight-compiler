@@ -14347,7 +14347,8 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       `export function pattern(): RegExp | undefined { return /\\d+/gu; }
        export function patternIf(flag: boolean): RegExp | undefined { return flag ? /a/ : undefined; }
        export function size(value: any): number | undefined { return value.size; }
-       export function label(value: any): string | undefined { return value.label; }`,
+       export function label(value: any): string | undefined { return value.label; }
+       export function produced(factory: () => any): number | undefined { return factory().size; }`,
     );
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
@@ -14368,8 +14369,13 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     expect(contents).toMatch(/if \(erased_value(?:_[0-9]+)?\.kind\(\) == flight::AnyKind::string\)/u);
     expect(contents).toContain('flight::named_properties(value)');
-    // Nothing is cast, reinterpreted, or materialized: the regexp is constructed and the erased value is
-    // asked what it holds.
+    // A produced receiver stays alive for the whole selection, so the property reference cannot outlive
+    // the Any returned by the factory.
+    expect(contents).toMatch(
+      /const auto& erased_receiver(?:_[0-9]+)? = factory\(\); const auto& erased_value(?:_[0-9]+)? = flight::named_properties\(erased_receiver(?:_[0-9]+)?\)\.get\(flight::String\("size"\)\)/u,
+    );
+    // Nothing is cast or reinterpreted: the regexp is constructed and the erased value is asked what it
+    // holds. Nullish values answer absence; a different present kind is rejected by the checked selection.
     expect(contents).not.toContain('static_cast<flight::RegExp>');
     expect(contents).not.toContain('static_pointer_cast');
   });
