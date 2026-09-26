@@ -1948,6 +1948,60 @@ describe('createCppCompilerBackend', () => {
     expect(failure.classification).toBe('target-runtime');
   });
 
+  it('refuses an array whose element union the position does not hold', () => {
+    const refusal = (position: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            'array-element-union-subset.ts',
+            `interface YamlSubsetValue { key: string }
+             interface ExtraValue { extra: number }
+             const marker = Symbol.for('marker');
+             function consume(_values: (YamlSubsetValue | ExtraValue | typeof marker)[]): number { return 1; }
+             ${position}`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      );
+
+    const argument = refusal(
+      `export function pass(values: (YamlSubsetValue | ExtraValue)[]): number { return consume(values); }`,
+    );
+    expect(argument.rule).toBe('cpp-contextual-array-element-union-narrowing');
+    // The source language accepts this conversion, but the target cannot make it without copying: the
+    // container is parameterized by its element type, and a rebuilt array is a different object than the one
+    // the source passed and can still observe.
+    expect(argument.classification).toBe('source-portability');
+    expect(argument.message).toContain('would copy the array and change the identity the source passes');
+
+    const returned = refusal(
+      `export function read(values: (YamlSubsetValue | ExtraValue)[]): (YamlSubsetValue | ExtraValue | typeof marker)[] { return values; }`,
+    );
+    expect(returned.rule).toBe('cpp-contextual-array-element-union-narrowing');
+
+    const assigned = refusal(
+      `interface Holder { entries: (YamlSubsetValue | ExtraValue | typeof marker)[] }
+       export function put(holder: Holder, values: (YamlSubsetValue | ExtraValue)[]): void { holder.entries = values; }`,
+    );
+    expect(assigned.rule).toBe('cpp-contextual-array-element-union-narrowing');
+  });
+
+  it('passes an array whose element union the position already holds', () => {
+    const result = lower(
+      'array-element-union-identical.ts',
+      `interface YamlSubsetValue { key: string }
+       interface ExtraValue { extra: number }
+       const marker = Symbol.for('marker');
+       function consume(_values: (YamlSubsetValue | ExtraValue | typeof marker)[]): number { return 1; }
+       export function pass(values: (YamlSubsetValue | ExtraValue | typeof marker)[]): number { return consume(values); }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // One element type, one container type: there is nothing to convert, so the value crosses as it is.
+    expect(contents).toContain('return consume(values);');
+    expect(contents).not.toContain('cpp-contextual-array-element-union-narrowing');
+  });
+
   it('converts a union holding a subset of the destination alternatives in every position', () => {
     const result = lower(
       'contextual-union-subset.ts',

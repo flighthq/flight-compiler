@@ -2819,6 +2819,7 @@ function emitExpression(
     const erasedDynamicConversion = emitCppContextualErasedDynamicValueCpp(expression, expectedType, context);
     if (erasedDynamicConversion) return erasedDynamicConversion;
     refuseCppContextualStructuralArrayNominalRecoveryCpp(expression, expectedType, context);
+    refuseCppContextualArrayElementUnionNarrowingCpp(expression, expectedType, context);
     const optionalPropertyConversion = emitCppOptionalPropertyDualSentinelConversionCpp(
       expression,
       expectedType,
@@ -17904,6 +17905,54 @@ function getCppNominalReferenceNameCpp(type: Readonly<IrType>): string | undefin
 // a different array object than the one the assignment stored, which the source can observe. What is
 // missing is the element type the source dropped when it wrote the projection, so this refusal belongs
 // to the source to fix and is attributed source-portability rather than compiler-restriction.
+// An array whose element union is a strict subset of the element union the position expects cannot cross.
+//
+// The target's container is parameterized by its ELEMENT type, so the parameter is a different C++ container,
+// and there is no conversion between the two variants to build one from the other. Rebuilding would copy the
+// array -- which the source can observe, because the source passes one array object and may mutate it through
+// either name -- and a view cannot present the wider element type without a conversion the runtime does not
+// have. The source writes the copy it means (`take([...values])`) or declares the position over the element
+// union the value has; the refusal says so rather than emitting a conversion the target compiler rejects.
+function refuseCppContextualArrayElementUnionNarrowingCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): void {
+  // A literal is built at the element type the position asks for, so there is nothing to convert.
+  if (expression.kind === 'array') return;
+  const expectedElement = getIrArrayTypeCpp(expectedType, context, new Set())?.element;
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
+  const sourceElement = sourceType ? getIrArrayTypeCpp(sourceType, context, new Set())?.element : undefined;
+  if (!expectedElement || !sourceElement) return;
+  // A STRUCTURAL expectation is the owner-preserving view lane's: `SequenceView` converts from the owning
+  // array it views, so those two element spellings differ and still cross, and this refusal would be wrong.
+  if (context.referenceRepresentationPlanner.resolveStructuralRow(expectedElement, context.module)) return;
+  const spellingContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set() };
+  const sourceSpellings = getCppUnionAlternativeSpellingsCpp(sourceElement, spellingContext);
+  const expectedSpellings = getCppUnionAlternativeSpellingsCpp(expectedElement, spellingContext);
+  if (sourceSpellings.length === 0 || expectedSpellings.length <= sourceSpellings.length) return;
+  // The subset direction only: every alternative the value can hold has to be one the position holds. A
+  // position that holds fewer, or holds different ones, is a conversion the source language rejects too and
+  // a different question, so this refusal leaves it where it is.
+  if (!sourceSpellings.every((spelling) => expectedSpellings.includes(spelling))) return;
+  emissionError(
+    context,
+    `an array of [${sourceSpellings.join(', ')}] cannot be passed where the element union is [${expectedSpellings.join(', ')}]: the target's container is parameterized by its element type, so this would need a different container, and building one would copy the array and change the identity the source passes. Write the copy explicitly, or declare the position over the element union the value has`,
+    'cpp-contextual-array-element-union-narrowing',
+    'source-portability',
+  );
+}
+
+// The alternatives of a union type as the target spells them, or the single spelling of a type that is not a
+// union. Used to compare two element positions by what their values would be, not by how they were written.
+function getCppUnionAlternativeSpellingsCpp(type: Readonly<IrType>, context: EmitContext): readonly string[] {
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  if (!union) return [emitCppAliasResolvedValueTypeCpp(type, context)];
+  return union.types
+    .filter((member) => member.kind !== 'null' && member.kind !== 'undefined')
+    .map((member) => emitCppAliasResolvedValueTypeCpp(member, context));
+}
+
 function refuseCppContextualStructuralArrayNominalRecoveryCpp(
   expression: Readonly<IrExpression>,
   target: Readonly<IrType>,
