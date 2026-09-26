@@ -8453,6 +8453,19 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('hex[static_cast<size_t>');
   });
 
+  it('retains string element evidence in a contextual nullable object', () => {
+    const result = lower(
+      'contextual-string-element.ts',
+      `export function pick(source: string, index: number): { value: string } | null {
+        return { value: source[index] };
+      }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(output).toContain('return std::optional<flight::Ref<');
+    expect(output).toContain('.char_at(index)');
+  });
+
   it('lowers typed-array range fill through a mutable subarray view', () => {
     const output = emitIrModuleCpp(
       lower(

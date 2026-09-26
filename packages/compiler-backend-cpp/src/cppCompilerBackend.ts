@@ -13825,8 +13825,7 @@ function getCppUnrepresentedUnionValueCauseCpp(
       if (property.optional || property.phantom) return true;
       const member = shape.find((candidate) => candidate.name === property.name && !candidate.optional);
       return (
-        member !== undefined &&
-        analyzeIrTypeStructuralAssignability(member.type, property.type).status === 'compatible'
+        member !== undefined && analyzeIrTypeStructuralAssignability(member.type, property.type).status === 'compatible'
       );
     });
   };
@@ -18219,6 +18218,10 @@ function getIrIndexedElementTypeCpp(
       ? createIrTypeEvidenceUnionCpp(members)
       : undefined;
   }
+  // String indexing follows the runtime's UTF-16 `char_at` contract and produces another string. Keep
+  // this evidence available to contextual union/object construction just as the emitter already does for
+  // the indexed read itself; without it a value such as `{ value: source[index] }` loses its source type.
+  if (type.kind === 'primitive' && type.name === 'string') return type;
   if (type.kind !== 'named') return undefined;
   if (type.reference.kind === 'ambient') {
     if (/^(?:Float32|Float64|Int16|Int32|Int8|Uint16|Uint32|Uint8|Uint8Clamped)Array$/u.test(type.reference.name)) {
