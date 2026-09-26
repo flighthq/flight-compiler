@@ -1883,6 +1883,18 @@ describe('createCppCompilerBackend', () => {
     expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
     expect(failure.classification).toBe('source-portability');
     expect(failure.message).toContain('leaves a member the destination requires optional or absent');
+
+    const incompatible = lower(
+      'union-value-incompatible-member.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       function take(_value: Alpha | Beta): number { return 1; }
+       export function pass(value: { a: string }): number { return take(value); }`,
+    );
+    expect(
+      captureBackendEmissionFailure(() => emitIrModuleCpp(incompatible.module, { runtimeProfile: 'flight-cpp' }))
+        .classification,
+    ).toBe('source-portability');
   });
 
   it('keeps a value whose type merely resembles an alternative attributed to the compiler', () => {

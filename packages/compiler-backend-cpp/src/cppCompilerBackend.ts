@@ -13245,7 +13245,7 @@ function emitContextualUnionExpressionInContextCpp(
     emissionError(
       context,
       cause === 'partial-value'
-        ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, so it is not the shape an alternative declares. Pass the declared type, or make the member required where the value is declared`
+        ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
         : cause === 'nominal-mismatch'
           ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
           : `contextual union value type ${targetType} is not a represented runtime domain`,
@@ -13815,18 +13815,20 @@ function getCppUnrepresentedUnionValueCauseCpp(
   const shape = context.referenceRepresentationPlanner.resolveObjectShape(runtimeType, context.module);
   if (!shape) return undefined;
   // One alternative that accepts the value is enough for the source language, and it accepts it when every
-  // member that alternative requires is a member the value has and does not make optional. This is the same
-  // question the checker asks; it answers with `undefined is not assignable to`, and the shape answers with
-  // the member's own optionality.
+  // member that alternative requires is a compatible member the value has and does not make optional. This
+  // is the same question the checker asks; the shape supplies presence and optionality, while the shared
+  // structural analyzer compares the member value types.
   const satisfies = (alternative: Readonly<IrType>): boolean => {
     const declared = context.referenceRepresentationPlanner.resolveObjectShape(alternative, context.module);
     if (!declared) return false;
-    return declared.every(
-      (property) =>
-        property.optional ||
-        property.phantom ||
-        shape.some((member) => member.name === property.name && !member.optional),
-    );
+    return declared.every((property) => {
+      if (property.optional || property.phantom) return true;
+      const member = shape.find((candidate) => candidate.name === property.name && !candidate.optional);
+      return (
+        member !== undefined &&
+        analyzeIrTypeStructuralAssignability(member.type, property.type).status === 'compatible'
+      );
+    });
   };
   if (!plan.valueSlots.some((slot) => slot.sourceAlternatives.some(satisfies))) return 'partial-value';
   // Some alternative accepts the value, so the source language accepts the conversion and the barrier is
