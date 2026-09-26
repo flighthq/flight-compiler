@@ -11497,7 +11497,16 @@ function emitUnionMemberAssertionCpp(
   // An assertion that names the value's own union type selects no alternative: `value as Slot` where the
   // value already is a `Slot` asks for a projection the source did not describe, and the refusal has to
   // say so rather than list the alternatives as though one of them had been meant.
-  const namesSourceUnion = sourceTarget !== undefined && sourceTarget === assertedTarget;
+  // The emitted spellings erase a source-only difference, so two spellings that agree can still be two
+  // different TypeScript types: `readonly number[] | undefined` asserted as `number[] | undefined` is a
+  // conversion the source states, while `value as Slot` on a value that already is a `Slot` states
+  // nothing at all. The canonical types tell them apart, and only the first is a conversion to emit.
+  const namesSourceUnion =
+    sourceTarget !== undefined &&
+    sourceTarget === assertedTarget &&
+    (sourceType === undefined ||
+      normalizeCompilerStructuralValueCanonical(sourceType) ===
+        normalizeCompilerStructuralValueCanonical(assertedType));
   if (alternatives.length !== 1 && !namesSourceUnion) {
     // Asserting a union of alternatives the value already holds narrows the CARRIER rather than an
     // alternative: the target admits fewer values than the source, so which one is active is a runtime
@@ -11508,6 +11517,19 @@ function emitUnionMemberAssertionCpp(
     const subUnion = getCppSubUnionAssertionSlotsCpp(plan, assertedPlan, context);
     if (subUnion && assertedUnion) {
       return emitCppSubUnionAssertionCpp(assertedUnion, plan, assertedPlan!, subUnion, expression, context);
+    }
+    // An assertion whose representation the target already has is a statement about the SOURCE's types
+    // rather than work for the target: `readonly number[] | undefined` and `number[] | undefined` are one
+    // C++ optional, so the value is emitted as itself. Nothing is cast, converted, or copied -- the two
+    // carriers are the same type -- and the assertion still selects no alternative, which is why it is
+    // answered here rather than by narrowing below.
+    if (
+      !namesSourceUnion &&
+      sourceType !== undefined &&
+      assertedPlan !== undefined &&
+      hasEquivalentCppUnionRepresentation(assertedPlan, plan)
+    ) {
+      return emitExpression(expression, context, undefined, false);
     }
     // The same alternatives with the sentinel spelled differently is not a narrowing of an alternative but
     // a move of the absence marker, and it is exact in both directions.

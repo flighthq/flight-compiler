@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/identityAssertionConversion.ts: cast to union requires Rust type-directed lowering

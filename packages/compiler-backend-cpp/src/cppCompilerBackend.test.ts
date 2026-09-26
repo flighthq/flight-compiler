@@ -14539,6 +14539,47 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.rule).toBe('cpp-contextual-union-missing-expression-type:optionalSingle');
   });
 
+  it('emits an assertion whose representation the target already has as the value itself', () => {
+    const result = lower(
+      'identity-assertion-conversion.ts',
+      `interface Point { readonly x: number }
+       export function readonlyView(values: Point[] | undefined): readonly Point[] | undefined {
+         return values as readonly Point[] | undefined;
+       }
+       export function readonlyNumbers(values: number[] | undefined): readonly number[] | undefined {
+         return values as readonly number[] | undefined;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // `readonly Point[] | undefined` and `Point[] | undefined` are one optional of one array carrier, so the
+    // assertion states a source-level distinction the target needs no work for. The value is emitted as
+    // itself: the two carriers ARE the same type, so there is nothing to cast, convert, or copy.
+    expect(contents).toMatch(
+      /inline std::optional<flight::Array<flight::Ref<Point>>> readonly_view\([^)]*\) \{\s*return values;\s*\}/u,
+    );
+    expect(contents).toMatch(
+      /inline std::optional<flight::Array<double>> readonly_numbers\([^)]*\) \{\s*return values;\s*\}/u,
+    );
+    expect(contents).not.toContain('static_cast<std::optional<flight::Array');
+    expect(contents).not.toContain('static_pointer_cast');
+
+    // An assertion that states nothing at all still refuses: `value as Slot` where the value already is a
+    // `Slot` selects no alternative, and the refusal says so rather than treating it as a conversion.
+    const sameUnion = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'same-union-assertion.ts',
+          `type Slot = string | number;
+           export function f(value: Slot): Slot { return value as Slot; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(sameUnion.rule).toBe('cpp-type-assertion-unidentified');
+    expect(sameUnion.message).toContain("names the value's own union type");
+  });
+
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
