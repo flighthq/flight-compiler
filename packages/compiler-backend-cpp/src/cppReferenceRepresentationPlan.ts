@@ -1935,6 +1935,30 @@ function getReferenceDeclarationResolutionCpp(
   const local = module.declarations.has(binding.id) || module.importsByBindingId.has(binding.id);
   const owners = moduleSet.namedBindingOwnersByBindingId.get(binding.id) ?? [];
   const owner = local ? module : owners.length === 1 ? owners[0] : undefined;
+  // Interface inheritance can synthesize an imported binding while retaining the declaration's
+  // package/source provenance but without adding a corresponding import item to the consumer module.
+  // Resolve that binding directly against its uniquely identified source module. Ordinary imports
+  // still take the owner/import-specifier path below; this fallback only applies when the owner table
+  // has no answer, so it cannot override an ambiguous import graph.
+  if (!owner && binding.kind === 'import') {
+    const sourceModules =
+      moduleSet.modulesByPackageSource.get(`${binding.packageName}\0${normalizePathPortable(binding.source)}`) ?? [];
+    if (sourceModules.length === 1) {
+      const exportName = reference.path.length === 1 ? reference.path[0]! : binding.name;
+      const locations = getReferenceExportLocationsCpp(sourceModules[0]!, exportName, moduleSet, new Set(), cache);
+      if (locations.length === 1) return { kind: 'location', location: locations[0]! };
+    }
+    // A second synthetic form keeps the consumer's source as provenance and nests the original
+    // declaration binding in its id (`interface-inheritance:<binding>`), so the metadata source is
+    // not the declaring module either. Search the same package only when the exported name identifies
+    // exactly one declaration; duplicate names remain indeterminate rather than guessing a target.
+    const packageLocations = deduplicateReferenceDeclarationLocationsCpp(
+      moduleSet.modules
+        .filter((candidate) => candidate.module.packageName === binding.packageName)
+        .flatMap((candidate) => getReferenceExportLocationsCpp(candidate, binding.name, moduleSet, new Set(), cache)),
+    );
+    if (packageLocations.length === 1) return { kind: 'location', location: packageLocations[0]! };
+  }
   if (!owner) return { kind: 'indeterminate' };
   if (binding.kind !== 'import') {
     if (reference.path.length > 0) return { kind: 'indeterminate' };

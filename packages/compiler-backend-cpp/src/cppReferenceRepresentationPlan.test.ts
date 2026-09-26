@@ -94,6 +94,48 @@ describe('C++ reference planner object shapes', () => {
     ]);
   });
 
+  it('resolves a synthetic interface-inheritance binding by its unique package declaration', () => {
+    const types = lower(
+      'node.ts',
+      `
+        export interface NodeTraits { enabled: boolean; }
+        export interface Node2DTraits extends NodeTraits { x: number; }
+        export interface Node<Traits extends object> extends NodeTraits { children: NodeOf<Traits>[]; }
+        export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+        export type Node2D = Node<Node2DTraits> & Node2DTraits;
+      `,
+      '@flighthq/types',
+    );
+    const display = lower(
+      'display.ts',
+      `import type { Node2D } from './node'; export interface DisplayObject extends Node2D {}`,
+      '@flighthq/types',
+    );
+    // The semantic lowerer normally records this inferred import. Interface inheritance can also retain
+    // the synthetic binding after that import item has been elided, while its package/source/name remain
+    // authoritative. Exercise that shape directly so the planner cannot regress to an owner-only lookup.
+    const missingInferredImport = {
+      ...display,
+      imports: display.imports.filter(
+        (item) => !item.bindings.some((binding) => binding.binding.name === 'Node2DTraits'),
+      ),
+    };
+    const resolver = createIrTypeReferenceRepresentationPlannerCpp([missingInferredImport, types], {
+      edges: [
+        { specifier: './node', target: { packageName: '@flighthq/types', source: 'packages/types/src/node.ts' } },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    });
+
+    expect(
+      resolver.resolveObjectShape(declarationType(missingInferredImport, 'DisplayObject'), missingInferredImport),
+    ).toEqual([
+      { name: 'enabled', optional: false, readonly: false, type: { kind: 'primitive', name: 'boolean' } },
+      expect.objectContaining({ name: 'children', optional: false }),
+      { name: 'x', optional: false, readonly: false, type: numberType },
+    ]);
+  });
+
   it('selects the narrower compatible property when flattening Node2D-style intersections', () => {
     const module = lower(
       'node-2d-shape.ts',
