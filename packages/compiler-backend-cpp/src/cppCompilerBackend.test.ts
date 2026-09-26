@@ -25779,16 +25779,20 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
          return holder[EntityRuntimeKey] as EntityRuntime | undefined;
        }`,
     );
-    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    // Both assertions name the whole optional the slot's value sits inside, so matching by spelling can
+    // never succeed -- and neither can be emitted. Narrowing to a different record would be a pointer cast,
+    // and these records are interfaces: their heritage is emitted as independent structs, so
+    // `static_pointer_cast<WidgetRuntime>` between them does not compile (verified against the pinned
+    // runtime). The assertion refuses instead, and because the source is valid the refusal is the
+    // compiler's gap rather than the source's mistake.
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
 
     expect(result.diagnostics).toEqual([]);
-    // Both assertions are answerable because both sides are one-value unions of the same kind: the
-    // target is the whole optional and the slot is the value inside it, so matching by spelling can
-    // never succeed. Narrowing to a different record is a cast; naming the same one is not.
-    expect(emitted.contents).toContain('std::static_pointer_cast<WidgetRuntime>(');
-    // Exactly one cast: the narrowing to a DIFFERENT record needs one, and naming the same record does
-    // not. Both assertions read the same slot, so a second cast is the bug this pins.
-    expect(emitted.contents.match(/std::static_pointer_cast</gu)).toHaveLength(1);
+    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('target std::optional<flight::Ref<WidgetRuntime>>');
   });
 
   it('spells a dependent member type the way the runtime spells it', () => {

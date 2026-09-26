@@ -1,0 +1,1 @@
+cpp emission failed for @flighthq/golden/packages/golden/src/assertionInterfaceOneValueUnlowered.ts: type assertion target must identify exactly one C++ variant alternative: target std::optional<flight::Ref<DerivedShape>> against [flight::Ref<BaseShape>]

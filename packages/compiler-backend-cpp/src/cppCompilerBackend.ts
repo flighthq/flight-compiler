@@ -11065,10 +11065,20 @@ function emitUnionMemberAssertionCpp(
   // refuses rather than emitting something that cannot compile.
   const assertedUnion = getIrUnionTypeCpp(assertedType, context, new Set());
   const assertedPlan = assertedUnion ? getCppUnionRepresentationPlan(assertedUnion, context) : undefined;
-  const narrowing =
+  const singleSlotNarrowing =
     plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
       ? getCppReferenceNarrowingCpp(plan.valueSlots[0]!.targetType, assertedPlan.valueSlots[0]!.targetType)
       : undefined;
+  // A cast between two records is only a cast the target compiler accepts when the records are related by
+  // class heritage. An interface's members are flattened into an independent struct, so a narrowing between
+  // two of those has no C++ relationship to cast along and `static_pointer_cast` would not compile -- the
+  // value's own representation is the only spelling that does. That pair refuses below instead: the source
+  // is valid, so the refusal is the compiler's gap, which is what its default attribution says.
+  const narrowing =
+    singleSlotNarrowing?.cast !== undefined &&
+    !isCppClassHeritageRelatedCpp(plan.valueSlots[0]!.runtimeType, assertedPlan!.valueSlots[0]!.runtimeType, context)
+      ? undefined
+      : singleSlotNarrowing;
   const structuralNarrowing =
     plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
       ? isCppExplicitStructuralUnionSlotExtensionCpp(plan.valueSlots[0]!, assertedPlan.valueSlots[0]!, context)
@@ -11091,24 +11101,40 @@ function emitUnionMemberAssertionCpp(
     // for the narrowing -- which is the compiler's gap and is reported as one. Only an assertion whose
     // target relates to no alternative at all, or one that names the value's own union type, is a claim
     // about the source's own types that the source has to restate.
+    // One-value pairs are compared slot to slot: the assertion names the whole optional and the slot is
+    // the value inside it, so the asserted type is never the record the slot holds.
+    const slotPairRelated =
+      plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1
+        ? context.referenceRepresentationPlanner.isStructurallyAssignable(
+            assertedPlan.valueSlots[0]!.runtimeType,
+            plan.valueSlots[0]!.runtimeType,
+            context.module,
+          ) ||
+          context.referenceRepresentationPlanner.isStructurallyAssignable(
+            plan.valueSlots[0]!.runtimeType,
+            assertedPlan.valueSlots[0]!.runtimeType,
+            context.module,
+          )
+        : false;
     const relatedToAnAlternative =
       !namesSourceUnion &&
-      plan.valueSlots.some(
-        (slot) =>
-          slot.sourceAlternatives.some(
-            (alternative) =>
-              context.referenceRepresentationPlanner.isStructurallyAssignable(
-                assertedType,
-                alternative,
-                context.module,
-              ) ||
-              context.referenceRepresentationPlanner.isStructurallyAssignable(
-                alternative,
-                assertedType,
-                context.module,
-              ),
-          ) || isCppNominalHeritageUnionSlotCpp(slot, assertedType, context),
-      );
+      (slotPairRelated ||
+        plan.valueSlots.some(
+          (slot) =>
+            slot.sourceAlternatives.some(
+              (alternative) =>
+                context.referenceRepresentationPlanner.isStructurallyAssignable(
+                  assertedType,
+                  alternative,
+                  context.module,
+                ) ||
+                context.referenceRepresentationPlanner.isStructurallyAssignable(
+                  alternative,
+                  assertedType,
+                  context.module,
+                ),
+            ) || isCppNominalHeritageUnionSlotCpp(slot, assertedType, context),
+        ));
     // The alternatives are matched by target type, so naming the target and the types it was
     // compared against is what makes the refusal readable without a debugger: the asserted target
     // is often the whole optional the union already spells, compared against a slot's stored value.
@@ -11253,16 +11279,19 @@ function isCppNominalHeritageUnionSlotCpp(
   ) {
     return false;
   }
-  if (!isCppClassDeclarationCpp(assertedType, context)) return false;
-  const assertedBases = collectCppDeclaredBaseBindingIdsCpp(assertedType, context);
-  return slot.sourceAlternatives.some((alternative) => {
-    if (!isCppClassDeclarationCpp(alternative, context)) return false;
-    const alternativeId = getCppNamedBindingIdCpp(alternative);
-    return (
-      assertedBases.has(alternativeId ?? '') ||
-      collectCppDeclaredBaseBindingIdsCpp(alternative, context).has(getCppNamedBindingIdCpp(assertedType) ?? '')
-    );
-  });
+  return slot.sourceAlternatives.some((alternative) =>
+    isCppClassHeritageRelatedCpp(assertedType, alternative, context),
+  );
+}
+
+// Whether two declarations are related by class heritage, with every link a class. Both directions answer
+// one question -- one of them is the other's base -- because the cast is a cast either way.
+function isCppClassHeritageRelatedCpp(left: Readonly<IrType>, right: Readonly<IrType>, context: EmitContext): boolean {
+  if (!isCppClassDeclarationCpp(left, context) || !isCppClassDeclarationCpp(right, context)) return false;
+  return (
+    collectCppDeclaredBaseBindingIdsCpp(left, context).has(getCppNamedBindingIdCpp(right) ?? '') ||
+    collectCppDeclaredBaseBindingIdsCpp(right, context).has(getCppNamedBindingIdCpp(left) ?? '')
+  );
 }
 
 // The binding identities a type's own declaration names as its bases, transitively, by the heritage the
