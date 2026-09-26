@@ -240,6 +240,46 @@ describe('createCppCompilerBackend', () => {
 
     expect(failure).toMatchObject({ code: 'unsupported-ir', rule: 'cpp-lowering-pass-refused' });
     expect(failure.message).toContain('interface Broken inherits incompatible property source');
+    // The inheritance pass reports this cause with its own code, and that code is what the backend reads:
+    // the interface contradicts itself, which the source language rejects as well, so the source is what
+    // has to change and the message says which member to reconcile.
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('TypeScript rejects this heritage as well');
+  });
+
+  it('classifies an inherited nullability conflict as a source change and says what to declare', () => {
+    const result = lower(
+      'inherited-nullability-conflict.ts',
+      `declare interface OptionalSource { source?: string; }
+       declare interface UndefinedSource { source: string | undefined; }
+       export interface Broken extends OptionalSource, UndefinedSource {}`,
+    );
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(result.module));
+
+    // The TypeScript checker rejects this heritage too (2320, named property 'source' of the two bases
+    // are not identical), so nothing about the target is missing: the source has to state one type for
+    // the property, and the report says so instead of leaving it as a compiler restriction.
+    expect(failure.rule).toBe('cpp-lowering-pass-refused');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('interface Broken inherits incompatible property source');
+    expect(failure.message).toContain('declare the property once at a type both bases accept');
+  });
+
+  it('keeps a lowering pass gap that the source language accepts attributed to the compiler', () => {
+    const result = lower(
+      'array-binding-default-and-rest.ts',
+      `export function read(values: number[]): number {
+         const [first = 0, ...rest] = values;
+         return first + rest.length;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(result.module));
+
+    // The control for the case above: this source is valid, the pass has not reached the form, and the
+    // refusal keeps the default attribution. Only the reason that is a fact about the source's own
+    // declaration is attributed to the source.
+    expect(failure.rule).toBe('cpp-lowering-pass-refused');
+    expect(failure.classification).toBe('compiler-restriction');
   });
 
   it('accepts the RenderProxy2D source refinement from Node<any> to the Node2D intersection', () => {

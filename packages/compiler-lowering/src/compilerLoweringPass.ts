@@ -224,6 +224,7 @@ function validateCompilerLoweringPassOrder(
 
 const compilerLoweringFailureCodes: Readonly<Record<CompilerLoweringFailureCode, true>> = {
   'duplicate-pass-name': true,
+  'incompatible-heritage': true,
   'invalid-pass-identity': true,
   'invalid-pass-order': true,
   'invalid-verification-depth': true,

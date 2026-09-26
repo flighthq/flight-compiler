@@ -32,6 +32,10 @@ export interface CompilerLoweringPass {
 
 export type CompilerLoweringFailureCode =
   | 'duplicate-pass-name'
+  // An interface's own declaration contradicts the bases it extends, which no target can represent and
+  // the source language already rejects: the failure is the source's, and the code says so structurally
+  // rather than leaving a reader to match on the message.
+  | 'incompatible-heritage'
   | 'invalid-pass-identity'
   | 'invalid-pass-order'
   | 'invalid-verification-depth'

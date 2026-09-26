@@ -9,6 +9,7 @@ import {
   resolveIrTypeStructuralSubstitution,
 } from '../../compiler-structural/src/index.js';
 import type {
+  CompilerLoweringFailureCode,
   CompilerInterfaceInheritanceLoweringOptions,
   CompilerLoweringPass,
   CompilerModuleIdentity,
@@ -673,9 +674,12 @@ function addIrInterfacePropertyFlattened(
   if (!isDeepStrictEqual(existing, property)) {
     const diagnostic = propertyToExisting.diagnostics[0] ?? existingToProperty.diagnostics[0];
     const detail = diagnostic ? ` (${diagnostic.code} at ${diagnostic.path.map(String).join('.') || 'type'})` : '';
+    // This heritage is not one the target lacks a representation for: the interface's own declaration
+    // cannot hold the property at one type, which is what the source language rejects here too (2320).
     failIrInterfaceInheritanceLowering(
       context.subject,
       `interface ${declaration.binding.name} inherits incompatible property ${property.name}${detail}`,
+      'incompatible-heritage',
     );
   }
 }
@@ -1642,8 +1646,12 @@ function getInterfaceInheritanceRelativeSpecifier(fromSource: string, targetSour
   return relative.startsWith('.') ? relative : `./${relative}`;
 }
 
-function failIrInterfaceInheritanceLowering(module: Readonly<IrModule>, message: string): never {
-  throw createCompilerLoweringFailure('unsupported-ir', compilerLoweringPassNameInterfaceInheritance, module, message);
+function failIrInterfaceInheritanceLowering(
+  module: Readonly<IrModule>,
+  message: string,
+  code: CompilerLoweringFailureCode = 'unsupported-ir',
+): never {
+  throw createCompilerLoweringFailure(code, compilerLoweringPassNameInterfaceInheritance, module, message);
 }
 
 const compilerEmptyModuleResolutionPlan: CompilerModuleResolutionPlan = Object.freeze({

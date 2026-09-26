@@ -598,21 +598,24 @@ describe('createCompilerLoweringPassInterfaceInheritance', () => {
     };
     const incompatible = replaceInterface(module, right, incompatibleRight);
 
-    for (const [subject, message] of [
-      [missingArgument, 'requires heritage type argument Value'],
-      [tooManyArguments, 'receives too many heritage type arguments'],
-      [unresolved, 'inherits a nonlocal interface'],
-      [qualified, 'inherits a nonlocal interface'],
-      [unavailable, 'heritage type alias Alias is not object-shaped'],
-      [cyclic, 'has cyclic structural inheritance'],
-      [incompatible, 'inherits incompatible property value'],
+    // The code is part of the contract, not decoration: exactly one of these reasons is a fact about the
+    // source's own declaration rather than about a form the pass has not reached, and the backend reads
+    // the code to attribute it. Every other reason keeps the generic code, which is the control here.
+    for (const [subject, message, code] of [
+      [missingArgument, 'requires heritage type argument Value', 'unsupported-ir'],
+      [tooManyArguments, 'receives too many heritage type arguments', 'unsupported-ir'],
+      [unresolved, 'inherits a nonlocal interface', 'unsupported-ir'],
+      [qualified, 'inherits a nonlocal interface', 'unsupported-ir'],
+      [unavailable, 'heritage type alias Alias is not object-shaped', 'unsupported-ir'],
+      [cyclic, 'has cyclic structural inheritance', 'unsupported-ir'],
+      [incompatible, 'inherits incompatible property value', 'incompatible-heritage'],
     ] as const) {
       expect(() => lowerIrModuleWithCompilerPasses(subject, [pass])).toThrow(message);
       try {
         lowerIrModuleWithCompilerPasses(subject, [pass]);
       } catch (error) {
         expect(isCompilerLoweringFailure(error)).toBe(true);
-        if (isCompilerLoweringFailure(error)) expect(error.code).toBe('unsupported-ir');
+        if (isCompilerLoweringFailure(error)) expect(error.code).toBe(code);
       }
     }
   });

@@ -446,8 +446,24 @@ function emitIrModuleCppWithContext(
       createCompilerLoweringPassSwitchSuspension(),
     ]);
   } catch (error) {
-    if (isCompilerLoweringFailure(error) && error.code === 'unsupported-ir') {
-      throw createBackendEmissionFailure('cpp', sourceModule, error.message, 'cpp-lowering-pass-refused');
+    if (
+      isCompilerLoweringFailure(error) &&
+      (error.code === 'unsupported-ir' || error.code === 'incompatible-heritage')
+    ) {
+      // An interface whose own declaration contradicts the bases it extends is a source fact -- the source
+      // language rejects the same heritage -- so the report attributes it to the source and says what to
+      // declare. Every other lowering refusal keeps the default attribution: a pass that has not reached a
+      // form yet is the compiler's to widen, and saying otherwise would send a reader to edit good source.
+      const heritage = error.code === 'incompatible-heritage';
+      throw createBackendEmissionFailure(
+        'cpp',
+        sourceModule,
+        heritage
+          ? `${error.message}. TypeScript rejects this heritage as well, so declare the property once at a type both bases accept, or drop one of the bases`
+          : error.message,
+        'cpp-lowering-pass-refused',
+        heritage ? { classification: 'source-portability' } : undefined,
+      );
     }
     throw error;
   }
