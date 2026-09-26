@@ -10880,23 +10880,26 @@ function getCppClosedKeyElementMembersCpp(
       'cpp-closed-key-absent-member',
     );
   }
-  const distinct = [...new Set(memberTypes)];
-  if (distinct.length !== 1) {
-    // A member that cannot hold the value the source wrote is an assignment the source language rejects
-    // as well -- the value would have to be assignable to every member the key set names -- so the author
-    // is the one who can narrow the key and the value together. Everything else here is the target's: the
-    // members lower to different C++ types and the result representation that would hold several of them
-    // is the union planner's question, which the read selection has not answered yet.
-    const sourceInvalid = writtenType !== undefined && rejected.length > 0;
+  if (writtenType !== undefined && rejected.length > 0) {
+    // Write compatibility is independent of whether the selected members happen to share one target
+    // type. A number cannot be assigned through `'alpha' | 'beta'` when both members are strings either:
+    // the source must correlate the key and value before the backend can dispatch the write.
     emissionError(
       context,
-      `closed-key ${writtenType === undefined ? 'selection' : 'write'} over ${String(distinct.length)} member types requires a represented result union${
-        sourceInvalid
-          ? '. Narrow the key and the value together, so each assignment names one member the value fits'
-          : ''
-      }`,
+      `closed-key write value is not assignable to every selected member (${rejected.join(', ')}). Narrow the key and the value together, so each assignment names one member the value fits`,
       'cpp-closed-key-multiple-member-types',
-      sourceInvalid ? 'source-portability' : undefined,
+      'source-portability',
+    );
+  }
+  const distinct = [...new Set(memberTypes)];
+  if (distinct.length !== 1) {
+    // Every write value that reaches this point fits every selected member. What remains is the target's:
+    // the members lower to different C++ types and the result representation that would hold several of
+    // them is the union planner's question, which the read selection has not answered yet.
+    emissionError(
+      context,
+      `closed-key ${writtenType === undefined ? 'selection' : 'write'} over ${String(distinct.length)} member types requires a represented result union`,
+      'cpp-closed-key-multiple-member-types',
     );
   }
   return { distinct, members, runtime };

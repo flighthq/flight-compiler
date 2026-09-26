@@ -13266,6 +13266,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.rule).toBe('cpp-closed-key-multiple-member-types');
     expect(failure.classification).toBe('source-portability');
     expect(failure.message).toContain('Narrow the key and the value together');
+
+    const sameMemberType = lower(
+      'closed-key-write-unfitted-same-member-type.ts',
+      `interface Labels { alpha?: string; beta?: string }
+       export function set(labels: Labels, key: 'alpha' | 'beta', value: number): void {
+         labels[key] = value;
+       }`,
+    );
+    const sameMemberTypeFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(sameMemberType.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(sameMemberTypeFailure.rule).toBe('cpp-closed-key-multiple-member-types');
+    expect(sameMemberTypeFailure.classification).toBe('source-portability');
+    expect(sameMemberTypeFailure.message).toContain('alpha, beta');
   });
 
   it('keeps a closed-key read over several member types attributed to the compiler', () => {
