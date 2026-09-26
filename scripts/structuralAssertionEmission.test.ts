@@ -47,6 +47,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'contextualUnionSubsetConversion', header: 'contextual_union_subset_conversion.hpp' },
   { fixture: 'indexSignatureRecordCarrier', header: 'index_signature_record_carrier.hpp' },
   { fixture: 'indexSignatureRecordEnumeration', header: 'index_signature_record_enumeration.hpp' },
+  { fixture: 'assertionOneAlternativeRecovery', header: 'assertion_one_alternative_recovery.hpp' },
 ];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
 const runtime = resolveDependency(root, 'flight-cpp');

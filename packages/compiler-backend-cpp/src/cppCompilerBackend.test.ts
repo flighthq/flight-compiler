@@ -2128,6 +2128,31 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('Narrow or convert the source expression');
   });
 
+  it('identifies the one alternative an assertion names, and carries absence across it', () => {
+    const result = lower(
+      'one-alternative-assertion.ts',
+      `interface Alpha { a: number }
+       interface Beta { b: number }
+       interface Gamma { c: number }
+       export function one(value: Alpha | Beta | Gamma): Alpha | undefined { return value as Alpha | undefined; }
+       export function nullable(value: Alpha | Beta): Alpha | null { return value as Alpha | null; }
+       export function fromNullable(value: (Alpha | Beta) | undefined): Alpha | undefined {
+         return value as Alpha | undefined;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The assertion names the one alternative it claims is active, so the carrier it builds holds that
+    // alternative and nothing else: the `get_if` answers which one is really there, a value holding another
+    // falls through to the throw, and absence crosses exactly where the assertion admits it. Before this,
+    // all three refused as `cpp-type-assertion-unidentified` even though each names one known alternative.
+    expect(contents).toContain('([&]() -> std::optional<flight::Ref<Alpha>>');
+    expect(contents).toContain('std::get_if<flight::Ref<Alpha>>(&narrowed_union)');
+    expect(contents).not.toContain('std::get_if<flight::Ref<Beta>>(&narrowed_union)');
+    expect(contents).toContain('has_value()) return std::nullopt;');
+    expect(contents).toContain('throw std::logic_error("asserted union alternative is not present in the value")');
+  });
+
   it('narrows a union carrier to the alternatives the value holds', () => {
     const result = lower(
       'sub-union-assertion.ts',

@@ -11606,13 +11606,15 @@ function getCppSubUnionAssertionSlotsCpp(
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
   assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan> | undefined,
 ): readonly Readonly<{ source: number; target: number }>[] | undefined {
-  // The two carriers have to be the same SHAPE of carrier -- a variant of alternatives either way -- while
-  // the absence dimension may differ, because dropping or adding absence is part of what an assertion
-  // states and each direction is answered below.
+  // The value has to be a variant of alternatives, and the asserted carrier may hold several or only one:
+  // `value as A | undefined` over `A | B | C` names the one alternative the assertion claims is active, which
+  // is the same question this lane already answers for a subset of several. The absence dimension may differ
+  // in either direction, because dropping or adding absence is part of what an assertion states.
   if (
     !assertedPlan ||
     getCppUnionCarrierFamilyCpp(assertedPlan.kind) === undefined ||
-    getCppUnionCarrierFamilyCpp(assertedPlan.kind) !== getCppUnionCarrierFamilyCpp(plan.kind) ||
+    getCppUnionCarrierFamilyCpp(plan.kind) !== 'many' ||
+    assertedPlan.valueSlots.length === 0 ||
     plan.valueSlots.length === 0
   ) {
     return undefined;
