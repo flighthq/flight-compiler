@@ -1,1 +1,1 @@
-cpp emission failed for @flighthq/golden/packages/golden/src/closedKeyWriteUnfittedValue.ts: closed-key write over 2 member types requires a represented result union. Narrow the key and the value together, so each assignment names one member the value fits
+cpp emission failed for @flighthq/golden/packages/golden/src/closedKeyWriteUnfittedValue.ts: closed-key write value is not assignable to every selected member (fontSize, color). Narrow the key and the value together, so each assignment names one member the value fits
