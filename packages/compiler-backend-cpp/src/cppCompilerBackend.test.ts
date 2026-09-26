@@ -13282,6 +13282,64 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(sameMemberTypeFailure.message).toContain('alpha, beta');
   });
 
+  it('selects the alternative an erased dynamic value holds when it enters a union', () => {
+    const result = lower(
+      'erased-union-entry.ts',
+      `interface Cache { entry: number | string | undefined }
+       export function store(cache: Cache, payload: unknown): void {
+         cache.entry = payload as number | string | undefined;
+       }
+       export function read(payload: unknown): number | string {
+         return payload as number | string;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The value is erased, so the conversion asks the runtime what it holds rather than reinterpreting it:
+    // each alternative tests the kind it needs and extracts through the runtime's own accessor, and a value
+    // of another kind fails loudly instead of becoming an alternative it is not.
+    expect(contents).toContain('erased_value.kind() == flight::AnyKind::number');
+    expect(contents).toContain('erased_value.as_number()');
+    expect(contents).toContain('erased_value.kind() == flight::AnyKind::string');
+    expect(contents).toContain('erased_value.as_string()');
+    expect(contents).toContain('erased_value.is_nullish()');
+    expect(contents).toContain('erased value holds no alternative this union represents');
+  });
+
+  it('recovers an object alternative of an erased value at the type it was stored as', () => {
+    const result = lower(
+      'erased-object-union-entry.ts',
+      `interface Payload { id: string }
+       export function read(payload: unknown): Payload | number {
+         return payload as Payload | number;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // A reference alternative is recovered through the runtime's own exact-type lookup, which answers empty
+    // for a value that holds something else -- so a branch that cannot hold the alternative is skipped
+    // rather than reinterpreted.
+    expect(contents).toContain('erased_value.object_if<Payload>()');
+    expect(contents).toContain('std::in_place_type<flight::Ref<Payload>>');
+    expect(contents).not.toContain('static_cast<std::variant<flight::Ref<Payload>, double>>');
+  });
+
+  it('refuses an erased value entering a union whose alternative it cannot test for', () => {
+    const result = lower(
+      'erased-untestable-union-entry.ts',
+      `function accept(_value: Uint8Array | number): void {}
+       export function pass(payload: any): void { accept(payload); }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // A typed array has no test the runtime can answer for an erased value, and a branch that cannot test
+    // would be guessing which alternative the value is, so the conversion stays refused.
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(failure.message).toContain('is not a represented runtime domain');
+  });
+
   it('keeps a closed-key read over several member types attributed to the compiler', () => {
     const result = lower(
       'closed-key-read-heterogeneous.ts',

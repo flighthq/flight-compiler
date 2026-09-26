@@ -13090,6 +13090,17 @@ function emitContextualUnionExpressionInContextCpp(
         return emitCppUnionValueConstruction(converted, structural.slot.targetType, union, plan.kind, context);
       }
     }
+    // An `any`-typed value is the one erased source whose conversion the source language sanctions: it is
+    // assignable to every position, so a cache or registry storing what it was handed reaches here as a
+    // conversion the author asked for, and it is a SELECTION rather than a missing representation -- each
+    // branch asks for the kind its alternative needs and extracts it through the runtime's own accessor.
+    // A bare `unknown` in this position is a conversion the source language rejects, so it keeps its
+    // refusal; the assertion door is where an author states that one is meant, and that lane takes the
+    // same selection.
+    const erasedConstruction = isCppAnySourcedDynamicValueCpp(runtimeType)
+      ? emitCppErasedValueUnionConstructionCpp(expression, union, plan, context)
+      : undefined;
+    if (erasedConstruction) return erasedConstruction;
     emissionError(
       context,
       `contextual union value type ${targetType} is not a represented runtime domain`,
@@ -13576,6 +13587,99 @@ function getIrOptionalChainCoalescedTypeEvidenceCpp(
   );
   if (!present[0]) return undefined;
   return { kind: 'union', types: [{ kind: fallback }, present[0], ...present.slice(1)] };
+}
+
+interface CppErasedValueUnionExtraction {
+  readonly test: (value: string) => string;
+  readonly value: (value: string) => string;
+}
+
+// Builds a union carrier from an erased dynamic value by asking the runtime what it holds.
+//
+// A `flight::Any` is the one source whose alternatives a target can TEST, so storing one into a union is a
+// checked selection rather than a cast: each branch tests the kind its alternative needs and extracts the
+// value through the runtime's own accessor, which throws rather than reinterpreting when the kind is
+// something else. A value whose kind no alternative holds fails loudly, and the alternative that is an
+// object reference is recovered at the exact type it was stored as, which is what `object_if` exists for.
+// Any alternative without such a test -- a structural row, an external binding, a typed array -- leaves the
+// whole conversion to the refusal, because a branch that cannot test is a branch that would guess.
+function emitCppErasedValueUnionConstructionCpp(
+  expression: Readonly<IrExpression>,
+  union: Readonly<Extract<IrType, { kind: 'union' }>>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || plan.valueSlots.length === 0) return undefined;
+  const extractions = plan.valueSlots.map((slot) => getCppErasedValueUnionExtractionCpp(slot.targetType));
+  if (extractions.some((extraction) => extraction === undefined)) return undefined;
+  const everyExtraction = extractions.filter(
+    (extraction): extraction is Readonly<CppErasedValueUnionExtraction> => extraction !== undefined,
+  );
+  const carrier =
+    plan.kind === 'singleValue'
+      ? plan.valueSlots[0]!.targetType
+      : plan.kind === 'optionalSingle'
+        ? (() => {
+            context.includes.add('optional');
+            return `std::optional<${plan.valueSlots[0]!.targetType}>`;
+          })()
+        : emitUnionTypeCpp(union, context);
+  context.includes.add('flight/any.hpp');
+  context.includes.add('stdexcept');
+  const erased = getGeneratedTargetName('erasedValue', context);
+  const branches = plan.valueSlots.map((slot, index) => {
+    const extraction = everyExtraction[index]!;
+    const constructed = emitCppUnionValueConstruction(
+      extraction.value(erased),
+      slot.targetType,
+      union,
+      plan.kind,
+      context,
+    );
+    return `if (${extraction.test(erased)}) return ${constructed};`;
+  });
+  // An erased value that holds absence is the union's own absence, when the union admits one.
+  const admitsAbsence = union.types.some((member) => member.kind === 'null' || member.kind === 'undefined');
+  const absence = admitsAbsence
+    ? [
+        `if (${erased}.is_nullish()) return ${emitCppUnionSentinelConstruction('undefined', union, plan.kind, context)};`,
+      ]
+    : [];
+  return `([&]() -> ${carrier} { const auto& ${erased} = ${emitExpression(expression, context)}; ${[...branches, ...absence].join(' ')} throw std::logic_error("erased value holds no alternative this union represents"); }())`;
+}
+
+function getCppErasedValueUnionExtractionCpp(targetType: string): Readonly<CppErasedValueUnionExtraction> | undefined {
+  const element = getCppReferenceElementTypeNameCpp(targetType);
+  if (element !== undefined) {
+    return {
+      test: (value) => `static_cast<bool>(${value}.object_if<${element}>())`,
+      value: (value) => `${value}.object_if<${element}>()`,
+    };
+  }
+  switch (targetType) {
+    case 'bool':
+      return {
+        test: (value) => `${value}.kind() == flight::AnyKind::boolean`,
+        value: (value) => `${value}.as_boolean()`,
+      };
+    case 'double':
+      return {
+        test: (value) => `${value}.kind() == flight::AnyKind::number`,
+        value: (value) => `${value}.as_number()`,
+      };
+    case 'flight::String':
+      return {
+        test: (value) => `${value}.kind() == flight::AnyKind::string`,
+        value: (value) => `${value}.as_string()`,
+      };
+    case 'flight::Symbol':
+      return {
+        test: (value) => `${value}.kind() == flight::AnyKind::symbol`,
+        value: (value) => `${value}.as_symbol()`,
+      };
+    default:
+      return undefined;
+  }
 }
 
 function emitCppUnionValueConstruction(
@@ -17558,15 +17662,34 @@ function getCppErasedValueAssertionCpp(
     string: 'as_string',
     symbol: 'as_symbol',
   };
-  if (target.kind !== 'primitive') return undefined;
-  const extraction = extractions[target.name];
-  if (!extraction) return undefined;
-  context.includes.add('flight/any.hpp');
-  return `${emitExpression(expression, context)}.${extraction}()`;
+  if (target.kind === 'primitive') {
+    const extraction = extractions[target.name];
+    if (!extraction) return undefined;
+    context.includes.add('flight/any.hpp');
+    return `${emitExpression(expression, context)}.${extraction}()`;
+  }
+  // A union target is several alternatives, so the assertion is the same checked selection the contextual
+  // lane builds: each alternative asks the runtime for the kind it needs. Without this the assertion fell
+  // through to a `static_cast` between the erased value and the carrier, which does not compile.
+  const union = getIrUnionTypeCpp(target, context, new Set());
+  if (!union) return undefined;
+  return emitCppErasedValueUnionConstructionCpp(
+    expression,
+    union,
+    getCppUnionRepresentationPlan(union, context),
+    context,
+  );
 }
 
 // Exactly the positions `emitType` routes to `flight::Any`: an unconstrained type that is neither the
 // dynamic `this` nor an erased object reference, which have their own representations.
+// The erased source whose conversion the source language sanctions, as opposed to the one it rejects: `any`
+// is assignable to every position, so a union target is a conversion the author asked for; `unknown` is not,
+// and an unasserted one in a union position is a conversion the source language reports.
+function isCppAnySourcedDynamicValueCpp(type: Readonly<IrType> | undefined): boolean {
+  return type?.kind === 'unknown' && type.source === 'any';
+}
+
 function isCppErasedDynamicValueTypeCpp(type: Readonly<IrType> | undefined): boolean {
   return type?.kind === 'unknown' && type.source !== 'this' && type.source !== 'object';
 }
