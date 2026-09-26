@@ -13924,6 +13924,59 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('stores a callable that accepts absence where the destination always supplies a value', () => {
+    const result = lower(
+      'callable-union-parameterity.ts',
+      `type Handler = (value: number) => void;
+       type HandlerSlot = Handler | string;
+       export function storeOptional(handler: (value?: number) => void): HandlerSlot { return handler; }
+       export function storeNullable(handler: (value: number | undefined) => void): HandlerSlot { return handler; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The destination's signature is the only caller this value ever has, and it always supplies the
+    // parameter, so a handler that also accepts absence is one it can call: the source's optional storage
+    // is constructed by the call. The `?` spelling therefore stores through the alternative's carrier with
+    // no wrapper at all, while the nullable spelling is wrapped -- same call, with the argument carried
+    // into the source's optional parameter explicitly. Neither is a cast and neither copies the callable's
+    // target, which is what "one callable stored where another spelling of it is declared" means.
+    expect(contents).toContain('std::in_place_type<std::function<void(double)>>, handler');
+    expect(contents).toContain('std::in_place_type<std::function<void(double)>>, [contextual_callable');
+    expect(contents).not.toContain('static_cast');
+  });
+
+  it('attributes a callable the destination cannot call to the signature, not to a value domain', () => {
+    const refusal = (file: string, source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // A destination parameter the caller may omit reaches a value that requires it as a call the
+    // destination cannot make, so the value stays refused -- and it is reported as the signature agreement
+    // it is. A callable is a represented domain, so claiming otherwise sends the reader after a missing
+    // representation that does not exist.
+    const omitted = refusal(
+      'callable-union-parameterity-omitted.ts',
+      `type Slot = ((value?: number) => void) | string;
+       export function store(handler: (value: number) => void): Slot { return handler; }`,
+    );
+    expect(omitted.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(omitted.classification).toBe('compiler-restriction');
+    expect(omitted.message).toContain('agrees with no alternative');
+    expect(omitted.message).toContain('std::function<void(std::optional<double>)>');
+    expect(omitted.message).not.toContain('is not a represented runtime domain');
+
+    // A parameter the destination's signature cannot supply at all is the same refusal with the same
+    // attribution: what fails is the agreement between two signatures, whatever the difference is.
+    const missing = refusal(
+      'callable-union-parameterity-missing.ts',
+      `type Slot = ((value: number) => void) | string;
+       export function store(handler: (value: number, extra: string) => void): Slot { return handler; }`,
+    );
+    expect(missing.message).toContain('agrees with no alternative');
+    expect(missing.message).not.toContain('is not a represented runtime domain');
+  });
+
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>

@@ -13504,15 +13504,23 @@ function emitContextualUnionExpressionInContextCpp(
     // does not represent at all, or a value whose type is not the declaration any alternative names --
     // a structural shape, a partial projection, or a record that merely LOOKS like one. The first is the
     // runtime's to add; the rest are declarations the source has to state, because no checked conversion
-    // exists between two nominal types that are not the same type.
+    // exists between two nominal types that are not the same type. A callable is the exception that proves
+    // the vocabulary: it IS a represented domain, so a refusal is about the signatures agreeing rather
+    // than about representation, and it is worded and attributed as that.
     const cause = getCppUnrepresentedUnionValueCauseCpp(runtimeType, plan, context);
     emissionError(
       context,
-      cause === 'partial-value'
-        ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
-        : cause === 'nominal-mismatch'
-          ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
-          : `contextual union value type ${targetType} is not a represented runtime domain`,
+      cause === 'callable-signature'
+        ? `contextual union callable value type ${targetType} agrees with no alternative's signature: the destination holds [${plan.valueSlots
+            .map((slot) => slot.targetType)
+            .join(
+              ', ',
+            )}]. A callable is a represented domain, so the obstacle is that the destination's signature cannot call this one. Declare the value's parameters so the destination's signature supplies them, and its result as one the destination holds`
+        : cause === 'partial-value'
+          ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
+          : cause === 'nominal-mismatch'
+            ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
+            : `contextual union value type ${targetType} is not a represented runtime domain`,
       'cpp-contextual-union-value-type-unrepresented',
       cause === 'erased-kind' ? 'target-runtime' : cause === 'partial-value' ? 'source-portability' : undefined,
     );
@@ -13851,19 +13859,60 @@ function getCppCallableUnionValueSlotCpp(
     const parametersAgree = source.parameters.slice(0, target.parameters.length).every((parameter, parameterIndex) => {
       const targetParameter = target.parameters[parameterIndex]!;
       return (
-        parameter.optional === targetParameter.optional &&
         parameter.rest === targetParameter.rest &&
-        emitCppCallableParameterValueConversionCpp('argument', targetParameter.type, parameter.type, parameter.rest, {
-          ...context,
-          anonymousStructs: new Map(),
-          includes: new Set<string>(),
-        }) !== undefined
+        acceptsCppContextualCallableParameterCpp(parameter, targetParameter, context)
       );
     });
     if (!parametersAgree) return [];
     return hasCppCompatibleCallableReturnRepresentationCpp(source.returns, target.returns, context) ? [index] : [];
   });
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+// Whether a source parameter accepts every argument the contextual one can supply.
+//
+// The contextual signature is the only caller this value ever has, so the question is exactly what that
+// signature passes: a parameter it always supplies is a present value, and one it may omit is absence.
+// The emitted parameter types answer both directions, because they are what the C++ call sees -- a source
+// that stores `std::optional<X>` is called with an `X` from a contextual parameter that always supplies
+// one, and the storage is constructed implicitly. Payload comparison alone cannot see that: `number` and
+// `number | undefined` are two payload domains and one storage, which is why a value declaring
+// `(v?: number) => void` or `(v: number | undefined) => void` is the same callable to a signature that
+// always supplies a number.
+function acceptsCppContextualCallableParameterCpp(
+  source: Readonly<IrFunctionTypeParameter>,
+  target: Readonly<IrFunctionTypeParameter>,
+  context: EmitContext,
+): boolean {
+  const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const sourceStorage = emitOptionalTypeCpp(
+    emitCppParameterTypeCpp(source.type, source.rest, isolatedContext),
+    source.optional,
+    isolatedContext,
+  );
+  const targetStorage = emitOptionalTypeCpp(
+    emitCppParameterTypeCpp(target.type, target.rest, isolatedContext),
+    target.optional,
+    isolatedContext,
+  );
+  if (sourceStorage === targetStorage) return true;
+  const conversion = emitCppCallableParameterValueConversionCpp(
+    'argument',
+    target.type,
+    source.type,
+    source.rest,
+    isolatedContext,
+  );
+  if (conversion === undefined) {
+    // The contextual parameter always supplies a value and the source stores it optionally: the call
+    // constructs that storage, exactly as it does for a parameter the source declared optional. The
+    // other direction -- a contextual parameter the caller may omit -- is not symmetric, because a
+    // source that requires a value is then a call the destination cannot make.
+    return !target.optional && sourceStorage === `std::optional<${targetStorage}>`;
+  }
+  // A converted argument carries the source's own payload domain, so the two parameters need only agree
+  // on whether the caller may supply absence.
+  return !target.optional || source.optional;
 }
 
 function hasCppCompatibleCallableReturnRepresentationCpp(
@@ -14074,8 +14123,17 @@ function getCppUnrepresentedUnionValueCauseCpp(
   runtimeType: Readonly<IrType>,
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
   context: EmitContext,
-): 'erased-kind' | 'nominal-mismatch' | 'partial-value' | undefined {
+): 'callable-signature' | 'erased-kind' | 'nominal-mismatch' | 'partial-value' | undefined {
   if (isCppErasedDynamicValueTypeCpp(runtimeType)) return 'erased-kind';
+  // A callable never reaches a shape, so without this the refusal below would report a represented domain
+  // as an unrepresented one. The destination holds callables of its own -- otherwise this value would not
+  // have been asked about an alternative at all -- and what separates them is how they may be called.
+  if (
+    runtimeType.kind === 'function' &&
+    plan.valueSlots.some((slot) => getCppClosedCallableType(slot.runtimeType, context, new Set()) !== undefined)
+  ) {
+    return 'callable-signature';
+  }
   const shape = context.referenceRepresentationPlanner.resolveObjectShape(runtimeType, context.module);
   if (!shape) return undefined;
   // One alternative that accepts the value is enough for the source language, and it accepts it when every
