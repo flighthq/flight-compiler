@@ -57,6 +57,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'referenceAssertionHeritage', header: 'reference_assertion_heritage.hpp' },
   { fixture: 'typeofPresenceGuard', header: 'typeof_presence_guard.hpp' },
   { fixture: 'callableUnionStorageConstruction', header: 'callable_union_storage_construction.hpp' },
+  { fixture: 'contextualUnionViewConversion', header: 'contextual_union_view_conversion.hpp' },
   { fixture: 'erasedCallableReturn', header: 'erased_callable_return.hpp' },
   { fixture: 'erasedCallableReturnDomain', header: 'erased_callable_return_domain.hpp' },
   { fixture: 'indexSignatureRecordCarrier', header: 'index_signature_record_carrier.hpp' },
@@ -66,7 +67,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
 ];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
 const erasedRowRefusalFixture = 'erasedStructuralRowRefused';
-const unionViewRefusalFixture = 'contextualUnionViewInequivalent';
+
 const runtime = resolveDependency(root, 'flight-cpp');
 const includeDirectories = runtime === undefined ? [] : collectCppRuntimeIncludeDirectories(runtime.directory);
 const toolchain = findCppCompilerToolchain();
@@ -100,17 +101,6 @@ describe('structural assertion emission', () => {
     expect(pinned).toContain(
       'the runtime contract needs a structural object alternative constructed from the row owner and native object',
     );
-  });
-
-  it('pins the readonly-view union conversion as a refusal', () => {
-    const directory = path.join(goldenDirectory, unionViewRefusalFixture);
-
-    // Nothing pinned this rule before; the shape is the one the corpus reports, where the same owners are
-    // reached through a readonly view and the emitter has no per-slot conversion between the carriers.
-    expect(existsSync(path.join(directory, 'cpp'))).toBe(false);
-    const pinned = readFileSync(path.join(directory, 'cpp.error.txt'), 'utf8');
-    expect(pinned).toContain('contextual C++ union conversion requires equivalent source union evidence');
-    expect(pinned).toContain('keep both sides on the same declared union alias');
   });
 
   it('pins the missing-cell case as a refusal rather than an emission to compile', () => {

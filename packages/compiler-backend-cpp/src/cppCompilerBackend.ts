@@ -14510,6 +14510,24 @@ function emitContextualUnionExpressionInContextCpp(
     if (subsetSlots) {
       return emitCppContextualUnionSubsetCpp(expression, expressionType, union, plan, subsetSlots, context);
     }
+    // A source that reaches each owner through a READONLY VIEW is a conversion the runtime already provides,
+    // not a gap: `structural_ref_cast<Ref<T>>(row)` recovers the owner, and does not materialize, because
+    // `row_materializes_from` requires an EMPTY source object -- a view of a real object takes the
+    // `wrap_ref(source.shared_object())` branch. The proof is exact and per slot: the source slot's row must
+    // name exactly the owner one destination slot's runtime type is, with no ambiguity and no two views onto
+    // one owner. Anything else keeps the refusal below.
+    const viewSlots = getCppUnionReadonlyViewConversionSlotsCpp(expressionPlan, plan, context);
+    if (viewSlots) {
+      return emitCppUnionReadonlyViewConversionCpp(
+        expression,
+        expressionType,
+        union,
+        plan,
+        expressionPlan,
+        viewSlots,
+        context,
+      );
+    }
     const runtimeConversionGap = hasUniqueCppSemanticUnionSlotMappingCpp(expressionPlan, plan, context);
     const action = runtimeConversionGap
       ? 'The alternatives match uniquely, but no checked target-runtime conversion exists between their C++ carriers; keep both sides on the same declared union alias or add a runtime conversion contract.'
@@ -14813,6 +14831,71 @@ function emitCppContextualUnionSubsetCpp(
   });
   const absence = admitsCppUnionAbsenceCpp(plan.kind) ? [`if (!${converted}.has_value()) return std::nullopt;`] : [];
   return `([&]() -> ${carrier} { const auto& ${converted} = ${emitExpression(expression, context, expressionType, false)}; ${[...absence, ...branches].join(' ')} throw std::logic_error("source union alternative is not one the destination stores"); }())`;
+}
+
+// The slot pairing of a union conversion whose source reaches each owner through a readonly view.
+//
+// Every pairing is proven, never guessed, and the function answers only when they all are: each source slot
+// must BE a structural row, that row's object must spell exactly one destination slot's runtime type, and no
+// two source slots may name the same destination slot. A slot that fails any of those keeps the refusal --
+// including the ambiguous case, where two views name one owner and the conversion would have to choose.
+function getCppUnionReadonlyViewConversionSlotsCpp(
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): readonly Readonly<{ source: number; target: number }>[] | undefined {
+  if (sourcePlan.kind !== 'multiVariant' || targetPlan.kind !== 'multiVariant') return undefined;
+  if (sourcePlan.valueSlots.length === 0 || sourcePlan.valueSlots.length !== targetPlan.valueSlots.length) {
+    return undefined;
+  }
+  const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const pairs: { source: number; target: number }[] = [];
+  const taken = new Set<number>();
+  for (const [source, sourceSlot] of sourcePlan.valueSlots.entries()) {
+    const row = context.referenceRepresentationPlanner.resolveStructuralRow(sourceSlot.runtimeType, context.module);
+    const rowObject = row ? getCppStructuralRowObjectTypeCpp(row) : undefined;
+    if (!rowObject || !hasFlightReferenceRepresentationCpp(rowObject, context)) return undefined;
+    const ownerSpelling = emitType(rowObject, isolatedContext);
+    const matches = targetPlan.valueSlots.flatMap((slot, target) =>
+      slot.targetType === ownerSpelling ? [target] : [],
+    );
+    if (matches.length !== 1) return undefined;
+    const target = matches[0]!;
+    if (taken.has(target)) return undefined;
+    taken.add(target);
+    pairs.push({ source, target });
+  }
+  return pairs;
+}
+
+// Rebuilds the destination carrier from a source carrier whose slots are readonly views of its owners.
+//
+// The cast is the runtime's own checked recovery, so the value keeps its identity: no member is copied, no
+// row is materialized, and no native cast is written. A held alternative no pairing covers throws rather than
+// becoming an alternative it is not, which is what the plan's collision rules already guarantee cannot
+// happen -- the throw is the guard, not the expectation.
+function emitCppUnionReadonlyViewConversionCpp(
+  expression: Readonly<IrExpression>,
+  expressionType: Readonly<IrType>,
+  union: Readonly<Extract<IrType, { kind: 'union' }>>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  pairs: readonly Readonly<{ source: number; target: number }>[],
+  context: EmitContext,
+): string {
+  context.includes.add('variant');
+  context.includes.add('stdexcept');
+  context.includes.add('flight/structural_ref.hpp');
+  const converted = getGeneratedTargetName('convertedUnion', context);
+  const carrier = emitUnionTypeCpp(union, context);
+  const branches = pairs.map((pair) => {
+    const sourceSlot = sourcePlan.valueSlots[pair.source]!;
+    const targetSlot = plan.valueSlots[pair.target]!;
+    const recovered = `flight::structural_ref_cast<${targetSlot.targetType}>(*alternative)`;
+    const constructed = emitCppUnionValueConstruction(recovered, targetSlot.targetType, union, plan.kind, context);
+    return `if (const auto* alternative = std::get_if<${sourceSlot.targetType}>(&${converted})) return ${constructed};`;
+  });
+  return `([&]() -> ${carrier} { const auto& ${converted} = ${emitExpression(expression, context, expressionType, false)}; ${branches.join(' ')} throw std::logic_error("source union alternative is not a readonly view of one the destination names"); }())`;
 }
 
 function hasUniqueCppSemanticUnionSlotMappingCpp(

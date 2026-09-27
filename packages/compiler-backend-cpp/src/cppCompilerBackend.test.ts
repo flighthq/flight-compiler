@@ -19101,40 +19101,42 @@ Resolver make_resolver(TextureRef texture) {
     expect(nominal).toContain('return flight::Any::object(command);');
   });
 
-  it('refuses a union whose alternatives reach the same owners through a readonly view', () => {
-    // The plans' slots match UNIQUELY -- the source is a readonly view of the same two owners the destination
-    // names -- so the refusal is not about which alternative is which. It is that the C++ carriers differ and
-    // the emitter has no per-slot conversion from a row view to its owner.
+  it('converts a union whose alternatives reach the same owners through a readonly view', () => {
     const result = lower(
       'union-readonly-view.ts',
       `interface Color { readonly r: number; readonly g: number }
        interface Texture { readonly id: string }
        export function pick(value: Readonly<Color> | Readonly<Texture>): Color | Texture { return value; }`,
     );
-    const refusal = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
-    );
-    expect(refusal.rule).toBe('cpp-contextual-union-inequivalent');
-    // The gap is the emitter's per-slot conversion, and the classification says the runtime is where the fix
-    // would come from. The runtime fact is the opposite: `flight::structural_ref_cast<Ref<T>>(row)` recovers
-    // the owner without materializing (`row_materializes_from` requires an EMPTY source object, so a view of
-    // a real object takes the `wrap_ref(source.shared_object())` branch). The pin records the current
-    // classification so a change to it is deliberate rather than incidental.
-    expect(refusal.classification).toBe('target-runtime');
-    expect(refusal.message).toContain('keep both sides on the same declared union alias');
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
-    // A union the emitter CAN convert still lowers, so the refusal is about the carriers and not about unions
-    // of declared interfaces: identical spellings on both sides convert by rebuilding the carrier.
-    const converted = emitIrModuleCpp(
-      lower(
-        'union-same-carriers.ts',
-        `interface Color { readonly r: number }
-         interface Texture { readonly id: string }
-         export function pick(value: Color | Texture): Color | Texture { return value; }`,
-      ).module,
-      { runtimeProfile: 'flight-cpp' },
-    ).contents;
-    expect(converted).toContain('std::variant<flight::Ref<Color>, flight::Ref<Texture>>');
+    // The runtime's OWN checked recovery, per slot: the source row names exactly the owner the destination
+    // slot's runtime type is, so the cast recovers that object rather than a copy of it. Nothing is
+    // materialized and no native cast is written.
+    expect(contents).toContain(
+      'std::get_if<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Color>>>>>',
+    );
+    expect(contents).toContain(
+      '{std::in_place_type<flight::Ref<Color>>, flight::structural_ref_cast<flight::Ref<Color>>(*alternative)}',
+    );
+    expect(contents).toContain('flight::structural_ref_cast<flight::Ref<Texture>>(*alternative)');
+    expect(contents).not.toContain('materialize_row');
+    expect(contents).not.toContain('static_cast<flight::Ref');
+
+    // A REFUSAL CONTROL the checker accepts: the source union names one owner twice over, so no per-slot
+    // pairing exists and the conversion must not choose one. It keeps the rule it had.
+    const ambiguous = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'union-readonly-view-ambiguous.ts',
+          `interface Color { readonly r: number }
+           interface Texture { readonly id: string }
+           export function pick(value: Readonly<Color> | Color | Texture): Color | Texture { return value; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(ambiguous.rule).toBe('cpp-contextual-union-inequivalent');
   });
 
   it('keeps open Partial indexed reads outside finite optional selection', () => {
