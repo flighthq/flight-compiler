@@ -4527,6 +4527,15 @@ describe('createCppCompilerBackend', () => {
              anisotropyStrength: number;
              readonly kind: 'AnisotropyPbrExtension';
            }
+           export interface IridescencePbrExtension {
+             iridescence: number;
+             iridescenceIor: number;
+             iridescenceMap: Texture | null;
+             iridescenceThicknessMap: Texture | null;
+             iridescenceThicknessMax: number;
+             iridescenceThicknessMin: number;
+             readonly kind: 'IridescencePbrExtension';
+           }
            export interface ClearcoatPbrExtension {
              clearcoat: number;
              clearcoatMap: Texture | null;
@@ -4584,6 +4593,7 @@ describe('createCppCompilerBackend', () => {
           `import type {
              AnisotropyPbrExtension,
              ClearcoatPbrExtension,
+             IridescencePbrExtension,
              SheenPbrExtension,
              SpecularGlossinessPbrMaterial,
              SpecularPbrExtension,
@@ -4595,6 +4605,9 @@ describe('createCppCompilerBackend', () => {
            export function createClearcoatPbrExtension(
              options?: Readonly<Partial<ClearcoatPbrExtension>>,
            ): ClearcoatPbrExtension { throw new Error('stub'); }
+           export function createIridescencePbrExtension(
+             options?: Readonly<Partial<IridescencePbrExtension>>,
+           ): IridescencePbrExtension { throw new Error('stub'); }
            export function createSheenPbrExtension(
              options?: Readonly<Partial<SheenPbrExtension>>,
            ): SheenPbrExtension { throw new Error('stub'); }
@@ -4710,6 +4723,25 @@ describe('createCppCompilerBackend', () => {
              kind: 'KHR_materials_unlit',
            };`,
         ),
+        source(
+          '@flighthq/scene3d-formats',
+          'packages/scene3d-formats/src/gltfIridescence.ts',
+          `import { createIridescencePbrExtension } from '@flighthq/materials/contract';
+           import type { GltfExtensionHandler } from '@flighthq/types/contract';
+           export const handler: GltfExtensionHandler = {
+             apply(context) {
+               createIridescencePbrExtension({
+                 iridescence: 0,
+                 iridescenceIor: 1.3,
+                 iridescenceMap: context.resolveTexture(undefined, 'linear'),
+                 iridescenceThicknessMap: context.resolveTexture(undefined, 'linear'),
+                 iridescenceThicknessMax: 400,
+                 iridescenceThicknessMin: 100,
+               });
+             },
+             kind: 'KHR_materials_iridescence',
+           };`,
+        ),
       ],
       moduleResolution,
     );
@@ -4735,6 +4767,7 @@ describe('createCppCompilerBackend', () => {
     const specular = session.emitModule(modules[5]!)[0]!.contents;
     const specularGlossiness = session.emitModule(modules[6]!)[0]!.contents;
     const unlit = session.emitModule(modules[7]!)[0]!.contents;
+    const iridescence = session.emitModule(modules[8]!)[0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     // Each map source stays single-evaluation, maps null to null (not the Partial row's undefined sentinel),
@@ -4769,12 +4802,14 @@ describe('createCppCompilerBackend', () => {
     // Unlit is the carried-only control: no texture lookup, just the standard material's exact nullable
     // owner entering the Partial destination.
     expectOwnerPreservingTextureWidenings(unlit, 1, 0);
+    expectOwnerPreservingTextureWidenings(iridescence, 2);
     expect(sheen).toContain('flight::String("srgb")');
     expect(sheen).toContain('flight::String("linear")');
     expect(specular).toContain('flight::String("srgb")');
     expect(specular).toContain('flight::String("linear")');
     expect(specularGlossiness.match(/flight::String\("srgb"\)/gu)).toHaveLength(2);
     expect(unlit).toContain('RowKey<"baseColorMap">');
+    expect(iridescence.match(/flight::String\("linear"\)/gu)).toHaveLength(2);
   });
 
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
