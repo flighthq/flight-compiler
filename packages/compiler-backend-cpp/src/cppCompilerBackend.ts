@@ -8014,15 +8014,20 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       // about identity rather than a reading of it.
       if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
         populateCppUnionArmIdentitiesCpp(context.unionArmIdentities, context);
-        const canonical = getCppUnionArmIdentityKeyCpp(type, context.module, context);
+        const canonical = getCppUnionArmIdentityKeyCpp(type, context);
         const candidates = canonical ? context.unionArmIdentities.get(canonical) : undefined;
+        const nominalMember = type.types.find(
+          (member): member is Extract<IrType, { kind: 'named' }> => member.kind === 'named',
+        );
+        const armModule = nominalMember ? getCppNamedTypeBindingModuleCpp(nominalMember, context) : context.module;
         // A module's identity is its package and source, not the object: the module being emitted is the
-        // one the passes produced, while the index is built from the modules they were given. Comparing the
-        // objects would make a module's own arms look like another module's, and naming them from there
-        // suppresses the definitions this module owes -- the arm would be referenced and never declared.
+        // one the passes produced, while the index is built from the modules they were given. The arm's
+        // nominal member names its source module even when contextual emission temporarily runs in the
+        // destination owner's module. Comparing that source identity keeps a provider's own arm local while
+        // still recognizing an imported expansion inside a destination-owner scratch context.
         const declared =
           candidates?.length === 1 &&
-          getCppModuleIdentityKey(candidates[0]!.owner) !== getCppModuleIdentityKey(context.module)
+          getCppModuleIdentityKey(candidates[0]!.owner) !== getCppModuleIdentityKey(armModule)
             ? candidates[0]
             : undefined;
         if (declared) {
@@ -14077,12 +14082,6 @@ function emitContextualUnionExpressionInContextCpp(
     const leftPlan = leftUnion ? getCppUnionRepresentationPlan(leftUnion, context) : undefined;
     const representedLeftPlan = implicitLeftStoragePlan ?? leftPlan;
     if (representedLeftPlan) {
-      const targetSlot = plan.valueSlots[0];
-      const sourceSlot = leftStoragePlan?.valueSlots[0];
-      const expectedSentinels = union.types.filter(
-        (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
-          member.kind === 'null' || member.kind === 'undefined',
-      );
       const variantMerge =
         leftStorageType && leftStoragePlan
           ? emitCppNullishCoalesceMultiVariantConstructionCpp(
@@ -14095,35 +14094,19 @@ function emitContextualUnionExpressionInContextCpp(
             )
           : undefined;
       if (variantMerge) return variantMerge;
-      // A literal-sentinel fallback deliberately merges both absent states from the left. Project
-      // the dual-sentinel carrier into the contextual optional only when its sole value slot is the
-      // destination's exact C++ representation; a heterogeneous destination or erased Any keeps the
-      // existing fail-closed conversion path.
-      if (
-        fallback &&
-        plan.kind === 'optionalSingle' &&
-        targetSlot &&
-        targetSlot.targetType !== 'flight::Any' &&
-        expectedSentinels.length === 1 &&
-        expectedSentinels[0]!.kind === fallback &&
-        leftStorageType &&
-        leftStoragePlan?.kind === 'dualSentinelVariant' &&
-        leftStoragePlan.valueSlots.length === 1 &&
-        sourceSlot?.targetType === targetSlot.targetType
-      ) {
-        const source = getGeneratedTargetName('nullishCoalesceLeft', context);
-        const left = emitExpression(expression.left, context, leftStorageType);
-        const present = emitCppUnionValueConstruction(
-          `std::get<${sourceSlot.targetType}>(${source})`,
-          targetSlot.targetType,
-          union,
-          plan.kind,
-          context,
-        );
-        const absent = emitCppUnionSentinelConstruction(fallback, union, plan.kind, context);
-        context.includes.add('variant');
-        return `([&]() -> ${emitUnionTypeCpp(union, context)} { auto ${source} = ${left}; if (std::holds_alternative<${sourceSlot.targetType}>(${source})) return ${present}; return ${absent}; }())`;
-      }
+      const dualSentinelProjection =
+        fallback && leftStorageType && leftStoragePlan
+          ? emitCppDualSentinelNullishProjectionCpp(
+              expression.left,
+              leftStorageType,
+              leftStoragePlan,
+              fallback,
+              union,
+              plan,
+              context,
+            )
+          : undefined;
+      if (dualSentinelProjection) return dualSentinelProjection;
       if (
         hasEquivalentCppOptionalUnionRepresentation(plan, representedLeftPlan) &&
         ((expression.right.kind === 'literal' && expression.right.value === null) ||
@@ -14871,6 +14854,54 @@ function hasCppSameDeclaredUnionRuntimeTypeCpp(
     leftOwner.declaration.binding.id === rightOwner.declaration.binding.id &&
     getCppModuleIdentityKey(leftOwner.module) === getCppModuleIdentityKey(rightOwner.module),
   );
+}
+
+// `T | null | undefined` needs a dual-sentinel variant, while `(T | null | undefined) ?? null`
+// deliberately merges those two source sentinels into the contextual nullable destination. Forward
+// only value alternatives whose exact C++ carriers form a bijection with that destination: the held
+// Ref/value is copied into the optional, and no structural reconstruction or reference cast is needed.
+function emitCppDualSentinelNullishProjectionCpp(
+  expression: Readonly<IrExpression>,
+  sourceType: Readonly<IrType>,
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  fallback: 'null' | 'undefined',
+  targetUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    sourcePlan.kind !== 'dualSentinelVariant' ||
+    (targetPlan.kind !== 'optionalSingle' && targetPlan.kind !== 'optionalVariant') ||
+    targetPlan.sentinels[fallback] !== 'optionalAbsence' ||
+    targetUnion.types.filter((member) => member.kind === 'null' || member.kind === 'undefined').length !== 1 ||
+    sourcePlan.valueSlots.length !== targetPlan.valueSlots.length
+  ) {
+    return undefined;
+  }
+  const remainingTargets = new Set(targetPlan.valueSlots.keys());
+  const mappings = sourcePlan.valueSlots.flatMap((source) => {
+    const sourceCarrier = qualifyCppDeclaringModuleTypeCpp(source.targetType, context);
+    if (sourceCarrier === 'flight::Any') return [];
+    const matches = [...remainingTargets].filter(
+      (index) => qualifyCppDeclaringModuleTypeCpp(targetPlan.valueSlots[index]!.targetType, context) === sourceCarrier,
+    );
+    if (matches.length !== 1) return [];
+    const targetIndex = matches[0]!;
+    remainingTargets.delete(targetIndex);
+    return [{ source, sourceCarrier, target: targetPlan.valueSlots[targetIndex]! }];
+  });
+  if (mappings.length !== sourcePlan.valueSlots.length || remainingTargets.size !== 0) return undefined;
+
+  const source = getGeneratedTargetName('nullishCoalesceLeft', context);
+  const left = emitExpression(expression, context, sourceType);
+  const branches = mappings.map((mapping) => {
+    const targetCarrier = qualifyCppDeclaringModuleTypeCpp(mapping.target.targetType, context);
+    const present = emitCppUnionValueConstruction('*alternative', targetCarrier, targetUnion, targetPlan.kind, context);
+    return `if (const auto* alternative = std::get_if<${mapping.sourceCarrier}>(&${source})) return ${present};`;
+  });
+  const absent = emitCppUnionSentinelConstruction(fallback, targetUnion, targetPlan.kind, context);
+  context.includes.add('variant');
+  return `([&]() -> ${emitUnionTypeCpp(targetUnion, context)} { auto ${source} = ${left}; ${branches.join(' ')} return ${absent}; }())`;
 }
 
 function emitCppNullishCoalesceMultiVariantConstructionCpp(
@@ -19849,23 +19880,89 @@ function getCppMemberDeclarationKeyCpp(
 // is about is the same wherever it is written.
 //
 // The shape is required rather than searched for: one nominal member and at least one other. An arm that
-// is not that shape is not what this rule recognizes, and a remaining member that is itself a reference
-// can only be compared by a nested resolution this does not attempt -- so it simply fails to match, and
-// the local emission stands.
-function getCppUnionArmIdentityKeyCpp(
-  arm: Readonly<IrType>,
-  module: Readonly<IrModule>,
-  context: EmitContext,
-): string | undefined {
+// is not that shape is not what this rule recognizes. Nested references in the structural remainder are
+// compared only when their declarations resolve uniquely; an unresolved name remains distinct, so the
+// local emission stands.
+function getCppUnionArmIdentityKeyCpp(arm: Readonly<IrType>, context: EmitContext): string | undefined {
   if (arm.kind !== 'intersection') return undefined;
   const declared = arm.types.filter((member) => member.kind === 'named');
   if (declared.length !== 1) return undefined;
-  const key = getCppMemberDeclarationKeyCpp(declared[0]!, module, context);
+  const bindingModule = getCppNamedTypeBindingModuleCpp(declared[0]!, context);
+  const key = getCppMemberDeclarationKeyCpp(declared[0]!, bindingModule, context);
   if (!key) return undefined;
   const remaining = arm.types.filter((member) => member !== declared[0]);
   if (remaining.length === 0) return undefined;
   if (remaining.some((member) => member.kind === 'named')) return undefined;
-  return `${key}\0${remaining.map((member) => normalizeCompilerStructuralValueCanonical(member)).join('\x01')}`;
+  return `${key}\0${remaining
+    .map((member) =>
+      normalizeCompilerStructuralValueCanonical(normalizeCppUnionArmIdentityTypeCpp(member, bindingModule, context)),
+    )
+    .join('\x01')}`;
+}
+
+// Union selections are lowered independently in their consumer, so references nested inside an anonymous
+// arm use that consumer's import bindings rather than the provider's bindings. Array/tuple/property readonly
+// flags are likewise source write constraints that the C++ carrier erases. Normalize only those two
+// representation-neutral differences for the identity index: declarations become their resolved owner key,
+// and readonly becomes the mutable spelling the emitted storage already uses. Every value-bearing shape,
+// optional bit, literal discriminant, member order, and declaration identity remains part of the key.
+function normalizeCppUnionArmIdentityTypeCpp(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): Readonly<IrType> {
+  const normalize = (member: Readonly<IrType>): Readonly<IrType> =>
+    normalizeCppUnionArmIdentityTypeCpp(member, module, context);
+  switch (type.kind) {
+    case 'array':
+      return { ...type, element: normalize(type.element), readonly: false };
+    case 'conditionalFacet':
+      return { ...type, check: normalize(type.check), facet: normalize(type.facet) };
+    case 'function':
+      return {
+        ...type,
+        parameters: type.parameters.map((parameter) => ({ ...parameter, type: normalize(parameter.type) })),
+        returns: normalize(type.returns),
+        typeParameters: type.typeParameters.map((parameter) => ({
+          ...parameter,
+          ...(parameter.constraint === undefined ? {} : { constraint: normalize(parameter.constraint) }),
+          ...(parameter.default === undefined ? {} : { default: normalize(parameter.default) }),
+        })),
+      };
+    case 'indexedAccess':
+      return { ...type, index: normalize(type.index), object: normalize(type.object) };
+    case 'intersection':
+      return { ...type, types: type.types.map(normalize) as unknown as typeof type.types };
+    case 'keyof':
+      return { ...type, type: normalize(type.type) };
+    case 'named': {
+      const declaration = getCppMemberDeclarationKeyCpp(type, module, context);
+      return {
+        ...type,
+        reference: declaration ? { kind: 'ambient', name: `decl:${declaration}` } : type.reference,
+        typeArguments: type.typeArguments.map(normalize),
+      };
+    }
+    case 'object':
+      return {
+        ...type,
+        properties: type.properties.map((property) => ({
+          ...property,
+          readonly: false,
+          type: normalize(property.type),
+        })),
+      };
+    case 'tuple':
+      return {
+        ...type,
+        elements: type.elements.map((element) => ({ ...element, type: normalize(element.type) })),
+        readonly: false,
+      };
+    case 'union':
+      return { ...type, types: type.types.map(normalize) as unknown as typeof type.types };
+    default:
+      return type;
+  }
 }
 
 // Records every union arm in the emission under the identity it holds. Called once, from the first
@@ -19881,7 +19978,7 @@ function populateCppUnionArmIdentitiesCpp(identities: Map<string, CppUnionArmIde
         continue;
       }
       for (const arm of declaration.type.types) {
-        const key = getCppUnionArmIdentityKeyCpp(arm, module, moduleContext);
+        const key = getCppUnionArmIdentityKeyCpp(arm, moduleContext);
         if (!key) continue;
         const existing = identities.get(key);
         if (existing) existing.push({ arm, owner: module });

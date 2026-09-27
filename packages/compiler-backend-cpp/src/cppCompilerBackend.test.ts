@@ -5062,6 +5062,132 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('source optionalVariant');
   });
 
+  it('resolves shaded material indexed map options into their exact texture union', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/Texture',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Texture.ts' },
+        },
+        {
+          specifier: '@flighthq/types/ShadedMaterial',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/ShadedMaterial.ts' },
+        },
+        {
+          specifier: '@flighthq/types/ShadedMaterialOptions',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/ShadedMaterialOptions.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, body: string, packageName = '@flighthq/types') => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          'packages/types/src/Texture.ts',
+          `export interface TextureCommon { version: number }
+           export interface Texture2D extends TextureCommon { readonly dimension: '2d'; source: object | null }
+           export type Texture =
+             | Texture2D
+             | (TextureCommon & { readonly dimension: 'cube'; sources: readonly object[] });`,
+        ),
+        source(
+          'packages/types/src/ShadedMaterial.ts',
+          `import type { Texture } from '@flighthq/types/Texture';
+           export interface ShadedMaterial {
+             diffuseMap: Texture | null;
+             normalMap: Texture | null;
+             specularMap: Texture | null;
+           }`,
+        ),
+        source(
+          'packages/types/src/ShadedMaterialOptions.ts',
+          `import type { ShadedMaterial } from '@flighthq/types/ShadedMaterial';
+           export interface ShadedMaterialOptions {
+             diffuseMap?: ShadedMaterial['diffuseMap'];
+             normalMap?: ShadedMaterial['normalMap'];
+             specularMap?: ShadedMaterial['specularMap'];
+           }`,
+        ),
+        source(
+          'packages/shading/src/createShadedMaterial.ts',
+          `import type { ShadedMaterial } from '@flighthq/types/ShadedMaterial';
+           import type { ShadedMaterialOptions } from '@flighthq/types/ShadedMaterialOptions';
+           export function initializeShadedMaterial(
+             out: ShadedMaterial,
+             options: Readonly<ShadedMaterialOptions>,
+           ): void {
+             out.diffuseMap = options.diffuseMap ?? null;
+             out.normalMap = options.normalMap ?? null;
+             out.specularMap = options.specularMap ?? null;
+           }`,
+          '@flighthq/shading',
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/shading': { includePrefix: 'flight/shading', namespace: 'flight::shading' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const texture = session.emitModule(modules[0]!)[0]!.contents;
+    const options = session.emitModule(modules[2]!)[0]!.contents;
+    const emitted = session.emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const cubeArm = texture.match(/struct (version_dimension_sources_[0-9a-f]+) :/u)?.[1];
+    expect(cubeArm).toBeDefined();
+    expect(options).toContain(`flight::Ref<flight::types::${cubeArm!}>`);
+    expect(options).not.toContain(`struct ${cubeArm!}`);
+    expect(options.match(/flight::Null, flight::Undefined>/gu)).toHaveLength(3);
+    expect(emitted.match(/out->(?:diffuse|normal|specular)_map =/gu)).toHaveLength(3);
+    expect(emitted.match(new RegExp(`std::get_if<flight::Ref<flight::types::${cubeArm!}>>`, 'gu'))).toHaveLength(3);
+    expect(emitted.match(/std::get_if<flight::Ref<flight::types::Texture2D>>/gu)).toHaveLength(3);
+    expect(emitted.match(/return std::nullopt;/gu)).toHaveLength(3);
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('static_cast<flight::Ref');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toMatch(/make_(?:structural_)?ref</u);
+  });
+
+  it('keeps an extra dual-sentinel value arm out of a shaded material map', () => {
+    const result = lower(
+      'shaded-material-extra-map-arm.ts',
+      `interface Texture2D { readonly dimension: '2d'; source: object | null }
+       interface TextureCube { readonly dimension: 'cube'; sources: readonly object[] }
+       interface VideoTexture { readonly dimension: 'video'; uri: string }
+       type Texture = Texture2D | TextureCube;
+       interface ShadedMaterial { diffuseMap: Texture | null }
+       interface ShadedMaterialOptions { diffuseMap?: (Texture | VideoTexture) | null }
+       export function initializeShadedMaterial(
+         out: ShadedMaterial,
+         options: Readonly<ShadedMaterialOptions>,
+       ): void {
+         out.diffuseMap = options.diffuseMap ?? null;
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.message).toContain('source optionalVariant');
+    expect(failure.message).toContain('target optionalVariant');
+  });
+
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
     const result = lower(
       'inherited-alternative-assertion.ts',
