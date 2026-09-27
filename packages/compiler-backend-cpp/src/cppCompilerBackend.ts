@@ -179,6 +179,14 @@ interface CppVariantCommonPropertyEvidence {
     | undefined;
 }
 
+interface CppVariantPropertyArrayPredicateEvidence {
+  readonly arrayReceiverType: Readonly<IrType>;
+  readonly binding: Readonly<IrBindingIdentity>;
+  readonly memberAccess: string;
+  readonly nonArrayReceiverType: Readonly<IrType>;
+  readonly operator: '->' | '.';
+}
+
 interface CppWeakMapTypeArgumentPlan {
   readonly valueRepresentation: 'direct' | 'erased';
   readonly weakKeyPolicyTargetName?: string | undefined;
@@ -3368,13 +3376,10 @@ function emitExpression(
         expression.operator === '===' ||
         expression.operator === '!=' ||
         expression.operator === '!==';
-      const shortCircuitEvidence =
-        (expression.operator === '&&' || expression.operator === '||') && expression.left.kind === 'binary'
-          ? expression.left.semantics.unionMemberTest
-          : undefined;
-      const rightContext = shortCircuitEvidence
-        ? getCppUnionMemberTestBranchContextCpp(shortCircuitEvidence, expression.operator === '&&', context)
-        : context;
+      const rightContext =
+        expression.operator === '&&' || expression.operator === '||'
+          ? getCppConditionBranchContextCpp(expression.left, expression.operator === '&&', context)
+          : context;
       const leftType = equality ? getIrExpressionTypeEvidenceCpp(expression.left, context) : undefined;
       const rightType = equality ? getIrExpressionTypeEvidenceCpp(expression.right, rightContext) : undefined;
       const referenceIdentity = equality
@@ -3403,6 +3408,8 @@ function emitExpression(
       return `(${left} ${op} ${right})`;
     }
     case 'call': {
+      const variantPropertyArrayPredicate = emitCppVariantPropertyArrayPredicateCpp(expression, context);
+      if (variantPropertyArrayPredicate) return variantPropertyArrayPredicate;
       const mathHypot = emitCppMathHypotCallCpp(expression, context);
       if (mathHypot) return mathHypot;
       if (expression.optional) return emitOptionalCallExpressionCpp(expression, context);
@@ -4070,9 +4077,7 @@ function emitExpression(
       if (primitiveErasedTypeof) return primitiveErasedTypeof;
       const erasedTypeof = emitCppErasedTypeofConditionalCpp(expression, context, expectedType);
       if (erasedTypeof) return erasedTypeof;
-      const evidence =
-        expression.condition.kind === 'binary' ? expression.condition.semantics.unionMemberTest : undefined;
-      return `(${emitCppTruthinessExpression(expression.condition, context)} ? ${emitCppConditionalBranchCpp(expression.whenTrue, getCppUnionMemberTestBranchContextCpp(evidence, true, context), expectedType)} : ${emitCppConditionalBranchCpp(expression.whenFalse, getCppUnionMemberTestBranchContextCpp(evidence, false, context), expectedType)})`;
+      return `(${emitCppTruthinessExpression(expression.condition, context)} ? ${emitCppConditionalBranchCpp(expression.whenTrue, getCppConditionBranchContextCpp(expression.condition, true, context), expectedType)} : ${emitCppConditionalBranchCpp(expression.whenFalse, getCppConditionBranchContextCpp(expression.condition, false, context), expectedType)})`;
     }
     case 'element': {
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
@@ -7154,12 +7159,10 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ];
     }
     case 'if': {
-      const evidence =
-        statement.condition.kind === 'binary' ? statement.condition.semantics.unionMemberTest : undefined;
       const lines = [
         `if (${emitCppTruthinessExpression(statement.condition, context)}) {`,
         ...indentSourceLines(
-          emitStatementBody(statement.consequent, getCppUnionMemberTestBranchContextCpp(evidence, true, context)),
+          emitStatementBody(statement.consequent, getCppConditionBranchContextCpp(statement.condition, true, context)),
         ),
         '}',
       ];
@@ -7167,7 +7170,10 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         lines.push(
           'else {',
           ...indentSourceLines(
-            emitStatementBody(statement.otherwise, getCppUnionMemberTestBranchContextCpp(evidence, false, context)),
+            emitStatementBody(
+              statement.otherwise,
+              getCppConditionBranchContextCpp(statement.condition, false, context),
+            ),
           ),
           '}',
         );
@@ -12857,6 +12863,126 @@ function getCppUnionMemberComplementTypeCpp(
     ...remaining,
     ...union.types.filter((member) => member.kind === 'null' || member.kind === 'undefined'),
   ]);
+}
+
+// `Array.isArray(holder.items)` can discriminate the holder even though the tested property has no
+// single C++ type across its alternatives. Projecting `items` first would require a second variant and
+// would copy or rebox the collection handle. Instead, prove that every holder alternative declares the
+// property and that each property type is wholly array or wholly non-array, then ask the property inside
+// the existing holder visit. The same partition is the branch proof used for later property reads.
+function getCppVariantPropertyArrayPredicateEvidenceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<CppVariantPropertyArrayPredicateEvidence> | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.arguments.length !== 1 ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.optional ||
+    expression.callee.name !== 'isArray' ||
+    expression.callee.object.kind !== 'identifier' ||
+    expression.callee.object.reference.kind !== 'ambient' ||
+    expression.callee.object.reference.name !== 'Array'
+  ) {
+    return undefined;
+  }
+  const property = expression.arguments[0]!;
+  if (
+    property.kind !== 'property' ||
+    property.optional ||
+    property.object.kind !== 'identifier' ||
+    property.object.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const declared = getCppBindingTypeCpp(property.object.reference.binding.id, context);
+  const union = declared ? getIrVariantUnionTypeCpp(declared, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const representation = getCppVariantRepresentationForInspection(union, context);
+  if (representation.direct) return undefined;
+
+  const classified = union.types.map((member) => {
+    const propertyType = getIrObjectPropertyTypeCpp(member, property.name, context);
+    if (!propertyType) return undefined;
+    if (getIrArrayTypeCpp(propertyType, context, new Set())) return { array: true as const, member };
+    if (
+      getIrTupleTypeCpp(propertyType, context, new Set()) ||
+      getIrUnionTypeCpp(propertyType, context, new Set()) ||
+      propertyType.kind === 'unknown' ||
+      propertyType.kind === 'never' ||
+      (propertyType.kind === 'named' &&
+        propertyType.reference.kind === 'binding' &&
+        propertyType.reference.binding.kind === 'typeParameter')
+    ) {
+      return undefined;
+    }
+    return { array: false as const, member };
+  });
+  if (classified.some((candidate) => candidate === undefined)) return undefined;
+  const alternatives = classified.filter((candidate) => candidate !== undefined);
+  const arrayReceiverType = createIrTypeEvidenceUnionCpp(
+    alternatives.filter((candidate) => candidate.array).map((candidate) => candidate.member),
+  );
+  const nonArrayReceiverType = createIrTypeEvidenceUnionCpp(
+    alternatives.filter((candidate) => !candidate.array).map((candidate) => candidate.member),
+  );
+  if (!arrayReceiverType || !nonArrayReceiverType) return undefined;
+
+  const referenceModes = new Set(
+    representation.alternatives.map((alternative) =>
+      hasFlightReferenceRepresentationCpp(alternative.runtimeType, context) ? 'reference' : 'value',
+    ),
+  );
+  if (referenceModes.size !== 1) return undefined;
+  // This lane is for declared data fields. An ambient member may require a method call or a renamed
+  // accessor, which is a different projection proof and must keep the ordinary refusal.
+  if (
+    representation.alternatives.some(
+      (alternative) =>
+        getCppVariantAmbientMemberBindingCpp(alternative.runtimeType, property.name, context) !== undefined,
+    )
+  ) {
+    return undefined;
+  }
+  return {
+    arrayReceiverType,
+    binding: property.object.reference.binding,
+    memberAccess: safeCppName(property.name),
+    nonArrayReceiverType,
+    operator: referenceModes.has('reference') ? '->' : '.',
+  };
+}
+
+function emitCppVariantPropertyArrayPredicateCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  const evidence = getCppVariantPropertyArrayPredicateEvidenceCpp(expression, context);
+  const argument = expression.arguments[0];
+  if (!evidence || argument?.kind !== 'property') return undefined;
+  context.includes.add('flight/array.hpp');
+  context.includes.add('variant');
+  return `std::visit([](const auto& value) { return flight::is_array(value${evidence.operator}${evidence.memberAccess}); }, ${emitExpression(argument.object, context)})`;
+}
+
+function getCppConditionBranchContextCpp(
+  condition: Readonly<IrExpression>,
+  result: boolean,
+  context: EmitContext,
+): EmitContext {
+  const unionMemberTest = condition.kind === 'binary' ? condition.semantics.unionMemberTest : undefined;
+  const unionContext = getCppUnionMemberTestBranchContextCpp(unionMemberTest, result, context);
+  const arrayProperty = getCppVariantPropertyArrayPredicateEvidenceCpp(condition, context);
+  if (!arrayProperty) return unionContext;
+  return {
+    ...unionContext,
+    narrowedBindingTypes: new Map(unionContext.narrowedBindingTypes).set(
+      arrayProperty.binding.id,
+      result ? arrayProperty.arrayReceiverType : arrayProperty.nonArrayReceiverType,
+    ),
+  };
 }
 
 function getCppUnionMemberTestBranchContextCpp(

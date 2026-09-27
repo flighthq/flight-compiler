@@ -1223,6 +1223,96 @@ function lowerPixiParseAssertionModules() {
   return { guardedObject, optionalVariant, pixiParse, rawMember, startEnd };
 }
 
+function lowerImportedTextureAtlasFrameUnionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface TextureAtlasRect { h: number; w: number; x: number; y: number }
+         export interface TextureAtlasAsepriteBaseFrame { frame: TextureAtlasRect; rotated: boolean }
+         export interface TextureAtlasAsepriteArrayFrame extends TextureAtlasAsepriteBaseFrame {
+           filename: string;
+         }
+         export interface TextureAtlasAsepriteHashDocument {
+           frames: Record<string, TextureAtlasAsepriteBaseFrame>;
+         }
+         export interface TextureAtlasAsepriteArrayDocument {
+           frames: TextureAtlasAsepriteArrayFrame[];
+         }
+         export type TextureAtlasAsepriteDocument =
+           | TextureAtlasAsepriteArrayDocument
+           | TextureAtlasAsepriteHashDocument;
+         export interface TextureAtlasPackerHashFrame {
+           frame: TextureAtlasRect;
+           pivot?: { x: number; y: number };
+           rotated: boolean;
+         }
+         export interface TextureAtlasPackerArrayFrame extends TextureAtlasPackerHashFrame {
+           filename: string;
+         }
+         export interface TextureAtlasPackerHashDocument {
+           frames: Record<string, TextureAtlasPackerHashFrame>;
+         }
+         export interface TextureAtlasPackerArrayDocument {
+           frames: TextureAtlasPackerArrayFrame[];
+         }
+         export type TextureAtlasPackerDocument =
+           | TextureAtlasPackerArrayDocument
+           | TextureAtlasPackerHashDocument;`,
+      ),
+      source(
+        '@flighthq/textureatlas-formats',
+        'textureatlas-formats/src/textureAtlasAsepriteParse.ts',
+        `import type { TextureAtlasAsepriteDocument } from '@flighthq/types/contract';
+         export function measureAsepriteFrames(doc: TextureAtlasAsepriteDocument): number {
+           let total = 0;
+           if (Array.isArray(doc.frames)) {
+             for (const entry of doc.frames) total += entry.filename.length + entry.frame.w;
+           } else {
+             for (const [frameName, entry] of Object.entries(doc.frames)) {
+               total += frameName.length + entry.frame.h;
+             }
+           }
+           return total;
+         }`,
+      ),
+      source(
+        '@flighthq/textureatlas-formats',
+        'textureatlas-formats/src/textureAtlasPackerParse.ts',
+        `import type { TextureAtlasPackerDocument } from '@flighthq/types/contract';
+         export function measurePackerFrames(doc: TextureAtlasPackerDocument): number {
+           let total = 0;
+           if (Array.isArray(doc.frames)) {
+             for (const entry of doc.frames) total += entry.filename.length + entry.frame.w;
+           } else {
+             for (const [frameName, entry] of Object.entries(doc.frames)) {
+               total += frameName.length + entry.frame.h + (entry.pivot?.x ?? 0);
+             }
+           }
+           return total;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedPhysicsShapeAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -4098,6 +4188,94 @@ describe('createCppCompilerBackend', () => {
       expect(() =>
         execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
       ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('narrows imported texture-atlas document variants through their array-valued frame property', () => {
+    const { moduleResolution, results } = lowerImportedTextureAtlasFrameUnionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const aseprite = session.emitModule(modules[1]!)[0]!.contents;
+    const packer = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const contents of [aseprite, packer]) {
+      expect(contents).toMatch(
+        /std::visit\(\[\]\(const auto& value\) \{ return flight::is_array\(value->frames\); \}, doc\)/u,
+      );
+      expect(contents).toContain('std::get<0>(doc)->frames');
+      expect(contents).toContain('std::get<1>(doc)->frames');
+      expect(contents).not.toContain('static_pointer_cast');
+      expect(contents).not.toContain('make_ref');
+      expect(contents).not.toContain('make_shared');
+    }
+  });
+
+  it('keeps array predicates over mixed property storage refused without a receiver partition', () => {
+    const result = lower(
+      'mixed-frame-property.ts',
+      `interface ArrayDocument { frames: string[] }
+       interface MixedDocument { frames: string[] | Record<string, string> }
+       type Document = ArrayDocument | MixedDocument;
+       export function measure(doc: Document): number {
+         if (Array.isArray(doc.frames)) return doc.frames.length;
+         return 0;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The predicate cannot select one document arm: MixedDocument itself can hold either property
+    // carrier. Projecting that field would require a nested carrier, so the ordinary guard refusal stays.
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-union-member-access-unguarded');
+    expect(failure.message).toContain('property frames');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles imported texture-atlas array-property variant narrowing', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedTextureAtlasFrameUnionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/textureatlas-formats': {
+            includePrefix: 'test/textureatlas-formats',
+            namespace: 'flighthq_textureatlas_formats',
+          },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-texture-atlas-variant-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      for (const output of emitted.slice(1)) {
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, output.path), [
+          directory,
+          ...cppRuntimeIncludeDirectories,
+        ]);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      }
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
