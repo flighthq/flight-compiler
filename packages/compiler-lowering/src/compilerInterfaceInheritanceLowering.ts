@@ -203,6 +203,7 @@ function lowerIrInterfaceDeclarationInheritance(
   );
   return {
     ...declaration,
+    compatiblePropertyOverrides: [],
     extends: [],
     heritageEvidence: [],
     properties: inherited
@@ -657,6 +658,9 @@ function addIrInterfacePropertyFlattened(
   if (
     (!property.optional || existing.optional) &&
     (propertyToExisting.status === 'compatible' ||
+      (directOverride &&
+        declaration.kind === 'interface' &&
+        declaration.compatiblePropertyOverrides?.includes(property.name)) ||
       (directOverride && propertyToExisting.status === 'indeterminate') ||
       (directOverride && isIrInterfaceIntersectionOverrideCompatible(propertyType, existingType)) ||
       (directOverride && isIrInterfaceMethodOverrideCompatible(propertyType, existingType)))

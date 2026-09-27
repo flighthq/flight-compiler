@@ -576,6 +576,121 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toMatch(/source;/u);
   });
 
+  it('emits the imported cyclic renderer graph using checker-proven source refinement evidence', () => {
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(`/flight/packages/types/src/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const target = (file: string) => ({
+      packageName: '@flighthq/types',
+      source: `packages/types/src/${file}`,
+    });
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        { specifier: './Node', target: target('Node.ts') },
+        { specifier: './Node2D', target: target('Node2D.ts') },
+        { specifier: './NodeRenderer', target: target('NodeRenderer.ts') },
+        { specifier: './Renderable', target: target('Renderable.ts') },
+        { specifier: './RenderProxy', target: target('RenderProxy.ts') },
+        { specifier: './RenderProxy2D', target: target('RenderProxy2D.ts') },
+        { specifier: './RenderState', target: target('RenderState.ts') },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const files = [
+      source(
+        'Node.ts',
+        `export interface NodeTraits { enabled: boolean; }
+         export interface NodeRuntime<Traits extends object = NodeTraits> {
+           canAddChild: (target: Node<Traits>, child: Node<Traits>) => boolean;
+           children: NodeOf<Traits>[] | null;
+         }
+         export interface Node<Traits extends object = NodeTraits> extends NodeTraits {
+           runtime: NodeRuntime<Traits> | undefined;
+         }
+         export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+         export type NodeAny = Node<any>;`,
+      ),
+      source(
+        'Node2D.ts',
+        `import type { Node, NodeTraits } from './Node';
+         export interface Node2DTraits extends NodeTraits { x: number; }
+         export type Node2D = Node<Node2DTraits> & Node2DTraits;`,
+      ),
+      source(
+        'Renderable.ts',
+        `import type { NodeAny } from './Node';
+         export interface RenderCache { cached: true; }
+         export type Renderable = NodeAny | RenderCache;`,
+      ),
+      source('RenderState.ts', 'export interface RenderState { frame: number; }'),
+      source(
+        'NodeRenderer.ts',
+        `import type { Renderable } from './Renderable';
+         import type { RenderProxy } from './RenderProxy';
+         import type { RenderState } from './RenderState';
+         export interface NodeRenderer {
+           createData(state: RenderState, source: Renderable): object | null;
+           submit(state: RenderState, node: RenderProxy): void;
+         }`,
+      ),
+      source(
+        'RenderProxy.ts',
+        `import type { NodeRenderer } from './NodeRenderer';
+         import type { Renderable } from './Renderable';
+         export interface RenderProxy { source: Renderable; renderer: NodeRenderer | null; }`,
+      ),
+      source(
+        'RenderProxy2D.ts',
+        `import type { Node2D } from './Node2D';
+         import type { RenderProxy } from './RenderProxy';
+         export interface RenderProxy2D extends RenderProxy { source: Node2D; transform: number; }`,
+      ),
+      source(
+        'Scene2DRenderer.ts',
+        `import type { Node2D } from './Node2D';
+         import type { NodeRenderer } from './NodeRenderer';
+         import type { RenderProxy2D } from './RenderProxy2D';
+         import type { RenderState } from './RenderState';
+         export interface Scene2DRenderer extends NodeRenderer {
+           createData(state: RenderState, source: Node2D): object | null;
+           submit(state: RenderState, node: RenderProxy2D): void;
+         }`,
+      ),
+      source(
+        'SpriteRenderer.ts',
+        `import type { Node2D } from './Node2D';
+         import type { NodeRenderer } from './NodeRenderer';
+         import type { RenderProxy2D } from './RenderProxy2D';
+         import type { RenderState } from './RenderState';
+         export interface SpriteRenderer extends NodeRenderer {
+           createData(state: RenderState, source: Node2D): object | null;
+           submit(state: RenderState, node: RenderProxy2D): void;
+         }`,
+      ),
+    ];
+    const results = lowerTypeScriptSources(files, moduleResolution);
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    // TypeScript accepts the recursive Node<any> union refinement and both method-parameter
+    // refinements. The neutral structural checker cannot close that imported recursion by itself, so
+    // semantic lowering carries only the checker's positive assignability fact into inheritance.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const [index, name] of [
+      [6, 'RenderProxy2D'],
+      [7, 'Scene2DRenderer'],
+      [8, 'SpriteRenderer'],
+    ] as const) {
+      expect(session.emitModule(modules[index]!)[0]!.contents).toContain(`struct ${name}`);
+    }
+  });
+
   it('emits imported function and tuple aliases through their inline C++ representations', () => {
     const types = lowerPackage(
       '@flighthq/types',

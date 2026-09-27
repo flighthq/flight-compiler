@@ -2612,6 +2612,7 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
   const ownProperties = lowerTypeProperties(node.members, context);
   const heritage = node.heritageClauses?.flatMap((clause) => clause.types) ?? [];
   const heritageReferences = heritage.map((type) => lowerExpressionWithTypeArguments(type, context));
+  const compatiblePropertyOverrides = lowerTypeScriptCompatibleInterfacePropertyOverrides(node, heritage, context);
   const heritageEvidence = heritage.flatMap((type, index): IrInterfaceHeritageEvidence[] => {
     const properties = lowerTypeScriptInterfaceHeritageEvidence(type, context);
     return properties ? [{ index, properties, reference: heritageReferences[index]! }] : [];
@@ -2635,6 +2636,7 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
   const indexSignature = lowerInterfaceIndexSignature(node, context);
   return {
     binding: lowerTypeBindingIdentity(node.name, context),
+    ...(compatiblePropertyOverrides.length > 0 ? { compatiblePropertyOverrides } : {}),
     exported: isExported(node),
     extends: heritageReferences,
     ...(heritageEvidence.length > 0 ? { heritageEvidence } : {}),
@@ -2644,6 +2646,29 @@ function lowerInterface(node: ts.InterfaceDeclaration, context: LoweringContext)
     properties,
     typeParameters: lowerTypeParameters(node.typeParameters, context),
   };
+}
+
+function lowerTypeScriptCompatibleInterfacePropertyOverrides(
+  node: ts.InterfaceDeclaration,
+  heritage: readonly ts.ExpressionWithTypeArguments[],
+  context: LoweringContext,
+): readonly string[] {
+  if (heritage.length === 0) return [];
+  const bases = heritage.map((type) => ({ node: type, type: context.checker.getTypeAtLocation(type) }));
+  const compatible = new Set<string>();
+  for (const member of node.members) {
+    if (!ts.isPropertySignature(member) || !member.type) continue;
+    const name = tryPropertyName(member.name);
+    if (!name) continue;
+    const inherited = bases.flatMap(({ node: baseNode, type: base }) => {
+      const property = context.checker.getPropertyOfType(base, name);
+      return property ? [context.checker.getTypeOfSymbolAtLocation(property, baseNode)] : [];
+    });
+    if (inherited.length === 0) continue;
+    const own = context.checker.getTypeFromTypeNode(member.type);
+    if (inherited.every((base) => context.checker.isTypeAssignableTo(own, base))) compatible.add(name);
+  }
+  return [...compatible];
 }
 
 // The element type an index signature admits, lowered from the signature itself rather than from the

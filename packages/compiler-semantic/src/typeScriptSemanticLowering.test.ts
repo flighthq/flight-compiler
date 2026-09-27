@@ -3303,6 +3303,24 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(methodReturn.returns.reference).toMatchObject({ binding: { id: parameter?.id }, kind: 'binding' });
   });
 
+  it('records checker-proven direct interface property refinements', () => {
+    const result = lower(
+      'interface-property-refinement.ts',
+      `interface Base { value: string | number; }
+       export interface Refined extends Base { value: string; }
+       export interface Incompatible extends Base { value: boolean; }`,
+    );
+    const refined = result.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Refined',
+    );
+    const incompatible = result.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'Incompatible',
+    );
+
+    expect(refined).toMatchObject({ compatiblePropertyOverrides: ['value'] });
+    expect(incompatible).not.toHaveProperty('compatiblePropertyOverrides');
+  });
+
   it('materializes the closed GlContext ambient Pick surface while retaining its host heritage', () => {
     const members = [
       'ACTIVE_TEXTURE',

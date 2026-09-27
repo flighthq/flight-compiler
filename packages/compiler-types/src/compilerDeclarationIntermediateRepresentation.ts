@@ -66,6 +66,11 @@ export interface IrTypeAliasDeclaration {
 
 export interface IrInterfaceDeclaration {
   readonly binding: IrTypeBindingIdentity;
+  // Direct property refinements which the source checker proved assignable to every inherited
+  // declaration of that property. Structural lowering retains this positive evidence because an
+  // imported recursive generic can be safe in the source language even when neutral IR analysis
+  // cannot close the recursion well enough to prove it again.
+  readonly compatiblePropertyOverrides?: readonly string[] | undefined;
   readonly exported: boolean;
   readonly extends: readonly IrTypeReference[];
   // TypeScript's checker can resolve structural heritage declared outside the explicit compiler
