@@ -2589,6 +2589,107 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('static_pointer_cast');
   });
 
+  it('stores an entity-refined generic table in its optional declared owner', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/registry/contract',
+          target: { packageName: '@flighthq/registry', source: 'packages/registry/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          `export interface Entity { readonly uid: string }
+           export interface KeyedTable<Value> { readonly entries: ReadonlyMap<string, Value> }`,
+        ),
+        source(
+          '@flighthq/registry',
+          'packages/registry/src/contract.ts',
+          `import type { Entity, KeyedTable } from '@flighthq/types/contract';
+           export function withEntry<Value>(
+             table: Readonly<KeyedTable<Value>>,
+             value: Value,
+           ): KeyedTable<Value> & Entity { throw new Error('stub'); }`,
+        ),
+        source(
+          '@flighthq/spritesheet-formats',
+          'packages/spritesheet-formats/src/spritesheetDetect.ts',
+          `import { withEntry } from '@flighthq/registry/contract';
+           import type { KeyedTable } from '@flighthq/types/contract';
+           interface FormatEntry { detect: (text: string) => boolean; parse: (text: string) => number }
+           interface RegisteredFormatEntry { entry: FormatEntry; order: number }
+           let registry: KeyedTable<RegisteredFormatEntry> | null = null;
+           export function bind(entry: FormatEntry): void {
+             if (registry === null) return;
+             registry = withEntry(registry, { entry, order: 0 });
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/registry': { includePrefix: 'flight/registry', namespace: 'flight::registry' },
+          '@flighthq/spritesheet-formats': {
+            includePrefix: 'flight/spritesheet-formats',
+            namespace: 'flight::spritesheet_formats',
+          },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(emitted).toContain('with_entry<RegisteredFormatEntry>');
+    expect(emitted).toContain('flight::make_ref<RegisteredFormatEntry>');
+  });
+
+  it('constructs optional named frame tags from a direct map expression', () => {
+    const result = lower(
+      'optional-named-map-result.ts',
+      `interface Animation { direction: 'forward' | 'reverse'; frameNames: string[]; name: string }
+       interface FrameTag { direction: 'forward' | 'reverse'; from: number; name: string; to: number }
+       interface Meta { frameTags?: FrameTag[] }
+       interface Data { animations: Animation[] }
+       export function dataToMeta(data: Readonly<Data>): Meta {
+         return {
+           frameTags: data.animations.length
+             ? data.animations.map((animation) => {
+                 const from = animation.frameNames.length;
+                 return {
+                   direction: animation.direction,
+                   from,
+                   name: animation.name,
+                   to: animation.frameNames.length,
+                 };
+               })
+             : undefined,
+         };
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('flight::make_ref<FrameTag>');
+  });
+
   it('keeps an erased value whose kind the runtime does not represent attributed to the runtime', () => {
     const result = lower(
       'union-value-erased-kind.ts',
