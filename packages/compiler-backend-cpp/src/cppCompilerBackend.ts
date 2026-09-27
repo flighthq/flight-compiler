@@ -2898,6 +2898,18 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
   ) {
     return initializerType;
   }
+  // Indexed loop lowering replaces a for-of binding with an immutable local read from the compiler's
+  // snapshot array. The array still stores the source collection's exact named variant even when the
+  // checker expands the new local to anonymous object alternatives. Keep that existing carrier only
+  // after every stored source alternative maps to exactly one complete binding shape.
+  if (
+    variable.initializer.kind === 'element' &&
+    variableUnion &&
+    initializerUnion &&
+    hasUniqueCppCollectionElementSourceAlternativeMapping(variable.type, initializerType, context)
+  ) {
+    return initializerType;
+  }
   // TypeScript may expand an inferred local to an anonymous object even when its initializer still
   // retains the named declaration returned by a call. Preserve that source identity only after the
   // two complete object layouts prove representation-equivalent; the same proof also covers the
@@ -7093,11 +7105,83 @@ function getIrIterableElementTypeCpp(
   return getIrIterableElementTypeCpp(alias, context, nextResolvingAliases);
 }
 
-// A for-of binding is stored as the collection's element type, but TypeScript can report a flow-expanded
-// anonymous object for the binding while retaining the named declaration on the iterable. Keep that
-// source identity only when the two complete, non-nullable unions have a one-to-one runtime-shape
-// mapping. The later narrowing rule still has to identify one source alternative by name; this proof
-// only prevents the loop boundary from discarding the names that the collection actually stores.
+// An immutable binding initialized by an indexed collection read receives the element carrier the collection
+// already stores. TypeScript may instead report a recursively expanded anonymous shape for that binding.
+// Keep the existing carrier only when the complete, non-nullable source and binding unions have a one-to-one
+// structural mapping; this prevents compiler-owned indexed-loop lowering from discarding represented owners.
+function hasUniqueCppCollectionElementSourceAlternativeMapping(
+  bindingType: Readonly<IrType>,
+  sourceType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const bindingUnion = getIrUnionTypeCpp(bindingType, context, new Set());
+  const sourceUnion = getIrUnionTypeCpp(sourceType, context, new Set());
+  if (!bindingUnion || !sourceUnion) return false;
+  if (
+    bindingUnion.types.some((member) => member.kind === 'null' || member.kind === 'undefined') ||
+    sourceUnion.types.some((member) => member.kind === 'null' || member.kind === 'undefined')
+  ) {
+    return false;
+  }
+  const inspectionContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, inspectionContext);
+  if (
+    sourcePlan.kind !== 'multiVariant' ||
+    sourcePlan.valueSlots.length !== sourceUnion.types.length ||
+    bindingUnion.types.length !== sourceUnion.types.length
+  ) {
+    return false;
+  }
+  const unmatchedBindingMembers = new Set(bindingUnion.types.keys());
+  for (const sourceMember of sourceUnion.types) {
+    const matches = [...unmatchedBindingMembers].filter((index) =>
+      areCppCollectionElementSourceAlternativeShapesEquivalent(sourceMember, bindingUnion.types[index]!, context),
+    );
+    if (matches.length !== 1) return false;
+    unmatchedBindingMembers.delete(matches[0]!);
+  }
+  return unmatchedBindingMembers.size === 0;
+}
+
+function areCppCollectionElementSourceAlternativeShapesEquivalent(
+  left: Readonly<IrType>,
+  right: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (isDeepStrictEqual(left, right)) return true;
+  const leftShape = resolveCppObjectShapeInTypeOwnerCpp(left, context);
+  const rightShape = resolveCppObjectShapeInTypeOwnerCpp(right, context);
+  if (
+    !leftShape ||
+    !rightShape ||
+    leftShape.length !== rightShape.length ||
+    !context.referenceRepresentationPlanner.isStructurallyAssignable(left, right, context.module) ||
+    !context.referenceRepresentationPlanner.isStructurallyAssignable(right, left, context.module)
+  ) {
+    return false;
+  }
+  const rightByName = new Map(rightShape.map((property) => [property.name, property] as const));
+  return leftShape.every((property) => {
+    const other = rightByName.get(property.name);
+    if (
+      !other ||
+      property.optional !== other.optional ||
+      Boolean(property.computedKey) !== Boolean(other.computedKey)
+    ) {
+      return false;
+    }
+    const value = getCppLiteralDiscriminantValueCpp(property.type, context, new Set());
+    const otherValue = getCppLiteralDiscriminantValueCpp(other.type, context, new Set());
+    return value === undefined && otherValue === undefined
+      ? true
+      : value !== undefined && otherValue !== undefined && Object.is(value, otherValue);
+  });
+}
+
+// A direct for-of binding is emitted as the collection's element type, but TypeScript can report a
+// flow-expanded anonymous object for the binding while retaining the named declaration on the iterable.
+// Keep that source identity only when the two complete, non-nullable represented unions have a one-to-one
+// runtime-shape mapping. The later narrowing rule still has to identify one source alternative by name.
 function hasUniqueCppForOfSourceAlternativeMapping(
   bindingType: Readonly<IrType>,
   sourceType: Readonly<IrType>,

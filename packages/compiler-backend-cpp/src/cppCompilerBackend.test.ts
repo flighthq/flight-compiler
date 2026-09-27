@@ -7429,6 +7429,79 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  it('retains a named union element through suspending snapshot-loop lowering', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/ports',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/ports.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/ports.ts',
+            `export declare const EntityRuntimeKey: unique symbol;
+             export interface EntityRuntime { binding: object | null; uid?: string }
+             interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+             export interface InputPort extends Entity { readonly name: string; readonly type: 'input' }
+             export interface OutputPort extends Entity { readonly name: string; readonly type: 'output' }
+             export type Port = InputPort | OutputPort;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/midi',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/midi/src/asyncPortSnapshot.ts',
+            `import type { Port } from '@flighthq/types/ports';
+             async function dispose(_port: Port): Promise<void> {}
+             export async function disposeAll(ports: Set<Port>): Promise<void> {
+               for (const port of [...ports]) await dispose(port);
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const contents = emitCppModuleCppSession(results, moduleResolution, 1);
+
+    // Await-condition lowering snapshots the source set, then replaces this for-of with an indexed
+    // loop. Both compiler-owned locals still hold the source collection's exact named variant; the
+    // checker's recursively expanded anonymous shapes are not a new owner or a reason to copy referents.
+    expect(contents).toContain('flight::Array<flighthq_types::Port> array_spread_result');
+    expect(contents).toContain('auto port = await_loop_iterable.element(await_loop_index);');
+    expect(contents).toContain('co_await dispose(port)');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('static_pointer_cast');
+
+    const ambiguous = lower(
+      'ambiguous-async-port-snapshot.ts',
+      `interface FirstPort { readonly name: string }
+       interface SecondPort { readonly name: string }
+       type Port = FirstPort | SecondPort;
+       async function dispose(_port: Port): Promise<void> {}
+       export async function disposeAll(ports: Set<Port>): Promise<void> {
+         for (const port of [...ports]) await dispose(port);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(ambiguous.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
   it('refuses a for-of source alias that names multiple runtime alternatives', () => {
     const result = lower(
       'ambiguous-xml-content.ts',
