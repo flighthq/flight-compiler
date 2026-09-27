@@ -3915,8 +3915,25 @@ function emitExpression(
         context.includes.add('flight/conditional_facet_ref.hpp');
         return `flight::assume_conditional_facets<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context, conditionalFacet.base)})`;
       }
+      const sourceEvidence = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+      // A named-property read through erased storage still has an exact runtime carrier: `flight::Any`.
+      // Let its checked union extraction answer before the generic union assertion classifier. Otherwise
+      // that classifier sees Any as one opaque slot and refuses before `object_if<T>` can select the one
+      // represented target reference. Storage evidence is required here: an `unknown` annotation over a
+      // concrete initializer is not an Any and must not acquire Any's extraction operations.
+      const hasErasedStorage = hasCppErasedDynamicTestOperandCpp(expression.expression, sourceEvidence, context);
+      const erasedValueAssertion =
+        hasErasedStorage || isCppOptionalErasedDynamicValueTypeCpp(sourceEvidence, context)
+          ? getCppErasedValueAssertionCpp(
+              expression.type,
+              hasErasedStorage ? { kind: 'unknown', source: 'unknown' } : sourceEvidence,
+              expression.expression,
+              context,
+            )
+          : undefined;
       const asserted =
         emitCppErasedRefAssertionCpp(expression.expression, expression.type, context) ??
+        erasedValueAssertion ??
         emitUnionMemberAssertionCpp(expression.expression, expression.type, context);
       const assertedGenericFactory = emitCppUnknownBridgedGenericFactoryAssertionCpp(expression, context);
       const callableTypeParameter = getCppCallableTypeParameterCpp(expression.type, context);
@@ -3939,7 +3956,6 @@ function emitExpression(
         const callableFieldName = getCppCallableObjectFieldNameCpp(callableObject.properties);
         return `flight::make_ref<${storageType}>(${storageType}{.${callableFieldName} = ${emitExpression(expression.expression, context, callableObject.callable)}})`;
       }
-      const sourceEvidence = getIrExpressionTypeEvidenceCpp(expression.expression, context);
       const assertedExpression =
         asserted ??
         assertedGenericFactory ??
@@ -11193,6 +11209,12 @@ function isCppAliasResolvedErasedDynamicValueTypeCpp(
   return target ? isCppAliasResolvedErasedDynamicValueTypeCpp(target, context, new Set(seen).add(key)) : false;
 }
 
+function isCppOptionalErasedDynamicValueTypeCpp(type: Readonly<IrType> | undefined, context: EmitContext): boolean {
+  const union = type ? getIrUnionTypeCpp(type, context, new Set()) : undefined;
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  return plan?.kind === 'optionalSingle' && plan.valueSlots[0]?.targetType === 'flight::Any';
+}
+
 // Whether a declaration's storage decision elected the erased dynamic value.
 //
 // This mirrors the spelling election the declaration emitters perform a few lines below their own
@@ -15468,7 +15490,14 @@ function emitCppErasedValueUnionConstructionCpp(
           ]
         : [];
   let source: string;
-  if (isCppErasedDynamicPropertyReadCpp(expression, context) && expression.object.kind !== 'identifier') {
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
+  const optionalErasedSource =
+    plan.kind === 'optionalSingle' && admitsUndefined && isCppOptionalErasedDynamicValueTypeCpp(sourceType, context);
+  if (optionalErasedSource) {
+    const slot = getGeneratedTargetName('erasedValueSlot', context);
+    context.includes.add('optional');
+    source = `const auto& ${slot} = ${emitExpression(expression, context)}; if (!${slot}.has_value()) return ${emitCppUnionSentinelConstruction('undefined', union, plan.kind, context)}; const auto& ${erased} = ${slot}.value();`;
+  } else if (isCppErasedDynamicPropertyReadCpp(expression, context) && expression.object.kind !== 'identifier') {
     // A property read returns a reference into its erased receiver. Retain a produced receiver for the
     // whole checked selection; otherwise `factory().member` leaves the reference dangling after the
     // initializer's full expression. An identifier already owns stable storage and keeps the direct
@@ -19969,9 +19998,8 @@ function refuseCppContextualStructuralArrayNominalRecoveryCpp(
 // the source cannot check. Once that position holds the erased dynamic value, no `static_cast` reaches
 // its alternative — the erased value has no conversion operator — so the assertion becomes the runtime's
 // own checked extraction, which is the closest faithful spelling of what the source wrote: it yields the
-// alternative, and it throws rather than inventing one when the value is something else. Only the
-// primitives are reached this way; an erased value asserted to an object reference is a different
-// question and keeps its refusal.
+// alternative, and it throws rather than inventing one when the value is something else. Object
+// references use the same rule only when the target names one exact referent that Any can check.
 function getCppErasedValueAssertionCpp(
   target: Readonly<IrType>,
   source: Readonly<IrType> | undefined,
@@ -19979,7 +20007,9 @@ function getCppErasedValueAssertionCpp(
   context: EmitContext,
 ): string | undefined {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
-  if (!isCppErasedDynamicValueTypeCpp(source)) return undefined;
+  if (!isCppErasedDynamicValueTypeCpp(source) && !isCppOptionalErasedDynamicValueTypeCpp(source, context)) {
+    return undefined;
+  }
   const extractions: Readonly<Record<string, string>> = {
     boolean: 'as_boolean',
     number: 'as_number',
@@ -19991,6 +20021,15 @@ function getCppErasedValueAssertionCpp(
     if (!extraction) return undefined;
     context.includes.add('flight/any.hpp');
     return `${emitExpression(expression, context)}.${extraction}()`;
+  }
+  const referenceTarget = emitType(target, { ...context, anonymousStructs: new Map(), includes: new Set() });
+  const referenceElement = getCppReferenceElementTypeNameCpp(referenceTarget);
+  if (referenceElement !== undefined && !isCppOptionalErasedDynamicValueTypeCpp(source, context)) {
+    const erased = getGeneratedTargetName('erasedValue', context);
+    const recovered = getGeneratedTargetName('erasedObject', context);
+    context.includes.add('flight/any.hpp');
+    context.includes.add('stdexcept');
+    return `([&]() -> ${emitType(target, context)} { const auto& ${erased} = ${emitExpression(expression, context)}; auto ${recovered} = ${erased}.object_if<${referenceElement}>(); if (!${recovered}) throw std::logic_error("erased value does not hold the asserted object type"); return ${recovered}; }())`;
   }
   // A union target is several alternatives, so the assertion is the same checked selection the contextual
   // lane builds: each alternative asks the runtime for the kind it needs. Without this the assertion fell

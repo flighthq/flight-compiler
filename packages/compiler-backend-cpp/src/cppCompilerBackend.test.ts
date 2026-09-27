@@ -1165,6 +1165,46 @@ function lowerImportedRenderStateAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerPixiParseAssertionModules() {
+  const pixiParse = lowerPackage(
+    '@flighthq/particles-formats',
+    'pixiParse.ts',
+    `export function readColorValue(obj: unknown): unknown | undefined {
+       const valueObj = obj as { value?: unknown } | null | undefined;
+       return valueObj?.value;
+     }`,
+  );
+  const rawMember = lowerPackage(
+    '@flighthq/particles-formats',
+    'pixiParseRawMember.ts',
+    `type PixiRaw = Record<string, unknown>;
+     export function readAcceleration(raw: PixiRaw): unknown | undefined {
+       const accel = raw.acceleration as { x?: unknown; y?: unknown } | undefined;
+       return accel?.x;
+     }`,
+  );
+  const startEnd = lowerPackage(
+    '@flighthq/particles-formats',
+    'pixiParseStartEnd.ts',
+    `export function readStart(obj: unknown): unknown | undefined {
+       if (obj == null || typeof obj !== 'object') return undefined;
+       const o = obj as { start?: unknown; end?: unknown };
+       const startObj = o.start as { value?: unknown } | undefined;
+       return startObj?.value;
+     }`,
+  );
+  const guardedObject = lowerPackage(
+    '@flighthq/particles-formats',
+    'pixiParseGuardedObject.ts',
+    `export function readStart(obj: unknown): unknown | undefined {
+       if (obj == null || typeof obj !== 'object') return undefined;
+       const o = obj as { start?: unknown; end?: unknown };
+       return o.start;
+     }`,
+  );
+  return { guardedObject, pixiParse, rawMember, startEnd };
+}
+
 function lowerImportedPhysicsShapeAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -3973,6 +4013,57 @@ describe('createCppCompilerBackend', () => {
     expect(typed).toContain('get_render_state_runtime');
     expect(typed).not.toContain('static_pointer_cast');
     expect(typed).not.toContain('structural_ref_cast');
+  });
+
+  it('extracts the nested erased Pixi object assertion through its unique target', () => {
+    const { guardedObject, pixiParse, rawMember, startEnd } = lowerPixiParseAssertionModules();
+    const pixiContents = emitIrModuleCpp(pixiParse.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const rawMemberContents = emitIrModuleCpp(rawMember.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const guardedObjectContents = emitIrModuleCpp(guardedObject.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const startEndContents = emitIrModuleCpp(startEnd.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The first erased view remains Any so optional member access can use its dynamic named-property
+    // owner. The nested `o.start` read is Any too, but its assertion names one represented object slot;
+    // recover that exact referent with Any's checked extraction, matching the direct Record member case.
+    // No pointer cast or replacement object is licensed by the assertion.
+    expect([pixiParse, rawMember, guardedObject, startEnd].flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(pixiContents).toContain('auto value_obj = obj;');
+    expect(pixiContents).toContain('flight::named_properties(optional_chain_receiver)');
+    expect(rawMemberContents).toMatch(/\.object_if<x_y_[a-f\d]+>\(\)/u);
+    expect(guardedObjectContents).toMatch(/\.object_if<start_end_[a-f\d]+>\(\)/u);
+    expect(guardedObjectContents).toContain(
+      'throw std::logic_error("erased value does not hold the asserted object type")',
+    );
+    expect(startEndContents).toContain('const auto& erased_value_slot = o->start;');
+    expect(startEndContents).toContain('if (!erased_value_slot.has_value()) return std::nullopt;');
+    expect(startEndContents).toContain('const auto& erased_value_2 = erased_value_slot.value();');
+    expect(startEndContents).toMatch(/\.object_if<value_[a-f\d]+>\(\)/u);
+    expect(startEndContents).toContain(
+      'throw std::logic_error("erased value holds no alternative this union represents")',
+    );
+    const contents = [pixiContents, rawMemberContents, guardedObjectContents, startEndContents].join('\n');
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('structural_ref_cast');
+    expect(contents).not.toContain('make_ref');
+    expect(contents).not.toContain('make_shared');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles the nested erased Pixi object extraction', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { startEnd } = lowerPixiParseAssertionModules();
+    const emitted = emitIrModuleCpp(startEnd.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-pixi-erased-object-'));
+    const header = path.join(directory, 'pixi-erased-object.hpp');
+
+    try {
+      writeFileSync(header, emitted, 'utf8');
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it('classifies the scene runtime, node-data, sprite, and PBR extension assertions', () => {
