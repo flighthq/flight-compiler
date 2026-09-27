@@ -3803,18 +3803,93 @@ describe('createCppCompilerBackend', () => {
     expect(contents).toContain('value->value');
   });
 
-  it('refuses to erase named members into a homogeneous index-signature record', () => {
+  it('keeps representable named members in an erased string-index carrier', () => {
     const result = lower(
+      'mixed-erased-index-signature-carrier.ts',
+      `interface Light { type: string }
+       interface Extensions {
+         KHR_lights_punctual?: { lights: Light[] };
+         [kind: string]: unknown;
+       }
+       interface ShapeBase { hd?: boolean; ix?: number; nm?: string; ty: string }
+       interface UnknownShape extends ShapeBase { [field: string]: unknown }
+       export function create(light: Light): Extensions {
+         return { KHR_lights_punctual: { lights: [light] }, vendor: true };
+       }
+       export function lights(value: Extensions): Light[] | undefined {
+         return value.KHR_lights_punctual?.lights;
+       }
+       export function type(value: UnknownShape): string { return value.ty; }
+       export function hidden(value: UnknownShape): boolean | undefined { return value.hd; }
+       export function maybeType(value: UnknownShape | undefined): string | undefined { return value?.ty; }
+       export function rename(value: UnknownShape, name: string): string { return value.nm = name; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Both schemas use one identity-bearing Record<String, Any>. A fresh named object enters Any with its
+    // exact referent, and reads recover only that exact type or primitive through checked runtime accessors.
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('using Extensions = flight::Record<flight::String, flight::Any>;');
+    expect(contents).toContain('using UnknownShape = flight::Record<flight::String, flight::Any>;');
+    expect(contents).not.toContain('struct Extensions');
+    expect(contents).not.toContain('struct UnknownShape');
+    expect(contents).toContain('flight::Any::object(');
+    expect(contents).toContain('.object_if<');
+    expect(contents).toContain('.as_string()');
+    expect(contents).toContain('.as_boolean()');
+    expect(contents).toContain('.set(flight::String("nm"), flight::Any(');
+    expect(contents).not.toContain('static_cast<flight::Ref<');
+    expect(contents).not.toContain('make_structural_ref');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-mixed-index-signature-'));
+      const header = path.join(directory, 'mixed_index_signature.hpp');
+      try {
+        writeFileSync(header, contents, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it('refuses to erase named members into a homogeneous index-signature record', () => {
+    const failure = (file: string, source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+    const typed = failure(
       'mixed-index-signature-carrier.ts',
       `interface Mixed { [name: string]: number | string; fixed: number }
        export function read(value: Mixed): number { return value.fixed; }`,
     );
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    const array = failure(
+      'mixed-index-signature-array-member.ts',
+      `interface Mixed { [name: string]: unknown; values: number[] }
+       export function read(value: Mixed): number[] { return value.values; }`,
+    );
+    const numeric = failure(
+      'mixed-numeric-index-signature-carrier.ts',
+      `interface Mixed { [index: number]: unknown; label: string }
+       export function read(value: Mixed): string { return value.label; }`,
+    );
+    const compound = failure(
+      'mixed-index-signature-compound-assignment.ts',
+      `interface Mixed { [name: string]: unknown; count: number }
+       export function increment(value: Mixed): number { return value.count += 1; }`,
     );
 
-    expect(failure.rule).toBe('cpp-index-signature-named-members-unrepresented');
-    expect(failure.classification).toBe('compiler-restriction');
+    for (const refusal of [typed, array, numeric]) {
+      expect(refusal.rule).toBe('cpp-index-signature-named-members-unrepresented');
+      expect(refusal.classification).toBe('compiler-restriction');
+      expect(refusal.message).toContain('Keep the open bag as Record<string, unknown> beside a closed typed object');
+    }
+    expect(array.message).toContain('named member values has no flight::Any alternative');
+    expect(compound.rule).toBe('cpp-index-signature-named-member-assignment-unrepresented');
+    expect(compound.classification).toBe('compiler-restriction');
+    expect(compound.message).toContain('requires a typed read-modify-write projection');
   });
 
   it('refuses an array whose element union the position does not hold', () => {

@@ -1211,7 +1211,7 @@ function getCppResolvedIndexSignatureCpp(
 ): Readonly<{ keyKind: 'number' | 'string'; valueType: IrType }> | undefined {
   const signature = declaration.indexSignature;
   if (!signature) return undefined;
-  assertCppPureIndexSignatureCarrierCpp(declaration, context);
+  assertCppIndexSignatureCarrierRepresentedCpp(declaration, context);
   if (declaration.typeParameters.length === 0) return signature;
   if (declaration.typeParameters.length !== typeArguments.length) {
     emissionError(
@@ -1229,16 +1229,60 @@ function getCppResolvedIndexSignatureCpp(
   };
 }
 
-function assertCppPureIndexSignatureCarrierCpp(
+function assertCppIndexSignatureCarrierRepresentedCpp(
   declaration: Readonly<IrInterfaceDeclaration>,
   context: EmitContext,
 ): void {
   if (declaration.properties.length === 0 && declaration.extends.length === 0) return;
+  const signature = declaration.indexSignature;
+  const declarationType = getCppInterfaceDeclarationTypeCpp(declaration);
+  const namedProperties = context.referenceRepresentationPlanner.resolveObjectShape(declarationType, context.module);
+  const unrepresentedProperty = namedProperties?.find((property) => {
+    if (isCppNonEmittingObjectPropertyCpp(property)) return false;
+    const runtimeType = getIrTypeRuntimeDomainCpp(property.type, context, new Set());
+    return !runtimeType || !isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context);
+  });
+  // A string-indexed `unknown` bag already has one homogeneous carrier: Record<String, Any>. Named
+  // members whose present values can enter Any retain their exact primitive or reference alternative in
+  // that same storage, so a checked read can recover them without a second row, a copy, or a cast.
+  if (
+    signature?.keyKind === 'string' &&
+    isCppAliasResolvedErasedDynamicValueTypeCpp(signature.valueType, context) &&
+    namedProperties !== undefined &&
+    unrepresentedProperty === undefined
+  ) {
+    return;
+  }
   emissionError(
     context,
-    `index-signature carrier ${declaration.binding.name} also declares or inherits named members whose per-name types cannot be represented by one homogeneous Record value type`,
+    `index-signature carrier ${declaration.binding.name} also declares or inherits named members whose per-name types cannot be represented by one homogeneous Record value type${unrepresentedProperty ? `; named member ${unrepresentedProperty.name} has no flight::Any alternative for its runtime storage` : ''}. Keep the open bag as Record<string, unknown> beside a closed typed object, or give every named member a value domain the erased record carrier can store and recover exactly`,
     'cpp-index-signature-named-members-unrepresented',
   );
+}
+
+interface CppErasedIndexNamedPropertyPlan {
+  readonly property: Readonly<IrObjectTypeProperty>;
+}
+
+// One statically declared name on the narrow mixed carrier admitted above. Arbitrary names still use
+// ordinary Record indexing and yield Any; only a member present in the resolved object shape receives a
+// checked projection back to its declared value domain.
+function getCppErasedIndexNamedPropertyPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): Readonly<CppErasedIndexNamedPropertyPlan> | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const receiverType = objectType ? getCppNonNullableType(objectType, context, new Set()) : undefined;
+  if (!receiverType || receiverType.kind === 'union') return undefined;
+  const signature = getCppDeclaredIndexSignatureCpp(receiverType, context);
+  if (signature?.keyKind !== 'string' || !isCppAliasResolvedErasedDynamicValueTypeCpp(signature.valueType, context)) {
+    return undefined;
+  }
+  const property = context.referenceRepresentationPlanner
+    .resolveObjectShape(receiverType, context.module)
+    ?.find((candidate) => candidate.name === expression.name && !isCppNonEmittingObjectPropertyCpp(candidate));
+  return property ? { property } : undefined;
 }
 
 function isCppInterfaceRepresentationAliasCpp(
@@ -1250,7 +1294,7 @@ function isCppInterfaceRepresentationAliasCpp(
   // members at all: it is represented as the runtime's keyed record, and emitting a struct for it as well
   // would name two different carriers for one type.
   if (declaration.indexSignature && getCppRuntimeProfile(context.options) === 'flight-cpp') {
-    assertCppPureIndexSignatureCarrierCpp(declaration, context);
+    assertCppIndexSignatureCarrierRepresentedCpp(declaration, context);
     return true;
   }
   const type = getCppInterfaceDeclarationTypeCpp(declaration);
@@ -1992,7 +2036,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   // members would be a subset of what the type admits.
   const indexSignature = declaration.indexSignature;
   if (indexSignature && getCppRuntimeProfile(context.options) === 'flight-cpp') {
-    assertCppPureIndexSignatureCarrierCpp(declaration, context);
+    assertCppIndexSignatureCarrierRepresentedCpp(declaration, context);
     const key: Readonly<IrType> = {
       kind: 'primitive',
       name: indexSignature.keyKind === 'number' ? 'number' : 'string',
@@ -3099,6 +3143,10 @@ function emitExpression(
       }
       const assignmentType = getIrAssignmentTargetTypeCpp(expression.left, context);
       const rightType = getIrExpressionTypeEvidenceCpp(expression.right, context);
+      const erasedIndexNamedPropertyTarget = expression.left.kind === 'property' ? expression.left : undefined;
+      const erasedIndexNamedProperty = erasedIndexNamedPropertyTarget
+        ? getCppErasedIndexNamedPropertyPlanCpp(erasedIndexNamedPropertyTarget, context)
+        : undefined;
       const exactCallableFieldAssignment =
         expression.operator === '=' &&
         assignmentType &&
@@ -3110,7 +3158,15 @@ function emitExpression(
           : undefined;
       const right =
         foreignAnonymousObject ??
-        emitExpression(expression.right, context, exactCallableFieldAssignment ? rightType : assignmentType);
+        emitExpression(
+          expression.right,
+          context,
+          erasedIndexNamedProperty
+            ? (rightType ?? erasedIndexNamedProperty.property.type)
+            : exactCallableFieldAssignment
+              ? rightType
+              : assignmentType,
+        );
       const denseArraySequentialAppendAssignment =
         expression.operator === '='
           ? emitCppDenseArraySequentialAppendAssignmentCpp(expression.left, right, context)
@@ -3122,6 +3178,17 @@ function emitExpression(
         context,
       );
       if (capturedRuntimeReferentAssignment) return capturedRuntimeReferentAssignment;
+      const erasedIndexNamedPropertyAssignment =
+        erasedIndexNamedProperty && erasedIndexNamedPropertyTarget
+          ? emitCppErasedIndexNamedPropertyAssignmentCpp(
+              erasedIndexNamedPropertyTarget,
+              expression.operator,
+              right,
+              rightType ?? erasedIndexNamedProperty.property.type,
+              context,
+            )
+          : undefined;
+      if (erasedIndexNamedPropertyAssignment) return erasedIndexNamedPropertyAssignment;
       const structuralRowAssignment =
         expression.operator === '=' && getCppRuntimeProfile(context.options) === 'flight-cpp'
           ? emitCppStructuralRowAssignment(expression.left, right, context)
@@ -4906,6 +4973,8 @@ function emitExpression(
       if (narrowedUnion) return narrowedUnion;
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
       if (narrowedPresent) return narrowedPresent;
+      const erasedIndexNamedProperty = emitCppErasedIndexNamedPropertyReadCpp(expression, context);
+      if (erasedIndexNamedProperty) return erasedIndexNamedProperty;
       const optionalErasedDynamicProperty = emitCppErasedDynamicOptionalPropertyReadCpp(expression, context);
       if (optionalErasedDynamicProperty) return optionalErasedDynamicProperty;
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context, expectedType);
@@ -15563,6 +15632,44 @@ function emitCppErasedValueUnionConstructionCpp(
   context: EmitContext,
 ): string | undefined {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || plan.valueSlots.length === 0) return undefined;
+  const erased = getGeneratedTargetName('erasedValue', context);
+  let source: string;
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
+  const optionalErasedSource = isCppOptionalErasedDynamicValueTypeCpp(sourceType, context);
+  if (optionalErasedSource) {
+    const slot = getGeneratedTargetName('erasedValueSlot', context);
+    const admitsUndefined = union.types.some((member) => member.kind === 'undefined');
+    context.includes.add('optional');
+    context.includes.add('stdexcept');
+    const missing = admitsUndefined
+      ? `return ${emitCppUnionSentinelConstruction('undefined', union, plan.kind, context)};`
+      : 'throw std::logic_error("an absent erased value is not represented by the asserted union");';
+    source = `const auto& ${slot} = ${emitExpression(expression, context)}; if (!${slot}.has_value()) ${missing} const auto& ${erased} = ${slot}.value();`;
+  } else if (isCppErasedDynamicPropertyReadCpp(expression, context) && expression.object.kind !== 'identifier') {
+    // A property read returns a reference into its erased receiver. Retain a produced receiver for the
+    // whole checked selection; otherwise `factory().member` leaves the reference dangling after the
+    // initializer's full expression. An identifier already owns stable storage and keeps the direct
+    // zero-copy spelling.
+    const receiver = getGeneratedTargetName('erasedReceiver', context);
+    context.includes.add('flight/structural_ref.hpp');
+    source = `const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto& ${erased} = flight::named_properties(${receiver}).get(${emitLiteral(expression.name, context)});`;
+  } else {
+    source = `const auto& ${erased} = ${emitExpression(expression, context)};`;
+  }
+  return emitCppErasedValueUnionConstructionFromSourceCpp(source, erased, union, plan, context);
+}
+
+// The checked Any-to-union selection with its source binding supplied by the caller. Most callers bind an
+// expression directly; a named read from an erased index-signature carrier first has to distinguish a
+// missing Record entry from a present Any holding `undefined`, then uses this exact same selection.
+function emitCppErasedValueUnionConstructionFromSourceCpp(
+  source: string,
+  erased: string,
+  union: Readonly<Extract<IrType, { kind: 'union' }>>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || plan.valueSlots.length === 0) return undefined;
   const extractions = plan.valueSlots.map((slot) => getCppErasedValueUnionExtractionCpp(slot.targetType));
   if (extractions.some((extraction) => extraction === undefined)) return undefined;
   const everyExtraction = extractions.filter(
@@ -15579,7 +15686,6 @@ function emitCppErasedValueUnionConstructionCpp(
         : emitUnionTypeCpp(union, context);
   context.includes.add('flight/any.hpp');
   context.includes.add('stdexcept');
-  const erased = getGeneratedTargetName('erasedValue', context);
   const branches = plan.valueSlots.map((slot, index) => {
     const extraction = everyExtraction[index]!;
     const constructed = emitCppUnionValueConstruction(
@@ -15615,28 +15721,68 @@ function emitCppErasedValueUnionConstructionCpp(
             `if (${erased}.is_nullish()) return ${emitCppUnionSentinelConstruction(admitsNull ? 'null' : 'undefined', union, plan.kind, context)};`,
           ]
         : [];
-  let source: string;
-  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
-  const optionalErasedSource = isCppOptionalErasedDynamicValueTypeCpp(sourceType, context);
-  if (optionalErasedSource) {
-    const slot = getGeneratedTargetName('erasedValueSlot', context);
-    context.includes.add('optional');
-    const missing = admitsUndefined
-      ? `return ${emitCppUnionSentinelConstruction('undefined', union, plan.kind, context)};`
-      : 'throw std::logic_error("an absent erased value is not represented by the asserted union");';
-    source = `const auto& ${slot} = ${emitExpression(expression, context)}; if (!${slot}.has_value()) ${missing} const auto& ${erased} = ${slot}.value();`;
-  } else if (isCppErasedDynamicPropertyReadCpp(expression, context) && expression.object.kind !== 'identifier') {
-    // A property read returns a reference into its erased receiver. Retain a produced receiver for the
-    // whole checked selection; otherwise `factory().member` leaves the reference dangling after the
-    // initializer's full expression. An identifier already owns stable storage and keeps the direct
-    // zero-copy spelling.
-    const receiver = getGeneratedTargetName('erasedReceiver', context);
-    context.includes.add('flight/structural_ref.hpp');
-    source = `const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto& ${erased} = flight::named_properties(${receiver}).get(${emitLiteral(expression.name, context)});`;
-  } else {
-    source = `const auto& ${erased} = ${emitExpression(expression, context)};`;
-  }
   return `([&]() -> ${carrier} { ${source} ${[...branches, ...absence].join(' ')} throw std::logic_error("erased value holds no alternative this union represents"); }())`;
+}
+
+// A mixed `{ named?: T; [key: string]: unknown }` carrier stores both the named and open entries in one
+// Record<String, Any>. Recover a declared name through Any's checked accessor for the exact runtime domain
+// the checker gave that member. A missing Record entry contributes `undefined`; it is not confused with a
+// present Any that happens to hold `undefined`, even though both reach the same optional result when the
+// declared property admits it.
+function emitCppErasedIndexNamedPropertyReadCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const named = getCppErasedIndexNamedPropertyPlanCpp(expression, context);
+  const declaredType = named ? getIrObjectPropertyReadTypeCpp(named.property) : undefined;
+  if (!named || !declaredType) return undefined;
+  const resultType =
+    expression.optional && !hasIrTypeAbsentMember(declaredType)
+      ? (getIrExpressionTypeEvidenceCpp(expression, context) ??
+        createIrTypeEvidenceUnionCpp([declaredType, { kind: 'undefined' }]))
+      : declaredType;
+  if (!resultType) return undefined;
+  const union = getIrUnionTypeCpp(resultType, context, new Set());
+  const unionPlan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  const receiver = getGeneratedTargetName('namedIndexReceiver', context);
+  const lookup = getGeneratedTargetName('namedIndexLookup', context);
+  const erased = getGeneratedTargetName('namedIndexValue', context);
+  const key = emitLiteral(expression.name, context);
+  let receiverSource: string;
+  let record: string;
+  if (expression.optional) {
+    const semantics = expression.optionalChain;
+    if (!semantics) emissionError(context, 'optional named index member lacks optional-chain evidence');
+    const projection = getCppOptionalChainReceiverProjectionCpp(semantics.receiverType, context);
+    const absent =
+      union && unionPlan && union.types.some((member) => member.kind === 'undefined')
+        ? emitCppUnionSentinelConstruction('undefined', union, unionPlan.kind, context)
+        : undefined;
+    if (!absent) return undefined;
+    const absentTest = projection.absent.replaceAll('optional_chain_receiver', receiver);
+    receiverSource = `auto ${receiver} = ${emitOptionalChainReceiverCpp(expression.object, context)}; if (${absentTest}) return ${absent};`;
+    record = projection.value.replaceAll('optional_chain_receiver', receiver);
+  } else {
+    receiverSource = `auto&& ${receiver} = ${emitExpression(expression.object, context)};`;
+    record = receiver;
+  }
+  const missing =
+    union && unionPlan && union.types.some((member) => member.kind === 'undefined')
+      ? emitCppUnionSentinelConstruction('undefined', union, unionPlan.kind, context)
+      : undefined;
+  const source = missing
+    ? `${receiverSource} const auto ${lookup} = ${record}.get(${key}); if (!${lookup}.has_value()) return ${missing}; const auto& ${erased} = ${lookup}.value();`
+    : `${receiverSource} const auto& ${erased} = ${record}.get(${key}).value();`;
+  if (union && unionPlan) {
+    return emitCppErasedValueUnionConstructionFromSourceCpp(source, erased, union, unionPlan, context);
+  }
+  const runtimeType = getIrTypeRuntimeDomainCpp(resultType, context, new Set());
+  const targetType = runtimeType ? emitType(runtimeType, context) : undefined;
+  const extraction = targetType ? getCppErasedValueUnionExtractionCpp(targetType) : undefined;
+  if (!targetType || !extraction) return undefined;
+  context.includes.add('flight/any.hpp');
+  context.includes.add('stdexcept');
+  return `([&]() -> ${targetType} { ${source} if (${extraction.test(erased)}) return ${extraction.value(erased)}; throw std::logic_error("named index member does not hold its declared runtime domain"); }())`;
 }
 
 function getCppErasedValueUnionExtractionCpp(targetType: string): Readonly<CppErasedValueUnionExtraction> | undefined {
@@ -22644,6 +22790,48 @@ function emitCppRecordIndexedAssignmentCpp(
   const receiver = emitExpression(target.object, context);
   const key = emitCppRequiredRecordKeyCpp(target.index, record.key, context);
   return `([&]() { auto assignment_value = ${value}; ${receiver}.set(${key}, assignment_value); return assignment_value; }())`;
+}
+
+function emitCppAnyConstructionFromValueCpp(
+  value: string,
+  type: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const runtimeType = getIrTypeRuntimeDomainCpp(type, context, new Set());
+  if (!runtimeType || !isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context)) return undefined;
+  context.includes.add('flight/any.hpp');
+  if (isCppErasedDynamicValueTypeCpp(runtimeType)) return value;
+  if (runtimeType.kind === 'function') return `flight::Any::function(${value})`;
+  if (hasFlightReferenceRepresentationCpp(runtimeType, context)) return `flight::Any::object(${value})`;
+  return `flight::Any(${value})`;
+}
+
+function emitCppErasedIndexNamedPropertyAssignmentCpp(
+  target: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  operator: Extract<IrExpression, { kind: 'assignment' }>['operator'],
+  value: string,
+  valueType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (!getCppErasedIndexNamedPropertyPlanCpp(target, context)) return undefined;
+  if (operator !== '=') {
+    emissionError(
+      context,
+      `operator ${operator} on a named member of an erased index-signature carrier requires a typed read-modify-write projection`,
+      'cpp-index-signature-named-member-assignment-unrepresented',
+    );
+  }
+  const receiver = getGeneratedTargetName('namedIndexAssignmentReceiver', context);
+  const assigned = getGeneratedTargetName('namedIndexAssignmentValue', context);
+  const boxed = emitCppAnyConstructionFromValueCpp(assigned, valueType, context);
+  if (!boxed) {
+    emissionError(
+      context,
+      `named index member ${target.name} cannot enter flight::Any without changing its runtime representation`,
+      'cpp-index-signature-named-member-assignment-unrepresented',
+    );
+  }
+  return `([&]() { auto&& ${receiver} = ${emitExpression(target.object, context)}; auto ${assigned} = ${value}; ${receiver}.set(${emitLiteral(target.name, context)}, ${boxed}); return ${assigned}; }())`;
 }
 
 function emitCppRecordNullishAssignmentCpp(
