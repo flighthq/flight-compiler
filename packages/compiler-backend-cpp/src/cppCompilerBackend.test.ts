@@ -4243,7 +4243,7 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('Narrow or convert the source expression');
   });
 
-  it('passes the glTF anisotropy, clearcoat, and sheen texture unions through their exact imported alias', () => {
+  it('passes glTF anisotropy, clearcoat, sheen, and specular texture unions through their exact imported alias', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -4294,6 +4294,13 @@ describe('createCppCompilerBackend', () => {
              sheenRoughnessMap: Texture | null;
              readonly kind: 'SheenPbrExtension';
            }
+           export interface SpecularPbrExtension {
+             specular: number;
+             specularColor: number;
+             specularColorMap: Texture | null;
+             specularMap: Texture | null;
+             readonly kind: 'SpecularPbrExtension';
+           }
            export interface GltfExtensionContext {
              resolveTexture(info: object | undefined, colorSpace: string): Texture | null;
            }
@@ -4309,6 +4316,7 @@ describe('createCppCompilerBackend', () => {
              AnisotropyPbrExtension,
              ClearcoatPbrExtension,
              SheenPbrExtension,
+             SpecularPbrExtension,
            } from '@flighthq/types/contract';
            export function createAnisotropyPbrExtension(
              options?: Readonly<Partial<AnisotropyPbrExtension>>,
@@ -4318,7 +4326,10 @@ describe('createCppCompilerBackend', () => {
            ): ClearcoatPbrExtension { throw new Error('stub'); }
            export function createSheenPbrExtension(
              options?: Readonly<Partial<SheenPbrExtension>>,
-           ): SheenPbrExtension { throw new Error('stub'); }`,
+           ): SheenPbrExtension { throw new Error('stub'); }
+           export function createSpecularPbrExtension(
+             options?: Readonly<Partial<SpecularPbrExtension>>,
+           ): SpecularPbrExtension { throw new Error('stub'); }`,
         ),
         source(
           '@flighthq/scene3d-formats',
@@ -4372,6 +4383,23 @@ describe('createCppCompilerBackend', () => {
              kind: 'KHR_materials_sheen',
            };`,
         ),
+        source(
+          '@flighthq/scene3d-formats',
+          'packages/scene3d-formats/src/gltfSpecular.ts',
+          `import { createSpecularPbrExtension } from '@flighthq/materials/contract';
+           import type { GltfExtensionHandler } from '@flighthq/types/contract';
+           export const handler: GltfExtensionHandler = {
+             apply(context) {
+               createSpecularPbrExtension({
+                 specular: 1,
+                 specularColor: 0,
+                 specularColorMap: context.resolveTexture(undefined, 'srgb'),
+                 specularMap: context.resolveTexture(undefined, 'linear'),
+               });
+             },
+             kind: 'KHR_materials_specular',
+           };`,
+        ),
       ],
       moduleResolution,
     );
@@ -4394,11 +4422,11 @@ describe('createCppCompilerBackend', () => {
     const anisotropy = session.emitModule(modules[2]!)[0]!.contents;
     const clearcoat = session.emitModule(modules[3]!)[0]!.contents;
     const sheen = session.emitModule(modules[4]!)[0]!.contents;
+    const specular = session.emitModule(modules[5]!)[0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-    // Clearcoat and sheen drive the same exact-carrier widening through three and two independent map
-    // properties. Each source stays single-evaluation, maps null to null (not the Partial row's undefined
-    // sentinel), and copies only its already-held Ref into the destination variant.
+    // Each map source stays single-evaluation, maps null to null (not the Partial row's undefined sentinel),
+    // and copies only its already-held Ref into the destination variant.
     const expectOwnerPreservingTextureWidenings = (emitted: string, count: number) => {
       expect(emitted.match(/RowKey<"resolveTexture">/gu)).toHaveLength(count);
       expect(
@@ -4424,8 +4452,11 @@ describe('createCppCompilerBackend', () => {
     expectOwnerPreservingTextureWidenings(anisotropy, 1);
     expectOwnerPreservingTextureWidenings(clearcoat, 3);
     expectOwnerPreservingTextureWidenings(sheen, 2);
+    expectOwnerPreservingTextureWidenings(specular, 2);
     expect(sheen).toContain('flight::String("srgb")');
     expect(sheen).toContain('flight::String("linear")');
+    expect(specular).toContain('flight::String("srgb")');
+    expect(specular).toContain('flight::String("linear")');
   });
 
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
