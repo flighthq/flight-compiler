@@ -801,6 +801,67 @@ function lowerImportedSceneErasedRowProbeModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedTransformVelocityModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const visit = (assertion: string) =>
+    `import type { NodeOf, Transform2DNode } from '@flighthq/types/contract';
+     function acceptTransformNode<Traits extends object>(node: Readonly<Transform2DNode<Traits>>): void { node; }
+     export function visitTransformVelocity<Traits extends object>(
+       node: Readonly<Transform2DNode<Traits>>,
+       child: NodeOf<Traits> | null,
+     ): void {
+       node;
+       if (child !== null) acceptTransformNode(${assertion});
+     }`;
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface Node<Traits extends object> { enabled: boolean; traits: Traits }
+         export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+         export interface HasTransform2D { x: number; y: number }
+         export type Transform2DNode<Traits extends object> = NodeOf<Traits> & HasTransform2D;`,
+      ),
+      source(
+        '@flighthq/velocity',
+        'velocity/src/transformVelocity.ts',
+        visit('child as unknown as Readonly<Transform2DNode<Traits>>'),
+      ),
+      source(
+        '@flighthq/velocity',
+        'velocity/src/transformVelocityTyped.ts',
+        visit('child as Readonly<Transform2DNode<Traits>>'),
+      ),
+      source(
+        '@flighthq/velocity',
+        'velocity/src/transformVelocityErased.ts',
+        `import type { Transform2DNode } from '@flighthq/types/contract';
+         export function recoverTransformNode<Traits extends object>(
+           value: unknown,
+         ): Readonly<Transform2DNode<Traits>> {
+           return value as Readonly<Transform2DNode<Traits>>;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedSceneResourceAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -2222,6 +2283,75 @@ describe('createCppCompilerBackend', () => {
     expect(typedSkinning).toContain('is_mesh_node(scene)');
     expect(typedSkinning).toContain('prepare_mesh_skinning(scene);');
     expect(typedSkinning).not.toContain('flight::Any');
+  });
+
+  it('reuses the pre-erasure row owner for the transform velocity child assertion', () => {
+    const { moduleResolution, results } = lowerImportedTransformVelocityModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const erasedMarker = session.emitModule(modules[1]!)[0]!.contents;
+    const typed = session.emitModule(modules[2]!)[0]!.contents;
+    const trulyErased = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+
+    // The child position carries the represented NodeOf<Traits> row that getNodeChildAt returns after the
+    // null guard. Both assertions are runtime no-ops in JavaScript, so the erased-marker spelling must
+    // lower exactly like the typed spelling: re-view the same row owner as the transform intersection. A
+    // real unknown parameter has no such owner evidence and stays refused rather than being cast, copied,
+    // or materialized.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const output of [erasedMarker, typed]) {
+      expect(output).toContain('flight::structural_ref_cast<');
+      expect(output).toContain('>(flight::structural_ref_cast<');
+      expect(output).not.toContain('flight::Any');
+      expect(output).not.toContain('make_ref');
+      expect(output).not.toContain('materialize_row');
+      expect(output).not.toContain('static_pointer_cast');
+    }
+    expect(trulyErased.rule).toBe('cpp-erased-value-assertion-unrepresented');
+    expect(trulyErased.classification).toBe('target-runtime');
+    expect(trulyErased.message).toContain('flight::Any has no structural-row alternative or checked row projection');
+    expect(trulyErased.message).toContain('keep the API typed to the structural source before erasure');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles the pre-erasure transform velocity row assertion', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedTransformVelocityModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+          '@flighthq/velocity': { includePrefix: 'test/velocity', namespace: 'flighthq_velocity' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.slice(0, 3).map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-transform-velocity-row-'));
+
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const velocity = emitted[1]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, velocity.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it('compares an exactly owned structural row through explicit erased reference identity', () => {

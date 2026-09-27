@@ -3752,6 +3752,7 @@ function emitExpression(
         expression.type,
         context.module,
       );
+      const structuralProjectionCandidate = getCppStructuralProjectionRowCpp(expression.type, context);
       if (
         expression.expression.kind === 'object' &&
         hasCppOpenStructuralRowTypeParameterCpp(expression.type, context) &&
@@ -3763,20 +3764,37 @@ function emitExpression(
           'cpp-structural-open-row-construction-unproven',
         );
       }
-      const structuralSourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+      // An assertion through `unknown` is still a runtime no-op when both sides are structural rows. Keep
+      // the represented expression beneath that marker so the outer row cast re-views its existing owner;
+      // constructing Any would discard precisely the owner the row cast needs. This lane is deliberately
+      // narrower than generic erased recovery: it crosses only erased cast markers, requires a represented
+      // structural source and target, and never claims a genuinely Any-backed value.
+      const preErasureStructuralSource =
+        structuralTarget || structuralProjectionCandidate
+          ? getCppPreErasureStructuralAssertionSourceCpp(expression.expression, context)
+          : undefined;
+      const structuralSourceExpression = preErasureStructuralSource?.expression ?? expression.expression;
+      const structuralSourceType =
+        preErasureStructuralSource?.type ?? getIrExpressionTypeEvidenceCpp(expression.expression, context);
       const structuralSource =
+        preErasureStructuralSource?.row ??
         getCppStructuralRowExpressionPlanCpp(expression.expression, context) ??
         (structuralSourceType
           ? context.referenceRepresentationPlanner.resolveStructuralRow(structuralSourceType, context.module)
           : undefined);
-      const structuralProjectionTarget = structuralSource
-        ? getCppStructuralProjectionRowCpp(expression.type, context)
-        : undefined;
+      const structuralProjectionTarget = structuralSource ? structuralProjectionCandidate : undefined;
       if ((structuralTarget || structuralProjectionTarget) && getCppRuntimeProfile(context.options) === 'flight-cpp') {
         if (expression.expression.kind === 'object') {
           return emitExpression(expression.expression, context, expression.type);
         }
-        const subject = emitCppAssertionSubjectCpp(expression.expression, context);
+        if (!structuralSource && isCppErasedDynamicValueTypeCpp(structuralSourceType)) {
+          emissionError(
+            context,
+            `an actually erased value cannot be asserted as structural row ${describeIrTypeForDiagnosticCpp(expression.type)}: flight::Any has no structural-row alternative or checked row projection. Preserve the represented row through the assertion, or keep the API typed to the structural source before erasure; the compiler will not cast, copy, or materialize a replacement row`,
+            'cpp-erased-value-assertion-unrepresented',
+          );
+        }
+        const subject = emitCppAssertionSubjectCpp(structuralSourceExpression, context);
         const structuralSourceObject = structuralSource
           ? getCppStructuralRowObjectTypeCpp(structuralSource)
           : undefined;
@@ -20007,6 +20025,27 @@ function getCppRepresentedErasedAssertionSourceCpp(
   if (!crossedErasedAssertion) return undefined;
   const type = getIrExpressionTypeEvidenceCpp(source, context);
   return type && !isCppErasedDynamicValueTypeCpp(type) ? { expression: source, type } : undefined;
+}
+
+// The existing structural carrier beneath a type-only erased assertion marker. Unlike the general
+// represented-assertion helper above, this stops at the first non-erased cast: an intervening concrete
+// assertion is a representation claim of its own and cannot be silently skipped. Fresh object literals
+// also stay on construction handling, where contextual storage decides which object is actually created.
+function getCppPreErasureStructuralAssertionSourceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<{ expression: IrExpression; row: CompilerCppStructuralRowPlan; type: IrType }> | undefined {
+  let source = expression;
+  let crossedErasedAssertion = false;
+  while (source.kind === 'cast' && isCppErasedDynamicValueTypeCpp(source.type)) {
+    crossedErasedAssertion = true;
+    source = source.expression;
+  }
+  if (!crossedErasedAssertion || source.kind === 'object') return undefined;
+  const type = getIrExpressionTypeEvidenceCpp(source, context);
+  if (!type || isCppErasedDynamicValueTypeCpp(type)) return undefined;
+  const row = context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module);
+  return row ? { expression: source, row, type } : undefined;
 }
 
 // Exactly the positions `emitType` routes to `flight::Any`: an unconstrained type that is neither the
