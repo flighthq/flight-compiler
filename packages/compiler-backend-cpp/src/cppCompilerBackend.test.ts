@@ -1669,6 +1669,75 @@ function lowerImportedGizmoAlignmentModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedRiveSceneSequenceModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+      {
+        specifier: './riveAnimation',
+        target: { packageName: '@flighthq/scene2d-formats', source: 'packages/scene2d-formats/src/riveAnimation.ts' },
+      },
+      {
+        specifier: './riveImportRegistry',
+        target: {
+          packageName: '@flighthq/scene2d-formats',
+          source: 'packages/scene2d-formats/src/riveImportRegistry.ts',
+        },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface RiveCoreObject { properties: number[]; typeKey: number }`,
+      ),
+      source(
+        '@flighthq/scene2d-formats',
+        'scene2d-formats/src/riveAnimation.ts',
+        `import type { RiveCoreObject } from '@flighthq/types/contract';
+         export function createRiveAnimationClips(
+           objects: readonly Readonly<RiveCoreObject>[],
+         ): number { return objects.length; }`,
+      ),
+      source(
+        '@flighthq/scene2d-formats',
+        'scene2d-formats/src/riveImportRegistry.ts',
+        `import type { RiveCoreObject } from '@flighthq/types/contract';
+         export function createRiveArtboardImportContext(
+           objects: readonly Readonly<RiveCoreObject>[],
+         ): number { return objects.length; }`,
+      ),
+      source(
+        '@flighthq/scene2d-formats',
+        'scene2d-formats/src/riveScene2D.ts',
+        `import type { RiveCoreObject } from '@flighthq/types/contract';
+         import { createRiveAnimationClips } from './riveAnimation';
+         import { createRiveArtboardImportContext } from './riveImportRegistry';
+         export function createRiveArtboardImport(
+           objects: readonly Readonly<RiveCoreObject>[],
+         ): number {
+           const contextObjectCount = createRiveArtboardImportContext(objects);
+           const animationCount = createRiveAnimationClips(objects);
+           return contextObjectCount + animationCount;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedPhysicsShapeAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -25317,6 +25386,73 @@ Resolver make_resolver(TextureRef texture) {
       }
       const alignment = emitted[1]!;
       const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, alignment.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps imported Rive core objects on owner-preserving sequence views across helper modules', () => {
+    const { moduleResolution, results } = lowerImportedRiveSceneSequenceModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = modules
+      .slice(1)
+      .map((module) => session.emitModule(module)[0]!.contents)
+      .join('\n');
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The artboard importer only lends its object stream to helpers that accept the identical projected
+    // sequence ABI. This does not perform the distinct, unsupported operation of storing it as an owner.
+    expect(contents).toMatch(/create_rive_artboard_import\(flight::SequenceView<.*> objects/u);
+    expect(contents).toMatch(/create_rive_artboard_import_context\(flight::SequenceView<.*> objects/u);
+    expect(contents).toMatch(/create_rive_animation_clips\(flight::SequenceView<.*> objects/u);
+    expect(contents).toContain('create_rive_artboard_import_context(objects)');
+    expect(contents).toContain('create_rive_animation_clips(objects)');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles imported Rive core-object sequence forwarding', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedRiveSceneSequenceModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/scene2d-formats': {
+            includePrefix: 'test/scene2d-formats',
+            namespace: 'flighthq_scene2d_formats',
+          },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-rive-scene-sequence-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const scene = emitted[3]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, scene.path), [
         directory,
         ...cppRuntimeIncludeDirectories,
       ]);
