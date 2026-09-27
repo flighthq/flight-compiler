@@ -1393,6 +1393,80 @@ function lowerImportedColorLutCacheModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedExplainUnpackedRectanglesModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+      {
+        specifier: './packRectangles',
+        target: { packageName: '@flighthq/binpack', source: 'packages/binpack/src/packRectangles.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export type RectangleId = string | number;
+         export interface PackableRectangle { id: RectangleId; width: number; height: number }
+         export interface BinPackOptions { allowRotation?: boolean; maxHeight?: number; maxWidth?: number }
+         export interface PackResult { unpacked: RectangleId[] }
+         export interface UnpackedRectangleExplanation {
+           readonly id: RectangleId;
+           readonly usableHeight: number;
+           readonly usableWidth: number;
+         }`,
+      ),
+      source(
+        '@flighthq/binpack',
+        'binpack/src/packRectangles.ts',
+        `import type { BinPackOptions, PackableRectangle, PackResult } from '@flighthq/types/contract';
+         export const BIN_PACK_DEFAULT_MAX_EXTENT = 16384;
+         export function packRectangles(
+           rects: readonly Readonly<PackableRectangle>[],
+           options?: Readonly<BinPackOptions>,
+         ): PackResult { return { unpacked: [] }; }`,
+      ),
+      source(
+        '@flighthq/binpack',
+        'binpack/src/explainUnpackedRectangles.ts',
+        `import type {
+           BinPackOptions,
+           PackableRectangle,
+           UnpackedRectangleExplanation,
+         } from '@flighthq/types/contract';
+         import { BIN_PACK_DEFAULT_MAX_EXTENT, packRectangles } from './packRectangles';
+         export function explainUnpackedRectangles(
+           rectangles: readonly Readonly<PackableRectangle>[],
+           options?: Readonly<BinPackOptions>,
+         ): UnpackedRectangleExplanation[] {
+           const usableWidth = BIN_PACK_DEFAULT_MAX_EXTENT;
+           const usableHeight = BIN_PACK_DEFAULT_MAX_EXTENT;
+           const result = packRectangles(rectangles, options);
+           if (result.unpacked.length === 0) return [];
+           const explanations: UnpackedRectangleExplanation[] = [];
+           for (const rectangle of rectangles) {
+             explanations.push({ id: rectangle.id, usableWidth, usableHeight });
+           }
+           return explanations;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedPhysicsShapeAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -24566,6 +24640,62 @@ Resolver make_resolver(TextureRef texture) {
       }
       const cache = emitted[3]!;
       const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, cache.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps the current imported unpacked-rectangle explainer on its owner-preserving sequence lane', () => {
+    const { moduleResolution, results } = lowerImportedExplainUnpackedRectanglesModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(contents).toMatch(/explain_unpacked_rectangles\(flight::SequenceView<.*> rectangles/u);
+    expect(contents).toContain('pack_rectangles(rectangles, options)');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles the current imported unpacked-rectangle sequence lane', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedExplainUnpackedRectanglesModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/binpack': { includePrefix: 'test/binpack', namespace: 'flighthq_binpack' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-binpack-sequence-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const explanation = emitted[2]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, explanation.path), [
         directory,
         ...cppRuntimeIncludeDirectories,
       ]);
