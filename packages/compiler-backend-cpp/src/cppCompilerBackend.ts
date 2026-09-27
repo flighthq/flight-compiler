@@ -11826,10 +11826,15 @@ function emitUnionMemberAssertionCpp(
     plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
       ? isCppExplicitStructuralUnionSlotExtensionCpp(plan.valueSlots[0]!, assertedPlan.valueSlots[0]!, context)
       : false;
+  const partialStructuralNarrowing =
+    plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
+      ? getCppPartialStructuralUnionSlotNarrowingCpp(plan.valueSlots[0]!, assertedPlan.valueSlots[0]!, context)
+      : undefined;
   const alternatives = plan.valueSlots.filter(
     (slot) =>
       narrowing !== undefined ||
       structuralNarrowing ||
+      partialStructuralNarrowing !== undefined ||
       slot.targetType === assertedTarget ||
       slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)) ||
       isCppNominalHeritageUnionSlotCpp(slot, assertedType, context),
@@ -12000,6 +12005,14 @@ function emitUnionMemberAssertionCpp(
     narrowing?.cast ??
     (alternatives[0]!.targetType === assertedTarget ? undefined : getCppReferenceElementTypeNameCpp(assertedTarget));
   const narrowed = (inner: string): string => {
+    if (partialStructuralNarrowing) {
+      context.includes.add('flight/structural_ref.hpp');
+      const source = partialStructuralNarrowing.sourceProjection
+        ? `${emitCppStructuralRowReferenceTypeCpp(partialStructuralNarrowing.sourceProjection, context)}(${inner})`
+        : inner;
+      const target = getCppSingleStructuralAliasUnionTargetTypeCpp(assertedPlan!, context);
+      return `flight::structural_ref_cast<${target ?? assertedPlan!.valueSlots[0]!.targetType}>(${source})`;
+    }
     if (structuralNarrowing) {
       context.includes.add('flight/structural_ref.hpp');
       const target = getCppSingleStructuralAliasUnionTargetTypeCpp(assertedPlan!, context);
@@ -12009,6 +12022,11 @@ function emitUnionMemberAssertionCpp(
     context.includes.add('memory');
     return `std::static_pointer_cast<${cast}>(${inner})`;
   };
+  if (plan.kind === 'optionalSingle' && partialStructuralNarrowing) {
+    const source = getGeneratedTargetName('partialStructuralSource', context);
+    context.includes.add('optional');
+    return `([&]() -> ${emitType(assertedType, context)} { auto ${source} = ${value}; if (!${source}.has_value()) return std::nullopt; return ${narrowed(`${source}.value()`)}; }())`;
+  }
   if (plan.kind === 'optionalSingle') return narrowed(`${value}.value()`);
   if (plan.kind === 'optionalVariant') return narrowed(`std::get<${alternatives[0]!.targetType}>(${value}.value())`);
   return narrowed(`std::get<${alternatives[0]!.targetType}>(${value})`);
@@ -12017,6 +12035,28 @@ function emitUnionMemberAssertionCpp(
 interface CppStructuralUnionAssertionAlternative {
   readonly slot: Readonly<ReturnType<typeof getCppUnionRepresentationPlan>['valueSlots'][number]>;
   readonly targetType: Readonly<IrType>;
+}
+
+interface CppPartialStructuralUnionSlotNarrowing {
+  readonly sourceProjection?: Readonly<CompilerCppStructuralRowPlan> | undefined;
+}
+
+// A nullable native reference asserted to a nullable Partial row is the union form of the ordinary
+// structural-row assertion above. Absence stays in the same optional carrier, while the present value is
+// re-viewed through the source's own structural owner. A Partial row is the one wider view that can safely
+// ask for a member the source did not declare: the runtime answers an unbound cell with an empty value,
+// exactly as Partial promises. Required and readonly derived rows continue to need owner proof and refuse.
+function getCppPartialStructuralUnionSlotNarrowingCpp(
+  source: Readonly<ReturnType<typeof getCppUnionRepresentationPlan>['valueSlots'][number]>,
+  target: Readonly<ReturnType<typeof getCppUnionRepresentationPlan>['valueSlots'][number]>,
+  context: EmitContext,
+): Readonly<CppPartialStructuralUnionSlotNarrowing> | undefined {
+  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(target.runtimeType, context.module);
+  if (!targetRow || !isCppStructuralRowPartialPlanCpp(targetRow)) return undefined;
+  const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(source.runtimeType, context.module);
+  if (sourceRow) return {};
+  const sourceProjection = getCppStructuralProjectionRowCpp(source.runtimeType, context);
+  return sourceProjection ? { sourceProjection } : undefined;
 }
 
 // A discriminated structural union stores each authored intersection as its own reference alternative.
@@ -12064,18 +12104,18 @@ function getCppStructuralUnionAssertionAlternativeCpp(
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-// A one-reference assertion from a base interface to a wider interface has no target storage to select:
-// the represented owner contains only the source fields. Identify that shape before the generic variant
-// refusal so it receives the structural owner's actionable source-portability diagnostic. This is not a
-// cast lane -- adding fields to an existing owner would require materialization or runtime side storage.
+// An assertion from a base interface alternative to a wider interface has no target storage to select:
+// the represented owner contains only the source fields. Identify the unique related alternative before
+// the generic variant refusal so it receives the structural owner's actionable source-portability
+// diagnostic. This is not a cast lane -- adding or refining fields on an existing owner would require
+// materialization or runtime side storage. If more than one alternative is a base of the target, the
+// assertion is genuinely ambiguous and remains in the generic union diagnostic.
 function getCppStructuralAssertionMissingOwnerPairCpp(
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
   assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan> | undefined,
   assertedType: Readonly<IrType>,
   context: EmitContext,
 ): Readonly<{ source: Readonly<IrType>; target: Readonly<IrType> }> | undefined {
-  if (plan.valueSlots.length !== 1) return undefined;
-  const sourceSlot = plan.valueSlots[0]!;
   const assertedSingle = getCppSingleValueTypePlanCpp(assertedType, {
     ...context,
     anonymousStructs: new Map(),
@@ -12087,35 +12127,32 @@ function getCppStructuralAssertionMissingOwnerPairCpp(
       : assertedSingle
         ? { runtimeType: assertedSingle.presentType, targetType: assertedSingle.targetType }
         : undefined;
-  if (
-    !targetSlot ||
-    getCppReferenceElementTypeNameCpp(sourceSlot.targetType) === undefined ||
-    getCppReferenceElementTypeNameCpp(targetSlot.targetType) === undefined
-  ) {
+  if (!targetSlot || getCppReferenceElementTypeNameCpp(targetSlot.targetType) === undefined) {
     return undefined;
   }
-  const source = sourceSlot.runtimeType;
   const target = targetSlot.runtimeType;
-  if (isCppClassDeclarationCpp(source, context) || isCppClassDeclarationCpp(target, context)) return undefined;
-  const sourceProperties = resolveCppObjectShapeInTypeOwnerCpp(source, context)?.filter(
-    (property) => !property.phantom,
-  );
+  if (isCppClassDeclarationCpp(target, context)) return undefined;
   const targetProperties = resolveCppObjectShapeInTypeOwnerCpp(target, context)?.filter(
     (property) => !property.phantom,
   );
-  if (!sourceProperties || sourceProperties.length === 0 || !targetProperties) return undefined;
-  const targetFields = new Map(
-    targetProperties.map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
-  );
-  const targetContainsSource = sourceProperties.every((property) => {
-    const targetProperty = targetFields.get(getCppStructuralRowPropertyIdentityCpp(property, context));
-    return (
-      targetProperty !== undefined &&
-      targetProperty.optional === property.optional &&
-      emitType(targetProperty.type, context) === emitType(property.type, context)
+  if (!targetProperties || targetProperties.length === 0) return undefined;
+  const matches = plan.valueSlots.flatMap((sourceSlot): readonly Readonly<IrType>[] => {
+    if (getCppReferenceElementTypeNameCpp(sourceSlot.targetType) === undefined) return [];
+    const source = sourceSlot.runtimeType;
+    if (isCppClassDeclarationCpp(source, context)) return [];
+    const sourceProperties = resolveCppObjectShapeInTypeOwnerCpp(source, context)?.filter(
+      (property) => !property.phantom,
     );
+    if (!sourceProperties || sourceProperties.length === 0) return [];
+    const targetIsSourceSubtype = context.referenceRepresentationPlanner.isStructurallyAssignable(
+      target,
+      source,
+      context.module,
+    );
+    const absent = collectCppStructuralRowAssertionAbsentMembersCpp(source, target, context);
+    return targetIsSourceSubtype && absent.length > 0 ? [source] : [];
   });
-  return targetContainsSource && targetProperties.length > sourceProperties.length ? { source, target } : undefined;
+  return matches.length === 1 ? { source: matches[0]!, target } : undefined;
 }
 
 // A structural assertion may add a row only when the target plan literally contains the source

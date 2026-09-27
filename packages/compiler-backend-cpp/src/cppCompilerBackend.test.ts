@@ -451,6 +451,92 @@ function lowerImportedTypeAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedSceneTypeAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface Scene2DRuntime extends EntityRuntime { scene2dSignals: object | null }
+         export interface Scene2D extends Entity { root: Node2D }
+         export interface NodeData extends Entity {}
+         export interface NodeTraits { data: NodeData | null; kind: string }
+         export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {}
+         export type NodeAny = Node<any>;
+         export interface Node2DData extends NodeData {}
+         export interface Node2DTraits extends NodeTraits { data: Node2DData | null }
+         export type Node2D = Node<Node2DTraits> & Node2DTraits;
+         export interface SpriteData extends Node2DData { texture: object | null }
+         export interface Sprite extends Node2D { data: SpriteData }
+         export interface RenderCache extends Entity { cached: true }
+         export type Renderable = NodeAny | RenderCache;
+         export type ShapeCommandToken = string | number;
+         export interface PbrExtension extends Entity { readonly kind: string }
+         export interface TransmissionVolumePbrExtension extends PbrExtension {
+           readonly kind: 'TransmissionVolumePbrExtension';
+           transmission: number;
+         }`,
+      ),
+      source(
+        '@flighthq/scene2d',
+        'scene2d/src/scene2d.ts',
+        `import type { Scene2D, Scene2DRuntime } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function getScene2DSignals(source: Readonly<Scene2D>): object | null {
+           const runtime = source[EntityRuntimeKey] as Scene2DRuntime | undefined;
+           return runtime?.scene2dSignals ?? null;
+         }`,
+      ),
+      source(
+        '@flighthq/scene2d',
+        'scene2d/src/sceneKindUsage.ts',
+        `import type { Node2D, ShapeCommandToken } from '@flighthq/types/contract';
+         export function getCommands(node: Readonly<Node2D>): readonly ShapeCommandToken[] | undefined {
+           return (node.data as Readonly<Partial<{ commands: readonly ShapeCommandToken[] }>> | null)?.commands;
+         }`,
+      ),
+      source(
+        '@flighthq/scene2d',
+        'scene2d/src/sprite.ts',
+        `import type { Renderable, Sprite } from '@flighthq/types/contract';
+         export function getTexture(source: Renderable): object | null {
+           return (source as Sprite).data.texture;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/gltfTransmissionVolume.ts',
+        `import type { PbrExtension, TransmissionVolumePbrExtension } from '@flighthq/types/contract';
+         export function resolveTransmissionVolume(
+           existing: PbrExtension | null,
+         ): TransmissionVolumePbrExtension | null {
+           if (existing === null) return null;
+           return existing as TransmissionVolumePbrExtension;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -2876,6 +2962,56 @@ describe('createCppCompilerBackend', () => {
     expect(concrete).toContain('get_concrete_runtime');
     expect(concrete).not.toContain('static_pointer_cast');
     expect(concrete).not.toContain('structural_ref_cast');
+  });
+
+  it('classifies the scene runtime, node-data, sprite, and PBR extension assertions', () => {
+    const { moduleResolution, results } = lowerImportedSceneTypeAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const scene = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const commands = session.emitModule(modules[2]!)[0]!.contents;
+    const sprite = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    const transmission = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [scene, sprite, transmission]) {
+      expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+      expect(failure.classification).toBe('source-portability');
+      expect(failure.message).toContain('An assertion cannot add those cells');
+    }
+    expect(scene.message).toContain('scene2dSignals');
+    expect(sprite.message).toContain('flight::Ref<flighthq_types::Node<flight::Any>>');
+    expect(sprite.message).toContain('flight::Ref<flighthq_types::Sprite>');
+    expect(transmission.message).toContain('transmission');
+    expect(commands).toContain('auto partial_structural_source =');
+    expect(commands).toContain('if (!partial_structural_source.has_value()) return std::nullopt;');
+    expect(commands).toContain('std::optional<flight::StructuralRef<');
+    expect(commands).toContain('flight::structural_ref_cast<');
+    expect(commands).toContain(
+      'flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<flighthq_types::Node2DData>>>>',
+    );
+    expect(commands).not.toContain('make_ref');
+    expect(commands).not.toContain('make_shared');
+  });
+
+  it('does not choose an owner when multiple union alternatives are bases of an asserted interface', () => {
+    const result = lower(
+      'ambiguous-structural-owner-assertion.ts',
+      `interface Left { left: string }
+       interface Right { right: number }
+       interface Both extends Left, Right { extra: boolean }
+       export function choose(value: Left | Right): Both { return value as Both; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
+    expect(failure.classification).toBe('compiler-restriction');
   });
 
   it('carries absence across a union carrier narrowing and refuses to invent it where the target has none', () => {
