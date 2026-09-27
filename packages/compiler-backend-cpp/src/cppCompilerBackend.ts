@@ -11812,10 +11812,77 @@ function isCppNominalHeritageUnionSlotCpp(
 // one question -- one of them is the other's base -- because the cast is a cast either way.
 function isCppClassHeritageRelatedCpp(left: Readonly<IrType>, right: Readonly<IrType>, context: EmitContext): boolean {
   if (!isCppClassDeclarationCpp(left, context) || !isCppClassDeclarationCpp(right, context)) return false;
-  return (
+  if (
     collectCppDeclaredBaseBindingIdsCpp(left, context).has(getCppNamedBindingIdCpp(right) ?? '') ||
     collectCppDeclaredBaseBindingIdsCpp(right, context).has(getCppNamedBindingIdCpp(left) ?? '')
+  ) {
+    return true;
+  }
+  // The ids above only line up while both sides are named the way THIS module names them. A hierarchy that
+  // crosses a package boundary does not: `ImageResource extends TextureSource` is declared in one package,
+  // and the module being emitted holds imports for the pair, so the base reference inside the declaring
+  // module carries that module's binding id and nothing here carries it. The declarations are the same
+  // declarations, so the question is asked of them instead.
+  return (
+    isCppClassDerivedByDeclarationCpp(left, right, context) || isCppClassDerivedByDeclarationCpp(right, left, context)
   );
+}
+
+// Whether the class `derived` names reaches the class `base` names, following `extends` in the module
+// where each hop was written.
+//
+// The identity is the EMITTED SPELLING, not the binding id: a heritage chain that crosses a package
+// boundary names its base with the declaring module's binding, which no reference in this module carries,
+// while both sides spell the same C++ type. Comparing spellings is therefore the comparison the cast will
+// actually make. An interface ends the chain: its members flatten into an independent struct, so a chain
+// that passes through one is not a chain of casts.
+function isCppClassDerivedByDeclarationCpp(
+  derived: Readonly<IrType>,
+  base: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const baseSpelling = isCppClassDeclarationCpp(base, context) ? emitType(base, isolatedContext) : undefined;
+  if (baseSpelling === undefined) return false;
+  const visited = new Set<string>();
+  const queue: (Readonly<IrType> | undefined)[] = [derived];
+  while (queue.length > 0) {
+    const current = queue.pop();
+    if (current === undefined) continue;
+    const spelling = emitType(current, isolatedContext);
+    if (spelling === baseSpelling) return true;
+    if (visited.has(spelling)) continue;
+    visited.add(spelling);
+    const resolved = resolveCppClassForTypeCpp(current, context);
+    if (resolved?.declaration.extends) queue.push(resolved.declaration.extends);
+  }
+  return false;
+}
+
+// The class a type names, asked in the module that names it, wherever the class was declared.
+function resolveCppClassForTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<{ declaration: Readonly<IrClassDeclaration>; module: Readonly<IrModule> }> | undefined {
+  if (type.kind !== 'named') return undefined;
+  return type.kind === 'named'
+    ? getCppClassDeclarationRefCpp(type, getCppNamedTypeBindingModuleCpp(type, context), context)
+    : undefined;
+}
+
+// The class declaration a type names, and the module that declares it -- which is not always the module the
+// reference appears in. `undefined` for an interface, for a type this walk cannot resolve, and for anything
+// that is not a named binding; each of those ends a heritage chain rather than extending it.
+function getCppClassDeclarationRefCpp(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): Readonly<{ declaration: Readonly<IrClassDeclaration>; module: Readonly<IrModule> }> | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const direct = context.directBindingOwners.get(type.reference.binding.id);
+  if (direct?.declaration.kind === 'class') return { declaration: direct.declaration, module: context.module };
+  const owner = getCppNamedTypeDeclarationOwnerCpp(type, module, context);
+  return owner?.declaration.kind === 'class' ? { declaration: owner.declaration, module: owner.module } : undefined;
 }
 
 // The binding identities a type's own declaration names as its bases, transitively, by the heritage the
@@ -11851,10 +11918,10 @@ function getCppClassHeritageReferencesCpp(
   return declaration.extends ? [declaration.extends] : [];
 }
 
+// Whether the type names a CLASS, wherever that class was declared. An imported class is still a class: this
+// module holds an import for it, and its heritage is what a cast between the two carriers would follow.
 function isCppClassDeclarationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
-  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
-  const declaration = context.directBindingOwners.get(type.reference.binding.id)?.declaration;
-  return declaration?.kind === 'class';
+  return resolveCppClassForTypeCpp(type, context) !== undefined;
 }
 
 function getCppNamedBindingIdCpp(type: Readonly<IrType>): string | undefined {

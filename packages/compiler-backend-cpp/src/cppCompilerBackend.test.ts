@@ -14689,6 +14689,82 @@ Resolver make_resolver(TextureRef texture) {
     expect(assigned.rule).toBe('cpp-presence-test-without-absence-storage');
   });
 
+  it('narrows a class hierarchy the emitting module names through imports', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importer: undefined as never,
+          specifier: '@flighthq/types/resource',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/resource.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [provider, consumer] = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/resource.ts',
+            `export class TextureSource { public id = ''; }
+             export class ImageResource extends TextureSource { public width = 0; }
+             export class Unrelated { public tag = 0; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/texture',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/texture/src/videoTexture.ts',
+            `import { ImageResource, TextureSource } from '@flighthq/types/resource';
+             export function narrowOptional(value: TextureSource | undefined): ImageResource | undefined {
+               return value as ImageResource | undefined;
+             }
+             export function narrowPlain(value: TextureSource): ImageResource {
+               return value as ImageResource;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer!, provider!],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(consumer!)[0]!.contents;
+
+    // `ImageResource extends TextureSource` is declared in another package, and the module being emitted
+    // holds imports for the pair: the base reference inside the declaring module carries THAT module's
+    // binding id, which nothing here carries. The identity a cast can follow is the emitted spelling, and
+    // the optional wrapper reuses the same proven pointer cast the one-package case already emits.
+    expect(emitted).toContain('return std::static_pointer_cast<flighthq_types::ImageResource>(value.value());');
+    expect(emitted).toContain('return std::static_pointer_cast<flighthq_types::ImageResource>(value);');
+    expect(emitted).not.toContain('static_cast<flight::Ref<flighthq_types::ImageResource>>');
+
+    // A sibling the chain does not reach is still refused: the walk follows declared bases, so an
+    // unrelated class in the same package is not a narrowing the cast could make.
+    expect(
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            'cross-package-sibling-assertion.ts',
+            `class TextureSource { public id = ''; }
+             class Unrelated { public tag = 0; }
+             export function f(value: TextureSource): Unrelated { return value as Unrelated; }`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      ).rule,
+    ).toBe('cpp-reference-assertion-without-heritage');
+  });
+
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
