@@ -168,6 +168,7 @@ interface IterableIterator<T> extends Iterator<T> {
 }
 
 interface SymbolConstructor {
+  (description?: string | number): symbol;
   for(key: string): symbol;
   readonly iterator: unique symbol;
 }

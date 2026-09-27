@@ -14056,11 +14056,44 @@ function emitCppNarrowedUnionValueCpp(
       return `std::get<${String(plan.valueSlots.indexOf(matches[0]!))}>(${variant})`;
     }
   }
+  const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
+  if (plan.kind === 'optionalVariant' && narrowedUnion) {
+    const narrowedPlan = getCppUnionRepresentationPlan(narrowedUnion, context);
+    const mapped = narrowedPlan.valueSlots.map((slot) => {
+      const sourceIndex = plan.valueSlots.findIndex((sourceSlot) => sourceSlot.targetType === slot.targetType);
+      return sourceIndex >= 0 ? slot : undefined;
+    });
+    const exactSlots = mapped.filter((slot) => slot !== undefined);
+    if (
+      narrowedPlan.kind === 'optionalVariant' &&
+      narrowedPlan.valueSlots.length < plan.valueSlots.length &&
+      exactSlots.length === mapped.length
+    ) {
+      context.includes.add('optional');
+      context.includes.add('stdexcept');
+      context.includes.add('variant');
+      const narrowed = getGeneratedTargetName('narrowedUnion', context);
+      const carrier = emitUnionTypeCpp(narrowedUnion, context);
+      const branches = exactSlots.map((slot) => {
+        const constructed = emitCppUnionValueConstruction(
+          '*alternative',
+          slot.targetType,
+          narrowedUnion,
+          narrowedPlan.kind,
+          context,
+        );
+        return `if (const auto* alternative = std::get_if<${slot.targetType}>(&${narrowed}.value())) return ${constructed};`;
+      });
+      // The flow proof removes alternatives from the carrier, not from the values they own. Rebuild the
+      // optional variant by copying its primitive values and reference handles; arrays and records keep
+      // their original owners, and an unproved alternative fails instead of being cast or materialized.
+      return `([&]() -> ${carrier} { const auto& ${narrowed} = ${binding}; if (!${narrowed}.has_value()) return std::nullopt; ${branches.join(' ')} throw std::logic_error("narrowed union holds an excluded alternative"); }())`;
+    }
+  }
   const variantUnion = getIrVariantUnionTypeCpp(union, context, new Set());
   if (!variantUnion) return undefined;
   const representation = getCppVariantRepresentationForInspection(variantUnion, context);
   if (representation.direct && narrowedType) return binding;
-  const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
   if (narrowedUnion) {
     const selectedAlternatives = narrowedUnion.types.map((member) => {
       const matches = representation.alternatives.filter(

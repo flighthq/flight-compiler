@@ -4642,6 +4642,70 @@ describe('createCppCompilerBackend', () => {
     expect(contents).not.toContain('cpp-contextual-union-inequivalent');
   });
 
+  it('preserves recursive union owners after a unique-symbol guard', () => {
+    const result = lower(
+      'recursive-union-symbol-guard.ts',
+      `type Value = null | boolean | number | string | Value[] | Mapping;
+       interface Mapping { [key: string]: Value }
+       const FAILURE = Symbol('failure');
+       type ParseValue = Value | typeof FAILURE;
+       function take(value: Value): Value { return value; }
+       export function parse(mapping: Mapping, sequence: Value[], key: string, value: ParseValue): Value | null {
+         if (value === FAILURE) return null;
+         mapping[key] = value;
+         sequence.push(value);
+         return take(value);
+       }`,
+    );
+    const parse = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'parse',
+    );
+    const guard = parse?.kind === 'function' ? parse.body[0] : undefined;
+    expect(
+      guard?.kind === 'if' && guard.condition.kind === 'binary' ? guard.condition.semantics : undefined,
+    ).toMatchObject({ unionMemberTest: { binding: { name: 'value' }, whenResult: true } });
+    const assignment = parse?.kind === 'function' ? parse.body[1] : undefined;
+    const assignedValue =
+      assignment?.kind === 'expression' && assignment.expression.kind === 'assignment'
+        ? assignment.expression.right
+        : undefined;
+
+    expect(assignedValue).toMatchObject({
+      kind: 'identifier',
+      narrowedType: { kind: 'union' },
+    });
+
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('mapping.set(key,');
+    expect(contents).toContain('sequence.push(');
+    expect(contents).toContain('return take(');
+    expect(contents).toContain('std::get_if<flight::Array<Value>>');
+    expect(contents).toContain('std::get_if<flight::Record<flight::String, Value>>');
+    expect(contents).not.toContain('flight::make_ref');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('cpp-contextual-union-inequivalent');
+  });
+
+  it('does not exclude a broad symbol after an identity comparison', () => {
+    const result = lower(
+      'broad-symbol-guard.ts',
+      `type Value = null | number | string;
+       function take(value: Value): Value { return value; }
+       export function parse(value: Value | symbol, marker: symbol): Value | null {
+         if (value === marker) return null;
+         return take(value);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.classification).toBe('source-portability');
+  });
+
   it('keeps a union holding an alternative the destination cannot take attributed to the source', () => {
     const result = lower(
       'contextual-union-unheld.ts',

@@ -7246,9 +7246,38 @@ function getTypeScriptUnionMemberTestEvidence(
   return (
     getTypeScriptTypeofUnionMemberTestEvidence(node.left, node.right, whenResult, context) ??
     getTypeScriptTypeofUnionMemberTestEvidence(node.right, node.left, whenResult, context) ??
+    getTypeScriptUniqueSymbolUnionMemberTestEvidence(node.left, node.right, whenResult, context) ??
+    getTypeScriptUniqueSymbolUnionMemberTestEvidence(node.right, node.left, whenResult, context) ??
     getTypeScriptDiscriminantUnionMemberTestEvidence(node.left, node.right, whenResult, context) ??
     getTypeScriptDiscriminantUnionMemberTestEvidence(node.right, node.left, whenResult, context)
   );
+}
+
+function getTypeScriptUniqueSymbolUnionMemberTestEvidence(
+  test: ts.Expression,
+  expected: ts.Expression,
+  whenResult: boolean,
+  context: LoweringContext,
+): IrUnionMemberTestEvidence | undefined {
+  const subject = unwrapTypeScriptParenthesizedExpression(test);
+  const compared = unwrapTypeScriptParenthesizedExpression(expected);
+  if (!ts.isIdentifier(subject) || !ts.isIdentifier(compared)) return undefined;
+  const comparedType = context.checker.getTypeAtLocation(compared);
+  if (!(comparedType.flags & ts.TypeFlags.UniqueESSymbol)) return undefined;
+  const source = getTypeScriptUnionBindingEvidence(subject, context);
+  const subjectSymbol = getTypeScriptIdentifierValueSymbol(subject, context);
+  const declaration = subjectSymbol?.valueDeclaration ?? subjectSymbol?.declarations?.[0];
+  if (!source || !subjectSymbol || !declaration) return undefined;
+  const declared = context.checker.getTypeOfSymbolAtLocation(subjectSymbol, declaration);
+  const declaredMembers = declared.isUnion() ? declared.types : [declared];
+  const matches = declaredMembers.filter(
+    (member) =>
+      context.checker.isTypeAssignableTo(comparedType, member) &&
+      context.checker.isTypeAssignableTo(member, comparedType),
+  );
+  if (matches.length !== 1) return undefined;
+  const irMatches = source.type.types.filter((member) => getTypeScriptIrTypeTypeofName(member, context) === 'symbol');
+  return irMatches.length === 1 ? { binding: source.binding, member: irMatches[0]!, whenResult } : undefined;
 }
 
 function getTypeScriptInUnionMemberTestEvidence(
@@ -7343,6 +7372,27 @@ function getTypeScriptIrTypeTypeofName(
   }
   const direct = getIrTypeTypeofName(type);
   if (direct) return direct;
+  if (type.kind === 'typeOf' && type.reference.kind === 'binding') {
+    const reference = type.reference;
+    const referencedSymbol = [...context.bindings].find(([, binding]) => binding.id === reference.binding.id)?.[0];
+    if (!referencedSymbol) return undefined;
+    let symbol =
+      referencedSymbol.flags & ts.SymbolFlags.Alias
+        ? context.checker.getAliasedSymbol(referencedSymbol)
+        : referencedSymbol;
+    let site = symbol.valueDeclaration ?? symbol.declarations?.[0];
+    if (!site) return undefined;
+    let valueType = context.checker.getTypeOfSymbolAtLocation(symbol, site);
+    for (const path of reference.path) {
+      const property = context.checker.getPropertyOfType(valueType, path);
+      if (!property) return undefined;
+      symbol = property;
+      site = property.valueDeclaration ?? property.declarations?.[0] ?? site;
+      valueType = context.checker.getTypeOfSymbolAtLocation(property, site);
+    }
+    const domain = lowerTypeScriptTypeOperatorValueDomain(valueType, context.checker);
+    return domain === 'unknown' || domain === 'null' ? undefined : domain;
+  }
   if (type.kind === 'named' && type.reference.kind === 'binding' && resolvingAliases.has(type.reference.binding.id)) {
     return undefined;
   }
@@ -8126,13 +8176,7 @@ function getTypeScriptReferenceNarrowedMember(
   reference: Readonly<IrIdentifierReference>,
   context: LoweringContext,
 ): { narrowedMember?: string; narrowedType?: IrType } {
-  const evidence = getTypeScriptReferenceNarrowingEvidence(node, reference, context);
-  const parent = node.parent;
-  const carriesExactType =
-    (ts.isPropertyAccessExpression(parent) && parent.expression === node) ||
-    (ts.isElementAccessExpression(parent) && parent.expression === node) ||
-    (ts.isCallExpression(parent) && parent.expression === node);
-  return carriesExactType ? evidence : evidence.narrowedMember ? { narrowedMember: evidence.narrowedMember } : {};
+  return getTypeScriptReferenceNarrowingEvidence(node, reference, context);
 }
 
 function getTypeScriptReferenceNarrowingEvidence(
