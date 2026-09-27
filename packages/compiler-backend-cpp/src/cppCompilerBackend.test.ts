@@ -1467,6 +1467,61 @@ function lowerImportedExplainUnpackedRectanglesModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedGlRenderTextureEffectModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface GlRenderState { readonly frame: number }
+         export interface RenderEffect { kind: string }
+         export interface GlRenderEffectApplicationExplanation { readonly requestedCount: number }`,
+      ),
+      source(
+        '@flighthq/effects-gl',
+        'effects-gl/src/glRenderTextureEffect.ts',
+        `import type {
+           GlRenderEffectApplicationExplanation,
+           GlRenderState,
+           RenderEffect,
+         } from '@flighthq/types/contract';
+         export function applyGlRenderEffectsToRenderTexture(
+           state: GlRenderState,
+           effects: ReadonlyArray<Readonly<RenderEffect>>,
+         ): boolean {
+           explainGlRenderEffectApplication(state, effects, true, false);
+           return effects.length > 0;
+         }
+         export function explainGlRenderEffectApplication(
+           state: GlRenderState,
+           effects: ReadonlyArray<Readonly<RenderEffect>>,
+           sourceAvailable: boolean,
+           destinationAvailable = false,
+         ): GlRenderEffectApplicationExplanation {
+           const availabilityCount = (sourceAvailable ? 1 : 0) + (destinationAvailable ? 1 : 0);
+           return { requestedCount: effects.length + availabilityCount + state.frame * 0 };
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedPhysicsShapeAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -24778,6 +24833,65 @@ Resolver make_resolver(TextureRef texture) {
       }
       const explanation = emitted[2]!;
       const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, explanation.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps the current imported render-texture effect chain on its owner-preserving sequence lane', () => {
+    const { moduleResolution, results } = lowerImportedGlRenderTextureEffectModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // Both declarations use the same projected element representation. Passing the existing view
+    // preserves its hidden outer owner; this edge never asks for an owning Array<Ref<RenderEffect>>.
+    expect(contents).toMatch(/apply_gl_render_effects_to_render_texture\([^)]*flight::SequenceView<.*> effects/u);
+    expect(contents).toMatch(/explain_gl_render_effect_application\([^)]*flight::SequenceView<.*> effects/u);
+    expect(contents).toContain('explain_gl_render_effect_application(state, effects, true, false)');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles the current imported render-texture effect sequence lane', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedGlRenderTextureEffectModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/effects-gl': { includePrefix: 'test/effects-gl', namespace: 'flighthq_effects_gl' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-render-texture-effect-sequence-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const effect = emitted[1]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, effect.path), [
         directory,
         ...cppRuntimeIncludeDirectories,
       ]);
