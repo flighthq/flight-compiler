@@ -23020,9 +23020,7 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('std::optional<std::variant<');
     // A plain callback view retains the original callable-object owner; it does not copy the object's
     // std::function field and thereby split mutable closure state from its attached properties.
-    expect(contents).toContain(
-      'auto emit_miss = flighthq_render::get_render_state_runtime(state)->registry_miss',
-    );
+    expect(contents).toContain('auto emit_miss = flighthq_render::get_render_state_runtime(state)->registry_miss');
     expect(contents).toContain('contextual_callable_object_owner = contextual_callable_object.value()');
     expect(contents).toContain('(*contextual_callable_object_owner)(');
     expect(contents).toContain('.get(flight::row_get<flight::RowKey<"kind">>(effect))');
