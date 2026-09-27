@@ -801,6 +801,74 @@ function lowerImportedSceneErasedRowProbeModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedSceneResourceAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface NodeData extends Entity {}
+         export interface Node2DData extends NodeData {}
+         interface TextureCommon extends Entity { version: number }
+         export interface Texture2D extends TextureCommon {
+           readonly dimension: '2d';
+           source: Entity | null;
+         }
+         export type Texture =
+           | Texture2D
+           | (TextureCommon & { readonly dimension: '2d-array'; sources: readonly (Entity | null)[] })
+           | (TextureCommon & { readonly dimension: '3d'; source: Entity | null })
+           | (TextureCommon & { readonly dimension: 'cube'; sources: readonly (Entity | null)[] });
+         export interface ImageResourceReference extends Entity { textures?: Texture[] }
+         export interface Scene3D extends Entity { resources: ImageResourceReference[] }`,
+      ),
+      source(
+        '@flighthq/scene3d-resources',
+        'scene3d-resources/src/getScene3DResourceTextures.ts',
+        `import type { ImageResourceReference, Scene3D, Texture } from '@flighthq/types/contract';
+         export function getScene3DTextureResourceReference(
+           scene: Readonly<Scene3D>,
+           texture: Readonly<Texture>,
+         ): ImageResourceReference | null {
+           for (const resource of scene.resources) {
+             if (resource.textures?.includes(texture as Texture) === true) return resource;
+           }
+           return null;
+         }`,
+      ),
+      source(
+        '@flighthq/swf',
+        'swf/src/swfDocument.ts',
+        `import type { Node2DData } from '@flighthq/types/contract';
+         interface SwfRectangle { height: number; width: number; x: number; y: number }
+         interface SwfAuthoredBoundsData extends Node2DData { authoredBounds: SwfRectangle }
+         export function getSwfAuthoredWidth(data: Node2DData | null): number {
+           return (data as SwfAuthoredBoundsData).authoredBounds.width;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -3517,6 +3585,46 @@ describe('createCppCompilerBackend', () => {
     expect(textShaper.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
     expect(textShaper.message).toContain('TextShaperCacheRuntime');
     expect(textShaper.message).toContain('entries');
+  });
+
+  it('preserves the imported texture union representation through a readonly assertion', () => {
+    const { moduleResolution, results } = lowerImportedSceneResourceAssertionModules();
+    const modules = results.map((result) => result.module);
+    const contents = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    // Readonly changes the TypeScript view but not any of the four C++ variant alternatives. The assertion
+    // therefore passes the same carrier directly to includes: it neither selects one alternative nor casts
+    // a referent, and the optional property wrapper is the only carrier the generated expression opens.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(contents).toContain('flighthq_types::Texture texture');
+    expect(contents).toContain('return optional_chain_receiver.value().includes(texture);');
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('structural_ref_cast');
+  });
+
+  it('names the missing authored-bounds owner in the relocated SWF assertion', () => {
+    const { moduleResolution, results } = lowerImportedSceneResourceAssertionModules();
+    const modules = results.map((result) => result.module);
+    const failure = captureBackendEmissionFailure(() =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules,
+        options: { runtimeProfile: 'flight-cpp' },
+      }).emitModule(modules[2]!),
+    );
+
+    // The historical swfNode assertion now lives in swfDocument. Node2DData has no authoredBounds cell,
+    // so a cast cannot recover the local extension even though it is the target's unique structural base.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('flight::Ref<flighthq_types::Node2DData>');
+    expect(failure.message).toContain('flight::Ref<SwfAuthoredBoundsData>');
+    expect(failure.message).toContain('reads authoredBounds, which the source type does not declare');
   });
 
   it.skipIf(!canCompileCpp)('compiles a nullable native reference projected to a Partial row', () => {
@@ -16634,9 +16742,7 @@ Resolver make_resolver(TextureRef texture) {
        export function pass(handler: (value: any) => void): number { return take(handler); }`,
     );
     expect(
-      captureBackendEmissionFailure(() =>
-        emitIrModuleCpp(unrepresented.module, { runtimeProfile: 'flight-cpp' }),
-      ).rule,
+      captureBackendEmissionFailure(() => emitIrModuleCpp(unrepresented.module, { runtimeProfile: 'flight-cpp' })).rule,
     ).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
