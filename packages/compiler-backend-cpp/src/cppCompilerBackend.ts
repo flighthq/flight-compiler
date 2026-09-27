@@ -288,6 +288,7 @@ interface EmitContext {
   async?: boolean | undefined;
   bindingClasses: ReadonlyMap<string, Readonly<IrClassDeclaration>>;
   bindingInitializers: ReadonlyMap<string, Readonly<IrExpression>>;
+  immutableInitializerBindingIds: ReadonlySet<string>;
   externalCallResultPresenceBindings: Map<string, Readonly<CppExternalCallResultPresencePlan>>;
   contextualBindingStorageTargetTypes: Map<string, Readonly<IrType>>;
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
@@ -550,6 +551,7 @@ function emitIrModuleCppWithContext(
     arrayElementBindingIds,
     bindingClasses: collectIrModuleBindingClassesCpp(module, bindingTypes),
     bindingInitializers: collectIrModuleBindingInitializersCpp(module),
+    immutableInitializerBindingIds: collectIrModuleImmutableInitializerBindingIdsCpp(module),
     bindingTypes,
     capturedReferentOnlyBindingIds,
     contextualBindingStorageTargetTypes,
@@ -17970,7 +17972,9 @@ function getCppContextualCallTypeArgumentsCpp(
         ? getCppFunctionDeclarationForBindingCpp(argument.reference.binding.id, context)
         : undefined;
     const initializer =
-      argument.kind === 'identifier' && argument.reference.kind === 'binding'
+      argument.kind === 'identifier' &&
+      argument.reference.kind === 'binding' &&
+      context.immutableInitializerBindingIds.has(argument.reference.binding.id)
         ? context.bindingInitializers.get(argument.reference.binding.id)
         : undefined;
     const initializerType =
@@ -22160,6 +22164,16 @@ function collectIrModuleBindingInitializersCpp(
   analyzeIrModuleTraversal(module, {
     variable(variable) {
       if ('binding' in variable && variable.initializer) result.set(variable.binding.id, variable.initializer);
+    },
+  });
+  return result;
+}
+
+function collectIrModuleImmutableInitializerBindingIdsCpp(module: Readonly<IrModule>): ReadonlySet<string> {
+  const result = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    variable(variable) {
+      if ('binding' in variable && !variable.mutable && variable.initializer) result.add(variable.binding.id);
     },
   });
   return result;

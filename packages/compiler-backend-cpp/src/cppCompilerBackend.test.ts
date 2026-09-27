@@ -19179,6 +19179,25 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('materialize_row');
   });
 
+  it('does not infer a generic owner from a mutable erased binding initializer', () => {
+    const result = lower(
+      'mutable-erased-generic-argument.ts',
+      `function accept<T>(_value: T): void {}
+       export function forward(replacement: string): void {
+         let value: any = 1;
+         value = replacement;
+         accept(value);
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The initializer no longer describes the value after reassignment. Template deduction must use the
+    // erased binding carrier rather than freezing the first numeric owner into the call.
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).not.toContain('accept<double>');
+    expect(contents).not.toContain('static_cast<double>');
+  });
+
   it('stores a callable that accepts a wider payload than the destination supplies', () => {
     const result = lower(
       'callable-union-wider-parameter.ts',
