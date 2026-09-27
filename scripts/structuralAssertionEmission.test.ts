@@ -65,6 +65,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'assertionInheritedAlternativeRecovery', header: 'assertion_inherited_alternative_recovery.hpp' },
 ];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
+const erasedRowRefusalFixture = 'erasedStructuralRowRefused';
 const runtime = resolveDependency(root, 'flight-cpp');
 const includeDirectories = runtime === undefined ? [] : collectCppRuntimeIncludeDirectories(runtime.directory);
 const toolchain = findCppCompilerToolchain();
@@ -82,6 +83,22 @@ describe('structural assertion emission', () => {
     expect(() =>
       execFileSync(toolchain.command, arguments_, { cwd: emitted, encoding: 'utf8', stdio: 'pipe' }),
     ).not.toThrow();
+  });
+
+  it('pins the erased structural row as a refusal naming the runtime contract it needs', () => {
+    const directory = path.join(goldenDirectory, erasedRowRefusalFixture);
+
+    expect(existsSync(path.join(directory, 'cpp'))).toBe(false);
+    const pinned = readFileSync(path.join(directory, 'cpp.error.txt'), 'utf8');
+    // The pin is the MESSAGE, not the rule id: it is what a reader acts on, and it names the runtime
+    // contract that would have to exist before this can lower.
+    expect(pinned).toContain('cannot erase structural row');
+    expect(pinned).toContain(
+      'Copying members, boxing the view, or using shared_object() would change identity or lose a widened owner',
+    );
+    expect(pinned).toContain(
+      'the runtime contract needs a structural object alternative constructed from the row owner and native object',
+    );
   });
 
   it('pins the missing-cell case as a refusal rather than an emission to compile', () => {

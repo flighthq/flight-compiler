@@ -18491,6 +18491,51 @@ Resolver make_resolver(TextureRef texture) {
     expect(untestable.message).toContain('its result as one the destination holds');
   });
 
+  it('refuses erasing a structural row and names the runtime contract it needs', () => {
+    const refusal = (file: string, source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // A row is a VIEW: the derived owner is still the identity, and `shared_object()` is deliberately null
+    // for a widened schema, so the erasure needs a runtime carrier that keeps the owner and the native type.
+    // Nothing local can stand in for it -- copying members, boxing the view, or reaching for the native
+    // object would change identity or lose the widened owner.
+    const view = refusal(
+      'erased-structural-row-view.ts',
+      `interface Command { readonly id: string; readonly payload: number }
+       export function inspect(command: Readonly<Partial<Command>>): unknown { return command; }`,
+    );
+    expect(view.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+    expect(view.classification).toBe('target-runtime');
+    expect(view.message).toContain(
+      'the runtime contract needs a structural object alternative constructed from the row owner and native object',
+    );
+
+    // The widened spelling reaches the same refusal: a derived row viewed as its base retains the DERIVED
+    // owner, which is exactly the identity a plain object alternative would drop.
+    const widened = refusal(
+      'erased-structural-row-widened.ts',
+      `interface Base { readonly id: string }
+       interface Derived extends Base { readonly extra: number }
+       export function inspect(value: Derived): unknown { return value as Readonly<Partial<Base>>; }`,
+    );
+    expect(widened.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+    expect(widened.message).toContain('for a structural capability probe, accept the source row type');
+
+    // A NOMINAL reference is a different value and still erases: the refusal is about rows, not about every
+    // object, so the carrier that exists for references keeps working.
+    const nominal = emitIrModuleCpp(
+      lower(
+        'erased-nominal-reference.ts',
+        `interface Command { readonly id: string }
+         export function inspect(command: Command): unknown { return command; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(nominal).toContain('return flight::Any::object(command);');
+  });
+
   it('keeps open Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
