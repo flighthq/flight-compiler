@@ -1313,6 +1313,86 @@ function lowerImportedTextureAtlasFrameUnionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedColorLutCacheModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+      {
+        specifier: './colorLut',
+        target: { packageName: '@flighthq/adjustments', source: 'packages/adjustments/src/colorLut.ts' },
+      },
+      {
+        specifier: './colorLutAdjustment',
+        target: { packageName: '@flighthq/adjustments', source: 'packages/adjustments/src/colorLutAdjustment.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface ColorLut { size: number }
+         export type ColorTransformFunction = (
+           out: [number, number, number], r: number, g: number, b: number,
+         ) => void;`,
+      ),
+      source(
+        '@flighthq/adjustments',
+        'adjustments/src/colorLut.ts',
+        `import type { ColorLut, ColorTransformFunction } from '@flighthq/types/contract';
+         export const COLOR_LUT_DEFAULT_SIZE = 32;
+         export function bakeColorLut(
+           transforms: ReadonlyArray<ColorTransformFunction>,
+           size: number = COLOR_LUT_DEFAULT_SIZE,
+         ): ColorLut { return { size: size + transforms.length }; }`,
+      ),
+      source(
+        '@flighthq/adjustments',
+        'adjustments/src/colorLutAdjustment.ts',
+        `import type { ColorTransformFunction } from '@flighthq/types/contract';
+         export function getAdjustmentColorTransform(
+           operation: Readonly<{ kind: string }>,
+         ): ColorTransformFunction | null { return null; }`,
+      ),
+      source(
+        '@flighthq/adjustments',
+        'adjustments/src/colorLutCache.ts',
+        `import type { ColorLut, ColorTransformFunction } from '@flighthq/types/contract';
+         import { bakeColorLut, COLOR_LUT_DEFAULT_SIZE } from './colorLut';
+         import { getAdjustmentColorTransform } from './colorLutAdjustment';
+         export function bakeColorLutForRun(
+           run: ReadonlyArray<Readonly<{ kind: string }>>,
+           size: number = COLOR_LUT_DEFAULT_SIZE,
+         ): ColorLut {
+           const signature = colorLutRunSignature(run, size);
+           const transforms: ColorTransformFunction[] = [];
+           for (const operation of run) {
+             const transform = getAdjustmentColorTransform(operation);
+             if (transform !== null) transforms.push(transform);
+           }
+           return bakeColorLut(transforms, size + signature.length * 0);
+         }
+         function colorLutRunSignature(
+           run: ReadonlyArray<Readonly<{ kind: string }>>,
+           size: number,
+         ): string { return String(size + run.length); }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedPhysicsShapeAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -24331,6 +24411,67 @@ Resolver make_resolver(TextureRef texture) {
     const result = /inline flight::Array<(?<element>.+)> sort_rows/u.exec(output);
     expect(result?.groups?.element).toBeDefined();
     expect(output).toContain(`flight::Array<${result?.groups?.element}> array_spread_result`);
+  });
+
+  it('keeps the current imported color-LUT cache on identity-preserving sequence lanes', () => {
+    const { moduleResolution, results } = lowerImportedColorLutCacheModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The structural run remains one owner-preserving SequenceView when forwarded to the signature
+    // helper. The transforms array is already constructed with its nominal callable element type, so
+    // neither edge asks a view to recover an owning array that it does not retain.
+    expect(contents).toMatch(/bake_color_lut_for_run\(flight::SequenceView<.*> run, std::optional<double>/u);
+    expect(contents).toContain('color_lut_run_signature(run, size.value())');
+    expect(contents).toContain('flight::Array<flighthq_types::ColorTransformFunction> transforms');
+    expect(contents).toContain('bake_color_lut(transforms');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles the current imported color-LUT cache sequence lanes', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedColorLutCacheModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/adjustments': { includePrefix: 'test/adjustments', namespace: 'flighthq_adjustments' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-color-lut-sequence-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const cache = emitted[3]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, cache.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it('uses owner-preserving views for readonly structural array parameters', () => {
