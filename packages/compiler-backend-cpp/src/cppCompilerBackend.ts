@@ -598,6 +598,23 @@ function emitIrModuleCppWithContext(
   for (const bindingId of collectCppErasedObjectParameterBindingIds(module, context)) {
     erasedObjectParameterBindingIds.add(bindingId);
   }
+  // A binding the module ASSIGNS to keeps its storage but not its provenance: the call that produced the
+  // first value no longer says which sentinel the comparison reads, because the assignment may supply a
+  // value whose absence is a different one. A mutable binding the module never assigns to is a different
+  // fact -- its storage is the declaration's, unchanged -- so the two are told apart here, once, before
+  // the plan is recorded.
+  const assignedBindingIds = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (
+        expression.kind === 'assignment' &&
+        expression.left.kind === 'identifier' &&
+        expression.left.reference.kind === 'binding'
+      ) {
+        assignedBindingIds.add(expression.left.reference.binding.id);
+      }
+    },
+  });
   analyzeIrModuleTraversal(module, {
     parameter(parameter) {
       if (hasCppErasedDynamicStorageCpp({ binding: parameter.binding, mutable: true, type: parameter.type }, context)) {
@@ -613,7 +630,7 @@ function emitIrModuleCppWithContext(
       if (externalCallResultAbsence) {
         context.externalCallResultPresenceBindings.set(variable.binding.id, {
           absence: externalCallResultAbsence,
-          immutable: !variable.mutable,
+          immutable: !variable.mutable || !assignedBindingIds.has(variable.binding.id),
         });
       }
       if (variable.initializer.kind === 'call' && variable.initializer.presence === 'narrowedPresent') return;

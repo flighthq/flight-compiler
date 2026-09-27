@@ -14625,6 +14625,71 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('static_cast<flight::Ref<');
   });
 
+  it('answers an external call-result presence test from the storage its declaration chose', () => {
+    const result = lower(
+      'mutable-external-call-result-presence.ts',
+      `export function immutable(registry: HostRegistry): boolean {
+         const entry = registry.find('immutable');
+         return entry === null;
+       }
+       export function mutable(registry: HostRegistry): boolean {
+         let entry = registry.find('mutable');
+         return entry === null;
+       }
+       }`,
+    );
+    const binding = {
+      headers: ['host/registry.hpp'],
+      members: [
+        {
+          callResultAbsence: 'null' as const,
+          callResultType: 'std::optional<host::Entry>',
+          sourceMember: 'find',
+          targetName: 'find',
+        },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      sourceName: 'HostRegistry',
+      space: 'type' as const,
+      targetName: 'host::Registry',
+    };
+    const contents = emitIrModuleCpp(result.module, {
+      externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    // The declaration stores the channel's own type for a mutable binding exactly as for an immutable one --
+    // the mutability flag does not enter that decision -- so the comparison reads the same optional either
+    // way, and a reassignment cannot change a C++ variable's type. The evidence propagated here is the
+    // declaration's recorded storage target, not the initializer's provenance.
+    const body = (name: string) => new RegExp(`bool ${name}[^]*?\\n\\}`, 'u').exec(contents)?.[0] ?? '';
+    expect(body('immutable')).toContain('std::optional<host::Entry> entry = registry.find');
+    expect(body('immutable')).toContain('return !entry.has_value();');
+    expect(body('mutable')).toContain('std::optional<host::Entry> entry = registry.find');
+    expect(body('mutable')).toContain('return !entry.has_value();');
+    // A binding the module ASSIGNS to is the different case, and keeps its refusal: the call that produced
+    // the first value no longer says which sentinel the comparison reads, because the assignment may supply
+    // a value whose absence is a different one.
+    const assigned = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'assigned-external-call-result-presence.ts',
+          `export function reassigned(registry: HostRegistry): boolean {
+             let entry = registry.find('first');
+             entry = registry.find('second');
+             return entry === null;
+           }`,
+        ).module,
+        {
+          externalBindings: { bindings: [binding], schema: 'flight-cpp-external-bindings/1' },
+          runtimeProfile: 'flight-cpp',
+        },
+      ),
+    );
+    expect(assigned.rule).toBe('cpp-presence-test-without-absence-storage');
+  });
+
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
