@@ -4423,7 +4423,7 @@ describe('createCppCompilerBackend', () => {
     }
   });
 
-  it('passes glTF anisotropy, clearcoat, sheen, and specular texture unions through their exact imported alias', () => {
+  it('passes glTF texture unions from anisotropy through specular-glossiness via their exact imported alias', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -4481,7 +4481,21 @@ describe('createCppCompilerBackend', () => {
              specularMap: Texture | null;
              readonly kind: 'SpecularPbrExtension';
            }
+           export interface StandardPbrMaterial {
+             emissiveMap: Texture | null;
+             normalMap: Texture | null;
+             occlusionMap: Texture | null;
+           }
+           export interface SpecularGlossinessPbrMaterial {
+             diffuseMap: Texture | null;
+             emissiveMap: Texture | null;
+             normalMap: Texture | null;
+             occlusionMap: Texture | null;
+             specularGlossinessMap: Texture | null;
+             readonly kind: 'SpecularGlossinessPbrMaterial';
+           }
            export interface GltfExtensionContext {
+             standard: Readonly<StandardPbrMaterial>;
              resolveTexture(info: object | undefined, colorSpace: string): Texture | null;
            }
            export interface GltfExtensionHandler {
@@ -4496,6 +4510,7 @@ describe('createCppCompilerBackend', () => {
              AnisotropyPbrExtension,
              ClearcoatPbrExtension,
              SheenPbrExtension,
+             SpecularGlossinessPbrMaterial,
              SpecularPbrExtension,
            } from '@flighthq/types/contract';
            export function createAnisotropyPbrExtension(
@@ -4509,7 +4524,10 @@ describe('createCppCompilerBackend', () => {
            ): SheenPbrExtension { throw new Error('stub'); }
            export function createSpecularPbrExtension(
              options?: Readonly<Partial<SpecularPbrExtension>>,
-           ): SpecularPbrExtension { throw new Error('stub'); }`,
+           ): SpecularPbrExtension { throw new Error('stub'); }
+           export function createSpecularGlossinessPbrMaterial(
+             options?: Readonly<Partial<SpecularGlossinessPbrMaterial>>,
+           ): SpecularGlossinessPbrMaterial { throw new Error('stub'); }`,
         ),
         source(
           '@flighthq/scene3d-formats',
@@ -4580,6 +4598,24 @@ describe('createCppCompilerBackend', () => {
              kind: 'KHR_materials_specular',
            };`,
         ),
+        source(
+          '@flighthq/scene3d-formats',
+          'packages/scene3d-formats/src/gltfSpecularGlossiness.ts',
+          `import { createSpecularGlossinessPbrMaterial } from '@flighthq/materials/contract';
+           import type { GltfExtensionHandler } from '@flighthq/types/contract';
+           export const handler: GltfExtensionHandler = {
+             apply(context) {
+               createSpecularGlossinessPbrMaterial({
+                 diffuseMap: context.resolveTexture(undefined, 'srgb'),
+                 emissiveMap: context.standard.emissiveMap,
+                 normalMap: context.standard.normalMap,
+                 occlusionMap: context.standard.occlusionMap,
+                 specularGlossinessMap: context.resolveTexture(undefined, 'srgb'),
+               });
+             },
+             kind: 'KHR_materials_pbrSpecularGlossiness',
+           };`,
+        ),
       ],
       moduleResolution,
     );
@@ -4603,12 +4639,13 @@ describe('createCppCompilerBackend', () => {
     const clearcoat = session.emitModule(modules[3]!)[0]!.contents;
     const sheen = session.emitModule(modules[4]!)[0]!.contents;
     const specular = session.emitModule(modules[5]!)[0]!.contents;
+    const specularGlossiness = session.emitModule(modules[6]!)[0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     // Each map source stays single-evaluation, maps null to null (not the Partial row's undefined sentinel),
     // and copies only its already-held Ref into the destination variant.
-    const expectOwnerPreservingTextureWidenings = (emitted: string, count: number) => {
-      expect(emitted.match(/RowKey<"resolveTexture">/gu)).toHaveLength(count);
+    const expectOwnerPreservingTextureWidenings = (emitted: string, count: number, resolveCount = count) => {
+      expect(emitted.match(/RowKey<"resolveTexture">/gu)).toHaveLength(resolveCount);
       expect(
         emitted.match(/if \(!contextual_union_source(?:_\d+)?\.has_value\(\)\) return std::variant</gu),
       ).toHaveLength(count);
@@ -4633,10 +4670,12 @@ describe('createCppCompilerBackend', () => {
     expectOwnerPreservingTextureWidenings(clearcoat, 3);
     expectOwnerPreservingTextureWidenings(sheen, 2);
     expectOwnerPreservingTextureWidenings(specular, 2);
+    expectOwnerPreservingTextureWidenings(specularGlossiness, 5, 2);
     expect(sheen).toContain('flight::String("srgb")');
     expect(sheen).toContain('flight::String("linear")');
     expect(specular).toContain('flight::String("srgb")');
     expect(specular).toContain('flight::String("linear")');
+    expect(specularGlossiness.match(/flight::String\("srgb"\)/gu)).toHaveLength(2);
   });
 
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
