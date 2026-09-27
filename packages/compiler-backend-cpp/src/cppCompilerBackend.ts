@@ -17584,9 +17584,11 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       if (targets.size !== 1) return [];
       const target = [...targets.values()][0]!;
       const source = context.bindingTypes.get(bindingId);
+      const initializer = context.bindingInitializers.get(bindingId);
       const representedTargetArray = getIrArrayTypeCpp(target, context, new Set());
       const arrayProjection = Boolean(
         source &&
+        initializer?.kind === 'array' &&
         representedTargetArray &&
         context.referenceRepresentationPlanner.resolveStructuralRow(representedTargetArray.element, context.module) &&
         isCppContextualCollectionProjectionCpp(source, target, context) &&

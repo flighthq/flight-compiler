@@ -14612,6 +14612,31 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.message).toContain('without changing array identity');
   });
 
+  it('does not retype a call-produced array as a fresh contextual allocation', () => {
+    const result = lower(
+      'contextual-object-call-existing-array.ts',
+      `interface Light { readonly intensity: number }
+       interface Lights { hemisphere?: readonly Readonly<Light>[] }
+       function load(): Light[] { return []; }
+       function create(_options?: Readonly<Partial<Lights>>): void {}
+       export function pass(): void {
+         const hemisphere: Light[] = load();
+         create({ hemisphere });
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The call result already owns Array<Ref<Light>> storage. Re-typing its local binding would not change
+    // that allocation and cannot create Array<StructuralRef<RowOf<Light>>> without copying its identity.
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-contextual-union-value-type-unrepresented',
+    });
+    expect(failure.message).toContain('without changing array identity');
+  });
+
   it('stores a branded symbol in its optional trait-key domain', () => {
     const result = lower(
       'optional-branded-symbol.ts',
