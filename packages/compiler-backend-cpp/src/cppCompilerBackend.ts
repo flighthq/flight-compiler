@@ -14901,13 +14901,30 @@ function emitCppErasedCallableReturnCpp(
     );
     return `if (${extraction.test(erased)}) return ${constructed};`;
   });
-  // A destination that admits absence answers the erased nullish kinds with its own absence. One that does
-  // not has no absence to answer with, so the case falls through to the throw with the rest.
-  const absence = union.types.some((member) => member.kind === 'null' || member.kind === 'undefined')
-    ? [
-        `if (${erased}.is_nullish()) return ${emitCppUnionSentinelConstruction('undefined', union, plan.kind, context)};`,
-      ]
-    : [];
+  // Optional carriers erase which source sentinel caused absence, while a dual-sentinel variant exists
+  // specifically to preserve null versus undefined. Match the erased-union extraction lane and reconstruct
+  // each distinct sentinel when the destination retains that distinction.
+  const admitsNull = union.types.some((member) => member.kind === 'null');
+  const admitsUndefined = union.types.some((member) => member.kind === 'undefined');
+  const absence =
+    plan.kind === 'dualSentinelVariant'
+      ? [
+          ...(admitsNull
+            ? [
+                `if (${erased}.is_null()) return ${emitCppUnionSentinelConstruction('null', union, plan.kind, context)};`,
+              ]
+            : []),
+          ...(admitsUndefined
+            ? [
+                `if (${erased}.is_undefined()) return ${emitCppUnionSentinelConstruction('undefined', union, plan.kind, context)};`,
+              ]
+            : []),
+        ]
+      : admitsNull || admitsUndefined
+        ? [
+            `if (${erased}.is_nullish()) return ${emitCppUnionSentinelConstruction(admitsNull ? 'null' : 'undefined', union, plan.kind, context)};`,
+          ]
+        : [];
   return `([&]() -> ${emitUnionTypeCpp(union, context)} { const auto& ${erased} = ${invocation}; ${[...branches, ...absence].join(' ')} throw std::logic_error("an erased callable result holds no alternative this signature returns"); }())`;
 }
 

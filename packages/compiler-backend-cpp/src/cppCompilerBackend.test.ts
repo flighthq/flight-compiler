@@ -17197,12 +17197,15 @@ Resolver make_resolver(TextureRef texture) {
       'erased-callable-return.ts',
       `type NumberSlot = (() => number | undefined) | string;
        type TextSlot = (() => string | undefined) | string;
+       type DualSlot = (() => number | null | undefined) | string;
        type ErasedSlot = (() => any) | string;
        function takeNumber(value: NumberSlot): number { return typeof value === 'string' ? 0 : 1; }
        function takeText(value: TextSlot): number { return typeof value === 'string' ? 0 : 1; }
+       function takeDual(value: DualSlot): number { return typeof value === 'string' ? 0 : 1; }
        function takeErased(value: ErasedSlot): number { return typeof value === 'string' ? 0 : 1; }
        export function passNumber(handler: () => any): number { return takeNumber(handler); }
        export function passText(handler: () => any): number { return takeText(handler); }
+       export function passDual(handler: () => any): number { return takeDual(handler); }
        export function passErased(handler: () => any): number { return takeErased(handler); }`,
     );
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -17218,6 +17221,8 @@ Resolver make_resolver(TextureRef texture) {
     );
     expect(contents).toContain('flight::AnyKind::string');
     expect(contents).toContain('.as_string()');
+    expect(contents).toContain('.is_null()');
+    expect(contents).toContain('.is_undefined()');
     expect(contents).not.toContain('static_cast');
     // The control: a source that ALREADY declares the erased result is stored as itself, unchanged -- the
     // extraction is written only where the destination's result is a closed one.
