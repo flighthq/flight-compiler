@@ -14707,9 +14707,10 @@ function hasUniqueCppSemanticUnionSlotMappingCpp(
 }
 
 // Widen a represented source union into a nullable destination only when every present source slot
-// selects exactly one destination slot. An optional source must also encode the same sentinel: passing
-// optional<T> directly to optional<variant<T, U>> has no converting constructor, while extracting
-// without the check would turn source absence into a throw.
+// selects exactly one destination slot. An optional source must also encode a sentinel the destination
+// represents: passing optional<T> directly to optional<variant<T, U>> has no converting constructor,
+// while extracting without the check would turn source absence into a throw. A dual-sentinel destination
+// can preserve that source sentinel explicitly, even when the optional payload is itself a variant.
 function emitCppOptionalUnionWideningCpp(
   expression: Readonly<IrExpression>,
   expressionType: Readonly<IrType>,
@@ -14718,7 +14719,7 @@ function emitCppOptionalUnionWideningCpp(
   targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
   context: EmitContext,
 ): string | undefined {
-  if (targetPlan.kind !== 'optionalVariant') {
+  if (targetPlan.kind !== 'optionalVariant' && targetPlan.kind !== 'dualSentinelVariant') {
     return undefined;
   }
   const slotMappings = sourcePlan.valueSlots.map((sourceSlot) => {
@@ -14733,6 +14734,36 @@ function emitCppOptionalUnionWideningCpp(
   if (slotMappings.some((mapping) => mapping === undefined)) return undefined;
   const mappings = slotMappings.filter((mapping) => mapping !== undefined);
   const resultType = qualifyCppDeclaringModuleTypeCpp(emitUnionTypeCpp(targetUnion, context), context);
+  if (sourcePlan.kind === 'optionalVariant' && targetPlan.kind === 'dualSentinelVariant') {
+    // The visitor copies the already-held carrier into the destination. A semantic declaration match
+    // with different C++ storage would require a conversion this path deliberately does not invent.
+    if (mappings.some((mapping) => mapping.source.targetType !== mapping.target.targetType)) return undefined;
+    const sourceSentinel =
+      sourcePlan.sentinels.null === 'optionalAbsence'
+        ? 'null'
+        : sourcePlan.sentinels.undefined === 'optionalAbsence'
+          ? 'undefined'
+          : undefined;
+    if (!sourceSentinel || targetPlan.sentinels[sourceSentinel] === 'absent') return undefined;
+    const source = getGeneratedTargetName('contextualUnionSource', context);
+    const value = getGeneratedTargetName('contextualUnionValue', context);
+    const valueType = getGeneratedTargetName('contextualUnionValueType', context);
+    const absent = emitCppUnionSentinelConstruction(sourceSentinel, targetUnion, targetPlan.kind, context);
+    const branches = mappings.map((mapping, index) => {
+      const sourceType = mapping.source.targetType;
+      const targetType = qualifyCppDeclaringModuleTypeCpp(mapping.target.targetType, context);
+      const result = `${resultType}{std::in_place_type<${targetType}>, ${value}}`;
+      if (mappings.length === 1) return `return ${result};`;
+      if (index === mappings.length - 1) return `else return ${result};`;
+      return `${index === 0 ? 'if' : 'else if'} constexpr (std::is_same_v<${valueType}, ${sourceType}>) return ${result};`;
+    });
+    const emitted = emitExpression(expression, context, expressionType, false);
+    context.includes.add('optional');
+    context.includes.add('type_traits');
+    context.includes.add('variant');
+    return `([&]() -> ${resultType} { auto ${source} = ${emitted}; if (!${source}.has_value()) return ${absent}; return std::visit([&](const auto& ${value}) -> ${resultType} { using ${valueType} = std::decay_t<decltype(${value})>; ${branches.join(' ')} }, ${source}.value()); }())`;
+  }
+  if (targetPlan.kind !== 'optionalVariant') return undefined;
   if (sourcePlan.kind === 'multiVariant' && mappings.length > 1) {
     const value = getGeneratedTargetName('contextualUnionValue', context);
     const valueType = getGeneratedTargetName('contextualUnionValueType', context);

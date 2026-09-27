@@ -4096,6 +4096,109 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('Narrow or convert the source expression');
   });
 
+  it('passes the glTF anisotropy texture union through its exact imported alias', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/materials/contract',
+          target: { packageName: '@flighthq/materials', source: 'packages/materials/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          `export interface TextureCommon { colorSpace: string; version: number }
+           export interface Texture2D extends TextureCommon { readonly dimension: '2d'; source: object | null }
+           export type Texture =
+             | Texture2D
+             | (TextureCommon & { readonly dimension: 'cube'; sources: readonly object[] });
+           export interface AnisotropyPbrExtension {
+             anisotropyMap: Texture | null;
+             anisotropyRotation: number;
+             anisotropyStrength: number;
+             readonly kind: 'AnisotropyPbrExtension';
+           }
+           export interface GltfExtensionContext {
+             resolveTexture(info: object | undefined, colorSpace: string): Texture | null;
+           }
+           export interface GltfExtensionHandler {
+             apply(context: Readonly<GltfExtensionContext>): void;
+             kind: string;
+           }`,
+        ),
+        source(
+          '@flighthq/materials',
+          'packages/materials/src/contract.ts',
+          `import type { AnisotropyPbrExtension } from '@flighthq/types/contract';
+           export function createAnisotropyPbrExtension(
+             options?: Readonly<Partial<AnisotropyPbrExtension>>,
+           ): AnisotropyPbrExtension { throw new Error('stub'); }`,
+        ),
+        source(
+          '@flighthq/scene3d-formats',
+          'packages/scene3d-formats/src/gltfAnisotropy.ts',
+          `import { createAnisotropyPbrExtension } from '@flighthq/materials/contract';
+           import type { GltfExtensionHandler } from '@flighthq/types/contract';
+           export const handler: GltfExtensionHandler = {
+             apply(context) {
+               createAnisotropyPbrExtension({
+                 anisotropyMap: context.resolveTexture(undefined, 'linear'),
+                 anisotropyRotation: 0,
+                 anisotropyStrength: 0,
+               });
+             },
+             kind: 'KHR_materials_anisotropy',
+           };`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/materials': { includePrefix: 'flight/materials', namespace: 'flight::materials' },
+          '@flighthq/scene3d-formats': {
+            includePrefix: 'flight/scene3d-formats',
+            namespace: 'flight::scene3d_formats',
+          },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted.match(/RowKey<"resolveTexture">/gu)).toHaveLength(1);
+    expect(emitted).toContain('if (!contextual_union_source.has_value()) return std::variant<');
+    expect(emitted).toContain('std::in_place_type<flight::Null>, flight::null');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::Texture2D>>, contextual_union_value');
+    expect(emitted).toMatch(
+      /std::in_place_type<flight::Ref<flight::types::color_space_version_dimension_sources_[a-f\d]+>>, contextual_union_value/u,
+    );
+    expect(emitted).not.toMatch(
+      /make_(?:structural_)?ref<flight::types::(?:Texture2D|color_space_version_dimension_sources_)/u,
+    );
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('static_cast<flight::Ref');
+    expect(emitted).not.toContain('structural_ref_cast');
+  });
+
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
     const result = lower(
       'inherited-alternative-assertion.ts',
