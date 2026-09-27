@@ -4170,7 +4170,7 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('Narrow or convert the source expression');
   });
 
-  it('passes the glTF anisotropy texture union through its exact imported alias', () => {
+  it('passes the glTF anisotropy and clearcoat texture unions through their exact imported alias', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -4205,6 +4205,15 @@ describe('createCppCompilerBackend', () => {
              anisotropyStrength: number;
              readonly kind: 'AnisotropyPbrExtension';
            }
+           export interface ClearcoatPbrExtension {
+             clearcoat: number;
+             clearcoatMap: Texture | null;
+             clearcoatNormalMap: Texture | null;
+             clearcoatNormalScale: number;
+             clearcoatRoughness: number;
+             clearcoatRoughnessMap: Texture | null;
+             readonly kind: 'ClearcoatPbrExtension';
+           }
            export interface GltfExtensionContext {
              resolveTexture(info: object | undefined, colorSpace: string): Texture | null;
            }
@@ -4216,10 +4225,13 @@ describe('createCppCompilerBackend', () => {
         source(
           '@flighthq/materials',
           'packages/materials/src/contract.ts',
-          `import type { AnisotropyPbrExtension } from '@flighthq/types/contract';
+          `import type { AnisotropyPbrExtension, ClearcoatPbrExtension } from '@flighthq/types/contract';
            export function createAnisotropyPbrExtension(
              options?: Readonly<Partial<AnisotropyPbrExtension>>,
-           ): AnisotropyPbrExtension { throw new Error('stub'); }`,
+           ): AnisotropyPbrExtension { throw new Error('stub'); }
+           export function createClearcoatPbrExtension(
+             options?: Readonly<Partial<ClearcoatPbrExtension>>,
+           ): ClearcoatPbrExtension { throw new Error('stub'); }`,
         ),
         source(
           '@flighthq/scene3d-formats',
@@ -4237,11 +4249,30 @@ describe('createCppCompilerBackend', () => {
              kind: 'KHR_materials_anisotropy',
            };`,
         ),
+        source(
+          '@flighthq/scene3d-formats',
+          'packages/scene3d-formats/src/gltfClearcoat.ts',
+          `import { createClearcoatPbrExtension } from '@flighthq/materials/contract';
+           import type { GltfExtensionHandler } from '@flighthq/types/contract';
+           export const handler: GltfExtensionHandler = {
+             apply(context) {
+               createClearcoatPbrExtension({
+                 clearcoat: 0,
+                 clearcoatMap: context.resolveTexture(undefined, 'linear'),
+                 clearcoatNormalMap: context.resolveTexture(undefined, 'linear'),
+                 clearcoatNormalScale: 1,
+                 clearcoatRoughness: 0,
+                 clearcoatRoughnessMap: context.resolveTexture(undefined, 'linear'),
+               });
+             },
+             kind: 'KHR_materials_clearcoat',
+           };`,
+        ),
       ],
       moduleResolution,
     );
     const modules = results.map((result) => result.module);
-    const emitted = createCppCompilerBackend().createEmissionSession!({
+    const session = createCppCompilerBackend().createEmissionSession!({
       moduleResolution,
       modules,
       options: {
@@ -4255,22 +4286,38 @@ describe('createCppCompilerBackend', () => {
         },
         runtimeProfile: 'flight-cpp',
       },
-    }).emitModule(modules[2]!)[0]!.contents;
+    });
+    const anisotropy = session.emitModule(modules[2]!)[0]!.contents;
+    const clearcoat = session.emitModule(modules[3]!)[0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-    expect(emitted.match(/RowKey<"resolveTexture">/gu)).toHaveLength(1);
-    expect(emitted).toContain('if (!contextual_union_source.has_value()) return std::variant<');
-    expect(emitted).toContain('std::in_place_type<flight::Null>, flight::null');
-    expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::Texture2D>>, contextual_union_value');
-    expect(emitted).toMatch(
-      /std::in_place_type<flight::Ref<flight::types::color_space_version_dimension_sources_[a-f\d]+>>, contextual_union_value/u,
-    );
-    expect(emitted).not.toMatch(
-      /make_(?:structural_)?ref<flight::types::(?:Texture2D|color_space_version_dimension_sources_)/u,
-    );
-    expect(emitted).not.toContain('static_pointer_cast');
-    expect(emitted).not.toContain('static_cast<flight::Ref');
-    expect(emitted).not.toContain('structural_ref_cast');
+    // Clearcoat drives the same exact-carrier widening through three independent map properties. Each
+    // source stays single-evaluation, maps null to null (not the Partial row's undefined sentinel), and
+    // copies only its already-held Ref into the destination variant.
+    const expectOwnerPreservingTextureWidenings = (emitted: string, count: number) => {
+      expect(emitted.match(/RowKey<"resolveTexture">/gu)).toHaveLength(count);
+      expect(
+        emitted.match(/if \(!contextual_union_source(?:_\d+)?\.has_value\(\)\) return std::variant</gu),
+      ).toHaveLength(count);
+      expect(emitted.match(/std::in_place_type<flight::Null>, flight::null/gu)).toHaveLength(count);
+      expect(emitted).not.toContain('std::in_place_type<flight::Undefined>, flight::undefined');
+      expect(
+        emitted.match(/std::in_place_type<flight::Ref<flight::types::Texture2D>>, contextual_union_value(?:_\d+)?/gu),
+      ).toHaveLength(count);
+      expect(
+        emitted.match(
+          /std::in_place_type<flight::Ref<flight::types::color_space_version_dimension_sources_[a-f\d]+>>, contextual_union_value(?:_\d+)?/gu,
+        ),
+      ).toHaveLength(count);
+      expect(emitted).not.toMatch(
+        /make_(?:structural_)?ref<flight::types::(?:Texture2D|color_space_version_dimension_sources_)/u,
+      );
+      expect(emitted).not.toContain('static_pointer_cast');
+      expect(emitted).not.toContain('static_cast<flight::Ref');
+      expect(emitted).not.toContain('structural_ref_cast');
+    };
+    expectOwnerPreservingTextureWidenings(anisotropy, 1);
+    expectOwnerPreservingTextureWidenings(clearcoat, 3);
   });
 
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
