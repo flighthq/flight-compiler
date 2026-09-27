@@ -4812,6 +4812,151 @@ describe('createCppCompilerBackend', () => {
     expect(iridescence.match(/flight::String\("linear"\)/gu)).toHaveLength(2);
   });
 
+  it('keeps scene resource recovery unions in their exact imported owners', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/image/contract',
+          target: { packageName: '@flighthq/image', source: 'packages/image/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './getScene3DResourceTextures',
+          target: {
+            packageName: '@flighthq/scene3d-resources',
+            source: 'packages/scene3d-resources/src/getScene3DResourceTextures.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          `export interface TextureCommon { colorSpace: string; version: number }
+           export interface Texture2D extends TextureCommon { readonly dimension: '2d'; source: object | null }
+           export type Texture =
+             | Texture2D
+             | (TextureCommon & { readonly dimension: 'cube'; sources: readonly object[] });
+           interface ImageResourceReferenceBase { state: string; textures?: Texture[] }
+           export interface EmbeddedImageResourceReference extends ImageResourceReferenceBase {
+             readonly kind: 'Embedded'; bytes: readonly number[];
+           }
+           export interface ExternalImageResourceReference extends ImageResourceReferenceBase {
+             readonly kind: 'External'; uri: string;
+           }
+           export type ImageResourceReference =
+             | EmbeddedImageResourceReference
+             | ExternalImageResourceReference;
+           export interface UpdateScene3DResourceStreamingOptions {
+             select?: (
+               texture: Readonly<Texture>,
+               ref: Readonly<ImageResourceReference>,
+             ) => boolean;
+           }`,
+        ),
+        source(
+          '@flighthq/image',
+          'packages/image/src/contract.ts',
+          `import type { ImageResourceReference } from '@flighthq/types/contract';
+           export function resetFailedImageResourceReference(ref: ImageResourceReference): boolean {
+             return ref.kind === 'Embedded';
+           }`,
+        ),
+        source(
+          '@flighthq/scene3d-resources',
+          'packages/scene3d-resources/src/getScene3DResourceTextures.ts',
+          `import type { ImageResourceReference, Texture } from '@flighthq/types/contract';
+           export function getScene3DTextureResourceReference(
+             texture: Readonly<Texture>,
+           ): ImageResourceReference | null { texture; return null; }`,
+        ),
+        source(
+          '@flighthq/scene3d-resources',
+          'packages/scene3d-resources/src/sceneResourceRecovery.ts',
+          `import { resetFailedImageResourceReference } from '@flighthq/image/contract';
+           import type {
+             ImageResourceReference,
+             Texture,
+             UpdateScene3DResourceStreamingOptions,
+           } from '@flighthq/types/contract';
+           import { getScene3DTextureResourceReference } from './getScene3DResourceTextures';
+           export function retryFailedScene3DResource(
+             texture: Texture,
+             options?: Readonly<UpdateScene3DResourceStreamingOptions>,
+           ): number {
+             const reset = new Set<ImageResourceReference>();
+             const ref = getScene3DTextureResourceReference(texture);
+             if (ref == null || reset.has(ref)) return 0;
+             if (options?.select !== undefined && !options.select(texture, ref)) return 0;
+             if (resetFailedImageResourceReference(ref)) reset.add(ref);
+             return reset.size;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/image': { includePrefix: 'flight/image', namespace: 'flight::image' },
+          '@flighthq/scene3d-resources': {
+            includePrefix: 'flight/scene3d-resources',
+            namespace: 'flight::scene3d_resources',
+          },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('get_scene3_dtexture_resource_reference(texture)');
+    expect(emitted).toContain('if ((!ref.has_value() || reset.has(ref.value()))) {');
+    expect(emitted).toContain('.value()(texture, ref.value())');
+    expect(emitted).toContain('reset_failed_image_resource_reference(ref.value())');
+    expect(emitted).toContain('reset.add(ref.value())');
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('static_cast<flight::Ref');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toMatch(
+      /make_(?:structural_)?ref<flight::types::(?:Embedded|External)ImageResourceReference>/u,
+    );
+  });
+
+  it('keeps an unproved nullable resource union outside a present-only call', () => {
+    const result = lower(
+      'nullable-resource-reference.ts',
+      `interface EmbeddedImageResourceReference { readonly kind: 'Embedded'; bytes: readonly number[] }
+       interface ExternalImageResourceReference { readonly kind: 'External'; uri: string }
+       type ImageResourceReference = EmbeddedImageResourceReference | ExternalImageResourceReference;
+       function resetFailedImageResourceReference(ref: ImageResourceReference): boolean { return ref.kind === 'Embedded'; }
+       export function retry(ref: ImageResourceReference | null): boolean {
+         return resetFailedImageResourceReference(ref);
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.message).toContain('source optionalVariant');
+  });
+
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
     const result = lower(
       'inherited-alternative-assertion.ts',

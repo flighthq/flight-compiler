@@ -14250,7 +14250,10 @@ function emitContextualUnionExpressionInContextCpp(
   const expressionUnion = getIrUnionTypeCpp(expressionType, context, new Set());
   if (expressionUnion) {
     const expressionPlan = getCppUnionRepresentationPlan(expressionUnion, context);
-    if (hasEquivalentCppUnionRepresentation(expressionPlan, plan)) {
+    if (
+      hasEquivalentCppUnionRepresentation(expressionPlan, plan) ||
+      hasEquivalentCppContextualUnionRepresentationCpp(expressionPlan, plan, context)
+    ) {
       return undefined;
     }
     const equivalentConversion = emitCppEquivalentUnionRepresentationConversionCpp(
@@ -14565,9 +14568,10 @@ function emitContextualUnionExpressionInContextCpp(
   );
 }
 
-// A presence-proved primitive read carries an optional storage type in its checker flow evidence even
-// though the expression itself has already excluded absence. Remove that sentinel only when the
-// remaining value slot is exactly the destination slot. Ordinary identifier reads retain the full
+// A presence-proved read carries an optional storage type in its checker flow evidence even though the
+// expression itself has already excluded absence. Remove that sentinel only when the remaining value
+// slots are exactly the destination slots. Primitive single-slot reads and exact multi-variant reads can
+// then use the identifier emitter's checked `.value()` access; every other identifier retains the full
 // carrier evidence needed by assertions and member projection.
 function getCppContextualUnionSourceTypeEvidenceCpp(
   expression: Readonly<IrExpression>,
@@ -14578,8 +14582,8 @@ function getCppContextualUnionSourceTypeEvidenceCpp(
   if (
     expression.kind === 'identifier' &&
     expression.presence === 'narrowedPresent' &&
-    targetPlan.kind === 'singleValue' &&
-    targetPlan.valueSlots[0]?.runtimeType.kind === 'primitive'
+    ((targetPlan.kind === 'singleValue' && targetPlan.valueSlots[0]?.runtimeType.kind === 'primitive') ||
+      targetPlan.kind === 'multiVariant')
   ) {
     const presentType = getCppNonNullableType(inferredType, context, new Set());
     if (presentType && hasEquivalentCppContextualUnionValueSlotsCpp(presentType, targetPlan, context)) {
@@ -14606,7 +14610,7 @@ function hasEquivalentCppContextualUnionValueSlotsCpp(
     return (
       sourcePlan.sentinels.null === 'absent' &&
       sourcePlan.sentinels.undefined === 'absent' &&
-      haveSameCppUnionValueSlotTypesCpp(sourcePlan, targetPlan)
+      haveSameCppContextualUnionValueSlotTypesCpp(sourcePlan, targetPlan, context)
     );
   }
   const runtimeType = getIrTypeRuntimeDomainCpp(sourceType, context, new Set());
@@ -14615,8 +14619,48 @@ function hasEquivalentCppContextualUnionValueSlotsCpp(
     targetPlan.valueSlots.length === 1 &&
     targetPlan.sentinels.null === 'absent' &&
     targetPlan.sentinels.undefined === 'absent' &&
-    targetPlan.valueSlots[0]!.targetType === emitType(runtimeType, inspectionContext),
+    qualifyCppDeclaringModuleTypeCpp(targetPlan.valueSlots[0]!.targetType, context) ===
+      qualifyCppDeclaringModuleTypeCpp(emitType(runtimeType, inspectionContext), context),
   );
+}
+
+// A union alias is planned in its declaring module, where its own alternatives are initially unqualified,
+// while the same alternatives carried through an import already use their qualified names. Compare the
+// spelling after applying the declaring module's qualification, which is also applied to the finished
+// contextual expression. Semantically similar arms remain distinct: the exact emitted C++ carrier names,
+// representation kind, slot count, and (for direct reuse) slot order must agree.
+function hasEquivalentCppContextualUnionRepresentationCpp(
+  left: ReturnType<typeof getCppUnionRepresentationPlan>,
+  right: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): boolean {
+  return (
+    left.kind === right.kind &&
+    left.valueSlots.length === right.valueSlots.length &&
+    left.valueSlots.every(
+      (slot, index) =>
+        qualifyCppDeclaringModuleTypeCpp(slot.targetType, context) ===
+        qualifyCppDeclaringModuleTypeCpp(right.valueSlots[index]!.targetType, context),
+    )
+  );
+}
+
+function haveSameCppContextualUnionValueSlotTypesCpp(
+  left: ReturnType<typeof getCppUnionRepresentationPlan>,
+  right: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): boolean {
+  if (left.valueSlots.length !== right.valueSlots.length) return false;
+  const remaining = new Set(right.valueSlots.keys());
+  for (const leftSlot of left.valueSlots) {
+    const leftType = qualifyCppDeclaringModuleTypeCpp(leftSlot.targetType, context);
+    const matches = [...remaining].filter(
+      (index) => qualifyCppDeclaringModuleTypeCpp(right.valueSlots[index]!.targetType, context) === leftType,
+    );
+    if (matches.length !== 1) return false;
+    remaining.delete(matches[0]!);
+  }
+  return remaining.size === 0;
 }
 
 function haveSameCppUnionValueSlotTypesCpp(
