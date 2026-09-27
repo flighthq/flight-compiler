@@ -3014,6 +3014,31 @@ describe('createCppCompilerBackend', () => {
     expect(failure.classification).toBe('compiler-restriction');
   });
 
+  it.skipIf(!canCompileCpp)('compiles a nullable native reference projected to a Partial row', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const result = lower(
+      'compile-nullable-partial-projection.ts',
+      `interface NodeData { readonly kind: string }
+       export function commands(data: NodeData | null): readonly string[] | undefined {
+         return (data as Readonly<Partial<{ commands: readonly string[] }>> | null)?.commands;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-nullable-partial-projection-'));
+    const header = path.join(directory, 'nullable_partial_projection.hpp');
+
+    expect(emitted).toContain('if (!partial_structural_source.has_value()) return std::nullopt;');
+    try {
+      writeFileSync(header, emitted, 'utf8');
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it('carries absence across a union carrier narrowing and refuses to invent it where the target has none', () => {
     const result = lower(
       'sub-union-nullable-assertion.ts',
