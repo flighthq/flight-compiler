@@ -8320,9 +8320,7 @@ function getTypeScriptSyntacticReferenceNarrowedMember(
   // resolver below can still enumerate its exact alternatives. Prefer it when it resolves as a union so
   // narrowing never trades a declared owner for a lookalike structural carrier; otherwise retain the
   // checker evidence that served non-union annotations before this owner-preserving lane.
-  const authoredAlternatives = authored
-    ? getTypeScriptNarrowingUnionAlternatives(authored, context, new Set())
-    : [];
+  const authoredAlternatives = authored ? getTypeScriptNarrowingUnionAlternatives(authored, context, new Set()) : [];
   const alternatives =
     authoredAlternatives.length >= 2
       ? authoredAlternatives
