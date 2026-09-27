@@ -2803,6 +2803,17 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
   }
   const initializerType = getIrExpressionTypeEvidenceCpp(variable.initializer, context);
   if (!initializerType) return undefined;
+  // A contextually checked fresh object already names the owner it is safe to allocate. `satisfies`
+  // deliberately leaves the binding's source type as its narrower anonymous shape, while the literal
+  // retains the declared target in `initializerType`; construct under that owner when every written
+  // member belongs to it and only optional members are omitted. Existing values still require complete
+  // representation equivalence below because changing their owner would be a cast or a replacement.
+  if (
+    variable.initializer.kind === 'object' &&
+    isCppContextualNamedObjectLiteralConstructionCpp(variable.binding.id, initializerType, context)
+  ) {
+    return initializerType;
+  }
   const variableUnion = getIrUnionTypeCpp(variable.type, context, new Set());
   const initializerUnion = getIrUnionTypeCpp(initializerType, context, new Set());
   // TypeScript may expand an inferred local to an anonymous object even when its initializer still
@@ -15874,8 +15885,7 @@ function getCppConcreteNamedUnionValueSlotCpp(
   if (
     source.kind !== 'named' ||
     source.reference.kind !== 'binding' ||
-    source.reference.binding.kind === 'typeParameter' ||
-    source.typeArguments.length !== 0
+    source.reference.binding.kind === 'typeParameter'
   ) {
     return undefined;
   }
@@ -17730,9 +17740,10 @@ function isCppContextualNamedObjectLiteralConstructionCpp(
   context: EmitContext,
 ): boolean {
   // A fresh object may adopt a narrower nominal layout at its allocation site only when every
-  // observable use asks for that one identity. Requiring all destination fields after the last
-  // spread proves that omitted source-only fields never enter the allocation; restricting spreads
-  // to closed Flight data references makes their otherwise discarded reads inert in this runtime.
+  // observable use asks for that one identity. Requiring every written field after the last spread
+  // to belong to the destination proves that source-only fields never enter the allocation; omitted
+  // destination fields must be optional. Restricting spreads to closed Flight data references makes
+  // their otherwise discarded reads inert in this runtime.
   if (
     targetType.kind !== 'named' ||
     targetType.reference.kind !== 'binding' ||
@@ -17779,12 +17790,14 @@ function isCppContextualNamedObjectLiteralConstructionCpp(
     if (member.kind !== 'property' || propertiesByName.has(member.name)) return false;
     propertiesByName.set(member.name, member);
   }
-  if (propertiesByName.size !== targetProperties.length) return false;
+  const targetPropertyNames = new Set(targetProperties.map((property) => property.name));
+  if ([...propertiesByName.keys()].some((name) => !targetPropertyNames.has(name))) return false;
   const sourcePropertiesByName = new Map(sourceProperties.map((property) => [property.name, property] as const));
   return targetProperties.every((property) => {
     const member = propertiesByName.get(property.name);
     const sourceProperty = sourcePropertiesByName.get(property.name);
-    if (!member || !sourceProperty || (sourceProperty.optional && !property.optional)) return false;
+    if (!member) return property.optional || hasIrTypeAbsentMember(property.type);
+    if (!sourceProperty || (sourceProperty.optional && !property.optional)) return false;
     const sourceReadType = sourceProperty.optional
       ? (createIrTypeEvidenceUnionCpp([sourceProperty.type, { kind: 'undefined' }]) ?? sourceProperty.type)
       : sourceProperty.type;

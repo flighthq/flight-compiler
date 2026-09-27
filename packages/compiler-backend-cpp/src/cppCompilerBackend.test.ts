@@ -2386,6 +2386,39 @@ describe('createCppCompilerBackend', () => {
     ).toBe('compiler-restriction');
   });
 
+  it('constructs a fresh satisfies object under its declared union-arm owner', () => {
+    const result = lower(
+      'satisfies-union-arm-owner.ts',
+      `interface RuntimeBase { binding: object | null; uid?: string }
+       interface LassoSelectionRuntime extends RuntimeBase { active: boolean; path: number[] }
+       interface MarqueeSelectionRuntime extends RuntimeBase { active: boolean; startX: number }
+       interface SelectionStateRuntime<NodeType extends object> extends RuntimeBase {
+         activeNode: NodeType | null;
+         selectedNodes: NodeType[];
+       }
+       function install(_runtime: RuntimeBase | undefined): void {}
+       export function createLasso(): void {
+         const runtime = { active: false, binding: null, path: [] } satisfies LassoSelectionRuntime;
+         install(runtime);
+       }
+       export function createMarquee(): void {
+         const runtime = { active: false, binding: null, startX: 0 } satisfies MarqueeSelectionRuntime;
+         install(runtime);
+       }
+       export function createSelectionState<NodeType extends object>(selectedNodes: NodeType[]): void {
+         const runtime = { activeNode: null, binding: null, selectedNodes } satisfies SelectionStateRuntime<NodeType>;
+         install(runtime);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('flight::make_ref<LassoSelectionRuntime>');
+    expect(emitted).toContain('flight::make_ref<MarqueeSelectionRuntime>');
+    expect(emitted).toContain('flight::make_ref<SelectionStateRuntime<NodeType>>');
+    expect(emitted.match(/std::optional<flight::Ref<RuntimeBase>>\{runtime\}/gu)).toHaveLength(3);
+    expect(emitted).not.toContain('static_pointer_cast');
+  });
+
   it('keeps an erased value whose kind the runtime does not represent attributed to the runtime', () => {
     const result = lower(
       'union-value-erased-kind.ts',
