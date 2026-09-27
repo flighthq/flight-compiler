@@ -25232,6 +25232,58 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted).not.toContain('flight::Array<flight::Any>');
   });
 
+  it('retains exact array element evidence through a nested conditional empty branch', () => {
+    const result = lower(
+      'nested-conditional-empty-array.ts',
+      `export function select(
+         direct: unknown[],
+         projected: unknown[],
+         useDirect: boolean,
+         useProjected: boolean,
+       ): unknown[] {
+         const values = useDirect ? direct : useProjected ? projected : [];
+         return values;
+       }
+       export function selectPreserved(direct: unknown[]): unknown[] {
+         const describedAsUnknown: unknown = direct;
+         return Array.isArray(describedAsUnknown) ? describedAsUnknown : [];
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted.match(/flight::Array<flight::Any>\{\}/gu)).toHaveLength(2);
+    expect(emitted).toContain('auto described_as_unknown = direct;');
+    expect(emitted).not.toContain('static_cast<flight::Array<flight::Any>>');
+  });
+
+  it('attributes an erased Array.isArray conditional value to the target runtime', () => {
+    const result = lower(
+      'dynamic-nested-conditional-empty-array.ts',
+      `function isObject(value: unknown): value is Record<string, unknown> {
+         return typeof value === 'object' && value !== null && !Array.isArray(value);
+       }
+       export function select(rawChars: unknown): unknown[] {
+         const values = Array.isArray(rawChars)
+           ? rawChars
+           : isObject(rawChars)
+             ? Object.values(rawChars)
+             : [];
+         return values;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-erased-array-predicate-runtime-required',
+    });
+    expect(failure.message).toContain('flight::Any has no array alternative or checked exact-array extraction');
+    expect(failure.message).toContain('Keep the value in its exact array type before the erased boundary');
+    expect(failure.message).toContain('will not reinterpret the erased value, cast it, or materialize');
+  });
+
   it.skipIf(!canCompileCpp)('compiles an empty nullish fallback in its sole present array domain', () => {
     if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
     const result = lower(

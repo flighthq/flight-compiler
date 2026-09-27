@@ -4018,6 +4018,7 @@ function emitExpression(
       return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
     }
     case 'conditional': {
+      refuseCppErasedArrayPredicateValueCpp(expression, context);
       const numericPropertyTypeof = emitCppNumericPropertyTypeofConditionalCpp(expression, context, expectedType);
       if (numericPropertyTypeof) return numericPropertyTypeof;
       const primitiveErasedTypeof = emitCppPrimitiveErasedTypeofConditionalCpp(expression, context, expectedType);
@@ -22061,6 +22062,47 @@ function emitCppConditionalBranchCpp(
   );
 }
 
+// A predicate proves which source value the true branch denotes, but it does not create target storage.
+// When that binding chose Any storage, returning the guarded value would require the runtime to recover
+// the exact array handle; using an expected branch type here would instead disguise that extraction as a
+// conversion and either cast or rebuild the array.
+function refuseCppErasedArrayPredicateValueCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'conditional' }>>,
+  context: EmitContext,
+): void {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return;
+  const condition = expression.condition;
+  if (
+    condition.kind !== 'call' ||
+    condition.optional ||
+    condition.arguments.length !== 1 ||
+    condition.callee.kind !== 'property' ||
+    condition.callee.optional ||
+    condition.callee.name !== 'isArray' ||
+    condition.callee.object.kind !== 'identifier' ||
+    condition.callee.object.reference.kind !== 'ambient' ||
+    condition.callee.object.reference.name !== 'Array'
+  ) {
+    return;
+  }
+  const candidate = condition.arguments[0]!;
+  if (
+    candidate.kind !== 'identifier' ||
+    candidate.reference.kind !== 'binding' ||
+    expression.whenTrue.kind !== 'identifier' ||
+    expression.whenTrue.reference.kind !== 'binding' ||
+    expression.whenTrue.reference.binding.id !== candidate.reference.binding.id ||
+    !hasCppErasedDynamicTestOperandCpp(candidate, getIrExpressionTypeEvidenceCpp(candidate, context), context)
+  ) {
+    return;
+  }
+  emissionError(
+    context,
+    'Array.isArray narrows an erased value in the source, but flight::Any has no array alternative or checked exact-array extraction for the guarded value. Keep the value in its exact array type before the erased boundary, or add the array carrier, predicate, and identity-preserving extraction to the runtime; the compiler will not reinterpret the erased value, cast it, or materialize a replacement array',
+    'cpp-erased-array-predicate-runtime-required',
+  );
+}
+
 function getIrAssignmentTargetTypeCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -25305,6 +25347,7 @@ const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial
 const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-array-length-sparse-runtime-required',
   'cpp-contextual-structural-array-nominal-recovery-unproven',
+  'cpp-erased-array-predicate-runtime-required',
   'cpp-erased-error-view-runtime-required',
   'cpp-erased-structural-row-construction-unrepresented',
   'cpp-erased-tag-unreportable',
