@@ -3586,7 +3586,7 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('static_pointer_cast');
   });
 
-  it('stores an entity-refined generic table in its optional declared owner', () => {
+  it('stores the spritesheet registry result in its optional declared owner', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -3677,14 +3677,18 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('with_entry<flight::Ref<RegisteredFormatEntry>>');
     expect(emitted).toContain('flight::make_ref<RegisteredFormatEntry>');
     expect(emitted).not.toMatch(/entry_order_[a-f0-9]+/u);
+    expect(emitted).not.toContain('static_cast<flight::');
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('make_structural_ref');
+    expect(emitted.match(/flight::structural_ref_cast/gu)).toHaveLength(1);
     expect(captureBackendEmissionFailure(() => session.emitModule(modules[3]!)).rule).toBe(
       'cpp-contextual-union-value-type-unrepresented',
     );
   });
 
-  it('constructs optional named frame tags from a direct map expression', () => {
+  it('constructs TexturePacker frame tags in their optional named array owner', () => {
     const result = lower(
-      'optional-named-map-result.ts',
+      'packages/spritesheet-formats/src/texturePackerSerialize.ts',
       `interface Animation { direction: 'forward' | 'reverse'; frameNames: string[]; name: string }
        interface FrameTag { direction: 'forward' | 'reverse'; from: number; name: string; to: number }
        interface Meta { frameTags?: FrameTag[] }
@@ -3708,7 +3712,12 @@ describe('createCppCompilerBackend', () => {
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('std::optional<flight::Array<flight::Ref<FrameTag>>> frame_tags;');
     expect(emitted).toContain('flight::make_ref<FrameTag>');
+    expect(emitted).not.toContain('static_cast<flight::');
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('make_structural_ref');
+    expect(emitted).not.toContain('structural_ref_cast');
 
     const existing = lower(
       'optional-existing-map-result.ts',
@@ -3895,7 +3904,9 @@ describe('createCppCompilerBackend', () => {
       expect(refusal.message).toContain('Keep the open bag as Record<string, unknown> beside a closed typed object');
     }
     expect(array.message).toContain('named member values has no flight::Any alternative');
-    expect(callable.message).toContain('named member callback has no flight::Any alternative with a checked extraction');
+    expect(callable.message).toContain(
+      'named member callback has no flight::Any alternative with a checked extraction',
+    );
     expect(compound.rule).toBe('cpp-index-signature-named-member-assignment-unrepresented');
     expect(compound.classification).toBe('compiler-restriction');
     expect(compound.message).toContain('requires a typed read-modify-write projection');
