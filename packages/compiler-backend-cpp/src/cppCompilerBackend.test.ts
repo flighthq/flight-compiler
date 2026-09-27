@@ -5304,6 +5304,169 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('target optionalVariant');
   });
 
+  it('returns the first present source from a narrowed texture source sequence', () => {
+    const result = lower(
+      'texture-first-source.ts',
+      `interface TextureSource { width: number; height: number }
+       interface TextureCommon { version: number }
+       interface Texture2D extends TextureCommon {
+         readonly dimension: '2d';
+         source: TextureSource | null;
+       }
+       type Texture =
+         | Texture2D
+         | (TextureCommon & {
+             readonly dimension: '2d-array';
+             sources: readonly (TextureSource | null)[];
+           })
+         | (TextureCommon & {
+             readonly dimension: 'cube';
+             sources: readonly [
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+             ];
+           });
+       export function getFirstTextureSource(texture: Readonly<Texture>): TextureSource | null {
+         switch (texture.dimension) {
+           case '2d': return texture.source;
+           case '2d-array':
+           case 'cube': return texture.sources.find((source) => source !== null) ?? null;
+         }
+       }`,
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('get_first_texture_source');
+    expect(emitted).toContain('.find(');
+    expect(emitted).toContain('std::get_if<flight::Ref<flighthq_math::TextureSource>>');
+    expect(emitted).toContain('[=](std::optional<flight::Ref<TextureSource>> source)');
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('make_ref<TextureSource>');
+  });
+
+  it('refuses a nullable derived texture source crossing an independent interface owner carrier', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+             export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;
+             export interface EntityRuntime { binding: object | null }
+             export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+             export interface TextureSource extends Entity { width: number; height: number }
+             export interface VoxelGrid extends TextureSource { depth: number }
+             interface TextureCommon extends Entity { version: number }
+             export interface Texture2D extends TextureCommon {
+               readonly dimension: '2d';
+               source: TextureSource | null;
+             }
+             export type TextureSourceCubeFaces = readonly [
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+               TextureSource | null,
+             ];
+             export type Texture =
+               | Texture2D
+               | (TextureCommon & {
+                   readonly dimension: '2d-array';
+                   sources: readonly (TextureSource | null)[];
+                 })
+               | (TextureCommon & {
+                   readonly dimension: '3d';
+                   source: VoxelGrid | null;
+                 })
+               | (TextureCommon & {
+                   readonly dimension: 'cube';
+                   sources: TextureSourceCubeFaces;
+                 });
+             type TextureLikeFrom<Type extends Texture> =
+               Type extends Texture ? EntityWithoutRuntime<Type> : never;
+             export type TextureLike = TextureLikeFrom<Texture>;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/texture',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/texture/src/texture.ts',
+            `import type { TextureLike, TextureSource } from '@flighthq/types/contract';
+             export function getFirstTextureSource(texture: Readonly<TextureLike>): TextureSource | null {
+               switch (texture.dimension) {
+                 case '2d':
+                 case '3d': return texture.source;
+                 case '2d-array':
+                 case 'cube': return texture.sources.find((source) => source !== null) ?? null;
+               }
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(failure.rule).toBe('cpp-contextual-union-interface-heritage-carrier-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('from VoxelGrid to TextureSource');
+    expect(failure.message).toContain(
+      'independent flight::Ref<flighthq_types::VoxelGrid> and flight::Ref<flighthq_types::TextureSource> owner types',
+    );
+    expect(failure.message).toContain('native pointer cast');
+    expect(failure.message).toContain('materializing the target would replace object identity');
+    expect(failure.message).toContain('explicitly represent both owners');
+  });
+
+  it('does not infer the array find contract for a lookalike receiver', () => {
+    const result = lower(
+      'lookalike-find.ts',
+      `interface Finder {
+         find(predicate: (value: number) => boolean): unknown;
+       }
+       export function findValue(values: Finder): number | null {
+         return values.find((value) => value > 0) ?? null;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-contextual-union-missing-expression-type:optionalSingle');
+  });
+
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
     const result = lower(
       'inherited-alternative-assertion.ts',

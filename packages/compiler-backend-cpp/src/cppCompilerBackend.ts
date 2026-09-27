@@ -14590,6 +14590,15 @@ function emitContextualUnionExpressionInContextCpp(
         context,
       );
     }
+    const interfaceHeritageGap = getCppInterfaceHeritageUnionCarrierGapCpp(expressionPlan, plan, context);
+    if (interfaceHeritageGap) {
+      emissionError(
+        context,
+        `contextual nullable interface conversion from ${describeIrTypeForDiagnosticCpp(interfaceHeritageGap.source)} to ${describeIrTypeForDiagnosticCpp(interfaceHeritageGap.target)} follows TypeScript interface heritage, but flight-cpp stores those declarations in independent ${interfaceHeritageGap.sourceCarrier} and ${interfaceHeritageGap.targetCarrier} owner types. A native pointer cast would claim C++ inheritance the emitted interface structs do not have, materializing the target would replace object identity, and a structural row would change the declared result carrier. Preserve the exact source owner in the declared result and explicitly represent both owners where the branches merge, or add an owner-preserving interface-heritage carrier to the runtime contract.`,
+        'cpp-contextual-union-interface-heritage-carrier-unrepresented',
+        'target-runtime',
+      );
+    }
     const runtimeConversionGap = hasUniqueCppSemanticUnionSlotMappingCpp(expressionPlan, plan, context);
     const action = runtimeConversionGap
       ? 'The alternatives match uniquely, but no checked target-runtime conversion exists between their C++ carriers; keep both sides on the same declared union alias or add a runtime conversion contract.'
@@ -14981,6 +14990,61 @@ function hasUniqueCppSemanticUnionSlotMappingCpp(
     unmatched.delete(matches[0]!);
   }
   return unmatched.size === 0;
+}
+
+interface CppInterfaceHeritageUnionCarrierGap {
+  readonly source: Readonly<IrType>;
+  readonly sourceCarrier: string;
+  readonly target: Readonly<IrType>;
+  readonly targetCarrier: string;
+}
+
+function getCppInterfaceHeritageUnionCarrierGapCpp(
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): Readonly<CppInterfaceHeritageUnionCarrierGap> | undefined {
+  if (
+    (sourcePlan.kind !== 'optionalSingle' && sourcePlan.kind !== 'optionalVariant') ||
+    targetPlan.kind !== 'optionalSingle' ||
+    targetPlan.valueSlots.length !== 1 ||
+    sourcePlan.sentinels.null !== targetPlan.sentinels.null ||
+    sourcePlan.sentinels.undefined !== targetPlan.sentinels.undefined
+  ) {
+    return undefined;
+  }
+  const targetSlot = targetPlan.valueSlots[0]!;
+  const target = targetSlot.runtimeType;
+  if (target.kind !== 'named') return undefined;
+  const targetModule = getCppNamedTypeBindingModuleCpp(target, context);
+  const targetOwner = getCppNominalTypeDeclarationOwnerCpp(target, targetModule, context);
+  if (targetOwner?.declaration.kind !== 'interface') return undefined;
+  const gaps: CppInterfaceHeritageUnionCarrierGap[] = [];
+  for (const sourceSlot of sourcePlan.valueSlots) {
+    if (
+      sourceSlot.targetType === targetSlot.targetType ||
+      hasCppSameDeclaredUnionRuntimeTypeCpp(sourceSlot.runtimeType, target, context)
+    ) {
+      continue;
+    }
+    const source = sourceSlot.runtimeType;
+    if (source.kind !== 'named') return undefined;
+    const sourceModule = getCppNamedTypeBindingModuleCpp(source, context);
+    const sourceOwner = getCppNominalTypeDeclarationOwnerCpp(source, sourceModule, context);
+    if (
+      sourceOwner?.declaration.kind !== 'interface' ||
+      !isCppNominalTypeDerivedFromCpp(source, sourceModule, target, targetModule, context, new Set())
+    ) {
+      return undefined;
+    }
+    gaps.push({
+      source,
+      sourceCarrier: sourceSlot.targetType,
+      target,
+      targetCarrier: targetSlot.targetType,
+    });
+  }
+  return gaps.length === 1 ? gaps[0] : undefined;
 }
 
 // Widen a represented source union into a nullable destination only when every present source slot
@@ -17783,6 +17847,18 @@ function getCppRuntimeMemberCallResultTypeEvidence(
     }
   }
   const receiver = callee.member?.receiver;
+  const reconstructedReceiver = getIrExpressionTypeEvidenceCpp(callee.object, context);
+  const reconstructedArray = reconstructedReceiver
+    ? getIrArrayTypeCpp(reconstructedReceiver, context, new Set())
+    : undefined;
+  const reconstructedTuple = reconstructedReceiver
+    ? getIrTupleTypeCpp(reconstructedReceiver, context, new Set())
+    : undefined;
+  const reconstructedArrayMember =
+    receiver === undefined &&
+    callee.name === 'find' &&
+    (reconstructedArray !== undefined ||
+      (reconstructedTuple !== undefined && getIrHomogeneousTupleElementTypeCpp(reconstructedTuple) !== undefined));
   if (receiver === 'string') {
     if (callee.name === 'match') {
       return createIrTypeEvidenceUnionCpp([
@@ -17801,8 +17877,8 @@ function getCppRuntimeMemberCallResultTypeEvidence(
       return { element: { kind: 'primitive', name: 'string' }, kind: 'array', readonly: false };
     return undefined;
   }
-  if (receiver === 'array') {
-    const array = getIrExpressionTypeEvidenceCpp(callee.object, context);
+  if (receiver === 'array' || reconstructedArrayMember) {
+    const array = reconstructedReceiver;
     const element = array ? getIrIterableElementTypeCpp(array, context, new Set()) : undefined;
     if (element && (callee.name === 'pop' || callee.name === 'shift' || callee.name === 'find')) {
       return createIrTypeEvidenceUnionCpp([element, { kind: 'undefined' }]);
@@ -19370,6 +19446,8 @@ function getIrCallArgumentExpectedTypeCpp(
   if (externalParameterType) return externalParameterType;
   const resolvedPromiseArgument = getCppResolvedPromiseArgumentExpectedTypeCpp(expression, index, expectedType);
   if (resolvedPromiseArgument) return resolvedPromiseArgument;
+  const arrayCallback = getCppContextualArrayCallbackTypeCpp(expression, expectedType, index, context);
+  if (arrayCallback) return arrayCallback;
   const collectionType = getCppCollectionCallArgumentExpectedTypeCpp(expression, index, context);
   if (collectionType) return collectionType;
   if (expression.callee.kind === 'property' && expression.callee.member) {
@@ -19523,19 +19601,23 @@ function getCppContextualArrayCallbackTypeCpp(
   index: number,
   context: EmitContext,
 ): Readonly<Extract<IrType, { kind: 'function' }>> | undefined {
-  if (index !== 0 || expression.callee.kind !== 'property' || expression.callee.member?.receiver !== 'array') {
+  if (index !== 0 || expression.callee.kind !== 'property') return undefined;
+  const receiverEvidence = getIrExpressionTypeEvidenceCpp(expression.callee.object, context);
+  const receiverArray = receiverEvidence ? getIrArrayTypeCpp(receiverEvidence, context, new Set()) : undefined;
+  const receiverTuple = receiverEvidence ? getIrTupleTypeCpp(receiverEvidence, context, new Set()) : undefined;
+  const receiverElement =
+    receiverArray?.element ?? (receiverTuple ? getIrHomogeneousTupleElementTypeCpp(receiverTuple) : undefined);
+  if (
+    expression.callee.member?.receiver !== 'array' &&
+    (expression.callee.member !== undefined || expression.callee.name !== 'find' || receiverElement === undefined)
+  ) {
     return undefined;
   }
   const callback = getIrExpressionTypeEvidenceCpp(expression.arguments[index]!, context);
   if (callback?.kind !== 'function') return undefined;
-  const receiver = getIrArrayTypeCpp(
-    getIrExpressionTypeEvidenceCpp(expression.callee.object, context),
-    context,
-    new Set(),
-  );
   const first = callback.parameters[0];
   const refinedParameter =
-    receiver && first ? getCppInvariantCollectionEvidenceRefinementCpp(first.type, receiver.element) : undefined;
+    receiverElement && first ? getCppInvariantCollectionEvidenceRefinementCpp(first.type, receiverElement) : undefined;
   const callbackExpression = expression.arguments[index]!;
   if (
     callbackExpression.kind === 'function' &&
@@ -19544,8 +19626,7 @@ function getCppContextualArrayCallbackTypeCpp(
   ) {
     context.objectEntriesTupleBindingIds.add(callbackExpression.parameters[0].binding.id);
   }
-  const result =
-    expression.callee.member.name === 'map' ? getIrArrayTypeCpp(expectedType, context, new Set()) : undefined;
+  const result = expression.callee.name === 'map' ? getIrArrayTypeCpp(expectedType, context, new Set()) : undefined;
   if (!refinedParameter && !result) return undefined;
   return {
     ...callback,

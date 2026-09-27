@@ -7389,16 +7389,38 @@ function getTypeScriptDiscriminantUnionMemberTestEvidence(
   const sourceMembers = test.questionDotToken
     ? source.type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined')
     : source.type.types;
-  const memberEvidence = sourceMembers.map((member) => {
-    const shape = getIrTypeConstructionTargetShape(member, context);
-    const property =
-      shape?.kind === 'object' ? shape.properties.find((candidate) => candidate.name === test.name.text) : undefined;
-    return property ? getTypeScriptIrLiteralTypeValue(property.type, context) : undefined;
-  });
+  const memberEvidence = sourceMembers.map((member) =>
+    getTypeScriptIrDiscriminantLiteralValue(member, test.name.text, context),
+  );
   if (memberEvidence.some((property) => property === undefined)) return undefined;
   const matches = sourceMembers.filter((_, index) => Object.is(memberEvidence[index], literal));
   if (matches.length !== 1) return undefined;
   return { binding: source.binding, member: matches[0]!, whenResult };
+}
+
+function getTypeScriptIrDiscriminantLiteralValue(
+  type: Readonly<IrType>,
+  propertyName: string,
+  context: LoweringContext,
+  resolving: ReadonlySet<string> = new Set(),
+): boolean | number | string | undefined {
+  const bindingId = type.kind === 'named' && type.reference.kind === 'binding' ? type.reference.binding.id : undefined;
+  if (bindingId && resolving.has(bindingId)) return undefined;
+  const nextResolving = bindingId ? new Set(resolving).add(bindingId) : resolving;
+  const shape = getIrTypeConstructionTargetShape(type, context);
+  if (!shape) return undefined;
+  if (shape.kind === 'object') {
+    const property = shape.properties.find((candidate) => candidate.name === propertyName);
+    return property ? getTypeScriptIrLiteralTypeValue(property.type, context) : undefined;
+  }
+  if (shape.kind !== 'intersection') return undefined;
+  const values = new Set(
+    shape.types.flatMap((member) => {
+      const value = getTypeScriptIrDiscriminantLiteralValue(member, propertyName, context, nextResolving);
+      return value === undefined ? [] : [value];
+    }),
+  );
+  return values.size === 1 ? [...values][0] : undefined;
 }
 
 function getTypeScriptIrLiteralTypeValue(

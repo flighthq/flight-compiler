@@ -13315,6 +13315,38 @@ it('records structural union-member evidence on discriminant switch cases', () =
   expect(statement?.kind === 'switch' ? statement.subjectDomain : undefined).toBe('string');
 });
 
+it('records discriminant evidence carried by one constituent of an intersection arm', () => {
+  const result = lower(
+    'switch-intersection-union.ts',
+    `interface Common { readonly version: number }
+     type Texture =
+       | (Common & { readonly dimension: '2d'; readonly source: string })
+       | (Common & { readonly dimension: 'cube'; readonly sources: readonly string[] });
+     export function read(texture: Readonly<Texture>): string {
+       switch (texture.dimension) {
+         case '2d': return texture.source;
+         case 'cube': return texture.sources[0] ?? '';
+       }
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'read',
+  );
+  const statement = declaration?.kind === 'function' ? declaration.body[0] : undefined;
+
+  expect(result.diagnostics).toEqual([]);
+  expect(statement?.kind === 'switch' ? statement.cases[0]?.unionMemberTest : undefined).toMatchObject({
+    binding: { name: 'texture' },
+    member: { kind: 'intersection' },
+    whenResult: true,
+  });
+  expect(statement?.kind === 'switch' ? statement.cases[1]?.unionMemberTest : undefined).toMatchObject({
+    binding: { name: 'texture' },
+    member: { kind: 'intersection' },
+    whenResult: true,
+  });
+});
+
 // --- Destructuring assignment ---
 
 it('lowers array destructuring assignment as a statement', () => {
