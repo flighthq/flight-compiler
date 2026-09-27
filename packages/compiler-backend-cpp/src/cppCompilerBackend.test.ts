@@ -4426,6 +4426,68 @@ describe('createCppCompilerBackend', () => {
     expect(contents.match(/flight::named_properties\(value\)/gu)).toHaveLength(3);
   });
 
+  it('checks own keys through record storage and existing named-property views', () => {
+    const result = lower(
+      'object-has-own.ts',
+      `type Scalar = boolean | number | string;
+       interface Fields { [name: string]: Scalar }
+       interface Named { alpha: number; beta: string }
+       export function recordOwns(fields: Fields, key: string): boolean { return Object.hasOwn(fields, key); }
+       export function objectOwns(value: Named, key: string): boolean { return Object.hasOwn(value, key); }
+       export function viewOwns(value: Named, key: string): boolean {
+         const view = value as unknown as Record<string, unknown>;
+         return Object.hasOwn(view, key);
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Presence is answered by the carrier rather than by reading the value: an own key whose value is
+    // `undefined` remains present. Both object paths reuse the row owner's read-only view and allocate no
+    // record or detached property storage.
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('return fields.has(key);');
+    expect(contents).toContain('return flight::named_properties(value).has(key);');
+    expect(contents).toContain('return view.has(key);');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-object-has-own-'));
+      const header = path.join(directory, 'object_has_own.hpp');
+      try {
+        writeFileSync(header, contents, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it('refuses Object.hasOwn when no exact own-property carrier represents the receiver and key', () => {
+    const failure = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('object-has-own-unrepresented.ts', source).module, {
+          runtimeProfile: 'flight-cpp',
+        }),
+      );
+    const erased = failure(
+      'export function owns(value: any, key: string): boolean { return Object.hasOwn(value, key); }',
+    );
+    const symbol = failure(
+      `interface Named { value: number }
+       export function owns(value: Named, key: symbol): boolean { return Object.hasOwn(value, key); }`,
+    );
+
+    // An erased value might be a primitive whose JavaScript boxing semantics the named-property view does
+    // not model, and that view deliberately excludes symbols. Neither case is silently reinterpreted as a
+    // Record or answered by probing the value.
+    for (const refusal of [erased, symbol]) {
+      expect(refusal.rule).toBe('cpp-object-has-own-storage-unrepresented');
+      expect(refusal.classification).toBe('target-runtime');
+      expect(refusal.message).toContain('no represented own-property carrier');
+    }
+  });
+
   it('represents an interface that states an index signature as the runtime record', () => {
     const result = lower(
       'index-signature-carrier.ts',

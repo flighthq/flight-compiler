@@ -3622,6 +3622,8 @@ function emitExpression(
       if (isCppAmbientObjectMemberCallCpp(expression, 'freeze') && expression.arguments.length === 1) {
         return emitExpression(expression.arguments[0]!, context, expectedType);
       }
+      const objectHasOwn = emitCppObjectHasOwnCpp(expression, context);
+      if (objectHasOwn) return objectHasOwn;
       const namedPropertiesEnumeration = emitCppNamedPropertiesEnumerationCpp(expression, context);
       if (namedPropertiesEnumeration) return namedPropertiesEnumeration;
       if (
@@ -6555,6 +6557,59 @@ function getCppNamedPropertiesViewSourceCpp(
       : inner;
   const sourceType = getIrExpressionTypeEvidenceCpp(source, context);
   return sourceType && isCppNamedPropertiesSourceCpp(sourceType, context) ? source : undefined;
+}
+
+// `Object.hasOwn` asks storage whether a key exists; it must not infer presence from the stored value.
+// A runtime Record owns keyed storage and answers that question directly. A generated object or structural
+// row owns named string properties through its existing row owner, whose NamedProperties view answers the
+// same question without reading, copying, or materialising the property value. Erased dynamic values and
+// non-string object keys stay out of the view lane because that view deliberately represents only own named
+// string properties.
+function emitCppObjectHasOwnCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    expression.arguments.length !== 2 ||
+    !isCppAmbientObjectMemberCallCpp(expression, 'hasOwn')
+  ) {
+    return undefined;
+  }
+  const object = expression.arguments[0]!;
+  const key = expression.arguments[1]!;
+  const objectIsView = getCppNamedPropertiesViewExpressionCpp(object, context);
+  if (!objectIsView) {
+    const record = getCppRecordTypeArgumentsCpp(getIrExpressionTypeEvidenceCpp(object, context), context, new Set());
+    if (record && isCppExpressionExactlyRepresentableAsTypeCpp(key, record.key, context)) {
+      return `${emitExpression(object, context)}.has(${emitExpression(key, context, record.key)})`;
+    }
+  }
+  if (!isCppStringKeyIndexCpp(key, context)) {
+    return refuseCppObjectHasOwnWithoutStorageCpp(context);
+  }
+  if (!objectIsView) {
+    const objectType = getIrExpressionTypeEvidenceCpp(object, context);
+    if (
+      !objectType ||
+      isCppErasedDynamicValueTypeCpp(objectType) ||
+      !isCppNamedPropertiesSourceCpp(objectType, context)
+    ) {
+      return refuseCppObjectHasOwnWithoutStorageCpp(context);
+    }
+  }
+  context.includes.add('flight/structural_ref.hpp');
+  const source = emitExpression(object, context);
+  const view = objectIsView ? source : `flight::named_properties(${source})`;
+  return `${view}.has(${emitExpression(key, context, { kind: 'primitive', name: 'string' })})`;
+}
+
+function refuseCppObjectHasOwnWithoutStorageCpp(context: EmitContext): never {
+  emissionError(
+    context,
+    'Object.hasOwn requires either a flight::Record with a compatible key or an owner-preserving named-property view with a string key; this receiver and key have no represented own-property carrier',
+    'cpp-object-has-own-storage-unrepresented',
+  );
 }
 
 // Whether an expression holds a dynamic named view, which is what makes `view[name]` a `get` rather
@@ -27292,6 +27347,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-external-record-conversion-wrong-space',
   'cpp-named-properties-write-unsupported',
   'cpp-number-to-fixed-runtime-helper-required',
+  'cpp-object-has-own-storage-unrepresented',
   'cpp-runtime-external-symbol-binding-incomplete',
   'cpp-sparse-array-literal-runtime-required',
   'cpp-union-runtime-domains-erased',
