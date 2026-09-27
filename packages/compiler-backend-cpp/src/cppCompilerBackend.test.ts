@@ -21675,7 +21675,12 @@ Resolver make_resolver(TextureRef texture) {
     expect(output).toContain('std::in_place_type<double>, 1.0');
     expect(output).toContain('std::holds_alternative<flight::Null>(value)');
     expect(output).toContain('std::holds_alternative<flight::Undefined>(value)');
-    expect(output).toContain('return std::get<double>(value)');
+    // The narrowed read selects the alternative by its proven slot index rather than by its type: an
+    // imported alias owns its arm spelling, so `std::get<T>` would name a type the declaration need not
+    // spell. The index is the slot's position in the list that renders the variant above, so 0 is the
+    // `double` alternative and the read is the same one `std::get<double>` names.
+    expect(output).toContain('return std::get<0>(value);');
+    expect(output).not.toContain('std::get<double>(value)');
   });
 
   it('preserves declared null separately from an omitted optional property', () => {
