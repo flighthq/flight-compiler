@@ -16626,6 +16626,18 @@ Resolver make_resolver(TextureRef texture) {
     // Every step is a construction of the accepted storage, never a cast.
     expect(contents).not.toContain('static_cast');
     expect(contents).not.toContain('static_pointer_cast');
+
+    const unrepresented = lower(
+      'callable-erased-array-storage.ts',
+      `type ArraySlot = ((value: number[]) => void) | string;
+       function take(value: ArraySlot): number { return 1; }
+       export function pass(handler: (value: any) => void): number { return take(handler); }`,
+    );
+    expect(
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(unrepresented.module, { runtimeProfile: 'flight-cpp' }),
+      ).rule,
+    ).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
   it('keeps open Partial indexed reads outside finite optional selection', () => {

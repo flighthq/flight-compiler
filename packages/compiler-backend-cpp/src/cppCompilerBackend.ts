@@ -14935,6 +14935,7 @@ function emitCppCallableParameterValueConversionCpp(
   //     storage is an optional of the variant: the destination supplies one of the alternatives, and the
   //     carrier constructs itself from that argument exactly as the contextual lanes do.
   if (isCppErasedDynamicValueTypeCpp(acceptedRuntime)) {
+    if (!isCppRuntimeTypeRepresentableInAnyCpp(providedRuntime, context)) return undefined;
     context.includes.add('flight/any.hpp');
     return `flight::Any(${value})`;
   }
