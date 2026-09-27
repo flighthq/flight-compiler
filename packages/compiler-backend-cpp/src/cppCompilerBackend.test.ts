@@ -14397,6 +14397,28 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('}()) = value');
   });
 
+  it('attributes an open named-property write to the missing target-runtime mutation contract', () => {
+    const result = lower(
+      'open-named-property-write.ts',
+      `interface Effect { kind: string; amount?: number }
+       export function set(effect: Effect, key: string, value: unknown): void {
+         const view = effect as unknown as Record<string, unknown>;
+         view[key] = value;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // Unlike the finite-key case above, `string` supplies no declared-member set to dispatch. The
+    // runtime view retains the exact row owner without materializing a Record, but deliberately has no
+    // setter, so the missing capability belongs to the target runtime rather than the union compiler.
+    expect(failure.rule).toBe('cpp-named-properties-write-unsupported');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('owner-preserving checked NamedProperties::set(String, Any) contract');
+    expect(failure.message).toContain('finite union of declared member names');
+  });
+
   it('attributes a closed-key write whose value fits no member to the source', () => {
     const result = lower(
       'closed-key-write-unfitted.ts',

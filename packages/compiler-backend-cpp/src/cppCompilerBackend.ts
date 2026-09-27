@@ -3062,7 +3062,7 @@ function emitExpression(
       ) {
         emissionError(
           context,
-          'a dynamic named view is read-only, so it cannot be an assignment target',
+          'a dynamic named-property write requires target-runtime mutation support: flight::NamedProperties is deliberately read-only, and this key has no finite declared member set the compiler can dispatch. Add an owner-preserving checked NamedProperties::set(String, Any) contract, or keep the key as a finite union of declared member names and assign through the typed object',
           'cpp-named-properties-write-unsupported',
         );
       }
@@ -25267,6 +25267,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-external-record-conversion-incomplete',
   'cpp-external-record-conversion-missing',
   'cpp-external-record-conversion-wrong-space',
+  'cpp-named-properties-write-unsupported',
   'cpp-number-to-fixed-runtime-helper-required',
   'cpp-runtime-external-symbol-binding-incomplete',
   'cpp-sparse-array-literal-runtime-required',
