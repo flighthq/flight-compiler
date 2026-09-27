@@ -537,6 +537,81 @@ function lowerImportedSceneTypeAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedTextureAndTextShaperAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;
+         export interface TextShaperCache extends Entity {}
+         export interface TextureSource extends Entity {
+           alphaType: string;
+           readonly gamut: string;
+           height: number;
+           kind: string;
+           version: number;
+           width: number;
+         }
+         export interface ImageResource extends TextureSource {
+           readonly kind: 'ImageTextureSource';
+           readonly source: object;
+         }
+         interface TextureCommon extends Entity { version: number }
+         export interface Texture2D extends TextureCommon {
+           readonly dimension: '2d';
+           source: TextureSource | null;
+         }
+         export type Texture =
+           | Texture2D
+           | (TextureCommon & {
+               readonly dimension: 'cube';
+               sources: readonly (TextureSource | null)[];
+             });
+         type TextureLikeFrom<Type extends Texture> = Type extends Texture ? EntityWithoutRuntime<Type> : never;
+         export type TextureLike = TextureLikeFrom<Texture>;`,
+      ),
+      source(
+        '@flighthq/texture',
+        'texture/src/videoTexture.ts',
+        `import type { ImageResource, TextureLike } from '@flighthq/types/contract';
+         export function getVideoImage(texture: Readonly<TextureLike>): ImageResource | null {
+           return texture.dimension === '2d' ? (texture.source as ImageResource | null) : null;
+         }`,
+      ),
+      source(
+        '@flighthq/textshaper',
+        'textshaper/src/textShaperCache.ts',
+        `import type { EntityRuntime, TextShaperCache } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         interface TextShaperCacheRuntime extends EntityRuntime { entries: Map<string, object> }
+         export function getTextShaperCacheRuntime(cache: TextShaperCache): TextShaperCacheRuntime | null {
+           return (cache[EntityRuntimeKey] as TextShaperCacheRuntime | undefined) ?? null;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -3150,6 +3225,36 @@ describe('createCppCompilerBackend', () => {
 
     expect(failure.rule).toBe('cpp-type-assertion-unidentified');
     expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('names the unrepresented owners in video texture and text shaper cache assertions', () => {
+    const { moduleResolution, results } = lowerImportedTextureAndTextShaperAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const video = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const textShaper = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+
+    // Neither assertion has a target reference to select: TextureLike stores its 2D source as the base
+    // TextureSource owner, and TextShaperCache stores the base EntityRuntime owner. The asserted extensions
+    // require cells those owners do not declare, so the unique related alternative improves the refusal but
+    // never licenses a pointer cast or materialized replacement.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [video, textShaper]) {
+      expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+      expect(failure.classification).toBe('source-portability');
+      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('type the slot or accessor as');
+    }
+    expect(video.message).toContain('flight::Ref<flighthq_types::TextureSource>');
+    expect(video.message).toContain('flight::Ref<flighthq_types::ImageResource>');
+    expect(video.message).toContain('source');
+    expect(textShaper.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
+    expect(textShaper.message).toContain('TextShaperCacheRuntime');
+    expect(textShaper.message).toContain('entries');
   });
 
   it.skipIf(!canCompileCpp)('compiles a nullable native reference projected to a Partial row', () => {
