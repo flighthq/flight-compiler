@@ -20142,6 +20142,40 @@ Resolver make_resolver(TextureRef texture) {
     expect(stringOr).toMatch(/erased_typeof_carrier(?:_\d+)?\.value\(\)\.as_string\(\)/u);
   });
 
+  it('answers the current bitmap font and Spine typeof sites from retained erased carriers', () => {
+    const result = lower(
+      'format-typeof.ts',
+      `function isRecord(value: unknown): value is Record<string, unknown> {
+         return typeof value === 'object' && value !== null;
+       }
+       function readJsonNumber(value: unknown): number | null {
+         return typeof value === 'number' ? value : null;
+       }
+       export function bitmapLineHeight(root: unknown): number | null {
+         if (!isRecord(root)) return null;
+         const common = root.common;
+         return isRecord(common) ? readJsonNumber(common.lineHeight) : null;
+       }
+       export function rangeMid(value: unknown, fallback = 0): number {
+         if (!isRecord(value)) return fallback;
+         const low = typeof value.low === 'number' ? value.low : fallback;
+         const high = typeof value.high === 'number' ? value.high : fallback;
+         return (low + high) * 0.5;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('read_json_number(flight::named_properties(common).get(flight::String("lineHeight")))');
+    expect(emitted).toContain('value.type_of() == flight::String("number")');
+    expect(emitted).toContain('value.as_number()');
+    expect(emitted.match(/named_properties\(value\)\.get\(flight::String\("(?:low|high)"\)\)/gu)).toHaveLength(2);
+    expect(emitted.match(/erased_typeof_carrier(?:_\d+)?\.as_number\(\)/gu)).toHaveLength(2);
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('flight::make_ref');
+    expect(emitted).not.toContain('flight::structural_ref_cast');
+  });
+
   it('passes an exact owner into a readonly structural view through the structural-ref lane', () => {
     // The bitmapfont subcase: a page of `readonly TextureAtlas[]` is handed to a parameter typed
     // `Readonly<TextureAtlas>`. That is the SAME referent under a readonly view, so the conversion is the
