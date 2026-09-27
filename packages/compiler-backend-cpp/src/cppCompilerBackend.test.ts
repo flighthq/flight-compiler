@@ -13132,6 +13132,38 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(standardLibrary.contents).toContain('unordered_map');
   });
 
+  it('recovers the exact declared WeakMap value owner from a structural checker result', () => {
+    const result = lower(
+      'weak-map-value-owner.ts',
+      `interface Key { id: number }
+       interface State { disposed: boolean; values: Set<string> }
+       const states = new WeakMap<Key, State>();
+       export function lookup(key: Key): State | undefined { return states.get(key); }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(contents).toContain('std::optional<flight::Ref<State>> lookup');
+    expect(contents).toContain('return states.get(key);');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('static_cast<flight::Ref');
+
+    const lookalike = lower(
+      'weak-map-value-owner-lookalike.ts',
+      `interface Key { id: number }
+       interface State { disposed: boolean; values: Set<string> }
+       interface StateStore {
+         get(key: Key): { disposed: boolean; values: Set<string> } | undefined;
+       }
+       export function lookup(store: StateStore, key: Key): State | undefined { return store.get(key); }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(lookalike.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+  });
+
   it('proves Flight WeakMap keys through reference unions and erased object types', () => {
     const results = lowerTypeScriptSources([
       {

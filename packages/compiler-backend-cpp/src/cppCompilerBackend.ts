@@ -17412,15 +17412,19 @@ function getIrCallReturnTypeCpp(
       }
     }
   }
+  const concreteMapGetResult = getCppConcreteMapGetResultTypeEvidenceCpp(expression, context);
   const runtimeResult = getCppRuntimeMemberCallResultTypeEvidence(expression, context);
   const stringConversion = getCppPrimitiveStringConversionCallResultTypeCpp(expression, context);
   if (expression.semantics.resultType.kind !== 'unknown') {
     return (
+      concreteMapGetResult ??
       (runtimeResult
         ? getCppInvariantCollectionEvidenceRefinementCpp(expression.semantics.resultType, runtimeResult)
-        : undefined) ?? expression.semantics.resultType
+        : undefined) ??
+      expression.semantics.resultType
     );
   }
+  if (concreteMapGetResult) return concreteMapGetResult;
   if (runtimeResult) return runtimeResult;
   if (stringConversion) return stringConversion;
   const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
@@ -17734,6 +17738,32 @@ function collectCppResultTypeSubstitutionsCpp(
   return normalizeCompilerStructuralValueCanonical(pattern) === normalizeCompilerStructuralValueCanonical(candidate);
 }
 
+// A concrete standard Map receiver owns its instantiated value domain even when the checker expands a
+// local interface into an anonymous result object. Recovering that declared value is exact: `get` can
+// return only the receiver's V or undefined, and resolving the receiver excludes lookalike user methods.
+function getCppConcreteMapGetResultTypeEvidenceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (
+    expression.optional ||
+    expression.semantics.optionalChain ||
+    expression.arguments.length !== 1 ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.name !== 'get'
+  ) {
+    return undefined;
+  }
+  const receiver = getIrExpressionTypeEvidenceCpp(expression.callee.object, context);
+  const weakMap = getIrWeakMapTypeCpp(receiver, context, new Set());
+  const strongCollection = getIrAmbientCollectionTypeCpp(receiver, context, new Set());
+  const strongMap =
+    strongCollection && ['Map', 'ReadonlyMap'].includes(strongCollection.reference.name) ? strongCollection : undefined;
+  const collection = weakMap ?? strongMap;
+  const value = collection?.typeArguments.length === 2 ? collection.typeArguments[1] : undefined;
+  return value && value.kind !== 'unknown' ? createIrTypeEvidenceUnionCpp([value, { kind: 'undefined' }]) : undefined;
+}
+
 // The package-graph source program deliberately does not make a host TypeScript library part of
 // module identity. Consequently the checker may report `any` for a standard runtime member even
 // though semantic lowering retained its resolved receiver. Preserve the small, versioned
@@ -17909,6 +17939,17 @@ function getCppRuntimeCollectionResultRefinementCpp(
   declaredType: Readonly<IrType>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
+  const concreteMapGetResult = getCppConcreteMapGetResultTypeEvidenceCpp(expression, context);
+  if (
+    concreteMapGetResult &&
+    !areCppTypesRepresentationEquivalent(declaredType, concreteMapGetResult, {
+      ...context,
+      anonymousStructs: new Map(),
+      includes: new Set<string>(),
+    })
+  ) {
+    return concreteMapGetResult;
+  }
   const runtimeType = getCppRuntimeMemberCallResultTypeEvidence(expression, context);
   return runtimeType ? getCppInvariantCollectionEvidenceRefinementCpp(declaredType, runtimeType) : undefined;
 }
