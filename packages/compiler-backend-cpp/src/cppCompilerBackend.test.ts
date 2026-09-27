@@ -691,6 +691,116 @@ function lowerImportedCommandAndPickingErasedRowModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedSceneErasedRowProbeModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+      {
+        specifier: '@flighthq/scene3d/contract',
+        target: { packageName: '@flighthq/scene3d', source: 'packages/scene3d/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface NodeTraits { enabled: boolean; name: string | null }
+         export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {}
+         export type NodeAny = Node<any>;
+         export interface Node3DTraits { alpha: number }
+         export type Node3D = Node<Node3DTraits> & Node3DTraits;
+         export interface Skeleton3D { joints: Node3D[] }
+         export interface Skin { skeleton: Skeleton3D }
+         export interface Mesh extends Node3D {
+           geometry: object;
+           materials: object[];
+           skin?: Skin | null;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d',
+        'scene3d/src/contract.ts',
+        `import type { Mesh, Node3D } from '@flighthq/types/contract';
+         export function isMesh(source: unknown): source is Mesh {
+           return source != null && typeof source === 'object' && (source as Partial<Mesh>).geometry != null;
+         }
+         export function isMeshNode(source: Readonly<Node3D>): source is Readonly<Mesh> {
+           return (source as Readonly<Partial<Mesh>>).geometry != null;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/sceneSkeleton.ts',
+        `import { isMesh } from '@flighthq/scene3d/contract';
+         import type { Mesh, Node3D } from '@flighthq/types/contract';
+         export function findScene3DSkeletonJoints(node: Readonly<Node3D>): readonly Node3D[] | null {
+           if (isMesh(node)) {
+             const skin = (node as unknown as Mesh).skin;
+             if (skin != null) return skin.skeleton.joints;
+           }
+           return null;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-resources',
+        'scene3d-resources/src/revealScene3DResourcesOnResolve.ts',
+        `import { isMesh } from '@flighthq/scene3d/contract';
+         import type { Node3D } from '@flighthq/types/contract';
+         export function collectPendingTextureOwners(node: Readonly<Node3D>): number {
+           if (!isMesh(node)) return 0;
+           return node.materials.length;
+         }`,
+      ),
+      source(
+        '@flighthq/skeleton3d',
+        'skeleton3d/src/prepareScene3DSkinning.ts',
+        `import type { Mesh, NodeAny } from '@flighthq/types/contract';
+         export function prepareScene3DSkinning(scene: Readonly<NodeAny>): boolean {
+           const mesh = scene as unknown as Mesh;
+           return mesh.geometry != null;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/sceneSkeletonTyped.ts',
+        `import { isMeshNode } from '@flighthq/scene3d/contract';
+         import type { Node3D } from '@flighthq/types/contract';
+         export function meshMaterialCount(node: Readonly<Node3D>): number {
+           return isMeshNode(node) ? node.materials.length : 0;
+         }`,
+      ),
+      source(
+        '@flighthq/skeleton3d',
+        'skeleton3d/src/prepareScene3DSkinningTyped.ts',
+        `import type { Mesh, NodeAny } from '@flighthq/types/contract';
+         function isMeshNode(source: Readonly<NodeAny>): source is Readonly<Mesh> {
+           return (source as Readonly<Partial<Mesh>>).geometry != null;
+         }
+         function prepareMeshSkinning(mesh: Readonly<Mesh>): void { mesh.geometry; }
+         export function prepareScene3DSkinning(scene: Readonly<NodeAny>): void {
+           if (isMeshNode(scene)) prepareMeshSkinning(scene);
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -1699,6 +1809,43 @@ describe('createCppCompilerBackend', () => {
     );
     expect(typedPicking).toContain('return flighthq_scene3d::is_mesh_node(node);');
     expect(typedPicking).not.toContain('flight::Any');
+  });
+
+  it('attributes imported scene structural capability probes before erased construction', () => {
+    const { moduleResolution, results } = lowerImportedSceneErasedRowProbeModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const sceneSkeleton = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const resourceReveal = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    const skinning = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+    const typedSceneSkeleton = session.emitModule(modules[5]!)[0]!.contents;
+    const typedSkinning = session.emitModule(modules[6]!)[0]!.contents;
+
+    // The two isMesh calls would need to construct an erased value for an ABI that accepts unknown. The
+    // skinning assertion uses the same erased marker inline. A widened row can retain a concrete Mesh
+    // owner, a custom geometry-bearing node owner, or only its projected schema, so selecting one nominal
+    // reference would lose valid source identities. Typed predicates keep that owner and narrow the row.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [sceneSkeleton, resourceReveal, skinning]) {
+      expect(failure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+      expect(failure.classification).toBe('target-runtime');
+      expect(failure.message).toContain(
+        'structural object alternative constructed from the row owner and native object',
+      );
+      expect(failure.message).toContain(
+        'for a structural capability probe, accept the source row type and inspect a Readonly<Partial<Target>> view before narrowing it',
+      );
+    }
+    expect(typedSceneSkeleton).toContain('flighthq_scene3d::is_mesh_node(node)');
+    expect(typedSceneSkeleton).toContain('row_get<flight::RowKey<"materials">>(node)');
+    expect(typedSceneSkeleton).not.toContain('flight::Any');
+    expect(typedSkinning).toContain('is_mesh_node(scene)');
+    expect(typedSkinning).toContain('prepare_mesh_skinning(scene);');
+    expect(typedSkinning).not.toContain('flight::Any');
   });
 
   it('compares an exactly owned structural row through explicit erased reference identity', () => {
