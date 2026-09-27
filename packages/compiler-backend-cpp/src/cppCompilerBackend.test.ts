@@ -25499,6 +25499,12 @@ Resolver make_resolver(TextureRef texture) {
     }
   });
 
+  // Historical Default-corpus evidence: packages/requirement-codegen/src/requirementCodegen.ts is not
+  // present in either the current Flight source tree or the pinned Flight dependency revision, and no
+  // package map or source reference retains that name. The nearby current package is registry-codegen
+  // with a distinct RegistryCodegen module/API; without source lineage, synthesizing an old module shape
+  // here would manufacture evidence. Its old nominal-recovery finding is stale by source removal.
+
   it('uses owner-preserving views for readonly structural array parameters', () => {
     const output = emitIrModuleCpp(
       lower(
