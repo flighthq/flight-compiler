@@ -15099,7 +15099,12 @@ function acceptsCppContextualCallableParameterCpp(
 // rather than guessing which alternative an erased value was meant to be.
 function canEmitCppErasedCallableReturnCpp(targetReturns: Readonly<IrType>, context: EmitContext): boolean {
   const union = getIrUnionTypeCpp(targetReturns, context, new Set());
-  if (!union) return false;
+  if (!union) {
+    // A destination with no absence of its own is one slot too: the erased result must hold exactly that
+    // domain, or the source's promise is broken. What decides is whether the runtime can TEST for and read
+    // out that domain -- an array or a record it cannot, and those keep their refusal.
+    return getCppErasedValueUnionExtractionCpp(emitType(targetReturns, context)) !== undefined;
+  }
   const plan = getCppUnionRepresentationPlan(union, context);
   return (
     plan.valueSlots.length > 0 &&
@@ -15121,7 +15126,17 @@ function emitCppErasedCallableReturnCpp(
   context: EmitContext,
 ): string | undefined {
   const union = getIrUnionTypeCpp(targetReturns, context, new Set());
-  if (!union) return undefined;
+  if (!union) {
+    // One domain and no absence: the erased result is read out through the accessor that domain names, and
+    // anything else is the promise the source broke -- there is no absence to answer it with.
+    const spelling = emitType(targetReturns, context);
+    const extraction = getCppErasedValueUnionExtractionCpp(spelling);
+    if (!extraction) return undefined;
+    context.includes.add('flight/any.hpp');
+    context.includes.add('stdexcept');
+    const only = getGeneratedTargetName('erasedReturn', context);
+    return `([&]() -> ${spelling} { const auto& ${only} = ${invocation}; if (${extraction.test(only)}) return ${extraction.value(only)}; throw std::logic_error("an erased callable result holds no alternative this signature returns"); }())`;
+  }
   const plan = getCppUnionRepresentationPlan(union, context);
   const extractions = plan.valueSlots.map((slot) => getCppErasedValueUnionExtractionCpp(slot.targetType));
   if (plan.valueSlots.length === 0 || extractions.some((extraction) => extraction === undefined)) return undefined;

@@ -17765,6 +17765,59 @@ Resolver make_resolver(TextureRef texture) {
     expect(unknownResult.rule).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('reads an erased callable result into a destination with no absence of its own', () => {
+    const result = lower(
+      'erased-callable-return-domain.ts',
+      `interface Point { readonly x: number }
+       type NumberSlot = (() => number) | string;
+       type TextSlot = (() => string) | undefined;
+       type PointSlot = (() => Point) | undefined;
+       function takeNumber(value: NumberSlot): number { return typeof value === 'string' ? 0 : 1; }
+       function takeText(value: TextSlot): number { return typeof value === 'undefined' ? 0 : 1; }
+       function takePoint(value: PointSlot): number { return typeof value === 'undefined' ? 0 : 1; }
+       export function passNumber(handler: () => any): number { return takeNumber(handler); }
+       export function passText(handler: () => any): number { return takeText(handler); }
+       export function passPoint(handler: () => any): number { return takePoint(handler); }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // One domain and no absence: the kind test names the accessor, and a result of any other kind breaks the
+    // promise the source made. A reference destination is read through the runtime's exact-type lookup, which
+    // answers empty for anything else instead of reinterpreting storage.
+    expect(contents).toMatch(
+      /if \(erased_return(_[0-9]+)?\.kind\(\) == flight::AnyKind::number\) return erased_return(_[0-9]+)?\.as_number\(\);/u,
+    );
+    expect(contents).toContain('return erased_return');
+    expect(contents).toContain('.as_string()');
+    expect(contents).toContain('.object_if<Point>()');
+    expect(contents).toContain(
+      'throw std::logic_error("an erased callable result holds no alternative this signature returns");',
+    );
+    // No absence branch is written for a destination that has none.
+    expect(contents).not.toContain('is_nullish()');
+    // The only `static_cast` the runtime's own test form uses is the boolean conversion in the reference
+    // lookup; nothing reinterprets the returned value.
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+
+    // A destination whose domain the runtime CANNOT read out of an erased value keeps its refusal, and the
+    // message names the source edit: declare the result as one the destination holds.
+    const untestable = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'erased-callable-return-untestable.ts',
+          `interface Point { readonly x: number }
+           type PointArraySlot = (() => Point[]) | undefined;
+           function take(value: PointArraySlot): number { return typeof value === 'undefined' ? 0 : 1; }
+           export function pass(handler: () => any): number { return take(handler); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(untestable.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(untestable.message).toContain('its result as one the destination holds');
+  });
+
   it('keeps open Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
