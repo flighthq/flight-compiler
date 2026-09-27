@@ -16597,6 +16597,37 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).toContain('flight::Record<flight::String, double>');
   });
 
+  it('writes the storage a contextual callable parameter constructs into', () => {
+    // The adapter appears where the DESTINATION supplies a narrower argument than the source accepts, so
+    // the source parameter's own storage is what the call has to construct into.
+    const result = lower(
+      'callable-union-storage.ts',
+      `type UnionSlot = ((value: number) => void) | string;
+       type ErasedSlot = ((value: number) => void) | string;
+       type UnknownSlot = ((value: number) => void) | string;
+       type PlainSlot = ((value: number) => void) | string;
+       export function take(value: UnionSlot): number { return 1; }
+       export function passUnion(handler: (value: number | string | undefined) => void): number {
+         return take(handler);
+       }
+       export function passErased(handler: (value: any) => void): number { return take(handler); }
+       export function passUnknown(handler: (value: unknown) => void): number { return take(handler); }
+       export function passPlain(handler: (value: number | string) => void): number { return take(handler); }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // An optional OF a variant needs both steps written: a bare argument constructs neither.
+    expect(contents).toContain('std::in_place, std::in_place_type<double>, contextual_callable_argument0');
+    // A parameter declared `any` (or `unknown`) accepts every value, and the runtime's carrier keeps it --
+    // one construction per erased parameter, and none for the plain variant, which does the work itself.
+    expect(contents.split('(flight::Any(').length - 1).toBe(2);
+    expect(contents).toContain('contextual_callable_2(flight::Any(');
+    expect(contents).toContain('take(std::variant<std::function<void(double)>, flight::String>');
+    // Every step is a construction of the accepted storage, never a cast.
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
   it('keeps open Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>

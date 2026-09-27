@@ -14926,6 +14926,32 @@ function emitCppCallableParameterValueConversionCpp(
     return value;
   }
   if (rest) return undefined;
+  // The accepted domain is a carrier the provided value CONSTRUCTS into, which the call writes explicitly.
+  // Two of those are representable and each is a construction of the accepted storage rather than a
+  // conversion out of it, so nothing is reinterpreted and nothing is materialized:
+  //   - the runtime's erased carrier, for a source parameter declared `unknown` or `any`: an `any` accepts
+  //     every value the source language can pass, and the carrier keeps it with its own kind;
+  //   - a union the source also admits absence to -- `(v: number | string | undefined) => void` -- whose
+  //     storage is an optional of the variant: the destination supplies one of the alternatives, and the
+  //     carrier constructs itself from that argument exactly as the contextual lanes do.
+  if (isCppErasedDynamicValueTypeCpp(acceptedRuntime)) {
+    context.includes.add('flight/any.hpp');
+    return `flight::Any(${value})`;
+  }
+  const acceptedUnion = getIrUnionTypeCpp(acceptedRuntime, context, new Set());
+  if (acceptedUnion) {
+    const acceptedPlan = getCppUnionRepresentationPlan(acceptedUnion, context);
+    // Only the storage a bare argument does NOT construct: a plain variant constructs itself from one of
+    // its alternatives, which the call already relies on, while an optional OF a variant needs both steps
+    // written out. Restricting it here keeps the plain variant's emission unchanged.
+    if (acceptedPlan.kind === 'optionalVariant') {
+      const providedSpelling = emitCppParameterTypeCpp(providedRuntime, rest, context);
+      const slot = acceptedPlan.valueSlots.find((candidate) => candidate.targetType === providedSpelling);
+      if (slot) {
+        return emitCppUnionValueConstruction(value, slot.targetType, acceptedUnion, acceptedPlan.kind, context);
+      }
+    }
+  }
   return emitCppStructuralReferenceValueConversionCpp(value, providedRuntime, acceptedRuntime, context);
 }
 
