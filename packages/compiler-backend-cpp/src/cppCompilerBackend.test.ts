@@ -4203,12 +4203,21 @@ describe('createCppCompilerBackend', () => {
     const result = lower(
       'satisfies-union-arm-owner.ts',
       `interface RuntimeBase { binding: object | null; uid?: string }
+       interface Signal<T extends (...args: any[]) => void> { emit: T }
+       interface SelectionSignals<NodeType extends object> {
+         onActiveChange: Signal<(active: NodeType | null) => void>;
+         onChange: Signal<(selected: readonly NodeType[]) => void>;
+       }
        interface LassoSelectionRuntime extends RuntimeBase { active: boolean; path: number[] }
        interface MarqueeSelectionRuntime extends RuntimeBase { active: boolean; startX: number }
        interface SelectionStateRuntime<NodeType extends object> extends RuntimeBase {
          activeNode: NodeType | null;
+         selectedNodeSet: Set<NodeType>;
          selectedNodes: NodeType[];
+         signals: SelectionSignals<NodeType>;
        }
+       interface SelectionState { runtime: RuntimeBase | undefined }
+       function createSignal<T extends (...args: any[]) => void>(): Signal<T> { throw new Error('unused'); }
        function install(_runtime: RuntimeBase | undefined): void {}
        export function createLasso(): void {
          const runtime = { active: false, binding: null, path: [] } satisfies LassoSelectionRuntime;
@@ -4218,17 +4227,42 @@ describe('createCppCompilerBackend', () => {
          const runtime = { active: false, binding: null, startX: 0 } satisfies MarqueeSelectionRuntime;
          install(runtime);
        }
-       export function createSelectionState<NodeType extends object>(selectedNodes: NodeType[]): void {
-         const runtime = { activeNode: null, binding: null, selectedNodes } satisfies SelectionStateRuntime<NodeType>;
+       export function createSelectionState<NodeType extends object>(selectedNodes: NodeType[]): SelectionState {
+         const state: SelectionState = { runtime: undefined };
+         const runtime = {
+           activeNode: null,
+           binding: null,
+           selectedNodeSet: new Set<NodeType>(),
+           selectedNodes,
+           signals: {
+             onActiveChange: createSignal(),
+             onChange: createSignal(),
+           },
+         } satisfies SelectionStateRuntime<NodeType>;
          install(runtime);
+         state.runtime = runtime;
+         return state;
        }`,
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
+    // The outer `satisfies` target owns the allocation, its nested contextual object owns the two
+    // signal references, and the generic calls materialize the callback types in place. Storing the
+    // resulting runtime through its declared base union therefore forwards one reference; it does not
+    // rebuild either row or copy the callable state into a replacement owner.
     expect(emitted).toContain('flight::make_ref<LassoSelectionRuntime>');
     expect(emitted).toContain('flight::make_ref<MarqueeSelectionRuntime>');
     expect(emitted).toContain('flight::make_ref<SelectionStateRuntime<NodeType>>');
-    expect(emitted.match(/std::optional<flight::Ref<RuntimeBase>>\{runtime\}/gu)).toHaveLength(3);
+    expect(emitted).toContain('flight::make_ref<SelectionSignals<NodeType>>');
+    expect(emitted.match(/std::optional<flight::Ref<RuntimeBase>>\{runtime\}/gu)).toHaveLength(4);
+    expect(emitted).toContain('create_signal<std::function<void(std::optional<flight::ErasedRef>)>>()');
+    expect(emitted).toContain('create_signal<std::function<void(flight::Array<NodeType>)>>()');
+    expect(emitted.match(/create_signal</gu)).toHaveLength(2);
+    expect(emitted).not.toContain('make_structural_ref');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('dynamic_cast');
+    expect(emitted).not.toContain('reinterpret_cast');
     expect(emitted).not.toContain('static_pointer_cast');
   });
 
