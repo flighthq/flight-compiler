@@ -8863,6 +8863,34 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(contents).toContain('lookup.set(key, value.value());');
   });
 
+  it('rebuilds a present collection union whose exact slots are an element subset', () => {
+    const result = lower(
+      'collection-subset-domain.ts',
+      `interface Alpha { value: number }
+       interface Beta { other: number }
+       interface Gamma { flag: boolean }
+       function pick(): Alpha | Beta | undefined { return undefined; }
+       const target = new Set<Alpha | Beta | Gamma>();
+       export function add(): void {
+         const found = pick();
+         if (found === undefined) return;
+         target.add(found);
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Both source slots name one exact destination type. Select the held source alternative and construct
+    // the wider destination by that type -- no erased or cast lane, and no need to manufacture Gamma.
+    expect(contents).toContain('std::get_if<flight::Ref<Alpha>>');
+    expect(contents).toContain('std::get_if<flight::Ref<Beta>>');
+    expect(contents).toContain('found.value()');
+    expect(contents).toContain('std::in_place_type<flight::Ref<Alpha>>');
+    expect(contents).toContain('std::in_place_type<flight::Ref<Beta>>');
+    expect(contents).not.toContain('std::in_place_type<flight::Ref<Gamma>>');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+  });
+
   it('attributes a collection argument the element cannot hold to the source', () => {
     const result = lower(
       'collection-unrelated-domain.ts',
@@ -8887,7 +8915,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.message).toContain('Narrow the value to one alternative add accepts');
   });
 
-  it('keeps a collection argument whose alternatives all fit the element attributed to the compiler', () => {
+  it('attributes a represented collection argument without an exact element carrier to the target runtime', () => {
     const subtype = lower(
       'collection-subtype-domain.ts',
       `interface Alpha { value: number }
@@ -8904,11 +8932,12 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       emitIrModuleCpp(subtype.module, { runtimeProfile: 'flight-cpp' }),
     );
 
-    // Every alternative IS assignable to the element here, so the source is valid and the gap is the
-    // lowering's: the refusal keeps the compiler's attribution rather than sending a reader to edit code
-    // the source language accepts.
+    // Every alternative IS assignable to the element here, so the source is valid. The target would have
+    // to change a tagged Alpha-or-Beta carrier into Alpha storage, which is a target-runtime conversion
+    // contract rather than a source error or an unclassified compiler gap.
     expect(subtypeFailure.rule).toBe('cpp-collection-argument-multiple-present-domains');
-    expect(subtypeFailure.classification).toBe('compiler-restriction');
+    expect(subtypeFailure.classification).toBe('target-runtime');
+    expect(subtypeFailure.message).toContain('cannot receive them without changing representation');
 
     const genericRead = lower(
       'collection-generic-read.ts',
@@ -8922,10 +8951,45 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
          target.add(found);
        }`,
     );
-    expect(
-      captureBackendEmissionFailure(() => emitIrModuleCpp(genericRead.module, { runtimeProfile: 'flight-cpp' }))
-        .classification,
-    ).toBe('compiler-restriction');
+    const genericReadFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(genericRead.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(genericReadFailure.rule).toBe('cpp-collection-argument-multiple-present-domains');
+    expect(genericReadFailure.classification).toBe('target-runtime');
+    expect(genericReadFailure.message).toContain('cannot receive them without changing representation');
+  });
+
+  it('attributes a ShapeJson-like guarded union push into erased storage to the target runtime', () => {
+    const result = lower(
+      'shape-json-collection-domain.ts',
+      `interface Matrix { a: number; b: number; c: number; d: number; tx: number; ty: number }
+       interface Texture { source: string }
+       type ShapeCommandToken = Matrix | Texture | boolean | number | readonly number[] | string | null;
+       function isMatrixValue(value: unknown): value is Matrix {
+         return typeof value === 'object' && value !== null;
+       }
+       function isSerializableScalarOrArray(value: unknown): boolean {
+         const type = typeof value;
+         return type === 'number' || type === 'string' || type === 'boolean' || Array.isArray(value);
+       }
+       export function serialize(commands: ShapeCommandToken[]): unknown[] {
+         const args: unknown[] = [];
+         const value = commands[0];
+         if (value === null || isMatrixValue(value)) return args;
+         if (isSerializableScalarOrArray(value)) args.push(value);
+         return args;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // `unknown[]` is erased storage. Entering it would require Any construction for every held tagged
+    // alternative, so there is no representation-preserving union conversion to emit for this valid source.
+    expect(failure.rule).toBe('cpp-collection-argument-multiple-present-domains');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('element carrier flight::Any');
+    expect(failure.message).toContain('Declare the collection over the exact source union');
   });
 
   it('widens an optional value into a nullable collection union', () => {

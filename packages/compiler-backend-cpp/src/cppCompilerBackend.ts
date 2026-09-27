@@ -18323,49 +18323,49 @@ function assertCppPresentOptionalCollectionArgumentCpp(
   if (!storageType || storageType.kind === 'unknown') {
     emissionError(
       context,
-      `collection member ${member} argument from optional C++ storage requires one present value domain`,
+      `collection member ${member} argument from optional C++ storage has no represented source domain. Give the lookup local an explicit value type, then narrow away absence before the call`,
       'cpp-collection-argument-multiple-present-domains',
+      'source-portability',
     );
   }
   if (!union) return;
   const storagePlan = getCppUnionRepresentationPlan(union, context);
   if (storagePlan.valueSlots.length === 1) return;
-  // The collection's element is itself a union here, and the present value is that same union: `found`
-  // is `A | B` and the target holds `A | B`, so the call passes one variant where the element is one
-  // variant. That is what the source wrote and what the target compiles, and it is the same value
-  // crossing rather than a narrowing of it.
+  // Presence flow can also narrow an explicitly nullable alternative away, so ask for the argument at
+  // the call before comparing represented value slots. Exact slot identity is sufficient even when the
+  // source and destination spell their variants in a different order or the destination is a superset:
+  // contextual union emission already rebuilds those carriers by their unique target types.
+  const argumentType = getIrExpressionTypeEvidenceCpp(argument, context);
+  const argumentUnion = argumentType ? getIrUnionTypeCpp(argumentType, context, new Set()) : undefined;
+  const argumentPlan = argumentUnion ? getCppUnionRepresentationPlan(argumentUnion, context) : storagePlan;
   const expectedPlan = expectedUnion ? getCppUnionRepresentationPlan(expectedUnion, context) : undefined;
-  if (expectedPlan && areCppUnionValueSlotsEqualCpp(storagePlan, expectedPlan)) return;
+  const exactRepresentedMapping =
+    expectedPlan &&
+    argumentPlan.valueSlots.every(
+      (source) => expectedPlan.valueSlots.filter((target) => target.targetType === source.targetType).length === 1,
+    );
+  if (exactRepresentedMapping) return;
   // Otherwise the present value has alternatives the element cannot hold. Whether that is the source's
   // to fix depends on whether the source language accepts it at all: when every alternative is
-  // assignable to the element, the source is valid and the target simply has no lowering for the
-  // widening yet, so the refusal keeps the compiler's attribution. When some alternative is not, the
-  // call is one the source language rejects, and the author has to narrow it.
-  const everyAlternativeFits = storagePlan.valueSlots.every((slot) =>
+  // assignable to the element, the source is valid but crossing would change the target representation
+  // (most notably a tagged union entering `flight::Any`). When some alternative is not, the source
+  // language rejects the call too, and the author has to narrow it.
+  const everyAlternativeFits = argumentPlan.valueSlots.every((slot) =>
     context.referenceRepresentationPlanner.isStructurallyAssignable(slot.runtimeType, expectedType, context.module),
   );
+  const sourceCarriers = argumentPlan.valueSlots.map((slot) => slot.targetType).join(', ');
+  const elementCarrier = expectedPlan
+    ? `${expectedPlan.kind} [${expectedPlan.valueSlots.map((slot) => slot.targetType).join(', ')}]`
+    : emitType(expectedType, context);
   emissionError(
     context,
-    `collection member ${member} argument from optional C++ storage requires one present value domain${
+    `collection member ${member} argument from optional C++ storage has represented present carriers [${sourceCarriers}]${
       everyAlternativeFits
-        ? '; the value and the element are not one target type, and converting between them is not lowered yet'
+        ? `, but element carrier ${elementCarrier} cannot receive them without changing representation. Declare the collection over the exact source union, or narrow and explicitly convert to one element carrier before ${member}`
         : `. Narrow the value to one alternative ${member} accepts, or declare the collection over the union the value has`
     }`,
     'cpp-collection-argument-multiple-present-domains',
-    everyAlternativeFits ? undefined : 'source-portability',
-  );
-}
-
-// Whether two union plans name the same alternatives in the same order. The emitted `std::variant` is
-// parameterized by that order, so two plans that hold the same alternatives in different orders are two
-// different target types and cannot be passed for one another.
-function areCppUnionValueSlotsEqualCpp(
-  left: Readonly<{ valueSlots: readonly Readonly<{ targetType: string }>[] }>,
-  right: Readonly<{ valueSlots: readonly Readonly<{ targetType: string }>[] }>,
-): boolean {
-  return (
-    left.valueSlots.length === right.valueSlots.length &&
-    left.valueSlots.every((slot, index) => slot.targetType === right.valueSlots[index]?.targetType)
+    everyAlternativeFits ? 'target-runtime' : 'source-portability',
   );
 }
 
