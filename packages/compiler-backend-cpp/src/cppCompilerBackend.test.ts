@@ -19637,6 +19637,24 @@ Resolver make_resolver(TextureRef texture) {
       ),
     );
     expect(mixed.rule).toBe('cpp-contextual-union-inequivalent');
+
+    // CONTROL: optional absence and explicit sentinel alternatives are different storage contracts. Even
+    // though the destination can express undefined, this lane must not read an optional source as a direct
+    // variant or silently collapse its absence into one of the destination's two sentinels.
+    const mismatchedAbsence = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'union-readonly-view-mismatched-absence.ts',
+          `interface Color { readonly r: number }
+           interface Texture { readonly id: string }
+           export function pick(
+             value: Readonly<Color> | Readonly<Texture> | undefined,
+           ): Color | Texture | null | undefined { return value; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(mismatchedAbsence.rule).toBe('cpp-contextual-union-inequivalent');
   });
 
   it('keeps open Partial indexed reads outside finite optional selection', () => {

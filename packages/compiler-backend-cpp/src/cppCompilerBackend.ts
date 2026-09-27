@@ -15137,9 +15137,13 @@ function getCppUnionReadonlyViewConversionSlotsCpp(
   }
   const sentinels = ['null', 'undefined'] as const;
   if (
-    sentinels.some(
-      (sentinel) => sourcePlan.sentinels[sentinel] !== 'absent' && targetPlan.sentinels[sentinel] === 'absent',
-    )
+    sentinels.some((sentinel) => {
+      const sourceStorage = sourcePlan.sentinels[sentinel];
+      const targetStorage = targetPlan.sentinels[sentinel];
+      return (
+        sourceStorage !== 'absent' && (targetStorage === 'absent' || sourceStorage !== targetStorage)
+      );
+    })
   ) {
     return undefined;
   }
@@ -15213,7 +15217,7 @@ function emitCppUnionReadonlyViewConversionCpp(
             const construction = emitCppUnionSentinelConstruction(sentinel, union, plan.kind, context);
             return `if (std::holds_alternative<${sentinelType}>(${converted})) return ${construction};`;
           })
-      : admitsCppUnionAbsenceCpp(plan.kind)
+      : admitsCppUnionAbsenceCpp(plan.kind) && admitsCppUnionAbsenceCpp(sourcePlan.kind)
         ? [`if (!${converted}.has_value()) return std::nullopt;`]
         : [];
   return `([&]() -> ${carrier} { const auto& ${converted} = ${emitExpression(expression, context, expressionType, false)}; ${[...absence, ...branches].join(' ')} throw std::logic_error("source union alternative is not a readonly view of one the destination names"); }())`;
