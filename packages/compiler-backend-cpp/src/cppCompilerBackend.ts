@@ -7938,7 +7938,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         const remedy =
           shapeless.length > 0
             ? 'Declare the object shape the code reads rather than intersecting a conjunct that has none'
-            : 'Declare one shape that holds each member once, at the type the code reads, rather than intersecting shapes that disagree';
+            : 'Declare one shape that holds each member once, at the type the code reads, rather than intersecting shapes that disagree. For a repeated computed owner slot, keep one nominal owner and the same generic specialization instead of intersecting owners with different slot types';
         // The source is what has to change either way: an intersection of a non-object or of two
         // declarations that disagree has no member set at one type, so the target has nothing to
         // represent rather than something it lacks.

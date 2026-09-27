@@ -30381,6 +30381,35 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(primitive.message).toContain('Declare the object shape the code reads');
   });
 
+  it('attributes conflicting generic runtime-slot owners to the source specialization', () => {
+    const result = lower(
+      'generic-runtime-slot-owner.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       interface EntityRuntime { binding: object | null }
+       interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       interface Node<Traits extends object> extends Entity {
+         [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+       }
+       type NodeAny = Node<any>;
+       type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+       interface NodeRuntime<Traits extends object> extends EntityRuntime {
+         children: NodeOf<Traits>[] | null;
+       }
+       export function read(_value: Node<NodeAny> & NodeAny): boolean { return true; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // NodeRuntime<NodeAny> recursively creates Node<NodeAny> & NodeAny. Their runtime slots name
+    // NodeRuntime<NodeAny> and NodeRuntime<any>, so selecting either owner would change the other
+    // conjunct's cell type rather than merge the same storage representation.
+    expect(failure.rule).toBe('cpp-intersection-member-shapeless');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('EntityRuntimeKey declared at different types');
+    expect(failure.message).toContain('keep one nominal owner and the same generic specialization');
+  });
+
   it('refuses a concrete trait whose fixed field conflicts with the Node row', () => {
     const result = lower(
       'incompatible-node-trait.ts',
