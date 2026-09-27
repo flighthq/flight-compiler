@@ -8317,13 +8317,18 @@ function getTypeScriptSyntacticReferenceNarrowedMember(
       : undefined;
   // The checker-derived binding evidence may expand a recursive alias until its cycle becomes an empty
   // structural object. The authored annotation retains the named owner at that cycle, and the alias
-  // resolver below can still enumerate its exact alternatives. Prefer it when present so narrowing never
-  // trades a declared owner for a lookalike structural carrier.
-  const alternatives = authored
+  // resolver below can still enumerate its exact alternatives. Prefer it when it resolves as a union so
+  // narrowing never trades a declared owner for a lookalike structural carrier; otherwise retain the
+  // checker evidence that served non-union annotations before this owner-preserving lane.
+  const authoredAlternatives = authored
     ? getTypeScriptNarrowingUnionAlternatives(authored, context, new Set())
-    : recorded
-      ? getTypeScriptNarrowingAlternatives(recorded, context, new Set())
-      : [];
+    : [];
+  const alternatives =
+    authoredAlternatives.length >= 2
+      ? authoredAlternatives
+      : recorded
+        ? getTypeScriptNarrowingAlternatives(recorded, context, new Set())
+        : [];
   if (alternatives.length < 2) return {};
   let remaining = alternatives;
   let reachedAssignment = false;
