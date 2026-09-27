@@ -1396,9 +1396,33 @@ describe('createCppCompilerBackend', () => {
       expect(failure.message).toContain(
         'runtime contract needs a structural object alternative constructed from the row owner and native object, with the native type retained for checked recovery',
       );
-      expect(failure.message).toContain('keep the value in its nominal reference type');
+      expect(failure.message).toContain('keep the value and API boundary in its nominal or structural type');
       expect(failure.message).toContain('using shared_object() would change identity or lose a widened owner');
+      expect(failure.message).toContain('an unchecked cast would discard the evidence needed for checked recovery');
     }
+  });
+
+  it('attributes a structural node predicate to its erased API boundary', () => {
+    const result = lower(
+      'erased-structural-node-predicate.ts',
+      `interface Node3D { enabled: boolean }
+       interface Mesh extends Node3D { geometry: object }
+       function isMesh(source: unknown): source is Mesh {
+         return source != null && typeof source === 'object' && (source as Partial<Mesh>).geometry != null;
+       }
+       export function visit(source: Readonly<Node3D>): boolean { return isMesh(source); }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('cannot erase structural row Readonly into unknown');
+    expect(failure.message).toContain('keep the value and API boundary in its nominal or structural type');
+    expect(failure.message).toContain(
+      'for a predicate, use a typed pre-erasure entry point instead of accepting unknown',
+    );
   });
 
   it('compares an exactly owned structural row through explicit erased reference identity', () => {

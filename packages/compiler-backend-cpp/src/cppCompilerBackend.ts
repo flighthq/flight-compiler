@@ -19419,7 +19419,7 @@ function emitCppContextualErasedDynamicValueCpp(
   if (context.referenceRepresentationPlanner.resolveStructuralRow(source, context.module)) {
     emissionError(
       context,
-      'flight-cpp cannot erase this structural row into Any: its runtime contract needs a structural object alternative constructed from the row owner and native object, with the native type retained for checked recovery. Until that carrier exists, keep the value in its nominal reference type instead of erasing a Readonly or projected view; copying members, boxing the view, or using shared_object() would change identity or lose a widened owner',
+      `flight-cpp cannot erase structural row ${describeIrTypeForDiagnosticCpp(source)} into ${describeIrTypeForDiagnosticCpp(target)}: the runtime contract needs a structural object alternative constructed from the row owner and native object, with the native type retained for checked recovery. Until that carrier exists, keep the value and API boundary in its nominal or structural type; for a predicate, use a typed pre-erasure entry point instead of accepting unknown. Copying members, boxing the view, or using shared_object() would change identity or lose a widened owner, and an unchecked cast would discard the evidence needed for checked recovery`,
       'cpp-erased-structural-row-construction-unrepresented',
     );
   }
