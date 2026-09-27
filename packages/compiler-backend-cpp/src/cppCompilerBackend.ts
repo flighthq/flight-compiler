@@ -14512,7 +14512,10 @@ function emitContextualUnionExpressionInContextCpp(
     // exists between two nominal types that are not the same type. A callable is the exception that proves
     // the vocabulary: it IS a represented domain, so a refusal is about the signatures agreeing rather
     // than about representation, and it is worded and attributed as that.
-    const cause = getCppUnrepresentedUnionValueCauseCpp(expression, runtimeType, plan, context);
+    const secondaryIntersectionCarrier = getCppSecondaryIntersectionCarrierConflictCpp(runtimeType, plan, context);
+    const cause = secondaryIntersectionCarrier
+      ? ('intersection-secondary-carrier' as const)
+      : getCppUnrepresentedUnionValueCauseCpp(expression, runtimeType, plan, context);
     const callableErasedReturnGap =
       cause === 'callable-return-erasure'
         ? getCppContextualCallableErasedReturnGapCpp(expression, runtimeType, plan, context)
@@ -14529,8 +14532,8 @@ function emitContextualUnionExpressionInContextCpp(
               )}]. A callable is a represented domain, so the obstacle is that the destination's signature cannot call this one. Declare the value's parameters so the destination's signature supplies them, and its result as one the destination holds`
           : cause === 'partial-value'
             ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
-            : cause === 'intersection-secondary-carrier'
-              ? `contextual union value type ${targetType} is an intersection stored through one nominal base, but the destination names another constituent's independent C++ object carrier. Only the intersection's unique nominal base preserves the same owner; converting to this secondary carrier would require retyping or copying the object. Make the destination contract the inherited interface base, or add owner-preserving structural-reference storage for that contract`
+            : secondaryIntersectionCarrier
+              ? `contextual union value type ${targetType} is an intersection stored through one nominal base, but the destination names secondary constituent ${secondaryIntersectionCarrier.targets.map(describeIrTypeForDiagnosticCpp).join(', ')} through an independent C++ object carrier. Only the intersection's unique nominal base ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)} preserves the same owner; converting to the secondary carrier would require retyping or copying the object. Make the destination contract ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)}, declare one explicit common nominal base, or add owner-preserving structural-reference storage for that contract`
               : cause === 'nominal-mismatch'
                 ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
                 : cause === 'structural-array-projection'
@@ -15457,15 +15460,11 @@ function getCppUnrepresentedUnionValueCauseCpp(
   | 'callable-return-erasure'
   | 'callable-signature'
   | 'erased-kind'
-  | 'intersection-secondary-carrier'
   | 'nominal-mismatch'
   | 'partial-value'
   | 'structural-array-projection'
   | undefined {
   if (isCppErasedDynamicValueTypeCpp(runtimeType)) return 'erased-kind';
-  if (hasCppSecondaryIntersectionCarrierTargetCpp(runtimeType, plan, context)) {
-    return 'intersection-secondary-carrier';
-  }
   // A callable never reaches a shape, so without this the refusal below would report a represented domain
   // as an unrepresented one. The destination holds callables of its own -- otherwise this value would not
   // have been asked about an alternative at all -- and what separates them is how they may be called.
@@ -15529,14 +15528,19 @@ function getCppUnrepresentedUnionValueCauseCpp(
 // Ref owner, but passing it to another constituent's independently minted object carrier cannot: C++ has
 // neither an inheritance path nor an owner-preserving structural view for that target. Compare declaration
 // identities, not shapes, so an anonymous lookalike does not acquire even this more specific diagnosis.
-function hasCppSecondaryIntersectionCarrierTargetCpp(
+interface CppSecondaryIntersectionCarrierConflict {
+  readonly base: Readonly<IrType>;
+  readonly targets: readonly Readonly<IrType>[];
+}
+
+function getCppSecondaryIntersectionCarrierConflictCpp(
   type: Readonly<IrType>,
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
   context: EmitContext,
-): boolean {
-  if (type.kind !== 'intersection') return false;
+): Readonly<CppSecondaryIntersectionCarrierConflict> | undefined {
+  if (type.kind !== 'intersection') return undefined;
   const base = getCppNominalIntersectionBaseCpp(type, context)?.type;
-  if (!base) return false;
+  if (!base) return undefined;
   const identity = (candidate: Readonly<IrType>): string | undefined =>
     candidate.kind === 'named' ? getCppNominalTypeArgumentIdentityCpp(candidate, context, new Set()) : undefined;
   const baseIdentity = identity(base);
@@ -15546,12 +15550,16 @@ function hasCppSecondaryIntersectionCarrierTargetCpp(
       return memberIdentity && memberIdentity !== baseIdentity ? [memberIdentity] : [];
     }),
   );
-  return plan.valueSlots.some((slot) =>
-    slot.sourceAlternatives.some((alternative) => {
+  const targets = new Map<string, Readonly<IrType>>();
+  for (const slot of plan.valueSlots) {
+    for (const alternative of slot.sourceAlternatives) {
       const alternativeIdentity = identity(alternative);
-      return alternativeIdentity !== undefined && secondaryIdentities.has(alternativeIdentity);
-    }),
-  );
+      if (alternativeIdentity !== undefined && secondaryIdentities.has(alternativeIdentity)) {
+        targets.set(alternativeIdentity, alternative);
+      }
+    }
+  }
+  return targets.size > 0 ? { base, targets: [...targets.values()] } : undefined;
 }
 
 interface CppContextualCallableErasedReturnGap {

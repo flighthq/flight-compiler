@@ -31724,6 +31724,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
             `import type { Entity } from './entity';
              import type { Adapter, Cache, Signals } from './types';
              export type { Adapter, Cache, Signals } from './types';
+             export type { Entity } from './entity';
              export type CacheAdapter = Entity & Adapter & { cache: Cache | null; signals: Signals | null };`,
             ts.ScriptTarget.Latest,
             true,
@@ -31756,6 +31757,22 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           ),
           upstreamDirectory: '/flight',
         },
+        {
+          packageName: '@flighthq/render',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/render/src/entityCache.ts',
+            `import type { Cache, CacheAdapter, Entity } from '@flighthq/types/contract';
+             function createAdapter(_cache: Cache): CacheAdapter { throw new Error('stub'); }
+             function setEntity(_entity: Entity | null): void {}
+             export function keep(cache: Cache): void {
+               const adapter = createAdapter(cache);
+               setEntity(adapter);
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
       ],
       resolution,
     );
@@ -31767,10 +31784,22 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     });
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const baseContents = session.emitModule(modules[4]!)[0]!.contents;
+    // The unique nominal base is a real C++ base of the generated intersection implementation, so this
+    // contextual optional construction shares the same Ref owner through the language's derived-to-base
+    // conversion. No structural row, cast, proxy, or replacement object is involved.
+    expect(baseContents).toContain('std::optional<flight::Ref<flighthq_types::Entity>>{adapter}');
+    expect(baseContents).not.toContain('structural_ref_cast');
+    expect(baseContents).not.toContain('static_pointer_cast');
+    expect(baseContents).not.toContain('make_ref');
+
     const failure = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
     expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
     expect(failure.message).toContain('intersection stored through one nominal base');
-    expect(failure.message).toContain("Only the intersection's unique nominal base preserves the same owner");
+    expect(failure.message).toContain('secondary constituent Adapter');
+    expect(failure.message).toContain("Only the intersection's unique nominal base Entity preserves the same owner");
+    expect(failure.message).toContain('Make the destination contract Entity');
+    expect(failure.message).toContain('declare one explicit common nominal base');
     expect(failure.message).toContain('owner-preserving structural-reference storage');
   });
 
