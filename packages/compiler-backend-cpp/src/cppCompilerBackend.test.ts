@@ -19589,6 +19589,56 @@ Resolver make_resolver(TextureRef texture) {
     expect(ambiguous.rule).toBe('cpp-contextual-union-inequivalent');
   });
 
+  it('carries a readonly-view union into an absence-carrying destination', () => {
+    const result = lower(
+      'union-readonly-view-absence.ts',
+      `interface Color { readonly r: number }
+       interface Texture { readonly id: string }
+       export function keepAbsence(
+         value: Readonly<Color> | Readonly<Texture> | null | undefined,
+       ): Color | Texture | null | undefined {
+         return value;
+       }
+       export function fromPresent(value: Readonly<Color> | Readonly<Texture>): Color | Texture | null | undefined {
+         return value;
+       }
+       export function fromOptional(
+         value: Readonly<Color> | Readonly<Texture> | undefined,
+       ): Color | Texture | undefined {
+         return value;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Absence survives SENTINEL BY SENTINEL: each one the source expresses is written back as the same one,
+    // so null does not collapse into undefined on the way through.
+    expect(contents).toMatch(
+      /if \(std::holds_alternative<flight::Null>\(converted_union(_[0-9]+)?\)\) return std::variant<flight::Ref<Color>, flight::Ref<Texture>, flight::Null, flight::Undefined>/u,
+    );
+    expect(contents).toMatch(/std::holds_alternative<flight::Undefined>\(converted_union(_[0-9]+)?\)/u);
+    // The present slot is the runtime's checked row recovery, and the optional carrier passes absence through
+    // its own accessor.
+    expect(contents).toContain('flight::structural_ref_cast<flight::Ref<Color>>(*alternative)');
+    expect(contents).toMatch(/if \(!converted_union(_[0-9]+)?\.has_value\(\)\) return std::nullopt;/u);
+    expect(contents).not.toContain('materialize_row');
+    expect(contents).not.toContain('static_cast<flight::Ref');
+
+    // CONTROL: a source whose slot is a PLAIN reference is not a view, so the lane must not pair it -- the
+    // runtime's row cast takes a `StructuralRef`, which a `Ref` is not.
+    const mixed = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'union-readonly-view-mixed-carrier.ts',
+          `interface Color { readonly r: number }
+           interface Texture { readonly id: string }
+           export function pick(value: Color | Readonly<Texture>): Color | Texture { return value; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(mixed.rule).toBe('cpp-contextual-union-inequivalent');
+  });
+
   it('keeps open Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>

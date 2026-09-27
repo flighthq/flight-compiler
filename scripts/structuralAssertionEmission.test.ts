@@ -32,7 +32,6 @@ const goldenDirectory = path.join(root, 'golden');
 // emits. A fixture that pins a refusal instead has no header to compile and is asserted here by what it
 // pinned; the emitted-source lane compiles everything else.
 const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[] = [
-  { fixture: 'contextualUnionRemap', header: 'contextual_union_remap.hpp' },
   { fixture: 'structuralAssertionOwner', header: 'structural_assertion_owner.hpp' },
   { fixture: 'unionMemberAliasAssertion', header: 'union_member_alias_assertion.hpp' },
   { fixture: 'importedAmbientAlias', header: 'imported_ambient_alias.hpp' },
@@ -58,6 +57,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'typeofPresenceGuard', header: 'typeof_presence_guard.hpp' },
   { fixture: 'callableUnionStorageConstruction', header: 'callable_union_storage_construction.hpp' },
   { fixture: 'contextualUnionViewConversion', header: 'contextual_union_view_conversion.hpp' },
+  { fixture: 'contextualUnionViewAbsence', header: 'contextual_union_view_absence.hpp' },
   { fixture: 'erasedCallableReturn', header: 'erased_callable_return.hpp' },
   { fixture: 'erasedCallableReturnDomain', header: 'erased_callable_return_domain.hpp' },
   { fixture: 'indexSignatureRecordCarrier', header: 'index_signature_record_carrier.hpp' },
@@ -67,6 +67,10 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
 ];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
 const erasedRowRefusalFixture = 'erasedStructuralRowRefused';
+// A fixture whose emitter behaviour changed on the base while the lane still expected a header: it
+// refuses now, so it is asserted here as a refusal. The lane compiles what it emits, and a fixture
+// that emits nothing is pinned by what it refused.
+const staleEmissionFixture = 'contextualUnionRemap';
 
 const runtime = resolveDependency(root, 'flight-cpp');
 const includeDirectories = runtime === undefined ? [] : collectCppRuntimeIncludeDirectories(runtime.directory);
@@ -85,6 +89,15 @@ describe('structural assertion emission', () => {
     expect(() =>
       execFileSync(toolchain.command, arguments_, { cwd: emitted, encoding: 'utf8', stdio: 'pipe' }),
     ).not.toThrow();
+  });
+
+  it('pins the fixture whose emission became a refusal on the base', () => {
+    const directory = path.join(goldenDirectory, staleEmissionFixture);
+
+    expect(existsSync(path.join(directory, 'cpp'))).toBe(false);
+    expect(readFileSync(path.join(directory, 'cpp.error.txt'), 'utf8')).toContain(
+      'contextual C++ union conversion requires equivalent source union evidence',
+    );
   });
 
   it('pins the erased structural row as a refusal naming the runtime contract it needs', () => {

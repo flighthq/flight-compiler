@@ -15125,8 +15125,22 @@ function getCppUnionReadonlyViewConversionSlotsCpp(
   targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
   context: EmitContext,
 ): readonly Readonly<{ source: number; target: number }>[] | undefined {
-  if (sourcePlan.kind !== 'multiVariant' || targetPlan.kind !== 'multiVariant') return undefined;
+  // Both carriers must be ones this conversion understands, and they must agree on how absence is stored:
+  // a source that expresses a sentinel the destination cannot hold has no equivalent to write, and a
+  // sentinel storage that differs between the two -- an optional on one side, a variant alternative on the
+  // other -- is a mapping this lane does not make. What it does carry is the present slot, and, where both
+  // sides store absence the same way, the absence itself, sentinel by sentinel.
+  const convertibleKinds = new Set(['dualSentinelVariant', 'multiVariant', 'optionalVariant']);
+  if (!convertibleKinds.has(sourcePlan.kind) || !convertibleKinds.has(targetPlan.kind)) return undefined;
   if (sourcePlan.valueSlots.length === 0 || sourcePlan.valueSlots.length !== targetPlan.valueSlots.length) {
+    return undefined;
+  }
+  const sentinels = ['null', 'undefined'] as const;
+  if (
+    sentinels.some(
+      (sentinel) => sourcePlan.sentinels[sentinel] !== 'absent' && targetPlan.sentinels[sentinel] === 'absent',
+    )
+  ) {
     return undefined;
   }
   const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
@@ -15136,6 +15150,12 @@ function getCppUnionReadonlyViewConversionSlotsCpp(
     const row = context.referenceRepresentationPlanner.resolveStructuralRow(sourceSlot.runtimeType, context.module);
     const rowObject = row ? getCppStructuralRowObjectTypeCpp(row) : undefined;
     if (!rowObject || !hasFlightReferenceRepresentationCpp(rowObject, context)) return undefined;
+    // The source slot must be the ROW VIEW itself, not a plain reference that happens to name the same
+    // owner: this lane converts a view into its owner through the runtime's row cast, and that cast takes a
+    // `StructuralRef`, which a `Ref` is not. A mixed source (`Color | Readonly<Texture>`) is exactly the
+    // shape where one slot would otherwise pair on a carrier the cast cannot accept.
+    const sourceSpelling = emitType(sourceSlot.runtimeType, isolatedContext);
+    if (!sourceSpelling.startsWith('flight::StructuralRef<')) return undefined;
     const ownerSpelling = emitType(rowObject, isolatedContext);
     const matches = targetPlan.valueSlots.flatMap((slot, target) =>
       slot.targetType === ownerSpelling ? [target] : [],
@@ -15167,16 +15187,36 @@ function emitCppUnionReadonlyViewConversionCpp(
   context.includes.add('variant');
   context.includes.add('stdexcept');
   context.includes.add('flight/structural_ref.hpp');
+  if (admitsCppUnionAbsenceCpp(plan.kind)) context.includes.add('optional');
   const converted = getGeneratedTargetName('convertedUnion', context);
   const carrier = emitUnionTypeCpp(union, context);
+  // An optional source hides its variant behind `std::optional`, so the present slot is read through the
+  // accessor; a source that stores its variants directly is read as it is. This is the same distinction the
+  // subset lane makes.
+  const present = admitsCppUnionAbsenceCpp(sourcePlan.kind) ? `${converted}.value()` : converted;
   const branches = pairs.map((pair) => {
     const sourceSlot = sourcePlan.valueSlots[pair.source]!;
     const targetSlot = plan.valueSlots[pair.target]!;
     const recovered = `flight::structural_ref_cast<${targetSlot.targetType}>(*alternative)`;
     const constructed = emitCppUnionValueConstruction(recovered, targetSlot.targetType, union, plan.kind, context);
-    return `if (const auto* alternative = std::get_if<${sourceSlot.targetType}>(&${converted})) return ${constructed};`;
+    return `if (const auto* alternative = std::get_if<${sourceSlot.targetType}>(&${present})) return ${constructed};`;
   });
-  return `([&]() -> ${carrier} { const auto& ${converted} = ${emitExpression(expression, context, expressionType, false)}; ${branches.join(' ')} throw std::logic_error("source union alternative is not a readonly view of one the destination names"); }())`;
+  // Absence is carried sentinel by sentinel where both sides store it the same way, so which of null and
+  // undefined the value was survives the conversion instead of collapsing into one of them.
+  const sentinelNames = ['null', 'undefined'] as const;
+  const absence =
+    plan.kind === 'dualSentinelVariant'
+      ? sentinelNames
+          .filter((sentinel) => sourcePlan.sentinels[sentinel] !== 'absent')
+          .map((sentinel) => {
+            const sentinelType = getCppDualSentinelTargetTypes(context)[sentinel];
+            const construction = emitCppUnionSentinelConstruction(sentinel, union, plan.kind, context);
+            return `if (std::holds_alternative<${sentinelType}>(${converted})) return ${construction};`;
+          })
+      : admitsCppUnionAbsenceCpp(plan.kind)
+        ? [`if (!${converted}.has_value()) return std::nullopt;`]
+        : [];
+  return `([&]() -> ${carrier} { const auto& ${converted} = ${emitExpression(expression, context, expressionType, false)}; ${[...absence, ...branches].join(' ')} throw std::logic_error("source union alternative is not a readonly view of one the destination names"); }())`;
 }
 
 function hasUniqueCppSemanticUnionSlotMappingCpp(
