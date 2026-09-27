@@ -927,6 +927,11 @@ describe('createCppCompilerBackend', () => {
        export function erase<Traits extends object>(value: Readonly<Core & NoInfer<Traits>>): unknown {
          return value;
        }`,
+      `interface Node<Traits> { enabled: boolean; traits: Traits }
+       type NodeAny = Readonly<Node<any>>;
+       export function readNodeProperty(target: NodeAny, property: string): unknown {
+         return (target as unknown as Readonly<Record<string, unknown>>)[property];
+       }`,
     ];
 
     for (const [index, source] of cases.entries()) {
@@ -935,9 +940,12 @@ describe('createCppCompilerBackend', () => {
         emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
       );
       expect(failure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+      expect(failure.classification).toBe('target-runtime');
       expect(failure.message).toContain(
-        'runtime contract needs an erased structural object carrier that retains the source row owner, native object, and checked native type',
+        'runtime contract needs a structural object alternative constructed from the row owner and native object, with the native type retained for checked recovery',
       );
+      expect(failure.message).toContain('keep the value in its nominal reference type');
+      expect(failure.message).toContain('using shared_object() would change identity or lose a widened owner');
     }
   });
 

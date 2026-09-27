@@ -18717,7 +18717,7 @@ function emitCppContextualErasedDynamicValueCpp(
   if (context.referenceRepresentationPlanner.resolveStructuralRow(source, context.module)) {
     emissionError(
       context,
-      'the flight-cpp runtime contract needs an erased structural object carrier that retains the source row owner, native object, and checked native type without materializing projected members',
+      'flight-cpp cannot erase this structural row into Any: its runtime contract needs a structural object alternative constructed from the row owner and native object, with the native type retained for checked recovery. Until that carrier exists, keep the value in its nominal reference type instead of erasing a Readonly or projected view; copying members, boxing the view, or using shared_object() would change identity or lose a widened owner',
       'cpp-erased-structural-row-construction-unrepresented',
     );
   }
@@ -24610,6 +24610,7 @@ const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial
 const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-array-length-sparse-runtime-required',
   'cpp-erased-error-view-runtime-required',
+  'cpp-erased-structural-row-construction-unrepresented',
   'cpp-erased-tag-unreportable',
   'cpp-error-name-runtime-required',
   'cpp-external-object-field-contract-missing',

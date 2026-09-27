@@ -18,7 +18,7 @@ describe('classifyCorpusIssueLane', () => {
     expect(classifyCorpusIssueLane('flight-cpp WeakMap value requires a proven C++ representation')).toBe('runtime');
     expect(
       classifyCorpusIssueLane(
-        'the flight-cpp runtime contract needs an erased structural object carrier that retains the source row owner, native object, and checked native type without materializing projected members',
+        'flight-cpp cannot erase this structural row into Any: its runtime contract needs a structural object alternative constructed from the row owner and native object, with the native type retained for checked recovery',
       ),
     ).toBe('runtime');
   });
