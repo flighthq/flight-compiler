@@ -187,6 +187,12 @@ interface CppVariantPropertyArrayPredicateEvidence {
   readonly operator: '->' | '.';
 }
 
+interface CppVariantArrayPredicateEvidence {
+  readonly arrayType: Readonly<IrType>;
+  readonly binding: Readonly<IrBindingIdentity>;
+  readonly nonArrayType: Readonly<IrType>;
+}
+
 interface CppWeakMapTypeArgumentPlan {
   readonly valueRepresentation: 'direct' | 'erased';
   readonly weakKeyPolicyTargetName?: string | undefined;
@@ -2580,10 +2586,18 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     !arrayElement && !variable.mutable && variable.type && variable.initializer?.kind === 'call'
       ? getCppRuntimeCollectionResultRefinementCpp(variable.initializer, variable.type, context)
       : undefined;
+  const guardedVariantInitializerType =
+    !arrayElement &&
+    !variable.mutable &&
+    variable.initializer?.kind === 'conditional' &&
+    getCppVariantArrayPredicateEvidenceCpp(variable.initializer.condition, context)
+      ? getIrExpressionTypeEvidenceCpp(variable.initializer, context)
+      : undefined;
   const preservedInitializerType = arrayElement
     ? undefined
     : (context.preservedInitializerTypes.get(variable.binding.id) ??
       invariantCollectionInitializerType ??
+      guardedVariantInitializerType ??
       getCppStructurallyEquivalentInitializerTypeCpp(variable, context) ??
       (inferredInitializerType?.kind === 'unknown' ? undefined : inferredInitializerType));
   if (preservedInitializerType) {
@@ -3478,6 +3492,8 @@ function emitExpression(
       return `(${left} ${op} ${right})`;
     }
     case 'call': {
+      const variantArrayPredicate = emitCppVariantArrayPredicateCpp(expression, context);
+      if (variantArrayPredicate) return variantArrayPredicate;
       const variantPropertyArrayPredicate = emitCppVariantPropertyArrayPredicateCpp(expression, context);
       if (variantPropertyArrayPredicate) return variantPropertyArrayPredicate;
       const mathHypot = emitCppMathHypotCallCpp(expression, context);
@@ -13032,6 +13048,74 @@ function getCppVariantPropertyArrayPredicateEvidenceCpp(
   };
 }
 
+// A direct `Array.isArray(value)` over an exact represented union asks which alternative the existing
+// variant holds. The generic runtime predicate cannot answer that carrier itself (a variant is not an
+// array), so visit its stored alternative and retain the same partition as branch evidence. This keeps
+// the selected array handle in its original storage; no cast or replacement collection is introduced.
+function getCppVariantArrayPredicateEvidenceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<CppVariantArrayPredicateEvidence> | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    expression.kind !== 'call' ||
+    expression.optional ||
+    expression.arguments.length !== 1 ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.optional ||
+    expression.callee.name !== 'isArray' ||
+    expression.callee.object.kind !== 'identifier' ||
+    expression.callee.object.reference.kind !== 'ambient' ||
+    expression.callee.object.reference.name !== 'Array'
+  ) {
+    return undefined;
+  }
+  const candidate = expression.arguments[0];
+  if (candidate?.kind !== 'identifier' || candidate.reference.kind !== 'binding') return undefined;
+  const declared = getCppBindingTypeCpp(candidate.reference.binding.id, context);
+  const union = declared ? getIrVariantUnionTypeCpp(declared, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (plan.kind !== 'multiVariant') return undefined;
+
+  const classified = union.types.map((member) => {
+    if (getIrArrayTypeCpp(member, context, new Set())) return { array: true as const, member };
+    if (
+      getIrTupleTypeCpp(member, context, new Set()) ||
+      getIrUnionTypeCpp(member, context, new Set()) ||
+      member.kind === 'unknown' ||
+      member.kind === 'never' ||
+      (member.kind === 'named' &&
+        member.reference.kind === 'binding' &&
+        member.reference.binding.kind === 'typeParameter')
+    ) {
+      return undefined;
+    }
+    return { array: false as const, member };
+  });
+  if (classified.some((member) => member === undefined)) return undefined;
+  const alternatives = classified.filter((member) => member !== undefined);
+  const arrayType = createIrTypeEvidenceUnionCpp(
+    alternatives.filter((member) => member.array).map((member) => member.member),
+  );
+  const nonArrayType = createIrTypeEvidenceUnionCpp(
+    alternatives.filter((member) => !member.array).map((member) => member.member),
+  );
+  return arrayType && nonArrayType ? { arrayType, binding: candidate.reference.binding, nonArrayType } : undefined;
+}
+
+function emitCppVariantArrayPredicateCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  const evidence = getCppVariantArrayPredicateEvidenceCpp(expression, context);
+  const candidate = expression.arguments[0];
+  if (!evidence || candidate?.kind !== 'identifier') return undefined;
+  context.includes.add('flight/array.hpp');
+  context.includes.add('variant');
+  return `std::visit([](const auto& value) { return flight::is_array(value); }, ${emitExpression(candidate, context)})`;
+}
+
 function emitCppVariantPropertyArrayPredicateCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
@@ -13051,6 +13135,16 @@ function getCppConditionBranchContextCpp(
 ): EmitContext {
   const unionMemberTest = condition.kind === 'binary' ? condition.semantics.unionMemberTest : undefined;
   const unionContext = getCppUnionMemberTestBranchContextCpp(unionMemberTest, result, context);
+  const arrayValue = getCppVariantArrayPredicateEvidenceCpp(condition, unionContext);
+  if (arrayValue) {
+    return {
+      ...unionContext,
+      narrowedBindingTypes: new Map(unionContext.narrowedBindingTypes).set(
+        arrayValue.binding.id,
+        result ? arrayValue.arrayType : arrayValue.nonArrayType,
+      ),
+    };
+  }
   const arrayProperty = getCppVariantPropertyArrayPredicateEvidenceCpp(condition, context);
   if (!arrayProperty) return unionContext;
   return {
@@ -14250,6 +14344,15 @@ function emitContextualUnionExpressionInContextCpp(
       context,
     );
     if (equivalentConversion) return equivalentConversion;
+    const callableObjectView = emitCppOptionalCallableObjectFunctionViewCpp(
+      expression,
+      expressionType,
+      expressionPlan,
+      union,
+      plan,
+      context,
+    );
+    if (callableObjectView) return callableObjectView;
     if (expressionPlan.kind === 'singleValue' && expressionPlan.valueSlots[0]) {
       const targetSlot = plan.valueSlots.find(
         (slot) => slot.representationKey === expressionPlan.valueSlots[0]!.representationKey,
@@ -15479,6 +15582,65 @@ function emitCppContextualCallableUnionValueCpp(
       : `return ${erasedReturn};`;
   const source = emitExpression(expression, context, sourceType, false);
   return `[${sourceName} = ${source}](${parameters.join(', ')}) -> ${returns} { ${body} }`;
+}
+
+// A callable object already owns the callable state and any attached properties. Viewing it as a plain
+// callback must retain that owner: copying its std::function field could duplicate mutable closure state,
+// while a forwarding lambda that captures the Ref invokes the original object. Restrict the view to one
+// nullable callable-object slot and one exactly matching nullable function slot so no parameter or result
+// conversion is hidden inside the adapter.
+function emitCppOptionalCallableObjectFunctionViewCpp(
+  expression: Readonly<IrExpression>,
+  expressionType: Readonly<IrType>,
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  targetUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    sourcePlan.kind !== 'optionalSingle' ||
+    targetPlan.kind !== 'optionalSingle' ||
+    sourcePlan.valueSlots.length !== 1 ||
+    targetPlan.valueSlots.length !== 1
+  ) {
+    return undefined;
+  }
+  const sourceSlot = sourcePlan.valueSlots[0]!;
+  const targetSlot = targetPlan.valueSlots[0]!;
+  const source = getCppCallableObjectIrTypeCpp(sourceSlot.runtimeType, context, new Set());
+  const target = getCppClosedCallableType(targetSlot.runtimeType, context, new Set());
+  if (
+    !source ||
+    !target ||
+    target.typeParameters.length > 0 ||
+    target.parameters.some((parameter) => parameter.optional || parameter.rest) ||
+    !hasCppExactCallableParameterRepresentationCpp(source.callable, target, context)
+  ) {
+    return undefined;
+  }
+  const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  if (emitType(source.callable.returns, isolatedContext) !== emitType(target.returns, isolatedContext)) {
+    return undefined;
+  }
+
+  const stored = getGeneratedTargetName('contextualCallableObject', context);
+  const owner = getGeneratedTargetName('contextualCallableObjectOwner', context);
+  const arguments_ = target.parameters.map((_, index) =>
+    getGeneratedTargetName(`contextualCallableObjectArgument${String(index)}`, context),
+  );
+  const parameters = target.parameters.map((parameter, index) => {
+    const type = emitCppParameterTypeCpp(parameter.type, parameter.rest, context);
+    return `${type} ${arguments_[index]!}`;
+  });
+  const invocation = `(*${owner})(${arguments_.join(', ')})`;
+  const returns = emitType(target.returns, context);
+  const body =
+    target.returns.kind === 'primitive' && target.returns.name === 'void' ? `${invocation};` : `return ${invocation};`;
+  const view = `${targetSlot.targetType}{[${owner} = ${stored}.value()](${parameters.join(', ')}) -> ${returns} { ${body} }}`;
+  const present = emitCppUnionValueConstruction(view, targetSlot.targetType, targetUnion, targetPlan.kind, context);
+  const value = emitOptionalExpressionCpp(expression, context, expressionType);
+  context.includes.add('optional');
+  return `([&]() -> ${emitUnionTypeCpp(targetUnion, context)} { auto ${stored} = ${value}; if (!${stored}.has_value()) return std::nullopt; return ${present}; }())`;
 }
 
 function getCppConstrainedTypeParameterUnionValueSlotCpp(
@@ -18480,10 +18642,17 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       if ('binding' in variable && !variable.mutable && variable.initializer) {
         const runtimeMemberType = getCppRuntimeMemberStorageTypeCpp(variable.initializer, context);
         if (runtimeMemberType) {
-          candidates.set(
-            variable.binding.id,
-            new Map([[normalizeCompilerStructuralValueCanonical(runtimeMemberType), runtimeMemberType]]),
-          );
+          if (getCppCallableObjectIrTypeCpp(runtimeMemberType, context, new Set())) {
+            // The provider owns the anonymous callable-object class, so spelling its structural type in
+            // this consumer would declare a different class. `auto` retains the returned carrier while
+            // this evidence keeps subsequent reads typed as that exact provider member.
+            context.preservedInitializerTypes.set(variable.binding.id, runtimeMemberType);
+          } else {
+            candidates.set(
+              variable.binding.id,
+              new Map([[normalizeCompilerStructuralValueCanonical(runtimeMemberType), runtimeMemberType]]),
+            );
+          }
         }
       }
       if (
@@ -18897,20 +19066,30 @@ function getCppRuntimeMemberStorageTypeCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  if (
-    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
-    expression.kind !== 'property' ||
-    expression.optional ||
-    expression.member?.receiver !== 'typedArray' ||
-    expression.member.name !== 'buffer'
-  ) {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || expression.kind !== 'property') {
     return undefined;
   }
-  return {
-    kind: 'named',
-    reference: { kind: 'ambient', name: 'ArrayBufferLike' },
-    typeArguments: [],
-  };
+  if (!expression.optional && expression.member?.receiver === 'typedArray' && expression.member.name === 'buffer') {
+    return {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'ArrayBufferLike' },
+      typeArguments: [],
+    };
+  }
+
+  // A callable-object member already has provider-owned storage: its Ref carries both the callable state
+  // and its attached properties. The lean consumer graph can infer a structurally identical local whose
+  // imported member names differ (or whose callable parameter has become unknown). Retyping the member at
+  // that immutable local would require constructing a second anonymous callable-object carrier. Preserve
+  // the exact property result instead; later use as a plain callback goes through the owner-retaining view.
+  const propertyType = getIrPropertyExpressionTypeEvidenceCpp(expression, context);
+  const union = propertyType ? getIrUnionTypeCpp(propertyType, context, new Set()) : undefined;
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  return plan?.kind === 'optionalSingle' &&
+    plan.valueSlots.length === 1 &&
+    getCppCallableObjectIrTypeCpp(plan.valueSlots[0]!.runtimeType, context, new Set())
+    ? propertyType
+    : undefined;
 }
 
 function isCppUnresolvedExternalStorageTypeCpp(type: Readonly<IrType>): boolean {
@@ -20218,11 +20397,26 @@ function getIrExpressionTypeEvidenceCpp(
         getIrNullishCoalesceTypeEvidenceCpp(expression, context) ??
         getIrOperatorValueDomainTypeCpp(expression.semantics.result)
       );
-    case 'conditional':
+    case 'conditional': {
+      if (getCppVariantArrayPredicateEvidenceCpp(expression.condition, context)) {
+        const whenTrue = getIrExpressionTypeEvidenceCpp(
+          expression.whenTrue,
+          getCppConditionBranchContextCpp(expression.condition, true, context),
+        );
+        const whenFalse =
+          expression.whenFalse.kind === 'literal' && expression.whenFalse.value === null
+            ? ({ kind: 'null' } as const)
+            : getIrExpressionTypeEvidenceCpp(
+                expression.whenFalse,
+                getCppConditionBranchContextCpp(expression.condition, false, context),
+              );
+        return whenTrue && whenFalse ? createIrTypeEvidenceUnionCpp([whenTrue, whenFalse]) : undefined;
+      }
       return (
         getIrExpressionTypeEvidenceCpp(expression.whenTrue, context) ??
         getIrExpressionTypeEvidenceCpp(expression.whenFalse, context)
       );
+    }
     case 'function':
       return {
         kind: 'function',
@@ -20456,6 +20650,37 @@ function refuseCppContextualStructuralArrayNominalRecoveryCpp(
   const targetArray = getIrArrayTypeCpp(target, context, new Set());
   if (!sourceArray?.readonly || !targetArray || !hasFlightReferenceRepresentationCpp(targetArray.element, context)) {
     return;
+  }
+  if (
+    expression.kind === 'conditional' &&
+    getCppVariantArrayPredicateEvidenceCpp(expression.condition, context) &&
+    areCppTypesRepresentationEquivalent(sourceArray, targetArray, context)
+  ) {
+    return;
+  }
+  // A union parameter does not use the standalone readonly-array parameter ABI: its array alternative
+  // is an owning array already stored in the variant. A branch that proves that exact alternative can
+  // select and wrap the existing handle without trying to recover an owner from SequenceView.
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
+    areCppTypesRepresentationEquivalent(sourceArray, targetArray, context)
+  ) {
+    const declared = getCppBindingTypeCpp(expression.reference.binding.id, context);
+    const declaredUnion = declared ? getIrVariantUnionTypeCpp(declared, context, new Set()) : undefined;
+    const declaredPlan = declaredUnion ? getCppUnionRepresentationPlan(declaredUnion, context) : undefined;
+    const narrowedTarget = emitType(sourceArray, {
+      ...context,
+      anonymousStructs: new Map(),
+      includes: new Set<string>(),
+    });
+    const matchingSlots = declaredPlan?.valueSlots.filter(
+      (slot) =>
+        slot.targetType === narrowedTarget ||
+        (getIrArrayTypeCpp(slot.runtimeType, context, new Set()) !== undefined &&
+          areCppTypesRepresentationEquivalent(slot.runtimeType, sourceArray, context)),
+    );
+    if (declaredPlan?.kind === 'multiVariant' && matchingSlots?.length === 1) return;
   }
   // Calls and property/index reads produce the owning Array carrier, unlike a structural-sequence
   // parameter. When its element representation is already the target's, copying the Array handle keeps

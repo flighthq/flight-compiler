@@ -22920,8 +22920,15 @@ Resolver make_resolver(TextureRef texture) {
            export interface RenderEffectPadding { bottom: number; left: number; right: number; top: number }
            export type RenderEffectPaddingResolver =
              (effect: Readonly<RenderEffect>) => RenderEffectPadding;
+           export interface RenderRegistrySignals { readonly active: boolean }
            export interface RenderState { readonly name: string }
            export interface RenderStateRuntime {
+             readonly registryMiss:
+               | (((registry: number, kind: string) => void) & {
+                   clear(): void;
+                   readonly signals: RenderRegistrySignals;
+                 })
+               | null;
              readonly registries: {
                readonly effectPaddingResolvers?: KeyedTable<RenderEffectPaddingResolver>;
              };
@@ -22935,6 +22942,7 @@ Resolver make_resolver(TextureRef texture) {
              RenderEffect,
              RenderEffectPadding,
              RenderEffectPaddingResolver,
+             RenderRegistrySignals,
              RenderState,
              RenderStateRuntime,
            } from './RenderState';`,
@@ -22953,6 +22961,21 @@ Resolver make_resolver(TextureRef texture) {
           `import { getRenderStateRuntime } from '@flighthq/render/contract';
            import type { RenderEffect, RenderState } from '@flighthq/types/contract';
            import { RegistryEntryState } from '@flighthq/types/contract';
+           function writeRegistryMiss(
+             emitMiss: ((registry: number, kind: string) => void) | null,
+           ): void {
+             emitMiss?.(1, 'missing');
+           }
+           export function forwardRegistryMiss(state: RenderState): void {
+             const emitMiss = getRenderStateRuntime(state).registryMiss;
+             writeRegistryMiss(emitMiss);
+           }
+           export function selectRenderEffectList(
+             effects: Readonly<RenderEffect> | ReadonlyArray<Readonly<RenderEffect>>,
+           ): number {
+             const list = Array.isArray(effects) ? effects : null;
+             return list === null ? 0 : list.length;
+           }
            export function resolveRenderEffectPaddingBottom(
              state: RenderState,
              effect: Readonly<RenderEffect>,
@@ -22987,6 +23010,21 @@ Resolver make_resolver(TextureRef texture) {
     // registry's declared entry union instantiated with the exact resolver, not an erased value selected
     // from the variable's contextual destination.
     expect(contents).toContain('RegistryTableEntry<flighthq_types::RenderEffectPaddingResolver>');
+    // The array guard inspects the value already stored in the parameter variant, and its true branch
+    // selects that same array arm for the nullable result instead of casting or rebuilding the collection.
+    expect(contents).toContain('std::visit([](const auto& value) { return flight::is_array(value); }, effects)');
+    expect(contents).toContain('std::get<0>(effects)');
+    expect(contents).toMatch(
+      /auto list = .*std::optional<flight::Array<.+>>\{std::get<0>\(effects\)\} : std::nullopt/u,
+    );
+    expect(contents).not.toContain('std::optional<std::variant<');
+    // A plain callback view retains the original callable-object owner; it does not copy the object's
+    // std::function field and thereby split mutable closure state from its attached properties.
+    expect(contents).toContain(
+      'auto emit_miss = flighthq_render::get_render_state_runtime(state)->registry_miss',
+    );
+    expect(contents).toContain('contextual_callable_object_owner = contextual_callable_object.value()');
+    expect(contents).toContain('(*contextual_callable_object_owner)(');
     expect(contents).toContain('.get(flight::row_get<flight::RowKey<"kind">>(effect))');
     expect(contents).toContain('entry.value().index()');
     // Narrowing selects the arm already stored by the imported alias. Naming a freshly emitted
