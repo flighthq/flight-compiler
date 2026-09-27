@@ -8221,7 +8221,17 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       }
       if (sourceName === 'Extract') {
         const extracted = getCppExtractedType(type.typeArguments, context);
-        if (!extracted) refuseCppUnexpandedTypeScriptUtilityAlias('Extract', context);
+        if (!extracted) {
+          const dependentDiscriminant = getCppDependentExtractDiscriminantRefusalCpp(type.typeArguments, context);
+          if (dependentDiscriminant) {
+            emissionError(
+              context,
+              `Extract cannot select one C++ type from dependent discriminant ${dependentDiscriminant.typeParameterName}: property ${dependentDiscriminant.propertyName} admits ${dependentDiscriminant.values.map((value) => JSON.stringify(value)).join(', ')}, whose literal types all use the same C++ ${dependentDiscriminant.carrierName} carrier. Return one complete declared union arm from each source branch, or split the generic declaration by arm; the compiler will not choose an arm with an unchecked cast or materialize a replacement structural row`,
+              'cpp-extract-dependent-discriminant-unrepresented',
+            );
+          }
+          refuseCppUnexpandedTypeScriptUtilityAlias('Extract', context);
+        }
         return emitType(extracted, context, representation);
       }
       // `NoInfer<T>` withholds a position from TypeScript's inference and is otherwise exactly `T`:
@@ -9032,6 +9042,88 @@ function getCppExtractedType(
     if (selected) surviving.push(member);
   }
   return createCppClosedTypeUnion(surviving);
+}
+
+// A dependent discriminant does not provide a C++ type-level choice when each source literal uses the
+// same target carrier: `Kind extends 'input' | 'output'` becomes one string type at every instantiation.
+// Recognize only the closed, one-property filter whose constraint enumerates unique literals and whose
+// source arms carry members of that exact discriminant domain. The semantic checker may already have
+// distributed the utility to one source arm, so the source values are a nonempty subset rather than
+// necessarily the whole constraint. Broader open Extracts retain the generic utility refusal because they
+// do not prove this source-portability cause. The fix belongs at the declaration boundary: each branch
+// must return the full arm it names, rather than asking an erased assertion to choose or complete storage.
+function getCppDependentExtractDiscriminantRefusalCpp(
+  typeArguments: readonly Readonly<IrType>[],
+  context: EmitContext,
+):
+  | Readonly<{
+      carrierName: 'boolean' | 'number' | 'string';
+      propertyName: string;
+      typeParameterName: string;
+      values: readonly (boolean | number | string)[];
+    }>
+  | undefined {
+  const sourceType = typeArguments[0];
+  const filterType = typeArguments[1];
+  if (!sourceType || !filterType || typeArguments.length !== 2) return undefined;
+  const source = getCppClosedTypeDomain(sourceType, context);
+  if (source.kind === 'refused' || source.category !== 'object' || source.members.length === 0) return undefined;
+  const filterProperties = context.referenceRepresentationPlanner.resolveObjectShape(filterType, context.module);
+  if (!filterProperties || filterProperties.length !== 1) return undefined;
+  const property = filterProperties[0]!;
+  if (property.computedKey || property.optional || property.phantom || property.role) return undefined;
+  const typeParameter = property.type;
+  if (
+    typeParameter.kind !== 'named' ||
+    typeParameter.reference.kind !== 'binding' ||
+    typeParameter.reference.binding.kind !== 'typeParameter' ||
+    typeParameter.typeArguments.length !== 0
+  ) {
+    return undefined;
+  }
+  const constraint = getCppDependentTypeParameterConstraintCpp(typeParameter.reference.binding.id, context);
+  if (!constraint) return undefined;
+  const resolvedConstraint =
+    constraint.kind === 'indexedAccess' &&
+    constraint.index.kind === 'literal' &&
+    typeof constraint.index.value === 'string'
+      ? getIrObjectPropertyTypeCpp(constraint.object, constraint.index.value, context)
+      : constraint;
+  if (!resolvedConstraint) return undefined;
+  const constraintDomain = getCppClosedTypeDomain(resolvedConstraint, context);
+  if (constraintDomain.kind === 'refused' || constraintDomain.category !== 'scalar') return undefined;
+  const constraintValues = constraintDomain.members.flatMap((member) =>
+    member.kind === 'literal' ? [member.value] : [],
+  );
+  if (
+    constraintValues.length < 2 ||
+    constraintValues.length !== constraintDomain.members.length ||
+    new Set(constraintValues.map((value) => typeof value)).size !== 1
+  ) {
+    return undefined;
+  }
+  const sourceValues: (boolean | number | string)[] = [];
+  for (const member of source.members) {
+    const memberDiscriminant = getIrObjectPropertyTypeCpp(member, property.name, context);
+    if (memberDiscriminant?.kind !== 'literal') return undefined;
+    sourceValues.push(memberDiscriminant.value);
+  }
+  const key = (value: boolean | number | string) => `${typeof value}:${JSON.stringify(value)}`;
+  const constraintKeys = new Set(constraintValues.map(key));
+  const sourceKeys = new Set(sourceValues.map(key));
+  if (
+    constraintKeys.size !== constraintValues.length ||
+    sourceKeys.size !== sourceValues.length ||
+    [...sourceKeys].some((candidate) => !constraintKeys.has(candidate))
+  ) {
+    return undefined;
+  }
+  return {
+    carrierName: typeof constraintValues[0] as 'boolean' | 'number' | 'string',
+    propertyName: property.name,
+    typeParameterName: typeParameter.reference.binding.name,
+    values: constraintValues,
+  };
 }
 
 type CppClosedTypeDomainCategory = 'object' | 'scalar';
@@ -26995,6 +27087,7 @@ const cppNullTaggedStoragePredicates: ReadonlyMap<string, string> = new Map([['f
 // fix is an explicit source conversion and the check report says which one.
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-closed-key-result-assertion-discards-alternatives',
+  'cpp-extract-dependent-discriminant-unrepresented',
   // A typeof test the emitter cannot fold is one the source can state: every type is assignable to
   // `unknown`, and a value preserved in that carrier is answered by the runtime's own `typeof` (proved by
   // the `unknown` and `any` spellings emitting `.type_of()` while the undeclared domain refuses). The

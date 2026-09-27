@@ -34768,6 +34768,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // declaration that used it. The refusal names the utility instead, which is the whole difference
     // between a diagnostic a reader can act on and a name that escapes.
     expect(failure.rule).toBe('cpp-typescript-utility-unexpanded:Extract');
+    expect(failure.classification).toBe('compiler-restriction');
     expect(failure.message).toContain('Extract was not resolved before emission and has no C++ lowering');
 
     const unresolved = lower(
@@ -34815,6 +34816,46 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       emitIrModuleCpp(indeterminate, { runtimeProfile: 'flight-cpp' }),
     );
     expect(indeterminateFailure.rule).toBe('cpp-typescript-utility-unexpanded:Extract');
+  });
+
+  it('attributes dependent discriminant Extract over complete arms to the source boundary', () => {
+    const result = lower(
+      'dependent-discriminant-extract.ts',
+      `interface StateBase { disposed: boolean; }
+       interface InputState extends StateBase {
+         kind: 'input';
+         messageSubscriptions: Set<string>;
+         operations: (message: string) => void;
+       }
+       interface OutputState extends StateBase {
+         kind: 'output';
+         operations: (message: number) => void;
+       }
+       type State = InputState | OutputState;
+       export function createState<
+         Kind extends State['kind'],
+         Operations extends State['operations'],
+       >(kind: Kind, operations: Operations) {
+         return { disposed: false, kind, operations } as Extract<State, { kind: Kind }>;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // Both literal tags lower to the same C++ string type, so Kind cannot choose a return carrier. The
+    // input value also becomes a complete arm only after its caller supplies messageSubscriptions. A
+    // variant return would change that asserted boundary, while a row replacement would copy the
+    // callable property. The source must therefore construct each complete arm explicitly.
+    expect(failure.rule).toBe('cpp-extract-dependent-discriminant-unrepresented');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('dependent discriminant Kind');
+    expect(failure.message).toContain('property kind admits "input", "output"');
+    expect(failure.message).toContain('same C++ string carrier');
+    expect(failure.message).toContain('one complete declared union arm');
+    expect(failure.message).toContain('split the generic declaration by arm');
+    expect(failure.message).toContain('will not choose an arm with an unchecked cast');
+    expect(failure.message).toContain('materialize a replacement structural row');
   });
 
   it('resolves a conditional alias reference whose check names a parameter inside an indexed access', () => {
