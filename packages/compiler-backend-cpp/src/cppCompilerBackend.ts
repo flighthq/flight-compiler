@@ -13819,6 +13819,18 @@ function emitContextualUnionExpressionInContextCpp(
         'cpp-logical-or-present-domain-unproven',
       );
     }
+    if (
+      expression.kind === 'property' &&
+      expression.type &&
+      expression.type.kind !== 'unknown' &&
+      isCppErasedDynamicValueTypeCpp(getIrExpressionTypeEvidenceCpp(expression.object, context))
+    ) {
+      emissionError(
+        context,
+        `property ${expression.name} has a checker-recorded result type, but its receiver reached C++ storage erased; preserve the receiver's concrete type through destructuring or iteration before constructing the contextual ${plan.kind} union`,
+        'cpp-contextual-union-recorded-property-erased-receiver',
+      );
+    }
     emissionError(
       context,
       `contextual ${plan.kind} construction requires expression type evidence`,
@@ -15561,8 +15573,25 @@ function getIrExpressionTypeForUnionConstructionCpp(
       // decide is the SPELLING, which the emitter builds; the type is not in doubt here, which is what
       // makes this evidence rather than a guess about an expression whose type was never recorded.
       return { kind: 'primitive', name: 'string' };
-    case 'tuple':
-      return getSingleIrTypeKindCpp(valueSlots, 'tuple');
+    case 'tuple': {
+      // Tuple literals enter the union planner through their shared Array runtime domain, so the
+      // value slot itself may be an array even though its source alternative retains the exact tuple.
+      // Recover that contextual source spelling only when the literal's arity selects one tuple. This
+      // supplies the element expectations already stated by the destination without constructing a
+      // different value or guessing among same-carrier alternatives.
+      const contextualTuples = valueSlots.flatMap((slot) =>
+        (slot.sourceAlternatives ?? [slot.runtimeType])
+          .flatMap((alternative) => getCppExpandedUnionSourceAlternativesCpp(alternative, context, new Set()))
+          .filter((alternative) => {
+            const tuple = getIrTupleTypeCpp(alternative, context, new Set());
+            return tuple?.elements.length === expression.elements.length;
+          }),
+      );
+      const uniqueTuples = new Map(
+        contextualTuples.map((tuple) => [normalizeCompilerStructuralValueCanonical(tuple), tuple]),
+      );
+      return uniqueTuples.size === 1 ? [...uniqueTuples.values()][0] : undefined;
+    }
     case 'unary':
       return getIrOperatorValueDomainTypeCpp(expression.semantics.result);
     case 'undefinedValue':

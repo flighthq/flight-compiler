@@ -28467,6 +28467,78 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).toContain('flight::Array<double>{0.0, 0.0, 0.0, 0.0}');
   });
 
+  it.each([
+    {
+      name: 'readonly nine-element tuple return',
+      source:
+        'export function make(value: number): readonly [number, number, number, number, number, number, number, number, number] | null { return [value, value, value, value, value, value, value, value, value]; }',
+    },
+    {
+      name: 'mutable four-element tuple return',
+      source:
+        'export function make(value: number): [number, number, number, number] | null { return [value, value, value, value]; }',
+    },
+    {
+      name: 'mutable two-element tuple return',
+      source: 'export function make(value: number): [number, number] | null { return [value, value]; }',
+    },
+    {
+      name: 'readonly six-element tuple return',
+      source:
+        'export function make(value: number): readonly [number, number, number, number, number, number] | null { return [value, value, value, value, value, value]; }',
+    },
+  ])('constructs a $name in an optional union', ({ source }) => {
+    const [result] = lowerTypeScriptSources([
+      {
+        packageName: '@flighthq/math',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/math/src/optional-value.ts',
+          source,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ]);
+
+    const emitted = emitIrModuleCpp(result!.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(emitted.contents).toContain('std::optional<flight::Array<double>>');
+  });
+
+  it('diagnoses an optional property whose iterable receiver has erased storage', () => {
+    const module = structuredClone(
+      lower(
+        'erased-iterable-property.ts',
+        `interface Animation { name: string }
+         interface Diagnostic { animationName: string | null }
+         export function validate(animations: Animation[]): Diagnostic[] | null {
+           const diagnostics: Diagnostic[] = [];
+           for (const animation of animations) diagnostics.push({ animationName: animation.name });
+           return diagnostics.length > 0 ? diagnostics : null;
+         }`,
+      ).module,
+    );
+    const validate = module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'validate',
+    );
+    const animations = validate?.kind === 'function' ? validate.parameters[0] : undefined;
+    if (animations?.type.kind !== 'array') throw new Error('expected animations array parameter');
+    const loop =
+      validate?.kind === 'function' ? validate.body.find((statement) => statement.kind === 'forOf') : undefined;
+    if (loop?.kind !== 'forOf' || 'pattern' in loop.variable) throw new Error('expected animation for-of binding');
+    // This is the exact boundary produced by the bounded package graph: the iterable's element reached
+    // backend IR as unknown while the checker-recorded `animation.name` result remained String. The
+    // result cannot safely repair the erased receiver storage or make `flight::Any.name` a valid read.
+    Object.assign(animations.type, { element: { kind: 'unknown', source: 'unknown' } });
+    Object.assign(loop.variable, { type: { kind: 'unknown', source: 'unknown' } });
+
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }));
+
+    expect(failure.rule).toBe('cpp-contextual-union-recorded-property-erased-receiver');
+    expect(failure.message).toContain("preserve the receiver's concrete type through destructuring or iteration");
+  });
+
   it('refuses an array literal that is not the length of the tuple it would fill', () => {
     const [result] = lowerTypeScriptSources([
       {
