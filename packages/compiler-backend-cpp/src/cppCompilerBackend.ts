@@ -16182,7 +16182,15 @@ function emitCppContextualCallableUnionValueCpp(
       return probe !== 'argument';
     });
   if (!needsAdapter) return emitExpression(expression, context, sourceType, false);
-  const sourceName = getGeneratedTargetName('contextualCallable', context);
+  const declaredFunction =
+    expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? getCppFunctionDeclarationForBindingCpp(expression.reference.binding.id, context)
+      : undefined;
+  const emittedSource = emitExpression(expression, context, sourceType, false);
+  // A declaration is a stateless function address, so the adapter can invoke it directly. Every other
+  // expression is still evaluated once and retained by value; that is the only safe lifetime for a
+  // produced callable whose wrapper escapes this expression.
+  const sourceName = declaredFunction ? emittedSource : getGeneratedTargetName('contextualCallable', context);
   const parameterNames = target.parameters.map((_, index) =>
     getGeneratedTargetName(`contextualCallableArgument${String(index)}`, context),
   );
@@ -16218,8 +16226,8 @@ function emitCppContextualCallableUnionValueCpp(
         ? `${invocation};`
         : `return ${invocation};`
       : `return ${erasedReturn};`;
-  const source = emitExpression(expression, context, sourceType, false);
-  return `[${sourceName} = ${source}](${parameters.join(', ')}) -> ${returns} { ${body} }`;
+  const capture = declaredFunction ? '' : `${sourceName} = ${emittedSource}`;
+  return `[${capture}](${parameters.join(', ')}) -> ${returns} { ${body} }`;
 }
 
 // A callable object already owns the callable state and any attached properties. Viewing it as a plain
@@ -17955,16 +17963,49 @@ function getCppContextualCallTypeArgumentsCpp(
   let argumentSubstitutions = new Map<string, Readonly<IrType>>();
   expression.arguments.forEach((argument, index) => {
     const parameter = declaration.parameters[index];
-    const argumentType =
-      getIrInvocationProvidedArgumentTypeCpp(expression, index) ?? getIrExpressionTypeEvidenceCpp(argument, context);
-    if (!parameter?.type || !argumentType || argumentType.kind === 'unknown') return;
-    const deductionType = parameter.optional ? getCppProvidedOptionalArgumentTypeCpp(argumentType) : argumentType;
-    if (!deductionType) return;
-    const candidateSubstitutions = new Map(argumentSubstitutions);
-    if (
-      collectCppResultTypeSubstitutionsCpp(parameter.type, deductionType, parameterIds, candidateSubstitutions, context)
-    ) {
-      argumentSubstitutions = candidateSubstitutions;
+    if (!parameter?.type) return;
+    const directExpressionType = getIrExpressionTypeEvidenceCpp(argument, context);
+    const functionDeclaration =
+      argument.kind === 'identifier' && argument.reference.kind === 'binding'
+        ? getCppFunctionDeclarationForBindingCpp(argument.reference.binding.id, context)
+        : undefined;
+    const initializer =
+      argument.kind === 'identifier' && argument.reference.kind === 'binding'
+        ? context.bindingInitializers.get(argument.reference.binding.id)
+        : undefined;
+    const initializerType =
+      directExpressionType && !isCppErasedDynamicValueTypeCpp(directExpressionType)
+        ? undefined
+        : initializer
+          ? getIrExpressionTypeEvidenceCpp(initializer, context)
+          : undefined;
+    const expressionType = functionDeclaration
+      ? getIrFunctionDeclarationTypeCpp(functionDeclaration)
+      : (initializerType ?? directExpressionType);
+    const providedType = getIrInvocationProvidedArgumentTypeCpp(expression, index);
+    // A checker-instantiated optional parameter can expand a named callable result into its structural
+    // shape. The callable expression still names the owner it returns, which is the evidence template
+    // deduction needs: substituting the expanded shape would manufacture a second C++ owner. Prefer that
+    // callable evidence, then retain the invocation metadata as the fallback for contextual literals.
+    const argumentTypes =
+      expressionType?.kind === 'function' ? [expressionType, providedType] : [providedType, expressionType];
+    for (const argumentType of argumentTypes) {
+      if (!argumentType || argumentType.kind === 'unknown') continue;
+      const deductionType = parameter.optional ? getCppProvidedOptionalArgumentTypeCpp(argumentType) : argumentType;
+      if (!deductionType) continue;
+      const candidateSubstitutions = new Map(argumentSubstitutions);
+      if (
+        collectCppResultTypeSubstitutionsCpp(
+          parameter.type,
+          deductionType,
+          parameterIds,
+          candidateSubstitutions,
+          context,
+        )
+      ) {
+        argumentSubstitutions = candidateSubstitutions;
+        break;
+      }
     }
   });
   const fromCandidate = (candidate: Readonly<IrType> | undefined): readonly Readonly<IrType>[] | undefined => {
@@ -18183,6 +18224,23 @@ function collectCppResultTypeSubstitutionsCpp(
       context,
     );
   }
+  const expandedPatternIntersection =
+    pattern.kind === 'named' ? resolveCppTypeAliasTarget(pattern, context) : undefined;
+  const expandedCandidateIntersection =
+    candidate.kind === 'named' ? resolveCppTypeAliasTarget(candidate, context) : undefined;
+  if (
+    (pattern.kind !== 'intersection' || candidate.kind !== 'intersection') &&
+    (pattern.kind === 'intersection' || expandedPatternIntersection?.kind === 'intersection') &&
+    (candidate.kind === 'intersection' || expandedCandidateIntersection?.kind === 'intersection')
+  ) {
+    return collectCppResultTypeSubstitutionsCpp(
+      pattern.kind === 'intersection' ? pattern : expandedPatternIntersection!,
+      candidate.kind === 'intersection' ? candidate : expandedCandidateIntersection!,
+      parameterIds,
+      substitutions,
+      context,
+    );
+  }
   if (
     pattern.kind === 'intersection' &&
     candidate.kind === 'intersection' &&
@@ -18211,26 +18269,41 @@ function collectCppResultTypeSubstitutionsCpp(
         ),
     );
   }
+  if (pattern.kind !== 'function' || candidate.kind !== 'function') {
+    const patternCallable = getCppClosedCallableType(pattern, context, new Set());
+    const candidateCallable = getCppClosedCallableType(candidate, context, new Set());
+    if (patternCallable && candidateCallable) {
+      return collectCppResultTypeSubstitutionsCpp(
+        patternCallable,
+        candidateCallable,
+        parameterIds,
+        substitutions,
+        context,
+      );
+    }
+  }
   if (
     pattern.kind === 'function' &&
     candidate.kind === 'function' &&
     pattern.typeParameters.length === 0 &&
     candidate.typeParameters.length === 0 &&
-    pattern.parameters.length === candidate.parameters.length
+    candidate.parameters.slice(pattern.parameters.length).every((parameter) => parameter.optional && !parameter.rest)
   ) {
     return (
-      pattern.parameters.every(
-        (parameter, index) =>
-          parameter.optional === candidate.parameters[index]!.optional &&
-          parameter.rest === candidate.parameters[index]!.rest &&
-          collectCppResultTypeSubstitutionsCpp(
-            parameter.type,
-            candidate.parameters[index]!.type,
-            parameterIds,
-            substitutions,
-            context,
-          ),
-      ) &&
+      candidate.parameters
+        .slice(0, pattern.parameters.length)
+        .every(
+          (parameter, index) =>
+            parameter.optional === pattern.parameters[index]!.optional &&
+            parameter.rest === pattern.parameters[index]!.rest &&
+            collectCppResultTypeSubstitutionsCpp(
+              pattern.parameters[index]!.type,
+              parameter.type,
+              parameterIds,
+              substitutions,
+              context,
+            ),
+        ) &&
       collectCppResultTypeSubstitutionsCpp(pattern.returns, candidate.returns, parameterIds, substitutions, context)
     );
   }
@@ -19985,13 +20058,41 @@ function getIrCallArgumentExpectedTypeCpp(
     (declaration.typeParameters.length === expression.typeArguments.length
       ? expression.typeArguments
       : getCppContextualCallTypeArgumentsCpp(expression, expectedType, context));
-  const resolvedParameterType =
-    typeArguments?.length === declaration.typeParameters.length
-      ? resolveIrTypeStructuralSubstitution(
-          parameterType,
-          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
-        )
-      : parameterType;
+  let resolvedParameterType = parameterType;
+  if (typeArguments?.length === declaration.typeParameters.length) {
+    const substitutions = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments);
+    resolvedParameterType = resolveIrTypeStructuralSubstitution(parameterType, substitutions);
+    const declaredParameter = declaration.parameters[index];
+    const argument = expression.arguments[index];
+    const namedFunctionArgument =
+      argument?.kind === 'identifier' &&
+      argument.reference.kind === 'binding' &&
+      getCppFunctionDeclarationForBindingCpp(argument.reference.binding.id, context) !== undefined;
+    const resolvedDeclared = declaredParameter
+      ? resolveIrTypeStructuralSubstitution(declaredParameter.type, substitutions)
+      : undefined;
+    if (
+      declaration.overloads.length === 0 &&
+      namedFunctionArgument &&
+      declaredParameter &&
+      resolvedDeclared &&
+      getCppClosedCallableType(resolvedDeclared, context, new Set())
+    ) {
+      // A checker-instantiated callable can expand its named result into a fresh anonymous owner. For a
+      // declared function value the generic substitution above retains the exact result owner, so rebuild
+      // just this callable slot and retain the invocation's optional/null sentinels around it.
+      const parameterUnion = getIrUnionTypeCpp(parameterType, context, new Set());
+      const sentinels = [
+        ...(parameterUnion?.types.filter((member) => member.kind === 'null' || member.kind === 'undefined') ?? []),
+        ...(declaredParameter.optional && !parameterUnion?.types.some((member) => member.kind === 'undefined')
+          ? ([{ kind: 'undefined' }] as const)
+          : []),
+      ];
+      resolvedParameterType = sentinels.length
+        ? (createIrTypeEvidenceUnionCpp([resolvedDeclared, ...sentinels]) ?? resolvedDeclared)
+        : resolvedDeclared;
+    }
+  }
   return preserveStructuralSequenceView(resolvedParameterType);
 }
 

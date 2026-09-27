@@ -9848,7 +9848,7 @@ describe('createCppCompilerBackend', () => {
       { runtimeProfile: 'flight-cpp' },
     ).contents;
     expect(widened).toContain(
-      'std::optional<std::function<flight::String(double)>>{[contextual_callable = consume_number_or_string](double contextual_callable_argument0) -> flight::String { return contextual_callable(contextual_callable_argument0); }}',
+      'std::optional<std::function<flight::String(double)>>{[](double contextual_callable_argument0) -> flight::String { return consume_number_or_string(contextual_callable_argument0); }}',
     );
 
     // A concrete result is also callable through a signature that admits that exact result or absence.
@@ -19027,6 +19027,156 @@ Resolver make_resolver(TextureRef texture) {
     // normalization already keeps the Symbol carrier, covering sceneNode's former contextual-union finding.
     expect(result.diagnostics).toEqual([]);
     expect(contents).toContain('(out->trait = std::optional<flight::Symbol>{key})');
+  });
+
+  it('stores imported scene node trait and runtime-factory carriers', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['allocateNode3D', 'allocateNode3DRuntime', 'initializeNode'],
+          specifier: '@flighthq/node/contract',
+          target: { packageName: '@flighthq/node', source: 'packages/node/src/node.ts' },
+        },
+        {
+          importedNames: ['Node', 'NodeData', 'NodeDataFactory', 'NodeRuntime', 'NodeRuntimeFactory'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Node.ts' },
+        },
+        {
+          importedNames: ['Node3D', 'Node3DRuntime', 'Node3DTraits', 'Node3DTraitsKey'],
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Node3D.ts' },
+        },
+        {
+          specifier: './Node',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Node.ts' },
+        },
+        {
+          specifier: './Node3D',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Node3D.ts' },
+        },
+        {
+          specifier: './node',
+          target: { packageName: '@flighthq/node', source: 'packages/node/src/node.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, contents: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, contents, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/Node.ts',
+          `declare const NodeTraitsKey: unique symbol;
+           export type NodeTraitsKey<T extends object> = symbol & { readonly [NodeTraitsKey]?: T };
+           export interface NodeData { readonly id: number }
+           export type NodeDataFactory<D extends NodeData> = (obj?: Readonly<Partial<D>>) => D;
+           export interface Node<Traits extends object> { readonly runtime?: NodeRuntime<Traits> }
+           export interface NodeRuntime<Traits extends object> { traits?: NodeTraitsKey<Traits> }
+           export type NodeRuntimeFactory<R extends object> = (obj?: Readonly<Partial<R>>) => R;`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/Node3D.ts',
+          `import type { Node, NodeRuntime } from './Node';
+           export interface Node3DTraits { enabled: boolean }
+           export interface HasAppearanceRuntime { appearanceId: number }
+           export interface HasTransform3DRuntime { transformId: number }
+           export type Node3D = Node<Node3DTraits> & Node3DTraits;
+           export type Node3DRuntime = NodeRuntime<Node3DTraits> & HasAppearanceRuntime & HasTransform3DRuntime;
+           export const Node3DTraitsKey = Symbol('Node3DTraits');`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          `export * from './Node';
+           export * from './Node3D';`,
+        ),
+        source(
+          '@flighthq/node',
+          'packages/node/src/node.ts',
+          `import type {
+             Node,
+             Node3D,
+             Node3DRuntime,
+             NodeData,
+             NodeDataFactory,
+             NodeRuntime,
+             NodeRuntimeFactory,
+           } from '@flighthq/types/contract';
+           export function allocateNode3D(): Node3D { throw new Error('stub'); }
+           export function allocateNode3DRuntime(): Node3DRuntime { throw new Error('stub'); }
+           export function initializeNode<
+             Traits extends object,
+             Data extends NodeData = NodeData,
+             Runtime extends NodeRuntime<Traits> = NodeRuntime<Traits>
+           >(
+             _out: Node<Traits> & Traits,
+             _kind: string,
+             _obj?: Readonly<Partial<Node<Traits>>>,
+             _createData?: NodeDataFactory<Data>,
+             _createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+           ): void {}`,
+        ),
+        source('@flighthq/node', 'packages/node/src/contract.ts', "export * from './node';"),
+        source(
+          '@flighthq/scene3d',
+          'packages/scene3d/src/sceneNode.ts',
+          `import { allocateNode3D, allocateNode3DRuntime, initializeNode } from '@flighthq/node/contract';
+           import type { Node3D, Node3DRuntime } from '@flighthq/types/contract';
+           import { Node3DTraitsKey } from '@flighthq/types/contract';
+           export function createNode3D(): Node3D {
+             const out = allocateNode3D();
+             initializeNode(out, 'Node3D', undefined, undefined, createNode3DRuntime);
+             return out;
+           }
+           export function createNode3DRuntime(): Node3DRuntime {
+             const out = allocateNode3DRuntime();
+             out.traits = Node3DTraitsKey;
+             return out;
+           }`,
+        ),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/node': { includePrefix: 'flight/node', namespace: 'flight::node' },
+          '@flighthq/scene3d': { includePrefix: 'flight/scene3d', namespace: 'flight::scene3d' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const contents = session.emitModule(modules[5]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The phantom trait brand has exactly the Symbol runtime domain, while the optional factory keeps
+    // the named Node3DRuntime owner inferred through the generic call. Its adapter accepts and ignores
+    // the optional Partial view, then forwards to the zero-argument factory; no row is copied or cast.
+    expect(contents).toContain('(out->traits = std::optional<flight::Symbol>{flight::types::node3_dtraits_key})');
+    expect(contents).toContain(
+      'flight::node::initialize_node<flight::Ref<flight::types::Node3DTraits>, flight::Ref<flight::types::NodeData>, flight::Ref<flight::types::Node3DRuntime>>',
+    );
+    expect(contents).toContain(
+      'std::optional<std::function<flight::Ref<flight::types::Node3DRuntime>(std::optional<flight::StructuralRef<',
+    );
+    expect(contents).toMatch(
+      /\[\]\([^)]*contextual_callable_argument0\) -> flight::Ref<flight::types::Node3DRuntime> \{ return create_node3_druntime\(\); \}/u,
+    );
+    expect(contents).not.toContain('create_node3_druntime(contextual_callable_argument0)');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('structural_ref_cast');
+    expect(contents).not.toContain('materialize_row');
   });
 
   it('stores a callable that accepts a wider payload than the destination supplies', () => {
