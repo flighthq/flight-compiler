@@ -271,6 +271,7 @@ function lowerImportedClosedKeyStorageModules() {
          }
          export type InteractionSignalName = 'onKeyDown' | 'onPointerDown';
          export interface InteractiveState { alpha?: number; visible?: boolean }
+         export interface OptionalCounters { alpha?: number; beta?: number }
          export interface InteractiveStates {
            disabled: InteractiveState | null;
            hover: InteractiveState | null;
@@ -300,13 +301,26 @@ function lowerImportedClosedKeyStorageModules() {
       ),
       source(
         'scene.ts',
-        `import type { InteractiveState, InteractiveStatePhase, InteractiveStates } from './types';
+        `import type { InteractiveState, InteractiveStatePhase, InteractiveStates, OptionalCounters } from './types';
          export function assignInteractiveState(
            states: InteractiveStates,
            phase: InteractiveStatePhase,
            state: InteractiveState,
          ): void {
            states[phase] = state;
+         }
+         export function readInteractiveState(
+           state: InteractiveState,
+           key: keyof InteractiveState,
+         ): number | boolean | undefined {
+           return state[key];
+         }
+         export function assignOptionalCounter(
+           counters: OptionalCounters | null,
+           key: keyof OptionalCounters,
+           value: number,
+         ): void {
+           if (counters !== null) counters[key] = value;
          }`,
       ),
     ],
@@ -1457,6 +1471,9 @@ describe('createCppCompilerBackend', () => {
     expect(sceneOutput).toContain('selection_receiver->hover = std::optional<');
     expect(sceneOutput).toContain('selection_receiver->pressed = std::optional<');
     expect(sceneOutput.match(/\{state\}; return;/gu)).toHaveLength(3);
+    expect(sceneOutput).toContain('std::in_place_type<double>');
+    expect(sceneOutput).toContain('std::in_place_type<bool>');
+    expect(sceneOutput.match(/->(?:alpha|beta) = value; return;/gu)).toHaveLength(2);
     expect(sceneOutput).not.toContain('selection_receiver[');
   });
 

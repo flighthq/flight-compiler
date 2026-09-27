@@ -11211,7 +11211,13 @@ function emitCppClosedKeyElementTypeofCpp(
   const keys = getCppClosedElementKeyNamesCpp(expression, context);
   if (!keys) return undefined;
   const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
-  const runtime = objectType ? getIrTypeRuntimeDomainCpp(objectType, context, new Set()) : undefined;
+  const representedObjectType =
+    objectType && 'presence' in expression.object && expression.object.presence === 'narrowedPresent'
+      ? (getCppNonNullableType(objectType, context, new Set()) ?? objectType)
+      : objectType;
+  const runtime = representedObjectType
+    ? getIrTypeRuntimeDomainCpp(representedObjectType, context, new Set())
+    : undefined;
   const properties = runtime
     ? context.referenceRepresentationPlanner.resolveObjectShape(runtime, context.module)
     : undefined;
@@ -19524,7 +19530,7 @@ function getIrIndexedElementTypeCpp(
   // absent key names no finite set and still reaches the refusal below.
   const closedElementKeys = getCppClosedElementKeyNamesCpp(expression, context);
   const closedElementShape = closedElementKeys
-    ? context.referenceRepresentationPlanner.resolveObjectShape(type, context.module)
+    ? resolveCppObjectShapeInTypeOwnerCpp(type, context)
     : undefined;
   if (closedElementKeys && closedElementShape) {
     const closedMembers = closedElementKeys.map((key) =>
