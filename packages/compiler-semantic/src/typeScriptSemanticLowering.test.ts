@@ -7125,6 +7125,40 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     });
   });
 
+  it('retains the contextual record owner around Object.create(null)', () => {
+    const result = lower(
+      'object-create-null-record.ts',
+      `interface Mapping { [key: string]: number }
+       export function create(): Mapping {
+         const mapping: Mapping = Object.create(null);
+         return mapping;
+       }`,
+    );
+    const create = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'create',
+    );
+    const declaration = create?.kind === 'function' ? create.body[0] : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(declaration).toMatchObject({
+      kind: 'variable',
+      declarations: [
+        {
+          type: { kind: 'named', reference: { binding: { name: 'Mapping' } } },
+          initializer: {
+            kind: 'call',
+            arguments: [{ kind: 'literal', value: null }],
+            callee: {
+              kind: 'property',
+              name: 'create',
+              object: { kind: 'identifier', reference: { kind: 'ambient', name: 'Object' } },
+            },
+          },
+        },
+      ],
+    });
+  });
+
   it('records exact anonymous alternatives selected by property-presence flow', () => {
     const result = lower(
       'anonymous-union.ts',

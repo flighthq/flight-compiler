@@ -3606,6 +3606,8 @@ function emitExpression(
       return `(${left} ${op} ${right})`;
     }
     case 'call': {
+      const objectCreated = emitCppObjectCreateCpp(expression, expectedType, context);
+      if (objectCreated) return objectCreated;
       const variantArrayPredicate = emitCppVariantArrayPredicateCpp(expression, context);
       if (variantArrayPredicate) return variantArrayPredicate;
       const variantPropertyArrayPredicate = emitCppVariantPropertyArrayPredicateCpp(expression, context);
@@ -10231,6 +10233,42 @@ function isCppAmbientObjectMemberCallCpp(
     expression.callee.object.reference.kind === 'ambient' &&
     expression.callee.object.reference.name === 'Object' &&
     expression.callee.name === member
+  );
+}
+
+// A null-prototype object used as an open string dictionary already has one exact target carrier:
+// flight::Record. It has owned keyed storage and no prototype chain, so its empty construction preserves
+// both the authored owner and Object.create(null)'s observable initial state. Other contextual objects are
+// deliberately excluded: constructing a fixed row or class here would invent fields the call never supplied,
+// while a non-null prototype needs runtime prototype-chain semantics the target does not currently expose.
+function emitCppObjectCreateCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    !isCppAmbientObjectMemberCallCpp(expression, 'create')
+  ) {
+    return undefined;
+  }
+  const prototype = expression.arguments[0];
+  const nullPrototype = expression.arguments.length === 1 && prototype?.kind === 'literal' && prototype.value === null;
+  if (nullPrototype) {
+    const record = getCppRecordTypeArgumentsCpp(expectedType, context, new Set());
+    if (record?.key.kind === 'primitive' && record.key.name === 'string' && expectedType) {
+      return `${emitType(expectedType, context)}{}`;
+    }
+    emissionError(
+      context,
+      'Object.create(null) requires a contextual string-keyed index-signature or Record owner; flight-cpp cannot infer dictionary storage from an erased value or materialize a fixed structural row',
+      'cpp-object-create-record-context-required',
+    );
+  }
+  emissionError(
+    context,
+    'Object.create with a prototype or property descriptors requires target-runtime prototype-chain and descriptor storage; flight-cpp only represents Object.create(null) through a contextual string-keyed Record owner',
+    'cpp-object-create-prototype-runtime-required',
   );
 }
 
@@ -27480,6 +27518,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-named-properties-write-unsupported',
   'cpp-number-to-fixed-runtime-helper-required',
   'cpp-object-has-own-storage-unrepresented',
+  'cpp-object-create-prototype-runtime-required',
   'cpp-runtime-external-symbol-binding-incomplete',
   'cpp-sparse-array-literal-runtime-required',
   'cpp-union-runtime-domains-erased',
@@ -27503,6 +27542,7 @@ const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-typeof-runtime-domain-unrepresented',
   'cpp-empty-array-element-type-unproven',
   'cpp-logical-or-present-domain-unproven',
+  'cpp-object-create-record-context-required',
   'cpp-structural-assertion-owner-unproven',
   'cpp-structural-variant-assertion-without-nominal-storage',
 ]);

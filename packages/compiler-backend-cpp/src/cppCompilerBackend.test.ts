@@ -4580,6 +4580,65 @@ describe('createCppCompilerBackend', () => {
     }
   });
 
+  it('constructs Object.create(null) as its contextual string-record owner', () => {
+    const result = lower(
+      'object-create-null-record.ts',
+      `type Value = null | boolean | number | string | Value[] | Mapping;
+       interface Mapping { [key: string]: Value }
+       export function create(key: string, value: Value): Mapping {
+         const mapping: Mapping = Object.create(null);
+         mapping[key] = value;
+         return mapping;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain(
+      'flight::Record<flight::String, Value> mapping = flight::Record<flight::String, Value>{};',
+    );
+    expect(contents).toContain('mapping.set(key, assignment_value);');
+    expect(contents).not.toContain('make_structural_ref');
+    expect(contents).not.toContain('static_cast');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-object-create-null-record-'));
+      const header = path.join(directory, 'object_create_null_record.hpp');
+      try {
+        writeFileSync(header, contents, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it('refuses Object.create when no exact contextual record owns its semantics', () => {
+    const failure = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('object-create-unrepresented.ts', source).module, {
+          runtimeProfile: 'flight-cpp',
+        }),
+      );
+    const erased = failure('export function create(): any { return Object.create(null); }');
+    const inherited = failure(
+      `interface Prototype { value: number }
+       export function create(prototype: Prototype): any { return Object.create(prototype); }`,
+    );
+    const described = failure('export function create(): any { return Object.create(null, {}); }');
+
+    expect(erased.rule).toBe('cpp-object-create-record-context-required');
+    expect(erased.classification).toBe('source-portability');
+    expect(erased.message).toContain('contextual string-keyed');
+    for (const refusal of [inherited, described]) {
+      expect(refusal.rule).toBe('cpp-object-create-prototype-runtime-required');
+      expect(refusal.classification).toBe('target-runtime');
+      expect(refusal.message).toContain('prototype-chain and descriptor storage');
+    }
+  });
+
   it('refuses Object.hasOwn when no exact own-property carrier represents the receiver and key', () => {
     const failure = (source: string) =>
       captureBackendEmissionFailure(() =>
