@@ -1393,7 +1393,7 @@ function lowerImportedColorLutCacheModules() {
   return { moduleResolution, results };
 }
 
-function lowerImportedExplainUnpackedRectanglesModules() {
+function lowerImportedBinpackSequenceModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
       {
@@ -1430,12 +1430,30 @@ function lowerImportedExplainUnpackedRectanglesModules() {
       source(
         '@flighthq/binpack',
         'binpack/src/packRectangles.ts',
-        `import type { BinPackOptions, PackableRectangle, PackResult } from '@flighthq/types/contract';
+        `import type {
+           BinPackOptions,
+           PackableRectangle,
+           PackResult,
+           RectangleId,
+         } from '@flighthq/types/contract';
          export const BIN_PACK_DEFAULT_MAX_EXTENT = 16384;
          export function packRectangles(
            rects: readonly Readonly<PackableRectangle>[],
            options?: Readonly<BinPackOptions>,
-         ): PackResult { return { unpacked: [] }; }`,
+         ): PackResult {
+           const placeable: Readonly<PackableRectangle>[] = [];
+           for (const rect of rects) placeable.push(rect);
+           const sorted = sortRectanglesForPacking(placeable);
+           return packIntoBin(sorted);
+         }
+         function packIntoBin(sorted: readonly Readonly<PackableRectangle>[]): PackResult {
+           const unpacked: RectangleId[] = [];
+           for (const rect of sorted) unpacked.push(rect.id);
+           return { unpacked };
+         }
+         function sortRectanglesForPacking(
+           rects: readonly Readonly<PackableRectangle>[],
+         ): readonly Readonly<PackableRectangle>[] { return [...rects]; }`,
       ),
       source(
         '@flighthq/binpack',
@@ -24788,8 +24806,30 @@ Resolver make_resolver(TextureRef texture) {
     }
   });
 
+  it('keeps the current imported rectangle packer on owner-preserving sequence lanes', () => {
+    const { moduleResolution, results } = lowerImportedBinpackSequenceModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The packer creates placeable itself, then lends that owner to the sort helper. The sorted result
+    // is another owning array lent to packIntoBin; neither edge reconstructs Array<Ref<PackableRectangle>>.
+    expect(contents).toMatch(/pack_rectangles\(flight::SequenceView<.*> rects/u);
+    expect(contents).toMatch(/flight::Array<flight::StructuralRef<.*>> placeable/u);
+    expect(contents).toContain('sort_rectangles_for_packing(placeable)');
+    expect(contents).toContain('return pack_into_bin(sorted);');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
   it('keeps the current imported unpacked-rectangle explainer on its owner-preserving sequence lane', () => {
-    const { moduleResolution, results } = lowerImportedExplainUnpackedRectanglesModules();
+    const { moduleResolution, results } = lowerImportedBinpackSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
       moduleResolution,
@@ -24806,9 +24846,9 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('static_pointer_cast');
   });
 
-  it.skipIf(!canCompileCpp)('compiles the current imported unpacked-rectangle sequence lane', () => {
+  it.skipIf(!canCompileCpp)('compiles the current imported binpack sequence lanes', () => {
     if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
-    const { moduleResolution, results } = lowerImportedExplainUnpackedRectanglesModules();
+    const { moduleResolution, results } = lowerImportedBinpackSequenceModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
       moduleResolution,
