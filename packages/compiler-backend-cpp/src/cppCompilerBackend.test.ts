@@ -4170,7 +4170,7 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('Narrow or convert the source expression');
   });
 
-  it('passes the glTF anisotropy and clearcoat texture unions through their exact imported alias', () => {
+  it('passes the glTF anisotropy, clearcoat, and sheen texture unions through their exact imported alias', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -4214,6 +4214,13 @@ describe('createCppCompilerBackend', () => {
              clearcoatRoughnessMap: Texture | null;
              readonly kind: 'ClearcoatPbrExtension';
            }
+           export interface SheenPbrExtension {
+             sheenColor: number;
+             sheenColorMap: Texture | null;
+             sheenRoughness: number;
+             sheenRoughnessMap: Texture | null;
+             readonly kind: 'SheenPbrExtension';
+           }
            export interface GltfExtensionContext {
              resolveTexture(info: object | undefined, colorSpace: string): Texture | null;
            }
@@ -4225,13 +4232,20 @@ describe('createCppCompilerBackend', () => {
         source(
           '@flighthq/materials',
           'packages/materials/src/contract.ts',
-          `import type { AnisotropyPbrExtension, ClearcoatPbrExtension } from '@flighthq/types/contract';
+          `import type {
+             AnisotropyPbrExtension,
+             ClearcoatPbrExtension,
+             SheenPbrExtension,
+           } from '@flighthq/types/contract';
            export function createAnisotropyPbrExtension(
              options?: Readonly<Partial<AnisotropyPbrExtension>>,
            ): AnisotropyPbrExtension { throw new Error('stub'); }
            export function createClearcoatPbrExtension(
              options?: Readonly<Partial<ClearcoatPbrExtension>>,
-           ): ClearcoatPbrExtension { throw new Error('stub'); }`,
+           ): ClearcoatPbrExtension { throw new Error('stub'); }
+           export function createSheenPbrExtension(
+             options?: Readonly<Partial<SheenPbrExtension>>,
+           ): SheenPbrExtension { throw new Error('stub'); }`,
         ),
         source(
           '@flighthq/scene3d-formats',
@@ -4268,6 +4282,23 @@ describe('createCppCompilerBackend', () => {
              kind: 'KHR_materials_clearcoat',
            };`,
         ),
+        source(
+          '@flighthq/scene3d-formats',
+          'packages/scene3d-formats/src/gltfSheen.ts',
+          `import { createSheenPbrExtension } from '@flighthq/materials/contract';
+           import type { GltfExtensionHandler } from '@flighthq/types/contract';
+           export const handler: GltfExtensionHandler = {
+             apply(context) {
+               createSheenPbrExtension({
+                 sheenColor: 0,
+                 sheenColorMap: context.resolveTexture(undefined, 'srgb'),
+                 sheenRoughness: 0,
+                 sheenRoughnessMap: context.resolveTexture(undefined, 'linear'),
+               });
+             },
+             kind: 'KHR_materials_sheen',
+           };`,
+        ),
       ],
       moduleResolution,
     );
@@ -4289,11 +4320,12 @@ describe('createCppCompilerBackend', () => {
     });
     const anisotropy = session.emitModule(modules[2]!)[0]!.contents;
     const clearcoat = session.emitModule(modules[3]!)[0]!.contents;
+    const sheen = session.emitModule(modules[4]!)[0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-    // Clearcoat drives the same exact-carrier widening through three independent map properties. Each
-    // source stays single-evaluation, maps null to null (not the Partial row's undefined sentinel), and
-    // copies only its already-held Ref into the destination variant.
+    // Clearcoat and sheen drive the same exact-carrier widening through three and two independent map
+    // properties. Each source stays single-evaluation, maps null to null (not the Partial row's undefined
+    // sentinel), and copies only its already-held Ref into the destination variant.
     const expectOwnerPreservingTextureWidenings = (emitted: string, count: number) => {
       expect(emitted.match(/RowKey<"resolveTexture">/gu)).toHaveLength(count);
       expect(
@@ -4318,6 +4350,9 @@ describe('createCppCompilerBackend', () => {
     };
     expectOwnerPreservingTextureWidenings(anisotropy, 1);
     expectOwnerPreservingTextureWidenings(clearcoat, 3);
+    expectOwnerPreservingTextureWidenings(sheen, 2);
+    expect(sheen).toContain('flight::String("srgb")');
+    expect(sheen).toContain('flight::String("linear")');
   });
 
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
