@@ -66,6 +66,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
 ];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
 const erasedRowRefusalFixture = 'erasedStructuralRowRefused';
+const unionViewRefusalFixture = 'contextualUnionViewInequivalent';
 const runtime = resolveDependency(root, 'flight-cpp');
 const includeDirectories = runtime === undefined ? [] : collectCppRuntimeIncludeDirectories(runtime.directory);
 const toolchain = findCppCompilerToolchain();
@@ -99,6 +100,17 @@ describe('structural assertion emission', () => {
     expect(pinned).toContain(
       'the runtime contract needs a structural object alternative constructed from the row owner and native object',
     );
+  });
+
+  it('pins the readonly-view union conversion as a refusal', () => {
+    const directory = path.join(goldenDirectory, unionViewRefusalFixture);
+
+    // Nothing pinned this rule before; the shape is the one the corpus reports, where the same owners are
+    // reached through a readonly view and the emitter has no per-slot conversion between the carriers.
+    expect(existsSync(path.join(directory, 'cpp'))).toBe(false);
+    const pinned = readFileSync(path.join(directory, 'cpp.error.txt'), 'utf8');
+    expect(pinned).toContain('contextual C++ union conversion requires equivalent source union evidence');
+    expect(pinned).toContain('keep both sides on the same declared union alias');
   });
 
   it('pins the missing-cell case as a refusal rather than an emission to compile', () => {
