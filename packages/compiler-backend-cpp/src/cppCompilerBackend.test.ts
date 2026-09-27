@@ -934,6 +934,100 @@ function lowerImportedMeshAndMovieClipAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedDialogAndGizmoAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface FileDialogHandle extends Entity {
+           readonly kind: 'File' | 'Directory';
+           readonly name: string;
+           readonly path: string | null;
+         }
+         export interface FileDialogHandleOperations {
+           readonly readBinary?: () => Uint8Array | null;
+           readonly readText?: () => string | null;
+           readonly writeBinary?: (data: Readonly<Uint8Array>) => boolean;
+           readonly writeText?: (data: string) => boolean;
+         }
+         export interface FileDialogHandleRuntime extends EntityRuntime {
+           operations: FileDialogHandleOperations | null;
+         }
+         export interface HierarchyNodeAny extends Entity { parent: HierarchyNodeAny | null }
+         declare const GizmoStateNodeTypeKey: unique symbol;
+         export interface GizmoState<
+           NodeType extends HierarchyNodeAny = HierarchyNodeAny,
+         > extends Entity {
+           readonly [GizmoStateNodeTypeKey]?: NodeType;
+         }`,
+      ),
+      source(
+        '@flighthq/dialog',
+        'dialog/src/fileDialog.ts',
+        `import type {
+           FileDialogHandle,
+           FileDialogHandleOperations,
+           FileDialogHandleRuntime,
+         } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function getFileDialogHandleOperations(
+           handle: Readonly<FileDialogHandle>,
+         ): Readonly<FileDialogHandleOperations> | null {
+           const runtime = handle[EntityRuntimeKey] as FileDialogHandleRuntime | undefined;
+           return runtime?.operations ?? null;
+         }`,
+      ),
+      source(
+        '@flighthq/gizmo',
+        'gizmo/src/gizmoState.ts',
+        `import type {
+           EntityRuntime,
+           GizmoState,
+           HierarchyNodeAny,
+         } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         interface GizmoRuntime<NodeType extends HierarchyNodeAny> extends EntityRuntime {
+           bounds: object;
+           camera: object | null;
+           cleanups: Array<() => void>;
+           customPivotX: number;
+           customPivotY: number;
+           disposed: boolean;
+           handleRoot: object;
+           handles: object[];
+           selection: NodeType | null;
+           signals: object;
+         }
+         export function getGizmoRuntime<NodeType extends HierarchyNodeAny>(
+           state: Readonly<GizmoState<NodeType>>,
+         ): GizmoRuntime<NodeType> {
+           return state[EntityRuntimeKey] as GizmoRuntime<NodeType>;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -3719,6 +3813,37 @@ describe('createCppCompilerBackend', () => {
     expect(movieClip.message).toContain('flight::Ref<flighthq_types::NodeRuntime<');
     expect(movieClip.message).toContain('flight::Ref<flighthq_types::MovieClipRuntime>');
     expect(movieClip.message).toContain('movieClipSignals');
+  });
+
+  it('names the missing owners in file dialog and generic gizmo runtime assertions', () => {
+    const { moduleResolution, results } = lowerImportedDialogAndGizmoAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const dialog = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const gizmo = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+
+    // These are the SDK accessors' exact assertions: both read the EntityRuntimeKey base slot, while
+    // their asserted runtimes add cells that the stored owner does not have. The generic GizmoRuntime
+    // target still has one related represented owner; its type parameter does not license fabricating
+    // the extra cells. Keep both as actionable carrier refusals rather than pointer casts.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [dialog, gizmo]) {
+      expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+      expect(failure.classification).toBe('source-portability');
+      expect(failure.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
+      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('type the slot or accessor as');
+    }
+    expect(dialog.message).toContain('flight::Ref<flighthq_types::FileDialogHandleRuntime>');
+    expect(dialog.message).toContain('operations');
+    expect(gizmo.message).toContain('flight::Ref<GizmoRuntime<NodeType>>');
+    expect(gizmo.message).toContain('bounds');
+    expect(gizmo.message).toContain('selection');
+    expect(gizmo.message).toContain('signals');
   });
 
   it.skipIf(!canCompileCpp)('compiles a nullable native reference projected to a Partial row', () => {
