@@ -1175,6 +1175,80 @@ function lowerImportedRenderStateAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedHasBoundsRectangleModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const results = lowerTypeScriptSources(
+    [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          `export interface BoundsNodeAny { readonly id: string }
+           export interface Rectangle { height: number; width: number; x: number; y: number }
+           export interface HasBoundsRectangleRuntime {
+             boundsRectangle: Rectangle | null;
+             computeLocalBoundsRectangle: (out: Rectangle, source: Readonly<BoundsNodeAny>) => void;
+             isLocalBoundsRectangleValid: ((source: Readonly<BoundsNodeAny>) => boolean) | null;
+             localBoundsRectangle: Rectangle | null;
+             worldBoundsRectangle: Rectangle | null;
+           }
+           export type MethodsOf<T> = {
+             [K in keyof T as T[K] extends (...args: any) => any ? K : never]: T[K];
+           };`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/node',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/node/src/hasBoundsRectangle.ts',
+          `import type {
+             BoundsNodeAny,
+             HasBoundsRectangleRuntime,
+             MethodsOf,
+             Rectangle,
+           } from '@flighthq/types/contract';
+           export function defaultComputeLocalBoundsRectangle(
+             _out: Rectangle,
+             _source: Readonly<BoundsNodeAny>,
+           ): void {}
+           export function initBoundsRectangleRuntimeTrait(
+             target: HasBoundsRectangleRuntime,
+             methods?: Readonly<
+               Partial<
+                 MethodsOf<HasBoundsRectangleRuntime> &
+                   Pick<HasBoundsRectangleRuntime, 'isLocalBoundsRectangleValid'>
+               >
+             >,
+           ): void {
+             target.boundsRectangle = null;
+             target.localBoundsRectangle = null;
+             target.worldBoundsRectangle = null;
+             target.computeLocalBoundsRectangle =
+               methods?.computeLocalBoundsRectangle ?? defaultComputeLocalBoundsRectangle;
+             target.isLocalBoundsRectangleValid = methods?.isLocalBoundsRectangleValid ?? null;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerPixiParseAssertionModules() {
   const pixiParse = lowerPackage(
     '@flighthq/particles-formats',
@@ -4241,6 +4315,57 @@ describe('createCppCompilerBackend', () => {
     expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
     expect(failure.classification).toBe('source-portability');
     expect(failure.message).toContain('Narrow or convert the source expression');
+  });
+
+  it('keeps imported HasBoundsRectangle method defaults in their exact callable carriers', () => {
+    const { moduleResolution, results } = lowerImportedHasBoundsRectangleModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/node': { includePrefix: 'test/node', namespace: 'flighthq_node' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const contents = emitted[1]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // MethodsOf and Pick select the same declared callable cells the runtime interface owns. Optional
+    // chaining contributes only absence; `??` either unwraps that exact callable or supplies the exact
+    // default, while the nullable predicate keeps the interface's one optional callable carrier.
+    expect(contents).toContain('target->compute_local_bounds_rectangle =');
+    expect(contents).toContain('if (nullish_coalesce_left.has_value()) return nullish_coalesce_left.value()');
+    expect(contents).toContain('return default_compute_local_bounds_rectangle');
+    expect(contents).toContain('target->is_local_bounds_rectangle_valid =');
+    expect(contents).not.toContain('std::visit');
+    expect(contents).not.toContain('structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('make_ref');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-has-bounds-method-carriers-'));
+      try {
+        for (const output of emitted) {
+          const outputPath = path.join(directory, output.path);
+          mkdirSync(path.dirname(outputPath), { recursive: true });
+          writeFileSync(outputPath, output.contents, 'utf8');
+        }
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, emitted[1]!.path), [
+          directory,
+          ...cppRuntimeIncludeDirectories,
+        ]);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
   });
 
   it('passes glTF anisotropy, clearcoat, sheen, and specular texture unions through their exact imported alias', () => {
