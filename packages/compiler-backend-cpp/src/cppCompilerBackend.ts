@@ -3948,6 +3948,26 @@ function emitExpression(
           'cpp-reference-assertion-without-heritage',
         );
       }
+      // A reference assertion between records related by CLASS heritage is a POINTER cast, not a value
+      // conversion. `static_cast<Ref<Derived>>` from a `Ref<Base>` has no constructor to reach -- the
+      // converting constructor only goes from derived to base -- while the runtime's own pointer cast is
+      // exactly the conversion the emitted inheritance proves. The union lane already narrows this way,
+      // inside the branch that named the alternative; here the source states the relation directly, and
+      // the same proof applies: both records are known to the emitter, and one derives from the other.
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        referenceSource &&
+        hasFlightReferenceRepresentationCpp(referenceSource, context) &&
+        hasFlightReferenceRepresentationCpp(expression.type, context) &&
+        emitType(referenceSource, context) !== emitType(expression.type, context) &&
+        isCppClassHeritageRelatedCpp(referenceSource, expression.type, context)
+      ) {
+        const pointerTarget = getCppReferenceElementTypeNameCpp(emitType(expression.type, context));
+        if (pointerTarget) {
+          context.includes.add('memory');
+          return `std::static_pointer_cast<${pointerTarget}>(${emitExpression(expression.expression, context)})`;
+        }
+      }
       return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
     }
     case 'conditional': {

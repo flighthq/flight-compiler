@@ -14608,15 +14608,21 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.message).toContain('has no heritage to cast along');
     expect(failure.message).toContain('needs identity the carrier does not hold');
 
-    // CLASS heritage is untouched: the emitted C++ inheritance is real, so the conversion is real.
+    // CLASS heritage takes the pointer cast, in BOTH directions: the emitted inheritance is real, so the
+    // relation is exactly what that cast proves -- and the converting constructor only goes from derived to
+    // base, which is why a `static_cast<Ref<Derived>>` from a base has no constructor to reach and the
+    // down-cast was emitting a call that could not compile.
     const heritage = lower(
       'class-heritage-assertion.ts',
       `class Base { readonly id: string = ''; }
        class Derived extends Base { readonly extra: number = 1; }
-       export function f(value: Derived): Base { return value as Base; }`,
+       export function widen(value: Derived): Base { return value as Base; }
+       export function narrow(value: Base): Derived { return value as Derived; }`,
     );
     const contents = emitIrModuleCpp(heritage.module, { runtimeProfile: 'flight-cpp' }).contents;
-    expect(contents).toContain('return static_cast<flight::Ref<Base>>(value);');
+    expect(contents).toContain('return std::static_pointer_cast<Base>(value);');
+    expect(contents).toContain('return std::static_pointer_cast<Derived>(value);');
+    expect(contents).not.toContain('static_cast<flight::Ref<');
   });
 
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {

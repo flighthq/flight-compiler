@@ -24,6 +24,10 @@ function widen(value:CollisionAabb):ShapeBase {
   return (cast value : ShapeBase);
 }
 
+function narrow(value:ShapeBase):CollisionAabb {
+  return (cast value : CollisionAabb);
+}
+
 function identity(value:Named):Named {
   return (cast value : Named);
 }
