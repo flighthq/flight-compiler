@@ -13525,7 +13525,7 @@ function getCppUnionRepresentationPlan(
       .join('; ');
     emissionError(
       context,
-      `C++ runtime contract maps distinct union domains to one carrier without a discriminator or checked projection (${collisions}); bind each domain to a distinct target type or provide that runtime contract`,
+      `C++ runtime contract maps distinct union domains to one carrier without a discriminator or checked projection (${collisions}); give the domains distinguishable key, element, or member types so each reaches a carrier of its own -- a union of two declarations that differ only in name is one carrier whatever the emitter does -- or provide that runtime contract`,
       'cpp-union-runtime-domains-erased',
     );
   }

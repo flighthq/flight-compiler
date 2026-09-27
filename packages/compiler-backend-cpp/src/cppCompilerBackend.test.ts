@@ -15614,6 +15614,41 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('std::visit');
   });
 
+  it('names the distinguishable declaration that separates two erased union domains', () => {
+    const refusal = (file: string, source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // Two declarations that differ only in NAME reach one C++ carrier: whatever the emitter does, there is
+    // no discriminator or projection to tell the domains apart, so the domain stays the runtime's. The
+    // message therefore names the source edit that does separate them.
+    const erased = refusal(
+      'erased-union-domains.ts',
+      `interface Fields { [name: string]: number }
+       interface Counts { [name: string]: number }
+       export function detect(value: Fields | Counts, key: string): number | undefined { return value[key]; }`,
+    );
+    expect(erased.rule).toBe('cpp-union-runtime-domains-erased');
+    expect(erased.classification).toBe('target-runtime');
+    expect(erased.message).toContain('give the domains distinguishable key, element, or member types');
+    expect(erased.message).toContain('flight::Record<flight::String, double>');
+
+    // And the edit works: one distinguishable element type and the union reaches two carriers, lowering as
+    // a checked conversion rather than refusing.
+    const separated = lower(
+      'separated-union-domains.ts',
+      `interface Fields { [name: string]: number }
+       interface Counts { [name: string]: number | string }
+       export function detect(value: Fields | Counts, key: string): number | string | undefined {
+         return value[key];
+       }`,
+    );
+    const contents = emitIrModuleCpp(separated.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(contents).toContain('flight::Record<flight::String, std::variant<double, flight::String>>');
+    expect(contents).toContain('flight::Record<flight::String, double>');
+  });
+
   it('keeps open Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
@@ -16315,7 +16350,10 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.classification).toBe('target-runtime');
     expect(failure.message).toContain('First | Second -> flight::Same');
     expect(failure.message).toContain('without a discriminator or checked projection');
-    expect(failure.message).toContain('bind each domain to a distinct target type');
+    // The message names the SOURCE edit that separates two domains as well as the runtime contract that
+    // would otherwise have to distinguish them: a union of two declarations differing only in name reaches
+    // one carrier whatever the emitter does.
+    expect(failure.message).toContain('give the domains distinguishable key, element, or member types');
   });
 
   it('normalizes a homogeneous tuple and array union to the shared flight-cpp array domain', () => {
