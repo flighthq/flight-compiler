@@ -350,6 +350,22 @@ function lowerImportedTypeAssertionModules() {
         '@flighthq/types',
         'types/src/contract.ts',
         `export interface EntityRuntime { binding: object | null }
+         export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface RenderState extends Entity { pixelRatio: number }
+         export interface RenderTargetDimensions { height: number; width: number }
+         export interface AppRenderView<
+           State extends RenderState = RenderState,
+           Target extends RenderTargetDimensions = RenderTargetDimensions,
+         > extends Entity { renderState: State; renderTarget: Target }
+         export type AppRenderViewResize<
+           State extends RenderState = RenderState,
+           Target extends RenderTargetDimensions = RenderTargetDimensions,
+         > = (state: State, target: Target, width: number, height: number) => void;
+         export interface RenderStateRuntime extends EntityRuntime {
+           currentFrameId: number;
+           renderProxyMap: WeakMap<object, object>;
+         }
          export interface CollisionAabb2D { maxX: number; minX: number }
          export interface CollisionCircle2D { radius: number; x: number }
          export type CollisionShape2D =
@@ -383,6 +399,50 @@ function lowerImportedTypeAssertionModules() {
         `import type { ParticleFormatKind } from '@flighthq/types/contract';
          export function detect(value: string | null): ParticleFormatKind | null {
            return value as ParticleFormatKind | null;
+         }`,
+      ),
+      source(
+        '@flighthq/app',
+        'app/src/appRenderView.ts',
+        `import type {
+           AppRenderView,
+           AppRenderViewResize,
+           EntityRuntime,
+           RenderState,
+           RenderTargetDimensions,
+         } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         interface AppRenderViewRuntime<
+           State extends RenderState = RenderState,
+           Target extends RenderTargetDimensions = RenderTargetDimensions,
+         > extends EntityRuntime {
+           attached: boolean;
+           resize: AppRenderViewResize<State, Target>;
+           synchronize: () => void;
+         }
+         export function getAppRenderViewRuntime(
+           view: AppRenderView,
+         ): AppRenderViewRuntime<RenderState, RenderTargetDimensions> {
+           return view[EntityRuntimeKey] as AppRenderViewRuntime<RenderState, RenderTargetDimensions>;
+         }`,
+      ),
+      source(
+        '@flighthq/render',
+        'render/src/renderState.ts',
+        `import type { RenderState, RenderStateRuntime } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function getRenderStateRuntime(state: RenderState): RenderStateRuntime {
+           return state[EntityRuntimeKey] as RenderStateRuntime;
+         }`,
+      ),
+      source(
+        '@flighthq/render',
+        'render/src/concreteRenderState.ts',
+        `import type { RenderStateRuntime } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         interface RuntimeHolder { [EntityRuntimeKey]: RenderStateRuntime | undefined }
+         export function getConcreteRuntime(state: RuntimeHolder): RenderStateRuntime {
+           return state[EntityRuntimeKey] as RenderStateRuntime;
          }`,
       ),
     ],
@@ -2760,6 +2820,38 @@ describe('createCppCompilerBackend', () => {
     // Particle format detection's open branded string union already has the source carrier exactly.
     expect(detect).toMatch(/detect\(std::optional<flight::String> value\) \{\s*return value;\s*\}/u);
     expect(detect).not.toContain('static_cast');
+  });
+
+  it('names the unrepresented owners in the app and render runtime-key assertion cluster', () => {
+    const { moduleResolution, results } = lowerImportedTypeAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const app = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+    const render = captureBackendEmissionFailure(() => session.emitModule(modules[5]!));
+    const concrete = session.emitModule(modules[6]!)[0]!.contents;
+
+    // Both SDK assertions read EntityRuntime from EntityRuntimeKey. The derived runtime fields have no
+    // cells in that represented owner, so checker assignability cannot identify a recoverable C++ value:
+    // a cast would only rename Ref<EntityRuntime>. Naming the concrete slot up front is the safe control.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [app, render]) {
+      expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+      expect(failure.classification).toBe('source-portability');
+      expect(failure.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
+      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('type the slot or accessor as');
+    }
+    expect(app.message).toContain('AppRenderViewRuntime');
+    expect(app.message).toContain('attached, resize and synchronize');
+    expect(render.message).toContain('flighthq_types::RenderStateRuntime');
+    expect(render.message).toContain('currentFrameId and renderProxyMap');
+    expect(concrete).toContain('get_concrete_runtime');
+    expect(concrete).not.toContain('static_pointer_cast');
+    expect(concrete).not.toContain('structural_ref_cast');
   });
 
   it('carries absence across a union carrier narrowing and refuses to invent it where the target has none', () => {

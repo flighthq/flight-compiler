@@ -5527,13 +5527,16 @@ function refuseCppStructuralAssertionOwnerUnprovenCpp(
   target: Readonly<IrType> | undefined,
 ): never {
   const absent = collectCppStructuralRowAssertionAbsentMembersCpp(source, target, context);
+  const diagnosticContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set() };
+  const sourceType = source ? emitType(source, diagnosticContext) : 'the unresolved source row';
+  const targetType = target ? emitType(target, diagnosticContext) : 'the unresolved asserted row';
   const missing =
     absent.length === 0
       ? 'members the source type does not declare'
       : `${renderCppSubjectNameListCpp(absent)}, which the source type does not declare`;
   emissionError(
     context,
-    `the asserted row reads ${missing}, and a structural owner binds the members of the type the object was first reached as, so a member the source's own declaration lacks has no cell to answer the read. Declare the source as a type that declares ${absent.length === 0 ? 'them' : renderCppSubjectNameListCpp(absent)} -- convert it where the concrete type is known -- rather than asserting past it.`,
+    `the asserted row from ${sourceType} to ${targetType} reads ${missing}, and a structural owner binds the members of the type the object was first reached as, so a member the source's own declaration lacks has no cell to answer the read. An assertion cannot add those cells or prove which wider owner was stored. Declare the source as a type that declares ${absent.length === 0 ? 'them' : renderCppSubjectNameListCpp(absent)} -- type the slot or accessor as ${targetType} where the concrete type is known, or construct that target explicitly -- rather than asserting past ${sourceType}.`,
     'cpp-structural-assertion-owner-unproven',
   );
 }
@@ -11946,7 +11949,12 @@ function emitUnionMemberAssertionCpp(
     // lowered yet when what actually blocks it is identity the carrier never held.
     const projectedImplementor =
       !namesSourceUnion && isCppProjectedInterfaceImplementorAssertionCpp(assertedType, assertedPlan, plan, context);
-    const missingStructuralOwner = getCppStructuralAssertionMissingOwnerPairCpp(plan, assertedPlan, context);
+    const missingStructuralOwner = getCppStructuralAssertionMissingOwnerPairCpp(
+      plan,
+      assertedPlan,
+      assertedType,
+      context,
+    );
     if (missingStructuralOwner) {
       refuseCppStructuralAssertionOwnerUnprovenCpp(
         context,
@@ -12063,12 +12071,24 @@ function getCppStructuralUnionAssertionAlternativeCpp(
 function getCppStructuralAssertionMissingOwnerPairCpp(
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
   assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan> | undefined,
+  assertedType: Readonly<IrType>,
   context: EmitContext,
 ): Readonly<{ source: Readonly<IrType>; target: Readonly<IrType> }> | undefined {
-  if (plan.valueSlots.length !== 1 || assertedPlan?.valueSlots.length !== 1) return undefined;
+  if (plan.valueSlots.length !== 1) return undefined;
   const sourceSlot = plan.valueSlots[0]!;
-  const targetSlot = assertedPlan.valueSlots[0]!;
+  const assertedSingle = getCppSingleValueTypePlanCpp(assertedType, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set(),
+  });
+  const targetSlot =
+    assertedPlan?.valueSlots.length === 1
+      ? assertedPlan.valueSlots[0]!
+      : assertedSingle
+        ? { runtimeType: assertedSingle.presentType, targetType: assertedSingle.targetType }
+        : undefined;
   if (
+    !targetSlot ||
     getCppReferenceElementTypeNameCpp(sourceSlot.targetType) === undefined ||
     getCppReferenceElementTypeNameCpp(targetSlot.targetType) === undefined
   ) {
