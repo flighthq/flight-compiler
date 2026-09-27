@@ -1923,7 +1923,7 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('break an alias cycle');
   });
 
-  it('attributes an unproved asserted union member to source portability only for assertion syntax', () => {
+  it('attributes a variant member read to the guard the source has to state', () => {
     const source = `interface Left { readonly tag: string }
        interface Right { readonly tag: number }`;
     const plain = lower(
@@ -1944,10 +1944,16 @@ describe('createCppCompilerBackend', () => {
       emitIrModuleCpp(asserted, { runtimeProfile: 'flight-cpp' }),
     );
 
+    // Both alternatives HOLD the member -- the source language accepts the read, and what the target
+    // cannot do is read it without knowing which alternative is active, because the two store `tag` at
+    // different C++ types. That guard is the source's to state, so the plain spelling is attributed to the
+    // source as well; the assertion spelling states the receiver the read needs, and reaches the assertion
+    // lane's own rule instead.
     expect(plainFailure).toMatchObject({
-      classification: 'compiler-restriction',
+      classification: 'source-portability',
       rule: 'cpp-union-member-access-unguarded',
     });
+    expect(plainFailure.message).toContain('Narrow the union to one alternative where the member is read');
     expect(assertedFailure).toMatchObject({
       classification: 'source-portability',
       rule: 'cpp-type-assertion-unidentified',
@@ -14852,6 +14858,48 @@ Resolver make_resolver(TextureRef texture) {
         ),
       ).rule,
     ).toBe('cpp-reference-assertion-without-heritage');
+  });
+
+  it('attributes an unguarded variant member read to the guard the source has to state', () => {
+    const source = (body: string) => `interface AsepriteFrame { readonly x: number }
+       interface TexturePackerFrame { readonly filename: string }
+       interface AsepriteAtlas { readonly frames: AsepriteFrame[]; readonly meta: { readonly app: string } }
+       interface TexturePackerAtlas { readonly frames: TexturePackerFrame[]; readonly meta: { readonly size: number } }
+       type Atlas = AsepriteAtlas | TexturePackerAtlas;
+       ${body}`;
+
+    // Every alternative holds the member, so the source language accepts the read; the target needs to know
+    // which alternative is active, and that guard is the source's to write. The finding is attributed to the
+    // source for that reason, and the message names the shapes that state the guard.
+    const unguarded = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'unguarded-variant-member.ts',
+          source(`export function f(atlas: Atlas): number {
+          return atlas.frames.length;
+        }`),
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(unguarded.rule).toBe('cpp-union-member-access-unguarded');
+    expect(unguarded.classification).toBe('source-portability');
+    expect(unguarded.message).toContain('Narrow the union to one alternative where the member is read');
+
+    // The guards that DO narrow already lower, and stay lowered: a discriminant test selects the active
+    // alternative, so the read is on one record rather than on the variant.
+    const discriminated = lower(
+      'discriminated-variant-member.ts',
+      `interface Aseprite { readonly format: 'aseprite'; readonly frames: readonly number[] }
+       interface Packer { readonly format: 'packer'; readonly frames: readonly string[] }
+       export function f(atlas: Aseprite | Packer): number {
+         if (atlas.format === 'aseprite') return atlas.frames.length;
+         return 0;
+       }`,
+    );
+    const contents = emitIrModuleCpp(discriminated.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(contents).toContain('std::get<');
+    expect(contents).toContain('->frames.size()');
   });
 
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {

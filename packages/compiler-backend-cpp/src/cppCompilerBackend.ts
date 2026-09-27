@@ -4876,11 +4876,32 @@ function emitExpression(
         // narrowed union member that cannot identify one alternative refuses with that message, which
         // names the narrowing the read depends on rather than the read itself.
         emitExpression(expression.object, { ...context, anonymousStructs: new Map(), includes: new Set() });
+        // Every alternative holding the member is a different fact from some of them holding it. The source
+        // language accepts the first -- the member belongs to each alternative the value could be -- and
+        // what the target cannot do is read it without knowing which alternative is active, because the
+        // alternatives store it at different C++ types. That is a guard the SOURCE has to state, so it is
+        // attributed to the source rather than to this compiler. A member the alternatives do not all hold
+        // is a claim about the source's own types, which is a different question and keeps the default.
+        const receiverUnion = getIrUnionTypeCpp(
+          getIrExpressionTypeEvidenceCpp(expression.object, context) ?? { kind: 'unknown', source: 'unknown' },
+          context,
+          new Set(),
+        );
+        const everyAlternativeHoldsMember =
+          receiverUnion !== undefined &&
+          getCppUnionRepresentationPlan(receiverUnion, context).valueSlots.length > 0 &&
+          getCppUnionRepresentationPlan(receiverUnion, context).valueSlots.every(
+            (slot) => getIrObjectPropertyTypeCpp(slot.runtimeType, expression.name, context) !== undefined,
+          );
         emissionError(
           context,
-          `property ${expression.name} on a C++ variant requires proven union member access`,
+          everyAlternativeHoldsMember
+            ? `property ${expression.name} on a C++ variant requires proven union member access: every alternative holds it, but at C++ types the variant cannot read as one. Narrow the union to one alternative where the member is read -- a discriminant test, a type predicate, or an assertion -- or read a member the alternatives store at one type`
+            : `property ${expression.name} on a C++ variant requires proven union member access`,
           'cpp-union-member-access-unguarded',
-          hasCppReceiverAssertionSyntaxCpp(expression.object) ? 'source-portability' : undefined,
+          hasCppReceiverAssertionSyntaxCpp(expression.object) || everyAlternativeHoldsMember
+            ? 'source-portability'
+            : undefined,
         );
       }
       if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'ambient') {
