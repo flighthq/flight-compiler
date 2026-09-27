@@ -1028,6 +1028,82 @@ function lowerImportedDialogAndGizmoAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedRenderStateAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface RenderState extends Entity { pixelRatio: number }
+         export interface Renderable extends Entity { kind: string }
+         export interface RenderProxy { source: Renderable }
+         export interface RenderProxy2D extends RenderProxy { alpha: number }
+         export interface RenderProxyAdapter { adapt: (source: Renderable) => RenderProxy }
+         export interface RenderRegistrySignals { missed: boolean }
+         export interface RenderRegistryTable { name: string }
+         export interface RenderRegistries {
+           renderers: object;
+           strokeTessellator: object | null;
+         }
+         export interface RenderStateRuntime extends EntityRuntime {
+           currentFrameId: number;
+           renderAdaptHook: ((state: RenderState, source: Renderable, data: RenderProxy2D) => void) | null;
+           renderProxyAdapterMap: WeakMap<Renderable, RenderProxyAdapter>;
+           renderProxyMap: WeakMap<Renderable, RenderProxy>;
+           renderProxySources: Set<Renderable>;
+           registryMiss:
+             | (((registry: RenderRegistryTable, kind: string) => void) & {
+                 clear(): void;
+                 readonly signals: RenderRegistrySignals;
+               })
+             | null;
+           registries: RenderRegistries;
+           rendererMapId: number;
+           tempStack: Renderable[];
+         }`,
+      ),
+      source(
+        '@flighthq/render',
+        'render/src/renderState.ts',
+        `import type { RenderState, RenderStateRuntime } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function getRenderStateRuntime(state: RenderState): RenderStateRuntime {
+           return state[EntityRuntimeKey] as RenderStateRuntime;
+         }`,
+      ),
+      source(
+        '@flighthq/render',
+        'render/src/typedRenderState.ts',
+        `import type { RenderStateRuntime } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         interface RuntimeHolder { [EntityRuntimeKey]: RenderStateRuntime | undefined }
+         export function getRenderStateRuntime(state: RuntimeHolder): RenderStateRuntime {
+           return state[EntityRuntimeKey] as RenderStateRuntime;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedPhysicsShapeAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -3737,6 +3813,36 @@ describe('createCppCompilerBackend', () => {
     expect(concrete).toContain('get_concrete_runtime');
     expect(concrete).not.toContain('static_pointer_cast');
     expect(concrete).not.toContain('structural_ref_cast');
+  });
+
+  it('names the base owner behind the current render-state runtime assertion', () => {
+    const { moduleResolution, results } = lowerImportedRenderStateAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const typed = session.emitModule(modules[2]!)[0]!.contents;
+
+    // The production accessor reads the base EntityRuntime slot. RenderStateRuntime's maps, set,
+    // callbacks, registry intersection, and stack are not alternate views of that represented owner,
+    // so checker inheritance evidence can identify the owner only to explain why no cast is sound.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
+    expect(failure.message).toContain('flight::Ref<flighthq_types::RenderStateRuntime>');
+    expect(failure.message).toContain('renderAdaptHook');
+    expect(failure.message).toContain('renderProxyAdapterMap');
+    expect(failure.message).toContain('registryMiss');
+    expect(failure.message).toContain('tempStack');
+    expect(failure.message).toContain('An assertion cannot add those cells');
+    expect(failure.message).toContain('type the slot or accessor as');
+    expect(typed).toContain('get_render_state_runtime');
+    expect(typed).not.toContain('static_pointer_cast');
+    expect(typed).not.toContain('structural_ref_cast');
   });
 
   it('classifies the scene runtime, node-data, sprite, and PBR extension assertions', () => {
