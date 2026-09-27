@@ -25192,6 +25192,121 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted.contents).not.toContain('.value_or(std::nullopt)');
   });
 
+  it('keeps a scene hit material indexed lookup in its imported nullable owner', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Material',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Material.ts' },
+        },
+        {
+          specifier: './Mesh',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Mesh.ts' },
+        },
+        {
+          specifier: './Scene3DHit',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Scene3DHit.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/Material.ts',
+          `export interface Material { readonly kind: string }
+           export interface OtherMaterial { readonly kind: string }`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/Mesh.ts',
+          `import type { Material } from './Material';
+           export interface Mesh { geometry: number; materials: (Material | null)[] }`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/Scene3DHit.ts',
+          `import type { Mesh } from './Mesh';
+           export interface Scene3DHit { node: Mesh | null; triangleIndex: number }`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          `export * from './Material'; export * from './Mesh'; export * from './Scene3DHit';`,
+        ),
+        source(
+          '@flighthq/picking',
+          'packages/picking/src/sceneHitAttributes.ts',
+          `import type { Material, Scene3DHit } from '@flighthq/types/contract';
+           function getMeshGeometryTriangleSubsetIndex(_geometry: number, triangleIndex: number): number {
+             return triangleIndex;
+           }
+           export function getScene3DHitMaterial(hit: Readonly<Scene3DHit>): Material | null {
+             const node = hit.node;
+             if (node === null) return null;
+             const subsetIndex = getMeshGeometryTriangleSubsetIndex(node.geometry, hit.triangleIndex);
+             return subsetIndex < 0 ? null : (node.materials[subsetIndex] ?? null);
+           }`,
+        ),
+        source(
+          '@flighthq/picking',
+          'packages/picking/src/sceneHitAttributes-lookalike.ts',
+          `import type { OtherMaterial, Scene3DHit } from '@flighthq/types/contract';
+           export function getScene3DHitMaterial(hit: Readonly<Scene3DHit>): OtherMaterial | null {
+             const node = hit.node;
+             if (node === null) return null;
+             return node.materials[hit.triangleIndex] ?? null;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/picking': { includePrefix: 'flight/picking', namespace: 'flight::picking' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = session.emitModule(modules[4]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // Readonly is only a row view of the imported hit owner. Its node property retains the nullable
+    // Mesh owner, and the source null guard unwraps exactly that carrier. The selected array element is
+    // already Material | null, so `?? null` changes no represented domain and can return it directly.
+    expect(emitted).toContain('std::optional<flight::Ref<flight::types::Material>> get_scene3_dhit_material');
+    expect(emitted).toContain('auto node = flight::row_get<flight::RowKey<"node">>(hit);');
+    expect(emitted).toContain('node.value()->materials.element(subset_index)');
+    expect(emitted).not.toContain('flight::materialize_row');
+    expect(emitted).not.toContain('flight::structural_ref_cast');
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('static_cast<flight::Ref');
+    expect(emitted).not.toContain('make_ref');
+
+    // Structural source compatibility does not authorize changing the owner. An independently declared
+    // lookalike has a different Ref carrier, and there is no checked runtime conversion between them.
+    const lookalike = captureBackendEmissionFailure(() => session.emitModule(modules[5]!));
+    expect(lookalike.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(lookalike.classification).toBe('target-runtime');
+    expect(lookalike.message).toContain('no checked target-runtime conversion exists');
+    expect(lookalike.message).toContain('keep both sides on the same declared union alias');
+  });
+
   it('preserves imported alias storage when a Record miss changes from undefined to null', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',
