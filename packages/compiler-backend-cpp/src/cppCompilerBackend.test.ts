@@ -1738,6 +1738,52 @@ function lowerImportedRiveSceneSequenceModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedTreeViewSequenceModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface TreeViewControllerItem {
+           children?: readonly Readonly<TreeViewControllerItem>[];
+           expanded?: boolean;
+         }`,
+      ),
+      source(
+        '@flighthq/gui',
+        'gui/src/treeViewController.ts',
+        `import type { TreeViewControllerItem } from '@flighthq/types/contract';
+         export function collectTreeViewItems(
+           source: readonly Readonly<TreeViewControllerItem>[],
+         ): number {
+           let count = 0;
+           for (const item of source) {
+             count++;
+             if (item.children !== undefined) count += collectTreeViewItems(item.children);
+           }
+           return count;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedPhysicsShapeAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -25633,6 +25679,64 @@ Resolver make_resolver(TextureRef texture) {
       }
       const scene = emitted[3]!;
       const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, scene.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps imported recursive tree-view children on their owning structural sequence', () => {
+    const { moduleResolution, results } = lowerImportedTreeViewSequenceModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The narrowed property read returns the children array's own handle. Passing that handle to the
+    // recursive SequenceView parameter preserves the child's array identity without rebuilding rows.
+    expect(contents).toMatch(/collect_tree_view_items\(flight::SequenceView<.*> source/u);
+    expect(contents).toMatch(/collect_tree_view_items\([^;]*children/u);
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles imported recursive tree-view sequence forwarding', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedTreeViewSequenceModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/gui': { includePrefix: 'test/gui', namespace: 'flighthq_gui' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-tree-view-sequence-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const controller = emitted[1]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, controller.path), [
         directory,
         ...cppRuntimeIncludeDirectories,
       ]);
