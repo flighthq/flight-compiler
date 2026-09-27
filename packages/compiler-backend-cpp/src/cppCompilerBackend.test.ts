@@ -21475,7 +21475,48 @@ Resolver make_resolver(TextureRef texture) {
     expect(output).toContain('return total(rectangles)');
   });
 
-  it('refuses a discarded nominal referent as a source-portability change with the declaration to write', () => {
+  it('forwards a readonly structural sequence through the same owner-preserving view', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'forward-readonly-structural-array.ts',
+        `interface Operation { kind: string }
+         function signature(run: readonly Readonly<Operation>[]): string { return run[0].kind; }
+         function copy(run: readonly Readonly<Operation>[]): readonly Readonly<Operation>[] { return [...run]; }
+         export function read(run: readonly Readonly<Operation>[]): string { return signature(run); }
+         export function readCopy(run: readonly Readonly<Operation>[]): string {
+           const copied = copy(run);
+           return signature(copied);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    const view =
+      'flight::SequenceView<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Operation>>>>>';
+    expect(output).toContain(`signature(${view} run)`);
+    expect(output).toContain(`read(${view} run)`);
+    expect(output).toContain('return signature(run);');
+    expect(output).toContain('return signature(copied);');
+    expect(output).not.toContain('flight::materialize_row');
+    expect(output).not.toContain('flight::structural_ref_cast');
+  });
+
+  it('recovers an exact nominal referent from a readonly structural sequence element', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'structural-sequence-element-owner.ts',
+        `interface RiveCoreObject { typeKey: number }
+         export function first(objects: readonly Readonly<RiveCoreObject>[]): RiveCoreObject {
+           return objects[0];
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('return flight::structural_ref_cast<flight::Ref<RiveCoreObject>>(objects.element(0.0));');
+  });
+
+  it('reports missing outer owner recovery as a target-runtime capability with the declaration to write', () => {
     const declarations = `const EntityRuntimeKey = Symbol.for('EntityRuntime');
       interface Entity { [EntityRuntimeKey]: object | undefined }
       type EntityConstruction<Type extends Entity> = { -readonly [Key in keyof Type]: Type[Key] };
@@ -21495,9 +21536,11 @@ Resolver make_resolver(TextureRef texture) {
     );
 
     expect(failure.rule).toBe('cpp-contextual-structural-array-nominal-recovery-unproven');
-    // The view's element is the projected row, so the referent is not recoverable from it and the
-    // emitter cannot invent one: the report has to attribute the fix to the source, not to itself.
-    expect(failure.classification).toBe('source-portability');
+    // The exact RowOf keeps each referent, but SequenceView exposes no typed owner handle that could be
+    // stored as Array<Ref<T>> without a copy, so this is a runtime storage gap rather than lost evidence.
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('each RowOf element retains its exact nominal referent');
+    expect(failure.message).toContain('copying them into a different array object');
     expect(failure.message).toContain('readonly RiveCoreObject[] rather than readonly Readonly<RiveCoreObject>[]');
   });
 
@@ -21549,9 +21592,10 @@ Resolver make_resolver(TextureRef texture) {
     );
 
     // The refusal keys on the representations rather than on the two type spellings matching: the
-    // parameter position is an owner-preserving view and the field position is an owning array, so the
-    // write needs an element conversion this declaration gives no type for.
+    // The parameter is an owner-preserving view and the field is an owning array. Even with identical
+    // element spellings, the write needs a typed outer-owner handle that SequenceView does not expose.
     expect(contents.rule).toBe('cpp-contextual-structural-array-nominal-recovery-unproven');
+    expect(contents.classification).toBe('target-runtime');
     expect(contents.message).toContain('nominal element type');
     // No spelling is invented when the target names no nominal type of its own.
     expect(contents.message).not.toContain('readonly RiveCoreObject[]');

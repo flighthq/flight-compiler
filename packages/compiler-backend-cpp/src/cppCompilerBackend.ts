@@ -17495,6 +17495,30 @@ function getCppResolvedPromiseArgumentExpectedTypeCpp(
     : undefined;
 }
 
+// A readonly structural-array parameter is emitted as SequenceView<Element>. When the argument already
+// emits that same element representation, Array<Element> converts to the view and another SequenceView
+// passes through unchanged, preserving the outer owner's identity in both cases. Supplying the source
+// array type as contextual storage would instead make the generic owning-array refusal mistake this call
+// boundary for an assignment into Array<Element>.
+function isCppIdentityPreservingStructuralSequenceViewArgumentCpp(
+  expression: Readonly<IrExpression>,
+  parameterType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (expression.kind === 'array') return false;
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
+  const sourceArray = getIrArrayTypeCpp(sourceType, context, new Set());
+  const targetArray = getIrArrayTypeCpp(parameterType, context, new Set());
+  if (
+    !sourceArray ||
+    !targetArray?.readonly ||
+    !context.referenceRepresentationPlanner.resolveStructuralRow(targetArray.element, context.module)
+  ) {
+    return false;
+  }
+  return areCppTypesRepresentationEquivalent(sourceArray.element, targetArray.element, context);
+}
+
 function getIrCallArgumentExpectedTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   index: number,
@@ -17537,7 +17561,17 @@ function getIrCallArgumentExpectedTypeCpp(
     if (provided) return provided;
   }
   const semanticType = getIrInvocationArgumentExpectedTypeCpp(expression, index);
-  if (expression.callee.kind === 'function') return expression.callee.parameters[index]?.type;
+  const semanticArgument = expression.arguments[index];
+  const preserveStructuralSequenceView = (parameterType: Readonly<IrType> | undefined) =>
+    parameterType &&
+    semanticArgument &&
+    isCppIdentityPreservingStructuralSequenceViewArgumentCpp(semanticArgument, parameterType, context)
+      ? undefined
+      : parameterType;
+  if (semanticType && preserveStructuralSequenceView(semanticType) === undefined) return undefined;
+  if (expression.callee.kind === 'function') {
+    return preserveStructuralSequenceView(expression.callee.parameters[index]?.type);
+  }
   if (expression.callee.kind !== 'identifier' || expression.callee.reference.kind !== 'binding') {
     if (semanticType) return semanticType;
     // Required parameters do not need optional/default invocation metadata, but a property whose
@@ -17552,6 +17586,7 @@ function getIrCallArgumentExpectedTypeCpp(
     const argument = expression.arguments[index];
     const argumentType = argument ? getIrExpressionTypeEvidenceCpp(argument, context) : undefined;
     if (!argument || !argumentType) return parameterType;
+    if (isCppIdentityPreservingStructuralSequenceViewArgumentCpp(argument, parameterType, context)) return undefined;
     const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
     if (emitType(argumentType, isolatedContext) === emitType(parameterType, isolatedContext)) return undefined;
     const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(argumentType, context.module);
@@ -17586,7 +17621,9 @@ function getIrCallArgumentExpectedTypeCpp(
   );
   const parameterType =
     semanticType ?? declaration?.parameters[index]?.type ?? bindingCallable?.parameters[index]?.type;
-  if (!declaration || !parameterType || declaration.typeParameters.length === 0) return parameterType;
+  if (!declaration || !parameterType || declaration.typeParameters.length === 0) {
+    return preserveStructuralSequenceView(parameterType);
+  }
   // Semantic invocation evidence can retain the declaration's type parameter even though template
   // emission has already inferred its concrete argument. Apply that same complete substitution to
   // the parameter slot so contextual union construction does not compare a value against raw `N`.
@@ -17595,12 +17632,14 @@ function getIrCallArgumentExpectedTypeCpp(
     (declaration.typeParameters.length === expression.typeArguments.length
       ? expression.typeArguments
       : getCppContextualCallTypeArgumentsCpp(expression, expectedType, context));
-  return typeArguments?.length === declaration.typeParameters.length
-    ? resolveIrTypeStructuralSubstitution(
-        parameterType,
-        createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
-      )
-    : parameterType;
+  const resolvedParameterType =
+    typeArguments?.length === declaration.typeParameters.length
+      ? resolveIrTypeStructuralSubstitution(
+          parameterType,
+          createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
+        )
+      : parameterType;
+  return preserveStructuralSequenceView(resolvedParameterType);
 }
 
 function getCppTaskFulfillmentCallbackTypeCpp(
@@ -18800,15 +18839,6 @@ function getCppNominalReferenceNameCpp(type: Readonly<IrType>): string | undefin
   return type.reference.binding.name;
 }
 
-// A readonly structural sequence parameter is an owner-preserving view: it accepts any owner whose
-// elements convert to the projected row, so it never names one nominal element type. Storing that view
-// as an owning array of one nominal reference is therefore not merely unemitted but unrepresentable.
-// The view keeps the source array's identity as an opaque handle beside a projected element, so the
-// nominal referent of an element is not recoverable from the view at all -- converting one would assume
-// exactly what the parameter's type declined to state -- and materializing a fresh array would publish
-// a different array object than the one the assignment stored, which the source can observe. What is
-// missing is the element type the source dropped when it wrote the projection, so this refusal belongs
-// to the source to fix and is attributed source-portability rather than compiler-restriction.
 // An array whose element union is a strict subset of the element union the position expects cannot cross.
 //
 // The target's container is parameterized by its ELEMENT type, so the parameter is a different C++ container,
@@ -18861,6 +18891,12 @@ function getCppUnionAlternativeSpellingsCpp(type: Readonly<IrType>, context: Emi
   return [...new Set((union?.types ?? [type]).map(spelling))];
 }
 
+// A readonly structural sequence parameter is an owner-preserving view: its RowOf element retains the
+// exact nominal referent, and the view retains the source array's identity. What it does not retain is a
+// typed owning array handle: SequenceView keeps that owner behind opaque identity and accessor closures,
+// so it cannot recover Array<Ref<T>> even when every element can independently recover Ref<T>. Building
+// that array by iteration would publish a different array object, which the source can observe. This is
+// therefore a missing target-runtime projected-sequence storage capability, not lost source evidence.
 function refuseCppContextualStructuralArrayNominalRecoveryCpp(
   expression: Readonly<IrExpression>,
   target: Readonly<IrType>,
@@ -18880,6 +18916,15 @@ function refuseCppContextualStructuralArrayNominalRecoveryCpp(
   if (!sourceArray?.readonly || !targetArray || !hasFlightReferenceRepresentationCpp(targetArray.element, context)) {
     return;
   }
+  // Calls and property/index reads produce the owning Array carrier, unlike a structural-sequence
+  // parameter. When its element representation is already the target's, copying the Array handle keeps
+  // the same storage and identity; no nominal recovery or element conversion occurs.
+  if (
+    (expression.kind === 'call' || expression.kind === 'property' || expression.kind === 'element') &&
+    areCppTypesRepresentationEquivalent(sourceArray.element, targetArray.element, context)
+  ) {
+    return;
+  }
   const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(sourceArray.element, context.module);
   if (!sourceRow) return;
   const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceArray.element, context.module);
@@ -18890,11 +18935,11 @@ function refuseCppContextualStructuralArrayNominalRecoveryCpp(
   const nominalName = getCppNominalReferenceNameCpp(targetArray.element);
   const conversion =
     nominalName === undefined
-      ? 'Declare both the target and the source with the nominal element type rather than its Readonly projection, so the array the caller owns is the one stored.'
-      : `Declare the source as readonly ${nominalName}[] rather than readonly Readonly<${nominalName}>[], so the array the caller owns is the one stored.`;
+      ? 'Until flight-cpp provides identity-preserving projected-sequence storage, declare both the target and the source with the nominal element type rather than its Readonly projection.'
+      : `Until flight-cpp provides identity-preserving projected-sequence storage, declare the source as readonly ${nominalName}[] rather than readonly Readonly<${nominalName}>[].`;
   emissionError(
     context,
-    `a readonly structural sequence cannot be stored as an owning array of nominal references: the view keeps only the source array's identity and a projected element, so neither the owner's element type nor each nominal referent can be recovered from it. ${conversion}`,
+    `a readonly structural sequence cannot be stored as an owning array without changing array identity: each RowOf element retains its exact nominal referent, but the view keeps the outer owner only behind opaque identity and accessors, so recovering the elements would still require copying them into a different array object. ${conversion}`,
     'cpp-contextual-structural-array-nominal-recovery-unproven',
   );
 }
@@ -24674,6 +24719,7 @@ const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial
 
 const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-array-length-sparse-runtime-required',
+  'cpp-contextual-structural-array-nominal-recovery-unproven',
   'cpp-erased-error-view-runtime-required',
   'cpp-erased-structural-row-construction-unrepresented',
   'cpp-erased-tag-unreportable',
@@ -24694,7 +24740,6 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
 // fix is an explicit source conversion and the check report says which one.
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-closed-key-result-assertion-discards-alternatives',
-  'cpp-contextual-structural-array-nominal-recovery-unproven',
   'cpp-empty-array-element-type-unproven',
   'cpp-logical-or-present-domain-unproven',
   'cpp-structural-assertion-owner-unproven',
