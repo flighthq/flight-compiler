@@ -1852,6 +1852,67 @@ function lowerImportedRiveSceneDocumentTextureModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedPermissionOutcomeModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export type NotificationPermission = 'default' | 'granted' | 'denied';
+         export type NotificationPermissionQueryOutcome =
+           | { readonly permission: NotificationPermission; readonly reason: 'ok' }
+           | { readonly reason: 'operation-failed' };
+         export interface HostNotificationPermissionCapability {
+           getPermission(): Promise<NotificationPermissionQueryOutcome>;
+         }
+         export type PermissionState = 'granted' | 'denied' | 'prompt';
+         export type PermissionQueryOutcome =
+           | { readonly reason: 'ok'; readonly state: PermissionState }
+           | { readonly reason: 'operation-failed' | 'unsupported' };`,
+      ),
+      source(
+        '@flighthq/permissions',
+        'permissions/src/permission.ts',
+        `import type {
+           HostNotificationPermissionCapability,
+           PermissionQueryOutcome,
+         } from '@flighthq/types/contract';
+         export async function queryNotificationPermission(
+           capability: Readonly<HostNotificationPermissionCapability> | null,
+         ): Promise<PermissionQueryOutcome> {
+           if (capability === null) return { reason: 'unsupported' };
+           try {
+             const outcome = await capability.getPermission();
+             if (outcome.reason !== 'ok') return { reason: outcome.reason };
+             return {
+               reason: 'ok',
+               state: outcome.permission === 'default' ? 'prompt' : outcome.permission,
+             };
+           } catch {
+             return { reason: 'operation-failed' };
+           }
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedTreeViewSequenceModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -26288,6 +26349,90 @@ Resolver make_resolver(TextureRef texture) {
       }
       const document = emitted[1]!;
       const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, document.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps an awaited notification permission outcome in its imported union owner', () => {
+    const { moduleResolution, results } = lowerImportedPermissionOutcomeModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(contents).toContain('auto outcome = co_await');
+    expect(contents).toContain('std::get<0>(outcome)');
+    expect(contents).not.toContain('contextual_union_source');
+    expect(contents).not.toContain('std::visit');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('static_cast<flight::Ref');
+  });
+
+  it('refuses to preserve an awaited union owner when nested field storage differs', () => {
+    const result = lower(
+      'permission-outcome-mismatch.ts',
+      `type NotificationPermission = 'default' | 'granted' | 'denied';
+       type NativeOutcome =
+         | { readonly permission: NotificationPermission; readonly reason: 'ok' }
+         | { readonly reason: 'operation-failed' };
+       type DifferentOutcome =
+         | { readonly permission: number; readonly reason: 'ok' }
+         | { readonly reason: 'operation-failed' };
+       interface Host { read(): Promise<NativeOutcome> }
+       export async function read(host: Readonly<Host>): Promise<DifferentOutcome> {
+         const outcome: DifferentOutcome = await host.read();
+         return outcome;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('Narrow or convert the source expression');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles imported notification permission outcome projection', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedPermissionOutcomeModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/permissions': { includePrefix: 'test/permissions', namespace: 'flighthq_permissions' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-permission-outcome-union-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const permission = emitted[1]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, permission.path), [
         directory,
         ...cppRuntimeIncludeDirectories,
       ]);

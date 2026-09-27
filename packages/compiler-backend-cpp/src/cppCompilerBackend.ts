@@ -2885,6 +2885,14 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
   }
   const variableUnion = getIrUnionTypeCpp(variable.type, context, new Set());
   const initializerUnion = getIrUnionTypeCpp(initializerType, context, new Set());
+  if (
+    variable.initializer.kind === 'await' &&
+    variableUnion &&
+    initializerUnion &&
+    isCppOwnerPreservingStructuralUnionInitializerCpp(initializerType, initializerUnion, variableUnion, context)
+  ) {
+    return initializerType;
+  }
   // TypeScript may expand an inferred local to an anonymous object even when its initializer still
   // retains the named declaration returned by a call. Preserve that source identity only after the
   // two complete object layouts prove representation-equivalent; the same proof also covers the
@@ -2929,6 +2937,53 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
     areCppObjectShapesRepresentationEquivalent(variableShape, initializerShape, context)
     ? initializerType
     : undefined;
+}
+
+// An immutable local initialized from a declared union may have a checker-expanded structural type:
+// aliases nested in its record arms become their primitive targets, even though the value still carries
+// the provider's variant and anonymous-record owners. Keep that initializer carrier only when every
+// represented record arm has one complete, representation-equivalent destination arm. `auto` then binds
+// the existing variant without a visit, cast, row copy, or materialization; ambiguous/coalesced arms and
+// any field whose storage actually widens stay on the contextual-union refusal path.
+function isCppOwnerPreservingStructuralUnionInitializerCpp(
+  initializerType: Readonly<IrType>,
+  initializerUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  variableUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  context: EmitContext,
+): boolean {
+  if (
+    initializerType.kind !== 'named' ||
+    initializerType.reference.kind !== 'binding' ||
+    initializerType.reference.binding.kind === 'typeParameter'
+  ) {
+    return false;
+  }
+  const initializerPlan = getCppUnionRepresentationPlan(initializerUnion, context);
+  const variablePlan = getCppUnionRepresentationPlan(variableUnion, context);
+  if (
+    initializerPlan.kind !== 'multiVariant' ||
+    variablePlan.kind !== 'multiVariant' ||
+    initializerPlan.valueSlots.length !== variablePlan.valueSlots.length ||
+    initializerPlan.valueSlots.some(
+      (slot) => slot.targetType === 'flight::Any' || slot.sourceAlternatives.length !== 1,
+    ) ||
+    variablePlan.valueSlots.some((slot) => slot.targetType === 'flight::Any' || slot.sourceAlternatives.length !== 1)
+  ) {
+    return false;
+  }
+  const remaining = new Set(variablePlan.valueSlots.keys());
+  for (const source of initializerPlan.valueSlots) {
+    const matches = [...remaining].filter((index) =>
+      areCppUnionMemberObjectRepresentationsEquivalent(
+        source.runtimeType,
+        variablePlan.valueSlots[index]!.runtimeType,
+        context,
+      ),
+    );
+    if (matches.length !== 1) return false;
+    remaining.delete(matches[0]!);
+  }
+  return remaining.size === 0;
 }
 
 function areCppObjectShapesRepresentationEquivalent(
@@ -12796,7 +12851,7 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   }
   const representation = getCppVariantRepresentationForInspection(union, context);
   const alternatives = representation.alternatives.filter((alternative) =>
-    doesCppVariantAlternativeMatchType(alternative, evidence.member, context),
+    doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(alternative, evidence.member, context),
   );
   if (alternatives.length !== 1) {
     emissionError(context, 'union member test must identify exactly one C++ variant alternative');
@@ -13800,6 +13855,11 @@ function emitCppNarrowedUnionValueCpp(
         areCppUnionMemberDiscriminantsEquivalent(alternative.runtimeType, narrowedType, context),
       )
     : [];
+  const representationMatches = narrowedType
+    ? sourceAlternatives.filter(({ alternative }) =>
+        areCppUnionMemberObjectRepresentationsEquivalent(alternative.runtimeType, narrowedType, context),
+      )
+    : [];
   const matches =
     exactMatches.length > 0
       ? exactMatches
@@ -13807,7 +13867,9 @@ function emitCppNarrowedUnionValueCpp(
         ? targetMatches
         : namedMatches.length > 0
           ? namedMatches
-          : discriminantMatches;
+          : discriminantMatches.length > 0
+            ? discriminantMatches
+            : representationMatches;
   if (matches.length !== 1) {
     emissionError(
       context,
