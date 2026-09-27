@@ -315,6 +315,68 @@ function lowerImportedClosedKeyStorageModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedTypeAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface EntityRuntime { binding: object | null }
+         export interface CollisionAabb2D { maxX: number; minX: number }
+         export interface CollisionCircle2D { radius: number; x: number }
+         export type CollisionShape2D =
+           | (CollisionAabb2D & { kind: 'aabb' })
+           | (CollisionCircle2D & { kind: 'circle' });
+         export type ParticleFormatKind = 'One' | 'Two' | (string & Record<never, never>);`,
+      ),
+      source(
+        '@flighthq/collision',
+        'collision/src/collisionSupport2D.ts',
+        `import type { CollisionAabb2D, CollisionShape2D } from '@flighthq/types/contract';
+         export function support(shape: Readonly<CollisionShape2D>): number {
+           const aabb = shape as CollisionAabb2D;
+           return aabb.maxX;
+         }`,
+      ),
+      source(
+        '@flighthq/dialog',
+        'dialog/src/fileDialog.ts',
+        `import type { EntityRuntime } from '@flighthq/types/contract';
+         interface FileDialogHandleRuntime extends EntityRuntime { operations: string | null }
+         export function runtime(
+           value: EntityRuntime | undefined,
+         ): FileDialogHandleRuntime | undefined {
+           return value as FileDialogHandleRuntime | undefined;
+         }`,
+      ),
+      source(
+        '@flighthq/particles-formats',
+        'particles-formats/src/detect.ts',
+        `import type { ParticleFormatKind } from '@flighthq/types/contract';
+         export function detect(value: string | null): ParticleFormatKind | null {
+           return value as ParticleFormatKind | null;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -2447,6 +2509,50 @@ describe('createCppCompilerBackend', () => {
     expect(contents).toContain('std::in_place_type<flight::Ref<Beta>>');
     expect(contents).not.toContain('std::get_if<flight::Ref<Gamma>>');
     expect(contents).toContain('throw std::logic_error("asserted union alternative is not present in the value")');
+  });
+
+  it('classifies an exact imported structural union facet that has no nominal storage', () => {
+    const { moduleResolution, results } = lowerImportedTypeAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+
+    // Collision support callbacks receive the full discriminated shape union, but each registered
+    // callback asserts one bare interface carried by exactly one anonymous intersection alternative.
+    // The alternative stores the anonymous intersection referent, not a nominal Aabb reference, so a
+    // pointer cast cannot recover the target and materializing one would change identity.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(failure.rule).toBe('cpp-structural-variant-assertion-without-nominal-storage');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('is a structural facet of variant alternative');
+    expect(failure.message).toContain('carries no nominal target reference to recover');
+    expect(failure.message).toContain('Narrow the source union by its discriminant');
+  });
+
+  it('classifies missing runtime-extension storage and preserves an imported open string alias', () => {
+    const { moduleResolution, results } = lowerImportedTypeAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const runtimeFailure = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const detect = session.emitModule(modules[3]!)[0]!.contents;
+
+    // ApplicationRenderView, FileDialog, GizmoState, and MovieClip assert a base runtime owner into a
+    // wider interface. The represented base has no cell for the extension, so no cast can recover it.
+    expect(runtimeFailure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(runtimeFailure.classification).toBe('source-portability');
+    expect(runtimeFailure.message).toContain('operations, which the source type does not declare');
+    expect(runtimeFailure.message).toContain('Declare the source as a type that declares operations');
+    // Particle format detection's open branded string union already has the source carrier exactly.
+    expect(detect).toMatch(/detect\(std::optional<flight::String> value\) \{\s*return value;\s*\}/u);
+    expect(detect).not.toContain('static_cast');
   });
 
   it('carries absence across a union carrier narrowing and refuses to invent it where the target has none', () => {
@@ -27780,7 +27886,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
   });
 
-  it('narrows the one value slot of a union the assertion names', () => {
+  it('classifies a wider runtime-key assertion whose owner has only the base storage', () => {
     const result = lower(
       'runtime-key-assertion.ts',
       `const EntityRuntimeKey = Symbol.for('EntityRuntime');
@@ -27795,20 +27901,18 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
          return holder[EntityRuntimeKey] as EntityRuntime | undefined;
        }`,
     );
-    // Both assertions name the whole optional the slot's value sits inside, so matching by spelling can
-    // never succeed -- and neither can be emitted. Narrowing to a different record would be a pointer cast,
-    // and these records are interfaces: their heritage is emitted as independent structs, so
-    // `static_pointer_cast<WidgetRuntime>` between them does not compile (verified against the pinned
-    // runtime). The assertion refuses instead, and because the source is valid the refusal is the
-    // compiler's gap rather than the source's mistake.
+    // The first assertion names a wider interface than the runtime-key property's base declaration. The
+    // base owner has no `size` cell: interface heritage emits independent structs, a pointer cast has no
+    // relationship to follow, and materializing a WidgetRuntime would change identity. Name the missing
+    // storage and ask the source to declare it where the concrete runtime is known.
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
     );
 
     expect(result.diagnostics).toEqual([]);
-    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
-    expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.message).toContain('target std::optional<flight::Ref<WidgetRuntime>>');
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('size, which the source type does not declare');
   });
 
   it('spells a dependent member type the way the runtime spells it', () => {

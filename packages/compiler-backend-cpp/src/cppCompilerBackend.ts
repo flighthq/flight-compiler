@@ -5412,6 +5412,23 @@ function getCppStructuralRowObjectWideningProofCpp(
     : 'unproven';
 }
 
+// A type retained from an imported declaration must be resolved where that declaration was written. A
+// consumer's module may carry no direct binding for a provider-returned or inherited reference even though
+// the representation planner has the exact declaration in the graph.
+function resolveCppObjectShapeInTypeOwnerCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): readonly Readonly<IrObjectTypeProperty>[] | undefined {
+  const subject = getCppIdentityPreservingUtilityArgument(type) ?? type;
+  const owner = getCppTypeReferenceOwnerModuleCpp(subject, context);
+  return (
+    context.referenceRepresentationPlanner.resolveObjectShape(type, owner) ??
+    (owner === context.module
+      ? undefined
+      : context.referenceRepresentationPlanner.resolveObjectShape(type, context.module))
+  );
+}
+
 // Whether the asserted row itself answers a member its source never bound a cell for, in which case the
 // owner proof is asking about a read that cannot happen.
 //
@@ -5493,8 +5510,8 @@ function collectCppStructuralRowAssertionAbsentMembersCpp(
   context: EmitContext,
 ): readonly string[] {
   if (source === undefined || target === undefined) return [];
-  const sourceProperties = context.referenceRepresentationPlanner.resolveObjectShape(source, context.module);
-  const targetProperties = context.referenceRepresentationPlanner.resolveObjectShape(target, context.module);
+  const sourceProperties = resolveCppObjectShapeInTypeOwnerCpp(source, context);
+  const targetProperties = resolveCppObjectShapeInTypeOwnerCpp(target, context);
   if (!sourceProperties || !targetProperties) return [];
   const sourceFields = new Map(
     sourceProperties
@@ -11575,6 +11592,14 @@ function emitUnionMemberAssertionCpp(
   // refuses rather than emitting something that cannot compile.
   const assertedUnion = getIrUnionTypeCpp(assertedType, context, new Set());
   const assertedPlan = assertedUnion ? getCppUnionRepresentationPlan(assertedUnion, context) : undefined;
+  const structuralAlternative = getCppStructuralUnionAssertionAlternativeCpp(plan, assertedPlan, assertedType, context);
+  if (structuralAlternative) {
+    emissionError(
+      context,
+      `type assertion target ${emitType(structuralAlternative.targetType, assertionContext)} is a structural facet of variant alternative ${structuralAlternative.slot.targetType}, but that alternative retains only its anonymous referent and carries no nominal target reference to recover. Narrow the source union by its discriminant before reading the facet, or declare the callback parameter with the concrete target type.`,
+      'cpp-structural-variant-assertion-without-nominal-storage',
+    );
+  }
   const singleSlotNarrowing =
     plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
       ? getCppReferenceNarrowingCpp(plan.valueSlots[0]!.targetType, assertedPlan.valueSlots[0]!.targetType)
@@ -11716,6 +11741,14 @@ function emitUnionMemberAssertionCpp(
     // lowered yet when what actually blocks it is identity the carrier never held.
     const projectedImplementor =
       !namesSourceUnion && isCppProjectedInterfaceImplementorAssertionCpp(assertedType, assertedPlan, plan, context);
+    const missingStructuralOwner = getCppStructuralAssertionMissingOwnerPairCpp(plan, assertedPlan, context);
+    if (missingStructuralOwner) {
+      refuseCppStructuralAssertionOwnerUnprovenCpp(
+        context,
+        missingStructuralOwner.source,
+        missingStructuralOwner.target,
+      );
+    }
     emissionError(
       context,
       `type assertion target must identify exactly one C++ variant alternative: target ${assertedTarget} against [${plan.valueSlots
@@ -11766,6 +11799,98 @@ function emitUnionMemberAssertionCpp(
   if (plan.kind === 'optionalSingle') return narrowed(`${value}.value()`);
   if (plan.kind === 'optionalVariant') return narrowed(`std::get<${alternatives[0]!.targetType}>(${value}.value())`);
   return narrowed(`std::get<${alternatives[0]!.targetType}>(${value})`);
+}
+
+interface CppStructuralUnionAssertionAlternative {
+  readonly slot: Readonly<ReturnType<typeof getCppUnionRepresentationPlan>['valueSlots'][number]>;
+  readonly targetType: Readonly<IrType>;
+}
+
+// A discriminated structural union stores each authored intersection as its own reference alternative.
+// An assertion may name one nominal row inside exactly one of those intersections -- collision support
+// callbacks are the canonical shape -- but the alternative retains the anonymous intersection referent,
+// not a reference to that nominal facet. Recognize the exact match so the diagnostic names the missing
+// storage rather than presenting it as an unidentified alternative. Two matches stay ambiguous below.
+function getCppStructuralUnionAssertionAlternativeCpp(
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan> | undefined,
+  assertedType: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppStructuralUnionAssertionAlternative> | undefined {
+  if (plan.valueSlots.length < 2) return undefined;
+  const targetType = assertedPlan?.valueSlots.length === 1 ? assertedPlan.valueSlots[0]!.runtimeType : assertedType;
+  const targetRepresentation = context.referenceRepresentationPlanner.plan(
+    targetType,
+    getCppTypeReferenceOwnerModuleCpp(targetType, context),
+  );
+  if (
+    targetRepresentation.kind !== 'represented' ||
+    targetRepresentation.identityDomain !== 'object' ||
+    targetRepresentation.valueRepresentation !== 'flightReference'
+  ) {
+    return undefined;
+  }
+  const targetSpelling = emitType(targetType, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set(),
+  });
+  const matches: CppStructuralUnionAssertionAlternative[] = [];
+  for (const slot of plan.valueSlots) {
+    if (slot.targetType === targetSpelling) continue;
+    const candidates = slot.sourceAlternatives.length > 0 ? slot.sourceAlternatives : [slot.runtimeType];
+    for (const sourceType of candidates) {
+      const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module);
+      const sourceProjection = sourceRow ?? getCppStructuralProjectionRowCpp(sourceType, context);
+      if (!sourceProjection || !hasCppStructuralRowObjectProjectionCpp(sourceProjection, targetType, context)) {
+        continue;
+      }
+      matches.push({ slot, targetType });
+    }
+  }
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+// A one-reference assertion from a base interface to a wider interface has no target storage to select:
+// the represented owner contains only the source fields. Identify that shape before the generic variant
+// refusal so it receives the structural owner's actionable source-portability diagnostic. This is not a
+// cast lane -- adding fields to an existing owner would require materialization or runtime side storage.
+function getCppStructuralAssertionMissingOwnerPairCpp(
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  assertedPlan: ReturnType<typeof getCppUnionRepresentationPlan> | undefined,
+  context: EmitContext,
+): Readonly<{ source: Readonly<IrType>; target: Readonly<IrType> }> | undefined {
+  if (plan.valueSlots.length !== 1 || assertedPlan?.valueSlots.length !== 1) return undefined;
+  const sourceSlot = plan.valueSlots[0]!;
+  const targetSlot = assertedPlan.valueSlots[0]!;
+  if (
+    getCppReferenceElementTypeNameCpp(sourceSlot.targetType) === undefined ||
+    getCppReferenceElementTypeNameCpp(targetSlot.targetType) === undefined
+  ) {
+    return undefined;
+  }
+  const source = sourceSlot.runtimeType;
+  const target = targetSlot.runtimeType;
+  if (isCppClassDeclarationCpp(source, context) || isCppClassDeclarationCpp(target, context)) return undefined;
+  const sourceProperties = resolveCppObjectShapeInTypeOwnerCpp(source, context)?.filter(
+    (property) => !property.phantom,
+  );
+  const targetProperties = resolveCppObjectShapeInTypeOwnerCpp(target, context)?.filter(
+    (property) => !property.phantom,
+  );
+  if (!sourceProperties || sourceProperties.length === 0 || !targetProperties) return undefined;
+  const targetFields = new Map(
+    targetProperties.map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
+  );
+  const targetContainsSource = sourceProperties.every((property) => {
+    const targetProperty = targetFields.get(getCppStructuralRowPropertyIdentityCpp(property, context));
+    return (
+      targetProperty !== undefined &&
+      targetProperty.optional === property.optional &&
+      emitType(targetProperty.type, context) === emitType(property.type, context)
+    );
+  });
+  return targetContainsSource && targetProperties.length > sourceProperties.length ? { source, target } : undefined;
 }
 
 // A structural assertion may add a row only when the target plan literally contains the source
@@ -24743,6 +24868,7 @@ const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-empty-array-element-type-unproven',
   'cpp-logical-or-present-domain-unproven',
   'cpp-structural-assertion-owner-unproven',
+  'cpp-structural-variant-assertion-without-nominal-storage',
 ]);
 
 // The lib.d.ts type utilities this emitter cannot lower unconditionally. Each names a type-level
