@@ -69,6 +69,34 @@ describe('createCompilerLoweringPassCatchAwaitHoisting', () => {
     );
   });
 
+  it('distinguishes a caught source value consumed after the await from a deferred rethrow', () => {
+    const pass = createCompilerLoweringPassCatchAwaitHoisting();
+    const module = lower(
+      'export async function attempt(task: Promise<number>, backup: Promise<number>, reject: (reason: unknown) => void): Promise<void> { try { await task; } catch (error) { await backup; reject(error); } }',
+    );
+
+    expect(() => lowerIrModuleWithCompilerPasses(module, [pass])).toThrow(
+      expect.objectContaining({
+        code: 'unsupported-ir',
+        message: expect.stringContaining('preserves the thrown unknown value across suspension'),
+      }),
+    );
+  });
+
+  it('keeps a catch value consumed before the await in the compiler lowering lane', () => {
+    const pass = createCompilerLoweringPassCatchAwaitHoisting();
+    const module = lower(
+      'export async function attempt(task: Promise<number>, backup: Promise<number>, reject: (reason: unknown) => void): Promise<void> { try { await task; } catch (error) { reject(error); await backup; } }',
+    );
+
+    expect(() => lowerIrModuleWithCompilerPasses(module, [pass])).toThrow(
+      expect.objectContaining({
+        code: 'unsupported-ir',
+        message: expect.stringContaining('referenced catch binding cannot cross an await'),
+      }),
+    );
+  });
+
   it('reaches catch bodies inside class methods', () => {
     const pass = createCompilerLoweringPassCatchAwaitHoisting();
     const output = lowerIrModuleWithCompilerPasses(

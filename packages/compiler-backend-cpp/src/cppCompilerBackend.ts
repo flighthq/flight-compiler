@@ -456,14 +456,23 @@ function emitIrModuleCppWithContext(
       // declare. Every other lowering refusal keeps the default attribution: a pass that has not reached a
       // form yet is the compiler's to widen, and saying otherwise would send a reader to edit good source.
       const heritage = error.code === 'incompatible-heritage';
+      const caughtValueCarrier =
+        error.pass === 'catch-await-hoisting' &&
+        error.message.includes('an owned target representation that preserves the thrown unknown value');
       throw createBackendEmissionFailure(
         'cpp',
         sourceModule,
         heritage
           ? `${error.message}. TypeScript rejects this heritage as well, so declare the property once at a type both bases accept, or drop one of the bases`
-          : error.message,
+          : caughtValueCarrier
+            ? `${error.message}. The flight-cpp runtime contract must provide an owned caught-value carrier that can re-enter flight::Any after coroutine suspension; std::exception_ptr alone preserves rethrow but cannot supply the original unknown value to consumers`
+            : error.message,
         'cpp-lowering-pass-refused',
-        heritage ? { classification: 'source-portability' } : undefined,
+        heritage
+          ? { classification: 'source-portability' }
+          : caughtValueCarrier
+            ? { classification: 'target-runtime' }
+            : undefined,
       );
     }
     throw error;

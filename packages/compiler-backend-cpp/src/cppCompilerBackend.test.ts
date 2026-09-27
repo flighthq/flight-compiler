@@ -517,6 +517,48 @@ describe('createCppCompilerBackend', () => {
     expect(failure.classification).toBe('compiler-restriction');
   });
 
+  it('attributes a caught unknown value consumed after suspension to the target runtime', () => {
+    const result = lower(
+      'catch-value-after-await.ts',
+      `export async function run<T>(
+         task: Promise<T>,
+         pause: Promise<void>,
+         reject: (reason: unknown) => void,
+       ): Promise<void> {
+         try { await task; }
+         catch (error) { await pause; reject(error); }
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(result.module));
+
+    // The catch contract already records that `error` is the thrown unknown value. An exception_ptr
+    // owns enough state to rethrow after suspension, but cannot recreate that source value for a generic
+    // consumer. That conversion belongs in the runtime's erased-value contract, not in a cast here.
+    expect(failure.rule).toBe('cpp-lowering-pass-refused');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('owned caught-value carrier');
+    expect(failure.message).toContain('flight::Any');
+    expect(failure.message).toContain('std::exception_ptr alone preserves rethrow');
+  });
+
+  it('keeps a deferred catch rethrow in the compiler lowering lane', () => {
+    const result = lower(
+      'catch-rethrow-after-await.ts',
+      `export async function run(task: Promise<void>, pause: Promise<void>): Promise<void> {
+         try { await task; }
+         catch (error) { await pause; throw error; }
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(result.module));
+
+    // std::exception_ptr can preserve this identity without exposing it as an erased source value;
+    // synthesizing that local remains compiler work and must not be assigned to the runtime carrier.
+    expect(failure.rule).toBe('cpp-lowering-pass-refused');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('owned exception-value lowering');
+    expect(failure.message).not.toContain('owned caught-value carrier');
+  });
+
   it('accepts the RenderProxy2D source refinement from Node<any> to the Node2D intersection', () => {
     const result = lower(
       'render-proxy-2d.ts',

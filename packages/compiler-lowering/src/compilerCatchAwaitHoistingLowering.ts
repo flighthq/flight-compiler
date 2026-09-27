@@ -1,5 +1,6 @@
 import { analyzeIrModuleTraversal, analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/src/index.js';
 import type {
+  CompilerIrTraversalPath,
   CompilerLoweringPass,
   IrBindingIdentity,
   IrDeclaration,
@@ -75,6 +76,59 @@ function hasIrStatementBindingReference(statement: Readonly<IrStatement>, bindin
     },
   });
   return found;
+}
+
+function hasIrStatementBindingValueReferenceAfterAwait(statement: Readonly<IrStatement>, bindingId: string): boolean {
+  const awaitPaths: CompilerIrTraversalPath[] = [];
+  const directRethrowPaths = new Set<string>();
+  let found = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(candidate, path) {
+      if (candidate.kind === 'await') {
+        awaitPaths.push(path);
+        return undefined;
+      }
+      if (
+        candidate.kind === 'identifier' &&
+        candidate.reference.kind === 'binding' &&
+        candidate.reference.binding.id === bindingId &&
+        !directRethrowPaths.has(JSON.stringify(path)) &&
+        awaitPaths.some((awaitPath) => isIrTraversalPathInFollowingStatement(path, awaitPath))
+      ) {
+        found = true;
+        return false;
+      }
+      return undefined;
+    },
+    statement(candidate, path) {
+      if (
+        candidate.kind === 'throw' &&
+        candidate.expression.kind === 'identifier' &&
+        candidate.expression.reference.kind === 'binding' &&
+        candidate.expression.reference.binding.id === bindingId
+      ) {
+        directRethrowPaths.add(JSON.stringify([...path, 'expression']));
+      }
+      return undefined;
+    },
+  });
+  return found;
+}
+
+function isIrTraversalPathInFollowingStatement(
+  referencePath: CompilerIrTraversalPath,
+  awaitPath: CompilerIrTraversalPath,
+): boolean {
+  const sharedLength = Math.min(referencePath.length, awaitPath.length);
+  for (let index = 0; index < sharedLength; index++) {
+    if (referencePath[index] !== awaitPath[index]) return false;
+    if (referencePath[index] !== 'statements') continue;
+    const referenceStatement = referencePath[index + 1];
+    const awaitStatement = awaitPath[index + 1];
+    if (typeof referenceStatement !== 'number' || typeof awaitStatement !== 'number') continue;
+    if (referenceStatement !== awaitStatement) return referenceStatement > awaitStatement;
+  }
+  return false;
 }
 
 function createIrCatchFlagBinding(
@@ -198,11 +252,17 @@ function lowerIrStatementCatchAwaitHoisting(
         statement.catchClause.binding &&
         hasIrStatementBindingReference(statement.catchClause.body, statement.catchClause.binding.id)
       ) {
+        const valueCrossesAwait = hasIrStatementBindingValueReferenceAfterAwait(
+          statement.catchClause.body,
+          statement.catchClause.binding.id,
+        );
         throw createCompilerLoweringFailure(
           'unsupported-ir',
           compilerLoweringPassNameCatchAwaitHoisting,
           origin,
-          'a referenced catch binding cannot cross an await without owned exception-value lowering',
+          valueCrossesAwait
+            ? 'a caught source value used after an await requires an owned target representation that preserves the thrown unknown value across suspension'
+            : 'a referenced catch binding cannot cross an await without owned exception-value lowering',
         );
       }
 
