@@ -1202,7 +1202,15 @@ function lowerPixiParseAssertionModules() {
        return o.start;
      }`,
   );
-  return { guardedObject, pixiParse, rawMember, startEnd };
+  const optionalVariant = lowerPackage(
+    '@flighthq/particles-formats',
+    'pixiParseOptionalVariant.ts',
+    `interface Source { item?: unknown }
+     export function readItem(source: Source): { x?: unknown } | string | undefined {
+       return source.item as { x?: unknown } | string | undefined;
+     }`,
+  );
+  return { guardedObject, optionalVariant, pixiParse, rawMember, startEnd };
 }
 
 function lowerImportedPhysicsShapeAssertionModules() {
@@ -4016,17 +4024,20 @@ describe('createCppCompilerBackend', () => {
   });
 
   it('extracts the nested erased Pixi object assertion through its unique target', () => {
-    const { guardedObject, pixiParse, rawMember, startEnd } = lowerPixiParseAssertionModules();
+    const { guardedObject, optionalVariant, pixiParse, rawMember, startEnd } = lowerPixiParseAssertionModules();
     const pixiContents = emitIrModuleCpp(pixiParse.module, { runtimeProfile: 'flight-cpp' }).contents;
     const rawMemberContents = emitIrModuleCpp(rawMember.module, { runtimeProfile: 'flight-cpp' }).contents;
     const guardedObjectContents = emitIrModuleCpp(guardedObject.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const optionalVariantContents = emitIrModuleCpp(optionalVariant.module, { runtimeProfile: 'flight-cpp' }).contents;
     const startEndContents = emitIrModuleCpp(startEnd.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     // The first erased view remains Any so optional member access can use its dynamic named-property
     // owner. The nested `o.start` read is Any too, but its assertion names one represented object slot;
     // recover that exact referent with Any's checked extraction, matching the direct Record member case.
     // No pointer cast or replacement object is licensed by the assertion.
-    expect([pixiParse, rawMember, guardedObject, startEnd].flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(
+      [pixiParse, rawMember, guardedObject, optionalVariant, startEnd].flatMap((result) => result.diagnostics),
+    ).toEqual([]);
     expect(pixiContents).toContain('auto value_obj = obj;');
     expect(pixiContents).toContain('flight::named_properties(optional_chain_receiver)');
     expect(rawMemberContents).toMatch(/\.object_if<x_y_[a-f\d]+>\(\)/u);
@@ -4041,7 +4052,17 @@ describe('createCppCompilerBackend', () => {
     expect(startEndContents).toContain(
       'throw std::logic_error("erased value holds no alternative this union represents")',
     );
-    const contents = [pixiContents, rawMemberContents, guardedObjectContents, startEndContents].join('\n');
+    expect(optionalVariantContents).toContain('const auto& erased_value_slot = source->item;');
+    expect(optionalVariantContents).toContain('if (!erased_value_slot.has_value()) return std::nullopt;');
+    expect(optionalVariantContents).toMatch(/\.object_if<x_[a-f\d]+>\(\)/u);
+    expect(optionalVariantContents).toContain('flight::AnyKind::string');
+    const contents = [
+      pixiContents,
+      rawMemberContents,
+      guardedObjectContents,
+      optionalVariantContents,
+      startEndContents,
+    ].join('\n');
     expect(contents).not.toContain('static_pointer_cast');
     expect(contents).not.toContain('structural_ref_cast');
     expect(contents).not.toContain('make_ref');

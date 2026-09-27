@@ -15491,12 +15491,14 @@ function emitCppErasedValueUnionConstructionCpp(
         : [];
   let source: string;
   const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
-  const optionalErasedSource =
-    plan.kind === 'optionalSingle' && admitsUndefined && isCppOptionalErasedDynamicValueTypeCpp(sourceType, context);
+  const optionalErasedSource = isCppOptionalErasedDynamicValueTypeCpp(sourceType, context);
   if (optionalErasedSource) {
     const slot = getGeneratedTargetName('erasedValueSlot', context);
     context.includes.add('optional');
-    source = `const auto& ${slot} = ${emitExpression(expression, context)}; if (!${slot}.has_value()) return ${emitCppUnionSentinelConstruction('undefined', union, plan.kind, context)}; const auto& ${erased} = ${slot}.value();`;
+    const missing = admitsUndefined
+      ? `return ${emitCppUnionSentinelConstruction('undefined', union, plan.kind, context)};`
+      : 'throw std::logic_error("an absent erased value is not represented by the asserted union");';
+    source = `const auto& ${slot} = ${emitExpression(expression, context)}; if (!${slot}.has_value()) ${missing} const auto& ${erased} = ${slot}.value();`;
   } else if (isCppErasedDynamicPropertyReadCpp(expression, context) && expression.object.kind !== 'identifier') {
     // A property read returns a reference into its erased receiver. Retain a produced receiver for the
     // whole checked selection; otherwise `factory().member` leaves the reference dangling after the
