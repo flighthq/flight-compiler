@@ -22864,12 +22864,158 @@ Resolver make_resolver(TextureRef texture) {
 
     expect(consumer).toContain('entry.has_value()');
     expect(consumer).toContain('entry.value().index()');
-    expect(consumer).toMatch(/std::get<flight::Ref<state_value_[a-f0-9]+>>\(entry\.value\(\)\)->value/u);
+    expect(consumer).toContain('std::get<0>(entry.value())->value');
     expect(consumer).not.toContain('flight::Any');
     expect(sibling).toContain(
       'std::visit([](const auto& value) { return value->state; }, optional_chain_receiver.value())',
     );
     expect(sibling).not.toContain('flight::Any');
+  });
+
+  it('keeps an optional imported registry lookup in its exact entry union', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './RegistryTable',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RegistryTable.ts' },
+        },
+        {
+          specifier: './RenderState',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RenderState.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/render/contract',
+          target: { packageName: '@flighthq/render', source: 'packages/render/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/RegistryTable.ts',
+          `export const RegistryEntryState = { Bound: 'bound', Tombstoned: 'tombstoned' } as const;
+           export type RegistryTableEntry<T> =
+             | { readonly state: typeof RegistryEntryState.Bound; readonly value: T }
+             | { readonly state: typeof RegistryEntryState.Tombstoned };
+           export interface KeyedTable<T> {
+             readonly entries: ReadonlyMap<string, RegistryTableEntry<T>>;
+           }`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/RenderState.ts',
+          `import type { KeyedTable } from './RegistryTable';
+           export interface RenderEffect { readonly kind: string }
+           export interface RenderEffectPadding { bottom: number; left: number; right: number; top: number }
+           export type RenderEffectPaddingResolver =
+             (effect: Readonly<RenderEffect>) => RenderEffectPadding;
+           export interface RenderState { readonly name: string }
+           export interface RenderStateRuntime {
+             readonly registries: {
+               readonly effectPaddingResolvers?: KeyedTable<RenderEffectPaddingResolver>;
+             };
+           }`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          `export * from './RegistryTable';
+           export type {
+             RenderEffect,
+             RenderEffectPadding,
+             RenderEffectPaddingResolver,
+             RenderState,
+             RenderStateRuntime,
+           } from './RenderState';`,
+        ),
+        source(
+          '@flighthq/render',
+          'packages/render/src/contract.ts',
+          `import type { RenderState, RenderStateRuntime } from '@flighthq/types/contract';
+           export function getRenderStateRuntime(state: RenderState): RenderStateRuntime {
+             return state as unknown as RenderStateRuntime;
+           }`,
+        ),
+        source(
+          '@flighthq/effects',
+          'packages/effects/src/renderEffectPadding.ts',
+          `import { getRenderStateRuntime } from '@flighthq/render/contract';
+           import type { RenderEffect, RenderState } from '@flighthq/types/contract';
+           import { RegistryEntryState } from '@flighthq/types/contract';
+           export function resolveRenderEffectPaddingBottom(
+             state: RenderState,
+             effect: Readonly<RenderEffect>,
+           ): number {
+             const entries = getRenderStateRuntime(state).registries.effectPaddingResolvers?.entries;
+             const entry = entries?.get(effect.kind);
+             if (entry?.state !== RegistryEntryState.Bound) return 0;
+             return entry.value(effect).bottom;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/effects': { includePrefix: 'test/effects', namespace: 'flighthq_effects' },
+          '@flighthq/render': { includePrefix: 'test/render', namespace: 'flighthq_render' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const contents = emitted[4]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The optional receiver and Map miss share the one std::optional shell. Its present payload is the
+    // registry's declared entry union instantiated with the exact resolver, not an erased value selected
+    // from the variable's contextual destination.
+    expect(contents).toContain('RegistryTableEntry<flighthq_types::RenderEffectPaddingResolver>');
+    expect(contents).toContain('.get(flight::row_get<flight::RowKey<"kind">>(effect))');
+    expect(contents).toContain('entry.value().index()');
+    // Narrowing selects the arm already stored by the imported alias. Naming a freshly emitted
+    // consumer-side structural arm here would be a distinct C++ type even though TypeScript considers
+    // the records equivalent.
+    expect(contents).toContain('std::get<0>(entry.value())->value(effect)');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-effect-padding-entry-union-'));
+      try {
+        for (const output of emitted) {
+          const outputPath = path.join(directory, output.path);
+          mkdirSync(path.dirname(outputPath), { recursive: true });
+          writeFileSync(outputPath, output.contents, 'utf8');
+        }
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, emitted[4]!.path), [
+          directory,
+          ...cppRuntimeIncludeDirectories,
+        ]);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
   });
 
   it('emits generic function with template parameter', () => {

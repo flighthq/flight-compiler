@@ -4480,7 +4480,7 @@ function emitExpression(
             emissionError(context, 'dual-sentinel presence narrowing requires one remaining C++ value domain');
           }
           context.includes.add('variant');
-          return `std::get<${matchingSlots[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)})`;
+          return `std::get<${String(plan.valueSlots.indexOf(matchingSlots[0]!))}>(${emitIdentifierReference(expression.reference, context)})`;
         }
         if (plan?.kind === 'optionalVariant') {
           const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
@@ -4499,7 +4499,7 @@ function emitExpression(
             );
             if (matchingSlots.length === 1) {
               context.includes.add('variant');
-              return `std::get<${matchingSlots[0]!.targetType}>(${emitIdentifierReference(expression.reference, context)}.value())`;
+              return `std::get<${String(plan.valueSlots.indexOf(matchingSlots[0]!))}>(${emitIdentifierReference(expression.reference, context)}.value())`;
             }
           }
         }
@@ -13607,7 +13607,9 @@ function emitCppNarrowedUnionValueCpp(
       if (plan.kind === 'optionalSingle') return `${binding}.value()`;
       context.includes.add('variant');
       const variant = plan.kind === 'optionalVariant' ? `${binding}.value()` : binding;
-      return `std::get<${matches[0]!.targetType}>(${variant})`;
+      // Select storage by its proven slot index. An imported alias owns the concrete arm spelling, while
+      // re-emitting that structural arm in the consumer would name a distinct anonymous C++ type.
+      return `std::get<${String(plan.valueSlots.indexOf(matches[0]!))}>(${variant})`;
     }
   }
   const variantUnion = getIrVariantUnionTypeCpp(union, context, new Set());
@@ -17080,8 +17082,11 @@ function getIrCallReturnTypeCpp(
   if (expression.callee.kind === 'property' && expression.callee.optionalChain) {
     const callableReturns = getCppCallableReturnType(expression.callee.optionalChain.valueType, context, new Set());
     const recovered = getCppOptionalPropertyCallResultTypeEvidenceCpp(expression, context);
-    const returns =
-      callableReturns?.kind === 'unknown' ? (recovered ?? callableReturns) : (callableReturns ?? recovered);
+    // A package-graph library placeholder can retain `unknown | undefined` as a callable return even when
+    // the resolved standard collection receiver proves one exact instantiated result. The recovery is
+    // already restricted to that concrete runtime member, so it outranks the placeholder just as it does a
+    // bare unknown; lookalike methods never produce `recovered` and retain their recorded callable result.
+    const returns = recovered ?? callableReturns;
     if (returns && returns.kind !== 'unknown') {
       return expression.callee.optionalChain.receiverNullish === 'possible'
         ? { kind: 'union', types: [returns, { kind: 'undefined' }] }
@@ -23319,7 +23324,7 @@ function emitOptionalPropertyCallExpressionCpp(
   const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
   const callableReturns = getCppCallableReturnType(semantics.valueType, context, new Set());
   const recovered = getCppOptionalPropertyCallResultTypeEvidenceCpp(expression, context);
-  const returns = callableReturns?.kind === 'unknown' ? (recovered ?? callableReturns) : (callableReturns ?? recovered);
+  const returns = recovered ?? callableReturns;
   if (!returns || returns.kind === 'unknown')
     emissionError(
       context,
