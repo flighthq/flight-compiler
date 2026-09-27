@@ -4259,6 +4259,7 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('create_signal<std::function<void(flight::Array<NodeType>)>>()');
     expect(emitted.match(/create_signal</gu)).toHaveLength(2);
     expect(emitted).not.toContain('make_structural_ref');
+    expect(emitted).not.toContain('materialize_row');
     expect(emitted).not.toContain('structural_ref_cast');
     expect(emitted).not.toContain('static_cast');
     expect(emitted).not.toContain('dynamic_cast');
