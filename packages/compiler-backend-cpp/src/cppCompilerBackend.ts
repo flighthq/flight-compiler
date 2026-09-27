@@ -3918,11 +3918,32 @@ function emitExpression(
           'cpp-erased-external-reference-assertion-unrepresented',
         );
       }
-      // An erased value answers only what the runtime can read out of it honestly: the primitives, a
-      // reference it can identify, and a callable. `flight::Array` is not one of them, by the runtime's own
-      // contract — an array cannot be handed to `flight::Any` without inventing an identity or reinterpreting
-      // storage, and an element read back out of one is the same value. Emitting a `static_cast` there is a
-      // call to a conversion that does not exist, so the assertion is refused and named instead.
+      // A double assertion can erase spelling without erasing storage. When the expression immediately
+      // before that erased marker proves the exact array representation the outer assertion names, keep
+      // that carrier: the source cast is a runtime no-op, and so is the emitted conversion. A represented
+      // but different carrier proves the opposite -- the source explicitly discarded evidence that the
+      // two arrays differ, and only an explicit source conversion may construct the target element type.
+      // Do not send either case through Any merely because the intermediate syntax said unknown.
+      const representedErasedArraySource =
+        expression.type.kind === 'array' && isCppErasedDynamicValueTypeCpp(sourceEvidence)
+          ? getCppRepresentedErasedAssertionSourceCpp(expression.expression, context)
+          : undefined;
+      if (representedErasedArraySource) {
+        if (areCppTypesRepresentationEquivalent(representedErasedArraySource.type, expression.type, context)) {
+          return emitExpression(representedErasedArraySource.expression, context, undefined, false);
+        }
+        emissionError(
+          context,
+          `an erased assertion hides the represented source carrier ${emitType(representedErasedArraySource.type, context)} before naming ${emitType(expression.type, context)}, but those carriers are not representation-equivalent. Keep the exact array type through the assertion, or explicitly convert its elements before asserting the result; the compiler will not reinterpret the source carrier, cast it, or materialize a replacement array`,
+          'cpp-erased-value-assertion-unrepresented',
+          'source-portability',
+        );
+      }
+      // A genuinely erased value answers only what the runtime can read out of it honestly: the
+      // primitives, a reference it can identify, and a callable. `flight::Array` is not one of them, by
+      // the runtime's own contract -- an array cannot enter `flight::Any` without inventing an identity or
+      // reinterpreting storage, and no checked exact-array extraction exists. Emitting a `static_cast`
+      // would call a conversion that does not exist, while rebuilding the array would change its identity.
       if (
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
         expression.type.kind === 'array' &&
@@ -3930,7 +3951,7 @@ function emitExpression(
       ) {
         emissionError(
           context,
-          `an erased C++ value has no honest reading of ${emitType(expression.type, context)}; the runtime reports what it cannot carry rather than reinterpreting storage`,
+          `an erased C++ value has no identity-preserving reading as ${emitType(expression.type, context)}: flight::Any has no array alternative or checked exact-array extraction. Keep the value in its exact array type before the erased boundary, or add that carrier and extraction to the runtime; the compiler will not reinterpret the erased value, cast it, or materialize a replacement array`,
           'cpp-erased-value-assertion-unrepresented',
         );
       }
@@ -19471,6 +19492,28 @@ function getCppErasedValueAssertionCpp(
   );
 }
 
+// The represented expression on the other side of one or more erased assertion markers.
+//
+// `values as unknown as number[]` does not construct an `unknown` value at runtime. The inner cast is
+// only a type-system bridge, so the exact pre-erasure carrier remains available to the outer assertion.
+// Every assertion in that syntax chain is a source-level no-op, so type evidence comes from the expression
+// beneath all of them rather than from an intermediate asserted spelling. An identifier whose storage is
+// genuinely Any has no cast to cross and deliberately returns no represented source here.
+function getCppRepresentedErasedAssertionSourceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<{ expression: IrExpression; type: IrType }> | undefined {
+  let source = expression;
+  let crossedErasedAssertion = false;
+  while (source.kind === 'cast') {
+    crossedErasedAssertion ||= isCppErasedDynamicValueTypeCpp(source.type);
+    source = source.expression;
+  }
+  if (!crossedErasedAssertion) return undefined;
+  const type = getIrExpressionTypeEvidenceCpp(source, context);
+  return type && !isCppErasedDynamicValueTypeCpp(type) ? { expression: source, type } : undefined;
+}
+
 // Exactly the positions `emitType` routes to `flight::Any`: an unconstrained type that is neither the
 // dynamic `this` nor an erased object reference, which have their own representations.
 // The erased source whose conversion the source language sanctions, as opposed to the one it rejects: `any`
@@ -25209,6 +25252,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-erased-error-view-runtime-required',
   'cpp-erased-structural-row-construction-unrepresented',
   'cpp-erased-tag-unreportable',
+  'cpp-erased-value-assertion-unrepresented',
   'cpp-error-name-runtime-required',
   'cpp-external-object-field-contract-missing',
   'cpp-external-record-conversion-incomplete',

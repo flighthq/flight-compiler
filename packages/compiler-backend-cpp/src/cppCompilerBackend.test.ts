@@ -9355,6 +9355,82 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toContain('.as_number()');
   });
 
+  it('preserves an exact array carrier across erased assertion syntax and classifies the unrepresented cases', () => {
+    const exact = emitIrModuleCpp(
+      lower(
+        'erased-array-exact-source.ts',
+        `export function read(values: number[]): number[] {
+           return values as unknown as number[];
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // The intermediate `unknown` is assertion syntax, not storage. Exact evidence on its source proves the
+    // same Array<double> carrier reaches the result, so emission keeps that identity and constructs nothing.
+    expect(exact).toContain('return values;');
+    expect(exact).not.toContain('flight::Any');
+    expect(exact).not.toContain('static_cast');
+
+    const incompatible = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'erased-array-incompatible-source.ts',
+          `export function read(values: number[]): string[] {
+             return values as unknown as string[];
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(incompatible).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-erased-value-assertion-unrepresented',
+    });
+    expect(incompatible.message).toContain('flight::Array<double>');
+    expect(incompatible.message).toContain('flight::Array<flight::String>');
+    expect(incompatible.message).toContain('explicitly convert its elements');
+    expect(incompatible.message).toContain('will not reinterpret the source carrier, cast it, or materialize');
+
+    const refusal = (file: string, source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+    const unityParse = refusal(
+      'unity-parse-erased-array.ts',
+      `function readEmission(obj: unknown): void {
+         if (obj == null || typeof obj !== 'object') return;
+         const fields = obj as Record<string, unknown>;
+         const bursts = Array.isArray(fields.bursts)
+           ? (fields.bursts as Record<string, unknown>[]).map((burst) => burst)
+           : [];
+         void bursts;
+       }
+       export function parse(value: unknown): void { readEmission(value); }`,
+    );
+    const equalsSnapshot = refusal(
+      'equals-snapshot-erased-array.ts',
+      `export function equal(left: unknown, right: unknown): boolean {
+         if (!Array.isArray(left) || !Array.isArray(right)) return false;
+         const leftArray = left as unknown[];
+         const rightArray = right as unknown[];
+         return leftArray.length === rightArray.length;
+       }`,
+    );
+
+    for (const failure of [unityParse, equalsSnapshot]) {
+      expect(failure).toMatchObject({
+        classification: 'target-runtime',
+        rule: 'cpp-erased-value-assertion-unrepresented',
+      });
+      expect(failure.message).toContain('flight::Any has no array alternative or checked exact-array extraction');
+      expect(failure.message).toContain('Keep the value in its exact array type before the erased boundary');
+      expect(failure.message).toContain('will not reinterpret the erased value, cast it, or materialize');
+    }
+    expect(unityParse.message).toContain('flight::Array<flight::Record<flight::String, flight::Any>>');
+    expect(equalsSnapshot.message).toContain('flight::Array<flight::Any>');
+  });
+
   it('emits merged enum value namespace functions as static wrapper members', () => {
     const result = lower(
       'enum-namespace.ts',
