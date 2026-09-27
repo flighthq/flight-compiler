@@ -237,6 +237,84 @@ function lowerPackage(packageName: string, file: string, source: string) {
   });
 }
 
+function lowerImportedClosedKeyStorageModules() {
+  // The GUI consumer mirrors guiTestHelper's non-null imported call result followed by a broad signal
+  // key and callback assertion. The scene consumer mirrors flightDocumentText's `states[phase] = state`.
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: './provider',
+        target: { packageName: '@flighthq/closed-key', source: 'packages/closed-key/src/provider.ts' },
+      },
+      {
+        specifier: './types',
+        target: { packageName: '@flighthq/closed-key', source: 'packages/closed-key/src/types.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (file: string, text: string) => ({
+    packageName: '@flighthq/closed-key',
+    sourceFile: ts.createSourceFile(`/flight/packages/closed-key/src/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        'types.ts',
+        `export interface KeyboardEventData { altKey: boolean; key: string }
+         export interface PointerEventData { altKey: boolean; x: number }
+         export interface Signal<Listener> { emit: Listener }
+         export interface InteractionSignals {
+           onKeyDown: Signal<(data: Readonly<KeyboardEventData>) => void>;
+           onPointerDown: Signal<(data: Readonly<PointerEventData>) => void>;
+         }
+         export type InteractionSignalName = 'onKeyDown' | 'onPointerDown';
+         export interface InteractiveState { alpha?: number; visible?: boolean }
+         export interface InteractiveStates {
+           disabled: InteractiveState | null;
+           hover: InteractiveState | null;
+           pressed: InteractiveState | null;
+         }
+         export type InteractiveStatePhase = 'disabled' | 'hover' | 'pressed';`,
+      ),
+      source(
+        'provider.ts',
+        `import type { InteractionSignals } from './types';
+         export function getInteractionSignals(target: object): InteractionSignals | null {
+           void target;
+           return null;
+         }`,
+      ),
+      source(
+        'gui.ts',
+        `import { getInteractionSignals } from './provider';
+         import type {
+           InteractionSignalName,
+           KeyboardEventData,
+         } from './types';
+         export function emitKeyboard(target: object, name: InteractionSignalName): void {
+           const data: KeyboardEventData = { altKey: false, key: 'Enter' };
+           (getInteractionSignals(target)![name].emit as (data: Readonly<KeyboardEventData>) => void)(data);
+         }`,
+      ),
+      source(
+        'scene.ts',
+        `import type { InteractiveState, InteractiveStatePhase, InteractiveStates } from './types';
+         export function assignInteractiveState(
+           states: InteractiveStates,
+           phase: InteractiveStatePhase,
+           state: InteractiveState,
+         ): void {
+           states[phase] = state;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -1297,6 +1375,52 @@ describe('createCppCompilerBackend', () => {
          }`,
       ),
     ).toBe('cpp-object-index-without-closed-key-set');
+  });
+
+  it('uses exact imported storage for closed keys and refuses a heterogeneous property assertion', () => {
+    const { moduleResolution, results } = lowerImportedClosedKeyStorageModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const guiFailure = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const sceneOutput = session.emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(guiFailure.rule).toBe('cpp-closed-key-result-assertion-discards-alternatives');
+    expect(guiFailure.classification).toBe('source-portability');
+    expect(sceneOutput).toContain('selection_receiver->disabled = std::optional<');
+    expect(sceneOutput).toContain('selection_receiver->hover = std::optional<');
+    expect(sceneOutput).toContain('selection_receiver->pressed = std::optional<');
+    expect(sceneOutput.match(/\{state\}; return;/gu)).toHaveLength(3);
+    expect(sceneOutput).not.toContain('selection_receiver[');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles a closed-key write through imported represented storage', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedClosedKeyStorageModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-imported-closed-key-storage-'));
+    const typesHeader = path.join(directory, 'types.hpp');
+    const sceneHeader = path.join(directory, 'scene.hpp');
+
+    try {
+      writeFileSync(typesHeader, session.emitModule(modules[0]!)[0]!.contents, 'utf8');
+      writeFileSync(sceneHeader, session.emitModule(modules[3]!)[0]!.contents, 'utf8');
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, sceneHeader, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   // A written return type that names a type parameter belongs to the declaration that wrote it, not to

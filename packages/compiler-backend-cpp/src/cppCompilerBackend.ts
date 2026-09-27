@@ -11243,11 +11243,29 @@ function getCppClosedKeyElementMembersCpp(
   runtime: Readonly<IrType>;
 }> {
   const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
-  const runtime = objectType ? getIrTypeRuntimeDomainCpp(objectType, context, new Set()) : undefined;
-  const properties = runtime
-    ? context.referenceRepresentationPlanner.resolveObjectShape(runtime, context.module)
+  const representedObjectType =
+    objectType && 'presence' in expression.object && expression.object.presence === 'narrowedPresent'
+      ? (getCppNonNullableType(objectType, context, new Set()) ?? objectType)
+      : objectType;
+  const runtime = representedObjectType
+    ? getIrTypeRuntimeDomainCpp(representedObjectType, context, new Set())
     : undefined;
-  if (!runtime || !properties) {
+  // A returned imported interface retains the binding written in the provider module, and an
+  // identity-preserving utility such as `Readonly<Imported>` retains that imported referent too. The
+  // current module therefore cannot answer either one's declaration from its own import list. Resolve
+  // the owner from the represented subject, but ask for the complete written type's shape so readonly
+  // and required property semantics remain intact.
+  const representedSubject = runtime ? (getCppIdentityPreservingUtilityArgument(runtime) ?? runtime) : undefined;
+  const owner = representedSubject ? getCppTypeReferenceOwnerModuleCpp(representedSubject, context) : undefined;
+  const representation = runtime && owner ? context.referenceRepresentationPlanner.plan(runtime, owner) : undefined;
+  const properties =
+    runtime && owner ? context.referenceRepresentationPlanner.resolveObjectShape(runtime, owner) : undefined;
+  if (
+    !runtime ||
+    !properties ||
+    representation?.kind !== 'represented' ||
+    representation.valueRepresentation !== 'flightReference'
+  ) {
     emissionError(
       context,
       'closed-key element access requires represented object storage',
@@ -11583,6 +11601,23 @@ function emitUnionMemberAssertionCpp(
       slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)) ||
       isCppNominalHeritageUnionSlotCpp(slot, assertedType, context),
   );
+  // An assertion immediately after a property read through several named fields must not discard all
+  // but one possible property type: the selected key is still dynamic, so doing so would reinterpret
+  // another field's callable whenever that key wins. Narrow the key before the read instead; then the
+  // source names the one field whose property has the asserted type.
+  if (
+    alternatives.length === 1 &&
+    plan.valueSlots.length > 1 &&
+    expression.kind === 'property' &&
+    expression.object.kind === 'element' &&
+    getCppClosedElementKeyNamesCpp(expression.object, context)
+  ) {
+    emissionError(
+      context,
+      `closed-key property assertion to ${assertedTarget} discards other represented alternatives selected by the key; narrow the key before the indexed read so the asserted property belongs to every reachable member`,
+      'cpp-closed-key-result-assertion-discards-alternatives',
+    );
+  }
   // An assertion that names the value's own union type selects no alternative: `value as Slot` where the
   // value already is a `Slot` asks for a projection the source did not describe, and the refusal has to
   // say so rather than list the alternatives as though one of them had been meant.
@@ -18657,8 +18692,12 @@ function getIrExpressionTypeEvidenceCpp(
           : computedSymbol.type;
       }
       const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
-      const elementType = objectType
-        ? getIrIndexedElementTypeCpp(objectType, expression, context, new Set())
+      const indexedObjectType =
+        objectType && 'presence' in expression.object && expression.object.presence === 'narrowedPresent'
+          ? (getCppNonNullableType(objectType, context, new Set()) ?? objectType)
+          : objectType;
+      const elementType = indexedObjectType
+        ? getIrIndexedElementTypeCpp(indexedObjectType, expression, context, new Set())
         : undefined;
       return elementType && expression.presence === 'narrowedPresent'
         ? (getCppNonNullableType(elementType, context, new Set()) ?? elementType)
@@ -24654,6 +24693,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
 // the value the source wrote discards identity or type evidence the target representation needs, so the
 // fix is an explicit source conversion and the check report says which one.
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
+  'cpp-closed-key-result-assertion-discards-alternatives',
   'cpp-contextual-structural-array-nominal-recovery-unproven',
   'cpp-empty-array-element-type-unproven',
   'cpp-logical-or-present-domain-unproven',
