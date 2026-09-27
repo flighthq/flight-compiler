@@ -1738,6 +1738,65 @@ function lowerImportedRiveSceneSequenceModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedRiveSceneDocumentSequenceModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface Node2D { childCount: number }
+         export interface RiveArtboardImport { name: string; root: Node2D }
+         export interface RiveDocumentImportResult { artboards: RiveArtboardImport[] }`,
+      ),
+      source(
+        '@flighthq/scene2d-formats',
+        'scene2d-formats/src/riveScene2DDocument.ts',
+        `import type {
+           Node2D,
+           RiveArtboardImport,
+           RiveDocumentImportResult,
+         } from '@flighthq/types/contract';
+         export function createRiveDocumentSlots(
+           imported: RiveDocumentImportResult,
+           root: Node2D,
+         ): number {
+           return createRiveSlots(root, imported.artboards);
+         }
+         function createRiveSlots(
+           root: Node2D,
+           artboards: readonly Readonly<RiveArtboardImport>[],
+         ): number {
+           return collectRiveSlots(root, artboards, true);
+         }
+         function collectRiveSlots(
+           node: Node2D,
+           artboards: readonly Readonly<RiveArtboardImport>[],
+           recurse: boolean,
+         ): number {
+           if (recurse) return collectRiveSlots(node, artboards, false);
+           return artboards.length;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedTreeViewSequenceModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -25715,6 +25774,70 @@ Resolver make_resolver(TextureRef texture) {
       }
       const scene = emitted[3]!;
       const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, scene.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps imported Rive slot traversal on owner-preserving sequence views', () => {
+    const { moduleResolution, results } = lowerImportedRiveSceneDocumentSequenceModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The property read lends its owning Array handle to createRiveSlots, then both calls forward the
+    // same readonly view. No boundary recovers a new RiveArtboardImport array or rebuilds projected rows.
+    expect(contents).toMatch(/create_rive_slots\(root, [^;]*artboards[^;]*\)/u);
+    expect(contents).toMatch(/create_rive_slots\([^)]*flight::SequenceView<.*> artboards/u);
+    expect(contents).toMatch(/collect_rive_slots\([^)]*flight::SequenceView<.*> artboards/u);
+    expect(contents).toContain('collect_rive_slots(root, artboards, true)');
+    expect(contents).toContain('collect_rive_slots(node, artboards, false)');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles imported Rive slot traversal sequence forwarding', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedRiveSceneDocumentSequenceModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/scene2d-formats': {
+            includePrefix: 'test/scene2d-formats',
+            namespace: 'flighthq_scene2d_formats',
+          },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-rive-scene-document-sequence-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const document = emitted[1]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, document.path), [
         directory,
         ...cppRuntimeIncludeDirectories,
       ]);
