@@ -1028,6 +1028,79 @@ function lowerImportedDialogAndGizmoAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedPhysicsShapeAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface CollisionCircle2D { x: number; y: number; radius: number }
+         export interface CollisionAabb2D { minX: number; minY: number; maxX: number; maxY: number }
+         export type CollisionBuiltInShape2D =
+           | (CollisionCircle2D & { kind: 'circle' })
+           | (CollisionAabb2D & { kind: 'aabb' });
+         export interface Physics2DCollider { world: CollisionBuiltInShape2D }
+         export interface CollisionSphere3D { x: number; y: number; z: number; radius: number }
+         export interface CollisionBox3D { x: number; y: number; z: number; halfX: number; halfY: number; halfZ: number }
+         export type CollisionBuiltInShape3D =
+           | (CollisionSphere3D & { kind: 'sphere' })
+           | (CollisionBox3D & { kind: 'box' });
+         export interface CollisionTriangleMesh3D { kind: 'triangle-mesh'; points: number[] }
+         export interface CollisionHeightfield3D { kind: 'heightfield'; heights: number[] }
+         export type CollisionStaticShape3D = CollisionTriangleMesh3D | CollisionHeightfield3D;
+         export type CollisionColliderShape3D = CollisionBuiltInShape3D | CollisionStaticShape3D;
+         export interface Physics3DCollider { world: CollisionColliderShape3D }`,
+      ),
+      source(
+        '@flighthq/physics2d',
+        'physics2d/src/worldQueries.ts',
+        `import type { CollisionBuiltInShape2D, Physics2DCollider } from '@flighthq/types/contract';
+         export function writeSweptShapeBounds(
+           probe: Physics2DCollider,
+           shape: Readonly<CollisionBuiltInShape2D>,
+         ): void {
+           probe.world = shape as CollisionBuiltInShape2D;
+         }`,
+      ),
+      source(
+        '@flighthq/physics3d',
+        'physics3d/src/worldQueries.ts',
+        `import type { CollisionBuiltInShape3D, Physics3DCollider } from '@flighthq/types/contract';
+         export function writeSweptShapeBounds(
+           probe: Physics3DCollider,
+           shape: Readonly<CollisionBuiltInShape3D>,
+         ): void {
+           probe.world = shape as CollisionBuiltInShape3D;
+         }`,
+      ),
+      source(
+        '@flighthq/physics2d',
+        'physics2d/src/unchangedShapeAssertion.ts',
+        `import type { CollisionBuiltInShape2D } from '@flighthq/types/contract';
+         export function unchanged(shape: CollisionBuiltInShape2D): CollisionBuiltInShape2D {
+           return shape as CollisionBuiltInShape2D;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -3763,6 +3836,54 @@ describe('createCppCompilerBackend', () => {
     expect(contents).toContain('return optional_chain_receiver.value().includes(texture);');
     expect(contents).not.toContain('static_pointer_cast');
     expect(contents).not.toContain('structural_ref_cast');
+  });
+
+  it('preserves readonly physics shape carriers and widens the represented 3D subset', () => {
+    const { moduleResolution, results } = lowerImportedPhysicsShapeAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const physics2d = session.emitModule(modules[1]!)[0]!.contents;
+    const physics3d = session.emitModule(modules[2]!)[0]!.contents;
+
+    // Both assertions change only the checker view of the closed built-in union, so the asserted value
+    // stays on the carrier whose alternatives are already represented. The 2D destination is that same
+    // carrier. The 3D collider admits two additional static shapes, so assignment rebuilds the wider
+    // variant by checking the two alternatives the source can actually hold.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(physics2d).toContain('(probe->world = shape);');
+    expect(physics2d).not.toContain('static_pointer_cast');
+    expect(physics2d).not.toContain('structural_ref_cast');
+    expect(physics3d).toContain('probe->world = ([&]() ->');
+    expect(physics3d).toContain('std::get_if<');
+    expect(physics3d.match(/std::get_if</gu)).toHaveLength(2);
+    expect(physics3d).toContain('source union alternative is not one the destination stores');
+    expect(physics3d).not.toContain('static_pointer_cast');
+    expect(physics3d).not.toContain('structural_ref_cast');
+  });
+
+  it('keeps an unchanged imported physics union assertion attributed to the source', () => {
+    const { moduleResolution, results } = lowerImportedPhysicsShapeAssertionModules();
+    const modules = results.map((result) => result.module);
+    const failure = captureBackendEmissionFailure(() =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules,
+        options: { runtimeProfile: 'flight-cpp' },
+      }).emitModule(modules[3]!),
+    );
+
+    // Without the Readonly distinction the assertion simply names the value's existing union. It proves
+    // neither one alternative nor a representation conversion, so it must keep the actionable refusal.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain("names the value's own union type");
+    expect(failure.message).toContain('narrow it to an alternative the value can hold');
+    expect(failure.message).toContain('against [');
   });
 
   it('names the missing authored-bounds owner in the relocated SWF assertion', () => {
