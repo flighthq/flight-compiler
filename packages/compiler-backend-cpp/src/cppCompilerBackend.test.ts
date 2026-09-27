@@ -2638,11 +2638,24 @@ describe('createCppCompilerBackend', () => {
              registry = withEntry(registry, { entry, order: 0 });
            }`,
         ),
+        source(
+          '@flighthq/spritesheet-negative',
+          'packages/spritesheet-negative/src/existingEntry.ts',
+          `import { withEntry } from '@flighthq/registry/contract';
+           import type { KeyedTable } from '@flighthq/types/contract';
+           interface FormatEntry { detect: (text: string) => boolean; parse: (text: string) => number }
+           interface RegisteredFormatEntry { entry: FormatEntry; order: number }
+           let registry: KeyedTable<RegisteredFormatEntry> | null = null;
+           export function bind(existing: { entry: FormatEntry; order: number }): void {
+             if (registry === null) return;
+             registry = withEntry(registry, existing);
+           }`,
+        ),
       ],
       moduleResolution,
     );
     const modules = results.map((result) => result.module);
-    const emitted = createCppCompilerBackend().createEmissionSession!({
+    const session = createCppCompilerBackend().createEmissionSession!({
       moduleResolution,
       modules,
       options: {
@@ -2652,14 +2665,24 @@ describe('createCppCompilerBackend', () => {
             includePrefix: 'flight/spritesheet-formats',
             namespace: 'flight::spritesheet_formats',
           },
+          '@flighthq/spritesheet-negative': {
+            includePrefix: 'flight/spritesheet-negative',
+            namespace: 'flight::spritesheet_negative',
+          },
           '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
         },
         runtimeProfile: 'flight-cpp',
       },
-    }).emitModule(modules[2]!)[0]!.contents;
+    });
+    const emitted = session.emitModule(modules[2]!)[0]!.contents;
 
-    expect(emitted).toContain('with_entry<RegisteredFormatEntry>');
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('with_entry<flight::Ref<RegisteredFormatEntry>>');
     expect(emitted).toContain('flight::make_ref<RegisteredFormatEntry>');
+    expect(emitted).not.toMatch(/entry_order_[a-f0-9]+/u);
+    expect(captureBackendEmissionFailure(() => session.emitModule(modules[3]!)).rule).toBe(
+      'cpp-contextual-union-value-type-unrepresented',
+    );
   });
 
   it('constructs optional named frame tags from a direct map expression', () => {
@@ -2687,7 +2710,21 @@ describe('createCppCompilerBackend', () => {
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
+    expect(result.diagnostics).toEqual([]);
     expect(emitted).toContain('flight::make_ref<FrameTag>');
+
+    const existing = lower(
+      'optional-existing-map-result.ts',
+      `interface FrameTag { from: number; name: string }
+       interface Meta { frameTags?: FrameTag[] }
+       function load(): { from: number; name: string }[] { return []; }
+       export function dataToMeta(include: boolean): Meta {
+         return { frameTags: include ? load() : undefined };
+       }`,
+    );
+    expect(
+      captureBackendEmissionFailure(() => emitIrModuleCpp(existing.module, { runtimeProfile: 'flight-cpp' })).rule,
+    ).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
   it('keeps an erased value whose kind the runtime does not represent attributed to the runtime', () => {

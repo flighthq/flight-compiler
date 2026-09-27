@@ -15715,8 +15715,10 @@ function getIrExpressionTypeForUnionConstructionCpp(
         getIrNullishCoalesceTypeEvidenceCpp(expression, context) ??
         getIrOperatorValueDomainTypeCpp(expression.semantics.result)
       );
-    case 'call':
-      return getIrCallReturnTypeCpp(expression, context);
+    case 'call': {
+      const contextualResult = getCppContextualGenericCallUnionResultTypeCpp(expression, valueSlots, context);
+      return contextualResult ?? getIrCallReturnTypeCpp(expression, context);
+    }
     case 'cast':
       return expression.type;
     case 'element':
@@ -15829,6 +15831,39 @@ function getIrExpressionTypeForUnionConstructionCpp(
     default:
       return undefined;
   }
+}
+
+// A generic call may infer an anonymous structural type from a fresh argument even when its sole
+// contextual union arm names the declaration that argument and result are meant to use. Recover the
+// same complete substitution the call emitter uses, then let the ordinary union matcher verify the
+// resolved result. This changes neither an existing value nor the call result; it only keeps the named
+// template argument that the destination already proves when exactly one runtime arm is available.
+function getCppContextualGenericCallUnionResultTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (
+    valueSlots.length !== 1 ||
+    expression.callee.kind !== 'identifier' ||
+    expression.callee.reference.kind !== 'binding'
+  ) {
+    return undefined;
+  }
+  const declaration = getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context);
+  if (!declaration || declaration.typeParameters.length === 0) return undefined;
+  const typeArguments = getCppContextualResultConstrainedCallTypeArgumentsCpp(
+    expression,
+    declaration,
+    valueSlots[0]!.runtimeType,
+    context,
+  );
+  return typeArguments
+    ? resolveIrTypeStructuralSubstitution(
+        declaration.returns,
+        createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments),
+      )
+    : undefined;
 }
 
 // A contextually typed object literal can retain the checker's expanded nullable target as its own
@@ -16023,14 +16058,21 @@ function getCppConcreteNamedUnionValueSlotCpp(
   }>[],
   context: EmitContext,
 ): number | undefined {
+  // An intersection implemented over an imported nominal interface emits a derived C++ struct: that
+  // interface is its one actual base and the remaining members are refinements. It can enter exactly
+  // that base arm through Ref<Derived> -> Ref<Base>, without a cast or replacement object. Other
+  // constituents are not C++ bases and deliberately receive no nominal identity here.
+  const nominalIntersectionBase =
+    source.kind === 'intersection' ? getCppNominalIntersectionBaseCpp(source, context)?.type : undefined;
+  const concreteSource = nominalIntersectionBase ?? source;
   if (
-    source.kind !== 'named' ||
-    source.reference.kind !== 'binding' ||
-    source.reference.binding.kind === 'typeParameter'
+    concreteSource.kind !== 'named' ||
+    concreteSource.reference.kind !== 'binding' ||
+    concreteSource.reference.binding.kind === 'typeParameter'
   ) {
     return undefined;
   }
-  const sourceModule = getCppNamedTypeBindingModuleCpp(source, context);
+  const sourceModule = getCppNamedTypeBindingModuleCpp(concreteSource, context);
   const matches = valueSlots.flatMap((slot, slotIndex) =>
     slot.sourceAlternatives
       .flatMap((alternative) => getCppExpandedUnionSourceAlternativesCpp(alternative, context, new Set()))
@@ -16049,7 +16091,7 @@ function getCppConcreteNamedUnionValueSlotCpp(
         );
         return alternativePlan.valueSlots[0]?.representationKey === slot.representationKey &&
           isCppNominalTypeDerivedFromCpp(
-            source,
+            concreteSource,
             sourceModule,
             alternative,
             getCppNamedTypeBindingModuleCpp(alternative, context),
@@ -16461,11 +16503,11 @@ function isIrStringTypeEvidenceCpp(type: Readonly<IrType> | undefined): boolean 
   return type?.kind === 'primitive' && type.name === 'string';
 }
 
-// C++ cannot infer a function template parameter which appears only in the return type. TypeScript
-// can accept such a call from its contextual destination, however, and call-result semantics retain
-// the checker's instantiated type. Recover only a complete, structurally aligned substitution: an
-// incomplete result is left to ordinary C++ argument deduction instead of manufacturing `auto` or
-// choosing a constraint as a runtime type.
+// C++ cannot infer a function template parameter which appears only in the return type, nor reconcile
+// a fresh structural argument with the named owner supplied by the result context. TypeScript accepts
+// both. Prefer a complete contextual substitution when every argument can retain its representation or
+// is a fresh object constructible in that domain; otherwise retain the checker-inferred call result.
+// An incomplete result is left to ordinary C++ deduction instead of manufacturing a runtime type.
 function getCppContextualCallTypeArgumentsCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   expectedType: Readonly<IrType> | undefined,
@@ -16490,23 +16532,87 @@ function getCppContextualCallTypeArgumentsCpp(
       argumentSubstitutions = candidateSubstitutions;
     }
   });
-  const candidates = [expectedType, expression.semantics.resultType].flatMap((candidate) =>
-    candidate && candidate.kind !== 'unknown' ? [candidate] : [],
-  );
-  for (const candidate of candidates) {
+  const fromCandidate = (candidate: Readonly<IrType> | undefined): readonly Readonly<IrType>[] | undefined => {
+    if (!candidate || candidate.kind === 'unknown') return undefined;
     const substitutions = new Map(argumentSubstitutions);
     if (!collectCppResultTypeSubstitutionsCpp(declaration.returns, candidate, parameterIds, substitutions, context)) {
-      continue;
+      return undefined;
     }
     const arguments_ = declaration.typeParameters.map(
       (parameter) => substitutions.get(parameter.binding.id) ?? parameter.default,
     );
-    if (arguments_.every((argument): argument is Readonly<IrType> => argument !== undefined)) return arguments_;
-  }
+    return arguments_.every((argument): argument is Readonly<IrType> => argument !== undefined)
+      ? arguments_
+      : undefined;
+  };
+  const contextual = fromCandidate(expectedType);
+  if (contextual) return contextual;
+  const resultConstrained = expectedType
+    ? getCppContextualResultConstrainedCallTypeArgumentsCpp(expression, declaration, expectedType, context)
+    : undefined;
+  if (resultConstrained) return resultConstrained;
+  const semantic = fromCandidate(expression.semantics.resultType);
+  if (semantic) return semantic;
   const arguments_ = declaration.typeParameters.map(
     (parameter) => argumentSubstitutions.get(parameter.binding.id) ?? parameter.default,
   );
   return arguments_.every((argument): argument is Readonly<IrType> => argument !== undefined) ? arguments_ : undefined;
+}
+
+// The destination may name a generic result owner more precisely than inference from a fresh object
+// argument. Let that one result pattern constrain the call only when every supplied argument either
+// already has the resolved representation, crosses through an owner-preserving structural view, or is
+// the fresh object allocation that can adopt it. Several distinct substitutions remain ambiguous.
+function getCppContextualResultConstrainedCallTypeArgumentsCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  declaration: Readonly<IrFunctionDeclaration>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): readonly Readonly<IrType>[] | undefined {
+  const parameterIds = new Set(declaration.typeParameters.map((parameter) => parameter.binding.id));
+  const resultPatterns =
+    declaration.returns.kind === 'intersection'
+      ? [declaration.returns, ...declaration.returns.types]
+      : [declaration.returns];
+  const matches = new Map<string, readonly Readonly<IrType>[]>();
+  for (const resultPattern of resultPatterns) {
+    const substitutions = new Map<string, Readonly<IrType>>();
+    if (!collectCppResultTypeSubstitutionsCpp(resultPattern, expectedType, parameterIds, substitutions, context)) {
+      continue;
+    }
+    const typeArguments = declaration.typeParameters.map(
+      (parameter) => substitutions.get(parameter.binding.id) ?? parameter.default,
+    );
+    if (!typeArguments.every((argument): argument is Readonly<IrType> => argument !== undefined)) continue;
+    const plan = createIrTypeParameterSubstitutionPlan(declaration.typeParameters, typeArguments);
+    const argumentsFit = expression.arguments.every((argument, index) => {
+      const parameter = declaration.parameters[index];
+      if (!parameter || parameter.rest) return false;
+      const argumentType = getIrExpressionTypeEvidenceCpp(argument, context);
+      if (!argumentType) return false;
+      const verified = new Map(substitutions);
+      if (collectCppResultTypeSubstitutionsCpp(parameter.type, argumentType, parameterIds, verified, context)) {
+        return true;
+      }
+      const resolvedParameter = resolveIrTypeStructuralSubstitution(parameter.type, plan);
+      if (
+        argument.kind === 'object' &&
+        getCppContextualObjectUnionRuntimeTypeCpp(argument, [{ runtimeType: resolvedParameter }], context) !== undefined
+      ) {
+        return true;
+      }
+      const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+      return (
+        areCppTypesRepresentationEquivalent(argumentType, resolvedParameter, isolatedContext) ||
+        emitCppStructuralReferenceValueConversionCpp('source', argumentType, resolvedParameter, isolatedContext) !==
+          undefined
+      );
+    });
+    if (argumentsFit) {
+      matches.set(typeArguments.map(normalizeCompilerStructuralValueCanonical).join('\0'), typeArguments);
+    }
+  }
+  return matches.size === 1 ? [...matches.values()][0] : undefined;
 }
 
 function getCppValueRepresentedCallTypeArgumentsCpp(
@@ -22203,10 +22309,22 @@ function emitCppConditionalBranchCpp(
 ): string {
   const union = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
-  if (expression.kind !== 'object' || plan?.kind !== 'optionalSingle' || !plan.valueSlots[0]) {
+  if (plan?.kind !== 'optionalSingle') return emitExpression(expression, context, expectedType);
+  const slot = plan.valueSlots[0];
+  const freshMappedArray =
+    expression.kind === 'call' &&
+    expression.callee.kind === 'property' &&
+    expression.callee.member?.receiver === 'array' &&
+    expression.callee.member.name === 'map' &&
+    slot !== undefined &&
+    getIrArrayTypeCpp(slot.runtimeType, context, new Set()) !== undefined;
+  if ((expression.kind !== 'object' && !freshMappedArray) || !slot) {
     return emitExpression(expression, context, expectedType);
   }
-  const slot = plan.valueSlots[0];
+  // Both forms allocate their value in this expression. Carry the optional's sole present domain into
+  // that allocation before wrapping it: an object literal chooses its referent owner here, while map
+  // chooses the element owner for every callback result. Existing arrays do not enter this lane, so no
+  // array identity is retyped or materialized.
   return emitCppUnionValueConstruction(
     emitExpression(expression, context, slot.runtimeType, false),
     slot.targetType,
