@@ -15584,6 +15584,36 @@ Resolver make_resolver(TextureRef texture) {
     expect(closed).toContain('return value.index() == 0;');
   });
 
+  it('lowers a typeof presence guard as the storage own presence', () => {
+    // `typeof value !== 'undefined'` is a presence test the source states, and the semantic lowering
+    // already records it as a union member test on `undefined`. The union stores ONE optional, so the
+    // member the test names is the absence marker rather than a value slot: the answer is the storage's
+    // own presence, and the narrowing is what lets the read reach the member instead of the optional.
+    const result = lower(
+      'typeof-presence-guard.ts',
+      `interface Texture { readonly size: number }
+       function read(): Texture | undefined { return undefined; }
+       export function present(): number {
+         const texture = read();
+         if (typeof texture !== 'undefined') return texture.size;
+         return 0;
+       }
+       export function absent(): number {
+         const texture = read();
+         if (typeof texture === 'undefined') return 0;
+         return texture.size;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    // Both polarities: the branch that names the sentinel is the branch that does NOT hold a value.
+    expect(contents).toContain('if (texture.has_value()) {');
+    expect(contents).toContain('if (!(texture.has_value())) {');
+    expect(contents).toContain('return texture.value()->size;');
+    // No cast, no visit, no copy: the guard is the carrier's own presence and the read is the member.
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('std::visit');
+  });
+
   it('keeps open Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>

@@ -12453,6 +12453,24 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
   const evidenceSlot = getCppSingleUnionMemberValueSlotCpp(evidence.member, context);
   const nestedOptionalTest = emitCppNestedUnionMemberTestCpp(evidence, plan, context);
   if (nestedOptionalTest) return nestedOptionalTest;
+  // A test whose member IS the absence marker -- `typeof x !== 'undefined'` lowered as a member test on
+  // `undefined` -- is asking the carrier's own question rather than one about a value it stores: the plan
+  // holds one optional, and the sentinel the test names is the absence that optional expresses. The answer
+  // is the storage's own presence, with the evidence's polarity, and nothing is cast, copied, or visited.
+  const absenceSentinel =
+    evidence.member.kind === 'undefined' || evidence.member.kind === 'null' ? evidence.member.kind : undefined;
+  if (
+    absenceSentinel !== undefined &&
+    (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant') &&
+    plan.sentinels[absenceSentinel] === 'optionalAbsence'
+  ) {
+    context.includes.add('optional');
+    const binding = emitInitializedBindingValueCpp(evidence.binding, context);
+    const present = `${binding}.has_value()`;
+    // `whenResult` says the branch is the one where the value IS the member, and the member here is the
+    // absence: the branch that tests the sentinel is the branch that does NOT hold a value.
+    return evidence.whenResult ? `!(${present})` : present;
+  }
   if (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant') {
     const alternatives = plan.valueSlots.filter((slot) =>
       slot.sourceAlternatives.some(
