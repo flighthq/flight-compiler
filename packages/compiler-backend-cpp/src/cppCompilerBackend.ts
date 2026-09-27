@@ -7155,6 +7155,7 @@ function areCppCollectionElementSourceAlternativeShapesEquivalent(
     !leftShape ||
     !rightShape ||
     leftShape.length !== rightShape.length ||
+    !areCppUnionMemberObjectRepresentationsEquivalent(left, right, context) ||
     !context.referenceRepresentationPlanner.isStructurallyAssignable(left, right, context.module) ||
     !context.referenceRepresentationPlanner.isStructurallyAssignable(right, left, context.module)
   ) {
