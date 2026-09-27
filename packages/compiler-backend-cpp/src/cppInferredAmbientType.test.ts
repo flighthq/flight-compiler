@@ -25,7 +25,11 @@ describe('C++ inferred ambient types', () => {
 
     expect(result.diagnostics).toEqual([]);
     const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
-    expect(output).toContain('flight::Uint8Array input = static_cast<flight::Uint8Array>(bytes)');
+    // `Readonly<Uint8Array>` and `Uint8Array` are one C++ carrier, so the assertion states a source-only
+    // readonly distinction the target has no work for: the value is emitted as itself, and the runtime's
+    // shared handle makes that copy alias the same buffer, which is what a source `as` means.
+    expect(output).toContain('flight::Uint8Array input = bytes;');
+    expect(output).not.toContain('static_cast<flight::Uint8Array>');
     expect(output).toContain('flight::Map<double, flight::Ref<Row>> rows = table()');
     expect(output).not.toMatch(/\bauto\s+(?:length|size)\s*;/u);
     expect(output).not.toContain('std::function<auto');
