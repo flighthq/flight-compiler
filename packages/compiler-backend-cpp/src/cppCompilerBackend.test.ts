@@ -13590,6 +13590,116 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
   });
 
+  it('retains an imported private WeakMap value owner across an inferred call binding', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './resource',
+          target: { packageName: '@flighthq/midi', source: 'packages/midi/src/resource.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export declare const EntityRuntimeKey: unique symbol;
+             export interface EntityRuntime { binding: object | null; uid?: string }
+             interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+             export interface Access extends Entity { readonly id: string }
+             export interface InputPort extends Entity { readonly id: string; readonly type: 'input' }
+             export interface OutputPort extends Entity { readonly id: string; readonly type: 'output' }
+             export type Port = InputPort | OutputPort;
+             export interface Operations { close(): void }
+             export interface Subscription { readonly id: string }
+             export type Outcome = { readonly reason: 'ok' } | { readonly reason: 'failed' };`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/midi',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/midi/src/resource.ts',
+            `import type { Access, Operations, Outcome, Port, Subscription } from '@flighthq/types/contract';
+             interface State {
+               disposeCompleted: boolean;
+               disposePending: Promise<Outcome> | null;
+               disposed: boolean;
+               knownPorts: Set<Port>;
+               operations: Operations;
+               subscriptions: Set<Subscription>;
+             }
+             const states = new WeakMap<Access, State>();
+             export function getState(access: Access): State | undefined { return states.get(access); }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/midi',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/midi/src/dispose.ts',
+            `import type { Access } from '@flighthq/types/contract';
+             import { getState } from './resource';
+             export function dispose(access: Access): void {
+               const state = getState(access);
+               if (state === undefined || state.disposeCompleted) return;
+               state.disposed = true;
+               const pending = state.disposePending;
+               if (pending === null) return;
+               void pending.finally(() => { state.disposePending = null; });
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const contents = emitCppModuleCppSession(results, moduleResolution, 2);
+
+    expect(contents).toContain(
+      'flight::make_binding_cell(std::optional<flight::Ref<State>>{flighthq_midi::get_state(access)})',
+    );
+    expect(contents).toContain('state_capture.read_binding().value()->disposed = true');
+    expect(contents).toContain('state_capture.read_binding().value()->dispose_pending = std::nullopt');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('static_pointer_cast');
+
+    const mutableModules = structuredClone(results.map((result) => result.module));
+    const dispose = mutableModules[2]!.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'dispose',
+    );
+    const state = dispose?.kind === 'function' && dispose.body[0]?.kind === 'variable' ? dispose.body[0] : undefined;
+    if (!state || 'pattern' in state.declarations[0]!) throw new Error('Expected state binding');
+    Object.assign(state.declarations[0]!, { mutable: true });
+    const mutableFailure = captureBackendEmissionFailure(() =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules: mutableModules,
+        options: { runtimeProfile: 'flight-cpp' },
+      }).emitModule(mutableModules[2]! as IrModule),
+    );
+
+    // A binding that may be rebound can later receive another structurally compatible owner. Its first
+    // initializer cannot elect storage for the shared cell, so the existing target-runtime refusal remains.
+    expect(mutableFailure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(mutableFailure.classification).toBe('target-runtime');
+  });
+
   it('keeps an app subscription lookup and empty fallback in the declared WeakMap value owner', () => {
     const result = lower(
       'app-subscription-lookup.ts',

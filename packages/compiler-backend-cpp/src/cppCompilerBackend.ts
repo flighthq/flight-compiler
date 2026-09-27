@@ -676,9 +676,9 @@ function emitIrModuleCppWithContext(
     if (
       bindingType &&
       bindingPlan.reasons.includes('capturedReferentMutation') &&
-      !bindingPlan.reasons.some((reason) =>
-        ['capturedBindingMutation', 'capturedMutableBinding', 'outsideMutation'].includes(reason),
-      ) &&
+      // An outside property mutation changes the shared referent, not the binding. Copies of a represented
+      // reference still observe it, so only possible rebinding disqualifies the referent-only lane.
+      !bindingPlan.reasons.some((reason) => ['capturedBindingMutation', 'capturedMutableBinding'].includes(reason)) &&
       hasSharedReferentRepresentationCpp(bindingType, context)
     ) {
       capturedReferentOnlyBindingIds.add(bindingPlan.binding.id);
@@ -2672,10 +2672,13 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
         'cpp-shared-mutable-capture-missing-initial-storage',
       );
     }
-    const sharedType = emitOptionalTypeCpp(type, arrayElement, context);
-    const sharedInitializer = arrayElement
-      ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
-      : emitExpression(variable.initializer, context, variable.type);
+    // A referent-only capture may retain a narrower named initializer owner than the checker's expanded
+    // binding type. The shared cell stores that existing carrier; it does not convert or reconstruct it.
+    // Rebound or mutable bindings never receive this preserved type, so their cell still follows the
+    // declaration storage that every later assignment must satisfy.
+    const sharedStorageType = preservedInitializerType ? emitType(preservedInitializerType, context) : type;
+    const sharedType = emitOptionalTypeCpp(sharedStorageType, arrayElement, context);
+    const sharedInitializer = initializerValue!;
     const tuple = variable.type ? getIrTupleTypeCpp(variable.type, context, new Set()) : undefined;
     const runtimeArrayInitializer =
       getCppRuntimeProfile(context.options) === 'flight-cpp' &&
@@ -2866,7 +2869,8 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
     variable.mutable ||
     !variable.type ||
     !variable.initializer ||
-    context.sharedCaptureTargetNames.has(variable.binding.id)
+    (context.sharedCaptureTargetNames.has(variable.binding.id) &&
+      !context.capturedReferentOnlyBindingIds.has(variable.binding.id))
   ) {
     return undefined;
   }
