@@ -238,8 +238,10 @@ function lowerPackage(packageName: string, file: string, source: string) {
 }
 
 function lowerImportedClosedKeyStorageModules() {
-  // The GUI consumer mirrors guiTestHelper's non-null imported call result followed by a broad signal
-  // key and callback assertion. The scene consumer mirrors flightDocumentText's `states[phase] = state`.
+  // Both consumers reach their types through the export-all contract barrel used by the SDK. The GUI
+  // consumer mirrors guiTestHelper's non-null imported call result, computed runtime-key exclusion,
+  // broad signal key, and callback assertion. The scene consumer mirrors flightDocumentText's
+  // `states[phase] = state`.
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
       {
@@ -249,6 +251,10 @@ function lowerImportedClosedKeyStorageModules() {
       {
         specifier: './types',
         target: { packageName: '@flighthq/closed-key', source: 'packages/closed-key/src/types.ts' },
+      },
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/closed-key', source: 'packages/closed-key/src/contract.ts' },
       },
     ],
     schema: 'flight-compiler-module-resolution/1',
@@ -262,14 +268,17 @@ function lowerImportedClosedKeyStorageModules() {
     [
       source(
         'types.ts',
-        `export interface KeyboardEventData { altKey: boolean; key: string }
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface KeyboardEventData { altKey: boolean; key: string }
          export interface PointerEventData { altKey: boolean; x: number }
-         export interface Signal<Listener> { emit: Listener }
-         export interface InteractionSignals {
+         export interface Signal<Listener> extends Entity { emit: Listener }
+         export interface InteractionSignals extends Entity {
            onKeyDown: Signal<(data: Readonly<KeyboardEventData>) => void>;
            onPointerDown: Signal<(data: Readonly<PointerEventData>) => void>;
          }
-         export type InteractionSignalName = 'onKeyDown' | 'onPointerDown';
+         export type InteractionSignalName = Exclude<keyof InteractionSignals, typeof EntityRuntimeKey>;
          export interface InteractiveState { alpha?: number; visible?: boolean }
          export interface OptionalCounters { alpha?: number; beta?: number }
          export interface InteractiveStates {
@@ -293,7 +302,7 @@ function lowerImportedClosedKeyStorageModules() {
          import type {
            InteractionSignalName,
            KeyboardEventData,
-         } from './types';
+         } from '@flighthq/types/contract';
          export function emitKeyboard(target: object, name: InteractionSignalName): void {
            const data: KeyboardEventData = { altKey: false, key: 'Enter' };
            (getInteractionSignals(target)![name].emit as (data: Readonly<KeyboardEventData>) => void)(data);
@@ -301,7 +310,7 @@ function lowerImportedClosedKeyStorageModules() {
       ),
       source(
         'scene.ts',
-        `import type { InteractiveState, InteractiveStatePhase, InteractiveStates, OptionalCounters } from './types';
+        `import type { InteractiveState, InteractiveStatePhase, InteractiveStates, OptionalCounters } from '@flighthq/types/contract';
          export function assignInteractiveState(
            states: InteractiveStates,
            phase: InteractiveStatePhase,
@@ -323,6 +332,7 @@ function lowerImportedClosedKeyStorageModules() {
            if (counters !== null) counters[key] = value;
          }`,
       ),
+      source('contract.ts', "export * from './types';"),
     ],
     moduleResolution,
   );
@@ -2685,6 +2695,7 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(guiFailure.rule).toBe('cpp-closed-key-result-assertion-discards-alternatives');
     expect(guiFailure.classification).toBe('source-portability');
+    expect(guiFailure.message).toContain('narrow the key before the indexed read');
     expect(sceneOutput).toContain('selection_receiver->disabled = std::optional<');
     expect(sceneOutput).toContain('selection_receiver->hover = std::optional<');
     expect(sceneOutput).toContain('selection_receiver->pressed = std::optional<');
@@ -2693,6 +2704,9 @@ describe('createCppCompilerBackend', () => {
     expect(sceneOutput).toContain('std::in_place_type<bool>');
     expect(sceneOutput.match(/->(?:alpha|beta) = value; return;/gu)).toHaveLength(2);
     expect(sceneOutput).not.toContain('selection_receiver[');
+    expect(sceneOutput).not.toContain('flight::Any');
+    expect(sceneOutput).not.toContain('flight::make_ref');
+    expect(sceneOutput).not.toContain('flight::structural_ref_cast');
   });
 
   it.skipIf(!canCompileCpp)('compiles a closed-key write through imported represented storage', () => {
@@ -2707,10 +2721,12 @@ describe('createCppCompilerBackend', () => {
     const directory = mkdtempSync(path.join(tmpdir(), 'flight-imported-closed-key-storage-'));
     const typesHeader = path.join(directory, 'types.hpp');
     const sceneHeader = path.join(directory, 'scene.hpp');
+    const contractHeader = path.join(directory, 'contract.hpp');
 
     try {
       writeFileSync(typesHeader, session.emitModule(modules[0]!)[0]!.contents, 'utf8');
       writeFileSync(sceneHeader, session.emitModule(modules[3]!)[0]!.contents, 'utf8');
+      writeFileSync(contractHeader, session.emitModule(modules[4]!)[0]!.contents, 'utf8');
       const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, sceneHeader, cppRuntimeIncludeDirectories);
       expect(() =>
         execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
