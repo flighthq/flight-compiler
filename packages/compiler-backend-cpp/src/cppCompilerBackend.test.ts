@@ -14635,7 +14635,6 @@ Resolver make_resolver(TextureRef texture) {
        export function mutable(registry: HostRegistry): boolean {
          let entry = registry.find('mutable');
          return entry === null;
-       }
        }`,
     );
     const binding = {
