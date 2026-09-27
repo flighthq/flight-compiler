@@ -14296,7 +14296,7 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.message).toContain('is not a represented runtime domain');
   });
 
-  it('keeps a closed-key read over several member types attributed to the compiler', () => {
+  it('widens a heterogeneous closed-key read into its represented result union', () => {
     const result = lower(
       'closed-key-read-heterogeneous.ts',
       `interface Style { fontSize?: number; color?: string }
@@ -14304,15 +14304,76 @@ Resolver make_resolver(TextureRef texture) {
          return style[key];
        }`,
     );
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
-    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
-    // The source is valid; what is missing is a result representation that can hold several member types,
-    // which is the union planner's question and not the source's to answer.
-    expect(failure.rule).toBe('cpp-closed-key-multiple-member-types');
-    expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.message).toContain('requires a represented result union');
+    // Each optional cell retains its own storage. Presence enters the exact variant alternative, while
+    // absence enters the result union's undefined sentinel; neither value is erased or reconstructed.
+    expect(contents).toContain('-> std::optional<std::variant<double, flight::String>>');
+    expect(contents).toContain('const auto& selected_member = selection_receiver->font_size;');
+    expect(contents).toMatch(/const auto& selected_member_[0-9]+ = selection_receiver->color;/u);
+    expect(contents).toContain('std::in_place_type<double>, selected_member.value()');
+    expect(contents).toMatch(/std::in_place_type<flight::String>, selected_member_[0-9]+\.value\(\)/u);
+    expect(contents.match(/return std::nullopt;/gu)).toHaveLength(2);
+    expect(contents.match(/const auto selection_key = key;/gu)).toHaveLength(1);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+  });
+
+  it('preserves every TextFormat-like member representation in a closed-key read', () => {
+    const result = lower(
+      'text-format-closed-key-read.ts',
+      `interface FontVariation { readonly axis: string; readonly value: number }
+       interface TextFormat {
+         align?: 'left' | 'right';
+         bold?: boolean;
+         fontSize?: number;
+         tabStops?: number[];
+         target?: string;
+         variations?: readonly FontVariation[];
+       }
+       type TextFormatValue = TextFormat[keyof TextFormat];
+       export function read(format: TextFormat, key: keyof TextFormat): TextFormatValue {
+         const value = format[key];
+         return value;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The two string fields intentionally share the one string runtime domain. Every other field enters
+    // its exact result slot, including both array element representations, and optional absence remains
+    // the carrier's undefined state.
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('std::in_place_type<bool>');
+    expect(contents).toContain('std::in_place_type<double>');
+    expect(contents).toContain('std::in_place_type<flight::String>');
+    expect(contents).toContain('std::in_place_type<flight::Array<double>>');
+    expect(contents).toContain('std::in_place_type<flight::Array<flight::Ref<FontVariation>>>');
+    expect(contents.match(/const auto selection_key = key;/gu)).toHaveLength(1);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles a heterogeneous closed-key result carrier', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const result = lower(
+      'closed-key-read-heterogeneous-compile.ts',
+      `interface Style { fontSize?: number; color?: string }
+       export function get(style: Style, key: keyof Style): number | string | undefined {
+         return style[key];
+       }`,
+    );
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-heterogeneous-closed-key-'));
+    const header = path.join(directory, 'closed-key.hpp');
+
+    try {
+      writeFileSync(header, emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents, 'utf8');
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it('stores a contextual value whose alternative names the type through a declared alias', () => {
@@ -15177,7 +15238,7 @@ Resolver make_resolver(TextureRef texture) {
     expect(closed).toContain('return value.index() == 0;');
   });
 
-  it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {
+  it('keeps open Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
         emitIrModuleCpp(lower('partial-index-negative.ts', source).module, { runtimeProfile: 'flight-cpp' }),
@@ -15191,14 +15252,20 @@ Resolver make_resolver(TextureRef texture) {
          }`,
       ).rule,
     ).toBe('cpp-partial-shape-unresolvable');
-    expect(
-      refusal(
+
+    const closed = emitIrModuleCpp(
+      lower(
+        'partial-index-closed.ts',
         `interface Values { info?: { value: number }; count?: number }
          export function lookup(values: Values, key: keyof Values): { value: number } | number | undefined {
            return values[key];
          }`,
-      ).rule,
-    ).toBe('cpp-closed-key-multiple-member-types');
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(closed).toContain('std::in_place_type<flight::Ref<value_');
+    expect(closed).toContain('std::in_place_type<double>');
+    expect(closed).not.toContain('flight::Any');
   });
 
   it('resolves NonNullable over a named object indexed access', () => {

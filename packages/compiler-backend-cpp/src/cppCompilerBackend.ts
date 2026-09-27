@@ -11246,14 +11246,10 @@ function emitCppClosedKeyElementTypeofCpp(
 // chooses the member, but it is a dispatch over a set the compiler enumerated rather than a subscript
 // the target has no operator for.
 //
-// Every key must name a member the object actually emits, and the members must lower to one C++ type:
-// a key the object does not have would select nothing, and members of different types would need a
-// result representation that can hold several, which is a question for the union planner rather than
-// for this access.
 // The members a finite key set names, and how many C++ types their reads lower to. Shared by the read
 // selection and the write dispatch, because both need the same member set and the same refusals: a key the
-// object does not have would name nothing, and members of different types need a representation that can
-// hold several -- which is the union planner's question, not this access's.
+// object does not have would name nothing. A read may widen unlike members into its represented result
+// union; a write still needs one value that every selected member accepts.
 function getCppClosedKeyElementMembersCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   keys: readonly string[],
@@ -11342,14 +11338,15 @@ function getCppClosedKeyElementMembersCpp(
     );
   }
   const distinct = [...new Set(memberTypes)];
-  if (distinct.length !== 1) {
+  if (writtenType !== undefined && distinct.length !== 1) {
     // Every write value that reaches this point fits every selected member. What remains is the target's:
-    // the members lower to different C++ types and the result representation that would hold several of
-    // them is the union planner's question, which the read selection has not answered yet.
+    // the members lower to different C++ types, so there is no one assignment expression shared by the
+    // dispatch. Keep this refusal separate from reads, whose result union can represent the alternatives.
     emissionError(
       context,
-      `closed-key ${writtenType === undefined ? 'selection' : 'write'} over ${String(distinct.length)} member types requires a represented result union`,
+      `closed-key write over ${String(distinct.length)} member types requires one represented assignment type`,
       'cpp-closed-key-multiple-member-types',
+      'target-runtime',
     );
   }
   return { distinct, members, runtime };
@@ -11377,6 +11374,27 @@ function emitCppClosedKeyElementWriteCpp(
   return `([&]() { const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${selectionKey} = ${emitExpression(expression.index, context)}; ${branches.join(' ')} throw std::logic_error("Flight finite-key write reached no member"); }())`;
 }
 
+// An optional property's READ includes undefined because the cell may be empty; its WRITE accepts the
+// declared payload. Keep that distinction at the assignment boundary so contextual emission does not
+// wrap a present right-hand value in optional storage before the per-member dispatch sees it.
+function getCppClosedKeyElementWriteTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const keys = getCppClosedElementKeyNamesCpp(expression, context);
+  if (!keys) return undefined;
+  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const runtime = objectType ? getIrTypeRuntimeDomainCpp(objectType, context, new Set()) : undefined;
+  const representedSubject = runtime ? (getCppIdentityPreservingUtilityArgument(runtime) ?? runtime) : undefined;
+  const owner = representedSubject ? getCppTypeReferenceOwnerModuleCpp(representedSubject, context) : undefined;
+  const representation = runtime && owner ? context.referenceRepresentationPlanner.plan(runtime, owner) : undefined;
+  if (representation?.kind !== 'represented' || representation.valueRepresentation !== 'flightReference') {
+    return undefined;
+  }
+  const { members } = getCppClosedKeyElementMembersCpp(expression, keys, context);
+  return createIrTypeEvidenceUnionCpp(keys.map((key) => members.get(key)!.type));
+}
+
 function emitCppClosedKeyElementSelectionCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   keys: readonly string[],
@@ -11386,14 +11404,119 @@ function emitCppClosedKeyElementSelectionCpp(
   const receiver = getGeneratedTargetName('selectionReceiver', context);
   const selectionKey = getGeneratedTargetName('selectionKey', context);
   const select = (member: string): string => `${receiver}->${safeCppName(member)}`;
+  context.includes.add('stdexcept');
+  if (distinct.length === 1) {
+    const branches = keys.map((key) => {
+      const property = members.get(key)!;
+      return `if (${selectionKey} == ${emitLiteral(key, context)}) return ${select(property.name)};`;
+    });
+    // JavaScript evaluates the receiver and key once, in that order. Binding both before the dispatch
+    // keeps that contract for effectful expressions as well as the plain identifiers in the common case.
+    return `([&]() -> ${distinct[0]!} { const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${selectionKey} = ${emitExpression(expression.index, context)}; ${branches.join(' ')} throw std::logic_error("Flight finite-key selection reached no member"); }())`;
+  }
+
+  const resultType = getIrExpressionTypeEvidenceCpp(expression, context);
+  const resultUnion = resultType ? getIrUnionTypeCpp(resultType, context, new Set()) : undefined;
+  if (!resultType || !resultUnion) {
+    emissionError(
+      context,
+      `closed-key selection over ${String(distinct.length)} member types has no represented result union. Narrow the key before reading, or retain the indexed-access union in the expression type`,
+      'cpp-closed-key-multiple-member-types',
+      'target-runtime',
+    );
+  }
+  const resultPlan = getCppUnionRepresentationPlan(resultUnion, context);
   const branches = keys.map((key) => {
     const property = members.get(key)!;
-    return `if (${selectionKey} == ${emitLiteral(key, context)}) return ${select(property.name)};`;
+    const selected = getGeneratedTargetName('selectedMember', context);
+    const widened = emitCppClosedKeyMemberWideningCpp(
+      selected,
+      getIrObjectPropertyReadTypeCpp(property)!,
+      resultUnion,
+      resultPlan,
+      context,
+    );
+    if (!widened) {
+      const sourceUnion = getIrUnionTypeCpp(getIrObjectPropertyReadTypeCpp(property)!, context, new Set());
+      const sourcePlan = sourceUnion ? getCppUnionRepresentationPlan(sourceUnion, context) : undefined;
+      emissionError(
+        context,
+        `closed-key member ${key} cannot enter the indexed-access result carrier without changing its runtime representation (${sourcePlan?.kind ?? 'value'} [${sourcePlan?.valueSlots.map((slot) => slot.targetType).join(', ') ?? emitType(property.type, context)}] -> ${resultPlan.kind} [${resultPlan.valueSlots.map((slot) => slot.targetType).join(', ')}]). Narrow the key before reading, or provide a target runtime carrier for every result alternative`,
+        'cpp-closed-key-multiple-member-types',
+        'target-runtime',
+      );
+    }
+    return `if (${selectionKey} == ${emitLiteral(key, context)}) { const auto& ${selected} = ${select(property.name)}; ${widened} }`;
   });
-  context.includes.add('stdexcept');
   // JavaScript evaluates the receiver and key once, in that order. Binding both before the dispatch
   // keeps that contract for effectful expressions as well as the plain identifiers in the common case.
-  return `([&]() -> ${distinct[0]!} { const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${selectionKey} = ${emitExpression(expression.index, context)}; ${branches.join(' ')} throw std::logic_error("Flight finite-key selection reached no member"); }())`;
+  return `([&]() -> ${emitType(resultType, context)} { const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${selectionKey} = ${emitExpression(expression.index, context)}; ${branches.join(' ')} throw std::logic_error("Flight finite-key selection reached no member"); }())`;
+}
+
+// Widens one selected field into the indexed access's result carrier without erasing or rebuilding the
+// field value. Both source and result plans have already rejected runtime-domain collisions; one unique
+// destination slot with the source slot's exact target spelling therefore proves that the value can enter
+// as itself. Optional and variant storage is only inspected through its own presence/alternative operations.
+function emitCppClosedKeyMemberWideningCpp(
+  selected: string,
+  sourceType: Readonly<IrType>,
+  resultUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  resultPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  const sourceUnion = getIrUnionTypeCpp(sourceType, context, new Set());
+  if (!sourceUnion) {
+    const evidence = getCppPayloadRepresentationEvidenceCpp(sourceType, context);
+    if (!evidence) return undefined;
+    const targets = resultPlan.valueSlots.filter((slot) => slot.targetType === evidence.targetType);
+    return targets.length === 1
+      ? `return ${emitCppUnionValueConstruction(selected, targets[0]!.targetType, resultUnion, resultPlan.kind, context)};`
+      : undefined;
+  }
+
+  const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, context);
+  if (hasEquivalentCppUnionRepresentation(sourcePlan, resultPlan)) return `return ${selected};`;
+  const mappings = sourcePlan.valueSlots.map((source) => {
+    const targets = resultPlan.valueSlots.filter((target) => target.targetType === source.targetType);
+    return targets.length === 1 ? { source, target: targets[0]! } : undefined;
+  });
+  if (mappings.some((mapping) => mapping === undefined)) return undefined;
+  const exactMappings = mappings.filter((mapping) => mapping !== undefined);
+  const sentinels = (['null', 'undefined'] as const).filter((sentinel) => sourcePlan.sentinels[sentinel] !== 'absent');
+  if (sentinels.some((sentinel) => resultPlan.sentinels[sentinel] === 'absent')) return undefined;
+  const construct = (value: string, targetType: string): string =>
+    emitCppUnionValueConstruction(value, targetType, resultUnion, resultPlan.kind, context);
+  const constructSentinel = (sentinel: 'null' | 'undefined'): string =>
+    emitCppUnionSentinelConstruction(sentinel, resultUnion, resultPlan.kind, context);
+
+  if (sourcePlan.kind === 'singleValue' && exactMappings.length === 1) {
+    return `return ${construct(selected, exactMappings[0]!.target.targetType)};`;
+  }
+  if (sourcePlan.kind === 'optionalSingle' && exactMappings.length === 1 && sentinels.length === 1) {
+    return `if (!${selected}.has_value()) return ${constructSentinel(sentinels[0]!)}; return ${construct(`${selected}.value()`, exactMappings[0]!.target.targetType)};`;
+  }
+
+  const stored = sourcePlan.kind === 'optionalVariant' ? `${selected}.value()` : selected;
+  const alternatives = exactMappings.map(
+    (mapping) =>
+      `if (std::holds_alternative<${mapping.source.targetType}>(${stored})) return ${construct(`std::get<${mapping.source.targetType}>(${stored})`, mapping.target.targetType)};`,
+  );
+  if (sourcePlan.kind === 'optionalVariant') {
+    if (sentinels.length !== 1) return undefined;
+    alternatives.unshift(`if (!${selected}.has_value()) return ${constructSentinel(sentinels[0]!)};`);
+  } else if (sourcePlan.kind === 'dualSentinelVariant') {
+    const sourceSentinels = getCppDualSentinelTargetTypes(context);
+    alternatives.push(
+      ...sentinels.map(
+        (sentinel) =>
+          `if (std::holds_alternative<${sourceSentinels[sentinel]}>(${selected})) return ${constructSentinel(sentinel)};`,
+      ),
+    );
+  } else if (sourcePlan.kind !== 'multiVariant') {
+    return undefined;
+  }
+  context.includes.add('variant');
+  return `${alternatives.join(' ')} throw std::logic_error("Flight closed-key member holds no represented result alternative");`;
 }
 
 function getCppNullishLiteralKind(expression: Readonly<IrExpression>): 'null' | 'undefined' | undefined {
@@ -19404,8 +19527,8 @@ function getIrIndexedElementTypeCpp(
     ? context.referenceRepresentationPlanner.resolveObjectShape(type, context.module)
     : undefined;
   if (closedElementKeys && closedElementShape) {
-    const closedMembers = closedElementKeys.map(
-      (key) => closedElementShape.find((property) => property.name === key)?.type,
+    const closedMembers = closedElementKeys.map((key) =>
+      getIrObjectPropertyReadTypeCpp(closedElementShape.find((property) => property.name === key)),
     );
     if (closedMembers.every((member): member is Readonly<IrType> => member !== undefined)) {
       return createIrTypeEvidenceUnionCpp(closedMembers);
@@ -21615,6 +21738,7 @@ function getIrAssignmentTargetTypeCpp(
     expression.kind === 'element' ? getCppStructuralRowComputedPropertyCpp(expression, context) : undefined;
   return (
     structuralProperty?.type ??
+    (expression.kind === 'element' ? getCppClosedKeyElementWriteTypeCpp(expression, context) : undefined) ??
     getIrExpressionBindingTypeCpp(expression, context) ??
     getIrExpressionTypeEvidenceCpp(expression, context)
   );
