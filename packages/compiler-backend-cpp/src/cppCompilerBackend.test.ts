@@ -30189,6 +30189,227 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('>, table}');
   });
 
+  it('selects one generic registry union arm from an imported nominal argument', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/registry',
+          target: { packageName: '@flighthq/registry', source: 'packages/registry/src/registry.ts' },
+        },
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/types.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/types.ts',
+            `export interface Binding { readonly name: string }
+             export interface Descriptor { readonly kind: string }
+             export interface Document { readonly resources: readonly Descriptor[] }
+             export interface KeyedTable<T> { readonly entry: T; readonly shape: 'keyed' }
+             export interface SlotTable<T> { readonly slot: T; readonly shape: 'slot' }
+             export type RegistryTable<T> = KeyedTable<T> | SlotTable<T>;
+             export interface Registry { readonly bindings: KeyedTable<Binding> }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/registry',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/registry/src/registry.ts',
+            `import type { RegistryTable } from '@flighthq/types';
+             export function lookup<T>(_table: Readonly<RegistryTable<T>>): T | null { return null; }
+             export function forward<T>(table: Readonly<RegistryTable<T>>): T | null { return lookup(table); }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/consumer',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/consumer/src/consumer.ts',
+            `import { lookup } from '@flighthq/registry';
+             import type { Registry } from '@flighthq/types';
+             export function hasBinding(registry: Readonly<Registry>): boolean {
+               return lookup(registry.bindings) !== null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/lookalike',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/lookalike/src/lookalike.ts',
+            `import { lookup } from '@flighthq/registry';
+             import type { Binding } from '@flighthq/types';
+             export function hasBinding(table: { readonly entry: Binding; readonly shape: 'keyed' }): boolean {
+               return lookup(table) !== null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/dependencies',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/dependencies/src/dependencies.ts',
+            `import { lookup } from '@flighthq/registry';
+             import type { Descriptor, Document, Registry } from '@flighthq/types';
+             export function dependencies(
+               document: Readonly<Document>,
+               registry: Readonly<Registry>,
+             ): readonly Readonly<Descriptor>[] | null {
+               if (lookup(registry.bindings) === null) return null;
+               return document.resources;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const registry = session.emitModule(modules[1]!)[0]!.contents;
+    const emitted = session.emitModule(modules[2]!)[0]!.contents;
+    expect(registry).toContain('return lookup<T>(table);');
+    expect(emitted).toContain('lookup<flight::Ref<flighthq_types::Binding>>');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flighthq_types::KeyedTable<');
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"bindings">>(registry)');
+    expect(captureBackendEmissionFailure(() => session.emitModule(modules[3]!)).rule).toBe(
+      'cpp-contextual-union-value-type-unrepresented',
+    );
+    const projectedArray = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+    expect(projectedArray.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(projectedArray.message).toContain("cannot become the destination's projected element array");
+    expect(projectedArray.message).toContain('without changing array identity');
+  });
+
+  it('retains the owner boundary for a predicate-narrowed intersection return', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/types.ts' },
+        },
+        {
+          specifier: './entity',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/entity.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/types.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/types.ts',
+            `export type Adapter = { adapt: () => boolean | null };
+             export interface Cache { readonly value: number }
+             export interface Signals { readonly prepare: () => void }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/entity.ts',
+            `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+             export interface EntityRuntime { readonly binding: unknown }
+             export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `import type { Entity } from './entity';
+             import type { Adapter, Cache, Signals } from './types';
+             export type { Adapter, Cache, Signals } from './types';
+             export type CacheAdapter = Entity & Adapter & { cache: Cache | null; signals: Signals | null };`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/render',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/render/src/cache.ts',
+            `import type { Adapter, Cache, CacheAdapter } from '@flighthq/types/contract';
+             function getAdapter(): Adapter | null { return null; }
+             function createAdapter(_cache: Cache): CacheAdapter { throw new Error('stub'); }
+             function setAdapter(_adapter: Adapter | null): void {}
+             function isCacheAdapter(value: unknown): value is CacheAdapter {
+               return typeof value === 'object' && value !== null && 'cache' in value;
+             }
+             export function use(cache: Cache): CacheAdapter {
+               const existing = getAdapter();
+               if (isCacheAdapter(existing)) {
+                 existing.cache = cache;
+                 return existing;
+               }
+               const adapter = createAdapter(cache);
+               setAdapter(adapter);
+               return adapter;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(failure.message).toContain('intersection stored through one nominal base');
+    expect(failure.message).toContain("Only the intersection's unique nominal base preserves the same owner");
+    expect(failure.message).toContain('owner-preserving structural-reference storage');
+  });
+
   it('matches a contextual optional callable with one covariant nullable nominal return', () => {
     const result = lower(
       'callable-covariant-return.ts',

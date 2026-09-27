@@ -14291,11 +14291,13 @@ function emitContextualUnionExpressionInContextCpp(
               )}]. A callable is a represented domain, so the obstacle is that the destination's signature cannot call this one. Declare the value's parameters so the destination's signature supplies them, and its result as one the destination holds`
           : cause === 'partial-value'
             ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
-            : cause === 'nominal-mismatch'
-              ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
-              : cause === 'structural-array-projection'
-                ? `contextual union array value type ${targetType} cannot become the destination's projected element array without changing array identity. Construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
-                : `contextual union value type ${targetType} is not a represented runtime domain`,
+            : cause === 'intersection-secondary-carrier'
+              ? `contextual union value type ${targetType} is an intersection stored through one nominal base, but the destination names another constituent's independent C++ object carrier. Only the intersection's unique nominal base preserves the same owner; converting to this secondary carrier would require retyping or copying the object. Make the destination contract the inherited interface base, or add owner-preserving structural-reference storage for that contract`
+              : cause === 'nominal-mismatch'
+                ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
+                : cause === 'structural-array-projection'
+                  ? `contextual union array value type ${targetType} cannot become the destination's projected element array without changing array identity. Construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
+                  : `contextual union value type ${targetType} is not a represented runtime domain`,
       'cpp-contextual-union-value-type-unrepresented',
       cause === 'erased-kind' || cause === 'callable-return-erasure' || cause === 'structural-array-projection'
         ? 'target-runtime'
@@ -15112,11 +15114,15 @@ function getCppUnrepresentedUnionValueCauseCpp(
   | 'callable-return-erasure'
   | 'callable-signature'
   | 'erased-kind'
+  | 'intersection-secondary-carrier'
   | 'nominal-mismatch'
   | 'partial-value'
   | 'structural-array-projection'
   | undefined {
   if (isCppErasedDynamicValueTypeCpp(runtimeType)) return 'erased-kind';
+  if (hasCppSecondaryIntersectionCarrierTargetCpp(runtimeType, plan, context)) {
+    return 'intersection-secondary-carrier';
+  }
   // A callable never reaches a shape, so without this the refusal below would report a represented domain
   // as an unrepresented one. The destination holds callables of its own -- otherwise this value would not
   // have been asked about an alternative at all -- and what separates them is how they may be called.
@@ -15173,6 +15179,36 @@ function getCppUnrepresentedUnionValueCauseCpp(
   // Some alternative accepts the value, so the source language accepts the conversion and the barrier is
   // the target's: a declared reference is nominally its own type, and a shape that resembles one is not it.
   return 'nominal-mismatch';
+}
+
+// A nominal intersection implementation has exactly one C++ base; its other declared constituents are
+// emitted as direct refinements on that derived object. Passing the value to the base preserves the same
+// Ref owner, but passing it to another constituent's independently minted object carrier cannot: C++ has
+// neither an inheritance path nor an owner-preserving structural view for that target. Compare declaration
+// identities, not shapes, so an anonymous lookalike does not acquire even this more specific diagnosis.
+function hasCppSecondaryIntersectionCarrierTargetCpp(
+  type: Readonly<IrType>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): boolean {
+  if (type.kind !== 'intersection') return false;
+  const base = getCppNominalIntersectionBaseCpp(type, context)?.type;
+  if (!base) return false;
+  const identity = (candidate: Readonly<IrType>): string | undefined =>
+    candidate.kind === 'named' ? getCppNominalTypeArgumentIdentityCpp(candidate, context, new Set()) : undefined;
+  const baseIdentity = identity(base);
+  const secondaryIdentities = new Set(
+    type.types.flatMap((member): readonly string[] => {
+      const memberIdentity = identity(member);
+      return memberIdentity && memberIdentity !== baseIdentity ? [memberIdentity] : [];
+    }),
+  );
+  return plan.valueSlots.some((slot) =>
+    slot.sourceAlternatives.some((alternative) => {
+      const alternativeIdentity = identity(alternative);
+      return alternativeIdentity !== undefined && secondaryIdentities.has(alternativeIdentity);
+    }),
+  );
 }
 
 interface CppContextualCallableErasedReturnGap {
@@ -16723,6 +16759,31 @@ function collectCppResultTypeSubstitutionsCpp(
       return true;
     }
     return normalizeCompilerStructuralValueCanonical(previous) === normalizeCompilerStructuralValueCanonical(candidate);
+  }
+  // A generic parameter can sit below a closed union alias while the supplied value names one arm:
+  // `RegistryTable<T>` receiving `KeyedTable<Schema>` is the canonical case. Template deduction cannot
+  // see through the eventual std::variant, but the source declaration does provide one exact owner path.
+  // Open only that alias, collect against every arm independently, and accept the substitution only when
+  // one arm names the candidate. Structural lookalikes do not pass the recursive nominal comparison, and
+  // several matching arms remain ambiguous instead of choosing an arbitrary carrier.
+  const sameNamedApplication =
+    pattern.kind === 'named' &&
+    candidate.kind === 'named' &&
+    pattern.typeArguments.length === candidate.typeArguments.length &&
+    getTypeReferenceTargetName(pattern, context) === getTypeReferenceTargetName(candidate, context);
+  const patternUnion =
+    pattern.kind === 'union' || sameNamedApplication ? undefined : getIrUnionTypeCpp(pattern, context, new Set());
+  if (patternUnion) {
+    const matches = patternUnion.types.flatMap((alternative): readonly Map<string, Readonly<IrType>>[] => {
+      const branch = new Map(substitutions);
+      return collectCppResultTypeSubstitutionsCpp(alternative, candidate, parameterIds, branch, context)
+        ? [branch]
+        : [];
+    });
+    if (matches.length !== 1) return false;
+    substitutions.clear();
+    for (const [binding, type] of matches[0]!) substitutions.set(binding, type);
+    return true;
   }
   if (pattern.kind === 'named' && candidate.kind === 'named') {
     if (
