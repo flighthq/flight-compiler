@@ -2885,6 +2885,11 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
   }
   const variableUnion = getIrUnionTypeCpp(variable.type, context, new Set());
   const initializerUnion = getIrUnionTypeCpp(initializerType, context, new Set());
+  const nullishObjectFallbackOwner =
+    variable.initializer.kind === 'binary' && variable.initializer.operator === '??'
+      ? getCppOwnerPreservingNullishObjectFallbackTypeCpp(variable.initializer, context)
+      : undefined;
+  if (nullishObjectFallbackOwner) return nullishObjectFallbackOwner;
   if (
     variable.initializer.kind === 'await' &&
     variableUnion &&
@@ -2937,6 +2942,36 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
     areCppObjectShapesRepresentationEquivalent(variableShape, initializerShape, context)
     ? initializerType
     : undefined;
+}
+
+// A nullish lookup of one declared reference owner followed by a fresh object fallback still produces
+// that owner when the fallback can be allocated directly in its complete layout. TypeScript may infer a
+// structural union (`Owner | {}` for an all-optional interface), but no value needs that second carrier:
+// the present branch forwards the existing reference and the absent branch creates one new Owner. Keep
+// the proof at immutable local storage, and require the ordinary contextual-object matcher to reject
+// missing required members, extra members, ambiguous owners, and non-object fallbacks.
+function getCppOwnerPreservingNullishObjectFallbackTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.operator !== '??' || expression.right.kind !== 'object') return undefined;
+  const leftType = getIrExpressionTypeEvidenceCpp(expression.left, context);
+  const leftUnion = leftType ? getIrUnionTypeCpp(leftType, context, new Set()) : undefined;
+  if (!leftUnion) return undefined;
+  const plan = getCppUnionRepresentationPlan(leftUnion, context);
+  if (plan.kind !== 'optionalSingle' || plan.valueSlots.length !== 1) return undefined;
+  const slot = plan.valueSlots[0]!;
+  const fallbackType = getCppContextualObjectUnionRuntimeTypeCpp(expression.right, [slot], context);
+  if (
+    fallbackType?.kind !== 'named' ||
+    fallbackType.reference.kind !== 'binding' ||
+    fallbackType.reference.binding.kind === 'typeParameter' ||
+    !hasFlightReferenceRepresentationCpp(fallbackType, context) ||
+    emitType(fallbackType, { ...context, anonymousStructs: new Map(), includes: new Set<string>() }) !== slot.targetType
+  ) {
+    return undefined;
+  }
+  return fallbackType;
 }
 
 // An immutable local initialized from a declared union may have a checker-expanded structural type:
@@ -10843,6 +10878,26 @@ function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: Em
   if (
     expression.kind === 'identifier' &&
     expression.reference.kind === 'binding' &&
+    !context.arrayElementBindingIds.has(expression.reference.binding.id) &&
+    !context.externalCallResultPresenceBindings.has(expression.reference.binding.id)
+  ) {
+    const retained = context.preservedInitializerTypes.get(expression.reference.binding.id);
+    const retainedUnion = retained ? getIrUnionTypeCpp(retained, context, new Set()) : undefined;
+    if (
+      retained &&
+      retained.kind !== 'null' &&
+      retained.kind !== 'undefined' &&
+      !retainedUnion?.types.some((member) => member.kind === 'null' || member.kind === 'undefined')
+    ) {
+      // Storage chosen from an immutable initializer can be narrower than the checker's flow type.
+      // Once that retained carrier proves a present value, a stale nullable-binding mark must not make
+      // collection boundaries or later coalesces treat the concrete C++ reference as std::optional.
+      return false;
+    }
+  }
+  if (
+    expression.kind === 'identifier' &&
+    expression.reference.kind === 'binding' &&
     (context.nullableBindingIds.has(expression.reference.binding.id) ||
       context.arrayElementBindingIds.has(expression.reference.binding.id))
   ) {
@@ -11470,6 +11525,19 @@ function getCppClosedElementKeyNamesCpp(
   return keys;
 }
 
+function getCppClosedKeyElementObjectTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.object.kind === 'identifier' && expression.object.reference.kind === 'binding') {
+    const bindingId = expression.object.reference.binding.id;
+    const retained =
+      context.contextualBindingStorageTargetTypes.get(bindingId) ?? context.preservedInitializerTypes.get(bindingId);
+    if (retained) return retained;
+  }
+  return getIrExpressionTypeEvidenceCpp(expression.object, context);
+}
+
 // `typeof backend[operation]` does not need a common C++ value type for every selected member. It
 // needs the smaller runtime domain that `typeof` observes. A finite key set proves which represented
 // fields can be reached, and each field independently proves its present domain; optional fields
@@ -11482,7 +11550,7 @@ function emitCppClosedKeyElementTypeofCpp(
   if (expression.kind !== 'element') return undefined;
   const keys = getCppClosedElementKeyNamesCpp(expression, context);
   if (!keys) return undefined;
-  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const objectType = getCppClosedKeyElementObjectTypeCpp(expression, context);
   const representedObjectType =
     objectType && 'presence' in expression.object && expression.object.presence === 'narrowedPresent'
       ? (getCppNonNullableType(objectType, context, new Set()) ?? objectType)
@@ -11538,7 +11606,7 @@ function getCppClosedKeyElementMembersCpp(
   members: ReadonlyMap<string, Readonly<IrObjectTypeProperty>>;
   runtime: Readonly<IrType>;
 }> {
-  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const objectType = getCppClosedKeyElementObjectTypeCpp(expression, context);
   const representedObjectType =
     objectType && 'presence' in expression.object && expression.object.presence === 'narrowedPresent'
       ? (getCppNonNullableType(objectType, context, new Set()) ?? objectType)
@@ -11661,7 +11729,7 @@ function getCppClosedKeyElementWriteTypeCpp(
 ): Readonly<IrType> | undefined {
   const keys = getCppClosedElementKeyNamesCpp(expression, context);
   if (!keys) return undefined;
-  const objectType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const objectType = getCppClosedKeyElementObjectTypeCpp(expression, context);
   const runtime = objectType ? getIrTypeRuntimeDomainCpp(objectType, context, new Set()) : undefined;
   const representedSubject = runtime ? (getCppIdentityPreservingUtilityArgument(runtime) ?? runtime) : undefined;
   const owner = representedSubject ? getCppTypeReferenceOwnerModuleCpp(representedSubject, context) : undefined;

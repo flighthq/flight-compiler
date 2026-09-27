@@ -13327,6 +13327,74 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
   });
 
+  it('keeps an app subscription lookup and empty fallback in the declared WeakMap value owner', () => {
+    const result = lower(
+      'app-subscription-lookup.ts',
+      `interface AppEvents { id: number }
+       interface AppSubscriptions {
+         activate?: () => void;
+         allWindowsClosed?: () => void;
+         openFile?: () => void;
+         quitRequest?: () => void;
+         ready?: () => void;
+         secondInstance?: () => void;
+       }
+       const subscriptions = new WeakMap<AppEvents, AppSubscriptions>();
+       export function replaceAppSubscription(
+         app: AppEvents,
+         key: keyof AppSubscriptions,
+         unsubscribe: () => void,
+       ): void {
+         const current = subscriptions.get(app) ?? {};
+         current[key]?.();
+         current[key] = unsubscribe;
+         subscriptions.set(app, current);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    const contents = emitted.contents;
+
+    expect(contents).toContain('auto current = ([&]() -> flight::Ref<AppSubscriptions>');
+    expect(contents).toContain('auto nullish_coalesce_left = subscriptions.get(app)');
+    expect(contents).toContain('return flight::make_ref<AppSubscriptions>');
+    expect(contents).toContain('subscriptions.set(app, current)');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('static_cast<flight::Ref');
+
+    const extraFallback = lower(
+      'app-subscription-extra-fallback.ts',
+      `interface AppEvents { id: number }
+       interface AppSubscriptions { ready?: () => void }
+       const subscriptions = new WeakMap<AppEvents, AppSubscriptions>();
+       export function replace(app: AppEvents): void {
+         const current = subscriptions.get(app) ?? { extra: true };
+         void current;
+       }`,
+    );
+    const refusal = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(extraFallback.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(refusal.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(refusal.message).toContain('Narrow or convert the source expression');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-app-subscription-owner-'));
+      try {
+        const header = path.join(directory, emitted.path);
+        mkdirSync(path.dirname(header), { recursive: true });
+        writeFileSync(header, contents, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('proves Flight WeakMap keys through reference unions and erased object types', () => {
     const results = lowerTypeScriptSources([
       {
