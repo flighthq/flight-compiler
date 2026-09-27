@@ -3812,7 +3812,7 @@ describe('createCppCompilerBackend', () => {
          [kind: string]: unknown;
        }
        interface ShapeBase { hd?: boolean; ix?: number; nm?: string; ty: string }
-       interface UnknownShape extends ShapeBase { [field: string]: unknown }
+       interface UnknownShape extends ShapeBase { raw: unknown; [field: string]: unknown }
        export function create(light: Light): Extensions {
          return { KHR_lights_punctual: { lights: [light] }, vendor: true };
        }
@@ -3822,6 +3822,8 @@ describe('createCppCompilerBackend', () => {
        export function type(value: UnknownShape): string { return value.ty; }
        export function hidden(value: UnknownShape): boolean | undefined { return value.hd; }
        export function maybeType(value: UnknownShape | undefined): string | undefined { return value?.ty; }
+       export function raw(value: UnknownShape): unknown { return value.raw; }
+       export function maybeRaw(value: UnknownShape | undefined): unknown | undefined { return value?.raw; }
        export function rename(value: UnknownShape, name: string): string { return value.nm = name; }`,
     );
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -3837,6 +3839,7 @@ describe('createCppCompilerBackend', () => {
     expect(contents).toContain('.object_if<');
     expect(contents).toContain('.as_string()');
     expect(contents).toContain('.as_boolean()');
+    expect(contents).toContain('.get(flight::String("raw")).value()');
     expect(contents).toContain('.set(flight::String("nm"), flight::Any(');
     expect(contents).not.toContain('static_cast<flight::Ref<');
     expect(contents).not.toContain('make_structural_ref');
@@ -3875,18 +3878,24 @@ describe('createCppCompilerBackend', () => {
       `interface Mixed { [index: number]: unknown; label: string }
        export function read(value: Mixed): string { return value.label; }`,
     );
+    const callable = failure(
+      'mixed-index-signature-callable-member.ts',
+      `interface Mixed { [name: string]: unknown; callback: () => void }
+       export function read(value: Mixed): () => void { return value.callback; }`,
+    );
     const compound = failure(
       'mixed-index-signature-compound-assignment.ts',
       `interface Mixed { [name: string]: unknown; count: number }
        export function increment(value: Mixed): number { return value.count += 1; }`,
     );
 
-    for (const refusal of [typed, array, numeric]) {
+    for (const refusal of [typed, array, callable, numeric]) {
       expect(refusal.rule).toBe('cpp-index-signature-named-members-unrepresented');
       expect(refusal.classification).toBe('compiler-restriction');
       expect(refusal.message).toContain('Keep the open bag as Record<string, unknown> beside a closed typed object');
     }
     expect(array.message).toContain('named member values has no flight::Any alternative');
+    expect(callable.message).toContain('named member callback has no flight::Any alternative with a checked extraction');
     expect(compound.rule).toBe('cpp-index-signature-named-member-assignment-unrepresented');
     expect(compound.classification).toBe('compiler-restriction');
     expect(compound.message).toContain('requires a typed read-modify-write projection');

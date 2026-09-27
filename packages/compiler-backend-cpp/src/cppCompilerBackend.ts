@@ -1240,7 +1240,10 @@ function assertCppIndexSignatureCarrierRepresentedCpp(
   const unrepresentedProperty = namedProperties?.find((property) => {
     if (isCppNonEmittingObjectPropertyCpp(property)) return false;
     const runtimeType = getIrTypeRuntimeDomainCpp(property.type, context, new Set());
-    return !runtimeType || !isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context);
+    if (!runtimeType || !isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context)) return true;
+    if (isCppErasedDynamicValueTypeCpp(runtimeType)) return false;
+    const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+    return getCppErasedValueUnionExtractionCpp(emitType(runtimeType, isolatedContext)) === undefined;
   });
   // A string-indexed `unknown` bag already has one homogeneous carrier: Record<String, Any>. Named
   // members whose present values can enter Any retain their exact primitive or reference alternative in
@@ -1255,7 +1258,7 @@ function assertCppIndexSignatureCarrierRepresentedCpp(
   }
   emissionError(
     context,
-    `index-signature carrier ${declaration.binding.name} also declares or inherits named members whose per-name types cannot be represented by one homogeneous Record value type${unrepresentedProperty ? `; named member ${unrepresentedProperty.name} has no flight::Any alternative for its runtime storage` : ''}. Keep the open bag as Record<string, unknown> beside a closed typed object, or give every named member a value domain the erased record carrier can store and recover exactly`,
+    `index-signature carrier ${declaration.binding.name} also declares or inherits named members whose per-name types cannot be represented by one homogeneous Record value type${unrepresentedProperty ? `; named member ${unrepresentedProperty.name} has no flight::Any alternative with a checked extraction for its runtime storage` : ''}. Keep the open bag as Record<string, unknown> beside a closed typed object, or give every named member a value domain the erased record carrier can store and recover exactly`,
     'cpp-index-signature-named-members-unrepresented',
   );
 }
@@ -15770,6 +15773,20 @@ function emitCppErasedIndexNamedPropertyReadCpp(
     union && unionPlan && union.types.some((member) => member.kind === 'undefined')
       ? emitCppUnionSentinelConstruction('undefined', union, unionPlan.kind, context)
       : undefined;
+  if (isCppErasedDynamicValueTypeCpp(resultType)) {
+    context.includes.add('flight/any.hpp');
+    return `([&]() -> flight::Any { ${receiverSource} return ${record}.get(${key}).value(); }())`;
+  }
+  if (
+    union &&
+    unionPlan &&
+    unionPlan.valueSlots.length === 1 &&
+    unionPlan.valueSlots[0]!.targetType === 'flight::Any' &&
+    missing
+  ) {
+    context.includes.add('flight/any.hpp');
+    return `([&]() -> ${emitUnionTypeCpp(union, context)} { ${receiverSource} return ${record}.get(${key}); }())`;
+  }
   const source = missing
     ? `${receiverSource} const auto ${lookup} = ${record}.get(${key}); if (!${lookup}.has_value()) return ${missing}; const auto& ${erased} = ${lookup}.value();`
     : `${receiverSource} const auto& ${erased} = ${record}.get(${key}).value();`;
