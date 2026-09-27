@@ -869,6 +869,71 @@ function lowerImportedSceneResourceAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedMeshAndMovieClipAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface MeshGeometry extends Entity { version: number }
+         export interface MeshGeometryRuntime extends EntityRuntime {
+           morphBlendedWeights: Float32Array | null;
+         }
+         export interface Node2DTraits { kind: string }
+         export interface NodeRuntime<Traits extends object> extends EntityRuntime {
+           traits?: Traits;
+         }
+         export interface Node2DRuntime extends NodeRuntime<Node2DTraits> { scene2d: object | null }
+         export interface MovieClipRuntime extends Node2DRuntime { movieClipSignals: object | null }
+         export interface MovieClip extends Entity {
+           [EntityRuntimeKey]: NodeRuntime<Node2DTraits> | undefined;
+         }`,
+      ),
+      source(
+        '@flighthq/mesh',
+        'mesh/src/updateMeshMorph.ts',
+        `import type { MeshGeometry, MeshGeometryRuntime } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function getMorphBlendedWeights(
+           geometry: Readonly<MeshGeometry>,
+         ): Float32Array | null | undefined {
+           const runtime = geometry[EntityRuntimeKey] as MeshGeometryRuntime | undefined;
+           return runtime?.morphBlendedWeights;
+         }`,
+      ),
+      source(
+        '@flighthq/movieclip',
+        'movieclip/src/movieClip.ts',
+        `import type { MovieClip, MovieClipRuntime } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function getMovieClipSignals(clip: MovieClip): object | null {
+           const runtime = clip[EntityRuntimeKey] as MovieClipRuntime;
+           return runtime.movieClipSignals;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -3625,6 +3690,35 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('flight::Ref<flighthq_types::Node2DData>');
     expect(failure.message).toContain('flight::Ref<SwfAuthoredBoundsData>');
     expect(failure.message).toContain('reads authoredBounds, which the source type does not declare');
+  });
+
+  it('names the missing owners in mesh morph and movie clip runtime assertions', () => {
+    const { moduleResolution, results } = lowerImportedMeshAndMovieClipAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const mesh = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const movieClip = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+
+    // Both slots retain a represented base runtime. The assertion identifies the one structural subtype
+    // related to that slot, but its extra fields have no cells in the owner already stored there, so the
+    // evidence improves the refusal and never becomes a pointer cast.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [mesh, movieClip]) {
+      expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+      expect(failure.classification).toBe('source-portability');
+      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('type the slot or accessor as');
+    }
+    expect(mesh.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
+    expect(mesh.message).toContain('flight::Ref<flighthq_types::MeshGeometryRuntime>');
+    expect(mesh.message).toContain('morphBlendedWeights');
+    expect(movieClip.message).toContain('flight::Ref<flighthq_types::NodeRuntime<');
+    expect(movieClip.message).toContain('flight::Ref<flighthq_types::MovieClipRuntime>');
+    expect(movieClip.message).toContain('movieClipSignals');
   });
 
   it.skipIf(!canCompileCpp)('compiles a nullable native reference projected to a Partial row', () => {
