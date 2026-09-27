@@ -17192,6 +17192,54 @@ Resolver make_resolver(TextureRef texture) {
     ).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('reads an erased callable result through the runtime accessors', () => {
+    const result = lower(
+      'erased-callable-return.ts',
+      `type NumberSlot = (() => number | undefined) | string;
+       type TextSlot = (() => string | undefined) | string;
+       type ErasedSlot = (() => any) | string;
+       function takeNumber(value: NumberSlot): number { return typeof value === 'string' ? 0 : 1; }
+       function takeText(value: TextSlot): number { return typeof value === 'string' ? 0 : 1; }
+       function takeErased(value: ErasedSlot): number { return typeof value === 'string' ? 0 : 1; }
+       export function passNumber(handler: () => any): number { return takeNumber(handler); }
+       export function passText(handler: () => any): number { return takeText(handler); }
+       export function passErased(handler: () => any): number { return takeErased(handler); }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // A checked selection: the kind test names the accessor, and the destination's absence answers the
+    // erased nullish kinds. No reinterpretation and no cast.
+    expect(contents).toMatch(
+      /erased_return(_[0-9]+)?\.kind\(\) == flight::AnyKind::number\) return std::optional<double>\{erased_return(_[0-9]+)?\.as_number\(\)\};/u,
+    );
+    expect(contents).toMatch(/erased_return(_[0-9]+)?\.is_nullish\(\)\) return std::nullopt;/u);
+    expect(contents).toContain(
+      'throw std::logic_error("an erased callable result holds no alternative this signature returns");',
+    );
+    expect(contents).toContain('flight::AnyKind::string');
+    expect(contents).toContain('.as_string()');
+    expect(contents).not.toContain('static_cast');
+    // The control: a source that ALREADY declares the erased result is stored as itself, unchanged -- the
+    // extraction is written only where the destination's result is a closed one.
+    expect(contents).toContain(
+      'take_erased(std::variant<std::function<flight::Any()>, flight::String>{std::in_place_type<std::function<flight::Any()>>, handler});',
+    );
+
+    // An `unknown` result is NOT assignable to a closed one, so it keeps its refusal.
+    const unknownResult = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'unknown-callable-return.ts',
+          `type Slot = (() => number | undefined) | string;
+           export function take(value: Slot): number { return typeof value === 'string' ? 0 : 1; }
+           export function pass(handler: () => unknown): number { return take(handler); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(unknownResult.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+  });
+
   it('keeps open Partial indexed reads outside finite optional selection', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>

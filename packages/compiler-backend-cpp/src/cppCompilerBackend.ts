@@ -14854,12 +14854,74 @@ function acceptsCppContextualCallableParameterCpp(
   return !target.optional || source.optional;
 }
 
+// Whether an erased callable result can be read as the destination's result at all.
+//
+// Every alternative the destination can hold must be one the runtime can TEST for and extract: the
+// primitives, a string, a symbol, and a reference. A destination holding anything else keeps its refusal
+// rather than guessing which alternative an erased value was meant to be.
+function canEmitCppErasedCallableReturnCpp(targetReturns: Readonly<IrType>, context: EmitContext): boolean {
+  const union = getIrUnionTypeCpp(targetReturns, context, new Set());
+  if (!union) return false;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  return (
+    plan.valueSlots.length > 0 &&
+    plan.valueSlots.every((slot) => getCppErasedValueUnionExtractionCpp(slot.targetType) !== undefined)
+  );
+}
+
+// Reads an erased callable result into the result the destination declares.
+//
+// The source promised nothing about what it returns, and the destination promises a closed result, so the
+// conversion is a checked SELECTION: each alternative the destination can hold is tested for, the value comes
+// out through the runtime's named accessor rather than a reinterpretation, and the destination's absence is
+// the erased `null`/`undefined` it also holds. A value of some other kind breaks the promise the source made,
+// so it throws rather than becoming an alternative the destination is not -- the same checked selection the
+// erased union lanes already make. Nothing is copied and no row is materialized.
+function emitCppErasedCallableReturnCpp(
+  invocation: string,
+  targetReturns: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const union = getIrUnionTypeCpp(targetReturns, context, new Set());
+  if (!union) return undefined;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  const extractions = plan.valueSlots.map((slot) => getCppErasedValueUnionExtractionCpp(slot.targetType));
+  if (plan.valueSlots.length === 0 || extractions.some((extraction) => extraction === undefined)) return undefined;
+  context.includes.add('flight/any.hpp');
+  context.includes.add('stdexcept');
+  const erased = getGeneratedTargetName('erasedReturn', context);
+  const branches = plan.valueSlots.map((slot, index) => {
+    const extraction = extractions[index]!;
+    const constructed = emitCppUnionValueConstruction(
+      extraction.value(erased),
+      slot.targetType,
+      union,
+      plan.kind,
+      context,
+    );
+    return `if (${extraction.test(erased)}) return ${constructed};`;
+  });
+  // A destination that admits absence answers the erased nullish kinds with its own absence. One that does
+  // not has no absence to answer with, so the case falls through to the throw with the rest.
+  const absence = union.types.some((member) => member.kind === 'null' || member.kind === 'undefined')
+    ? [
+        `if (${erased}.is_nullish()) return ${emitCppUnionSentinelConstruction('undefined', union, plan.kind, context)};`,
+      ]
+    : [];
+  return `([&]() -> ${emitUnionTypeCpp(union, context)} { const auto& ${erased} = ${invocation}; ${[...branches, ...absence].join(' ')} throw std::logic_error("an erased callable result holds no alternative this signature returns"); }())`;
+}
+
 function hasCppCompatibleCallableReturnRepresentationCpp(
   source: Readonly<IrType>,
   target: Readonly<IrType>,
   context: EmitContext,
 ): boolean {
   if (emitType(source, context) === emitType(target, context)) return true;
+  // A source whose RESULT is erased -- `() => any` -- is a callable the source language allows wherever a
+  // closed result is expected, and the runtime can answer for it: the call's result is read through the
+  // runtime's own accessors rather than reinterpreted. Only an `any`-sourced result qualifies; `unknown` is
+  // a result the source language does NOT assign to a closed one, and stays refused.
+  if (isCppAnySourcedDynamicValueCpp(source) && canEmitCppErasedCallableReturnCpp(target, context)) return true;
   // A nominal reference returned through its own structural row is the same object with a
   // read-only call surface. Keep the slot's one declared std::function type and prove the
   // callable against it from the same emitType spellings used to write both signatures.
@@ -14980,6 +15042,10 @@ function emitCppContextualCallableUnionValueCpp(
     return emitExpression(expression, context, targetType, false);
   }
   const needsAdapter =
+    // The result is part of the signature too: a source whose return is erased must be read through the
+    // extraction, so the call cannot be stored directly even when every parameter already agrees.
+    (isCppAnySourcedDynamicValueCpp(sourceType.returns) &&
+      canEmitCppErasedCallableReturnCpp(target.returns, context)) ||
     sourceType.parameters.length !== target.parameters.length ||
     sourceType.parameters.some((parameter, index) => {
       const targetParameter = target.parameters[index];
@@ -15021,8 +15087,15 @@ function emitCppContextualCallableUnionValueCpp(
   });
   const invocation = `${sourceName}(${arguments_.join(', ')})`;
   const returns = emitType(target.returns, context);
+  const erasedReturn = isCppAnySourcedDynamicValueCpp(sourceType.returns)
+    ? emitCppErasedCallableReturnCpp(invocation, target.returns, context)
+    : undefined;
   const body =
-    target.returns.kind === 'primitive' && target.returns.name === 'void' ? `${invocation};` : `return ${invocation};`;
+    erasedReturn === undefined
+      ? target.returns.kind === 'primitive' && target.returns.name === 'void'
+        ? `${invocation};`
+        : `return ${invocation};`
+      : `return ${erasedReturn};`;
   const source = emitExpression(expression, context, sourceType, false);
   return `[${sourceName} = ${source}](${parameters.join(', ')}) -> ${returns} { ${body} }`;
 }
