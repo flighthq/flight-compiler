@@ -1099,6 +1099,88 @@ function lowerImportedDialogAndGizmoAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedSelectionStateAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface HierarchyNodeAny extends Entity { parent: HierarchyNodeAny | null }
+         export interface Signal<T extends (...args: any[]) => void> extends Entity { emit: T }
+         export interface SelectionSignals<NodeType extends HierarchyNodeAny = HierarchyNodeAny> {
+           onActiveChange: Signal<(active: NodeType | null) => void>;
+           onChange: Signal<(selected: readonly NodeType[]) => void>;
+         }
+         declare const SelectionStateNodeTypeKey: unique symbol;
+         export interface SelectionState<
+           NodeType extends HierarchyNodeAny = HierarchyNodeAny,
+         > extends Entity {
+           readonly [SelectionStateNodeTypeKey]?: NodeType;
+         }
+         export interface SelectionStateRuntime<
+           NodeType extends HierarchyNodeAny = HierarchyNodeAny,
+         > extends EntityRuntime {
+           activeNode: NodeType | null;
+           selectedNodeSet: Set<NodeType>;
+           selectedNodes: NodeType[];
+           signals: SelectionSignals<NodeType>;
+         }`,
+      ),
+      source(
+        '@flighthq/selection',
+        'selection/src/selectionState.ts',
+        `import type {
+           HierarchyNodeAny,
+           SelectionState,
+           SelectionStateRuntime,
+         } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function getSelectionStateRuntime<NodeType extends HierarchyNodeAny>(
+           state: SelectionState<NodeType>,
+         ): SelectionStateRuntime<NodeType> {
+           return state[EntityRuntimeKey] as SelectionStateRuntime<NodeType>;
+         }`,
+      ),
+      source(
+        '@flighthq/selection',
+        'selection/src/typedSelectionState.ts',
+        `import type {
+           HierarchyNodeAny,
+           SelectionStateRuntime,
+         } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         interface SelectionRuntimeHolder<NodeType extends HierarchyNodeAny> {
+           [EntityRuntimeKey]: SelectionStateRuntime<NodeType> | undefined;
+         }
+         export function getTypedSelectionStateRuntime<NodeType extends HierarchyNodeAny>(
+           state: SelectionRuntimeHolder<NodeType>,
+         ): SelectionStateRuntime<NodeType> {
+           return state[EntityRuntimeKey] as SelectionStateRuntime<NodeType>;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedRenderStateAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -6407,6 +6489,45 @@ describe('createCppCompilerBackend', () => {
     expect(gizmo.message).toContain('bounds');
     expect(gizmo.message).toContain('selection');
     expect(gizmo.message).toContain('signals');
+  });
+
+  it('refuses the selection-state base slot and accepts its concrete generic runtime slot', () => {
+    const { moduleResolution, results } = lowerImportedSelectionStateAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const typed = session.emitModule(modules[2]!)[0]!.contents;
+
+    // SelectionState inherits the base EntityRuntime slot, so its getter owns only binding: neither the
+    // generic constraint nor the assertion identifies cells for the selection state or its signal bundle.
+    // A slot declared as SelectionStateRuntime<NodeType> owns those cells already and needs no cast, row
+    // materialization, or copy of the signal callbacks to return the same reference.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
+    expect(failure.message).toContain('flight::Ref<flighthq_types::SelectionStateRuntime<NodeType>>');
+    expect(failure.message).toContain('reads activeNode, selectedNodeSet, selectedNodes and signals');
+    expect(failure.message).toContain('An assertion cannot add those cells');
+    expect(failure.message).toContain('type the slot or accessor as');
+    expect(typed).toContain('get_typed_selection_state_runtime');
+    expect(typed).toContain(
+      'std::optional<flight::Ref<flighthq_types::SelectionStateRuntime<NodeType>>> entity_runtime_key;',
+    );
+    expect(typed).toContain('return state->entity_runtime_key.value();');
+    expect(typed).not.toContain('static_pointer_cast');
+    expect(typed).not.toContain('structural_ref_cast');
+    expect(typed).not.toContain('static_cast');
+    expect(typed).not.toContain('dynamic_cast');
+    expect(typed).not.toContain('reinterpret_cast');
+    expect(typed).not.toContain('make_structural_ref');
+    expect(typed).not.toContain('materialize_row');
+    expect(typed).not.toContain('make_ref');
+    expect(typed).not.toContain('row_set');
   });
 
   it.skipIf(!canCompileCpp)('compiles a nullable native reference projected to a Partial row', () => {
