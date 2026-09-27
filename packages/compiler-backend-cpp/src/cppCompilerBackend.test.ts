@@ -14530,6 +14530,106 @@ Resolver make_resolver(TextureRef texture) {
     expect(missing.message).not.toContain('is not a represented runtime domain');
   });
 
+  it('attributes a contextual provider result requiring erased array storage to the runtime', () => {
+    const result = lower(
+      'contextual-provider-erased-array.ts',
+      `type Data = string | Readonly<Record<string, unknown>>;
+       type Provider = () => Data;
+       function log(_data: Data | Provider): void {}
+       export function warn(view: number[]): void {
+         log(() => ({ message: 'degenerate', view }));
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The lambda itself can adopt Provider's return domain, and its fresh object can be built as the
+    // Record alternative. The nested array still cannot enter `unknown`: flight::Any has no array
+    // alternative, so a return annotation or target cast would only hide the missing runtime carrier.
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-contextual-union-value-type-unrepresented',
+    });
+    expect(failure.message).toContain('member view has runtime type flight::Array<double>');
+    expect(failure.message).toContain('flight::Any has no carrier for it');
+  });
+
+  it('constructs fresh local arrays in an object call contextual element domain', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'contextual-object-call-array.ts',
+        `interface Light { readonly intensity: number }
+         interface Lights { hemisphere?: readonly Readonly<Light>[] }
+         function make(): Light { return { intensity: 1 }; }
+         function create(_options?: Readonly<Partial<Lights>>): void {}
+         export function pass(): void {
+           const hemisphere: Light[] = [];
+           hemisphere.push(make());
+           create({ hemisphere });
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    const projected = 'flight::Array<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Light>>>>>';
+    // The empty local adopts the only declared property domain before allocation. Pushes project each
+    // referent into that array, and the object call stores the same handle; no second array is materialized.
+    expect(contents).toContain(`${projected} hemisphere = ${projected}{}`);
+    expect(contents).toContain('hemisphere.push(flight::structural_ref_cast');
+    expect(contents).toContain(`std::optional<${projected}>{hemisphere}`);
+    expect(contents).not.toContain('flight::Array<flight::Ref<Light>> hemisphere');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('static_cast');
+  });
+
+  it('does not retype a contextual object-call array that has another nominal-array use', () => {
+    const result = lower(
+      'contextual-object-call-array-observed.ts',
+      `interface Light { readonly intensity: number }
+       interface Lights { hemisphere?: readonly Readonly<Light>[] }
+       function make(): Light { return { intensity: 1 }; }
+       function create(_options?: Readonly<Partial<Lights>>): void {}
+       function consume(_lights: Light[]): void {}
+       export function pass(): void {
+         const hemisphere: Light[] = [];
+         hemisphere.push(make());
+         create({ hemisphere });
+         consume(hemisphere);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // A second nominal-array use observes the original element carrier. Re-typing the allocation would
+    // make that call ill-formed, while projecting later would create another array identity, so neither is
+    // guessed. The runtime owns an identity-preserving projected-array carrier if this is to cross.
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-contextual-union-value-type-unrepresented',
+    });
+    expect(failure.message).toContain('without changing array identity');
+  });
+
+  it('stores a branded symbol in its optional trait-key domain', () => {
+    const result = lower(
+      'optional-branded-symbol.ts',
+      `declare const Brand: unique symbol;
+       type TraitKey<T extends object> = symbol & { readonly [Brand]?: T };
+       interface Box<T extends object> { trait?: TraitKey<T> }
+       interface Traits { enabled: boolean }
+       const key = Symbol('Traits');
+       export function initialize(out: Box<Traits>): void { out.trait = key; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The phantom brand changes source assignability, not the runtime domain. Current alias/intersection
+    // normalization already keeps the Symbol carrier, covering sceneNode's former contextual-union finding.
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('(out->trait = std::optional<flight::Symbol>{key})');
+  });
+
   it('stores a callable that accepts a wider payload than the destination supplies', () => {
     const result = lower(
       'callable-union-wider-parameter.ts',

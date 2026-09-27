@@ -14090,22 +14090,34 @@ function emitContextualUnionExpressionInContextCpp(
     // exists between two nominal types that are not the same type. A callable is the exception that proves
     // the vocabulary: it IS a represented domain, so a refusal is about the signatures agreeing rather
     // than about representation, and it is worded and attributed as that.
-    const cause = getCppUnrepresentedUnionValueCauseCpp(runtimeType, plan, context);
+    const cause = getCppUnrepresentedUnionValueCauseCpp(expression, runtimeType, plan, context);
+    const callableErasedReturnGap =
+      cause === 'callable-return-erasure'
+        ? getCppContextualCallableErasedReturnGapCpp(expression, runtimeType, plan, context)
+        : undefined;
     emissionError(
       context,
-      cause === 'callable-signature'
-        ? `contextual union callable value type ${targetType} agrees with no alternative's signature: the destination holds [${plan.valueSlots
-            .map((slot) => slot.targetType)
-            .join(
-              ', ',
-            )}]. A callable is a represented domain, so the obstacle is that the destination's signature cannot call this one. Declare the value's parameters so the destination's signature supplies them, and its result as one the destination holds`
-        : cause === 'partial-value'
-          ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
-          : cause === 'nominal-mismatch'
-            ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
-            : `contextual union value type ${targetType} is not a represented runtime domain`,
+      callableErasedReturnGap
+        ? `contextual union callable result cannot enter the destination's erased Record value: member ${callableErasedReturnGap.member} has runtime type ${emitType(callableErasedReturnGap.runtimeType, context)}, but flight::Any has no carrier for it. Add an identity-preserving erased carrier for that runtime type, or keep the member in a statically represented log-data type`
+        : cause === 'callable-signature'
+          ? `contextual union callable value type ${targetType} agrees with no alternative's signature: the destination holds [${plan.valueSlots
+              .map((slot) => slot.targetType)
+              .join(
+                ', ',
+              )}]. A callable is a represented domain, so the obstacle is that the destination's signature cannot call this one. Declare the value's parameters so the destination's signature supplies them, and its result as one the destination holds`
+          : cause === 'partial-value'
+            ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
+            : cause === 'nominal-mismatch'
+              ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
+              : cause === 'structural-array-projection'
+                ? `contextual union array value type ${targetType} cannot become the destination's projected element array without changing array identity. Construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
+                : `contextual union value type ${targetType} is not a represented runtime domain`,
       'cpp-contextual-union-value-type-unrepresented',
-      cause === 'erased-kind' ? 'target-runtime' : cause === 'partial-value' ? 'source-portability' : undefined,
+      cause === 'erased-kind' || cause === 'callable-return-erasure' || cause === 'structural-array-projection'
+        ? 'target-runtime'
+        : cause === 'partial-value'
+          ? 'source-portability'
+          : undefined,
     );
   }
   const emitted =
@@ -14841,10 +14853,18 @@ interface CppErasedValueUnionExtraction {
 // structural shape, or a declaration that merely resembles the alternative, is not the type that
 // alternative names, and no checked conversion exists between two nominal types that are not the same type.
 function getCppUnrepresentedUnionValueCauseCpp(
+  expression: Readonly<IrExpression>,
   runtimeType: Readonly<IrType>,
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
   context: EmitContext,
-): 'callable-signature' | 'erased-kind' | 'nominal-mismatch' | 'partial-value' | undefined {
+):
+  | 'callable-return-erasure'
+  | 'callable-signature'
+  | 'erased-kind'
+  | 'nominal-mismatch'
+  | 'partial-value'
+  | 'structural-array-projection'
+  | undefined {
   if (isCppErasedDynamicValueTypeCpp(runtimeType)) return 'erased-kind';
   // A callable never reaches a shape, so without this the refusal below would report a represented domain
   // as an unrepresented one. The destination holds callables of its own -- otherwise this value would not
@@ -14853,7 +14873,33 @@ function getCppUnrepresentedUnionValueCauseCpp(
     runtimeType.kind === 'function' &&
     plan.valueSlots.some((slot) => getCppClosedCallableType(slot.runtimeType, context, new Set()) !== undefined)
   ) {
-    return 'callable-signature';
+    return getCppContextualCallableErasedReturnGapCpp(expression, runtimeType, plan, context)
+      ? 'callable-return-erasure'
+      : 'callable-signature';
+  }
+  const sourceArray = getIrArrayTypeCpp(runtimeType, context, new Set());
+  if (sourceArray) {
+    const projected = plan.valueSlots.filter((slot) => {
+      const targetArray = getIrArrayTypeCpp(slot.runtimeType, context, new Set());
+      if (
+        !targetArray ||
+        !context.referenceRepresentationPlanner.resolveStructuralRow(targetArray.element, context.module)
+      ) {
+        return false;
+      }
+      const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(
+        sourceArray.element,
+        context.module,
+      );
+      const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(
+        targetArray.element,
+        context.module,
+      );
+      return Boolean(
+        sourceShape && targetShape && areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context),
+      );
+    });
+    if (projected.length === 1) return 'structural-array-projection';
   }
   const shape = context.referenceRepresentationPlanner.resolveObjectShape(runtimeType, context.module);
   if (!shape) return undefined;
@@ -14876,6 +14922,77 @@ function getCppUnrepresentedUnionValueCauseCpp(
   // Some alternative accepts the value, so the source language accepts the conversion and the barrier is
   // the target's: a declared reference is nominally its own type, and a shape that resembles one is not it.
   return 'nominal-mismatch';
+}
+
+interface CppContextualCallableErasedReturnGap {
+  readonly member: string;
+  readonly runtimeType: Readonly<IrType>;
+}
+
+// A concise callback may be contextually constructed in the destination's callable signature, but that
+// does not manufacture a runtime representation for values nested inside its result. Log providers are
+// the canonical case: the object literal can become Record<string, unknown>, while an array-valued field
+// still has nowhere to enter flight::Any. Identify that inner runtime boundary so it is attributed to the
+// runtime instead of suggesting a return annotation that leaves the same missing carrier underneath it.
+function getCppContextualCallableErasedReturnGapCpp(
+  expression: Readonly<IrExpression>,
+  source: Readonly<IrType>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): Readonly<CppContextualCallableErasedReturnGap> | undefined {
+  if (
+    expression.kind !== 'function' ||
+    expression.expression?.kind !== 'object' ||
+    source.kind !== 'function' ||
+    expression.expression.members.some((member) => member.kind !== 'property')
+  ) {
+    return undefined;
+  }
+  const targets = plan.valueSlots.flatMap((slot): readonly Extract<IrType, { kind: 'function' }>[] => {
+    const callable = getCppClosedCallableType(slot.runtimeType, context, new Set());
+    if (!callable || callable.typeParameters.length > 0) return [];
+    if (
+      source.parameters.slice(callable.parameters.length).some((parameter) => !parameter.optional || parameter.rest)
+    ) {
+      return [];
+    }
+    const parametersAgree = source.parameters.slice(0, callable.parameters.length).every((parameter, index) => {
+      const target = callable.parameters[index]!;
+      return parameter.rest === target.rest && acceptsCppContextualCallableParameterCpp(parameter, target, context);
+    });
+    return parametersAgree ? [callable] : [];
+  });
+  if (targets.length !== 1) return undefined;
+  const returnUnion = getIrUnionTypeCpp(targets[0]!.returns, context, new Set());
+  if (!returnUnion) return undefined;
+  const returnPlan = getCppUnionRepresentationPlan(returnUnion, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set<string>(),
+  });
+  const records = returnPlan.valueSlots.flatMap((slot) => {
+    const record = getCppRecordTypeArgumentsCpp(slot.runtimeType, context, new Set());
+    return record && isCppAliasResolvedErasedDynamicValueTypeCpp(record.value, context) ? [record] : [];
+  });
+  if (records.length !== 1) return undefined;
+  for (const member of expression.expression.members) {
+    if (member.kind !== 'property') continue;
+    const valueType =
+      getIrExpressionTypeEvidenceCpp(member.value, context) ??
+      getIrExpressionTypeForUnionConstructionCpp(member.value, [], context);
+    const runtimeType = valueType ? getIrTypeRuntimeDomainCpp(valueType, context, new Set()) : undefined;
+    if (!runtimeType || isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context)) continue;
+    return { member: member.name, runtimeType };
+  }
+  return undefined;
+}
+
+function isCppRuntimeTypeRepresentableInAnyCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (isCppErasedDynamicValueTypeCpp(type)) return true;
+  if (type.kind === 'null' || type.kind === 'undefined') return true;
+  if (type.kind === 'primitive') return type.name !== 'bigint' && type.name !== 'void';
+  if (type.kind === 'function') return true;
+  return hasFlightReferenceRepresentationCpp(type, context);
 }
 
 function emitCppErasedValueUnionConstructionCpp(
@@ -17294,6 +17411,7 @@ function collectCppContextualBindingStorageTargetTypesCpp(
   const candidates = new Map<string, Map<string, Readonly<IrType>>>();
   const eligible = new Set<string>();
   const projected = new Set<string>();
+  const projectedArrayPushes = new Map<string, readonly (readonly Readonly<IrExpression>[])[]>();
   const referenceCounts = new Map<string, number>();
   const recordTarget = (expression: Readonly<IrExpression>, expectedType: Readonly<IrType> | undefined): void => {
     if (
@@ -17394,6 +17512,7 @@ function collectCppContextualBindingStorageTargetTypesCpp(
               returnType,
               eligible,
               candidates,
+              acceptedReferenceCounts,
               context,
             );
           } else {
@@ -17417,22 +17536,78 @@ function collectCppContextualBindingStorageTargetTypesCpp(
         recordTarget(expression.right, getIrAssignmentTargetTypeCpp(expression.left, context));
       }
       if (expression.kind === 'object') {
-        collectCppObjectContextualStorageTargetsCpp(expression, expression.type, eligible, candidates, context);
+        collectCppObjectContextualStorageTargetsCpp(
+          expression,
+          expression.type,
+          eligible,
+          candidates,
+          acceptedReferenceCounts,
+          context,
+        );
       }
       if (expression.kind !== 'call') return;
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.member?.receiver === 'array' &&
+        expression.callee.name === 'push' &&
+        expression.callee.object.kind === 'identifier' &&
+        expression.callee.object.reference.kind === 'binding' &&
+        eligible.has(expression.callee.object.reference.binding.id)
+      ) {
+        const bindingId = expression.callee.object.reference.binding.id;
+        projectedArrayPushes.set(bindingId, [...(projectedArrayPushes.get(bindingId) ?? []), expression.arguments]);
+      }
       expression.arguments.forEach((argument, index) => {
         const expectedType = getIrCallArgumentExpectedTypeCpp(expression, index, context);
-        recordTarget(argument, expectedType);
+        // A call context types the members of an object literal just as a return context does. Carry
+        // that declaration back to a fresh collection binding while its storage is still undecided:
+        // constructing `const rows = []` directly as the sole property domain preserves the one array
+        // identity, whereas waiting until `{ rows }` is emitted would require projecting every element
+        // into a second array. Only bindings already admitted by the collection analysis participate.
+        if (argument.kind === 'object' && expectedType) {
+          collectCppObjectContextualStorageTargetsCpp(
+            argument,
+            expectedType,
+            eligible,
+            candidates,
+            acceptedReferenceCounts,
+            context,
+          );
+        } else {
+          recordTarget(argument, expectedType);
+        }
       });
     },
   });
   return new Map(
-    [...candidates].flatMap(([bindingId, targets]) =>
-      targets.size === 1 &&
-      (!projected.has(bindingId) || referenceCounts.get(bindingId) === acceptedReferenceCounts.get(bindingId))
-        ? ([[bindingId, [...targets.values()][0]!] as const] as const)
-        : [],
-    ),
+    [...candidates].flatMap(([bindingId, targets]) => {
+      if (targets.size !== 1) return [];
+      const target = [...targets.values()][0]!;
+      const source = context.bindingTypes.get(bindingId);
+      const representedTargetArray = getIrArrayTypeCpp(target, context, new Set());
+      const arrayProjection = Boolean(
+        source &&
+        representedTargetArray &&
+        context.referenceRepresentationPlanner.resolveStructuralRow(representedTargetArray.element, context.module) &&
+        isCppContextualCollectionProjectionCpp(source, target, context) &&
+        !areCppTypesRepresentationEquivalent(source, target, context),
+      );
+      const targetArray = arrayProjection ? representedTargetArray : undefined;
+      const compatiblePushes = targetArray
+        ? (projectedArrayPushes.get(bindingId) ?? []).filter((arguments_) =>
+            arguments_.every(
+              (argument) =>
+                argument.kind !== 'spread' &&
+                isCppContextualArrayElementWriteRepresentableCpp(argument, targetArray.element, context),
+            ),
+          ).length
+        : 0;
+      const requiresUseProof = projected.has(bindingId) || arrayProjection;
+      const representedReferences = (acceptedReferenceCounts.get(bindingId) ?? 0) + compatiblePushes;
+      return !requiresUseProof || referenceCounts.get(bindingId) === representedReferences
+        ? ([[bindingId, target] as const] as const)
+        : [];
+    }),
   );
 }
 
@@ -17517,6 +17692,7 @@ function collectCppObjectContextualStorageTargetsCpp(
   contextualType: Readonly<IrType>,
   eligible: ReadonlySet<string>,
   candidates: Map<string, Map<string, Readonly<IrType>>>,
+  acceptedReferenceCounts: Map<string, number>,
   context: EmitContext,
 ): void {
   for (const member of expression.members) {
@@ -17534,13 +17710,19 @@ function collectCppObjectContextualStorageTargetsCpp(
       declaredType && declaredType.kind !== 'unknown'
         ? declaredType
         : getIrExpressionTypeEvidenceCpp(context.bindingInitializers.get(bindingId)!, context);
-    const targetType = getIrObjectPropertyTypeCpp(contextualType, member.name, context);
+    const propertyType = getIrObjectPropertyTypeCpp(contextualType, member.name, context);
+    const targetType = propertyType
+      ? (getCppNonNullableType(propertyType, context, new Set()) ?? propertyType)
+      : undefined;
     if (!sourceType || !targetType || !isCppContextualCollectionProjectionCpp(sourceType, targetType, context)) {
       continue;
     }
     const targets = candidates.get(bindingId) ?? new Map<string, Readonly<IrType>>();
     targets.set(normalizeCompilerStructuralValueCanonical(targetType), targetType);
     candidates.set(bindingId, targets);
+    if (!areCppTypesRepresentationEquivalent(sourceType, targetType, context)) {
+      acceptedReferenceCounts.set(bindingId, (acceptedReferenceCounts.get(bindingId) ?? 0) + 1);
+    }
   }
 }
 
@@ -17669,6 +17851,17 @@ function isCppContextualArrayElementWriteRepresentableCpp(
   context: EmitContext,
 ): boolean {
   if (isCppExpressionRepresentableAsRuntimeTypeCpp(expression, target, context)) return true;
+  const source = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (
+    source &&
+    emitCppStructuralReferenceValueConversionCpp('source', source, target, {
+      ...context,
+      anonymousStructs: new Map(),
+      includes: new Set<string>(),
+    })
+  ) {
+    return true;
+  }
   if (expression.kind !== 'object' || expression.members.some((member) => member.kind !== 'property')) return false;
   const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(expression.type, context.module);
   const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(target, context.module);
@@ -19529,9 +19722,7 @@ function getIrIndexedElementTypeCpp(
   // `std::conditional_t` alias and therefore a non-deduced context, can never satisfy. An open, computed, or
   // absent key names no finite set and still reaches the refusal below.
   const closedElementKeys = getCppClosedElementKeyNamesCpp(expression, context);
-  const closedElementShape = closedElementKeys
-    ? resolveCppObjectShapeInTypeOwnerCpp(type, context)
-    : undefined;
+  const closedElementShape = closedElementKeys ? resolveCppObjectShapeInTypeOwnerCpp(type, context) : undefined;
   if (closedElementKeys && closedElementShape) {
     const closedMembers = closedElementKeys.map((key) =>
       getIrObjectPropertyReadTypeCpp(closedElementShape.find((property) => property.name === key)),
