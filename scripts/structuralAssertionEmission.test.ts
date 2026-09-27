@@ -44,6 +44,7 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
   { fixture: 'erasedValueUnionSelection', header: 'erased_value_union_selection.hpp' },
   { fixture: 'assertionSubUnionNarrowing', header: 'assertion_sub_union_narrowing.hpp' },
   { fixture: 'contextualUnionSubsetConversion', header: 'contextual_union_subset_conversion.hpp' },
+  { fixture: 'contextualUnionRemap', header: 'contextual_union_remap.hpp' },
   { fixture: 'contextualAliasAlternative', header: 'contextual_alias_alternative.hpp' },
   { fixture: 'callableUnionParameterity', header: 'callable_union_parameterity.hpp' },
   { fixture: 'callableUnionWiderParameter', header: 'callable_union_wider_parameter.hpp' },
@@ -67,10 +68,6 @@ const compiledFixtures: readonly Readonly<{ fixture: string; header: string }>[]
 ];
 const refusalFixture = 'structuralAssertionOwnerUnproven';
 const erasedRowRefusalFixture = 'erasedStructuralRowRefused';
-// A fixture whose emitter behaviour changed on the base while the lane still expected a header: it
-// refuses now, so it is asserted here as a refusal. The lane compiles what it emits, and a fixture
-// that emits nothing is pinned by what it refused.
-const staleEmissionFixture = 'contextualUnionRemap';
 
 const runtime = resolveDependency(root, 'flight-cpp');
 const includeDirectories = runtime === undefined ? [] : collectCppRuntimeIncludeDirectories(runtime.directory);
@@ -89,15 +86,6 @@ describe('structural assertion emission', () => {
     expect(() =>
       execFileSync(toolchain.command, arguments_, { cwd: emitted, encoding: 'utf8', stdio: 'pipe' }),
     ).not.toThrow();
-  });
-
-  it('pins the fixture whose emission became a refusal on the base', () => {
-    const directory = path.join(goldenDirectory, staleEmissionFixture);
-
-    expect(existsSync(path.join(directory, 'cpp'))).toBe(false);
-    expect(readFileSync(path.join(directory, 'cpp.error.txt'), 'utf8')).toContain(
-      'contextual C++ union conversion requires equivalent source union evidence',
-    );
   });
 
   it('pins the erased structural row as a refusal naming the runtime contract it needs', () => {

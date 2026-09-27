@@ -16944,8 +16944,14 @@ function emitCppEquivalentUnionRepresentationConversionCpp(
     return undefined;
   }
   const mappings = sourcePlan.valueSlots.map((source) => {
-    const targets = targetPlan.valueSlots.filter((target) => target.targetType === source.targetType);
-    return targets.length === 1 ? { source, target: targets[0]! } : undefined;
+    // A same-package declaration is spelled without its namespace inside that namespace, while the
+    // contextual alias owner may qualify the identical carrier. Compare both in the declaring-module
+    // spelling so `Ref<ShapeArm>` and `Ref<package::ShapeArm>` do not masquerade as different owners.
+    const sourceType = qualifyCppDeclaringModuleTypeCpp(source.targetType, context);
+    const targets = targetPlan.valueSlots.filter(
+      (target) => qualifyCppDeclaringModuleTypeCpp(target.targetType, context) === sourceType,
+    );
+    return targets.length === 1 ? { source, sourceType, target: targets[0]! } : undefined;
   });
   if (mappings.some((mapping) => mapping === undefined)) return undefined;
   const exactMappings = mappings.filter((mapping) => mapping !== undefined);
@@ -16969,7 +16975,7 @@ function emitCppEquivalentUnionRepresentationConversionCpp(
       targetPlan.kind,
       context,
     );
-    return { result, sourceType: mapping.source.targetType };
+    return { result, sourceType: mapping.sourceType };
   });
   const emitValueBranches = (exhaustive: boolean): string =>
     valueBranches

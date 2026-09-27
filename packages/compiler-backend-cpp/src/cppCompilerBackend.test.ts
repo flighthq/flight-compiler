@@ -34867,8 +34867,11 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
         {
-          specifier: '@flighthq/types',
-          target: { packageName: '@flighthq/types', source: 'packages/types/src/shapes.ts' },
+          specifier: './contextualUnionRemapShapes',
+          target: {
+            packageName: '@flighthq/golden',
+            source: 'packages/golden/src/contextualUnionRemapShapes.ts',
+          },
         },
       ],
       schema: 'flight-compiler-module-resolution/1',
@@ -34876,9 +34879,9 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     const results = lowerTypeScriptSources(
       [
         {
-          packageName: '@flighthq/types',
+          packageName: '@flighthq/golden',
           sourceFile: ts.createSourceFile(
-            '/flight/packages/types/src/shapes.ts',
+            '/flight/packages/golden/src/contextualUnionRemapShapes.ts',
             `export interface Circle { radius: number }
              export interface Aabb { min: number; max: number }
              export interface Obb { center: number; rotation: number }
@@ -34894,10 +34897,10 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           upstreamDirectory: '/flight',
         },
         {
-          packageName: '@flighthq/consumer',
+          packageName: '@flighthq/golden',
           sourceFile: ts.createSourceFile(
-            '/flight/packages/consumer/src/consumer.ts',
-            `import type { Aabb, Capsule, Circle, Obb, Shape } from '@flighthq/types';
+            '/flight/packages/golden/src/contextualUnionRemap.ts',
+            `import type { Aabb, Capsule, Circle, Obb, Shape } from './contextualUnionRemapShapes';
              type ReadonlyShape =
                | Readonly<Circle & { kind: 'circle' }>
                | Readonly<Aabb & { kind: 'aabb' }>
@@ -34922,8 +34925,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       modules,
       options: {
         packageTargets: {
-          '@flighthq/consumer': { includePrefix: 'flight/consumer', namespace: 'flight::consumer' },
-          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+          '@flighthq/golden': { includePrefix: 'flight/golden', namespace: 'flight::golden' },
         },
         runtimeProfile: 'flight-cpp',
       },
@@ -34932,10 +34934,13 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(emitted.match(/std::visit/gu)).toHaveLength(3);
     expect(emitted).toContain('std::is_same_v<contextual_union_value_type');
-    expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flight::golden::');
     expect(emitted).toContain('.has_value()) return std::nullopt');
     expect(emitted).toContain('flight::Null');
     expect(emitted).toContain('flight::Undefined');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('make_ref');
+    expect(emitted).not.toContain('static_cast');
   });
 
   it('keeps an annotated nullable reference when flow expands its assigned object literal', () => {
