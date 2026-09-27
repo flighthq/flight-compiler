@@ -15692,8 +15692,12 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
-    expect(emitted.contents).toContain('std::get<double>(scale.value())');
-    expect(emitted.contents).toContain('flight::parse_float(std::get<flight::String>(scale.value()))');
+    // Both reads select their alternative by the proven value-slot index -- the same index the typeof
+    // discriminant above tests and the order the declaration renders, so 0 is the `double` arm and 1 is
+    // `flight::String`. An imported alias owns its arm spelling, so std::get<T> would name a type the
+    // declaration need not spell.
+    expect(emitted.contents).toContain('std::get<0>(scale.value())');
+    expect(emitted.contents).toContain('flight::parse_float(std::get<1>(scale.value()))');
   });
 
   it('emits template literals with std::to_string', () => {
