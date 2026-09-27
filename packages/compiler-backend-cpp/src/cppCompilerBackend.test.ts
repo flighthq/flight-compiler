@@ -1614,6 +1614,61 @@ function lowerImportedGlRenderTextureEffectModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedGizmoAlignmentModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface GizmoSmartGuideResult { deltaX: number; deltaY: number }
+         export interface RectangleLike { height: number; width: number; x: number; y: number }`,
+      ),
+      source(
+        '@flighthq/gizmo',
+        'gizmo/src/gizmoAlignment.ts',
+        `import type { GizmoSmartGuideResult, RectangleLike } from '@flighthq/types/contract';
+         export function findGizmoSmartGuides(
+           out: GizmoSmartGuideResult,
+           movingBounds: Readonly<RectangleLike>,
+           candidateBounds: readonly Readonly<RectangleLike>[],
+           threshold: number,
+         ): boolean {
+           const foundX = findGizmoSmartGuideAxis(out, 0, 0, candidateBounds, threshold, true);
+           const foundY = findGizmoSmartGuideAxis(out, 0, 0, candidateBounds, threshold, false);
+           return foundX || foundY;
+         }
+         function findGizmoSmartGuideAxis(
+           out: GizmoSmartGuideResult,
+           movingStart: number,
+           movingEnd: number,
+           candidateBounds: readonly Readonly<RectangleLike>[],
+           threshold: number,
+           horizontal: boolean,
+         ): boolean {
+           out.deltaX += movingStart + movingEnd + threshold + (horizontal ? 0 : 0);
+           return candidateBounds.length > 0;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedPhysicsShapeAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -25088,6 +25143,66 @@ Resolver make_resolver(TextureRef texture) {
       }
       const effect = emitted[1]!;
       const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, effect.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps imported gizmo smart-guide candidates on their owner-preserving sequence view', () => {
+    const { moduleResolution, results } = lowerImportedGizmoAlignmentModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // Each axis query borrows the same projected sequence, so its hidden outer owner remains the one
+    // supplied by the caller. No Array<Ref<RectangleLike>> is recovered or constructed on either edge.
+    expect(contents).toMatch(/find_gizmo_smart_guides\([^)]*flight::SequenceView<.*> candidate_bounds/u);
+    expect(contents).toMatch(/find_gizmo_smart_guide_axis\([^)]*flight::SequenceView<.*> candidate_bounds/u);
+    expect(contents).toContain('find_gizmo_smart_guide_axis(out, 0.0, 0.0, candidate_bounds, threshold, true)');
+    expect(contents).toContain('find_gizmo_smart_guide_axis(out, 0.0, 0.0, candidate_bounds, threshold, false)');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles the imported gizmo smart-guide sequence lane', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerImportedGizmoAlignmentModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/gizmo': { includePrefix: 'test/gizmo', namespace: 'flighthq_gizmo' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-gizmo-alignment-sequence-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const alignment = emitted[1]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, alignment.path), [
         directory,
         ...cppRuntimeIncludeDirectories,
       ]);
