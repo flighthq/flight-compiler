@@ -5467,6 +5467,132 @@ describe('createCppCompilerBackend', () => {
     expect(failure.rule).toBe('cpp-contextual-union-missing-expression-type:optionalSingle');
   });
 
+  it('refuses a mutable capability probe after its source entered independent union owners', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+             export interface EntityRuntime { binding: object | null }
+             export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+             export interface Material extends Entity { readonly kind: string }
+             export interface MaterialData extends Entity {}
+             export interface HasMaterial {
+               material: Material | null;
+               materialData: MaterialData | null;
+             }
+             export interface Node<Traits extends object> extends Entity { enabled: boolean; traits: Traits }
+             export interface RenderCache extends Entity { kind: string }
+             export type Renderable = Node<any> | RenderCache;
+             export interface RenderProxy extends Entity {
+               source: Renderable;
+               material: Material | null;
+               materialData: MaterialData | null;
+             }
+             export interface RenderState extends Entity { frame: number }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/render',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/render/src/renderMaterial.ts',
+            `import type { HasMaterial, RenderProxy, RenderState } from '@flighthq/types/contract';
+             export function updateRenderProxyMaterial(
+               state: RenderState,
+               data: RenderProxy,
+               _parentData?: RenderProxy,
+             ): void {
+               const source = data.source as Partial<HasMaterial>;
+               data.material = source.material ?? null;
+               data.materialData = source.materialData ?? null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(failure.rule).toBe('cpp-mutable-partial-capability-union-owner-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('Renderable union stores independent');
+    expect(failure.message).toContain('Partial<HasMaterial>');
+    expect(failure.message).toContain('copying or materializing');
+    expect(failure.message).toContain('Readonly<Partial<HasMaterial>>');
+    expect(failure.message).toContain('before the value enters the union');
+
+    const ownerResult = lower(
+      'material-owner-view.ts',
+      `interface Material { readonly kind: string }
+       interface MaterialData { readonly value: number }
+       interface HasMaterial { material: Material | null; materialData: MaterialData | null }
+       interface RenderProxy {
+         source: HasMaterial;
+         material: Material | null;
+         materialData: MaterialData | null;
+       }
+       export function update(data: RenderProxy): void {
+         const source = data.source as Readonly<Partial<HasMaterial>>;
+         data.material = source.material ?? null;
+         data.materialData = source.materialData ?? null;
+       }`,
+    );
+    const ownerContents = emitIrModuleCpp(ownerResult.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(ownerContents).toContain('flight::structural_ref_cast<');
+    expect(ownerContents).toContain('RowReadonly<flight::RowPartial<');
+    expect(ownerContents).not.toContain('static_pointer_cast');
+    expect(ownerContents).not.toContain('make_ref');
+    expect(ownerContents).not.toContain('materialize_row');
+
+    const representedOwners = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'material-capability-represented-owners.ts',
+          `interface Material { readonly kind: string }
+           interface HasMaterial { material: Material | null }
+           interface Sprite extends HasMaterial { sprite: boolean }
+           interface Shape extends HasMaterial { shape: boolean }
+           type Renderable = Sprite | Shape;
+           export function material(value: Renderable): Material | null {
+             const source = value as Partial<HasMaterial>;
+             return source.material ?? null;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    // Both alternatives bind the target cell, so an owner-preserving per-slot row conversion exists. That
+    // lowering is a compiler gap, not the runtime-contract gap diagnosed for Renderable above.
+    expect(representedOwners.rule).toBe('cpp-type-assertion-unidentified');
+    expect(representedOwners.classification).toBe('compiler-restriction');
+  });
+
   it('narrows an inherited alternative through the branch that proved it is the one present', () => {
     const result = lower(
       'inherited-alternative-assertion.ts',

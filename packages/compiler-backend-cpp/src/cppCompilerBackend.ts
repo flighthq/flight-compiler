@@ -12166,6 +12166,15 @@ function emitUnionMemberAssertionCpp(
       'cpp-structural-variant-assertion-without-nominal-storage',
     );
   }
+  const mutablePartialCapabilityGap = getCppMutablePartialCapabilityUnionOwnerGapCpp(plan, assertedType, context);
+  if (mutablePartialCapabilityGap) {
+    emissionError(
+      context,
+      `mutable capability assertion from ${describeIrTypeForDiagnosticCpp(sourceType!)} to Partial<${describeIrTypeForDiagnosticCpp(mutablePartialCapabilityGap.target)}> cannot preserve the source object: the ${describeIrTypeForDiagnosticCpp(sourceType!)} union stores independent C++ owner carriers [${mutablePartialCapabilityGap.sourceCarriers.join(', ')}], and at least one carrier does not retain the ${describeIrTypeForDiagnosticCpp(mutablePartialCapabilityGap.target)} member cells. An unchecked or native cast cannot add those cells, copying or materializing a Partial object would replace identity, and a writable structural row would accept writes the stored owner cannot observe. If this is only a capability probe, preserve a Readonly<Partial<${describeIrTypeForDiagnosticCpp(mutablePartialCapabilityGap.target)}>> structural view before the value enters the union; otherwise declare the capability in every union owner or add an owner-preserving dynamic-capability carrier to the runtime contract.`,
+      'cpp-mutable-partial-capability-union-owner-unrepresented',
+      'target-runtime',
+    );
+  }
   const singleSlotNarrowing =
     plan.valueSlots.length === 1 && assertedPlan?.valueSlots.length === 1 && assertedPlan.kind === plan.kind
       ? getCppReferenceNarrowingCpp(plan.valueSlots[0]!.targetType, assertedPlan.valueSlots[0]!.targetType)
@@ -12397,6 +12406,47 @@ interface CppStructuralUnionAssertionAlternative {
 
 interface CppPartialStructuralUnionSlotNarrowing {
   readonly sourceProjection?: Readonly<CompilerCppStructuralRowPlan> | undefined;
+}
+
+interface CppMutablePartialCapabilityUnionOwnerGap {
+  readonly sourceCarriers: readonly string[];
+  readonly target: Readonly<IrType>;
+}
+
+// A mutable Partial assertion over a native variant can be an owner-preserving row view only when EVERY
+// alternative already binds every target cell. If one alternative does not, the assertion relies on
+// JavaScript's ability to add a property to whichever object the union holds. The native union retains no
+// such dynamic capability carrier: a row copy would replace identity, and a writable partial row would put
+// the new value in side storage that reads through the stored native owner cannot observe.
+//
+// Keep the distinction representation-based. A union whose alternatives all contain the target row is a
+// compiler lowering gap and deliberately falls through to the ordinary assertion refusal; this diagnostic
+// owns only the case no local checked conversion can implement.
+function getCppMutablePartialCapabilityUnionOwnerGapCpp(
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  assertedType: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppMutablePartialCapabilityUnionOwnerGap> | undefined {
+  if (sourcePlan.valueSlots.length < 2) return undefined;
+  const targetRow = getCppStructuralProjectionRowCpp(assertedType, context);
+  if (!targetRow || !isCppStructuralRowPartialPlanCpp(targetRow) || isCppStructuralRowReadonlyCpp(targetRow)) {
+    return undefined;
+  }
+  const target = getCppStructuralRowObjectTypeCpp(targetRow);
+  if (!target) return undefined;
+  let hasUnrepresentedOwner = false;
+  const sourceCarriers: string[] = [];
+  for (const sourceSlot of sourcePlan.valueSlots) {
+    if (getCppReferenceElementTypeNameCpp(sourceSlot.targetType) === undefined) return undefined;
+    const sourceRow = getCppStructuralProjectionRowCpp(sourceSlot.runtimeType, context);
+    const source = sourceRow ? getCppStructuralRowObjectTypeCpp(sourceRow) : undefined;
+    if (!source) return undefined;
+    sourceCarriers.push(sourceSlot.targetType);
+    if (getCppStructuralRowObjectWideningProofCpp(source, target, context) !== 'proven') {
+      hasUnrepresentedOwner = true;
+    }
+  }
+  return hasUnrepresentedOwner ? { sourceCarriers, target } : undefined;
 }
 
 // A nullable native reference asserted to a nullable Partial row is the union form of the ordinary
