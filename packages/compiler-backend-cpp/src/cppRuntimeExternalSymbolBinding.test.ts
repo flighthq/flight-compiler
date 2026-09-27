@@ -591,6 +591,7 @@ describe('getCompilerRuntimeExternalMemberCallResultTypeCpp', () => {
   it('returns exact evidence for runtime static members', () => {
     expect(getCompilerRuntimeExternalMemberCallResultTypeCpp('Symbol', 'for')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberCallResultTypeCpp('Symbol', 'for', 'flight-cpp')).toBe('flight::Symbol');
+    expect(getCompilerRuntimeExternalMemberCallResultTypeCpp('JSON', 'parse', 'flight-cpp')).toBe('flight::JsonValue');
   });
 
   it('returns exact member evidence from a downstream value binding', () => {

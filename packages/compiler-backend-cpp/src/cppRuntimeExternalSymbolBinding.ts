@@ -863,7 +863,7 @@ const cppFlightRuntimeExternalSymbolBindings = [
     headers: ['flight/json.hpp'],
     kind: 'runtime',
     members: [
-      { sourceMember: 'parse', targetName: 'flight::Json::parse' },
+      { callResultType: 'flight::JsonValue', sourceMember: 'parse', targetName: 'flight::Json::parse' },
       { sourceMember: 'stringify', targetName: 'flight::Json::stringify' },
     ],
     sourceName: 'JSON',

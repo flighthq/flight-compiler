@@ -10815,6 +10815,22 @@ function getCppExternalCallResultPresencePlanCpp(
     : undefined;
 }
 
+// A runtime result whose exact target carrier keeps source null in its own tag rather than optional
+// storage. Result-type evidence is required on the external binding, so this never guesses from a source
+// name or the position's expected type. A direct call and a local initialized from it reach the same map;
+// other expressions do not acquire a predicate merely because they are compared with null.
+function getCppNullTaggedStoragePresencePlanCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<{ nullPredicate: string }> | undefined {
+  const targetType =
+    expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? context.externalBindingStorageTargetTypes.get(expression.reference.binding.id)
+      : getCppExternalCallResultTargetCpp(expression, context);
+  const nullPredicate = targetType ? cppNullTaggedStoragePredicates.get(targetType) : undefined;
+  return nullPredicate ? { nullPredicate } : undefined;
+}
+
 // A source member is projected from the payload, never from `std::optional` itself. The storage fact
 // and the source type are deliberately separate: Record and indexed Array reads may elect optional
 // storage even when their TypeScript annotation names only the payload. Require control-flow evidence
@@ -10923,6 +10939,19 @@ function emitCppPresenceTestCpp(
     }
     context.includes.add('optional');
     return `${present ? '' : '!'}${value}.has_value()`;
+  }
+  const nullTaggedStorage = getCppNullTaggedStoragePresencePlanCpp(operand, context);
+  if (nullTaggedStorage) {
+    const valueName = getGeneratedTargetName('presenceOperand', context);
+    const value = emitExpression(operand, context);
+    // This exact carrier has a null tag and no undefined tag. Strict undefined therefore has a
+    // type-decided answer, but the operand still runs once: a presence test may wrap a call whose
+    // parse/validation side effects and exceptions the source observes. Null and loose nullish tests
+    // ask the carrier's own predicate, preserving its value without optional wrapping or conversion.
+    if (strict && sentinel === 'undefined') {
+      return `([&]() { const auto& ${valueName} = ${value}; static_cast<void>(${valueName}); return ${present ? 'true' : 'false'}; }())`;
+    }
+    return `([&]() { const auto& ${valueName} = ${value}; return ${present ? '!' : ''}${valueName}.${nullTaggedStorage.nullPredicate}(); }())`;
   }
   const genericCarrier = getCppGenericCarrierPropertyPresencePlanCpp(operand, context);
   if (genericCarrier) {
@@ -25291,6 +25320,11 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-sparse-array-literal-runtime-required',
   'cpp-union-runtime-domains-erased',
 ]);
+
+// Exact runtime value carriers whose source null domain survives as a named tag. Unlike an optional
+// result, these carriers hold null as a present value and cannot hold undefined; the predicate is the
+// complete runtime evidence a nullish comparison needs.
+const cppNullTaggedStoragePredicates: ReadonlyMap<string, string> = new Map([['flight::JsonValue', 'is_null']]);
 
 // Refusals whose cause is a source declaration the emitter cannot invent and the runtime cannot supply:
 // the value the source wrote discards identity or type evidence the target representation needs, so the

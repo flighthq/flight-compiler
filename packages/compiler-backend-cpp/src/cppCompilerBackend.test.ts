@@ -19690,6 +19690,40 @@ Resolver make_resolver(TextureRef texture) {
     );
   });
 
+  it('reads null presence from an exact null-tagged runtime result carrier', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'json-result-presence.ts',
+        `export function parseJsonObject(text: string): boolean {
+           const value: unknown = JSON.parse(text);
+           return value !== null;
+         }
+         export function directNull(text: string): boolean { return JSON.parse(text) === null; }
+         export function directUndefined(text: string): boolean { return JSON.parse(text) !== undefined; }
+         export function looseNullish(text: string): boolean { return JSON.parse(text) != null; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // JSON.parse has an exact JsonValue result carrier. Its null tag is queried directly, while an
+    // impossible undefined comparison is folded only after the call has been evaluated once. No optional
+    // wrapper, erased Any, cast, or materialized replacement value is introduced.
+    expect(emitted).toContain('flight::JsonValue value = flight::Json::parse(text);');
+    expect(emitted).toContain('const auto& presence_operand = value; return !presence_operand.is_null();');
+    expect(emitted).toContain(
+      'const auto& presence_operand_2 = flight::Json::parse(text); return presence_operand_2.is_null();',
+    );
+    expect(emitted).toContain(
+      'const auto& presence_operand_3 = flight::Json::parse(text); static_cast<void>(presence_operand_3); return true;',
+    );
+    expect(emitted).toContain(
+      'const auto& presence_operand_4 = flight::Json::parse(text); return !presence_operand_4.is_null();',
+    );
+    expect(emitted.match(/flight::Json::parse\(text\)/gu)).toHaveLength(4);
+    expect(emitted).not.toContain('flight::Any');
+    expect(emitted).not.toContain('std::optional<flight::JsonValue>');
+  });
+
   // The invariant the erased election exists to hold: a position the SOURCE wrote as `any` or
   // `unknown` is a value of no stated type, and flight-cpp's erased dynamic value is exactly that, so it
   // stays a number when it holds a number rather than being misstated as an object reference. Pinned
