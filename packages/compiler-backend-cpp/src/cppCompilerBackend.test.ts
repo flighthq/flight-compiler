@@ -4769,9 +4769,63 @@ describe('createCppCompilerBackend', () => {
 
     expect(assignedValue).toMatchObject({
       kind: 'identifier',
-      narrowedType: { kind: 'union' },
+      narrowedType: { kind: 'named', reference: { binding: { name: 'Value' } } },
     });
 
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('mapping.set(key,');
+    expect(contents).toContain('sequence.push(');
+    expect(contents).toContain('return take(');
+    expect(contents).toContain('std::get_if<flight::Array<Value>>');
+    expect(contents).toContain('std::get_if<flight::Record<flight::String, Value>>');
+    expect(contents).toContain('([&]() -> Value');
+    expect(contents).toContain('return Value{std::in_place');
+    expect(contents.indexOf('struct Value;')).toBeLessThan(contents.indexOf('using Mapping ='));
+    expect(contents.indexOf('using Mapping =')).toBeLessThan(contents.indexOf('struct Value : public'));
+    expect(contents).not.toContain('flight::make_ref');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('cpp-contextual-union-inequivalent');
+  });
+
+  it('preserves branch-assigned recursive union owners after a unique-symbol guard', () => {
+    const result = lower(
+      'recursive-local-union-symbol-guard.ts',
+      `type Value = null | boolean | number | string | Value[] | Mapping;
+       interface Mapping { [key: string]: Value }
+       const FAILURE = Symbol('failure');
+       type ParseValue = Value | typeof FAILURE;
+       function take(value: Value): Value { return value; }
+       export function parse(
+         mapping: Mapping,
+         sequence: Value[],
+         key: string,
+         condition: boolean,
+         left: ParseValue,
+         right: ParseValue,
+       ): Value | null {
+         let value: ParseValue;
+         if (condition) value = left;
+         else value = right;
+         if (value === FAILURE) return null;
+         mapping[key] = value;
+         sequence.push(value);
+         return take(value);
+       }`,
+    );
+    const parse = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'parse',
+    );
+    const assignment = parse?.kind === 'function' ? parse.body[3] : undefined;
+    const assignedValue =
+      assignment?.kind === 'expression' && assignment.expression.kind === 'assignment'
+        ? assignment.expression.right
+        : undefined;
+    expect(assignedValue).toMatchObject({
+      kind: 'identifier',
+      narrowedType: { kind: 'named', reference: { binding: { name: 'Value' } } },
+    });
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
@@ -4783,6 +4837,19 @@ describe('createCppCompilerBackend', () => {
     expect(contents).not.toContain('flight::make_ref');
     expect(contents).not.toContain('static_cast');
     expect(contents).not.toContain('cpp-contextual-union-inequivalent');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-branch-assigned-recursive-union-'));
+      const header = path.join(directory, 'branch_assigned_recursive_union.hpp');
+      try {
+        writeFileSync(header, contents, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
   });
 
   it('does not exclude a broad symbol after an identity comparison', () => {

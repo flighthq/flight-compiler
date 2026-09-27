@@ -1318,7 +1318,13 @@ function isCppInterfaceRepresentationAliasCpp(
 
 function emitCppForwardDeclarations(module: Readonly<IrModule>, context: EmitContext): string[] {
   return module.declarations.flatMap((declaration): string[] => {
-    if (declaration.kind !== 'class' && declaration.kind !== 'interface') return [];
+    if (
+      declaration.kind !== 'class' &&
+      declaration.kind !== 'interface' &&
+      (declaration.kind !== 'typeAlias' || !context.recursiveTypeAliasBindingIds.has(declaration.binding.id))
+    ) {
+      return [];
+    }
     if (
       declaration.kind === 'interface' &&
       getCppRuntimeProfile(context.options) === 'flight-cpp' &&
@@ -14134,7 +14140,16 @@ function emitCppNarrowedUnionValueCpp(
       context.includes.add('stdexcept');
       context.includes.add('variant');
       const narrowed = getGeneratedTargetName('narrowedUnion', context);
-      const carrier = emitUnionTypeCpp(narrowedUnion, context);
+      // A recursive source alias emits as a derived struct because C++ cannot spell its cycle as an alias.
+      // Reconstruct that named carrier, rather than the equivalent raw optional/variant base: callers store
+      // the declared owner and the base does not implicitly convert back to its derived wrapper.
+      const namedCarrier =
+        narrowedType?.kind === 'named' &&
+        narrowedType.reference.kind === 'binding' &&
+        context.recursiveTypeAliasBindingIds.has(narrowedType.reference.binding.id)
+          ? emitType(narrowedType, context)
+          : undefined;
+      const carrier = namedCarrier ?? emitUnionTypeCpp(narrowedUnion, context);
       const branches = exactSlots.map((slot) => {
         const constructed = emitCppUnionValueConstruction(
           '*alternative',
@@ -14142,6 +14157,7 @@ function emitCppNarrowedUnionValueCpp(
           narrowedUnion,
           narrowedPlan.kind,
           context,
+          namedCarrier,
         );
         return `if (const auto* alternative = std::get_if<${slot.targetType}>(&${narrowed}.value())) return ${constructed};`;
       });
@@ -16783,13 +16799,14 @@ function emitCppUnionValueConstruction(
   union: Readonly<Extract<IrType, { kind: 'union' }>>,
   planKind: ReturnType<typeof getCppUnionRepresentationPlan>['kind'],
   context: EmitContext,
+  carrierType?: string,
 ): string {
   if (planKind === 'singleValue') return emitted;
   if (planKind === 'optionalSingle') {
     context.includes.add('optional');
     return `std::optional<${targetType}>{${emitted}}`;
   }
-  const unionType = emitUnionTypeCpp(union, context);
+  const unionType = carrierType ?? emitUnionTypeCpp(union, context);
   if (planKind === 'optionalVariant') {
     return `${unionType}{std::in_place, std::in_place_type<${targetType}>, ${emitted}}`;
   }

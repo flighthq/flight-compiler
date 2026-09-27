@@ -7039,6 +7039,92 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     });
   });
 
+  it('retains a unique-symbol guard applied after branch assignments', () => {
+    const result = lower(
+      'branch-assigned-unique-symbol-narrowing.ts',
+      `type Value = null | boolean | number | string | Value[] | Mapping;
+       interface Mapping { [key: string]: Value }
+       const FAILURE = Symbol('failure');
+       type ParseValue = Value | typeof FAILURE;
+       export function parse(
+         mapping: Mapping,
+         key: string,
+         condition: boolean,
+         left: ParseValue,
+         right: ParseValue,
+       ): Value | null {
+         let value: ParseValue;
+         if (condition) value = left;
+         else value = right;
+         if (value === FAILURE) return null;
+         mapping[key] = value;
+         return value;
+       }`,
+    );
+    const parse = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'parse',
+    );
+    const guard = parse?.kind === 'function' ? parse.body[2] : undefined;
+    const assignment = parse?.kind === 'function' ? parse.body[3] : undefined;
+    const assignedValue =
+      assignment?.kind === 'expression' && assignment.expression.kind === 'assignment'
+        ? assignment.expression.right
+        : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(
+      guard?.kind === 'if' && guard.condition.kind === 'binary' ? guard.condition.semantics : undefined,
+    ).toMatchObject({ unionMemberTest: { binding: { name: 'value' }, whenResult: true } });
+    expect(assignedValue).toMatchObject({
+      kind: 'identifier',
+      narrowedType: { kind: 'named', reference: { binding: { name: 'Value' } } },
+    });
+  });
+
+  it('does not carry guards across an intervening assignment boundary', () => {
+    const result = lower(
+      'assigned-narrowing-boundary.ts',
+      `class First {}
+       class Second {}
+       class Third {}
+       type Value = First | Second | Third;
+       export function choose(value: Value, replacement: Value): Value {
+         if (value instanceof First) return value;
+         {
+           value = replacement;
+           if (value instanceof Second) return value;
+           return value;
+         }
+       }`,
+    );
+    const choose = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'choose',
+    );
+    const nested = choose?.kind === 'function' ? choose.body[1] : undefined;
+    const returned = nested?.kind === 'block' ? nested.statements[2] : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(returned).toMatchObject({
+      kind: 'return',
+      expression: {
+        kind: 'identifier',
+        narrowedType: {
+          kind: 'union',
+          types: expect.arrayContaining([
+            expect.objectContaining({
+              kind: 'named',
+              reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'First' }) }),
+            }),
+            expect.objectContaining({
+              kind: 'named',
+              reference: expect.objectContaining({ binding: expect.objectContaining({ name: 'Third' }) }),
+            }),
+          ]),
+        },
+      },
+    });
+  });
+
   it('records exact anonymous alternatives selected by property-presence flow', () => {
     const result = lower(
       'anonymous-union.ts',

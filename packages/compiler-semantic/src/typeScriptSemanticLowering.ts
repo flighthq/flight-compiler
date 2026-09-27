@@ -8308,15 +8308,38 @@ function getTypeScriptSyntacticReferenceNarrowedMember(
     const equalityDomain = getTypeScriptEnclosingLiteralEqualityNarrowingDomain(node, symbol, context.checker);
     if (equalityDomain) return { narrowedMember: equalityDomain };
   }
-  const alternatives = recorded ? getTypeScriptNarrowingAlternatives(recorded, context, new Set()) : [];
+  const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  const authored =
+    declaration &&
+    (ts.isVariableDeclaration(declaration) || ts.isParameter(declaration)) &&
+    declaration.type !== undefined
+      ? lowerType(declaration.type, context)
+      : undefined;
+  // The checker-derived binding evidence may expand a recursive alias until its cycle becomes an empty
+  // structural object. The authored annotation retains the named owner at that cycle, and the alias
+  // resolver below can still enumerate its exact alternatives. Prefer it when present so narrowing never
+  // trades a declared owner for a lookalike structural carrier.
+  const alternatives = authored
+    ? getTypeScriptNarrowingUnionAlternatives(authored, context, new Set())
+    : recorded
+      ? getTypeScriptNarrowingAlternatives(recorded, context, new Set())
+      : [];
   if (alternatives.length < 2) return {};
   let remaining = alternatives;
+  let reachedAssignment = false;
   for (let child: ts.Node = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
     if (ts.isBlock(parent)) {
       const statementIndex = parent.statements.findIndex((statement) => isTypeScriptNodeWithin(child, statement));
       for (let index = statementIndex - 1; index >= 0; index -= 1) {
         const statement = parent.statements[index]!;
-        if (doesTypeScriptStatementAssignBinding(statement, symbol, context.checker)) return {};
+        if (doesTypeScriptStatementAssignBinding(statement, symbol, context.checker)) {
+          // A guard after this assignment tests the value the assignment produced, so its exact remaining
+          // alternatives stay valid. The assignment is the boundary: guards before it describe an older
+          // value and must not narrow this read. With no intervening guard there is no proof to retain.
+          if (remaining.length === alternatives.length) return {};
+          reachedAssignment = true;
+          break;
+        }
         if (
           !ts.isIfStatement(statement) ||
           statement.elseStatement ||
@@ -8335,6 +8358,7 @@ function getTypeScriptSyntacticReferenceNarrowedMember(
         );
       }
     }
+    if (reachedAssignment) break;
     if (ts.isFunctionLike(parent)) break;
   }
   if (remaining.length === 0 || remaining.length === alternatives.length) return {};
