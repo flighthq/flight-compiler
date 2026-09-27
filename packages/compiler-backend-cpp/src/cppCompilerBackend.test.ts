@@ -612,6 +612,85 @@ function lowerImportedTextureAndTextShaperAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedCommandAndPickingErasedRowModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+      {
+        specifier: '@flighthq/scene3d/contract',
+        target: { packageName: '@flighthq/scene3d', source: 'packages/scene3d/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface NodeTraits { enabled: boolean; name: string | null }
+         export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {}
+         export type NodeAny = Node<any>;
+         export interface Node3DTraits { alpha: number }
+         export type Node3D = Node<Node3DTraits> & Node3DTraits;
+         export interface Mesh extends Node3D { geometry: object }
+         export interface CommandPropertyEntry {
+           readonly after: unknown;
+           readonly before: unknown;
+           readonly property: string;
+           readonly target: NodeAny;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d',
+        'scene3d/src/contract.ts',
+        `import type { Mesh, Node3D } from '@flighthq/types/contract';
+         export function isMesh(source: unknown): source is Mesh {
+           return source != null && typeof source === 'object' && (source as Partial<Mesh>).geometry != null;
+         }
+         export function isMeshNode(source: Readonly<Node3D>): source is Mesh {
+           return (source as Partial<Mesh>).geometry != null;
+         }`,
+      ),
+      source(
+        '@flighthq/command',
+        'command/src/command.ts',
+        `import type { NodeAny } from '@flighthq/types/contract';
+         export function readNodeProperty(target: Readonly<NodeAny>, property: string): unknown {
+           return (target as unknown as Readonly<Record<string, unknown>>)[property];
+         }`,
+      ),
+      source(
+        '@flighthq/picking',
+        'picking/src/pickScene3D.ts',
+        `import { isMesh } from '@flighthq/scene3d/contract';
+         import type { Node3D } from '@flighthq/types/contract';
+         export function pickNode(node: Readonly<Node3D>): boolean { return isMesh(node); }`,
+      ),
+      source(
+        '@flighthq/picking',
+        'picking/src/pickScene3DTyped.ts',
+        `import { isMeshNode } from '@flighthq/scene3d/contract';
+         import type { Node3D } from '@flighthq/types/contract';
+         export function pickNode(node: Readonly<Node3D>): boolean { return isMeshNode(node); }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {
     const first = createCppCompilerBackend();
@@ -1584,6 +1663,42 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain(
       'for a predicate, use a typed pre-erasure entry point instead of accepting unknown',
     );
+  });
+
+  it('attributes the imported command and picking structural erasures to their API boundaries', () => {
+    const { moduleResolution, results } = lowerImportedCommandAndPickingErasedRowModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const command = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const picking = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    const typedPicking = session.emitModule(modules[4]!)[0]!.contents;
+
+    // NodeAny and Node3D are structural rows whose owners can be wider concrete nodes. `Any::object`
+    // accepts only a nominal reference and `shared_object()` is deliberately absent after a widening, so
+    // neither the command's Record assertion nor picking's unknown predicate boundary can preserve the
+    // source identity and the native type needed for checked recovery. A row copy or unchecked cast would
+    // make the emitted program observe a different object or claim evidence the carrier does not hold.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [command, picking]) {
+      expect(failure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
+      expect(failure.classification).toBe('target-runtime');
+      expect(failure.message).toContain(
+        'structural object alternative constructed from the row owner and native object',
+      );
+      expect(failure.message).toContain('an unchecked cast would discard the evidence needed for checked recovery');
+    }
+    expect(command.message).toContain(
+      'for computed property access, keep the key/value operation typed before erasure',
+    );
+    expect(picking.message).toContain(
+      'for a predicate, use a typed pre-erasure entry point instead of accepting unknown',
+    );
+    expect(typedPicking).toContain('return flighthq_scene3d::is_mesh_node(node);');
+    expect(typedPicking).not.toContain('flight::Any');
   });
 
   it('compares an exactly owned structural row through explicit erased reference identity', () => {
