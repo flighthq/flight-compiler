@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -121,6 +121,87 @@ function emitCppModuleCppSession(
     modules: results.map((result) => result.module),
     options: { runtimeProfile: 'flight-cpp' },
   }).emitModule(results[index]!.module)[0]!.contents;
+}
+
+function lowerReexportedGenericCallableRowArgument() {
+  const node = ts.createSourceFile(
+    '/flight/packages/types/src/Node2D.ts',
+    `export interface Node2D { x: number; }`,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const transition = ts.createSourceFile(
+    '/flight/packages/types/src/NodeInteractiveStateBinding.ts',
+    `import type { Node2D } from '@flighthq/types/node';
+     export interface TransitionRequest<N extends Node2D = Node2D> { readonly value: N; }
+     export interface Transition<N extends Node2D = Node2D> {
+       readonly run: (request: Readonly<TransitionRequest<N>>) => void;
+     }`,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const descriptor = ts.createSourceFile(
+    '/flight/packages/types/src/GuiController.ts',
+    `import type { Node2D } from '@flighthq/types/node';
+     import type { Transition } from '@flighthq/types/transition';
+     export type GuiTransitionDescriptor = Transition<Node2D>;`,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const contract = ts.createSourceFile(
+    '/flight/packages/types/src/contract.ts',
+    `export type { Node2D } from '@flighthq/types/node';
+     export type { GuiTransitionDescriptor } from '@flighthq/types/descriptor';`,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const controller = ts.createSourceFile(
+    '/flight/packages/gui/src/guiController.ts',
+    `import type { GuiTransitionDescriptor, Node2D } from '@flighthq/types/contract';
+     interface Runtime { transition: Readonly<GuiTransitionDescriptor> | null; }
+     export function run(runtime: Runtime, target: Node2D | null): void {
+       if (target === null || runtime.transition === null) return;
+       runtime.transition.run({ value: target });
+     }`,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/node',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/Node2D.ts' },
+      },
+      {
+        specifier: '@flighthq/types/transition',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/NodeInteractiveStateBinding.ts' },
+      },
+      {
+        specifier: '@flighthq/types/descriptor',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/GuiController.ts' },
+      },
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+      {
+        specifier: '../../types/src/NodeInteractiveStateBinding.js',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/NodeInteractiveStateBinding.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const results = lowerTypeScriptSources(
+    [
+      { packageName: '@flighthq/types', sourceFile: node, upstreamDirectory: '/flight' },
+      { packageName: '@flighthq/types', sourceFile: transition, upstreamDirectory: '/flight' },
+      { packageName: '@flighthq/types', sourceFile: descriptor, upstreamDirectory: '/flight' },
+      { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+      { packageName: '@flighthq/gui', sourceFile: controller, upstreamDirectory: '/flight' },
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
 }
 
 function lower(file: string, source: string) {
@@ -21389,6 +21470,56 @@ Resolver make_resolver(TextureRef texture) {
     const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(sibling, { runtimeProfile: 'flight-cpp' }));
 
     expect(failure.rule).toBe('cpp-structural-row-nominal-recovery-unproven');
+  });
+
+  it('constructs a re-exported generic callable argument through its exact RowOf owner', () => {
+    const { moduleResolution, results } = lowerReexportedGenericCallableRowArgument();
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const output = emitCppModuleCppSession(results, moduleResolution, 4);
+    expect(output).toContain(
+      'flight::make_structural_ref<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::TransitionRequest<flight::Ref<flighthq_types::Node2D>>>>>>',
+    );
+    expect(output).toContain('flight::row_field<flight::RowKey<"value">>(target.value())');
+    expect(output).not.toContain('flight::make_ref<flighthq_types::TransitionRequest');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles a re-exported generic callable argument through its exact RowOf owner', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { moduleResolution, results } = lowerReexportedGenericCallableRowArgument();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/gui': { includePrefix: 'test/gui', namespace: 'flighthq_gui' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-generic-callable-row-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const controller = emitted[4]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, controller.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it('widens readonly derived structural rows at argument, assignment, and return boundaries', () => {

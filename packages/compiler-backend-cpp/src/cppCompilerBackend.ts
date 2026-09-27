@@ -17499,8 +17499,13 @@ function getIrCallArgumentExpectedTypeCpp(
     const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
     if (emitType(argumentType, isolatedContext) === emitType(parameterType, isolatedContext)) return undefined;
     const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(argumentType, context.module);
+    const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(parameterType, context.module);
+    // A contextual object literal and its parameter can have different structural-row spellings while
+    // still constructing one proven row value. Nominal recovery is only required when the parameter has
+    // no row of its own; applying that refusal to a row target rejects the ordinary construction below.
     if (
       sourceRow &&
+      !targetRow &&
       hasFlightReferenceRepresentationCpp(parameterType, context) &&
       !emitCppStructuralReferenceValueConversionCpp('source', argumentType, parameterType, isolatedContext)
     ) {
