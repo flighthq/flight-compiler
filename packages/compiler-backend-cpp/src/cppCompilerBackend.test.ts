@@ -15160,6 +15160,18 @@ Resolver make_resolver(TextureRef texture) {
   });
 
   it('attributes a contextual provider result requiring erased array storage to the runtime', () => {
+    const represented = emitIrModuleCpp(
+      lower(
+        'contextual-provider-erased-number.ts',
+        `type Data = string | Readonly<Record<string, unknown>>;
+         type Provider = () => Data;
+         function log(_data: Data | Provider): void {}
+         export function warn(view: number): void {
+           log(() => ({ message: 'degenerate', view }));
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
     const result = lower(
       'contextual-provider-erased-array.ts',
       `type Data = string | Readonly<Record<string, unknown>>;
@@ -15173,15 +15185,21 @@ Resolver make_resolver(TextureRef texture) {
       emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
     );
 
-    // The lambda itself can adopt Provider's return domain, and its fresh object can be built as the
-    // Record alternative. The nested array still cannot enter `unknown`: flight::Any has no array
-    // alternative, so a return annotation or target cast would only hide the missing runtime carrier.
+    // The lambda itself can adopt Provider's return domain, its fresh object can be built as the Record
+    // alternative, and a represented scalar member enters that Record's Any cell. The nested array still
+    // cannot enter `unknown`: flight::Any has no array alternative, so a return annotation or target cast
+    // would only hide the missing runtime carrier.
+    expect(represented).toContain('{flight::String("view"), view}');
+    expect(represented).not.toContain('flight::make_ref<message_view_');
     expect(failure).toMatchObject({
       classification: 'target-runtime',
       rule: 'cpp-contextual-union-value-type-unrepresented',
     });
     expect(failure.message).toContain('member view has runtime type flight::Array<double>');
     expect(failure.message).toContain('flight::Any has no carrier for it');
+    expect(failure.message).toContain(
+      'The provider callable and member value are represented; only erasing that value into the Record cell is missing',
+    );
   });
 
   it('constructs fresh local arrays in an object call contextual element domain', () => {

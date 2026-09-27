@@ -4578,17 +4578,21 @@ function emitExpression(
           : undefined;
       const expectedExternalObject = getCppExternalValueObjectSourceNameCpp(expectedType, context);
       const expectedExternalPayload = getCppExternalValueObjectSourceNameCpp(expectedPayload, context);
+      const expectedRecord = getCppRecordTypeArgumentsCpp(expectedType, context, new Set());
+      const expectedPayloadRecord = getCppRecordTypeArgumentsCpp(expectedPayload, context, new Set());
       const constructionType =
         expectedType && expectedExternalObject
           ? expectedType
           : expectedPayload && expectedExternalPayload
             ? expectedPayload
             : expectedType &&
-                (hasFlightReferenceRepresentationCpp(expectedType, context) ||
+                (expectedRecord ||
+                  hasFlightReferenceRepresentationCpp(expectedType, context) ||
                   hasFlightStructuralRowRepresentationCpp(expectedType, context))
               ? expectedType
               : expectedPayload &&
-                  (hasFlightReferenceRepresentationCpp(expectedPayload, context) ||
+                  (expectedPayloadRecord ||
+                    hasFlightReferenceRepresentationCpp(expectedPayload, context) ||
                     hasFlightStructuralRowRepresentationCpp(expectedPayload, context))
                 ? expectedPayload
                 : expression.type;
@@ -13784,6 +13788,28 @@ function emitContextualUnionExpressionInContextCpp(
   if (expression.kind === 'literal' && expression.value === null) {
     return emitCppUnionSentinelConstruction('null', union, plan.kind, context);
   }
+  if (expression.kind === 'object' && expression.members.every((member) => member.kind === 'property')) {
+    const erasedRecordSlots = plan.valueSlots.filter((slot) => {
+      const record = getCppRecordTypeArgumentsCpp(slot.runtimeType, context, new Set());
+      return record && isCppAliasResolvedErasedDynamicValueTypeCpp(record.value, context);
+    });
+    const recordSlot = erasedRecordSlots.length === 1 ? erasedRecordSlots[0] : undefined;
+    const membersRepresented = expression.members.every((member) => {
+      if (member.kind !== 'property') return false;
+      const valueType =
+        getIrExpressionTypeEvidenceCpp(member.value, context) ??
+        getIrExpressionTypeForUnionConstructionCpp(member.value, [], context);
+      const runtimeType = valueType ? getIrTypeRuntimeDomainCpp(valueType, context, new Set()) : undefined;
+      return Boolean(runtimeType && isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context));
+    });
+    // A fresh literal can allocate directly as the one erased Record alternative: every member enters
+    // the runtime's existing Any carrier at construction, so no object identity or member storage is
+    // converted afterward. An unrepresented member deliberately falls through to the owning diagnostic.
+    if (recordSlot && membersRepresented) {
+      const record = emitExpression(expression, context, recordSlot.runtimeType, false);
+      return emitCppUnionValueConstruction(record, recordSlot.targetType, union, plan.kind, context);
+    }
+  }
   if (expression.kind === 'binary' && expression.operator === '??') {
     const mergeEvidence = getCppNullishMergeEvidenceCpp(expression, context);
     const fallback =
@@ -14198,7 +14224,7 @@ function emitContextualUnionExpressionInContextCpp(
       : undefined;
   const callableValueSlot =
     matchedValueSlot < 0 && constrainedValueSlot === undefined
-      ? getCppCallableUnionValueSlotCpp(runtimeType, plan.valueSlots, context)
+      ? getCppCallableUnionValueSlotCpp(expression, runtimeType, plan.valueSlots, context)
       : undefined;
   const representedValueSlot = constrainedValueSlot ?? callableValueSlot ?? matchedValueSlot;
   if (representedValueSlot < 0) {
@@ -14256,7 +14282,7 @@ function emitContextualUnionExpressionInContextCpp(
     emissionError(
       context,
       callableErasedReturnGap
-        ? `contextual union callable result cannot enter the destination's erased Record value: member ${callableErasedReturnGap.member} has runtime type ${emitType(callableErasedReturnGap.runtimeType, context)}, but flight::Any has no carrier for it. Add an identity-preserving erased carrier for that runtime type, or keep the member in a statically represented log-data type`
+        ? `contextual union callable result cannot enter the destination's erased Record value: member ${callableErasedReturnGap.member} has runtime type ${emitType(callableErasedReturnGap.runtimeType, context)}, but flight::Any has no carrier for it. The provider callable and member value are represented; only erasing that value into the Record cell is missing. Add an identity-preserving erased carrier for that runtime type, or keep the member in a statically represented log-data type`
         : cause === 'callable-signature'
           ? `contextual union callable value type ${targetType} agrees with no alternative's signature: the destination holds [${plan.valueSlots
               .map((slot) => slot.targetType)
@@ -14595,6 +14621,7 @@ function emitCppNullishCoalesceMultiVariantConstructionCpp(
 }
 
 function getCppCallableUnionValueSlotCpp(
+  expression: Readonly<IrExpression>,
   source: Readonly<IrType>,
   valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
   context: EmitContext,
@@ -14617,9 +14644,41 @@ function getCppCallableUnionValueSlotCpp(
       );
     });
     if (!parametersAgree) return [];
-    return hasCppCompatibleCallableReturnRepresentationCpp(source.returns, target.returns, context) ? [index] : [];
+    const contextualRecordMembers = getCppContextualCallableErasedRecordReturnMembersCpp(expression, target, context);
+    const contextualRecordReturn =
+      hasCppExactCallableParameterRepresentationCpp(source, target, context) &&
+      contextualRecordMembers?.every((member) => isCppRuntimeTypeRepresentableInAnyCpp(member.runtimeType, context));
+    return hasCppCompatibleCallableReturnRepresentationCpp(source.returns, target.returns, context) ||
+      contextualRecordReturn
+      ? [index]
+      : [];
   });
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+function hasCppExactCallableParameterRepresentationCpp(
+  source: Readonly<Extract<IrType, { kind: 'function' }>>,
+  target: Readonly<Extract<IrType, { kind: 'function' }>>,
+  context: EmitContext,
+): boolean {
+  if (source.parameters.length !== target.parameters.length) return false;
+  const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  return source.parameters.every((parameter, index) => {
+    const targetParameter = target.parameters[index]!;
+    return (
+      parameter.rest === targetParameter.rest &&
+      emitOptionalTypeCpp(
+        emitCppParameterTypeCpp(parameter.type, parameter.rest, isolatedContext),
+        parameter.optional,
+        isolatedContext,
+      ) ===
+        emitOptionalTypeCpp(
+          emitCppParameterTypeCpp(targetParameter.type, targetParameter.rest, isolatedContext),
+          targetParameter.optional,
+          isolatedContext,
+        )
+    );
+  });
 }
 
 // Whether the contextual argument is one member of a union the source parameter stores directly.
@@ -14884,6 +14943,13 @@ function emitCppContextualCallableUnionValueCpp(
   if (sourceType.kind !== 'function') return emitExpression(expression, context, sourceType, false);
   const target = getCppClosedCallableType(targetType, context, new Set());
   if (!target) return emitExpression(expression, context, sourceType, false);
+  const contextualRecordMembers = getCppContextualCallableErasedRecordReturnMembersCpp(expression, target, context);
+  if (
+    hasCppExactCallableParameterRepresentationCpp(sourceType, target, context) &&
+    contextualRecordMembers?.every((member) => isCppRuntimeTypeRepresentableInAnyCpp(member.runtimeType, context))
+  ) {
+    return emitExpression(expression, context, targetType, false);
+  }
   const needsAdapter =
     sourceType.parameters.length !== target.parameters.length ||
     sourceType.parameters.some((parameter, index) => {
@@ -15087,6 +15153,43 @@ interface CppContextualCallableErasedReturnGap {
   readonly runtimeType: Readonly<IrType>;
 }
 
+function getCppContextualCallableErasedRecordReturnMembersCpp(
+  expression: Readonly<IrExpression>,
+  target: Readonly<Extract<IrType, { kind: 'function' }>>,
+  context: EmitContext,
+): readonly Readonly<CppContextualCallableErasedReturnGap>[] | undefined {
+  if (
+    expression.kind !== 'function' ||
+    expression.expression?.kind !== 'object' ||
+    expression.expression.members.some((member) => member.kind !== 'property')
+  ) {
+    return undefined;
+  }
+  const returnUnion = getIrUnionTypeCpp(target.returns, context, new Set());
+  if (!returnUnion) return undefined;
+  const returnPlan = getCppUnionRepresentationPlan(returnUnion, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set<string>(),
+  });
+  const records = returnPlan.valueSlots.flatMap((slot) => {
+    const record = getCppRecordTypeArgumentsCpp(slot.runtimeType, context, new Set());
+    return record && isCppAliasResolvedErasedDynamicValueTypeCpp(record.value, context) ? [record] : [];
+  });
+  if (records.length !== 1) return undefined;
+  const members: CppContextualCallableErasedReturnGap[] = [];
+  for (const member of expression.expression.members) {
+    if (member.kind !== 'property') return undefined;
+    const valueType =
+      getIrExpressionTypeEvidenceCpp(member.value, context) ??
+      getIrExpressionTypeForUnionConstructionCpp(member.value, [], context);
+    const runtimeType = valueType ? getIrTypeRuntimeDomainCpp(valueType, context, new Set()) : undefined;
+    if (!runtimeType) return undefined;
+    members.push({ member: member.name, runtimeType });
+  }
+  return members;
+}
+
 // A concise callback may be contextually constructed in the destination's callable signature, but that
 // does not manufacture a runtime representation for values nested inside its result. Log providers are
 // the canonical case: the object literal can become Record<string, unknown>, while an array-valued field
@@ -15121,28 +15224,9 @@ function getCppContextualCallableErasedReturnGapCpp(
     return parametersAgree ? [callable] : [];
   });
   if (targets.length !== 1) return undefined;
-  const returnUnion = getIrUnionTypeCpp(targets[0]!.returns, context, new Set());
-  if (!returnUnion) return undefined;
-  const returnPlan = getCppUnionRepresentationPlan(returnUnion, {
-    ...context,
-    anonymousStructs: new Map(),
-    includes: new Set<string>(),
-  });
-  const records = returnPlan.valueSlots.flatMap((slot) => {
-    const record = getCppRecordTypeArgumentsCpp(slot.runtimeType, context, new Set());
-    return record && isCppAliasResolvedErasedDynamicValueTypeCpp(record.value, context) ? [record] : [];
-  });
-  if (records.length !== 1) return undefined;
-  for (const member of expression.expression.members) {
-    if (member.kind !== 'property') continue;
-    const valueType =
-      getIrExpressionTypeEvidenceCpp(member.value, context) ??
-      getIrExpressionTypeForUnionConstructionCpp(member.value, [], context);
-    const runtimeType = valueType ? getIrTypeRuntimeDomainCpp(valueType, context, new Set()) : undefined;
-    if (!runtimeType || isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context)) continue;
-    return { member: member.name, runtimeType };
-  }
-  return undefined;
+  return getCppContextualCallableErasedRecordReturnMembersCpp(expression, targets[0]!, context)?.find(
+    (member) => !isCppRuntimeTypeRepresentableInAnyCpp(member.runtimeType, context),
+  );
 }
 
 function isCppRuntimeTypeRepresentableInAnyCpp(type: Readonly<IrType>, context: EmitContext): boolean {
