@@ -17615,14 +17615,18 @@ function collectCppContextualBindingStorageTargetTypesCpp(
       const source = context.bindingTypes.get(bindingId);
       const initializer = context.bindingInitializers.get(bindingId);
       const representedTargetArray = getIrArrayTypeCpp(target, context, new Set());
-      const arrayProjection = Boolean(
+      const representationChangingArrayProjection = Boolean(
         source &&
-        initializer?.kind === 'array' &&
         representedTargetArray &&
         context.referenceRepresentationPlanner.resolveStructuralRow(representedTargetArray.element, context.module) &&
         isCppContextualCollectionProjectionCpp(source, target, context) &&
         !areCppTypesRepresentationEquivalent(source, target, context),
       );
+      // Only an array literal is an allocation whose element storage this analysis may choose. A call or
+      // property result already owns its source carrier; accepting the projected target here would silently
+      // retype that existing array even though no allocation site can adopt the destination representation.
+      if (representationChangingArrayProjection && initializer?.kind !== 'array') return [];
+      const arrayProjection = representationChangingArrayProjection;
       const targetArray = arrayProjection ? representedTargetArray : undefined;
       const compatiblePushes = targetArray
         ? (projectedArrayPushes.get(bindingId) ?? []).filter((arguments_) =>
