@@ -4835,8 +4835,11 @@ describe('createCppCompilerBackend', () => {
     for (const key of ['keyof Backend', 'string']) {
       const refusal = failure(key);
       expect(refusal.rule).toBe('cpp-typeof-runtime-domain-unrepresented');
-      expect(refusal.classification).toBe('target-runtime');
-      expect(refusal.message).toContain('preserve the value in an unknown/any carrier');
+      // The declared type does not decide the test, and the emitter stores the record, so no runtime query
+      // is available for it: the declaration is the author's to state. Attribution moved from the runtime to
+      // the source on that evidence, and the message names the shapes that state it.
+      expect(refusal.classification).toBe('source-portability');
+      expect(refusal.message).toContain('the declared type does not decide it');
     }
 
     const bigint = captureBackendEmissionFailure(() =>
@@ -15130,6 +15133,48 @@ Resolver make_resolver(TextureRef texture) {
     const contents = emitIrModuleCpp(discriminated.module, { runtimeProfile: 'flight-cpp' }).contents;
     expect(contents).toContain('std::get<');
     expect(contents).toContain('->frames.size()');
+  });
+
+  it('attributes a typeof the declared type cannot decide to the source', () => {
+    // The TS `object` type excludes null and primitives but NOT functions, so `typeof` on it is genuinely
+    // undecided ('object' or 'function'). No fold is exact, and the runtime cannot answer for a value the
+    // emitter stores as the concrete record -- so the declaration is the author's to state, and the finding
+    // is attributed to the source.
+    const undecided = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower('typeof-undecided.ts', `export function f(value: object): boolean { return typeof value === 'object'; }`)
+          .module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(undecided.rule).toBe('cpp-typeof-runtime-domain-unrepresented');
+    expect(undecided.classification).toBe('source-portability');
+
+    // What the message points at is real: a value the runtime owns answers the test through the runtime's
+    // own `typeof`, and the strict comparison asks the named predicate.
+    const carrier = emitIrModuleCpp(
+      lower(
+        'typeof-erased-carrier.ts',
+        `export function isText(value: unknown): boolean { return typeof value === 'string'; }
+         export function isBlock(value: any): boolean { return typeof value === 'object'; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(carrier).toContain('return (value.type_of() == flight::String("string"));');
+    expect(carrier).toContain('return (value.type_of() == flight::String("object"));');
+
+    // A closed union with distinguishable alternatives is the other shape the message offers, and it lowers
+    // as a variant test rather than as a runtime query.
+    const closed = emitIrModuleCpp(
+      lower(
+        'typeof-closed-union.ts',
+        `export function f(value: string | Record<string, unknown>): boolean {
+           return typeof value === 'object';
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(closed).toContain('return value.index() == 0;');
   });
 
   it('keeps open and heterogeneous Partial indexed reads outside finite optional selection', () => {

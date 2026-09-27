@@ -5066,7 +5066,7 @@ function emitExpression(
         }
         emissionError(
           context,
-          'typeof requires closed runtime type evidence: preserve the value in an unknown/any carrier, use a closed union with distinguishable alternatives, or test an explicit discriminator',
+          "typeof requires closed runtime type evidence: the declared type does not decide it, and the target cannot ask a value it stores as a concrete carrier. State the type where the value is read: a closed union whose alternatives are distinguishable is lowered as a variant test, and a value the runtime owns -- a parameter declared `unknown` or `any` -- is answered by the runtime's own `typeof`",
           'cpp-typeof-runtime-domain-unrepresented',
         );
       }
@@ -11134,6 +11134,11 @@ function hasCppErasedDynamicStorageCpp(
     const initializerType = declaration.initializer
       ? getIrExpressionTypeEvidenceCpp(declaration.initializer, context)
       : undefined;
+    // The annotation is deliberately NOT consulted here. A declaration that says `unknown` still stores
+    // whatever its initializer emits -- `const raw: unknown = JSON.parse(text)` stores the runtime's
+    // `JsonValue`, which has no `type_of` -- so treating the annotation as an erased carrier would claim a
+    // runtime operation the stored value does not have. Measured: it emitted `raw.type_of()` against
+    // `flight::JsonValue` and did not compile.
     return isCppErasedDynamicValueTypeCpp(initializerType);
   }
   return isCppErasedDynamicValueTypeCpp(declaration.type);
@@ -24856,7 +24861,6 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-number-to-fixed-runtime-helper-required',
   'cpp-runtime-external-symbol-binding-incomplete',
   'cpp-sparse-array-literal-runtime-required',
-  'cpp-typeof-runtime-domain-unrepresented',
   'cpp-union-runtime-domains-erased',
 ]);
 
@@ -24865,6 +24869,11 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
 // fix is an explicit source conversion and the check report says which one.
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-closed-key-result-assertion-discards-alternatives',
+  // A typeof test the emitter cannot fold is one the source can state: every type is assignable to
+  // `unknown`, and a value preserved in that carrier is answered by the runtime's own `typeof` (proved by
+  // the `unknown` and `any` spellings emitting `.type_of()` while the undeclared domain refuses). The
+  // declaration is the author's to write, so the finding is attributed to the source.
+  'cpp-typeof-runtime-domain-unrepresented',
   'cpp-empty-array-element-type-unproven',
   'cpp-logical-or-present-domain-unproven',
   'cpp-structural-assertion-owner-unproven',
