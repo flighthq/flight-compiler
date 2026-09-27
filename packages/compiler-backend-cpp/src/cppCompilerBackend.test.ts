@@ -18497,6 +18497,122 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('static_cast');
   });
 
+  it('constructs imported scene light arrays in their contextual projected element domain', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/lighting/contract',
+          target: { packageName: '@flighthq/lighting', source: 'packages/lighting/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './sceneLights',
+          target: { packageName: '@flighthq/lighting', source: 'packages/lighting/src/sceneLights.ts' },
+        },
+        {
+          specifier: './Entity',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          specifier: './HemisphereLight',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/HemisphereLight.ts' },
+        },
+        {
+          specifier: './Scene3DLights',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Scene3DLights.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, contents: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, contents, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'types/src/Entity.ts',
+          `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           export interface Entity { [EntityRuntimeKey]: object | undefined }
+           export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;`,
+        ),
+        source(
+          '@flighthq/types',
+          'types/src/HemisphereLight.ts',
+          `import type { Entity } from './Entity';
+           export interface HemisphereLight extends Entity { enabled: boolean; intensity: number }
+           export function cloneHemisphereLight(_source: Readonly<HemisphereLight>): HemisphereLight {
+             throw new Error('stub');
+           }`,
+        ),
+        source(
+          '@flighthq/types',
+          'types/src/Scene3DLights.ts',
+          `import type { Entity, EntityWithoutRuntime } from './Entity';
+           import type { HemisphereLight } from './HemisphereLight';
+           export interface Scene3DLights extends Entity {
+             hemisphere?: readonly Readonly<HemisphereLight>[];
+           }
+           export type Scene3DLightsLike = EntityWithoutRuntime<Scene3DLights>;`,
+        ),
+        source(
+          '@flighthq/types',
+          'types/src/contract.ts',
+          `export * from './Entity';
+           export * from './HemisphereLight';
+           export * from './Scene3DLights';`,
+        ),
+        source(
+          '@flighthq/lighting',
+          'lighting/src/sceneLights.ts',
+          `import type { Scene3DLights, Scene3DLightsLike } from '@flighthq/types/contract';
+           export function createScene3DLights(_options?: Readonly<Partial<Scene3DLightsLike>>): Scene3DLights {
+             throw new Error('stub');
+           }`,
+        ),
+        source('@flighthq/lighting', 'lighting/src/contract.ts', "export * from './sceneLights';"),
+        source(
+          '@flighthq/scene3d',
+          'scene3d/src/sceneDocumentLights.ts',
+          `import { createScene3DLights } from '@flighthq/lighting/contract';
+           import { cloneHemisphereLight } from '@flighthq/types/contract';
+           import type { HemisphereLight, Scene3DLights } from '@flighthq/types/contract';
+           export function createScene3DLightsFromDocument(source: Readonly<HemisphereLight>): Scene3DLights {
+             const hemisphere: HemisphereLight[] = [];
+             hemisphere.push(cloneHemisphereLight(source));
+             return createScene3DLights({ hemisphere });
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const consumer = modules[6]!;
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const contents = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(consumer)[0]!.contents;
+
+    const projected =
+      'flight::Array<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::HemisphereLight>>>>>';
+    // This is the source's one fresh array owner with its element carrier chosen at allocation. Each
+    // pushed view retains the exact HemisphereLight owner, and the imported call stores that same array
+    // handle in its optional property -- no second array or copied row is needed at either barrel.
+    expect(contents).toContain(`${projected} hemisphere = ${projected}{}`);
+    expect(contents).toContain('hemisphere.push(flight::structural_ref_cast');
+    expect(contents).toContain(`std::optional<${projected}>{hemisphere}`);
+    expect(contents).not.toContain('flight::Array<flight::Ref<flighthq_types::HemisphereLight>> hemisphere');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('static_cast');
+  });
+
   it('does not retype a contextual object-call array that has another nominal-array use', () => {
     const result = lower(
       'contextual-object-call-array-observed.ts',

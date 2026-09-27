@@ -15140,9 +15140,7 @@ function getCppUnionReadonlyViewConversionSlotsCpp(
     sentinels.some((sentinel) => {
       const sourceStorage = sourcePlan.sentinels[sentinel];
       const targetStorage = targetPlan.sentinels[sentinel];
-      return (
-        sourceStorage !== 'absent' && (targetStorage === 'absent' || sourceStorage !== targetStorage)
-      );
+      return sourceStorage !== 'absent' && (targetStorage === 'absent' || sourceStorage !== targetStorage);
     })
   ) {
     return undefined;
