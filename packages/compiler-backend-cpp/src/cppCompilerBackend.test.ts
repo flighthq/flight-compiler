@@ -40941,6 +40941,67 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(comparison.rule).toBe('cpp-dual-sentinel-comparison-unrepresented');
   });
 
+  it('refuses erasing a scene3d structural row and names the carrier the runtime lacks', () => {
+    const shared = `interface SceneNode { readonly id: string; readonly kind: string }
+       interface Node2D extends SceneNode { readonly x: number }
+       `;
+    const refusal = (file: string, body: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, `${shared}${body}`).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // The three scene3d sites: a kind probe, a bounds accessor and a culling argument all hand a structural
+    // row to an erased destination -- `unknown`, `any`, a call argument, an object member. The row is a VIEW:
+    // its `shared_object()` is deliberately null for a widened schema, so the derived owner is still the
+    // identity and only the row names it. `Any::object` derives the owner from the POINTEE's static type
+    // (`AnyRowOwnerFactory<Object>::make` -> `owner_for`), so handing it the view would make the view the
+    // object and the view type the native type; and the runtime has no constructor that takes an existing
+    // `RowOwner`. Copying the members, boxing the view or reaching for `shared_object()` would each change
+    // identity or lose the widened owner, so the erasure is refused where the runtime is what must supply it.
+    for (const [label, file, body] of [
+      [
+        'kind usage',
+        'sceneKindUsage.ts',
+        `export function useKind(node: Readonly<Partial<SceneNode>>): unknown { return node; }`,
+      ],
+      ['bounds', 'sceneNodeBounds.ts', `export function bounds(node: Readonly<Partial<Node2D>>): any { return node; }`],
+      [
+        'culling argument',
+        'sceneNodeCulling.ts',
+        `function consume(value: unknown): void { void value; }
+         export function cull(node: Readonly<Partial<Node2D>>): void { consume(node); }`,
+      ],
+      [
+        'culling member',
+        'sceneNodeCulling.ts',
+        `export function cull(node: Readonly<Partial<Node2D>>) { return { node }; }`,
+      ],
+    ] as const) {
+      const failure = refusal(file, body);
+      expect(failure.rule, label).toBe('cpp-erased-structural-row-construction-unrepresented');
+      expect(failure.classification, label).toBe('target-runtime');
+      expect(failure.message, label).toContain('cannot erase structural row');
+      expect(failure.message, label).toContain(
+        'the runtime contract needs a structural object alternative constructed from the row owner and native object',
+      );
+      expect(failure.message, label).toContain(
+        'Copying members, boxing the view, or using shared_object() would change identity or lose a widened owner',
+      );
+    }
+
+    // The control that keeps the refusal about ERASURE rather than about structural rows as such: the same
+    // value reaching a nominal destination stays nominal and lowers, because nothing is being erased.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'sceneNodeBounds.ts',
+          `${shared}export function keep(node: Readonly<Partial<Node2D>>): Readonly<Partial<Node2D>> { return node; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('StructuralRef<');
+  });
+
   it('keeps an existing owner out of a union arm its declaration does not satisfy', () => {
     // The host report's pointContainment3D and storage sites: an EXISTING owner -- `Ref<points_kind...>`,
     // `Ref<reason_value...>` -- reaches a union arm whose declaration requires a member the owner's own
