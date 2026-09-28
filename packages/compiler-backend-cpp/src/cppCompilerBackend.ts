@@ -4062,11 +4062,11 @@ function emitExpression(
           !isCppStructuralRowSchemaReadonlyCpp(capabilityTargetRow)
         ) {
           const readonlySourceName = structuralSourceType
-            ? describeIrTypeForDiagnosticCpp(structuralSourceType)
+            ? describeDeclaredIrTypeForDiagnosticCpp(structuralSourceType)
             : 'source';
           emissionError(
             context,
-            `a structural assertion from the readonly row ${readonlySourceName} to the writable row ${describeIrTypeForDiagnosticCpp(expression.type)} claims mutation the source refused: a readonly row never becomes writable, because the boundary the value came through said its subject must not be mutated through it, and no cast, copy, or re-view can carry a capability the source withheld. Assert to the readonly row where the value is only read, or declare the source -- its parameter, slot, or accessor result -- as the writable type where that object may really be mutated`,
+            `a structural assertion from the readonly row ${readonlySourceName} to the writable row ${describeDeclaredIrTypeForDiagnosticCpp(expression.type)} claims mutation the source refused: a readonly row never becomes writable, because the boundary the value came through said its subject must not be mutated through it, and no cast, copy, or re-view can carry a capability the source withheld. Assert to the readonly row where the value is only read, or declare the source -- its parameter, slot, or accessor result -- as the writable type where that object may really be mutated`,
             'cpp-structural-assertion-writable-capability-unproven',
           );
         }
@@ -4275,9 +4275,16 @@ function emitExpression(
         emitType(referenceSource, context) !== emitType(expression.type, context) &&
         !isCppClassHeritageRelatedCpp(referenceSource, expression.type, context)
       ) {
+        const heritageSource = emitType(referenceSource, context);
+        const heritageTarget = emitType(expression.type, context);
+        // An intersection has no name of its own in C++ -- the plan gives it an anonymous owner type --
+        // so the generic sentence would leave the reader holding a generated name they cannot act on. The
+        // added half names the spelling they wrote and the flattening that put it out of cast range.
         emissionError(
           context,
-          `a reference assertion from ${emitType(referenceSource, context)} to ${emitType(expression.type, context)} has no heritage to cast along: the two records are unrelated in C++, so the narrowing needs identity the carrier does not hold`,
+          expression.type.kind === 'intersection'
+            ? `a reference assertion from ${heritageSource} to the intersection ${describeDeclaredIrTypeForDiagnosticCpp(expression.type)} has no heritage to cast along: the two records are unrelated in C++, so the narrowing needs identity the carrier does not hold. flight-cpp flattens the interface members of an intersection into an owner type of their own (${heritageTarget}), which is neither a base nor a derived type of ${heritageSource}, so no cast reaches the identity the assertion names. Declare the value as ${describeDeclaredIrTypeForDiagnosticCpp(expression.type)} where the concrete type is known, or construct that target explicitly, rather than asserting past ${heritageSource}`
+            : `a reference assertion from ${heritageSource} to ${heritageTarget} has no heritage to cast along: the two records are unrelated in C++, so the narrowing needs identity the carrier does not hold`,
           'cpp-reference-assertion-without-heritage',
         );
       }
@@ -8100,6 +8107,23 @@ function describeIrTypeForDiagnosticCpp(type: Readonly<IrType>): string {
     return type.reference.kind === 'ambient' ? type.reference.name : type.reference.binding.name;
   }
   return type.kind;
+}
+
+// The same name, restated for a type the author wrote as a spelling rather than a declaration. An
+// intersection has no name of its own -- the emitter plans one as an anonymous owner type, whose generated
+// name is not something the reader can act on -- so it is rendered the way it was written, members joined
+// with `&`, and an ambient wrapper keeps its arguments. A `Readonly<EffectBase> & BevelSpec` therefore
+// reads as itself in a diagnostic instead of as "Readonly & intersection".
+function describeDeclaredIrTypeForDiagnosticCpp(type: Readonly<IrType>): string {
+  if (type.kind === 'intersection') {
+    return type.types.map((member) => describeDeclaredIrTypeForDiagnosticCpp(member)).join(' & ');
+  }
+  if (type.kind === 'named' && type.typeArguments.length > 0) {
+    return `${describeIrTypeForDiagnosticCpp(type)}<${type.typeArguments
+      .map((argument) => describeDeclaredIrTypeForDiagnosticCpp(argument))
+      .join(', ')}>`;
+  }
+  return describeIrTypeForDiagnosticCpp(type);
 }
 
 // Naming a shapeless member is not enough when the member is a wrapper: `NoInfer<T>` has no shape of

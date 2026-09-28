@@ -20441,6 +20441,86 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('static_cast<flight::Ref<');
   });
 
+  it('names the asserted intersection a class reference cannot be narrowed to', () => {
+    // An intersection has no name of its own in C++, so the assertion's target is an anonymous owner type
+    // holding the flattened members. That carrier is a generated name the author cannot act on, and it is
+    // neither a base nor a derived type of the source's class, so the generic heritage sentence left the
+    // reader with nothing to change. The refusal now names the spelling they wrote, says what flattening
+    // did, and gives the two rewrites -- while changing nothing about what is emitted.
+    const classAndInterface = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'bevel-effect-intersection.ts',
+          `export class EffectBase { readonly kind: string = ''; }
+           export interface BevelSpec { readonly distance: number }
+           export function readDistance(effect: EffectBase): number {
+             return (effect as EffectBase & BevelSpec).distance;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(classAndInterface.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(classAndInterface.classification).toBe('compiler-restriction');
+    expect(classAndInterface.message).toContain('to the intersection EffectBase & BevelSpec');
+    expect(classAndInterface.message).toContain('flattens the interface members of an intersection');
+    expect(classAndInterface.message).toContain(
+      'Declare the value as EffectBase & BevelSpec where the concrete type is known',
+    );
+
+    // The same relation between two interfaces, so the refusal is about the carrier and not about classes.
+    const interfaceAndInterface = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'bevel-spec-intersection.ts',
+          `export interface EffectBaseSpec { readonly kind: string }
+           export interface BevelSpec { readonly distance: number }
+           export function readDistance(effect: EffectBaseSpec): number {
+             return (effect as EffectBaseSpec & BevelSpec).distance;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(interfaceAndInterface.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(interfaceAndInterface.message).toContain('to the intersection EffectBaseSpec & BevelSpec');
+
+    // A readonly part makes the assertion a structural re-view instead, which is where the capability rule
+    // answers -- and there the same renderer keeps the reader's spelling rather than saying "intersection".
+    const readonlyPart = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'bevel-readonly-intersection.ts',
+          `export class EffectBase { readonly kind: string = ''; }
+           export interface BevelSpec { readonly distance: number }
+           export function readDistance(effect: Readonly<EffectBase>): number {
+             return (effect as Readonly<EffectBase> & BevelSpec).distance;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(readonlyPart.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(readonlyPart.classification).toBe('source-portability');
+    expect(readonlyPart.message).toContain(
+      'from the readonly row Readonly<EffectBase> to the writable row Readonly<EffectBase> & BevelSpec',
+    );
+
+    // The class-heritage narrowing is the sound half of the same source shape and still emits: a class
+    // target has real C++ inheritance to cast along, which an intersection never does.
+    const heritage = emitIrModuleCpp(
+      lower(
+        'bevel-class-heritage.ts',
+        `export class EffectBase { readonly kind: string = ''; }
+         export class BevelEffect extends EffectBase { readonly distance: number = 0; }
+         export function readDistance(effect: EffectBase): number { return (effect as BevelEffect).distance; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(heritage).toContain('std::static_pointer_cast<BevelEffect>(effect)');
+    expect(heritage).not.toContain('flight::Any');
+  });
+
   it('answers an external call-result presence test from the storage its declaration chose', () => {
     const result = lower(
       'mutable-external-call-result-presence.ts',
