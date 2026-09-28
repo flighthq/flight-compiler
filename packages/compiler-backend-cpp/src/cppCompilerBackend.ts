@@ -15728,6 +15728,30 @@ function emitContextualUnionExpressionInContextCpp(
       `cpp-contextual-union-missing-value-domain:${plan.kind}`,
     );
   }
+  if (isCppFreshObjectAssertionToUnionCarrierGapCpp(expression, plan, context)) {
+    emissionError(
+      context,
+      `contextual nullable construction receives a fresh structural object asserted as the destination's complete represented union, but that assertion does not select which declared union arm owns the allocation. The closed C++ variant can hold each declared arm, not a new anonymous owner spanning the union, so flight-cpp cannot honor the assertion without an unchecked cast, copying or materializing the object, or adding side storage. Construct and retain one declared alternative before returning it, or return the declared union directly after the branch that selects that alternative; otherwise the runtime contract needs a checked dependent owner-preserving construction`,
+      'cpp-contextual-union-asserted-value-construction-unrepresented',
+    );
+  }
+  const constrainedUnionValueType = expression.kind === 'cast' ? expression.type : expressionType;
+  const constrainedUnionValueCarrierGap = isCppConstrainedUnionValueCarrierGapCpp(
+    constrainedUnionValueType,
+    plan,
+    context,
+  );
+  if (constrainedUnionValueCarrierGap) {
+    const source =
+      expression.kind === 'cast'
+        ? `the value is produced by an assertion rather than by that carrier. An assertion over a fresh structural value does not identify which declared union owner its generic type parameter retains`
+        : `the value still has the dependent parameter carrier, which may instantiate to a structurally compatible owner the closed destination variant does not hold. The constraint does not prove which declared union owner this instantiation retains`;
+    emissionError(
+      context,
+      `contextual nullable construction has a closed represented union for the constraint on ${describeIrTypeForDiagnosticCpp(constrainedUnionValueType)}, but ${source}, so flight-cpp cannot construct the dependent alternative without an unchecked cast, copying or materializing the object, or adding side storage. Return the declared union type when preserving the exact generic subtype is unnecessary, or construct and retain one declared alternative before the generic boundary; otherwise the runtime contract needs a dependent owner-preserving construction for the constrained parameter`,
+      'cpp-contextual-union-constrained-value-construction-unrepresented',
+    );
+  }
   const targetType = emitType(runtimeType, context);
   const valueSlot = plan.valueSlots.findIndex((slot) => slot.targetType === targetType);
   // The exact spelling is the first question and the answer for most values. An alternative that reaches
@@ -15745,6 +15769,33 @@ function emitContextualUnionExpressionInContextCpp(
       : undefined;
   const representedValueSlot = constrainedValueSlot ?? callableValueSlot ?? matchedValueSlot;
   if (representedValueSlot < 0) {
+    if (targetType.startsWith('std::variant<')) {
+      emissionError(
+        context,
+        `contextual nullable construction resolves the value's type evidence to a complete closed union carrier, but that carrier is not the destination variant and the expression does not select one declared alternative. This commonly occurs when a constrained generic value or whole-union assertion preserves a structural subtype or orders alternatives differently from the closed C++ variant. Keep the value in the exact declared union carrier, construct one declared arm before the generic boundary, or add a checked dependent owner carrier to the runtime contract; the compiler will not choose an arm with an unchecked cast, copy or materialize a replacement object, or add side storage.`,
+        'cpp-contextual-union-whole-value-domain-unrepresented',
+      );
+    }
+    const freshMappedArrayValueSlot = getCppFreshMappedArrayUnionValueSlotCpp(expression, plan.valueSlots, context);
+    if (freshMappedArrayValueSlot !== undefined) {
+      const slot = plan.valueSlots[freshMappedArrayValueSlot]!;
+      return emitCppUnionValueConstruction(
+        emitExpression(expression, context, slot.runtimeType, false),
+        slot.targetType,
+        union,
+        plan.kind,
+        context,
+      );
+    }
+    const interfaceHeritageGap = getCppInterfaceHeritageValueCarrierGapCpp(runtimeType, plan, context);
+    if (interfaceHeritageGap) {
+      emissionError(
+        context,
+        `contextual nullable interface conversion from ${describeIrTypeForDiagnosticCpp(interfaceHeritageGap.source)} to ${describeIrTypeForDiagnosticCpp(interfaceHeritageGap.target)} follows TypeScript interface heritage, but flight-cpp stores those declarations in independent ${interfaceHeritageGap.sourceCarrier} and ${interfaceHeritageGap.targetCarrier} owner types: each interface struct is emitted flattened, so the heritage is not a C++ base relation and no pointer cast exists to follow. A native pointer cast would claim C++ inheritance the emitted interface structs do not have, materializing the target would replace object identity, and a structural row would change the declared result carrier. Preserve the exact source owner in the declared result, or add an owner-preserving interface-heritage carrier to the runtime contract. Declaring the destination as the derived interface where the concrete type is known -- or converting where the type is still concrete rather than widening it through a nullable union -- avoids the boundary altogether; closing it at the carrier needs either that runtime carrier or interface structs emitted with the heritage as a C++ base relation.`,
+        'cpp-contextual-union-interface-heritage-carrier-unrepresented',
+        'target-runtime',
+      );
+    }
     const declaredValueSlot = getCppConcreteNamedUnionValueSlotCpp(runtimeType, plan.valueSlots, context);
     if (declaredValueSlot !== undefined) {
       return emitCppUnionValueConstruction(
@@ -15824,6 +15875,14 @@ function emitContextualUnionExpressionInContextCpp(
         ? `Change the source contract: declare the result as readonly ${describeIrTypeForDiagnosticCpp(structuralArrayProjectionGap.sourceElementType)}[] while preserving its existing absence arm, or declare the source field itself with the projected readonly-element type and construct every array in that declared context. If both declarations must remain, add an identity-preserving projected-array carrier or view to flight-cpp.`
         : `Return the exact source array type, or construct a fresh local array only in the declared destination context so its element carrier is chosen at allocation. If both declarations must remain, add an identity-preserving projected-array carrier or view to flight-cpp.`
       : undefined;
+    const partialValueGuidance =
+      expression.kind === 'call'
+        ? `The call has already selected a result owner from its arguments; the destination cannot retroactively replace that generic or anonymous owner. Constrain the call with the declared destination type where its type arguments are chosen, or change the called API to return the exact declared arm. The compiler will not cast, copy, or materialize the call result into another owner.`
+        : expression.kind === 'identifier' || expression.kind === 'property' || expression.kind === 'element'
+          ? `This expression refers to an existing owner. Keep the value in the declared destination arm from the point it is created, or explicitly rebuild the declared result in source where changing identity is intended. The compiler will not retype, copy, or materialize the existing object into a sibling owner.`
+          : expression.kind === 'object'
+            ? `The fresh outer literal still contains a member whose inferred owner or value domain does not match the selected declared arm. Give that nested value the arm's declared member type at its own construction site, or make every required member compatible there; the compiler will not insert a cast, hidden copy, or side object.`
+            : `Pass the declared type, or make every required member compatible where the value is declared; the compiler will not cast, copy, or materialize a replacement owner.`;
     emissionError(
       context,
       callableErasedReturnGap
@@ -15837,7 +15896,7 @@ function emitContextualUnionExpressionInContextCpp(
           : erasedTargetCellGap
             ? `contextual union source carrier ${targetType} can enter ${describeDeclaredIrTypeForDiagnosticCpp(erasedTargetCellGap.target)} in TypeScript through structural and generic assignability, but required ${erasedTargetCellGap.members.length === 1 ? 'member' : 'members'} ${renderCppSubjectNameListCpp(erasedTargetCellGap.members)} ${erasedTargetCellGap.members.length === 1 ? 'uses' : 'use'} incompatible C++ cell carriers; ${renderCppSubjectNameListCpp(erasedTargetCellGap.erasedMembers)} ${erasedTargetCellGap.erasedMembers.length === 1 ? 'crosses' : 'cross'} into target any erasure. ${erasedTargetCellGap.targetCarrier} therefore has no checked identity-preserving structural row conversion from the source owner; an unchecked cast would reinterpret the owner's cells, while copying or materializing a row, or adding side storage, would change its identity. Keep the union arm on the exact declared source owner, or add a runtime checked concrete-to-erased generic cell projection that preserves the owner`
             : cause === 'partial-value'
-              ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
+              ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. ${partialValueGuidance}`
               : intersectionUnionOwner
                 ? `contextual union value type ${targetType} has a distinct intersection owner from its matching ${intersectionUnionOwner.contract} arm over nominal base ${describeIrTypeForDiagnosticCpp(intersectionUnionOwner.base)}. The source intersection and destination arm are sibling C++ object carriers; converting between them would require sibling retyping or copying the object. Name one shared declared arm type in the ${intersectionUnionOwner.contract} contract and use that same arm declaration in both the union and value storage`
                 : secondaryIntersectionCarrier
@@ -15876,6 +15935,39 @@ function emitContextualUnionExpressionInContextCpp(
     plan.kind,
     context,
   );
+}
+
+// `Array.prototype.map` allocates its result and each concise object result while the call is being
+// emitted. When one destination union arm names an array of declared objects, that existing allocation
+// can therefore choose the declared element owner directly; no existing array or element is projected,
+// copied, or retyped. Keep this proof deliberately syntactic and unique: an existing array value, a
+// block-bodied callback, or two compatible destination element owners still has no such evidence.
+function getCppFreshMappedArrayUnionValueSlotCpp(
+  expression: Readonly<IrExpression>,
+  valueSlots: readonly Readonly<{ runtimeType: IrType }>[],
+  context: EmitContext,
+): number | undefined {
+  if (
+    expression.kind !== 'call' ||
+    expression.callee.kind !== 'property' ||
+    expression.callee.member?.receiver !== 'array' ||
+    expression.callee.member.name !== 'map' ||
+    expression.arguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const callback = expression.arguments[0]!;
+  if (callback.kind !== 'function') return undefined;
+  const callbackResult = callback.expression;
+  if (callbackResult?.kind !== 'object') return undefined;
+  const matches = valueSlots.flatMap((slot, index) => {
+    const targetArray = getIrArrayTypeCpp(slot.runtimeType, context, new Set());
+    if (!targetArray || !hasFlightReferenceRepresentationCpp(targetArray.element, context)) return [];
+    return getCppContextualObjectUnionRuntimeTypeCpp(callbackResult, [{ runtimeType: targetArray.element }], context)
+      ? [index]
+      : [];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 // A presence-proved read carries an optional storage type in its checker flow evidence even though the
@@ -16198,6 +16290,35 @@ interface CppInterfaceHeritageUnionCarrierGap {
   readonly sourceCarrier: string;
   readonly target: Readonly<IrType>;
   readonly targetCarrier: string;
+}
+
+function getCppInterfaceHeritageValueCarrierGapCpp(
+  source: Readonly<IrType>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): Readonly<CppInterfaceHeritageUnionCarrierGap> | undefined {
+  if (source.kind !== 'named') return undefined;
+  const sourceModule = getCppNamedTypeBindingModuleCpp(source, context);
+  const sourceOwner = getCppNominalTypeDeclarationOwnerCpp(source, sourceModule, context);
+  if (sourceOwner?.declaration.kind !== 'interface') return undefined;
+  const sourceCarrier = emitType(source, { ...context, anonymousStructs: new Map(), includes: new Set<string>() });
+  const matches = targetPlan.valueSlots.flatMap((slot): readonly CppInterfaceHeritageUnionCarrierGap[] => {
+    const target = slot.runtimeType;
+    if (target.kind !== 'named' || slot.targetType === sourceCarrier) return [];
+    if (
+      source.reference.kind === 'binding' &&
+      target.reference.kind === 'binding' &&
+      source.reference.binding.name === target.reference.binding.name
+    ) {
+      return [];
+    }
+    const targetModule = getCppNamedTypeBindingModuleCpp(target, context);
+    if (!isCppNominalTypeDerivedFromCpp(source, sourceModule, target, targetModule, context, new Set())) {
+      return [];
+    }
+    return [{ source, sourceCarrier, target, targetCarrier: slot.targetType }];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function getCppInterfaceHeritageUnionCarrierGapCpp(
@@ -17192,6 +17313,66 @@ function getCppConstrainedTypeParameterUnionValueSlotCpp(
   const targetType = emitType(runtimeType, { ...context, anonymousStructs: new Map(), includes: new Set() });
   const index = valueSlots.findIndex((slot) => slot.targetType === targetType);
   return index < 0 ? undefined : index;
+}
+
+// A type parameter constrained by a closed represented union is not itself that union's complete
+// variant carrier: it may instantiate to any structurally compatible owner. Identify the apparent exact
+// slot inventory so the refusal explains why the constraint still cannot select a stored owner.
+function isCppConstrainedUnionValueCarrierGapCpp(
+  type: Readonly<IrType>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): boolean {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'binding' ||
+    type.reference.binding.kind !== 'typeParameter' ||
+    type.reference.path.length !== 0 ||
+    type.typeArguments.length !== 0 ||
+    targetPlan.kind !== 'optionalVariant'
+  ) {
+    return false;
+  }
+  const reference = type.reference;
+  const declaration = context.anonymousStructTypeParameters.find(
+    (parameter) => parameter.binding.id === reference.binding.id,
+  );
+  const constraint = declaration?.constraint;
+  const union = constraint ? getIrUnionTypeCpp(constraint, context, new Set()) : undefined;
+  if (!union) return false;
+  const constraintPlan = getCppUnionRepresentationPlan(union, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set<string>(),
+  });
+  return (
+    constraintPlan.kind === 'multiVariant' &&
+    constraintPlan.valueSlots.length === targetPlan.valueSlots.length &&
+    constraintPlan.valueSlots.every((slot, index) => slot.targetType === targetPlan.valueSlots[index]?.targetType)
+  );
+}
+
+function isCppFreshObjectAssertionToUnionCarrierGapCpp(
+  expression: Readonly<IrExpression>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): boolean {
+  if (expression.kind !== 'cast' || expression.expression.kind !== 'object' || targetPlan.kind !== 'optionalVariant') {
+    return false;
+  }
+  if (isCppConstrainedUnionValueCarrierGapCpp(expression.type, targetPlan, context)) return true;
+  const assertedUnion = getIrUnionTypeCpp(expression.type, context, new Set());
+  if (!assertedUnion) return false;
+  const assertedPlan = getCppUnionRepresentationPlan(assertedUnion, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set<string>(),
+  });
+  return (
+    assertedPlan.kind === 'multiVariant' &&
+    assertedPlan.valueSlots.length === targetPlan.valueSlots.length &&
+    assertedPlan.valueSlots.every((slot, index) => slot.targetType === targetPlan.valueSlots[index]?.targetType)
+  );
 }
 
 // Optional-chain IR records the member/call value before the receiver's undefined short circuit.

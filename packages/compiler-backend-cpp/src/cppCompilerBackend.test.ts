@@ -4768,6 +4768,8 @@ describe('createCppCompilerBackend', () => {
     expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
     expect(failure.classification).toBe('source-portability');
     expect(failure.message).toContain('leaves a member the destination requires optional or absent');
+    expect(failure.message).toContain('This expression refers to an existing owner');
+    expect(failure.message).toContain('will not retype, copy, or materialize the existing object');
 
     const incompatible = lower(
       'union-value-incompatible-member.ts',
@@ -6472,6 +6474,12 @@ describe('createCppCompilerBackend', () => {
       'Declaring the destination as the derived interface where the concrete type is known',
     );
     expect(heritage.message).toContain('interface structs emitted with the heritage as a C++ base relation');
+
+    const presentHeritage = emit('Material | null', 'Material3D');
+    expect(presentHeritage.rule).toBe('cpp-contextual-union-interface-heritage-carrier-unrepresented');
+    expect(presentHeritage.classification).toBe('target-runtime');
+    expect(presentHeritage.message).toContain('from Material3D to Material');
+    expect(presentHeritage.message).toContain('materializing the target would replace object identity');
 
     // The same assignment with no heritage at all is one carrier on both sides, so it lowers: the refusal is
     // about the two owners and not about nullable assignment to an interface-typed member.
@@ -19791,6 +19799,60 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('std::optional<flight::Ref<NodeData>>{create_data.value()()}');
   });
 
+  it('refuses a dependent constrained union owner and preserves the declared-union control', () => {
+    const result = lowerPackage(
+      '@flighthq/node',
+      'generic-choice.ts',
+      `interface First { kind: 'first'; value: number }
+       interface Second { kind: 'second'; value: string }
+       type Choice = First | Second;
+       export function preserve<Type extends Readonly<Choice>>(value: Type): Type | null {
+         return value;
+       }`,
+    );
+    expect(result.diagnostics).toEqual([]);
+    const dependent = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(dependent.rule).toBe('cpp-contextual-union-constrained-value-construction-unrepresented');
+    expect(dependent.message).toContain('may instantiate to a structurally compatible owner');
+    expect(dependent.message).toContain('constraint does not prove which declared union owner');
+
+    const asserted = lowerPackage(
+      '@flighthq/node',
+      'generic-choice-assertion.ts',
+      `interface First { kind: 'first'; value: number }
+       interface Second { kind: 'second'; value: string }
+       type Choice = First | Second;
+       export function preserve<Type extends Readonly<Choice>>(value: Type): Type | null {
+         return { ...value } as Type;
+       }`,
+    );
+    const refusal = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(asserted.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(refusal.rule).toBe('cpp-contextual-union-asserted-value-construction-unrepresented');
+    expect(refusal.classification).toBe('compiler-restriction');
+    expect(refusal.message).toContain('does not select which declared union arm owns the allocation');
+    expect(refusal.message).toContain('unchecked cast, copying or materializing the object, or adding side storage');
+    expect(refusal.message).toContain('Construct and retain one declared alternative before returning it');
+
+    const declared = lowerPackage(
+      '@flighthq/node',
+      'declared-choice.ts',
+      `interface First { kind: 'first'; value: number }
+       interface Second { kind: 'second'; value: string }
+       type Choice = First | Second;
+       export function preserve(value: Choice): Choice | null { return value; }`,
+    );
+    const emitted = emitIrModuleCpp(declared.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain('std::visit(');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flighthq_node::First>>');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flighthq_node::Second>>');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('materialize_row');
+  });
+
   it('emits exact computed and named structural write proxies and refuses wider handlers', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',
@@ -31721,6 +31783,40 @@ Resolver make_resolver(TextureRef texture) {
     expect(output).toContain('return flight::make_ref<Key>(Key{.time = 0.0, .color = color})');
     expect(output).toContain('flight::Array<flight::Ref<Key>>{flight::make_ref<Key>');
     expect(output).toContain('.color_keys = color_keys');
+  });
+
+  it('constructs a fresh mapped array in its nullable named element domain', () => {
+    const output = emitIrModuleCpp(
+      lower(
+        'contextual-nullable-mapped-array.ts',
+        `interface Item { value: number }
+         interface Binding { item: Item }
+         export function create(items: readonly Item[], enabled: boolean): Binding[] | null {
+           if (!enabled) return null;
+           return items.map((item) => ({ item }));
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(output).toContain('std::optional<flight::Array<flight::Ref<Binding>>>');
+    expect(output).toContain('return flight::make_ref<Binding>(Binding{.item = item})');
+    expect(output).not.toContain('static_cast');
+    expect(output).not.toContain('materialize_row');
+
+    const existingOwners = lower(
+      'contextual-nullable-mapped-existing-owners.ts',
+      `interface Item { value: number }
+       interface Binding { value: number }
+       export function create(items: readonly Item[]): Binding[] | null {
+         return items.map((item) => item);
+       }`,
+    ).module;
+    const refusal = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(existingOwners, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(refusal.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(refusal.message).toContain('not a represented runtime domain');
   });
 
   it('constructs an empty inferred array through its sole nominal assignment target', () => {
