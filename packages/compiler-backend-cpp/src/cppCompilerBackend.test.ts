@@ -22979,6 +22979,52 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.message).toContain('reads extra, which the source type does not declare');
   });
 
+  it('attributes a kind-registered callback that erases its concrete command owner to the source boundary', () => {
+    const commandTypes = `interface Command { readonly kind: string; readonly label: string }
+       interface CompositeCommand extends Command { readonly children: readonly Command[] }`;
+    const erased = lower(
+      'command-binding-erased-owner.ts',
+      `${commandTypes}
+       interface CommandBinding { readonly execute: (command: Readonly<Command>) => void }
+       export function compositeCommandBinding(): CommandBinding {
+         return {
+           execute: (command) => {
+             const children = (command as Readonly<CompositeCommand>).children;
+             if (children.length === 0) return;
+           },
+         };
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(erased.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    // The registry selects the callback beside the value, but its parameter has already retained only the
+    // Command owner. That separate key does not prove cells for the derived command.
+    expect(erased.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('reads children, which the source type does not declare');
+    expect(failure.message).toContain('Preserve the concrete owner in the source type');
+    expect(failure.message).toContain('make an intentionally erased registry validate and recover that owner');
+    expect(failure.message).toContain('a tag or registry key carried beside the value does not prove');
+
+    // Keeping the exact command owner at the callback/API boundary is already represented and reads the
+    // existing row directly; it needs no cast, replacement row, or side storage.
+    const exact = emitIrModuleCpp(
+      lower(
+        'command-binding-exact-owner.ts',
+        `${commandTypes}
+         export function childCount(command: Readonly<CompositeCommand>): number { return command.children.length; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(exact).toContain('flight::row_get<flight::RowKey<"children">>(command)');
+    expect(exact).not.toContain('structural_ref_cast');
+    expect(exact).not.toContain('materialize');
+    expect(exact).not.toContain('make_ref');
+  });
+
   it('keeps a structural source asserted to a derived partial row, which answers an unbound member', () => {
     const contents = emitIrModuleCpp(
       lower(
