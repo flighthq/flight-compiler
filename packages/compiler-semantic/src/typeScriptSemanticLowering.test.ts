@@ -8981,6 +8981,45 @@ it('retains nullish comparison evidence hidden behind a local type alias', () =>
   });
 });
 
+it('reads a nullish comparison sentinel through a type parameter constraint', () => {
+  const result = lower(
+    'constrained-nullish-compare.ts',
+    `export function isAbsent<T extends string | undefined>(text: T): boolean { return text === undefined; }
+     export function isAbsentConcrete(text: string | undefined): boolean { return text === undefined; }
+     export function isAbsentPlain<T extends string>(text: T): boolean { return text === undefined; }`,
+  );
+  const evidence = (name: string) => {
+    const fn = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === name,
+    );
+    return fn?.kind === 'function' ? fn.body[0] : undefined;
+  };
+
+  // The parameter's own spelling carries no sentinel -- `T extends string | undefined` is `T` -- so reading
+  // it alone answered every comparison against it as constant, and the guard was folded away wherever the
+  // emitter emitted. The constraint is the same declaration's answer, and it admits the absent value.
+  expect(evidence('isAbsent')).toMatchObject({
+    expression: {
+      kind: 'binary',
+      semantics: { nullishComparison: { admitsNull: false, admitsUndefined: true, literal: 'undefined' } },
+    },
+  });
+  expect(evidence('isAbsentConcrete')).toMatchObject({
+    expression: {
+      kind: 'binary',
+      semantics: { nullishComparison: { admitsNull: false, admitsUndefined: true, literal: 'undefined' } },
+    },
+  });
+  // A constraint that excludes the sentinel keeps the type-decided answer, so the constraint is asked
+  // rather than assumed.
+  expect(evidence('isAbsentPlain')).toMatchObject({
+    expression: {
+      kind: 'binary',
+      semantics: { nullishComparison: { admitsNull: false, admitsUndefined: false, literal: 'undefined' } },
+    },
+  });
+});
+
 it('lowers destructured catch clause and finally block in try statement', () => {
   const result = lower(
     'try-catch.ts',

@@ -5340,13 +5340,17 @@ function emitExpression(
       if (
         expression.object.kind === 'identifier' &&
         expression.object.reference.kind === 'binding' &&
-        expression.object.presence !== 'narrowedPresent' &&
+        (expression.object.presence !== 'narrowedPresent' ||
+          receiverIsSentinelConstrainedTypeParameterCpp(expression.object, context)) &&
         isCppAbsenceCarryingExpressionCpp(expression.object, context)
       ) {
         // A type parameter is the one receiver where "narrow it" is not the whole answer: the parameter is
         // emitted as the type argument itself, so the sentinel its constraint carries has no storage to
         // narrow, and a guard over it reads a channel the emitted code does not have. Saying only "requires
-        // narrowed access" would send that author to write the guard they already wrote.
+        // narrowed access" would send that author to write the guard they already wrote. It is also the one
+        // receiver whose soundness does not depend on the presence proof: a proven-present read is still
+        // emitted on the type argument, which a sentinel-bearing instantiation does not have, so the
+        // refusal stands whether or not a guard proves the read present.
         const receiverBinding = expression.object.reference.binding;
         const receiverType = getCppBindingTypeCpp(receiverBinding.id, context);
         const typeParameterReceiver =
@@ -8859,7 +8863,14 @@ function getCppTypeParameterConstraintCpp(type: Readonly<IrType>, context: EmitC
     return undefined;
   }
   const bindingId = type.reference.binding.id;
-  return context.anonymousStructTypeParameters.find((parameter) => parameter.binding.id === bindingId)?.constraint;
+  // An anonymous struct's own parameter shadows the module's, which is why it is asked first; a parameter
+  // declared by a module-level declaration is answered by the module's map. The constraint is the
+  // declaration's own answer to a question the parameter's spelling does not carry -- `T extends
+  // string | undefined` names no sentinel -- so a caller that asks it has to reach both.
+  return (
+    context.anonymousStructTypeParameters.find((parameter) => parameter.binding.id === bindingId)?.constraint ??
+    getCppDependentTypeParameterConstraintCpp(bindingId, context)
+  );
 }
 
 // The base a nominal-intersection implementation inherits rather than redeclares, with the members it
@@ -11917,9 +11928,16 @@ function refuseCppPresenceTestCpp(
   sentinel: 'null' | 'undefined',
   context: EmitContext,
 ): never {
+  // A sentinel-constrained type parameter is the one receiver whose missing channel is not a storage choice
+  // the value could have carried: the constraint admits the sentinel, the parameter is emitted as the type
+  // argument, and folding the test away answered it for one instantiation instead of asking. The clause
+  // names the declaration to change, because no rewriting of the test itself can produce a channel.
+  const constrained = operand.kind === 'identifier' && receiverIsSentinelConstrainedTypeParameterCpp(operand, context);
   emissionError(
     context,
-    `a presence test against ${sentinel} has no absence channel in the emitted C++ storage for ${operand.kind}`,
+    constrained
+      ? `a presence test against ${sentinel} has no absence channel in the emitted C++ storage for the type parameter: the constraint admits ${sentinel}, and a C++ template parameter is emitted as the type argument itself, so the test has no channel to ask and folding it would answer for one instantiation of a constraint that allows another. Declare the parameter as the concrete optional type its constraint names, or narrow the value into a non-optional local before testing it`
+      : `a presence test against ${sentinel} has no absence channel in the emitted C++ storage for ${operand.kind}`,
     'cpp-presence-test-without-absence-storage',
   );
 }
@@ -11928,6 +11946,27 @@ function refuseCppPresenceTestCpp(
 // runtime, so a presence test on it is a question about storage; a type that excludes it makes the
 // test a question the type already answers. An erased dynamic value names no value type at all, so it
 // admits whatever it is asked about.
+// Whether a binding's type is a type parameter whose constraint admits an absent value. Such a receiver has
+// no storage for the sentinel in the emitted C++, so neither a presence test nor a member read through it
+// can be lowered: the test has no channel to ask and the read would sit on a type argument that a
+// sentinel-bearing instantiation does not have.
+function receiverIsSentinelConstrainedTypeParameterCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): boolean {
+  if (expression.reference.kind !== 'binding') return false;
+  const type = getCppBindingTypeCpp(expression.reference.binding.id, context);
+  if (type?.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind !== 'typeParameter') {
+    return false;
+  }
+  const constraint = getCppTypeParameterConstraintCpp(type, context);
+  return Boolean(
+    constraint &&
+    (admitsCppNullishSentinelCpp(constraint, 'null', context) ||
+      admitsCppNullishSentinelCpp(constraint, 'undefined', context)),
+  );
+}
+
 function admitsCppNullishSentinelCpp(
   type: Readonly<IrType> | undefined,
   sentinel: 'null' | 'undefined',
@@ -11935,9 +11974,17 @@ function admitsCppNullishSentinelCpp(
 ): boolean {
   if (!type) return true;
   if (isCppErasedDynamicValueTypeCpp(type)) return true;
-  const union = getIrUnionTypeCpp(type, context, new Set());
-  const members = union ? union.types : [type];
-  return members.some((member) => (sentinel === 'null' ? member.kind === 'null' : member.kind === 'undefined'));
+  const admits = (candidate: Readonly<IrType>): boolean => {
+    const union = getIrUnionTypeCpp(candidate, context, new Set());
+    const members = union ? union.types : [candidate];
+    return members.some((member) => (sentinel === 'null' ? member.kind === 'null' : member.kind === 'undefined'));
+  };
+  if (admits(type)) return true;
+  // A type parameter is spelled without its sentinel -- `T extends string | undefined` is `T` -- and the
+  // constraint is what admits the absent value. Answering from the parameter alone decides every
+  // comparison against it as constant, and the guard is then folded away wherever the emitter emits.
+  const constraint = getCppTypeParameterConstraintCpp(type, context);
+  return constraint ? admits(constraint) : false;
 }
 
 // The finite key set retained from the checker's resolved string-literal domain, or directly visible

@@ -10129,13 +10129,15 @@ describe('createCppCompilerBackend', () => {
     ).module;
     const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(generic, { runtimeProfile: 'flight-cpp' }));
 
-    // The guard here is exactly the narrowing the terse message asks for, so that sentence would send the
-    // author to write the line they already wrote. The receiver is a type parameter, whose sentinel lives
-    // in the CONSTRAINT while the parameter itself is emitted as the type argument -- there is no storage
-    // for the guard to narrow, and adding one is a change to the declaration, not to the read.
-    expect(failure.rule).toBe('cpp-optional-member-access-unproven');
+    // The guard here is exactly the narrowing the terse message asked for, so that sentence would have sent
+    // the author to write the line they already wrote. The receiver is a type parameter, whose sentinel
+    // lives in the CONSTRAINT while the parameter itself is emitted as the type argument: no rewriting of
+    // the test can produce a channel, so the refusal now comes from the guard itself and names the
+    // declaration to change. (Before the guard refused, the read behind it was the refusal; the read rule
+    // still covers a receiver with no guard at all.)
+    expect(failure.rule).toBe('cpp-presence-test-without-absence-storage');
     expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.message).toContain('the receiver is the type parameter T');
+    expect(failure.message).toContain('no absence channel in the emitted C++ storage for the type parameter');
     expect(failure.message).toContain('a C++ template parameter is emitted as the type argument itself');
     expect(failure.message).toContain('Declare the parameter as the concrete optional type its constraint names');
 
@@ -10215,9 +10217,9 @@ describe('createCppCompilerBackend', () => {
         { runtimeProfile: 'flight-cpp' },
       ),
     );
-    expect(constrained.rule).toBe('cpp-optional-member-access-unproven');
+    expect(constrained.rule).toBe('cpp-presence-test-without-absence-storage');
     expect(constrained.classification).toBe('compiler-restriction');
-    expect(constrained.message).toContain('the receiver is the type parameter T');
+    expect(constrained.message).toContain('no absence channel in the emitted C++ storage for the type parameter');
     expect(constrained.message).toContain('Declare the parameter as the concrete optional type its constraint names');
   });
 

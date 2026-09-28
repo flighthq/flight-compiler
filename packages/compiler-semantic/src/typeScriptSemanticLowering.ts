@@ -7666,13 +7666,19 @@ function getTypeScriptNullishComparisonEvidence(
   const members = type.kind === 'union' ? type.types : [type];
   const declared = getTypeScriptExpressionDeclaredType(operand, context);
   const declaredMembers = declared?.isUnion() ? declared.types : declared ? [declared] : [];
+  // A type parameter's own type is spelled without its sentinel -- `T extends string | undefined` is `T` --
+  // so reading only the parameter decides every comparison against it as constant, and the emitter then
+  // folds the guard away and reads a bare type argument. The constraint is the same declaration's answer to
+  // the same question, and it is what admits the absent value; the checker resolves it for us.
+  const constraint = declared ? context.checker.getBaseConstraintOfType(declared) : undefined;
+  const constraintMembers = constraint?.isUnion() ? constraint.types : constraint ? [constraint] : [];
+  const admits = (flag: number, kind: 'null' | 'undefined'): boolean =>
+    members.some((member) => member.kind === kind) ||
+    declaredMembers.some((member) => (member.flags & flag) !== 0) ||
+    constraintMembers.some((member) => (member.flags & flag) !== 0);
   return {
-    admitsNull:
-      members.some((member) => member.kind === 'null') ||
-      declaredMembers.some((member) => (member.flags & ts.TypeFlags.Null) !== 0),
-    admitsUndefined:
-      members.some((member) => member.kind === 'undefined') ||
-      declaredMembers.some((member) => (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0),
+    admitsNull: admits(ts.TypeFlags.Null, 'null'),
+    admitsUndefined: admits(ts.TypeFlags.Undefined | ts.TypeFlags.Void, 'undefined'),
     literal,
   };
 }
