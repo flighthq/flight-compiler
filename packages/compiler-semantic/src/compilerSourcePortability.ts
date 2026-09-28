@@ -111,7 +111,7 @@ function analyzeTypeScriptSourcePortabilityInput(
           parameter.type,
           'opaque-value-domain',
           parameterSubject,
-          renderOpaqueValueDomainMessage(parameterSubject, 'exposes', opaque),
+          renderOpaqueMethodValueDomainMessage(node, parameter.type, parameterSubject, opaque),
         );
       }
       if (node.type) {
@@ -122,7 +122,7 @@ function analyzeTypeScriptSourcePortabilityInput(
             node.type,
             'opaque-value-domain',
             returnSubject,
-            renderOpaqueValueDomainMessage(returnSubject, 'exposes', opaque),
+            renderOpaqueMethodValueDomainMessage(node, node.type, returnSubject, opaque),
           );
         }
       }
@@ -410,8 +410,20 @@ function renderOpaqueTypeAliasValueDomainMessage(
   subject: string,
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string {
+  const logData = getFlightLogOpaqueValueGuidance(node, subject, kinds);
+  if (logData) return logData;
   const pixiInput = getPixiParseOpaqueValueGuidance(node, subject, kinds);
   return pixiInput ?? renderOpaqueValueDomainMessage(subject, 'aliases', kinds);
+}
+
+function renderOpaqueMethodValueDomainMessage(
+  node: ts.MethodSignature,
+  type: ts.TypeNode,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string {
+  const appLoopHandle = getHostAppLoopOpaqueHandleGuidance(node, type, subject, kinds);
+  return appLoopHandle ?? renderOpaqueValueDomainMessage(subject, 'exposes', kinds);
 }
 
 function renderOpaquePropertyValueDomainMessage(
@@ -419,6 +431,8 @@ function renderOpaquePropertyValueDomainMessage(
   subject: string,
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string {
+  const flightContract = getFlightTypesOpaquePropertyGuidance(node, subject, kinds);
+  if (flightContract) return flightContract;
   const spineDrawOrder = getSpineDrawOrderOpaqueValueGuidance(node, subject, kinds);
   if (spineDrawOrder) return spineDrawOrder;
   const pixiInput = getPixiParseOpaqueValueGuidance(node, subject, kinds);
@@ -434,6 +448,116 @@ function renderOpaquePropertyValueDomainMessage(
   }
   const presence = node.questionToken ? 'an optional error payload' : 'an error payload';
   return `${subject} exposes unknown as ${presence}; JavaScript permits throwing values of any type, so neither the annotation nor its downstream uses prove one portable runtime representation. Normalize every producer at the catch or provider boundary into a named closed error payload shared by the result arms, storage, and consumers, using fields with explicit portable value types. If preserving arbitrary thrown values is intentional, record a reviewed source-portability exception for that boundary. The compiler will not infer Error, stringify the value, or choose a target-specific Any carrier.`;
+}
+
+function getFlightLogOpaqueValueGuidance(
+  node: ts.TypeAliasDeclaration,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    subject !== 'type:LogData' ||
+    !hasOnlyUnknown(kinds) ||
+    !isFlightTypesSource(node, 'Log.ts') ||
+    !isStringOrReadonlyUnknownRecord(node.type)
+  ) {
+    return undefined;
+  }
+  return `${subject} gives structured log records an open unknown value domain. Log producers pass those records through span and context merging into memory or buffered sinks, registered kind serializers and redaction, and JSON or text formatters; the values therefore cross capture and transport boundaries rather than remaining unexamined tokens. Normalize each producer before LogEntry construction to one named closed LogFieldValue domain shared by LogData, context and span fields, serializers, and sinks. A reviewed source-portability exception for this exact alias is justified only for a deliberately JavaScript-only diagnostic boundary whose values never enter portable storage or transport. The compiler will not infer a schema from logger call sites, stringify arbitrary fields, choose a target-specific Any carrier, insert a cast, or copy or materialize the record.`;
+}
+
+function getFlightTypesOpaquePropertyGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (!hasOnlyUnknown(kinds)) return undefined;
+  if (isFlightTypesSource(node, 'Log.ts') && isReadonlyUnknownRecord(node.type) && node.questionToken === undefined) {
+    const owner =
+      subject === 'interface:LogContext/property:fields'
+        ? 'context'
+        : subject === 'interface:LogSpan/property:fields'
+          ? 'span'
+          : undefined;
+    if (owner === undefined) return undefined;
+    return `${subject} gives the bound log ${owner} an open unknown field-value domain. The log package merges these fields into LogData before LogEntry emission, after which memory and buffered sinks may retain them and serializers, redaction, and formatters may inspect or serialize them. Normalize fields at createLog${owner === 'context' ? 'Context/createChildLogContext' : 'Span'} before they enter the ${owner}, using the same named closed LogFieldValue domain as LogData and every sink. A reviewed source-portability exception for this exact property is justified only for a deliberately JavaScript-only diagnostic boundary whose values never enter portable storage or transport. The compiler will not infer values from field names, stringify arbitrary fields, choose a target-specific Any carrier, insert a cast, or copy or materialize the record.`;
+  }
+  if (
+    isFlightTypesSource(node, 'Command.ts') &&
+    node.questionToken === undefined &&
+    node.type?.kind === ts.SyntaxKind.UnknownKeyword &&
+    (subject === 'interface:CommandPropertyEntry/property:after' ||
+      subject === 'interface:CommandPropertyEntry/property:before')
+  ) {
+    const field = subject.endsWith(':after') ? 'after' : 'before';
+    const source =
+      field === 'after'
+        ? 'createSetNodePropertyCommand and its batch variant capture the caller-supplied value'
+        : 'the command constructors read the current node property';
+    return `${subject} is a heterogeneous command-property slot: ${source}, merge preserves it, and the matching binding writes it back on ${field === 'after' ? 'execute or redo' : 'undo'} without inspecting or coercing it. Relative to generic history this value is genuinely opaque, not an inferred portable value domain. If portable command histories support a bounded property set, normalize both captures at the command-constructor boundary into one named closed CommandPropertyValue domain shared by entry storage and the node reader/writer. If arbitrary property values are intentionally transported only back to their originating node property, record a reviewed source-portability exception for this exact property. The compiler will not infer a property-indexed union, choose a target-specific Any carrier, insert a cast, or copy or materialize the value.`;
+  }
+  if (
+    isFlightTypesSource(node, 'Notification.ts') &&
+    node.questionToken !== undefined &&
+    node.type?.kind === ts.SyntaxKind.UnknownKeyword
+  ) {
+    if (subject === 'interface:NotificationRequest/property:data') {
+      return `${subject} carries caller-supplied Web Notification structured-clone data. The web page and service-worker adapters forward the same value through WebNotificationOptions.data to the native API without inspection, while a ScheduledNotification can retain its request. If this field participates in portable notification state, normalize it at the request producer into one named closed NotificationData domain shared by requests, schedules, and adapters. If it is intentionally an unexamined browser-provider payload, keep it at that provider boundary and record a reviewed source-portability exception for this exact property. The compiler will not infer the structured-clone subset, choose a target-specific Any carrier, insert a cast, or copy or materialize the payload.`;
+    }
+    if (subject === 'interface:WebNotificationOptions/property:data') {
+      return `${subject} is the browser-provider leg of NotificationRequest.data: both web adapters forward the caller's value unchanged into the native notification options, and no Flight consumer inspects it. If portable code owns the data, normalize it at the NotificationRequest producer into one named closed NotificationData domain and carry that type through these options. If the value remains an unexamined browser structured-clone payload, record a reviewed source-portability exception for this exact property. The compiler will not infer the browser's structured-clone domain, choose a target-specific Any carrier, insert a cast, or copy or materialize the payload.`;
+    }
+    if (subject === 'interface:WebServiceWorkerNotificationInstance/property:data') {
+      return `${subject} exposes browser-owned structured-clone data on a native service-worker notification, but the active-list adapter reads only tag identity and never returns, stores, or inspects data. For that unexamined provider contract, record a reviewed source-portability exception for this exact property. If a consumer begins transporting the value, normalize it at ingress into a named closed NotificationData domain before portable storage or results. The compiler will not infer the browser's structured-clone domain, choose a target-specific Any carrier, insert a cast, or copy or materialize the payload.`;
+    }
+  }
+  return undefined;
+}
+
+function getHostAppLoopOpaqueHandleGuidance(
+  node: ts.MethodSignature,
+  type: ts.TypeNode,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    !hasOnlyUnknown(kinds) ||
+    type.kind !== ts.SyntaxKind.UnknownKeyword ||
+    !isFlightTypesSource(node, 'HostAppLoop.ts')
+  ) {
+    return undefined;
+  }
+  if (subject === 'interface:HostAppLoopCapability/method:requestFrame.return') {
+    return `${subject} is a provider-issued cancellation token. startAppLoop stores it only in private LoopState and returns the same token to HostAppLoopCapability.cancelFrame; no consumer inspects, coerces, persists, or exposes it. This paired identity transport is genuinely opaque, so record a reviewed source-portability exception for this exact return boundary while that invariant holds. If handles must cross a portable result or storage boundary, define one named closed AppLoopFrameHandle domain shared by requestFrame, LoopState, cancelFrame, and every provider. The compiler will not assume the web provider's numeric handle, choose a target-specific Any carrier, insert a cast, or copy or materialize the token.`;
+  }
+  if (subject === 'interface:HostAppLoopCapability/method:cancelFrame.parameter:handle') {
+    return `${subject} accepts only the provider-issued token previously returned by requestFrame. startAppLoop passes that token back unchanged from private LoopState, and cancelFrame is the sole semantic consumer; portable code never examines the token. This paired identity transport is genuinely opaque, so record a reviewed source-portability exception for this exact parameter boundary while that invariant holds. If handles must cross a portable result or storage boundary, define one named closed AppLoopFrameHandle domain shared by requestFrame, LoopState, cancelFrame, and every provider. The compiler will not assume the web provider's numeric handle, choose a target-specific Any carrier, insert a cast, or copy or materialize the token.`;
+  }
+  return undefined;
+}
+
+function hasOnlyUnknown(kinds: ReadonlySet<OpaqueTypeKind>): boolean {
+  return kinds.size === 1 && kinds.has('unknown');
+}
+
+function isFlightTypesSource(node: ts.Node, basename: string): boolean {
+  return normalizePathPortable(node.getSourceFile().fileName).endsWith(`/packages/types/src/${basename}`);
+}
+
+function isReadonlyUnknownRecord(node: ts.TypeNode | undefined): boolean {
+  if (!node || !ts.isTypeReferenceNode(node) || getNodeName(node.typeName) !== 'Readonly') return false;
+  const inner = node.typeArguments?.[0];
+  if (!inner || !ts.isTypeReferenceNode(inner) || getNodeName(inner.typeName) !== 'Record') return false;
+  const [key, value] = inner.typeArguments ?? [];
+  return key?.kind === ts.SyntaxKind.StringKeyword && value?.kind === ts.SyntaxKind.UnknownKeyword;
+}
+
+function isStringOrReadonlyUnknownRecord(node: ts.TypeNode): boolean {
+  if (!ts.isUnionTypeNode(node) || node.types.length !== 2) return false;
+  return (
+    node.types.some((type) => type.kind === ts.SyntaxKind.StringKeyword) &&
+    node.types.some((type) => isReadonlyUnknownRecord(type))
+  );
 }
 
 function getTrayOpaqueErrorGuidance(

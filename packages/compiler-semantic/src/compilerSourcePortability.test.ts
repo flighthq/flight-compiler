@@ -222,6 +222,240 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([explicit]).findings).toEqual([]);
   });
 
+  it('traces Flight log records to their producer normalization boundary', () => {
+    const opaque = input(
+      'packages/types/src/Log.ts',
+      `type LogData = string | Readonly<Record<string, unknown>>;
+       interface LogContext { fields: Readonly<Record<string, unknown>> }
+       interface LogSpan { fields: Readonly<Record<string, unknown>> }`,
+    );
+    const closed = input(
+      'packages/types/src/Log.ts',
+      `type LogFieldValue = boolean | number | string | null;
+       type LogData = string | Readonly<Record<string, LogFieldValue>>;
+       interface LogContext { fields: Readonly<Record<string, LogFieldValue>> }
+       interface LogSpan { fields: Readonly<Record<string, LogFieldValue>> }`,
+    );
+    const controls = [
+      input('packages/types/src/Other.ts', 'type LogData = string | Readonly<Record<string, unknown>>;'),
+      input('packages/other/src/Log.ts', 'interface LogContext { fields: Readonly<Record<string, unknown>> }'),
+      input('packages/types/src/Log.ts', 'type LogData = unknown;'),
+      input('packages/types/src/Log.ts', 'interface LogSpan { fields: unknown }'),
+      input('packages/types/src/Log.ts', 'interface LogContext { fields: Readonly<Record<string, any>> }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'interface:LogContext/property:fields',
+      'interface:LogSpan/property:fields',
+      'type:LogData',
+    ]);
+    const alias = report.findings.find(({ subject }) => subject === 'type:LogData');
+    expect(alias?.message).toContain('through span and context merging');
+    expect(alias?.message).toContain('Normalize each producer before LogEntry construction');
+    for (const finding of report.findings.filter(({ subject }) => subject.endsWith('/property:fields'))) {
+      expect(finding.message).toContain('merges these fields into LogData before LogEntry emission');
+      expect(finding.message).toContain('same named closed LogFieldValue domain as LogData and every sink');
+    }
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('reviewed source-portability exception for this exact');
+      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('insert a cast');
+      expect(finding.message).toContain('copy or materialize the record');
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('LogFieldValue'),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('preserves heterogeneous command property slots as reviewed identity transport', () => {
+    const opaque = input(
+      'packages/types/src/Command.ts',
+      `interface CommandPropertyEntry {
+         readonly after: unknown;
+         readonly before: unknown;
+         readonly property: string;
+       }`,
+    );
+    const closed = input(
+      'packages/types/src/Command.ts',
+      `type CommandPropertyValue = boolean | number | string | null;
+       interface CommandPropertyEntry {
+         readonly after: CommandPropertyValue;
+         readonly before: CommandPropertyValue;
+         readonly property: string;
+       }`,
+    );
+    const controls = [
+      input('packages/types/src/Other.ts', 'interface CommandPropertyEntry { readonly after: unknown }'),
+      input('packages/other/src/Command.ts', 'interface CommandPropertyEntry { readonly before: unknown }'),
+      input('packages/types/src/Command.ts', 'interface OtherEntry { readonly after: unknown }'),
+      input('packages/types/src/Command.ts', 'interface CommandPropertyEntry { readonly after?: unknown }'),
+      input('packages/types/src/Command.ts', 'interface CommandPropertyEntry { readonly before: any }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'interface:CommandPropertyEntry/property:after',
+      'interface:CommandPropertyEntry/property:before',
+    ]);
+    expect(report.findings[0]?.message).toContain('capture the caller-supplied value');
+    expect(report.findings[0]?.message).toContain('execute or redo');
+    expect(report.findings[1]?.message).toContain('read the current node property');
+    expect(report.findings[1]?.message).toContain('on undo');
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('genuinely opaque');
+      expect(finding.message).toContain('named closed CommandPropertyValue domain');
+      expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('insert a cast');
+      expect(finding.message).toContain('copy or materialize the value');
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('CommandPropertyValue'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'The command binding returns each heterogeneous property value only to its originating slot.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(2);
+  });
+
+  it('keeps browser notification data at the exact structured-clone provider boundary', () => {
+    const opaque = input(
+      'packages/types/src/Notification.ts',
+      `interface NotificationRequest { data?: unknown }
+       interface WebNotificationOptions { data?: unknown }
+       interface WebServiceWorkerNotificationInstance { readonly data?: unknown }`,
+    );
+    const closed = input(
+      'packages/types/src/Notification.ts',
+      `type NotificationData = boolean | number | string | null;
+       interface NotificationRequest { data?: NotificationData }
+       interface WebNotificationOptions { data?: NotificationData }
+       interface WebServiceWorkerNotificationInstance { readonly data?: NotificationData }`,
+    );
+    const controls = [
+      input('packages/types/src/Other.ts', 'interface NotificationRequest { data?: unknown }'),
+      input('packages/other/src/Notification.ts', 'interface WebNotificationOptions { data?: unknown }'),
+      input('packages/types/src/Notification.ts', 'interface OtherRequest { data?: unknown }'),
+      input('packages/types/src/Notification.ts', 'interface NotificationRequest { data: unknown }'),
+      input('packages/types/src/Notification.ts', 'interface WebNotificationOptions { data?: any }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'interface:NotificationRequest/property:data',
+      'interface:WebNotificationOptions/property:data',
+      'interface:WebServiceWorkerNotificationInstance/property:data',
+    ]);
+    expect(report.findings[0]?.message).toContain('forward the same value through WebNotificationOptions.data');
+    expect(report.findings[0]?.message).toContain('a ScheduledNotification can retain its request');
+    expect(report.findings[1]?.message).toContain('browser-provider leg of NotificationRequest.data');
+    expect(report.findings[2]?.message).toContain('active-list adapter reads only tag identity');
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('named closed NotificationData domain');
+      expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('insert a cast');
+      expect(finding.message).toContain('copy or materialize the payload');
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('NotificationData'),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('recognizes the paired HostAppLoop handle as a provider-owned cancellation token', () => {
+    const opaque = input(
+      'packages/types/src/HostAppLoop.ts',
+      `interface HostAppLoopCapability {
+         requestFrame(callback: (time: number) => void): unknown;
+         cancelFrame(handle: unknown): void;
+       }`,
+    );
+    const closed = input(
+      'packages/types/src/HostAppLoop.ts',
+      `type AppLoopFrameHandle = number;
+       interface HostAppLoopCapability {
+         requestFrame(callback: (time: number) => void): AppLoopFrameHandle;
+         cancelFrame(handle: AppLoopFrameHandle): void;
+       }`,
+    );
+    const controls = [
+      input(
+        'packages/types/src/Other.ts',
+        'interface HostAppLoopCapability { requestFrame(callback: () => void): unknown }',
+      ),
+      input(
+        'packages/other/src/HostAppLoop.ts',
+        'interface HostAppLoopCapability { cancelFrame(handle: unknown): void }',
+      ),
+      input('packages/types/src/HostAppLoop.ts', 'interface OtherLoop { cancelFrame(handle: unknown): void }'),
+      input('packages/types/src/HostAppLoop.ts', 'interface HostAppLoopCapability { cancelFrame(handle: any): void }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'interface:HostAppLoopCapability/method:cancelFrame.parameter:handle',
+      'interface:HostAppLoopCapability/method:requestFrame.return',
+    ]);
+    expect(report.findings[0]?.message).toContain('sole semantic consumer');
+    expect(report.findings[1]?.message).toContain('stores it only in private LoopState');
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('paired identity transport is genuinely opaque');
+      expect(finding.message).toContain('named closed AppLoopFrameHandle domain');
+      expect(finding.message).toContain('reviewed source-portability exception for this exact');
+      expect(finding.message).toContain("will not assume the web provider's numeric handle");
+      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('insert a cast');
+      expect(finding.message).toContain('copy or materialize the token');
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('AppLoopFrameHandle'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'The provider token is returned only to the same provider for cancellation.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(2);
+  });
+
   it('requires tray-style failure results to normalize unknown error payloads at their producer boundary', () => {
     const opaque = input(
       'Tray.ts',
