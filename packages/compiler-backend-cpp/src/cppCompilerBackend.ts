@@ -4261,9 +4261,13 @@ function emitExpression(
       // reference between two of those -- a row asserted as the interface it extends, or as a sibling --
       // has no relationship to cast along, and the `static_cast` below is a call to a conversion that does
       // not exist (`no matching function for call to shared_ptr<Base>::shared_ptr(Ref<Derived>&)`). The
-      // assertion is one the source language accepts, so this is the compiler's gap and is refused as one:
-      // closing it needs the carrier to hold identity the flattened row does not carry, which is not a
-      // lowering this compiler can supply.
+      // assertion is one the source language accepts, but closing it between flattened owners needs the
+      // runtime carrier to retain and validate a dynamic owner the record does not carry. The emitter
+      // cannot supply that identity with a cast, a replacement row, or side storage, so that case belongs
+      // to the target runtime contract rather than to another lowering pass. Two actual, unrelated C++
+      // classes remain the older compiler restriction: their owners are represented, but no heritage
+      // permits the requested cast. A directly asserted intersection likewise retains its more precise
+      // source rewrite below because the author's declared intersection is the missing boundary.
       const referenceSource = sourceEvidence
         ? getIrTypeRuntimeDomainCpp(sourceEvidence, context, new Set())
         : undefined;
@@ -4277,15 +4281,21 @@ function emitExpression(
       ) {
         const heritageSource = emitType(referenceSource, context);
         const heritageTarget = emitType(expression.type, context);
+        const hasRepresentedClassOwners =
+          isCppClassDeclarationCpp(referenceSource, context) && isCppClassDeclarationCpp(expression.type, context);
+        const isDeclaredIntersectionTarget = expression.type.kind === 'intersection';
         // An intersection has no name of its own in C++ -- the plan gives it an anonymous owner type --
         // so the generic sentence would leave the reader holding a generated name they cannot act on. The
         // added half names the spelling they wrote and the flattening that put it out of cast range.
         emissionError(
           context,
-          expression.type.kind === 'intersection'
+          isDeclaredIntersectionTarget
             ? `a reference assertion from ${heritageSource} to the intersection ${describeDeclaredIrTypeForDiagnosticCpp(expression.type)} has no heritage to cast along: the two records are unrelated in C++, so the narrowing needs identity the carrier does not hold. flight-cpp flattens the interface members of an intersection into an owner type of their own (${heritageTarget}), which is neither a base nor a derived type of ${heritageSource}, so no cast reaches the identity the assertion names. Declare the value as ${describeDeclaredIrTypeForDiagnosticCpp(expression.type)} where the concrete type is known, or construct that target explicitly, rather than asserting past ${heritageSource}`
-            : `a reference assertion from ${heritageSource} to ${heritageTarget} has no heritage to cast along: the two records are unrelated in C++, so the narrowing needs identity the carrier does not hold`,
+            : hasRepresentedClassOwners
+              ? `a reference assertion from ${heritageSource} to ${heritageTarget} has no heritage to cast along: the two represented C++ class owners are unrelated, so the requested pointer cast is not valid`
+              : `a reference assertion from ${heritageSource} to ${heritageTarget} has no heritage to cast along: the declarations share no emitted C++ class-heritage path (source interface and intersection relationships flatten into independent owners), and the source carrier does not retain a checked dynamic owner that can recover the target. Keep the exact declared owner at the API boundary, or add a runtime contract that validates and recovers the target owner; the compiler will not use a native pointer cast, materialize a replacement row, or invent side storage`,
           'cpp-reference-assertion-without-heritage',
+          isDeclaredIntersectionTarget || hasRepresentedClassOwners ? undefined : 'target-runtime',
         );
       }
       // A reference assertion between records related by CLASS heritage is a POINTER cast, not a value

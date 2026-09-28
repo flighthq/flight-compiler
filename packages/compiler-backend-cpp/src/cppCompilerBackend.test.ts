@@ -20467,8 +20467,8 @@ Resolver make_resolver(TextureRef texture) {
   it('refuses a reference assertion with no heritage to cast along', () => {
     // Interface heritage flattens into independent structs, so a row asserted as the interface it extends
     // has no relationship for the emitted `static_cast` to follow: g++ rejects it with "no matching
-    // function for call to shared_ptr<Base>::shared_ptr(Ref<Derived>&)". The assertion is refused and named
-    // instead of emitted, and nothing is materialized to make it work.
+    // function for call to shared_ptr<Base>::shared_ptr(Ref<Derived>&)". Checked recovery therefore needs
+    // a dynamic-owner contract from the runtime; the assertion is refused instead of cast or materialized.
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(
         lower(
@@ -20481,9 +20481,11 @@ Resolver make_resolver(TextureRef texture) {
       ),
     );
     expect(failure.rule).toBe('cpp-reference-assertion-without-heritage');
-    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.classification).toBe('target-runtime');
     expect(failure.message).toContain('has no heritage to cast along');
-    expect(failure.message).toContain('needs identity the carrier does not hold');
+    expect(failure.message).toContain('does not retain a checked dynamic owner');
+    expect(failure.message).toContain('Keep the exact declared owner at the API boundary');
+    expect(failure.message).toContain('will not use a native pointer cast, materialize a replacement row');
 
     // CLASS heritage takes the pointer cast, in BOTH directions: the emitted inheritance is real, so the
     // relation is exactly what that cast proves -- and the converting constructor only goes from derived to
@@ -20580,6 +20582,91 @@ Resolver make_resolver(TextureRef texture) {
     ).contents;
     expect(heritage).toContain('std::static_pointer_cast<BevelEffect>(effect)');
     expect(heritage).not.toContain('flight::Any');
+  });
+
+  it('attributes generic node owner assertions to missing checked runtime recovery', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/interaction',
+      sourceFile: ts.createSourceFile(`/flight/packages/interaction/src/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface NodeData { readonly id: number }
+             export interface NodeTraits { readonly data: NodeData | null; readonly kind: string }
+             export interface Node<Traits extends object = NodeTraits> extends NodeTraits {}
+             export type NodeAny = Node<any>;
+             export interface Node2DTraits extends NodeTraits { readonly x: number }
+             export type Node2D = Node<Node2DTraits> & Node2DTraits;
+             export interface QuadBatchData extends NodeData { readonly instanceCount: number }
+             export interface QuadBatch extends Node2D { readonly data: QuadBatchData }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        source(
+          'quadBatchAssertion.ts',
+          `import type { NodeAny, QuadBatch } from '@flighthq/types/contract';
+           export function instanceCount(source: NodeAny): number {
+             return (source as QuadBatch).data.instanceCount;
+           }`,
+        ),
+        source(
+          'node2DAssertion.ts',
+          `import type { Node2D, NodeAny } from '@flighthq/types/contract';
+           export function x(source: NodeAny): number { return (source as Node2D).x; }`,
+        ),
+        source(
+          'exactQuadBatch.ts',
+          `import type { QuadBatch } from '@flighthq/types/contract';
+           export function instanceCount(source: QuadBatch): number { return source.data.instanceCount; }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const quadBatch = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const node2D = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const exact = session.emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [quadBatch, node2D]) {
+      expect(failure.rule).toBe('cpp-reference-assertion-without-heritage');
+      expect(failure.classification).toBe('target-runtime');
+      expect(failure.message).toContain(
+        'source interface and intersection relationships flatten into independent owners',
+      );
+      expect(failure.message).toContain('does not retain a checked dynamic owner');
+      expect(failure.message).toContain('add a runtime contract that validates and recovers the target owner');
+      expect(failure.message).toContain('will not use a native pointer cast, materialize a replacement row');
+    }
+    // Keeping the exact owner through the callback/API boundary is already represented and needs no cast,
+    // row materialization, side table, or callable adaptation.
+    expect(exact).toContain('return source->data->instance_count;');
+    expect(exact).not.toContain('static_cast');
+    expect(exact).not.toContain('pointer_cast');
+    expect(exact).not.toContain('structural_ref_cast');
+    expect(exact).not.toContain('materialize_row');
+    expect(exact).not.toContain('make_ref');
   });
 
   it('answers an external call-result presence test from the storage its declaration chose', () => {
@@ -20707,19 +20794,21 @@ Resolver make_resolver(TextureRef texture) {
 
     // A sibling the chain does not reach is still refused: the walk follows declared bases, so an
     // unrelated class in the same package is not a narrowing the cast could make.
-    expect(
-      captureBackendEmissionFailure(() =>
-        emitIrModuleCpp(
-          lower(
-            'cross-package-sibling-assertion.ts',
-            `class TextureSource { public id = ''; }
-             class Unrelated { public tag = 0; }
-             export function f(value: TextureSource): Unrelated { return value as Unrelated; }`,
-          ).module,
-          { runtimeProfile: 'flight-cpp' },
-        ),
-      ).rule,
-    ).toBe('cpp-reference-assertion-without-heritage');
+    const sibling = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'cross-package-sibling-assertion.ts',
+          `class TextureSource { public id = ''; }
+           class Unrelated { public tag = 0; }
+           export function f(value: TextureSource): Unrelated { return value as Unrelated; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(sibling.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(sibling.classification).toBe('compiler-restriction');
+    expect(sibling.message).toContain('two represented C++ class owners are unrelated');
+    expect(sibling.message).not.toContain('source interface and intersection relationships');
   });
 
   it('attributes an unguarded variant member read to the guard the source has to state', () => {
