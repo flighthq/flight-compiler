@@ -10421,6 +10421,61 @@ describe('createCppCompilerBackend', () => {
     expect(constrained.message).toContain('Declare the parameter as the concrete optional type its constraint names');
   });
 
+  it('projects presence through a mixed-absence coalesce', () => {
+    const timeline = `export interface TimelineSource { readonly frameRate?: number | null }
+       `;
+    const contents = emitIrModuleCpp(
+      lower(
+        'timeline.ts',
+        `${timeline}export function rate(source: TimelineSource): number { return source.frameRate ?? 30; }
+         export function rateParam(frameRate: number | null | undefined): number { return frameRate ?? 30; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // `frameRate?: number | null` admits BOTH sentinels -- the `?` contributes undefined and the type
+    // contributes null -- so the storage is the three-state variant. `?? 30` asks for presence and then
+    // either the value or the fallback, which that storage answers directly: the projection is a checked
+    // read of the one value slot, with no cast, copy, or second storage. The result type is the slot's own
+    // target, so nothing has to be converted either.
+    expect(contents).toContain('std::variant<double, flight::Null, flight::Undefined> frame_rate;');
+    expect(contents).toMatch(
+      /return \(\[&\]\(\) -> double \{ const auto& coalesce_left = source->frame_rate; if \(\(std::holds_alternative<flight::Null>\(coalesce_left\) \|\| std::holds_alternative<flight::Undefined>\(coalesce_left\)\)\) return 30\.0; return std::get<0>\(coalesce_left\); \}\(\)\);/u,
+    );
+    // The same shape through a parameter, so the projection is a property of the storage and not of the
+    // member read.
+    expect(contents).toMatch(
+      /const auto& coalesce_left(?:_\d+)? = frame_rate; if \(\(std::holds_alternative<flight::Null>/u,
+    );
+    expect(contents).not.toContain('flight::Any');
+
+    // `?? null` keeps its own lane: the result type IS the absent-carrying union, so no projection is needed
+    // and none is emitted. That is the control the new lowering must not disturb.
+    const nullable = emitIrModuleCpp(
+      lower(
+        'timeline.ts',
+        `${timeline}export function rate(source: TimelineSource): number | null { return source.frameRate ?? null; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(nullable).toContain('std::optional<double> rate');
+    expect(nullable).toMatch(/return \(\[&\]\(\) -> std::optional<double> \{ auto nullish_coalesce_left/u);
+
+    // Optional CHAINING over the same storage still refuses -- the projection it needs is a different one
+    // (the chain's receiver short-circuit) and it is not this lane's, so the refusal stands with its own
+    // message rather than being approximated here.
+    const chained = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'timeline.ts',
+          `${timeline}export function rate(source: TimelineSource): number { return source.frameRate?.valueOf() ?? 30; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(chained.message).toContain('dual-sentinel optional chaining requires presence projection lowering');
+  });
+
   it('reads one shared payload from optional variants produced by local and imported factories', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
@@ -25437,7 +25492,11 @@ Resolver make_resolver(TextureRef texture) {
     expect(output).toContain('co_return std::optional<double>{co_await loader()}');
   });
 
-  it('refuses dual-sentinel coalescing and optional chaining until presence projection is lowered', () => {
+  it('projects dual-sentinel coalescing and still refuses its optional chaining', () => {
+    // The coalesce asks for presence and then takes either the value or the fallback, which the three-state
+    // storage answers directly: the projection is a checked read of the one value slot. The chain's
+    // projection is a different one -- the receiver short-circuits before the member is reached -- so it is
+    // still refused rather than approximated.
     const coalesce = lower(
       'dual-coalesce.ts',
       'export function read(value: number | null | undefined): number { return value ?? 0; }',
@@ -25447,10 +25506,13 @@ Resolver make_resolver(TextureRef texture) {
       'export function text(value: number | null | undefined): string | undefined { return value?.toString(); }',
     );
 
-    expect(() => emitIrModuleCpp(coalesce.module)).toThrow(
-      'dual-sentinel nullish coalescing requires presence projection lowering',
+    const emitted = emitIrModuleCpp(coalesce.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain('std::variant<double, flight::Null, flight::Undefined>');
+    expect(emitted).toMatch(
+      /const auto& coalesce_left(?:_\d+)? = value; if \(\(std::holds_alternative<flight::Null>\(coalesce_left\) \|\| std::holds_alternative<flight::Undefined>\(coalesce_left\)\)\) return 0\.0; return std::get<0>\(coalesce_left\);/u,
     );
-    expect(() => emitIrModuleCpp(optionalChain.module)).toThrow(
+    expect(emitted).not.toContain('flight::Any');
+    expect(() => emitIrModuleCpp(optionalChain.module, { runtimeProfile: 'flight-cpp' })).toThrow(
       'dual-sentinel optional chaining requires presence projection lowering',
     );
   });

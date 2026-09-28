@@ -3240,6 +3240,31 @@ function getCppAliasExpandedUnionValueSlotCpp(
   return matches.length === 1 ? matches[0]! : -1;
 }
 
+// `left ?? fallback` where left is a dual-sentinel variant and the result type is that variant's one value
+// domain. The source's meaning is a presence projection -- the value when NEITHER sentinel is held, the
+// fallback when either is -- and the variant's own alternatives answer it, so the projection is a checked
+// read of the single value slot: no cast, no copy, no second storage. It is emitted only when both halves
+// line up (one value slot, and an expected type that IS that slot's target); anything else -- several value
+// domains, or an expected type that is itself absent-carrying -- keeps the refusal, because the projection
+// would then be a union conversion with its own question to answer.
+function emitCppDualSentinelCoalesceProjectionCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string | undefined {
+  if (plan.valueSlots.length !== 1 || !expectedType) return undefined;
+  const slot = plan.valueSlots[0]!;
+  if (slot.targetType !== emitType(expectedType, context)) return undefined;
+  const sentinels = getCppDualSentinelTargetTypes(context);
+  context.includes.add('variant');
+  const left = emitExpression(expression.left, context);
+  const fallback = emitExpression(expression.right, context, expectedType);
+  const valueName = getGeneratedTargetName('coalesce_left', context);
+  const absent = `(std::holds_alternative<${sentinels.null}>(${valueName}) || std::holds_alternative<${sentinels.undefined}>(${valueName}))`;
+  return `([&]() -> ${slot.targetType} { const auto& ${valueName} = ${left}; if (${absent}) return ${fallback}; return std::get<${String(plan.valueSlots.indexOf(slot))}>(${valueName}); }())`;
+}
+
 function emitExpression(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -3528,6 +3553,13 @@ function emitExpression(
           return emitExpression(expression.left, context, leftType);
         }
         if (union && getCppUnionRepresentationPlan(union, context).kind === 'dualSentinelVariant') {
+          const dualSentinelProjection = emitCppDualSentinelCoalesceProjectionCpp(
+            expression,
+            getCppUnionRepresentationPlan(union, context),
+            expectedType,
+            context,
+          );
+          if (dualSentinelProjection) return dualSentinelProjection;
           emissionError(context, 'dual-sentinel nullish coalescing requires presence projection lowering');
         }
         const expectedUnion = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
