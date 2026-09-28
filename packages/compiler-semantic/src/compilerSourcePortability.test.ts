@@ -68,6 +68,143 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reformatted.findings[0]?.line).not.toBe(first.findings[0]?.line);
   });
 
+  it('projects a fresh entity clone only after deleting its exact runtime key', () => {
+    const declarations = `declare const EntityRuntimeKey: unique symbol;
+       declare const ForeignRuntimeKey: unique symbol;
+       interface Entity { [EntityRuntimeKey]: object | undefined }
+       type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;`;
+    const asserted = input(
+      'packages/entity/src/clone.ts',
+      `${declarations}
+       export function stripEntityRuntime<Type extends Entity>(
+         source: Readonly<Type>,
+       ): EntityWithoutRuntime<Type> {
+         const copy = { ...source } as Record<PropertyKey, unknown>;
+         delete copy[EntityRuntimeKey];
+         return copy as unknown as EntityWithoutRuntime<Type>;
+       }`,
+    );
+    const typed = input(
+      'packages/entity/src/clone.ts',
+      `${declarations}
+       declare function omitEntityRuntime<Type extends Entity>(
+         source: Readonly<Type>,
+       ): EntityWithoutRuntime<Type>;
+       export function stripEntityRuntime<Type extends Entity>(
+         source: Readonly<Type>,
+       ): EntityWithoutRuntime<Type> {
+         return omitEntityRuntime(source);
+       }`,
+    );
+    const controls = [
+      input(
+        'packages/entity/src/otherClone.ts',
+        `${declarations}
+         function stripEntityRuntime<Type extends Entity>(source: Readonly<Type>): EntityWithoutRuntime<Type> {
+           const copy = { ...source } as Record<PropertyKey, unknown>;
+           delete copy[EntityRuntimeKey];
+           return copy as unknown as EntityWithoutRuntime<Type>;
+         }`,
+      ),
+      input(
+        'packages/other/src/clone.ts',
+        `${declarations}
+         function stripEntityRuntime<Type extends Entity>(source: Readonly<Type>): EntityWithoutRuntime<Type> {
+           const copy = { ...source } as Record<PropertyKey, unknown>;
+           delete copy[EntityRuntimeKey];
+           return copy as unknown as EntityWithoutRuntime<Type>;
+         }`,
+      ),
+      input(
+        'packages/entity/src/clone.ts',
+        `${declarations}
+         function cloneEntity<Type extends Entity>(source: Readonly<Type>): EntityWithoutRuntime<Type> {
+           const copy = { ...source } as Record<PropertyKey, unknown>;
+           delete copy[EntityRuntimeKey];
+           return copy as unknown as EntityWithoutRuntime<Type>;
+         }`,
+      ),
+      input(
+        'packages/entity/src/clone.ts',
+        `${declarations}
+         function stripEntityRuntime<Type extends Entity>(source: Readonly<Type>): EntityWithoutRuntime<Type> {
+           const copy = { ...source } as Record<string, unknown>;
+           delete copy[EntityRuntimeKey];
+           return copy as unknown as EntityWithoutRuntime<Type>;
+         }`,
+      ),
+      input(
+        'packages/entity/src/clone.ts',
+        `${declarations}
+         function stripEntityRuntime<Type extends Entity>(source: Readonly<Type>): EntityWithoutRuntime<Type> {
+           const copy = { ...source, extra: true } as Record<PropertyKey, unknown>;
+           delete copy[EntityRuntimeKey];
+           return copy as unknown as EntityWithoutRuntime<Type>;
+         }`,
+      ),
+      input(
+        'packages/entity/src/clone.ts',
+        `${declarations}
+         function stripEntityRuntime<Type extends Entity>(source: Readonly<Type>): EntityWithoutRuntime<Type> {
+           const copy = { ...source } as Record<PropertyKey, unknown>;
+           delete copy[ForeignRuntimeKey];
+           return copy as unknown as EntityWithoutRuntime<Type>;
+         }`,
+      ),
+      input(
+        'packages/entity/src/clone.ts',
+        `${declarations}
+         function stripEntityRuntime<Type extends Entity>(source: Readonly<Type>): EntityWithoutRuntime<Type> {
+           const copy = { ...source } as Record<PropertyKey, unknown>;
+           delete copy[EntityRuntimeKey];
+           return source as unknown as EntityWithoutRuntime<Type>;
+         }`,
+      ),
+      input(
+        'packages/entity/src/clone.ts',
+        `${declarations}
+         function stripEntityRuntime<Type extends Entity>(source: Readonly<Type>): EntityWithoutRuntime<Type> {
+           const copy = { ...source } as Record<PropertyKey, unknown>;
+           delete copy[EntityRuntimeKey];
+           return copy as any as EntityWithoutRuntime<Type>;
+         }`,
+      ),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([asserted]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected an entity runtime strip assertion finding');
+
+    expect(report.findings).toMatchObject([
+      {
+        rule: 'unchecked-double-assertion',
+        subject: 'function:stripEntityRuntime',
+      },
+    ]);
+    expect(finding.message).toContain('fresh { ...source } clone');
+    expect(finding.message).toContain('delete copy[EntityRuntimeKey]');
+    expect(finding.message).toContain('EntityWithoutRuntime<Type>');
+    expect(finding.message).toContain('new generic Type row owner');
+    expect(finding.message).toContain('sole cell excluded');
+    expect(finding.message).toContain('same copy owner with its exact representation');
+    expect(finding.message).toContain('one named generic entity-runtime strip operation');
+    expect(finding.message).toContain('arbitrary owner, key, or Omit assertion is not representation evidence');
+    expect(finding.message).toContain('reviewed source-portability exception is not justified');
+    expect(finding.message).toContain('clone the generic row once');
+    expect(finding.message).toContain('will not route it through Any');
+    expect(finding.message).toContain('cast or reinterpret the source owner');
+    expect(finding.message).toContain('copy or materialize a second replacement');
+    expect(finding.message).toContain('side storage');
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('fresh { ...source } clone'),
+        ),
+      ).toBe(true);
+    }
+  });
+
   it('separates fresh WebGPU mock literals from assertions that may retain an existing carrier', () => {
     const mocks = input(
       'packages/render-wgpu/src/wgpuTestHelper.ts',

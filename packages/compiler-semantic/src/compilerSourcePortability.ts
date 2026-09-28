@@ -353,6 +353,93 @@ function getUncheckedDoubleAssertionObjectLiteralTarget(node: ts.AsExpression | 
   return ts.isObjectLiteralExpression(source) ? targetName : undefined;
 }
 
+function getEntityRuntimeStripDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  if (
+    subject !== 'function:stripEntityRuntime' ||
+    bridge !== 'unknown' ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/entity/src/clone.ts') ||
+    !isNamedGenericTypeReference(getTypeAssertionType(node), 'EntityWithoutRuntime', 'Type')
+  ) {
+    return undefined;
+  }
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner) || getTypeAssertionType(inner).kind !== ts.SyntaxKind.UnknownKeyword) return undefined;
+  let retained: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retained)) retained = retained.expression;
+  if (!ts.isIdentifier(retained) || retained.text !== 'copy') return undefined;
+  if (!ts.isReturnStatement(node.parent) || node.parent.expression !== node) return undefined;
+  const body = node.parent.parent;
+  if (!ts.isBlock(body) || !ts.isFunctionDeclaration(body.parent) || body.parent.name?.text !== 'stripEntityRuntime') {
+    return undefined;
+  }
+  if (!isNamedGenericTypeReference(body.parent.type, 'EntityWithoutRuntime', 'Type')) return undefined;
+  const copy = getVariableDeclaration(body, 'copy');
+  if (!copy?.initializer || !ts.isAsExpression(copy.initializer)) return undefined;
+  if (!isPropertyKeyUnknownRecord(copy.initializer.type)) return undefined;
+  const clone = copy.initializer.expression;
+  if (
+    !ts.isObjectLiteralExpression(clone) ||
+    clone.properties.length !== 1 ||
+    !ts.isSpreadAssignment(clone.properties[0]!) ||
+    !ts.isIdentifier(clone.properties[0]!.expression) ||
+    clone.properties[0]!.expression.text !== 'source'
+  ) {
+    return undefined;
+  }
+  if (!body.statements.some(isEntityRuntimeKeyDeleteFromCopy)) return undefined;
+  return `${subject} uses ${bridge} only to project the fresh { ...source } clone after delete copy[EntityRuntimeKey] into EntityWithoutRuntime<Type>. The spread creates a new generic Type row owner, Record<PropertyKey, unknown> supplies the symbol-keyed mutation view, and deleting the declared EntityRuntimeKey removes the sole cell excluded by EntityWithoutRuntime<Type>; every other Type cell stays on the same copy owner with its exact representation. Express this as one named generic entity-runtime strip operation, or return the compiler-proven Omit projection directly, so the source no longer needs a double assertion. This proof is limited to the fresh clone, the PropertyKey record view, the exact runtime-key deletion, and the matching EntityWithoutRuntime<Type> result; an arbitrary owner, key, or Omit assertion is not representation evidence. A reviewed source-portability exception is not justified for a general double assertion. The compiler may clone the generic row once, clear its runtime slot, and preserve that clone as the projected result, but will not route it through Any, cast or reinterpret the source owner, copy or materialize a second replacement, or add side storage.`;
+}
+
+function isNamedGenericTypeReference(node: ts.TypeNode | undefined, name: string, argumentName: string): boolean {
+  if (!node || !ts.isTypeReferenceNode(node) || getNodeName(node.typeName) !== name) return false;
+  const argument = node.typeArguments?.[0];
+  return (
+    node.typeArguments?.length === 1 &&
+    argument !== undefined &&
+    ts.isTypeReferenceNode(argument) &&
+    getNodeName(argument.typeName) === argumentName
+  );
+}
+
+function isPropertyKeyUnknownRecord(node: ts.TypeNode): boolean {
+  if (!ts.isTypeReferenceNode(node) || getNodeName(node.typeName) !== 'Record') return false;
+  const [key, value] = node.typeArguments ?? [];
+  return (
+    node.typeArguments?.length === 2 &&
+    key !== undefined &&
+    ts.isTypeReferenceNode(key) &&
+    getNodeName(key.typeName) === 'PropertyKey' &&
+    value?.kind === ts.SyntaxKind.UnknownKeyword
+  );
+}
+
+function getVariableDeclaration(body: ts.Block, name: string): ts.VariableDeclaration | undefined {
+  for (const statement of body.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === name) return declaration;
+    }
+  }
+  return undefined;
+}
+
+function isEntityRuntimeKeyDeleteFromCopy(statement: ts.Statement): boolean {
+  if (!ts.isExpressionStatement(statement) || !ts.isDeleteExpression(statement.expression)) return false;
+  const target = statement.expression.expression;
+  return (
+    ts.isElementAccessExpression(target) &&
+    ts.isIdentifier(target.expression) &&
+    target.expression.text === 'copy' &&
+    ts.isIdentifier(target.argumentExpression) &&
+    target.argumentExpression.text === 'EntityRuntimeKey'
+  );
+}
+
 function getMaterialDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
@@ -1478,6 +1565,8 @@ function renderUncheckedDoubleAssertionMessage(
   subject: string,
   bridge: 'any' | 'never' | 'unknown',
 ): string {
+  const entityRuntimeStrip = getEntityRuntimeStripDoubleAssertionGuidance(node, subject, bridge);
+  if (entityRuntimeStrip) return entityRuntimeStrip;
   const material = getMaterialDoubleAssertionGuidance(node, subject, bridge);
   if (material) return material;
   const gltfMaterialExtension = getGltfMaterialExtensionDoubleAssertionGuidance(node, subject, bridge);
