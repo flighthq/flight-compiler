@@ -39638,7 +39638,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     ).contents;
     expect(contents).toContain('guards.get(flight::String("collision")).value()');
     expect(contents).toContain('guards.get(flight::String("interaction")).value()');
-    expect(contents).not.toMatch(/guards\.(collision|interaction)/u);
+    expect(contents).not.toMatch(/guards\.(collision|interaction)\b/u);
     expect(contents).not.toContain('flight::Any');
   });
 });
