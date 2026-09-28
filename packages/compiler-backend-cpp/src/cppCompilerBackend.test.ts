@@ -12000,6 +12000,35 @@ describe('createCppCompilerBackend', () => {
     expect(chained).not.toContain('flight::Any');
   });
 
+  it('merges an optional-chain dual sentinel into an optional material member', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'standardMaterial.ts',
+        `export interface StandardMaterial { name?: string | null }
+         export function initializeStandardMaterial(
+           out: StandardMaterial,
+           options?: Readonly<Partial<StandardMaterial>>,
+         ): void {
+           out.name = options?.name ?? null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // `options?.name` has distinct null and undefined alternatives, while `?? null` intentionally merges
+    // those two source sentinels before the result is placed back in the optional property's three-state
+    // carrier. The lowering reads the source once, forwards only the exact string carrier, and constructs
+    // the nullable projection without a cast or structural reconstruction.
+    expect(contents).toContain('std::variant<flight::String, flight::Null, flight::Undefined> name');
+    expect(contents).toContain('std::get_if<flight::String>');
+    expect(contents).toContain('return std::optional<flight::String>{*alternative};');
+    expect(contents).toContain('return std::nullopt;');
+    expect(contents.match(/options/gmu)).toHaveLength(2);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('structural_ref_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
   it('separates a helper-backed primitive member from one the runtime has no representation for', () => {
     const primitiveMember = (body: string) =>
       lower(
@@ -42077,15 +42106,17 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       emit(`export function f(s: GlScene3DRuntime): GlScene3DRuntime { return { count: s.count ?? 0 }; }`),
     ).toContain('return std::get<0>(coalesce_left);');
 
-    // Still refused, and the boundary is recorded here so the next attempt starts from it rather than from the
-    // whole family: a SENTINEL-LITERAL fallback (`?? null`, `?? undefined`) refuses where a value fallback and a
-    // same-storage operand both lower, and a comparison asking for both sentinels refuses on its own rule.
+    // A null fallback now uses the same exact-carrier merge as the optional-chain material case: the
+    // dual-sentinel source projects through a nullable carrier, then contextual construction places that
+    // value back in the declared result carrier. Undefined and deeper nesting retain their separate refusal
+    // boundaries, and a comparison asking for both sentinels refuses on its own rule.
+    const nullable = emit(
+      `export function f(s: GlScene3DRuntime): number | null | undefined { return s.count ?? null; }`,
+    );
+    expect(nullable).toContain('std::get_if<double>');
+    expect(nullable).toContain('return std::optional<double>{*alternative};');
+    expect(nullable).toContain('std::in_place_type<flight::Null>');
     for (const [label, body, rule] of [
-      [
-        'null fallback',
-        `export function f(s: GlScene3DRuntime): number | null | undefined { return s.count ?? null; }`,
-        'cpp-dual-sentinel-coalesce-projection-unproven',
-      ],
       [
         'undefined fallback',
         `export function f(s: GlScene3DRuntime): number | null | undefined { return s.count ?? undefined; }`,

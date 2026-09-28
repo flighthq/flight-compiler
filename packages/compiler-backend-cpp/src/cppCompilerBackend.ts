@@ -3302,13 +3302,11 @@ function getCppAliasExpandedUnionValueSlotCpp(
   return matches.length === 1 ? matches[0]! : -1;
 }
 
-// `left ?? fallback` where left is a dual-sentinel variant and the result type is that variant's one value
-// domain. The source's meaning is a presence projection -- the value when NEITHER sentinel is held, the
-// fallback when either is -- and the variant's own alternatives answer it, so the projection is a checked
-// read of the single value slot: no cast, no copy, no second storage. It is emitted only when both halves
-// line up (one value slot, and an expected type that IS that slot's target); anything else -- several value
-// domains, or an expected type that is itself absent-carrying -- keeps the refusal, because the projection
-// would then be a union conversion with its own question to answer.
+// `left ?? fallback` where left is a dual-sentinel variant. The source's meaning is a presence projection --
+// the value when NEITHER sentinel is held, the fallback when either is -- and the variant's own alternatives
+// answer it, so the projection is a checked read of the value slot: no cast and no structural reconstruction.
+// A sentinel-literal fallback may merge the two source sentinels into a contextual one-sentinel carrier, but
+// only through the exact-carrier union projection shared with contextual union construction below.
 function emitCppDualSentinelCoalesceProjectionCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
@@ -3322,6 +3320,30 @@ function emitCppDualSentinelCoalesceProjectionCpp(
   // mixed-absence union lowers here rather than needing a conversion.
   const expectedUnion = getIrUnionTypeCpp(expectedType, context, new Set());
   const expectedPlan = expectedUnion ? getCppUnionRepresentationPlan(expectedUnion, context) : undefined;
+  const sentinelFallback =
+    expression.right.kind === 'literal' && expression.right.value === null
+      ? ('null' as const)
+      : expression.right.kind === 'undefinedValue' ||
+          (expression.right.kind === 'identifier' &&
+            expression.right.reference.kind === 'ambient' &&
+            expression.right.reference.name === 'undefined')
+        ? ('undefined' as const)
+        : undefined;
+  const sourceType =
+    getIrExpressionBindingTypeCpp(expression.left, context) ?? getIrExpressionTypeEvidenceCpp(expression.left, context);
+  const nullishProjection =
+    sentinelFallback && expectedUnion && expectedPlan && sourceType
+      ? emitCppDualSentinelNullishProjectionCpp(
+          expression.left,
+          sourceType,
+          plan,
+          sentinelFallback,
+          expectedUnion,
+          expectedPlan,
+          context,
+        )
+      : undefined;
+  if (nullishProjection) return nullishProjection;
   if (
     expectedPlan?.kind === 'dualSentinelVariant' &&
     expectedPlan.valueSlots.length === plan.valueSlots.length &&
