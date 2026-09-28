@@ -12,14 +12,14 @@ inline flight::String resolve(std::variant<flight::String, flight::Null, flight:
   if (std::holds_alternative<flight::Null>(value)) {
     return flight::String("null");
   }
-  if (std::holds_alternative<flight::Undefined>(value)) {
+  if (std::holds_alternative<flight::Undefined>(std::get<0>(value))) {
     return flight::String("undefined");
   }
   return std::get<0>(value);
 }
 
 inline double coerce(std::variant<double, flight::Null, flight::Undefined> value, double fallback) {
-  if ((std::holds_alternative<flight::Null>(value) || std::holds_alternative<flight::Undefined>(value))) {
+  if ((std::holds_alternative<flight::Null>(value) || std::holds_alternative<flight::Undefined>(std::get<0>(value)))) {
     return fallback;
   }
   return std::get<0>(value);

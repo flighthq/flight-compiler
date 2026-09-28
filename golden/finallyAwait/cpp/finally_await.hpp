@@ -2,6 +2,7 @@
 #pragma once
 #include <coroutine>
 #include <exception>
+#include <flight/boolean.hpp>
 #include <flight/runtime.hpp>
 
 static_assert(flight::runtime_contract.compiler_contract == "flight-runtime-contract/2", "Flight compiler/runtime contract mismatch");
@@ -21,7 +22,7 @@ inline flight::Task<double> attempt(flight::Task<double> task) {
   }
   (done = true);
   if (finally_exception) std::rethrow_exception(finally_exception);
-  co_return (done ? result : result);
+  co_return (flight::to_boolean(done) ? result : result);
 }
 
 } // namespace flighthq_golden
