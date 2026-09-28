@@ -3539,9 +3539,18 @@ function emitExpression(
         // call's type evidence reports only that return. Treating it as absence-free dropped the fallback
         // and left `optional<double>` where the source has a `number` — so the default is kept, and the
         // optional-call result is defaulted below like any other absent-capable left.
+        // The optionality sits on the CALLEE when the chain is a member call -- `frameRate?.toFixed(2)` marks
+        // the property, not the call, and the call's own `optional` stays false. Reading only the call missed
+        // exactly those chains, and the ambient member's result (`string`) then looked absence-free: the
+        // fallback was dropped for `frameRate?.toFixed(2) ?? ''` while `frameRate?.valueOf() ?? 30` kept
+        // hers, because `valueOf` reports no such result to mistake for one.
+        const leftCallee = expression.left.kind === 'call' ? expression.left.callee : undefined;
         const leftIsOptionalCall =
           expression.left.kind === 'call' &&
-          (expression.left.optional === true || expression.left.semantics.optionalChain !== undefined);
+          (expression.left.optional === true ||
+            expression.left.semantics.optionalChain !== undefined ||
+            (leftCallee?.kind === 'property' &&
+              (leftCallee.optional === true || leftCallee.optionalChain !== undefined)));
         if (
           leftType &&
           !union &&
@@ -25311,19 +25320,14 @@ function emitOptionalCallExpressionCpp(
   return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${invocation}; }())`;
 }
 
-// A chained call on a primitive receiver whose member IS bound AND whose chain evidence carries the chain's
-// own absence. `valueOf` is the case that qualifies today: on a primitive it is the value, so the chain adds
-// the presence test and nothing else -- an exact result type, the value itself, no cast, copy, or side
-// storage.
-//
-// `toFixed` and `toString` are deliberately NOT here even though their unchained forms lower through exact
-// helpers (`flight::number_to_fixed`, `flight::to_string`). Their chain evidence records the ambient member's
-// own result (`string`) without the absence the chain contributes, so the surrounding `??` treats the chain
-// as present and drops the fallback -- emitting `<std::optional<String>>` where the declared type says
-// `String`, which g++ rejects ("could not convert ... from 'std::optional<flight::String>' to
-// 'flight::String'"). That is an evidence gap in the chain's result type, and until it is closed in the
-// semantic layer a projection here would either drop absence or mismatch the declared type. Both refuse,
-// with the message naming the receiver and the distinction.
+// A chained call on a primitive receiver whose member IS bound: the chain adds the presence test and nothing
+// else, and the lowering is the same one the unchained form uses. Every entry has an exact result type -- the
+// ambient surface declares them and the runtime binds them -- so nothing is a guess, and none of them casts,
+// copies, or needs side storage:
+//   valueOf  -> the value itself (Number/String/Boolean.prototype.valueOf return their receiver)
+//   toFixed  -> flight::number_to_fixed, result string
+//   toString -> flight::to_string, result string
+// Anything else has no representation and keeps refusing, because a `double` has no members to call.
 function emitCppOptionalPrimitiveMemberCallCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   callee: Readonly<Extract<IrExpression, { kind: 'property' }>>,
@@ -25333,9 +25337,25 @@ function emitCppOptionalPrimitiveMemberCallCpp(
 ): string | undefined {
   const payloadType = emitOptionalChainPayloadIrTypeCpp(receiverType, context);
   if (payloadType.kind !== 'primitive' || payloadType.name !== 'number') return undefined;
-  if (callee.name !== 'valueOf' || expression.arguments.length !== 0) return undefined;
+  const value = projection.value;
+  const arguments_ = expression.arguments;
+  let payload: Readonly<IrType>;
+  let invocation: string;
+  if (callee.name === 'valueOf' && arguments_.length === 0) {
+    payload = payloadType;
+    invocation = value;
+  } else if (callee.name === 'toFixed' && arguments_.length <= 1) {
+    context.includes.add('flight/number.hpp');
+    payload = { kind: 'primitive', name: 'string' };
+    invocation = `flight::number_to_fixed(${value}, ${arguments_.length === 1 ? emitExpression(arguments_[0]!, context, { kind: 'primitive', name: 'number' }) : '0.0'})`;
+  } else if (callee.name === 'toString' && arguments_.length === 0) {
+    payload = { kind: 'primitive', name: 'string' };
+    invocation = `flight::to_string(${value})`;
+  } else {
+    return undefined;
+  }
   context.includes.add('optional');
-  return `([&]() -> std::optional<${emitType(payloadType, context)}> { auto optional_chain_receiver = ${emitOptionalChainReceiverCpp(callee.object, context)}; if (${projection.absent}) return std::nullopt; return ${projection.value}; }())`;
+  return `([&]() -> std::optional<${emitType(payload, context)}> { auto optional_chain_receiver = ${emitOptionalChainReceiverCpp(callee.object, context)}; if (${projection.absent}) return std::nullopt; return ${invocation}; }())`;
 }
 
 function emitOptionalPropertyCallExpressionCpp(

@@ -10892,20 +10892,19 @@ describe('createCppCompilerBackend', () => {
          ${body}`,
       ).module;
 
-    // The chained HELPER-backed call refuses even though its unchained form lowers, and the message says
-    // which half is missing: `toFixed` has a representation (flight::number_to_fixed) but its chain evidence
-    // records only the ambient `string`, without the undefined the chain contributes. The identity member is
-    // different -- its chain evidence does carry the absence -- so it lowers; the sibling test pins that.
-    const chainedHelper = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(
-        primitiveMember(`export function rate(source: Source): string { return source.frameRate?.toFixed(2) ?? ''; }`),
-        { runtimeProfile: 'flight-cpp' },
-      ),
+    // The chained helper lowers through the same runtime call its unchained form uses. The chain adds the
+    // presence test and the fallback stays: the coalesce has to see the chain as an optional call for that,
+    // and the optionality of a MEMBER call sits on the callee rather than on the call -- reading only
+    // `call.optional` treated the ambient `string` result as absence-free and dropped the fallback, which is
+    // why this emitted `<optional<String>>` where `String` was declared.
+    const chainedHelper = emitIrModuleCpp(
+      primitiveMember(`export function rate(source: Source): string { return source.frameRate?.toFixed(2) ?? ''; }`),
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(chainedHelper).toMatch(
+      /return \(\[&\]\(\) -> std::optional<flight::String> \{ auto optional_chain_receiver = source->frame_rate; if \(!std::holds_alternative<double>\(optional_chain_receiver\)\) return std::nullopt; return flight::number_to_fixed\(std::get<double>\(optional_chain_receiver\), 2\.0\); \}\(\)\)\.value_or\(flight::String\(""\)\);/u,
     );
-    expect(chainedHelper.rule).toBe('cpp-optional-property-call-missing-callable-result');
-    expect(chainedHelper.message).toContain('on the primitive receiver double requires callable result evidence');
-    expect(chainedHelper.message).toContain('needs BOTH a representation this compiler binds');
-    expect(chainedHelper.message).toContain("carries the chain's own absence");
+    expect(chainedHelper).not.toContain('flight::Any');
 
     // The unchained call is where the difference shows, and it is the whole determination: a member the
     // runtime lowers through a helper and the ambient surface declares a result for (`toFixed(digits?:
@@ -10943,7 +10942,7 @@ describe('createCppCompilerBackend', () => {
     expect(identity).toContain('return call->value_of();');
   });
 
-  it('lowers a chained primitive valueOf and refuses the members whose chain evidence drops absence', () => {
+  it('lowers chained primitive members the runtime binds and preserves their fallbacks', () => {
     const source = (body: string) =>
       lower(
         'primitive-members.ts',
@@ -10960,23 +10959,28 @@ describe('createCppCompilerBackend', () => {
     );
     expect(valueOf).not.toContain('flight::Any');
 
-    // `toFixed` and `toString` lower through exact helpers WITHOUT the chain, and their chain evidence records
-    // only the ambient result -- `string`, without the undefined the chain contributes -- so the fallback
-    // around them would be dropped and the emitted optional would mismatch the declared type. Both refuse,
-    // and the message says which half is missing rather than sending the author back for a helper that exists.
+    // The helper-backed members lower through their own runtime calls, and every one keeps its fallback: the
+    // chain is a presence test over the one value slot, and the payload is the exact ambient result.
     const unchained = emit(`export function fixed(source: Source): string { return source.frameRate!.toFixed(2); }`);
     expect(unchained).toContain('flight::number_to_fixed(std::get<double>(source->frame_rate), 2.0)');
-    for (const member of ['toFixed(2)', 'toString()']) {
-      const failure = captureBackendEmissionFailure(() =>
-        emitIrModuleCpp(
-          source(`export function rate(source: Source): string { return source.frameRate?.${member} ?? ''; }`),
-          { runtimeProfile: 'flight-cpp' },
-        ),
-      );
-      expect(failure.rule, member).toBe('cpp-optional-property-call-missing-callable-result');
-      expect(failure.message, member).toContain('needs BOTH a representation this compiler binds');
-      expect(failure.message, member).toContain("carries the chain's own absence");
-    }
+    const fixed = emit(`export function fixed(source: Source): string { return source.frameRate?.toFixed(2) ?? ''; }`);
+    expect(fixed).toContain('flight::number_to_fixed(std::get<double>(optional_chain_receiver), 2.0)');
+    expect(fixed).toContain('.value_or(flight::String(""))');
+    const text_ = emit(`export function text(source: Source): string { return source.frameRate?.toString() ?? ''; }`);
+    expect(text_).toContain('flight::to_string(std::get<double>(optional_chain_receiver))');
+    expect(text_).toContain('.value_or(flight::String(""))');
+
+    // A member with no representation still refuses -- the chain cannot invent one, and the message names the
+    // receiver and both halves a chained call needs.
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        source(`export function rate(source: Source): string { return source.frameRate?.toPrecision(2) ?? ''; }`),
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(failure.rule).toBe('cpp-optional-property-call-missing-callable-result');
+    expect(failure.message).toContain('on the primitive receiver double requires callable result evidence');
+    expect(failure.message).toContain('needs BOTH a representation this compiler binds');
   });
 
   it('refuses a primitive member the compiler binds no representation for', () => {
