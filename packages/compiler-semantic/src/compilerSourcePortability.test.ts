@@ -1124,6 +1124,68 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toMatchObject([{ finding: { identity: finding.identity } }]);
   });
 
+  it('keeps the WGPU scene skinning slot on its existing named adapter contract', () => {
+    const opaque = input(
+      'packages/types/src/WgpuScene3DRuntime.ts',
+      'interface WgpuScene3DRuntime { skinningAdapter: unknown | null }',
+    );
+    const closed = input(
+      'packages/types/src/WgpuScene3DRuntime.ts',
+      `interface WgpuSkinningAdapter { isGpuSkinned(meshId: number): boolean }
+       interface WgpuScene3DRuntime { skinningAdapter: WgpuSkinningAdapter | null }`,
+    );
+    const controls = [
+      input('packages/types/src/Other.ts', 'interface WgpuScene3DRuntime { skinningAdapter: unknown | null }'),
+      input(
+        'packages/other/src/WgpuScene3DRuntime.ts',
+        'interface WgpuScene3DRuntime { skinningAdapter: unknown | null }',
+      ),
+      input('packages/types/src/WgpuScene3DRuntime.ts', 'interface OtherRuntime { skinningAdapter: unknown | null }'),
+      input(
+        'packages/types/src/WgpuScene3DRuntime.ts',
+        'interface WgpuScene3DRuntime { skinningAdapter?: unknown | null }',
+      ),
+      input('packages/types/src/WgpuScene3DRuntime.ts', 'interface WgpuScene3DRuntime { skinningAdapter: unknown }'),
+      input(
+        'packages/types/src/WgpuScene3DRuntime.ts',
+        'interface WgpuScene3DRuntime { skinningAdapter: unknown | null | undefined }',
+      ),
+      input('packages/types/src/WgpuScene3DRuntime.ts', 'interface WgpuScene3DRuntime { skinningAdapter: any | null }'),
+      input(
+        'packages/types/src/WgpuScene3DRuntime.ts',
+        'interface WgpuScene3DRuntime { skinningAdapter: Readonly<unknown> | null }',
+      ),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings).toMatchObject([
+      {
+        rule: 'opaque-value-domain',
+        subject: 'interface:WgpuScene3DRuntime/property:skinningAdapter',
+      },
+    ]);
+    const message = report.findings[0]?.message;
+    expect(message).toContain('erases a contract that is already closed');
+    expect(message).toContain('WgpuRenderRegistries.gpuSkinning is a SlotTable<WgpuSkinningAdapter>');
+    expect(message).toContain('late registration updates the same slot');
+    expect(message).toContain('direct mesh upload, draw, pipeline, and wireframe consumers immediately restore');
+    expect(message).toContain('shadow and shader consumers receive that type through the accessor');
+    expect(message).toContain('Type the runtime property directly as WgpuSkinningAdapter | null');
+    expect(message).toContain('Registry extensibility does not make the adapter opaque');
+    expect(message).toContain('A reviewed exception is not justified');
+    expect(message).toContain('target-specific Any carrier');
+    expect(message).toContain('retain or insert a cast');
+    expect(message).toContain('copy or materialize the adapter');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message: controlMessage }) => !controlMessage.includes('WgpuRenderRegistries.gpuSkinning'),
+        ),
+      ).toBe(true);
+    }
+  });
+
   it('keeps Scene2D materialization dimension probes on the declared node traits contract', () => {
     const opaque = input(
       'packages/scene-document/src/sceneDocumentScene2DMaterialization.ts',

@@ -846,6 +846,14 @@ function getFlightTypesOpaquePropertyGuidance(
   ) {
     return `${subject} is the application-owned result of accepting or dismissing a dialog entry. closeGuiDialog reads only entryId to validate the active entry, removes that entry, and emits the same result through onClose without inspecting, coercing, retaining, or serializing value. This is a genuinely application-opaque result boundary. Record a reviewed source-portability exception for this exact property while producers and listeners exclusively own the payload meaning and the GUI core remains identity transport. If close values enter portable persistence or shared interpretation, replace unknown with a named closed GuiDialogCloseValue domain or entry-discriminated result arms shared by close callers and listeners. The compiler will not infer a schema from entryId or listeners, choose a target-specific Any carrier, insert a cast, or copy or materialize the payload.`;
   }
+  if (
+    isFlightTypesSource(node, 'WgpuScene3DRuntime.ts') &&
+    subject === 'interface:WgpuScene3DRuntime/property:skinningAdapter' &&
+    node.questionToken === undefined &&
+    isUnknownOrNull(node.type)
+  ) {
+    return `${subject} erases a contract that is already closed. WgpuRenderRegistries.gpuSkinning is a SlotTable<WgpuSkinningAdapter>; the default scene registry and registerWgpuGpuSkinning bind defaultWgpuSkinningAdapter, getWgpuScene3DRuntime retains the bound value, and late registration updates the same slot. getWgpuSkinningAdapter and direct mesh upload, draw, pipeline, and wireframe consumers immediately restore WgpuSkinningAdapter | null, while shadow and shader consumers receive that type through the accessor. Type the runtime property directly as WgpuSkinningAdapter | null with a type-only import, preserve that type through the accessor and consumers, and remove the casts. Registry extensibility does not make the adapter opaque because every registered value must implement the same named interface. A reviewed exception is not justified. The compiler will not choose a target-specific Any carrier, retain or insert a cast, or copy or materialize the adapter.`;
+  }
   if (isFlightTypesSource(node, 'Log.ts') && isReadonlyUnknownRecord(node.type) && node.questionToken === undefined) {
     const owner =
       subject === 'interface:LogContext/property:fields'
@@ -928,6 +936,14 @@ function isReadonlyUnknownRecord(node: ts.TypeNode | undefined): boolean {
 
 function isUnknownArrayType(node: ts.TypeNode | undefined): boolean {
   return Boolean(node && ts.isArrayTypeNode(node) && node.elementType.kind === ts.SyntaxKind.UnknownKeyword);
+}
+
+function isUnknownOrNull(node: ts.TypeNode | undefined): boolean {
+  if (!node || !ts.isUnionTypeNode(node) || node.types.length !== 2) return false;
+  return (
+    node.types.some((type) => type.kind === ts.SyntaxKind.UnknownKeyword) &&
+    node.types.some((type) => hasNullType(type))
+  );
 }
 
 function isStringOrReadonlyUnknownRecord(node: ts.TypeNode): boolean {
