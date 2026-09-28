@@ -3396,6 +3396,124 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flight::Any');
   });
 
+  it('requires the node runtime accessor to retain writable capability and one exact trait owner', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/node/contract',
+          target: { packageName: '@flighthq/node', source: 'packages/node/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'types/src/contract.ts',
+          `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           export interface NodeInteractionState { enabled: boolean }
+           export interface NodeTraits { enabled: boolean }
+           export interface Node<Traits extends object = NodeTraits> {
+             [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+           }
+           export interface NodeRuntime<Traits extends object = NodeTraits> {
+             interactionState: NodeInteractionState | null;
+             traits: Traits | null;
+           }
+           export type NodeAny = Node<any>;`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/contract.ts',
+          `import { EntityRuntimeKey } from '@flighthq/types/contract';
+           import type { Node, NodeRuntime, NodeTraits } from '@flighthq/types/contract';
+           export function getNodeRuntime<Traits extends object = NodeTraits>(
+             source: Readonly<Node<Traits>>,
+           ): Readonly<NodeRuntime<Traits>> {
+             return source[EntityRuntimeKey]!;
+           }
+           export function getWritableNodeRuntime<Traits extends object>(
+             source: Node<Traits>,
+           ): NodeRuntime<Traits> {
+             return source[EntityRuntimeKey]!;
+           }`,
+        ),
+        source(
+          '@flighthq/interaction',
+          'interaction/src/nodeInteractionState.ts',
+          `import { getNodeRuntime } from '@flighthq/node/contract';
+           import type { NodeAny, NodeInteractionState, NodeRuntime } from '@flighthq/types/contract';
+           function createNodeInteractionState(): NodeInteractionState { return { enabled: true }; }
+           export function enableNodeInteractionState(source: NodeAny): NodeInteractionState {
+             const runtime = getNodeRuntime(source) as NodeRuntime<NodeAny>;
+             return (runtime.interactionState ??= createNodeInteractionState());
+           }`,
+        ),
+        source(
+          '@flighthq/interaction',
+          'interaction/src/readNodeInteractionState.ts',
+          `import { getNodeRuntime } from '@flighthq/node/contract';
+           import type { NodeAny, NodeInteractionState } from '@flighthq/types/contract';
+           export function getNodeInteractionState(source: Readonly<NodeAny>): NodeInteractionState | null {
+             return getNodeRuntime(source).interactionState;
+           }`,
+        ),
+        source(
+          '@flighthq/interaction',
+          'interaction/src/writeNodeInteractionState.ts',
+          `import { getWritableNodeRuntime } from '@flighthq/node/contract';
+           import type { Node, NodeInteractionState } from '@flighthq/types/contract';
+           function createNodeInteractionState(): NodeInteractionState { return { enabled: true }; }
+           export function enableNodeInteractionState<Traits extends object>(
+             source: Node<Traits>,
+           ): NodeInteractionState {
+             const runtime = getWritableNodeRuntime(source);
+             return (runtime.interactionState ??= createNodeInteractionState());
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const read = session.emitModule(modules[3]!)[0]!.contents;
+    const write = session.emitModule(modules[4]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(refused.classification).toBe('source-portability');
+    expect(refused.message).toContain('retained row owner is NodeRuntime<NodeTraits>');
+    expect(refused.message).toContain('asserted writable owner is NodeRuntime<NodeAny>');
+    expect(refused.message).toContain('different generic specializations');
+    expect(refused.message).toContain(
+      'Add a mutable-source accessor that returns NodeRuntime<Traits> directly from the typed runtime slot',
+    );
+    expect(refused.message).toContain('Keep getNodeRuntime readonly for reads');
+    expect(read).toContain('flighthq_node::get_node_runtime');
+    expect(read).toContain('RowKey<"interactionState">');
+    expect(read).not.toContain('structural_ref_cast');
+    expect(write).toContain('flighthq_node::get_writable_node_runtime');
+    expect(write).toContain('runtime->interaction_state');
+    expect(write).not.toContain('structural_ref_cast');
+    expect(write).not.toContain('materialize_row');
+    expect(write).not.toContain('static_pointer_cast');
+  });
+
   it('requires the bounds runtime slot and accessor to carry their writable cells', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [

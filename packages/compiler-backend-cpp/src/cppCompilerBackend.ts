@@ -4135,8 +4135,20 @@ function emitExpression(
             expression.type,
             context,
           );
-          const absentOwnerRemediation =
-            absent.length === 0
+          const genericOwnerMismatch = getCppStructuralRowGenericOwnerMismatchCpp(
+            capabilitySourceRow,
+            capabilityTargetRow,
+            context,
+          );
+          const readonlyAccessor =
+            structuralSourceExpression.kind === 'call' &&
+            structuralSourceExpression.callee.kind === 'identifier' &&
+            structuralSourceExpression.callee.reference.kind === 'binding'
+              ? structuralSourceExpression.callee.reference.binding.name
+              : 'the readonly accessor';
+          const absentOwnerRemediation = genericOwnerMismatch
+            ? ` The retained row owner is ${genericOwnerMismatch.source}, while the asserted writable owner is ${genericOwnerMismatch.target}; they are different generic specializations, so the assertion does not name the owner this row retains. Add a mutable-source accessor that returns ${genericOwnerMismatch.base}<Traits> directly from the typed runtime slot and preserves the same Traits argument from its mutable input. Keep ${readonlyAccessor} readonly for reads, and use the writable accessor only at mutation sites.`
+            : absent.length === 0
               ? ''
               : ` Making only that boundary writable is insufficient here: the source owner does not declare ${renderCppSubjectNameListCpp(absent)}, so it has no cells for the asserted row to mutate. Declare both the storage slot and the accessor result as the full writable ${writableTargetName} row where initialization establishes those cells, rather than widening ${readonlySourceName} at the use site.`;
           emissionError(
@@ -5718,6 +5730,58 @@ function emitCppContextualStructuralUnionAssertionFacetCpp(
   context.includes.add('variant');
   context.includes.add('stdexcept');
   return `([&]() -> ${emitType(expectedType, context)} { const auto& ${narrowed} = ${source}; if (const auto* alternative = std::get_if<${alternative.slot.targetType}>(&${narrowed})) return ${converted}; throw std::logic_error("asserted structural union alternative is not present"); }())`;
+}
+
+interface CppStructuralRowGenericOwnerMismatch {
+  readonly base: string;
+  readonly source: string;
+  readonly target: string;
+}
+
+// A readonly generic row may retain one exact nominal owner while an assertion names another
+// specialization of that declaration. The shared declaration name is not enough: each type argument
+// participates in the generated owner and in member cell types, so changing it would retype storage.
+// Report this before the ordinary absent-member guidance; the remedy is to preserve one type argument
+// through the typed slot and its accessor, not to add the member that merely exposed the mismatch.
+function getCppStructuralRowGenericOwnerMismatchCpp(
+  sourceRow: Readonly<CompilerCppStructuralRowPlan>,
+  targetRow: Readonly<CompilerCppStructuralRowPlan>,
+  context: EmitContext,
+): Readonly<CppStructuralRowGenericOwnerMismatch> | undefined {
+  const source = getCppStructuralRowObjectTypeCpp(sourceRow);
+  const target = getCppStructuralRowObjectTypeCpp(targetRow);
+  if (
+    source?.kind !== 'named' ||
+    target?.kind !== 'named' ||
+    source.reference.kind !== 'binding' ||
+    target.reference.kind !== 'binding' ||
+    source.typeArguments.length !== 1 ||
+    target.typeArguments.length !== 1
+  ) {
+    return undefined;
+  }
+  const sourceDeclaration = getCppMemberDeclarationKeyCpp(
+    source,
+    getCppNamedTypeBindingModuleCpp(source, context),
+    context,
+  );
+  const targetDeclaration = getCppMemberDeclarationKeyCpp(
+    target,
+    getCppNamedTypeBindingModuleCpp(target, context),
+    context,
+  );
+  if (
+    !sourceDeclaration ||
+    sourceDeclaration !== targetDeclaration ||
+    normalizeCompilerStructuralValueCanonical(source) === normalizeCompilerStructuralValueCanonical(target)
+  ) {
+    return undefined;
+  }
+  return {
+    base: describeIrTypeForDiagnosticCpp(target),
+    source: describeDeclaredIrTypeForDiagnosticCpp(source),
+    target: describeDeclaredIrTypeForDiagnosticCpp(target),
+  };
 }
 
 function emitCppContextualVoidValueCpp(
