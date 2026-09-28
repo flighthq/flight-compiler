@@ -203,6 +203,156 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
   });
 
+  it('identifies the exact Tray result errors that preserve genuinely opaque host payloads', () => {
+    const opaqueText = `interface TrayDestroyFailure {
+         readonly error?: unknown;
+         readonly step: 'native-resource';
+       }
+       type TrayCreateCapabilityResult =
+         | { readonly error?: unknown; readonly outcome: 'runtime-api-unavailable' }
+         | { readonly error?: unknown; readonly outcome: 'invalid-icon' }
+         | { readonly error?: unknown; readonly outcome: 'tray-create-failed' };
+       type TrayImageUpdateResult =
+         | { readonly error?: unknown; readonly outcome: 'invalid-icon' }
+         | { readonly error?: unknown; readonly outcome: 'image-update-failed' };
+       type TrayTitleUpdateResult = { readonly error?: unknown; readonly outcome: 'title-update-failed' };
+       type TrayTooltipUpdateResult = { readonly error?: unknown; readonly outcome: 'tooltip-update-failed' };
+       type TrayTemplateImageUpdateResult = {
+         readonly error?: unknown;
+         readonly outcome: 'template-image-update-failed';
+       };
+       type TrayPressedImageUpdateResult =
+         | { readonly error?: unknown; readonly outcome: 'invalid-icon' }
+         | { readonly error?: unknown; readonly outcome: 'pressed-image-update-failed' };
+       type TrayDoubleClickPolicyUpdateResult = {
+         readonly error?: unknown;
+         readonly outcome: 'double-click-policy-update-failed';
+       };
+       type TrayMenuUpdateResult =
+         | { readonly error?: unknown; readonly outcome: 'menu-build-failed' }
+         | { readonly error?: unknown; readonly outcome: 'menu-install-failed' };
+       type TrayTitleReadResult = { readonly error?: unknown; readonly outcome: 'title-read-failed' };
+       type TrayTooltipReadResult = { readonly error?: unknown; readonly outcome: 'tooltip-read-failed' };
+       type TrayBoundsResult = { readonly error?: unknown; readonly outcome: 'bounds-read-failed' };
+       type TrayPopupMenuResult = { readonly error?: unknown; readonly outcome: 'popup-failed' };
+       type TrayBalloonDisplayResult = { readonly error?: unknown; readonly outcome: 'balloon-display-failed' };
+       type TrayBalloonRemoveResult = { readonly error?: unknown; readonly outcome: 'balloon-remove-failed' };
+       type TrayReleaseResult = { readonly error?: unknown; readonly outcome: 'release-failed' };
+       type TrayEventAttachResult = { readonly error?: unknown; readonly outcome: 'subscription-failed' };`;
+    const opaque = input('packages/types/src/Tray.ts', opaqueText);
+    const closed = input(
+      'packages/types/src/Tray.ts',
+      `interface TrayErrorPayload {
+         readonly code: string;
+         readonly message: string;
+         readonly operation: string;
+       }
+       ${opaqueText.replaceAll('unknown', 'TrayErrorPayload')}`,
+    );
+    const renamed = input(
+      'packages/types/src/Other.ts',
+      `type TrayReleaseResult = { readonly error?: unknown; readonly outcome: 'release-failed' };`,
+    );
+    const sameBasename = input(
+      'packages/other/src/Tray.ts',
+      `type TrayReleaseResult = { readonly error?: unknown; readonly outcome: 'release-failed' };`,
+    );
+    const unrelated = input(
+      'packages/types/src/Tray.ts',
+      `type OtherResult = { readonly error?: unknown; readonly outcome: 'runtime-api-unavailable' };`,
+    );
+    const anyProbe = input(
+      'packages/types/src/Tray.ts',
+      `type TrayReleaseResult = { readonly error?: any; readonly outcome: 'release-failed' };`,
+    );
+    const requiredProbe = input(
+      'packages/types/src/Tray.ts',
+      `type TrayReleaseResult = { readonly error: unknown; readonly outcome: 'release-failed' };`,
+    );
+    const nullableProbe = input(
+      'packages/types/src/Tray.ts',
+      `type TrayReleaseResult = { readonly error?: unknown | null; readonly outcome: 'release-failed' };`,
+    );
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const messages = report.findings.map(({ message }) => message);
+
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'interface:TrayDestroyFailure/property:error',
+      'type:TrayBalloonDisplayResult/arm:outcome=balloon-display-failed/property:error',
+      'type:TrayBalloonRemoveResult/arm:outcome=balloon-remove-failed/property:error',
+      'type:TrayBoundsResult/arm:outcome=bounds-read-failed/property:error',
+      'type:TrayCreateCapabilityResult/arm:outcome=invalid-icon/property:error',
+      'type:TrayCreateCapabilityResult/arm:outcome=runtime-api-unavailable/property:error',
+      'type:TrayCreateCapabilityResult/arm:outcome=tray-create-failed/property:error',
+      'type:TrayDoubleClickPolicyUpdateResult/arm:outcome=double-click-policy-update-failed/property:error',
+      'type:TrayEventAttachResult/arm:outcome=subscription-failed/property:error',
+      'type:TrayImageUpdateResult/arm:outcome=image-update-failed/property:error',
+      'type:TrayImageUpdateResult/arm:outcome=invalid-icon/property:error',
+      'type:TrayMenuUpdateResult/arm:outcome=menu-build-failed/property:error',
+      'type:TrayMenuUpdateResult/arm:outcome=menu-install-failed/property:error',
+      'type:TrayPopupMenuResult/arm:outcome=popup-failed/property:error',
+      'type:TrayPressedImageUpdateResult/arm:outcome=invalid-icon/property:error',
+      'type:TrayPressedImageUpdateResult/arm:outcome=pressed-image-update-failed/property:error',
+      'type:TrayReleaseResult/arm:outcome=release-failed/property:error',
+      'type:TrayTemplateImageUpdateResult/arm:outcome=template-image-update-failed/property:error',
+      'type:TrayTitleReadResult/arm:outcome=title-read-failed/property:error',
+      'type:TrayTitleUpdateResult/arm:outcome=title-update-failed/property:error',
+      'type:TrayTooltipReadResult/arm:outcome=tooltip-read-failed/property:error',
+      'type:TrayTooltipUpdateResult/arm:outcome=tooltip-update-failed/property:error',
+    ]);
+    expect(messages.filter((message) => message.includes('reserved capability outcome'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('image decoder failures'))).toHaveLength(3);
+    expect(messages.filter((message) => message.includes('lifecycle creation or cancellation cleanup'))).toHaveLength(
+      1,
+    );
+    expect(messages.filter((message) => message.includes('native cleanup failures'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('Native image setters'))).toHaveLength(2);
+    expect(
+      messages.filter((message) => message.includes('A native setter or the generic update wrapper')),
+    ).toHaveLength(4);
+    expect(messages.filter((message) => message.includes('menu construction'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('deliberately heterogeneous'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('host read capability or invokeRead'))).toHaveLength(3);
+    expect(messages.filter((message) => message.includes('native Tray surface operation'))).toHaveLength(3);
+    expect(messages.filter((message) => message.includes('Signal subscription or release'))).toHaveLength(2);
+    for (const message of messages) {
+      expect(message).toContain('crosses the public Tray result boundary unchanged');
+      expect(message).toContain('neither a detection-only probe nor a normalized value: it is genuinely opaque');
+      expect(message).toContain('named closed TrayErrorPayload');
+      expect(message).toContain('reviewed source-portability exception for this exact property');
+      expect(message).toContain('target-specific Any carrier');
+      expect(message).toContain('insert a cast');
+      expect(message).toContain('copy or materialize the payload');
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const [control, count] of [
+      [renamed, 1],
+      [sameBasename, 1],
+      [unrelated, 1],
+      [anyProbe, 1],
+      [requiredProbe, 1],
+      [nullableProbe, 2],
+    ] as const) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(count);
+      expect(findings.every((finding) => !finding.message.includes('public Tray result boundary'))).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'Tray deliberately returns the provider-owned payload only for unexamined host diagnostics.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(22);
+  });
+
   it('keeps texture-atlas JSON detection probes at a reviewed boundary', () => {
     const opaque = input(
       'packages/textureatlas-formats/src/textureAtlasDetect.ts',

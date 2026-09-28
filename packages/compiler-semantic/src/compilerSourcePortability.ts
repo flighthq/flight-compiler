@@ -393,11 +393,83 @@ function renderOpaquePropertyValueDomainMessage(
   if (textureAtlasDetection) return textureAtlasDetection;
   const lottiePayload = getLottieOpaquePayloadGuidance(node, subject, kinds);
   if (lottiePayload) return lottiePayload;
+  const trayError = getTrayOpaqueErrorGuidance(node, subject, kinds);
+  if (trayError) return trayError;
   if (getNodeName(node.name) !== 'error' || kinds.size !== 1 || !kinds.has('unknown')) {
     return renderOpaqueValueDomainMessage(subject, 'exposes', kinds);
   }
   const presence = node.questionToken ? 'an optional error payload' : 'an error payload';
   return `${subject} exposes unknown as ${presence}; JavaScript permits throwing values of any type, so neither the annotation nor its downstream uses prove one portable runtime representation. Normalize every producer at the catch or provider boundary into a named closed error payload shared by the result arms, storage, and consumers, using fields with explicit portable value types. If preserving arbitrary thrown values is intentional, record a reviewed source-portability exception for that boundary. The compiler will not infer Error, stringify the value, or choose a target-specific Any carrier.`;
+}
+
+function getTrayOpaqueErrorGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    kinds.size !== 1 ||
+    !kinds.has('unknown') ||
+    getNodeName(node.name) !== 'error' ||
+    node.questionToken === undefined ||
+    node.type?.kind !== ts.SyntaxKind.UnknownKeyword ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/Tray.ts')
+  ) {
+    return undefined;
+  }
+  const flow = getTrayOpaqueErrorFlow(subject);
+  if (flow === undefined) return undefined;
+  const outcome = getDiscriminatedOutcomeFromSubject(subject) ?? 'native-resource destruction failure';
+  return `${subject} preserves an optional unknown error for the Tray ${outcome} result; ${flow} The payload crosses the public Tray result boundary unchanged. No consumer inspects it to recover a runtime domain, and it is neither a detection-only probe nor a normalized value: it is genuinely opaque. If portable consumers need machine-readable failure data, normalize every producer before result construction into one named closed TrayErrorPayload shared by capabilities, wrapper results, storage, and consumers. If arbitrary provider-thrown data is intentionally returned only as an unexamined host diagnostic, record a reviewed source-portability exception for this exact property. The compiler will not infer Error, stringify the value, choose a target-specific Any carrier, insert a cast, or copy or materialize the payload.`;
+}
+
+function getTrayOpaqueErrorFlow(subject: string): string | undefined {
+  switch (subject) {
+    case 'type:TrayCreateCapabilityResult/arm:outcome=runtime-api-unavailable/property:error':
+      return 'The arm is a reserved capability outcome, and createTrayIcon forwards any provider-supplied payload without narrowing.';
+    case 'type:TrayCreateCapabilityResult/arm:outcome=invalid-icon/property:error':
+    case 'type:TrayImageUpdateResult/arm:outcome=invalid-icon/property:error':
+    case 'type:TrayPressedImageUpdateResult/arm:outcome=invalid-icon/property:error':
+      return 'Electron image decoder failures are caught as thrown payloads, and the public create, update, or animation wrappers preserve the same payload without narrowing.';
+    case 'type:TrayCreateCapabilityResult/arm:outcome=tray-create-failed/property:error':
+      return 'Electron and Tauri lifecycle creation or cancellation cleanup, plus createTrayIcon itself, can catch arbitrary thrown values and preserve the same payload in the entity result.';
+    case 'interface:TrayDestroyFailure/property:error':
+      return 'Electron and Tauri native cleanup failures, or a rejected lifecycle destroy, are aggregated as failure entries without payload normalization.';
+    case 'type:TrayImageUpdateResult/arm:outcome=image-update-failed/property:error':
+    case 'type:TrayPressedImageUpdateResult/arm:outcome=pressed-image-update-failed/property:error':
+      return 'Native image setters and the generic update wrapper can catch arbitrary thrown values, and image animation propagates the resulting failure arm unchanged.';
+    case 'type:TrayDoubleClickPolicyUpdateResult/arm:outcome=double-click-policy-update-failed/property:error':
+    case 'type:TrayTemplateImageUpdateResult/arm:outcome=template-image-update-failed/property:error':
+    case 'type:TrayTitleUpdateResult/arm:outcome=title-update-failed/property:error':
+    case 'type:TrayTooltipUpdateResult/arm:outcome=tooltip-update-failed/property:error':
+      return 'A native setter or the generic update wrapper catches an arbitrary thrown value and returns it without narrowing.';
+    case 'type:TrayMenuUpdateResult/arm:outcome=menu-build-failed/property:error':
+      return 'Electron and Tauri menu construction catches arbitrary thrown values and returns the same payload without narrowing.';
+    case 'type:TrayMenuUpdateResult/arm:outcome=menu-install-failed/property:error':
+      return 'Menu installation is deliberately heterogeneous: producers return caught values, explicit Error instances, or an array of cleanup failures, and no consumer narrows them.';
+    case 'type:TrayBoundsResult/arm:outcome=bounds-read-failed/property:error':
+    case 'type:TrayTitleReadResult/arm:outcome=title-read-failed/property:error':
+    case 'type:TrayTooltipReadResult/arm:outcome=tooltip-read-failed/property:error':
+      return 'The host read capability or invokeRead can return or catch an arbitrary failure payload, which the public read wrapper preserves without normalization.';
+    case 'type:TrayBalloonDisplayResult/arm:outcome=balloon-display-failed/property:error':
+    case 'type:TrayBalloonRemoveResult/arm:outcome=balloon-remove-failed/property:error':
+    case 'type:TrayPopupMenuResult/arm:outcome=popup-failed/property:error':
+      return 'The native Tray surface operation or invokeUpdate catches an arbitrary thrown value and returns it without narrowing.';
+    case 'type:TrayEventAttachResult/arm:outcome=subscription-failed/property:error':
+    case 'type:TrayReleaseResult/arm:outcome=release-failed/property:error':
+      return 'Signal subscription or release catches an arbitrary thrown value and exposes it directly in the lifecycle result.';
+    default:
+      return undefined;
+  }
+}
+
+function getDiscriminatedOutcomeFromSubject(subject: string): string | undefined {
+  const marker = '/arm:outcome=';
+  const start = subject.indexOf(marker);
+  if (start < 0) return undefined;
+  const valueStart = start + marker.length;
+  const end = subject.indexOf('/', valueStart);
+  return subject.slice(valueStart, end < 0 ? undefined : end);
 }
 
 function getSpineDrawOrderOpaqueValueGuidance(
