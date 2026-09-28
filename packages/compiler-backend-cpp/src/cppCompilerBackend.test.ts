@@ -8076,6 +8076,148 @@ describe('createCppCompilerBackend', () => {
     expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('retains a named union element through a guarded imported resource state snapshot', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Entity',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          specifier: '@flighthq/types/ports',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/ports.ts' },
+        },
+        {
+          specifier: './resource',
+          target: { packageName: '@flighthq/midi', source: 'packages/midi/src/resource.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/Entity.ts',
+            `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+             export interface EntityRuntime { binding: object | null; uid?: string }
+             export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/ports.ts',
+            `import type { Entity } from './Entity';
+             export interface InputPort extends Entity { readonly name: string; readonly type: 'input' }
+             export interface OutputPort extends Entity { readonly name: string; readonly type: 'output' }
+             export type Port = InputPort | OutputPort;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/midi',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/midi/src/resource.ts',
+            `import type { Port } from '@flighthq/types/ports';
+             interface ResourceState { knownPorts: Set<Port> }
+             export function getResourceState(): ResourceState | undefined { return undefined; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/midi',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/midi/src/dispose.ts',
+            `import type { Port } from '@flighthq/types/ports';
+             import { getResourceState } from './resource';
+             async function dispose(_port: Port): Promise<void> {}
+             export async function disposeAll(): Promise<void> {
+               const state = getResourceState();
+               if (state === undefined) return;
+               for (const port of [...state.knownPorts]) await dispose(port);
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const contents = emitCppModuleCppSession(results, moduleResolution, 3);
+
+    expect(contents).toContain('flight::Array<flighthq_types::Port> array_spread_result');
+    expect(contents).toContain('co_await dispose(port)');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('static_pointer_cast');
+  });
+
+  it('does not preserve an async loop union owner when an emitted member carrier was expanded', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/ports',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/ports.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/ports.ts',
+            `interface PortMetadata { readonly value: number }
+             export interface InputPort {
+               readonly metadata: PortMetadata;
+               readonly type: 'input';
+             }
+             export interface OutputPort {
+               readonly metadata: PortMetadata;
+               readonly type: 'output';
+             }
+             export type Port = InputPort | OutputPort;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/midi',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/midi/src/dispose.ts',
+            `import type { Port } from '@flighthq/types/ports';
+             async function dispose(_port: Port): Promise<void> {}
+             export async function disposeAll(ports: Set<Port>): Promise<void> {
+               for (const port of [...ports]) await dispose(port);
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => emitCppModuleCppSession(results, moduleResolution, 1));
+
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.classification).toBe('source-portability');
+  });
+
   it('refuses a for-of source alias that names multiple runtime alternatives', () => {
     const result = lower(
       'ambiguous-xml-content.ts',

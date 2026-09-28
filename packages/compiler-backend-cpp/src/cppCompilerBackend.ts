@@ -2372,6 +2372,38 @@ function isCppRuntimeOwnedGeneratedSymbolMemberCpp(
   );
 }
 
+function hasCppInterfaceRuntimeOwnedSymbolMemberCpp(
+  type: Readonly<IrType>,
+  propertyName: string,
+  context: EmitContext,
+  resolving: ReadonlySet<string> = new Set(),
+): boolean {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
+  const module = getCppNamedTypeBindingModuleCpp(type, context);
+  const owner = getCppNamedTypeDeclarationOwnerCpp(type, module, context);
+  if (owner?.declaration.kind !== 'interface') return false;
+  const identity = `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}`;
+  if (resolving.has(identity)) return false;
+  const ownerContext = owner.module === context.module ? context : { ...context, module: owner.module };
+  if (
+    owner.declaration.properties.some(
+      (property) => property.name === propertyName && isCppRuntimeOwnedGeneratedSymbolMemberCpp(property, ownerContext),
+    )
+  ) {
+    return true;
+  }
+  const substitutions = createIrTypeParameterSubstitutionPlan(owner.declaration.typeParameters, type.typeArguments);
+  const nextResolving = new Set(resolving).add(identity);
+  return owner.declaration.extends.some((base) =>
+    hasCppInterfaceRuntimeOwnedSymbolMemberCpp(
+      resolveIrTypeStructuralSubstitution(base, substitutions),
+      propertyName,
+      ownerContext,
+      nextResolving,
+    ),
+  );
+}
+
 function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: EmitContext): string[] {
   const context: EmitContext = {
     ...outer,
@@ -7300,11 +7332,31 @@ function areCppCollectionElementSourceAlternativeShapesEquivalent(
   if (isDeepStrictEqual(left, right)) return true;
   const leftShape = resolveCppObjectShapeInTypeOwnerCpp(left, context);
   const rightShape = resolveCppObjectShapeInTypeOwnerCpp(right, context);
+  // The exact-carrier guard applies to storage the binding view could replace. A phantom unique-symbol
+  // member emits no field. The canonical EntityRuntime key is owned by the original Flight referent, so
+  // retaining that referent also retains its exact field; the checker's expanded key value is not new
+  // storage. Ordinary emitted members remain in this comparison and must keep identical carriers.
+  const runtimeOwnedNames = new Set(
+    leftShape
+      ?.filter(
+        (property) =>
+          !property.phantom &&
+          property.computedKey &&
+          hasCppInterfaceRuntimeOwnedSymbolMemberCpp(left, property.name, context),
+      )
+      .map((property) => property.name),
+  );
+  const bindingViewStorage = (property: Readonly<IrObjectTypeProperty>): boolean =>
+    !property.phantom && !runtimeOwnedNames.has(property.name);
+  const leftStorageShape = leftShape?.filter(bindingViewStorage);
+  const rightStorageShape = rightShape?.filter(bindingViewStorage);
   if (
     !leftShape ||
     !rightShape ||
     leftShape.length !== rightShape.length ||
-    !areCppUnionMemberObjectRepresentationsEquivalent(left, right, context) ||
+    !leftStorageShape ||
+    !rightStorageShape ||
+    !areCppObjectShapesRepresentationEquivalent(leftStorageShape, rightStorageShape, context) ||
     !context.referenceRepresentationPlanner.isStructurallyAssignable(left, right, context.module) ||
     !context.referenceRepresentationPlanner.isStructurallyAssignable(right, left, context.module)
   ) {
@@ -7316,6 +7368,7 @@ function areCppCollectionElementSourceAlternativeShapesEquivalent(
     if (
       !other ||
       property.optional !== other.optional ||
+      Boolean(property.phantom) !== Boolean(other.phantom) ||
       Boolean(property.computedKey) !== Boolean(other.computedKey)
     ) {
       return false;
