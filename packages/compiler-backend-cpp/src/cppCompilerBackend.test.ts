@@ -36905,7 +36905,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       'copying or materializing an array, or adding side storage, would publish a different outer owner',
     );
     expect(projectedArray.message).toContain(
-      'declare the result as readonly FlightDocumentResourceDescriptor[] with its existing null arm',
+      'declare the result as readonly FlightDocumentResourceDescriptor[] while preserving its existing absence arm',
     );
     expect(projectedArray.message).toContain(
       'declare the source field itself with the projected readonly-element type and construct every array in that declared context',

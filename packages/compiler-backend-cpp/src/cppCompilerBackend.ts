@@ -15576,7 +15576,7 @@ function emitContextualUnionExpressionInContextCpp(
       : undefined;
     const structuralArrayRemediation = structuralArrayProjectionGap
       ? expression.kind === 'property'
-        ? `Change the source contract: declare the result as readonly ${describeIrTypeForDiagnosticCpp(structuralArrayProjectionGap.sourceElementType)}[] with its existing null arm, or declare the source field itself with the projected readonly-element type and construct every array in that declared context. If both declarations must remain, add an identity-preserving projected-array carrier or view to flight-cpp.`
+        ? `Change the source contract: declare the result as readonly ${describeIrTypeForDiagnosticCpp(structuralArrayProjectionGap.sourceElementType)}[] while preserving its existing absence arm, or declare the source field itself with the projected readonly-element type and construct every array in that declared context. If both declarations must remain, add an identity-preserving projected-array carrier or view to flight-cpp.`
         : `Return the exact source array type, or construct a fresh local array only in the declared destination context so its element carrier is chosen at allocation. If both declarations must remain, add an identity-preserving projected-array carrier or view to flight-cpp.`
       : undefined;
     emissionError(
