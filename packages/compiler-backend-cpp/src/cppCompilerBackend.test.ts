@@ -10827,13 +10827,17 @@ describe('createCppCompilerBackend', () => {
     ).toBe('cpp-union-member-access-unguarded');
   });
 
-  it('names the constrained type parameter behind an absence-carrying member read', () => {
+  it('keeps a nested GlyphAtlas runtime read on storage that can prove presence', () => {
+    const declarations = `interface Bitmap { readonly width: number; readonly height: number }
+       interface GlyphAtlasRuntime { readonly bitmap: Bitmap }
+       interface GlyphAtlas<Runtime extends GlyphAtlasRuntime | undefined> { readonly runtime: Runtime }`;
     const generic = lower(
-      'explainGlyphAtlasEntry.ts',
-      `interface GlyphAtlasEntry { readonly width: number }
-       export function explain<T extends GlyphAtlasEntry | undefined>(entry: T): number {
-         if (entry === undefined) return 0;
-         return entry.width;
+      'packages/glyphatlas/src/explainGlyphAtlasEntry.ts',
+      `${declarations}
+       export function explain<Runtime extends GlyphAtlasRuntime | undefined>(atlas: GlyphAtlas<Runtime>): number {
+         const runtime = atlas.runtime;
+         if (runtime === undefined) return 0;
+         return runtime.bitmap.width + runtime.bitmap.height;
        }`,
     ).module;
     const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(generic, { runtimeProfile: 'flight-cpp' }));
@@ -10850,22 +10854,49 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('a C++ template parameter is emitted as the type argument itself');
     expect(failure.message).toContain('Declare the parameter as the concrete optional type its constraint names');
 
-    // The same guard over a concrete optional IS the narrowing the storage answers: the contrast is what
-    // makes the refusal above a statement about the receiver rather than about the guard.
+    // Without even a guard, the nested member read reaches the same boundary at `runtime.bitmap`: the
+    // type parameter still has no absence channel, so the compiler cannot unwrap it to reach width/height.
+    const unguardedGeneric = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'packages/glyphatlas/src/unguardedExplainGlyphAtlasEntry.ts',
+          `${declarations}
+           export function explain<Runtime extends GlyphAtlasRuntime | undefined>(atlas: GlyphAtlas<Runtime>): number {
+             const runtime = atlas.runtime;
+             return runtime.bitmap.width + runtime.bitmap.height;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(unguardedGeneric.rule).toBe('cpp-optional-member-access-unproven');
+    expect(unguardedGeneric.message).toContain('property bitmap');
+    expect(unguardedGeneric.message).toContain('the receiver is the type parameter Runtime');
+    expect(unguardedGeneric.message).toContain("guard's sentinel has no storage in the emitted code");
+
+    // The same guard over a concrete optional IS the narrowing the storage answers. The exact nested
+    // width/height reads use that checked value, while `fits` reads its already-present bitmap directly.
     const concrete = emitIrModuleCpp(
       lower(
-        'explainConcreteEntry.ts',
-        `interface GlyphAtlasEntry { readonly width: number }
-         export function explain(entry: GlyphAtlasEntry | undefined): number {
-           if (entry === undefined) return 0;
-           return entry.width;
+        'packages/glyphatlas/src/concreteExplainGlyphAtlasEntry.ts',
+        `${declarations}
+         export function explain(atlas: GlyphAtlas<GlyphAtlasRuntime | undefined>): number {
+           const runtime = atlas.runtime;
+           if (runtime === undefined) return 0;
+           return runtime.bitmap.width + runtime.bitmap.height;
+         }
+         export function fits(bitmap: Bitmap, width: number, height: number): boolean {
+           return bitmap.width <= width && bitmap.height <= height;
          }`,
       ).module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
-    expect(concrete).toContain('std::optional<flight::Ref<GlyphAtlasEntry>> entry');
-    expect(concrete).toContain('if (!entry.has_value())');
-    expect(concrete).toContain('entry.value()->width');
+    expect(concrete).toContain('auto runtime = atlas->runtime;');
+    expect(concrete).toContain('if (!runtime.has_value())');
+    expect(concrete).toContain('runtime.value()->bitmap->width');
+    expect(concrete).toContain('runtime.value()->bitmap->height');
+    expect(concrete).toContain('bitmap->width');
+    expect(concrete).toContain('bitmap->height');
     expect(concrete).not.toContain('structural_ref_cast');
     expect(concrete).not.toContain('materialize');
 
@@ -10874,15 +10905,18 @@ describe('createCppCompilerBackend', () => {
     const unguarded = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(
         lower(
-          'explainUnguardedEntry.ts',
-          `interface GlyphAtlasEntry { readonly width: number }
-           export function explain(entry: GlyphAtlasEntry | undefined): number { return entry.width; }`,
+          'packages/glyphatlas/src/unguardedConcreteExplainGlyphAtlasEntry.ts',
+          `${declarations}
+           export function explain(atlas: GlyphAtlas<GlyphAtlasRuntime | undefined>): number {
+             const runtime = atlas.runtime;
+             return runtime.bitmap.width;
+           }`,
         ).module,
         { runtimeProfile: 'flight-cpp' },
       ),
     );
     expect(unguarded.rule).toBe('cpp-optional-member-access-unproven');
-    expect(unguarded.message).toContain('property width');
+    expect(unguarded.message).toContain('property bitmap');
     expect(unguarded.message).toContain('requires narrowed access');
     expect(unguarded.message).toContain('no present-value proof reaches this read');
     expect(unguarded.message).toContain('Guard this exact receiver');
