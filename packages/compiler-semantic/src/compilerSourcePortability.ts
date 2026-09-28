@@ -474,6 +474,8 @@ function renderOpaqueTypeAliasValueDomainMessage(
   subject: string,
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string {
+  const residualFlightType = getResidualFlightTypeAliasOpaqueValueGuidance(node, subject, kinds);
+  if (residualFlightType) return residualFlightType;
   const logData = getFlightLogOpaqueValueGuidance(node, subject, kinds);
   if (logData) return logData;
   const pixiInput = getPixiParseOpaqueValueGuidance(node, subject, kinds);
@@ -487,7 +489,9 @@ function renderOpaqueMethodValueDomainMessage(
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string {
   const appLoopHandle = getHostAppLoopOpaqueHandleGuidance(node, type, subject, kinds);
-  return appLoopHandle ?? renderOpaqueValueDomainMessage(subject, 'exposes', kinds);
+  if (appLoopHandle) return appLoopHandle;
+  const videoStream = getHostVideoOpaqueStreamGuidance(node, type, subject, kinds);
+  return videoStream ?? renderOpaqueValueDomainMessage(subject, 'exposes', kinds);
 }
 
 function renderOpaquePropertyValueDomainMessage(
@@ -495,6 +499,8 @@ function renderOpaquePropertyValueDomainMessage(
   subject: string,
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string {
+  const animationValue = getAnimationOpaqueValueGuidance(node, subject, kinds);
+  if (animationValue) return animationValue;
   const flightContract = getFlightTypesOpaquePropertyGuidance(node, subject, kinds);
   if (flightContract) return flightContract;
   const spineDrawOrder = getSpineDrawOrderOpaqueValueGuidance(node, subject, kinds);
@@ -559,6 +565,99 @@ function getTrayWrapperOpaqueErrorFlow(node: ts.PropertySignature, subject: stri
 function isStringLiteralType(node: ts.TypeNode | undefined, value: string): boolean {
   return (
     node !== undefined && ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal) && node.literal.text === value
+  );
+}
+
+function getAnimationOpaqueValueGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (!hasOnlyUnknown(kinds) || node.questionToken !== undefined || node.type?.kind !== ts.SyntaxKind.UnknownKeyword) {
+    return undefined;
+  }
+  if (isFlightTypesSource(node, 'AnimationChannel.ts') && subject === 'interface:AnimationChannel/property:targetRef') {
+    return `${subject} is the animation core's domain-owned target reference. Channel construction and cloning retain the same reference; crossfade and layer composition use identity equality only, and sampling passes the channel unchanged to scene, skeleton, tween, or vendor binders that own validation and interpretation. The core neither serializes nor dereferences the target, so this is a genuinely domain-opaque extensibility contract. Record a reviewed source-portability exception for this exact property only while those invariants hold and every interpreting binder owns its narrowing. If targets must enter portable persistence or cross-domain transport, normalize them at createAnimationChannel into one named closed tagged AnimationTargetRef domain shared by producers and binders. The compiler will not infer a union from downstream casts or registry entries, choose a target-specific Any carrier, insert a cast, or copy or materialize the target reference.`;
+  }
+  if (
+    isFlightTypesSource(node, 'AnimationClipEvent.ts') &&
+    subject === 'interface:AnimationClipEvent/property:payload'
+  ) {
+    return `${subject} is an application-owned clip-marker payload. createAnimationClipEvent stores the supplied value unchanged, cloneAnimationClip carries the same payload reference into the cloned marker, and AnimationPlayer emits the whole event unchanged; the animation core reads only name and time. The payload is retained by the clip but remains genuinely domain-opaque and is never serialized or interpreted by the core. Record a reviewed source-portability exception for this exact property while payload meaning stays exclusively with event producers and listeners. If clips or marker payloads enter portable persistence or shared interpretation, normalize at createAnimationClipEvent into a named closed AnimationClipEventPayload domain or name-discriminated event arms. The compiler will not infer a schema from event names or listeners, choose a target-specific Any carrier, insert a cast, or copy or materialize the payload.`;
+  }
+  return undefined;
+}
+
+function getResidualFlightTypeAliasOpaqueValueGuidance(
+  node: ts.TypeAliasDeclaration,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (!hasOnlyUnknown(kinds)) return undefined;
+  if (
+    isFlightTypesSource(node, 'AppWindow.ts') &&
+    subject === 'type:NativeWindowHandle' &&
+    node.type.kind === ts.SyntaxKind.UnknownKeyword
+  ) {
+    return `${subject} is a host-owned native window identity. attachWindow forwards it directly to the selected provider; the web, Electron, and Tauri providers validate their own required surface before retaining the native object only in provider-private maps, while AppWindow stores no handle. This is a genuinely provider-opaque identity boundary. Record a reviewed source-portability exception for this exact alias while provider validation dominates every use and the handle never enters portable results, serialization, or application state. If portable code needs window identity, expose a separate named closed attachment key through a provider adapter and keep the native owner private. The compiler will not infer one representation from DOM, Electron, Tauri, or integer providers, choose a target-specific Any carrier, insert a cast, or copy or materialize the native window.`;
+  }
+  if (
+    isFlightTypesSource(node, 'Surface.ts') &&
+    subject === 'type:NativeSurfaceHandle' &&
+    node.type.kind === ts.SyntaxKind.UnknownKeyword
+  ) {
+    return `${subject} is the drawable identity owned by the allocating host. Surface construction retains it for the surface lifetime only in package-private SurfaceRuntime; portable layers pass the Surface entity, while web and rendering providers retrieve and narrow the handle to their own canvas, element, or native drawable type. This retained value is nevertheless genuinely provider-opaque, not portable surface data. Record a reviewed source-portability exception for this exact alias while only the allocating provider reads it and no handle enters public results or serialization. If portable code needs drawable identity, expose a separate named closed surface key through a provider adapter and keep the native owner private. The compiler will not infer one representation from DOM, SDL, EGL, WebGPU, or integer providers, choose a target-specific Any carrier, insert a cast, or copy or materialize the drawable.`;
+  }
+  if (
+    isFlightTypesSource(node, 'Net.ts') &&
+    subject === 'type:NetResponseBody' &&
+    isNetResponseBodyOpaqueUnion(node.type)
+  ) {
+    return `${subject} includes unknown for the JSON response arm, but that arm crosses the public NetResponse boundary and is returned to callers alongside text, ArrayBuffer, Blob, and null; it is not a provider token or an unexamined diagnostic. Both web decoder paths produce it from JSON.parse or Response.json, and native providers share the same contract. Declare a recursive named closed NetJsonValue domain for JSON primitives, arrays, and string-keyed objects, include it in NetResponseBody, and validate or normalize every host JSON decoder before NetResponse construction. The compiler will not treat unknown as only JSON, infer the responseType correlation, choose a target-specific Any carrier, insert a cast, or copy or materialize the response body.`;
+  }
+  return undefined;
+}
+
+function getHostVideoOpaqueStreamGuidance(
+  node: ts.MethodSignature,
+  type: ts.TypeNode,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    !hasOnlyUnknown(kinds) ||
+    type.kind !== ts.SyntaxKind.UnknownKeyword ||
+    !isFlightTypesSource(node, 'HostVideo.ts') ||
+    subject !== 'interface:HostVideoCapability/method:attachStream.parameter:stream' ||
+    node.questionToken === undefined ||
+    node.parameters.length !== 1 ||
+    !isHostImageSourceOrNull(node.type)
+  ) {
+    return undefined;
+  }
+  return `${subject} is the browser provider's live media-stream input. createWebVideoResourceFromMediaStream is the only production caller and passes a MediaStream directly; the web provider immediately installs it as the video element's srcObject and returns the HostImageSource, so portable VideoResource state retains the element rather than the stream. This is a genuinely provider-opaque input boundary. Record a reviewed source-portability exception for this exact parameter while attachment remains provider-local and the stream is never serialized or stored in portable state. If cross-host stream attachment becomes a portable feature, introduce a named closed HostVideoStreamHandle entity through provider adapters and keep each native stream private. The compiler will not assume MediaStream for every host, choose a target-specific Any carrier, insert a cast, or copy or materialize the live stream.`;
+}
+
+function isHostImageSourceOrNull(node: ts.TypeNode | undefined): boolean {
+  if (!node || !ts.isUnionTypeNode(node) || node.types.length !== 2) return false;
+  return (
+    node.types.some((type) => isNamedTypeReference(type, 'HostImageSource')) &&
+    node.types.some((type) => hasNullType(type))
+  );
+}
+
+function isNamedTypeReference(node: ts.TypeNode, name: string): boolean {
+  return ts.isTypeReferenceNode(node) && getNodeName(node.typeName) === name && (node.typeArguments?.length ?? 0) === 0;
+}
+
+function isNetResponseBodyOpaqueUnion(node: ts.TypeNode): boolean {
+  if (!ts.isUnionTypeNode(node) || node.types.length !== 5) return false;
+  return (
+    node.types.some((type) => type.kind === ts.SyntaxKind.StringKeyword) &&
+    node.types.some((type) => type.kind === ts.SyntaxKind.UnknownKeyword) &&
+    node.types.some((type) => isNamedTypeReference(type, 'ArrayBuffer')) &&
+    node.types.some((type) => isNamedTypeReference(type, 'Blob')) &&
+    node.types.some((type) => hasNullType(type))
   );
 }
 

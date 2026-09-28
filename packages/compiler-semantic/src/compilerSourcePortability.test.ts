@@ -537,6 +537,211 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(2);
   });
 
+  it('preserves animation target and marker payloads as exact domain-owned references', () => {
+    const target = input(
+      'packages/types/src/AnimationChannel.ts',
+      'interface AnimationChannel { track: AnimationTrack; targetRef: unknown }',
+    );
+    const event = input(
+      'packages/types/src/AnimationClipEvent.ts',
+      'interface AnimationClipEvent { name: string; payload: unknown; time: number }',
+    );
+    const closed = [
+      input(
+        'packages/types/src/AnimationChannel.ts',
+        `type AnimationTargetRef = { readonly kind: 'node'; readonly nodeId: string }
+           | { readonly boneIndex: number; readonly kind: 'bone' };
+         interface AnimationChannel { track: AnimationTrack; targetRef: AnimationTargetRef }`,
+      ),
+      input(
+        'packages/types/src/AnimationClipEvent.ts',
+        `type AnimationClipEventPayload =
+           | { readonly kind: 'audio'; readonly resource: string }
+           | { readonly kind: 'marker' };
+         interface AnimationClipEvent { name: string; payload: AnimationClipEventPayload; time: number }`,
+      ),
+    ];
+    const controls = [
+      input('packages/types/src/Other.ts', 'interface AnimationChannel { targetRef: unknown }'),
+      input('packages/other/src/AnimationChannel.ts', 'interface AnimationChannel { targetRef: unknown }'),
+      input('packages/types/src/AnimationChannel.ts', 'interface AnimationChannel { targetRef?: unknown }'),
+      input('packages/types/src/AnimationChannel.ts', 'interface AnimationChannel { targetRef: any }'),
+      input('packages/types/src/AnimationClipEvent.ts', 'interface AnimationClipEvent { payload?: unknown }'),
+      input('packages/types/src/AnimationClipEvent.ts', 'interface AnimationClipEvent { payload: unknown[] }'),
+      input('packages/types/src/AnimationClipEvent.ts', 'interface OtherEvent { payload: unknown }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([event, target]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'interface:AnimationChannel/property:targetRef',
+      'interface:AnimationClipEvent/property:payload',
+    ]);
+    expect(report.findings[0]?.message).toContain('crossfade and layer composition use identity equality only');
+    expect(report.findings[0]?.message).toContain('genuinely domain-opaque extensibility contract');
+    expect(report.findings[0]?.message).toContain('named closed tagged AnimationTargetRef domain');
+    expect(report.findings[1]?.message).toContain('cloneAnimationClip carries the same payload reference');
+    expect(report.findings[1]?.message).toContain('retained by the clip but remains genuinely domain-opaque');
+    expect(report.findings[1]?.message).toContain('named closed AnimationClipEventPayload domain');
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('insert a cast');
+      expect(finding.message).toMatch(/copy or materialize the (?:target reference|payload)/u);
+    }
+    expect(analyzeTypeScriptSourcePortability(closed).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('genuinely domain-opaque'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([event, target], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'The animation core preserves the domain-owned reference without interpreting or serializing it.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(2);
+  });
+
+  it('keeps native window, video-stream, and surface identities inside their exact providers', () => {
+    const windowHandle = input('packages/types/src/AppWindow.ts', 'type NativeWindowHandle = unknown;');
+    const videoStream = input(
+      'packages/types/src/HostVideo.ts',
+      `interface HostVideoCapability {
+         attachStream?(stream: unknown): HostImageSource | null;
+       }`,
+    );
+    const surfaceHandle = input('packages/types/src/Surface.ts', 'type NativeSurfaceHandle = unknown;');
+    const closed = [
+      input(
+        'packages/types/src/AppWindow.ts',
+        "interface NativeWindowHandle { readonly __brand: 'NativeWindowHandle' }",
+      ),
+      input(
+        'packages/types/src/HostVideo.ts',
+        `interface HostVideoStreamHandle { readonly __brand: 'HostVideoStreamHandle' }
+         interface HostVideoCapability { attachStream?(stream: HostVideoStreamHandle): HostImageSource | null }`,
+      ),
+      input(
+        'packages/types/src/Surface.ts',
+        "interface NativeSurfaceHandle { readonly __brand: 'NativeSurfaceHandle' }",
+      ),
+    ];
+    const controls = [
+      input('packages/types/src/Other.ts', 'type NativeWindowHandle = unknown;'),
+      input('packages/other/src/AppWindow.ts', 'type NativeWindowHandle = unknown;'),
+      input('packages/types/src/AppWindow.ts', 'type NativeWindowHandle = unknown | null;'),
+      input('packages/types/src/Surface.ts', 'type NativeSurfaceHandle = any;'),
+      input('packages/types/src/Surface.ts', 'type OtherHandle = unknown;'),
+      input(
+        'packages/types/src/HostVideo.ts',
+        'interface HostVideoCapability { attachStream(stream: unknown): HostImageSource | null }',
+      ),
+      input(
+        'packages/types/src/HostVideo.ts',
+        'interface HostVideoCapability { attachStream?(stream: unknown): HostImageSource }',
+      ),
+      input(
+        'packages/types/src/HostVideo.ts',
+        'interface OtherVideoCapability { attachStream?(stream: unknown): HostImageSource | null }',
+      ),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([surfaceHandle, videoStream, windowHandle]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'type:NativeWindowHandle',
+      'interface:HostVideoCapability/method:attachStream.parameter:stream',
+      'type:NativeSurfaceHandle',
+    ]);
+    expect(report.findings[0]?.message).toContain('retaining the native object only in provider-private maps');
+    expect(report.findings[0]?.message).toContain('genuinely provider-opaque identity boundary');
+    expect(report.findings[1]?.message).toContain('only production caller');
+    expect(report.findings[1]?.message).toContain("video element's srcObject");
+    expect(report.findings[1]?.message).toContain('named closed HostVideoStreamHandle entity');
+    expect(report.findings[2]?.message).toContain('only in package-private SurfaceRuntime');
+    expect(report.findings[2]?.message).toContain('genuinely provider-opaque');
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('reviewed source-portability exception for this exact');
+      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('insert a cast');
+      expect(finding.message).toMatch(/copy or materialize the (?:native window|live stream|drawable)/u);
+    }
+    expect(analyzeTypeScriptSourcePortability(closed).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('provider-opaque'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([surfaceHandle, videoStream, windowHandle], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'The native identity is confined to its provider and never enters portable state or serialization.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(3);
+  });
+
+  it('requires network JSON responses to use a closed recursive value domain', () => {
+    const opaque = input(
+      'packages/types/src/Net.ts',
+      'type NetResponseBody = string | unknown | ArrayBuffer | Blob | null;',
+    );
+    const closed = input(
+      'packages/types/src/Net.ts',
+      `type NetJsonPrimitive = boolean | number | string | null;
+       type NetJsonValue =
+         | NetJsonPrimitive
+         | readonly NetJsonValue[]
+         | Readonly<Record<string, NetJsonValue>>;
+       type NetResponseBody = string | NetJsonValue | ArrayBuffer | Blob | null;`,
+    );
+    const controls = [
+      input('packages/types/src/Other.ts', 'type NetResponseBody = string | unknown | ArrayBuffer | Blob | null;'),
+      input('packages/other/src/Net.ts', 'type NetResponseBody = string | unknown | ArrayBuffer | Blob | null;'),
+      input('packages/types/src/Net.ts', 'type NetResponseBody = unknown;'),
+      input('packages/types/src/Net.ts', 'type NetResponseBody = string | unknown | ArrayBuffer | null;'),
+      input('packages/types/src/Net.ts', 'type NetResponseBody = string | any | ArrayBuffer | Blob | null;'),
+      input('packages/types/src/Net.ts', 'type OtherBody = string | unknown | ArrayBuffer | Blob | null;'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings).toMatchObject([{ rule: 'opaque-value-domain', subject: 'type:NetResponseBody' }]);
+    const message = report.findings[0]?.message;
+    expect(message).toContain('crosses the public NetResponse boundary');
+    expect(message).toContain('not a provider token or an unexamined diagnostic');
+    expect(message).toContain('JSON.parse or Response.json');
+    expect(message).toContain('recursive named closed NetJsonValue domain');
+    expect(message).toContain('normalize every host JSON decoder before NetResponse construction');
+    expect(message).toContain('will not treat unknown as only JSON');
+    expect(message).toContain('target-specific Any carrier');
+    expect(message).toContain('insert a cast');
+    expect(message).toContain('copy or materialize the response body');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('NetJsonValue'),
+        ),
+      ).toBe(true);
+    }
+  });
+
   it('requires tray-style failure results to normalize unknown error payloads at their producer boundary', () => {
     const opaque = input(
       'Tray.ts',
