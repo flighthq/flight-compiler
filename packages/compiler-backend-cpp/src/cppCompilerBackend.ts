@@ -2635,9 +2635,15 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
         variable.type.element.types.some((type) => type.kind === 'unknown')))
       ? getIrExpressionTypeEvidenceCpp(variable.initializer, context)
       : undefined;
-  const invariantCollectionInitializerType =
-    !arrayElement && !variable.mutable && variable.type && variable.initializer?.kind === 'call'
+  const collectionInitializerRefinement =
+    !arrayElement && variable.type && variable.initializer?.kind === 'call'
       ? getCppRuntimeCollectionResultRefinementCpp(variable.initializer, variable.type, context)
+      : undefined;
+  const invariantCollectionInitializerType =
+    collectionInitializerRefinement &&
+    (!variable.mutable ||
+      hasCppMutableBindingExactCollectionStorageCpp(variable.binding.id, collectionInitializerRefinement, context))
+      ? collectionInitializerRefinement
       : undefined;
   const guardedVariantInitializerType =
     !arrayElement &&
@@ -2942,6 +2948,14 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
   }
   const variableUnion = getIrUnionTypeCpp(variable.type, context, new Set());
   const initializerUnion = getIrUnionTypeCpp(initializerType, context, new Set());
+  if (
+    variable.initializer.kind === 'conditional' &&
+    variableUnion &&
+    initializerUnion &&
+    isCppOwnerPreservingConditionalUnionInitializerCpp(variable.initializer, initializerUnion, variableUnion, context)
+  ) {
+    return initializerType;
+  }
   const nullishObjectFallbackOwner =
     variable.initializer.kind === 'binary' && variable.initializer.operator === '??'
       ? getCppOwnerPreservingNullishObjectFallbackTypeCpp(variable.initializer, context)
@@ -3011,6 +3025,36 @@ function getCppStructurallyEquivalentInitializerTypeCpp(
     areCppObjectShapesRepresentationEquivalent(variableShape, initializerShape, context)
     ? initializerType
     : undefined;
+}
+
+// A conditional does not allocate or convert either branch. When both branches already carry one exact
+// union representation, an immutable `auto` local keeps that carrier even if checker flow expands the
+// inferred binding into local anonymous arms. The inferred binding still has to pair every alternative
+// uniquely with the source representation; a lookalike, subset, or ambiguous discriminant is left alone.
+function isCppOwnerPreservingConditionalUnionInitializerCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'conditional' }>>,
+  initializerUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  variableUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  context: EmitContext,
+): boolean {
+  const inspectionContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const sourcePlan = getCppUnionRepresentationPlan(initializerUnion, inspectionContext);
+  const variablePlan = getCppUnionRepresentationPlan(variableUnion, inspectionContext);
+  if (!hasUniqueCppSemanticUnionSlotMappingCpp(sourcePlan, variablePlan, context)) return false;
+  const branchTypes = [expression.whenTrue, expression.whenFalse].map((branch) =>
+    getIrExpressionTypeEvidenceCpp(branch, context),
+  );
+  if (branchTypes.some((type) => !type)) return false;
+  return branchTypes.every((type) => {
+    const union = getIrUnionTypeCpp(type!, context, new Set());
+    if (!union) return false;
+    const plan = getCppUnionRepresentationPlan(union, {
+      ...context,
+      anonymousStructs: new Map(),
+      includes: new Set<string>(),
+    });
+    return hasEquivalentCppContextualUnionRepresentationCpp(plan, sourcePlan, context);
+  });
 }
 
 // A nullish lookup of one declared reference owner followed by a fresh object fallback still produces
@@ -15004,6 +15048,11 @@ function getCppUnionAliasDeclarationOwnerCpp(
   expectedType: Readonly<IrType>,
   context: EmitContext,
 ): Readonly<IrModule> | 'ambiguous' | undefined {
+  // Readonly/Required do not choose storage. When either wraps an imported union alias, the alias's
+  // declaring module still owns its anonymous intersection arms; looking only at the expanded union
+  // below would mint local twins and then ask for a conversion between two names for the same arms.
+  const identityType = getCppIdentityPreservingUtilityArgument(expectedType);
+  if (identityType) return getCppUnionAliasDeclarationOwnerCpp(identityType, context);
   const alias =
     expectedType.kind === 'union' ? getCppOptionalImportedUnionValueAliasCpp(expectedType, context) : expectedType;
   if (!alias || alias.kind !== 'named' || alias.reference.kind !== 'binding') return undefined;
@@ -15648,18 +15697,22 @@ function emitContextualUnionExpressionInContextCpp(
       );
     }
     const runtimeConversionGap = hasUniqueCppSemanticUnionSlotMappingCpp(expressionPlan, plan, context);
-    const action = runtimeConversionGap
-      ? 'The alternatives match uniquely, but no checked target-runtime conversion exists between their C++ carriers; keep both sides on the same declared union alias or add a runtime conversion contract.'
-      : 'Narrow or convert the source expression so each of its alternatives names exactly one destination union alternative.';
+    const intersectionOwnerGap =
+      runtimeConversionGap && hasCppDistinctIntersectionUnionOwnersCpp(expressionPlan, plan, context);
+    const action = intersectionOwnerGap
+      ? 'Every semantic alternative pairs uniquely, but the source stores it in a distinct intersection owner rather than the destination arm. Those generated owners are sibling C++ types, not a base relation: an unchecked cast would retype the object, while copying or materializing it would change identity. Keep both APIs on the same declared arm owner, introduce one shared nominal arm owner, or add an identity-preserving runtime view.'
+      : runtimeConversionGap
+        ? 'The alternatives match uniquely, but no checked target-runtime conversion exists between their C++ carriers; keep both sides on the same declared union alias or add a runtime conversion contract.'
+        : 'The carrier lists show which source alternatives have no exact destination carrier. Preserve the declared collection or member union alias before flow expansion, or narrow and convert the source while its concrete alternative is known.';
     emissionError(
       context,
-      `contextual C++ union conversion requires equivalent source union evidence: target ${plan.kind} [${plan.valueSlots
-        .map((slot) => slot.representationKey)
-        .join(', ')}] from source ${expressionPlan.kind} [${expressionPlan.valueSlots
-        .map((slot) => slot.representationKey)
+      `contextual C++ union conversion requires equivalent source union evidence: target ${plan.kind} carriers [${plan.valueSlots
+        .map((slot) => slot.targetType)
+        .join(', ')}] from ${expression.kind} source ${expressionPlan.kind} carriers [${expressionPlan.valueSlots
+        .map((slot) => slot.targetType)
         .join(', ')}]. ${action}`,
       'cpp-contextual-union-inequivalent',
-      runtimeConversionGap ? 'target-runtime' : 'source-portability',
+      intersectionOwnerGap ? undefined : runtimeConversionGap ? 'target-runtime' : 'source-portability',
     );
   }
   if (expressionType.kind === 'null' || expressionType.kind === 'undefined') {
@@ -16114,6 +16167,23 @@ function hasUniqueCppSemanticUnionSlotMappingCpp(
     unmatched.delete(matches[0]!);
   }
   return unmatched.size === 0;
+}
+
+function hasCppDistinctIntersectionUnionOwnersCpp(
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): boolean {
+  if (sourcePlan.valueSlots.length === 0 || sourcePlan.valueSlots.length !== targetPlan.valueSlots.length) {
+    return false;
+  }
+  return sourcePlan.valueSlots.every((source) => {
+    if (source.runtimeType.kind !== 'intersection') return false;
+    const sourceCarrier = qualifyCppDeclaringModuleTypeCpp(source.targetType, context);
+    return targetPlan.valueSlots.every(
+      (target) => qualifyCppDeclaringModuleTypeCpp(target.targetType, context) !== sourceCarrier,
+    );
+  });
 }
 
 interface CppInterfaceHeritageUnionCarrierGap {
@@ -18589,6 +18659,13 @@ function getIrTypeRuntimeDomainCpp(
     const valueType = getCppTypeOfValueType(type, context);
     return valueType ? getIrTypeRuntimeDomainCpp(valueType, context, resolvingAliases) : undefined;
   }
+  if (type.kind === 'indexedAccess') {
+    // Indexed access is compile-time selection, not one runtime value domain. Resolve the declared
+    // member before union planning so `Owner['member']` and that member's written union choose the
+    // same slots instead of treating the whole indexed-access node as one optional payload.
+    const indexed = getCppIndexedAccessType(type, context);
+    return indexed ? getIrTypeRuntimeDomainCpp(indexed, context, resolvingAliases) : undefined;
+  }
   if (
     type.kind === 'named' &&
     type.reference.kind === 'ambient' &&
@@ -19488,16 +19565,103 @@ function getCppRuntimeCollectionResultRefinementCpp(
   const concreteMapGetResult = getCppConcreteMapGetResultTypeEvidenceCpp(expression, context);
   if (
     concreteMapGetResult &&
-    !areCppTypesRepresentationEquivalent(declaredType, concreteMapGetResult, {
-      ...context,
-      anonymousStructs: new Map(),
-      includes: new Set<string>(),
-    })
+    !hasEquivalentCppCollectionResultStorageCpp(declaredType, concreteMapGetResult, context)
   ) {
     return concreteMapGetResult;
   }
   const runtimeType = getCppRuntimeMemberCallResultTypeEvidence(expression, context);
   return runtimeType ? getCppInvariantCollectionEvidenceRefinementCpp(declaredType, runtimeType) : undefined;
+}
+
+function hasEquivalentCppCollectionResultStorageCpp(
+  left: Readonly<IrType>,
+  right: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const leftUnion = getIrUnionTypeCpp(left, context, new Set());
+  const rightUnion = getIrUnionTypeCpp(right, context, new Set());
+  if (leftUnion || rightUnion) {
+    if (!leftUnion || !rightUnion) return false;
+    const leftPlan = getCppUnionRepresentationPlan(leftUnion, {
+      ...context,
+      anonymousStructs: new Map(),
+      includes: new Set<string>(),
+    });
+    const rightPlan = getCppUnionRepresentationPlan(rightUnion, {
+      ...context,
+      anonymousStructs: new Map(),
+      includes: new Set<string>(),
+    });
+    return hasEquivalentCppContextualUnionRepresentationCpp(leftPlan, rightPlan, context);
+  }
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  return emitType(left, isolatedContext) === emitType(right, isolatedContext);
+}
+
+// A mutable local initialized by Map/WeakMap.get already owns the collection's exact V | undefined
+// carrier. It may keep that carrier only when every later rebinding is a fresh construction in V (or
+// one of the carrier's own sentinels). This is deliberately a whole-binding proof: preserving the get
+// result for the initializer while one later assignment needs the checker's expanded anonymous owner
+// would merely move the inequivalent-union failure to that assignment -- or, worse, retype an existing
+// value. Fresh objects can adopt V at allocation and no existing object is cast, copied, or materialized.
+function hasCppMutableBindingExactCollectionStorageCpp(
+  bindingId: string,
+  storageType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const union = getIrUnionTypeCpp(storageType, context, new Set());
+  if (!union) return false;
+  const plan = getCppUnionRepresentationPlan(union, {
+    ...context,
+    anonymousStructs: new Map(),
+    includes: new Set<string>(),
+  });
+  let compatible = true;
+  analyzeIrModuleTraversal(context.module, {
+    expression(expression) {
+      if (
+        expression.kind !== 'assignment' ||
+        expression.left.kind !== 'identifier' ||
+        expression.left.reference.kind !== 'binding' ||
+        expression.left.reference.binding.id !== bindingId
+      ) {
+        return;
+      }
+      if (expression.operator !== '=') {
+        compatible = false;
+        return;
+      }
+      const value = expression.right;
+      if (value.kind === 'object') {
+        const selected = getCppContextualObjectUnionRuntimeTypeCpp(value, plan.valueSlots, context);
+        if (!selected) compatible = false;
+        return;
+      }
+      if (
+        (value.kind === 'literal' && value.value === null && plan.sentinels.null !== 'absent') ||
+        (value.kind === 'undefinedValue' && plan.sentinels.undefined !== 'absent') ||
+        (value.kind === 'identifier' &&
+          value.reference.kind === 'ambient' &&
+          value.reference.name === 'undefined' &&
+          plan.sentinels.undefined !== 'absent')
+      ) {
+        return;
+      }
+      const sourceType = getIrExpressionTypeEvidenceCpp(value, context);
+      const sourceUnion = sourceType ? getIrUnionTypeCpp(sourceType, context, new Set()) : undefined;
+      if (!sourceUnion) {
+        compatible = false;
+        return;
+      }
+      const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, {
+        ...context,
+        anonymousStructs: new Map(),
+        includes: new Set<string>(),
+      });
+      if (!hasEquivalentCppContextualUnionRepresentationCpp(sourcePlan, plan, context)) compatible = false;
+    },
+  });
+  return compatible;
 }
 
 // Array and tuple storage is invariant in C++, so a standard method that preserves its receiver's

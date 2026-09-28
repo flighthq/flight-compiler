@@ -38615,6 +38615,247 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).not.toContain('static_cast');
   });
 
+  it('keeps an imported intersection union alias owner through an identity utility', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './shapes',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/shapes.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/shapes.ts',
+          `export interface Circle { radius: number }
+           export interface Box { size: number }
+           export type Shape = (Circle & { kind: 'circle' }) | (Box & { kind: 'box' });`,
+        ),
+        source('@flighthq/types', 'packages/types/src/contract.ts', `export * from './shapes';`),
+        source(
+          '@flighthq/collision',
+          'packages/collision/src/forward.ts',
+          `import type { Shape } from '@flighthq/types/contract';
+           export function forward(value: Shape): Readonly<Shape> { return value; }
+           export function select(left: Readonly<Shape>, right: Readonly<Shape>, useLeft: boolean): Shape {
+             const selected = useLeft ? left : right;
+             return selected;
+           }`,
+        ),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/collision': { includePrefix: 'flight/collision', namespace: 'flight::collision' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('return value;');
+    expect(emitted).toContain('auto selected = (use_left ? left : right);');
+    expect(emitted).toContain('return selected;');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('make_ref');
+    expect(emitted).not.toContain('static_cast');
+  });
+
+  it('opens an indexed-access union before planning its runtime alternatives', () => {
+    const result = lower(
+      'contextual-indexed-access-union.ts',
+      `interface Texture2D { kind: '2d'; source: string }
+       interface TextureCube { kind: 'cube'; sources: string[] }
+       type Texture = Texture2D | TextureCube;
+       interface Material { texture: Texture | null }
+       interface Options { texture?: Material['texture'] }
+       export function initialize(out: Material, options: Readonly<Options>): void {
+         out.texture = options.texture ?? null;
+       }`,
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('out->texture =');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('make_ref');
+    expect(emitted).not.toContain('static_cast');
+  });
+
+  it('keeps a direct imported collection element on its declared union alias', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './resource',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/resource.ts' },
+        },
+        {
+          specifier: './scene',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/scene.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/resource.ts',
+          `const RuntimeKey = Symbol.for('Runtime');
+           interface Entity { [RuntimeKey]: { uid?: string } | undefined }
+           interface Base extends Entity { textures?: string[] }
+           export interface Embedded extends Base { bytes: Uint8Array; kind: 'embedded' }
+           export interface External extends Base { kind: 'external'; uri: string }
+           export type Resource = Embedded | External;`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/scene.ts',
+          `import type { Resource } from './resource';
+           export interface Scene { resources: Resource[] }`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          `export * from './resource'; export * from './scene';`,
+        ),
+        source(
+          '@flighthq/resources',
+          'packages/resources/src/find.ts',
+          `import type { Resource, Scene } from '@flighthq/types/contract';
+           export function find(scene: Readonly<Scene>): Resource | null {
+             for (const resource of scene.resources) {
+               if (resource.textures !== undefined) return resource;
+             }
+             return null;
+           }`,
+        ),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/resources': { includePrefix: 'flight/resources', namespace: 'flight::resources' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('return std::optional<flight::types::Resource>');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('make_ref');
+    expect(emitted).not.toContain('static_cast');
+  });
+
+  it('retains a mutable map lookup carrier when every rebind freshly constructs that owner', () => {
+    const result = lower(
+      'mutable-map-lookup-owner.ts',
+      `interface Host { id: number }
+       interface State { count: number; label: string }
+       const states = new WeakMap<Host, State>();
+       export function ensure(host: Host): State {
+         let state = states.get(host);
+         if (state === undefined) {
+           state = { count: 0, label: '' };
+           states.set(host, state);
+         }
+         return state;
+       }`,
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('auto state = states.get(host)');
+    expect(emitted).toContain('state = std::optional<flight::Ref<State>>{flight::make_ref<State>');
+    expect(emitted).toContain('states.set(host, state.value())');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('static_cast');
+  });
+
+  it('does not retain a mutable map lookup owner across an existing structural rebind', () => {
+    const result = lower(
+      'mutable-map-lookup-lookalike.ts',
+      `interface Host { id: number }
+       interface State { count: number; label: string }
+       interface Lookalike { count: number; label: string }
+       const states = new WeakMap<Host, State>();
+       export function choose(host: Host, other: Lookalike): State | Lookalike | undefined {
+         let state = states.get(host);
+         if (state === undefined) state = other;
+         return state;
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.message).toContain('carriers [');
+    expect(failure.message).not.toContain('"kind"=string');
+  });
+
+  it('explains why sibling intersection owners cannot be treated as declared union arms', () => {
+    const result = lower(
+      'contextual-intersection-owner-union.ts',
+      `interface Entity { entityId: number }
+       interface Circle { radius: number }
+       interface Box { size: number }
+       type Shape = (Circle & { kind: 'circle' }) | (Box & { kind: 'box' });
+       type OwnedShape =
+         | (Circle & { kind: 'circle' } & Entity)
+         | (Box & { kind: 'box' } & Entity);
+       export function forward(value: OwnedShape): Shape { return value; }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('distinct intersection owner');
+    expect(failure.message).toContain('sibling C++ types');
+    expect(failure.message).toContain('copying or materializing it would change identity');
+  });
+
   it('keeps an annotated nullable reference when flow expands its assigned object literal', () => {
     const result = lower(
       'contextual-union-flow-object.ts',
