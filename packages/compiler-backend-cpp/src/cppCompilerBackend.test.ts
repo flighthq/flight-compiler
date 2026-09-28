@@ -40822,6 +40822,65 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(comparison.rule).toBe('cpp-dual-sentinel-comparison-unrepresented');
   });
 
+  it('keeps an existing owner out of a union arm its declaration does not satisfy', () => {
+    // The host report's pointContainment3D and storage sites: an EXISTING owner -- `Ref<points_kind...>`,
+    // `Ref<reason_value...>` -- reaches a union arm whose declaration requires a member the owner's own
+    // declaration leaves optional or gives an incompatible type. The value is not the shape the arm declares,
+    // and it is already an object with identity: retyping it would claim a declaration it does not have, and
+    // rebuilding it would publish a different object. Both rewrites are the author's, so the refusal is the
+    // whole answer and it is stable.
+    const volume = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'pointContainment3D.ts',
+          `export interface Box3D { readonly kind: 'box'; readonly half: number }
+           export interface Sphere3D { readonly kind: 'sphere'; readonly radius: number }
+           export type Volume3D = Box3D | Sphere3D;
+           export function f(value: Partial<Box3D>): Volume3D { return value; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(volume.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(volume.message).toContain('the value leaves a member the destination requires optional or absent');
+    expect(volume.message).toContain('This expression refers to an existing owner');
+    expect(volume.message).toContain('Keep the value in the declared destination arm from the point it is created');
+    expect(volume.message).toContain('will not retype, copy, or materialize the existing object into a sibling owner');
+
+    // The same shape through a call argument rather than a return, which is the storage site's form.
+    const stored = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'storage.ts',
+          `export interface ReasonValue { readonly kind: 'value'; readonly reason: string }
+           export interface OtherValue { readonly kind: 'other'; readonly note: string }
+           export type StoredValue = ReasonValue | OtherValue;
+           function take(value: StoredValue): void { value.kind; }
+           export function f(value: Partial<ReasonValue>): void { take(value); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(stored.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(stored.message).toContain('This expression refers to an existing owner');
+
+    // A lookalike with every member present DOES enter the arm, which is the control that this refusal is
+    // about the owner's declaration and not about nominal identity as such.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'storage.ts',
+          `export interface ReasonValue { readonly kind: 'value'; readonly reason: string }
+           interface ReasonLike { readonly kind: 'value'; readonly reason: string }
+           export type StoredValue = ReasonValue;
+           function take(value: StoredValue): void { value.kind; }
+           export function f(value: ReasonLike): void { take(value); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('take(value)');
+  });
+
   it('attributes a multi-alternative interface-heritage union to the carriers it cannot narrow', () => {
     const shared = `export interface SelectionBase { readonly kind: string }
        export interface LassoSelection extends SelectionBase { readonly points: readonly number[] }
