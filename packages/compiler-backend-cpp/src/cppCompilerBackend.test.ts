@@ -29973,6 +29973,43 @@ Resolver make_resolver(TextureRef texture) {
     );
   });
 
+  it('attributes a Node2D hit-area view with incompatible generic cells to the target runtime', () => {
+    const result = lower(
+      'node-hit-area.ts',
+      `const RuntimeKey = Symbol('RuntimeKey');
+       interface EntityRuntime {}
+       interface Entity { readonly [RuntimeKey]: EntityRuntime | undefined }
+       interface NodeTraits { readonly enabled: boolean; readonly name: string | null }
+       interface NodeRuntime<Traits extends object> extends EntityRuntime { readonly traits: Traits }
+       interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {
+         readonly [RuntimeKey]: NodeRuntime<Traits> | undefined;
+       }
+       type NodeAny = Node<any>;
+       interface Node2DTraits extends NodeTraits { readonly x: number; readonly y: number }
+       type Node2D = Node<Node2DTraits> & Node2DTraits;
+       interface Rectangle extends Entity { readonly height: number; readonly width: number }
+       interface Path extends Entity { readonly commands: readonly number[] }
+       type HitArea = Readonly<Rectangle> | Readonly<Path> | Readonly<NodeAny> | 'bounds';
+       function setNodeHitArea(_source: NodeAny, _hitArea: HitArea | null): void {}
+       export function configure(target: Node2D, hitArea: Node2D): void {
+         setNodeHitArea(target, hitArea);
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('can enter Readonly<NodeAny> in TypeScript only because');
+    expect(failure.message).toContain('no checked identity-preserving structural row conversion');
+    expect(failure.message).toContain('unchecked cast');
+    expect(failure.message).toContain('copying or materializing a row');
+    expect(failure.message).toContain('side storage');
+  });
+
   it('refuses unsafe structural row widening without claiming unrelated conversions', () => {
     const readonlyToWritable = lower(
       'readonly-row-to-writable.ts',

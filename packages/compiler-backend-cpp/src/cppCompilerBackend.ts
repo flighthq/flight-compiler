@@ -15454,11 +15454,17 @@ function emitContextualUnionExpressionInContextCpp(
     const secondaryIntersectionCarrier = intersectionUnionOwner
       ? undefined
       : getCppSecondaryIntersectionCarrierConflictCpp(runtimeType, plan, context);
+    const erasedTargetCellGap =
+      intersectionUnionOwner || secondaryIntersectionCarrier
+        ? undefined
+        : getCppContextualUnionErasedTargetCellGapCpp(runtimeType, plan, context);
     const cause = intersectionUnionOwner
       ? ('intersection-union-owner' as const)
       : secondaryIntersectionCarrier
         ? ('intersection-secondary-carrier' as const)
-        : getCppUnrepresentedUnionValueCauseCpp(expression, runtimeType, plan, context);
+        : erasedTargetCellGap
+          ? ('structural-erased-target-cell' as const)
+          : getCppUnrepresentedUnionValueCauseCpp(expression, runtimeType, plan, context);
     const callableErasedReturnGap =
       cause === 'callable-return-erasure'
         ? getCppContextualCallableErasedReturnGapCpp(expression, runtimeType, plan, context)
@@ -15477,21 +15483,26 @@ function emitContextualUnionExpressionInContextCpp(
               .join(
                 ', ',
               )}]. A callable is a represented domain, so the obstacle is that the destination's signature cannot call this one. Declare the value's parameters so the destination's signature supplies them, and its result as one the destination holds`
-          : cause === 'partial-value'
-            ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
-            : intersectionUnionOwner
-              ? `contextual union value type ${targetType} has a distinct intersection owner from its matching ${intersectionUnionOwner.contract} arm over nominal base ${describeIrTypeForDiagnosticCpp(intersectionUnionOwner.base)}. The source intersection and destination arm are sibling C++ object carriers; converting between them would require sibling retyping or copying the object. Name one shared declared arm type in the ${intersectionUnionOwner.contract} contract and use that same arm declaration in both the union and value storage`
-              : secondaryIntersectionCarrier
-                ? `contextual union value type ${targetType} is stored through its intersection's own C++ object carrier, but the destination names secondary constituent ${secondaryIntersectionCarrier.targets.map(describeIrTypeForDiagnosticCpp).join(', ')} through an independent carrier. The runtime does not retain a checked owner-preserving view for that constituent, and the compiler will not replace one with an unchecked pointer cast, a materialized copy, or invented side storage. Keep the destination on the exact declared intersection owner, declare one explicit common nominal owner for both APIs, or add identity-preserving structural-reference storage for the constituent contract`
-                : cause === 'nominal-mismatch'
-                  ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
-                  : structuralArrayProjectionGap
-                    ? `contextual union source array carrier ${targetType} with element carrier ${structuralArrayProjectionGap.sourceElementCarrier} cannot become the destination's projected element array carrier ${structuralArrayProjectionGap.targetCarrier} with element carrier ${structuralArrayProjectionGap.targetElementCarrier} without changing array identity. Return the exact source array type, construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
-                    : `contextual union value type ${targetType} is not a represented runtime domain`,
+          : erasedTargetCellGap
+            ? `contextual union source carrier ${targetType} can enter ${describeDeclaredIrTypeForDiagnosticCpp(erasedTargetCellGap.target)} in TypeScript only because required ${erasedTargetCellGap.members.length === 1 ? 'member' : 'members'} ${renderCppSubjectNameListCpp(erasedTargetCellGap.members)} ${erasedTargetCellGap.members.length === 1 ? 'is' : 'are'} erased through any, but the source owner binds ${erasedTargetCellGap.members.length === 1 ? 'that member' : 'those members'} to concrete C++ storage while ${erasedTargetCellGap.targetCarrier} expects an any-erased cell carrier. flight-cpp has no checked identity-preserving structural row conversion for that mismatch; an unchecked cast would reinterpret the owner's cells, while copying or materializing a row, or adding side storage, would change its identity. Keep the union arm on the exact declared source owner, or add a runtime checked concrete-to-erased generic cell projection that preserves the owner`
+            : cause === 'partial-value'
+              ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
+              : intersectionUnionOwner
+                ? `contextual union value type ${targetType} has a distinct intersection owner from its matching ${intersectionUnionOwner.contract} arm over nominal base ${describeIrTypeForDiagnosticCpp(intersectionUnionOwner.base)}. The source intersection and destination arm are sibling C++ object carriers; converting between them would require sibling retyping or copying the object. Name one shared declared arm type in the ${intersectionUnionOwner.contract} contract and use that same arm declaration in both the union and value storage`
+                : secondaryIntersectionCarrier
+                  ? `contextual union value type ${targetType} is stored through its intersection's own C++ object carrier, but the destination names secondary constituent ${secondaryIntersectionCarrier.targets.map(describeIrTypeForDiagnosticCpp).join(', ')} through an independent carrier. The runtime does not retain a checked owner-preserving view for that constituent, and the compiler will not replace one with an unchecked pointer cast, a materialized copy, or invented side storage. Keep the destination on the exact declared intersection owner, declare one explicit common nominal owner for both APIs, or add identity-preserving structural-reference storage for the constituent contract`
+                  : cause === 'nominal-mismatch'
+                    ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
+                    : structuralArrayProjectionGap
+                      ? `contextual union source array carrier ${targetType} with element carrier ${structuralArrayProjectionGap.sourceElementCarrier} cannot become the destination's projected element array carrier ${structuralArrayProjectionGap.targetCarrier} with element carrier ${structuralArrayProjectionGap.targetElementCarrier} without changing array identity. Return the exact source array type, construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
+                      : `contextual union value type ${targetType} is not a represented runtime domain`,
       secondaryIntersectionCarrier
         ? 'cpp-contextual-union-secondary-intersection-carrier-unrepresented'
         : 'cpp-contextual-union-value-type-unrepresented',
-      cause === 'erased-kind' || cause === 'callable-return-erasure' || cause === 'structural-array-projection'
+      cause === 'erased-kind' ||
+        cause === 'callable-return-erasure' ||
+        cause === 'structural-array-projection' ||
+        cause === 'structural-erased-target-cell'
         ? 'target-runtime'
         : cause === 'partial-value'
           ? 'source-portability'
@@ -16952,6 +16963,67 @@ function getCppUnrepresentedUnionValueCauseCpp(
   // Some alternative accepts the value, so the source language accepts the conversion and the barrier is
   // the target's: a declared reference is nominally its own type, and a shape that resembles one is not it.
   return 'nominal-mismatch';
+}
+
+interface CppContextualUnionErasedTargetCellGap {
+  readonly members: readonly string[];
+  readonly target: Readonly<IrType>;
+  readonly targetCarrier: string;
+}
+
+// TypeScript lets a concrete generic owner flow into a structural target whose corresponding member
+// mentions `any`. The row runtime cannot make the same promise in that direction: the source owner bound
+// a concrete cell, while the target schema would read that cell through an erased carrier. The safe
+// conversion implemented above goes the other way -- an explicitly any-backed owner may be checked while
+// read through a concrete readonly schema. Identify only the reversed case where every target cell exists
+// with the same optionality and EVERY storage mismatch is explained by `any` in the readonly target.
+function getCppContextualUnionErasedTargetCellGapCpp(
+  source: Readonly<IrType>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): Readonly<CppContextualUnionErasedTargetCellGap> | undefined {
+  const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(source, context.module);
+  if (!sourceRow) return undefined;
+  const sourceProperties = context.referenceRepresentationPlanner
+    .resolveObjectShape(source, context.module)
+    ?.filter((property) => !property.phantom);
+  if (!sourceProperties) return undefined;
+  const sourceFields = new Map(
+    sourceProperties.map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
+  );
+  const matches = plan.valueSlots.flatMap((slot): readonly CppContextualUnionErasedTargetCellGap[] => {
+    const target = slot.runtimeType;
+    const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(target, context.module);
+    if (!targetRow || !isCppStructuralRowReadonlyCpp(targetRow)) return [];
+    const targetProperties = context.referenceRepresentationPlanner
+      .resolveObjectShape(target, context.module)
+      ?.filter((property) => !property.phantom);
+    if (!targetProperties || targetProperties.length === 0) return [];
+    const members: string[] = [];
+    for (const targetProperty of targetProperties) {
+      const sourceProperty = sourceFields.get(getCppStructuralRowPropertyIdentityCpp(targetProperty, context));
+      if (!sourceProperty) return [];
+      if (sourceProperty.optional !== targetProperty.optional) return [];
+      if (areCppTypesRepresentationEquivalent(sourceProperty.type, targetProperty.type, context)) continue;
+      if (
+        hasCppExplicitAnyTypeCpp(sourceProperty.type, context, new Set()) ||
+        !hasCppExplicitAnyTypeCpp(targetProperty.type, context, new Set())
+      ) {
+        return [];
+      }
+      members.push(targetProperty.name);
+    }
+    if (members.length === 0) return [];
+    const diagnosticContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+    return [
+      {
+        members: [...new Set(members)].sort(compareTextCodeUnits),
+        target,
+        targetCarrier: emitType(target, diagnosticContext),
+      },
+    ];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 // A nominal intersection implementation has one selected C++ base; its other named constituents are
