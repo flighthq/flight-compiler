@@ -100,6 +100,50 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([explicit]).findings).toEqual([]);
   });
 
+  it('requires a closed handle domain or a reviewed exception for intentional erasure', () => {
+    const erased = input('appLoop.ts', 'interface LoopState { frameHandle: unknown }');
+    const report = analyzeTypeScriptSourcePortability([erased]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected an opaque loop handle finding');
+    const closed = input(
+      'portable-appLoop.ts',
+      `type AppLoopFrameHandle = number;
+       interface AppLoopBackend {
+         requestFrame(callback: (time: number) => void): AppLoopFrameHandle;
+         cancelFrame(handle: AppLoopFrameHandle): void;
+       }
+       interface LoopState { frameHandle: AppLoopFrameHandle | null }`,
+    );
+
+    expect(report.findings).toMatchObject([
+      {
+        message: expect.stringContaining(
+          'Replace it with a named closed value type shared by the boundary, its storage, and its consumers; when intentional erasure is the contract, record a reviewed source-portability exception instead.',
+        ),
+        rule: 'opaque-value-domain',
+        subject: 'interface:LoopState/property:frameHandle',
+      },
+    ]);
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    expect(
+      analyzeTypeScriptSourcePortability([erased], {
+        exceptionPolicy: {
+          exceptions: [
+            {
+              findingIdentity: finding.identity,
+              reason: 'The handle is an opaque token returned only to its provider.',
+              rule: 'opaque-value-domain',
+            },
+          ],
+          schema: 'flight-compiler-source-portability-exceptions/1',
+        },
+      }),
+    ).toMatchObject({
+      acceptedExceptions: [{ finding: { identity: finding.identity } }],
+      findings: [],
+    });
+  });
+
   it('requires real indexed storage instead of an asserted index-signature view', () => {
     const asserted = input(
       'command.ts',

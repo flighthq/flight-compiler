@@ -3121,6 +3121,61 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('static_cast<flight::Any>(value)');
   });
 
+  it('keeps an intentionally erased loop handle opaque until the source closes its domain', () => {
+    const erased = emitIrModuleCpp(
+      lower(
+        'erased-loop-handle.ts',
+        `interface LoopBackend {
+           requestFrame(callback: (time: number) => void): unknown;
+           cancelFrame(handle: unknown): void;
+         }
+         interface LoopState { frameHandle: unknown }
+         export function replaceFrame(
+           backend: LoopBackend,
+           state: LoopState,
+           callback: (time: number) => void,
+         ): void {
+           state.frameHandle = backend.requestFrame(callback);
+           backend.cancelFrame(state.frameHandle);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const closed = emitIrModuleCpp(
+      lower(
+        'closed-loop-handle.ts',
+        `type AppLoopFrameHandle = number;
+         interface LoopBackend {
+           requestFrame(callback: (time: number) => void): AppLoopFrameHandle;
+           cancelFrame(handle: AppLoopFrameHandle): void;
+         }
+         interface LoopState { frameHandle: AppLoopFrameHandle }
+         export function replaceFrame(
+           backend: LoopBackend,
+           state: LoopState,
+           callback: (time: number) => void,
+         ): void {
+           state.frameHandle = backend.requestFrame(callback);
+           backend.cancelFrame(state.frameHandle);
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(erased).toContain('flight::Any frame_handle;');
+    expect(erased).toContain('std::function<flight::Any(std::function<void(double)>)> request_frame;');
+    expect(erased).toContain('std::function<void(flight::Any)> cancel_frame;');
+    expect(erased).toContain('state->frame_handle = backend->request_frame(callback)');
+    expect(erased).toContain('backend->cancel_frame(state->frame_handle)');
+    expect(erased).not.toContain('static_cast');
+    expect(erased).not.toContain('materialize_row');
+    expect(closed).toContain('using AppLoopFrameHandle = double;');
+    expect(closed).toContain('AppLoopFrameHandle frame_handle;');
+    expect(closed).toContain('state->frame_handle = backend->request_frame(callback)');
+    expect(closed).toContain('backend->cancel_frame(state->frame_handle)');
+    expect(closed).not.toContain('flight::Any');
+  });
+
   it('requires an owner-preserving runtime carrier to erase structural rows', () => {
     const cases = [
       `interface Widget { value: number }
