@@ -15702,8 +15702,8 @@ function emitContextualUnionExpressionInContextCpp(
     const action = intersectionOwnerGap
       ? 'Every semantic alternative pairs uniquely, but the source stores it in a distinct intersection owner rather than the destination arm. Those generated owners are sibling C++ types, not a base relation: an unchecked cast would retype the object, while copying or materializing it would change identity. Keep both APIs on the same declared arm owner, introduce one shared nominal arm owner, or add an identity-preserving runtime view.'
       : runtimeConversionGap
-        ? 'The alternatives match uniquely, but no checked target-runtime conversion exists between their C++ carriers; keep both sides on the same declared union alias or add a runtime conversion contract.'
-        : 'The carrier lists show which source alternatives have no exact destination carrier. Preserve the declared collection or member union alias before flow expansion, or narrow and convert the source while its concrete alternative is known.';
+        ? "The alternatives match uniquely, but no checked target-runtime conversion exists between their C++ carriers. Keep both sides on the same declared union alias; for a Map or WeakMap lookup followed by a rebind, construct its declared value owner and ensure every rebound member already has that owner member's carrier -- a Readonly structural view does not become a mutable nominal Ref. Otherwise add an identity-preserving runtime conversion contract."
+        : "The carrier lists show which source alternatives have no exact destination carrier. Preserve the declared collection or member union alias before flow expansion; for a Map or WeakMap lookup followed by a rebind, ensure every rebound member already has the declared value owner member's carrier -- a Readonly structural view does not become a mutable nominal Ref. Otherwise narrow and convert the source while its concrete alternative is known.";
     emissionError(
       context,
       `contextual C++ union conversion requires equivalent source union evidence: target ${plan.kind} carriers [${plan.valueSlots
@@ -18451,6 +18451,20 @@ function isCppExpressionRepresentableAsRuntimeTypeCpp(
   target: Readonly<IrType>,
   context: EmitContext,
 ): boolean {
+  // An empty array contributes no element value that could contradict its contextual element domain.
+  // The array emitter already requires that domain to construct its concrete C++ carrier, so a fresh
+  // enclosing object may use the declared member's array type without converting any existing value.
+  if (expression.kind === 'array' && expression.elements.length === 0) {
+    const targetArray = getIrArrayTypeCpp(target, context, new Set());
+    if (targetArray && targetArray.element.kind !== 'unknown' && targetArray.element.kind !== 'never') return true;
+  }
+  // A one-spread object explicitly asks to clone its operand. If that operand already has the member's
+  // exact C++ carrier, constructing the fresh contextual owner performs precisely the source-level copy;
+  // it does not grant an anonymous lookalike a nominal owner or add materialization the source omitted.
+  if (expression.kind === 'object' && expression.members.length === 1 && expression.members[0]?.kind === 'spread') {
+    const spreadType = getIrExpressionTypeEvidenceCpp(expression.members[0].expression, context);
+    if (spreadType && emitType(spreadType, context) === emitType(target, context)) return true;
+  }
   if (expression.kind === 'new' && expression.typeArguments.length === 0) {
     const ambientConstructorName = getIrAmbientConstructorNameCpp(expression.callee);
     const contextualType = getCppNonNullableType(target, context, new Set());

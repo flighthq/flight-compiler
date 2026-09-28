@@ -38807,6 +38807,69 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).not.toContain('static_cast');
   });
 
+  it('retains a mutable map lookup carrier for a complete fresh owner with nested spreads', () => {
+    const result = lower(
+      'mutable-map-lookup-nested-spread-owner.ts',
+      `interface Info { color: number; visible: boolean }
+       interface InfoProvider { getInfo(): Info }
+       interface ColorProvider { setColor(color: number): void }
+       interface Entry { color: number }
+       interface State {
+         applied: Info;
+         baseline: Info;
+         colorProvider: ColorProvider;
+         entries: Entry[];
+       }
+       const states = new WeakMap<InfoProvider, State>();
+       export function ensure(infoProvider: InfoProvider, colorProvider: ColorProvider): State {
+         let state = states.get(infoProvider);
+         if (state === undefined) {
+           const baseline = infoProvider.getInfo();
+           state = {
+             applied: { ...baseline },
+             baseline,
+             colorProvider,
+             entries: [],
+           };
+           states.set(infoProvider, state);
+         }
+         return state;
+       }`,
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('auto state = states.get(info_provider)');
+    expect(emitted).toContain('state = std::optional<flight::Ref<State>>{flight::make_ref<State>');
+    expect(emitted).toContain('states.set(info_provider, state.value())');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('static_cast');
+  });
+
+  it('does not retain a mutable map lookup owner when a rebound member is only a readonly view', () => {
+    const result = lower(
+      'mutable-map-lookup-readonly-member.ts',
+      `interface Host { id: number }
+       interface Provider { setValue(value: number): void }
+       interface State { entries: number[]; provider: Provider }
+       const states = new WeakMap<Host, State>();
+       export function ensure(host: Host, provider: Readonly<Provider>): State {
+         let state = states.get(host);
+         if (state === undefined) {
+           state = { entries: [], provider };
+           states.set(host, state);
+         }
+         return state;
+       }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' })).toThrowError(
+      /a Readonly structural view does not become a mutable nominal Ref/,
+    );
+  });
+
   it('does not retain a mutable map lookup owner across an existing structural rebind', () => {
     const result = lower(
       'mutable-map-lookup-lookalike.ts',
