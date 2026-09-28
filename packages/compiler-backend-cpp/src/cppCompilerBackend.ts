@@ -5604,6 +5604,8 @@ function emitCppContextualStructuralReferenceCpp(
   expectedType: Readonly<IrType>,
   context: EmitContext,
 ): string | undefined {
+  const narrowedUnionFacet = emitCppContextualStructuralUnionAssertionFacetCpp(expression, expectedType, context);
+  if (narrowedUnionFacet) return narrowedUnionFacet;
   const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
   if (!sourceType) return undefined;
   const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
@@ -5612,6 +5614,68 @@ function emitCppContextualStructuralReferenceCpp(
   }
   const source = emitExpression(expression, context, undefined, false);
   return emitCppStructuralReferenceValueConversionCpp(source, sourceType, expectedType, context);
+}
+
+// A collision registry callback receives an anonymous discriminated-union owner, then asserts the
+// nominal facet belonging to one alternative while passing it directly to a readonly structural
+// parameter. The assertion cannot manufacture the nominal reference that the variant never stored,
+// but the contextual row does not need one: select the represented alternative at runtime and project
+// a readonly view from that same owner. Keep this fused to the call context so the asserted nominal
+// value cannot escape, and require an exact row subject plus one unique structural alternative.
+function emitCppContextualStructuralUnionAssertionFacetCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.kind !== 'cast') return undefined;
+  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module);
+  const targetObject = targetRow ? getCppStructuralRowObjectTypeCpp(targetRow) : undefined;
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  if (
+    !targetRow ||
+    !targetObject ||
+    targetRow.kind !== 'readonly' ||
+    targetRow.row.kind !== 'rowOf' ||
+    emitCppAliasResolvedValueTypeCpp(targetObject, isolatedContext) !==
+      emitCppAliasResolvedValueTypeCpp(expression.type, isolatedContext)
+  ) {
+    return undefined;
+  }
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+  const union = sourceType ? getIrUnionTypeCpp(sourceType, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  if (plan.kind !== 'multiVariant') return undefined;
+  const assertedUnion = getIrUnionTypeCpp(expression.type, context, new Set());
+  const assertedPlan = assertedUnion ? getCppUnionRepresentationPlan(assertedUnion, context) : undefined;
+  const alternative = getCppStructuralUnionAssertionAlternativeCpp(plan, assertedPlan, expression.type, context);
+  if (!alternative) return undefined;
+  if (
+    !emitCppStructuralReferenceValueConversionCpp(
+      '*alternative',
+      alternative.slot.runtimeType,
+      expectedType,
+      isolatedContext,
+    )
+  ) {
+    return undefined;
+  }
+
+  const source =
+    expression.expression.kind === 'identifier' && expression.expression.reference.kind === 'binding'
+      ? emitIdentifierReference(expression.expression.reference, context)
+      : emitExpression(expression.expression, context, undefined, false);
+  const narrowed = getGeneratedTargetName('narrowedStructuralUnion', context);
+  const converted = emitCppStructuralReferenceValueConversionCpp(
+    '*alternative',
+    alternative.slot.runtimeType,
+    expectedType,
+    context,
+  );
+  if (!converted) return undefined;
+  context.includes.add('variant');
+  context.includes.add('stdexcept');
+  return `([&]() -> ${emitType(expectedType, context)} { const auto& ${narrowed} = ${source}; if (const auto* alternative = std::get_if<${alternative.slot.targetType}>(&${narrowed})) return ${converted}; throw std::logic_error("asserted structural union alternative is not present"); }())`;
 }
 
 function emitCppContextualVoidValueCpp(

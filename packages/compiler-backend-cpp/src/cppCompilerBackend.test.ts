@@ -381,6 +381,10 @@ function lowerImportedTypeAssertionModules() {
          export type CollisionShape2D =
            | (CollisionAabb2D & { kind: 'aabb' })
            | (CollisionCircle2D & { kind: 'circle' });
+         export function testImportedAabbPair(
+           a: Readonly<CollisionAabb2D>,
+           b: Readonly<CollisionAabb2D>,
+         ): number { return a.maxX + b.minX; }
          export type ParticleFormatKind = 'One' | 'Two' | (string & Record<never, never>);`,
       ),
       source(
@@ -453,6 +457,18 @@ function lowerImportedTypeAssertionModules() {
          interface RuntimeHolder { [EntityRuntimeKey]: RenderStateRuntime | undefined }
          export function getConcreteRuntime(state: RuntimeHolder): RenderStateRuntime {
            return state[EntityRuntimeKey] as RenderStateRuntime;
+         }`,
+      ),
+      source(
+        '@flighthq/collision',
+        'collision/src/registerBuiltInCollisionPairTests2D.ts',
+        `import { testImportedAabbPair } from '@flighthq/types/contract';
+         import type { CollisionAabb2D, CollisionShape2D } from '@flighthq/types/contract';
+         export function testRegisteredPair(
+           a: Readonly<CollisionShape2D>,
+           b: Readonly<CollisionShape2D>,
+         ): number {
+           return testImportedAabbPair(a as CollisionAabb2D, b as CollisionAabb2D);
          }`,
       ),
     ],
@@ -6348,6 +6364,68 @@ describe('createCppCompilerBackend', () => {
     expect(contents).toContain('std::in_place_type<flight::Ref<Beta>>');
     expect(contents).not.toContain('std::get_if<flight::Ref<Gamma>>');
     expect(contents).toContain('throw std::logic_error("asserted union alternative is not present in the value")');
+  });
+
+  it('passes a checked structural facet of one anonymous variant owner to a readonly parameter', () => {
+    const result = lower(
+      'collision-pair-adapter.ts',
+      `interface CollisionAabb2D { maxX: number; minX: number }
+       interface CollisionCircle2D { radius: number; x: number }
+       type CollisionShape2D =
+         | (CollisionAabb2D & { kind: 'aabb' })
+         | (CollisionCircle2D & { kind: 'circle' });
+       function testAabb(aabb: Readonly<CollisionAabb2D>): number { return aabb.maxX; }
+       export function adapt(shape: Readonly<CollisionShape2D>): number {
+         return testAabb(shape as CollisionAabb2D);
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('std::get_if<flight::Ref<');
+    expect(contents).toContain('flight::structural_ref_cast<flight::StructuralRef<');
+    expect(contents).toContain('throw std::logic_error("asserted structural union alternative is not present")');
+    expect(contents).not.toContain('std::static_pointer_cast<CollisionAabb2D>');
+    expect(contents).not.toContain('flight::make_ref<CollisionAabb2D>');
+    expect(contents).not.toContain('flight::materialize_row');
+  });
+
+  it('passes imported collision facets to readonly parameters without recovering nominal storage', () => {
+    const { moduleResolution, results } = lowerImportedTypeAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules.at(-1)!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(contents.match(/std::get_if<flight::Ref</g)).toHaveLength(2);
+    expect(contents.match(/flight::structural_ref_cast<flight::StructuralRef</g)).toHaveLength(2);
+    expect(contents).not.toContain('std::static_pointer_cast<CollisionAabb2D>');
+    expect(contents).not.toContain('flight::make_ref<CollisionAabb2D>');
+    expect(contents).not.toContain('flight::materialize_row');
+  });
+
+  it('refuses a contextual structural facet shared by multiple anonymous variant owners', () => {
+    const result = lower(
+      'ambiguous-collision-pair-adapter.ts',
+      `interface CollisionAxis2D { maxX: number; minX: number }
+       type CollisionShape2D =
+         | (CollisionAxis2D & { kind: 'aabb' })
+         | (CollisionAxis2D & { kind: 'capsule' });
+       function testAxis(axis: Readonly<CollisionAxis2D>): number { return axis.maxX; }
+       export function adapt(shape: Readonly<CollisionShape2D>): number {
+         return testAxis(shape as CollisionAxis2D);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
   });
 
   it('classifies an exact imported structural union facet that has no nominal storage', () => {
