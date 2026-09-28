@@ -134,7 +134,7 @@ interface AnonymousStruct {
   }>[];
   guard?: string;
   name: string;
-  properties: readonly { name: string; optional: boolean; type: string }[];
+  properties: readonly { initializer?: string; name: string; optional: boolean; type: string }[];
   referenceEnabled?: boolean;
   typeParameters: readonly string[];
 }
@@ -1720,7 +1720,8 @@ function emitAnonymousStructCpp(struct: Readonly<AnonymousStruct>, context: Emit
     }
   }
   for (const property of struct.properties) {
-    lines.push(`  ${emitOptionalTypeCpp(property.type, property.optional, context)} ${property.name};`);
+    const initializer = property.initializer ? ` = ${property.initializer}` : '';
+    lines.push(`  ${emitOptionalTypeCpp(property.type, property.optional, context)} ${property.name}${initializer};`);
   }
   for (const callable of struct.callables ?? []) {
     const parameters = callable.parameters.map((parameter) => `${parameter.type} ${parameter.name}`).join(', ');
@@ -1766,15 +1767,18 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
       }
       continue;
     }
-    const fieldType = emitCppObjectPropertyStorageCpp(
+    const fieldStorage = emitCppObjectPropertyStorageCpp(
       field,
       emitOptionalTypeCpp(emitType(field.type, context), field.optional, context),
       context,
-    ).type;
-    const initializer = field.initializer ? ` = ${emitExpression(field.initializer, context, field.type)}` : '';
+    );
+    const initializerValue = field.initializer
+      ? emitExpression(field.initializer, context, field.type)
+      : fieldStorage.initializer;
+    const initializer = initializerValue ? ` = ${initializerValue}` : '';
     const staticPrefix = field.static ? 'inline static ' : '';
     const constPrefix = field.static && field.readonly ? 'const ' : '';
-    lines.push(`  ${staticPrefix}${constPrefix}${fieldType} ${safeCppName(field.name)}${initializer};`);
+    lines.push(`  ${staticPrefix}${constPrefix}${fieldStorage.type} ${safeCppName(field.name)}${initializer};`);
   }
   if (declaration.classConstructor) {
     if (
@@ -2120,13 +2124,14 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
   const emittedMemberNames = new Set<string>();
   for (const property of declaration.properties) {
     if (isCppNonEmittingObjectPropertyCpp(property)) continue;
-    const propType = emitCppObjectPropertyStorageCpp(
+    const propertyStorage = emitCppObjectPropertyStorageCpp(
       property,
       emitOptionalTypeCpp(emitType(property.type, context), property.optional, context),
       context,
-    ).type;
+    );
     if (isCppDuplicateStructMemberCpp(emittedMemberNames, property.name)) continue;
-    lines.push(`  ${propType} ${safeCppName(property.name)};`);
+    const initializer = propertyStorage.initializer ? ` = ${propertyStorage.initializer}` : '';
+    lines.push(`  ${propertyStorage.type} ${safeCppName(property.name)}${initializer};`);
   }
   lines.push('};');
   return lines;
@@ -2515,13 +2520,14 @@ function emitTypeAlias(declaration: Readonly<IrTypeAliasDeclaration>, outer: Emi
     const emittedMemberNames = new Set<string>();
     for (const property of objectProperties) {
       if (isCppNonEmittingObjectPropertyCpp(property)) continue;
-      const propertyType = emitCppObjectPropertyStorageCpp(
+      const propertyStorage = emitCppObjectPropertyStorageCpp(
         property,
         emitOptionalTypeCpp(emitType(property.type, context), property.optional, context),
         context,
-      ).type;
+      );
       if (isCppDuplicateStructMemberCpp(emittedMemberNames, property.name)) continue;
-      lines.push(`  ${propertyType} ${safeCppName(property.name)};`);
+      const initializer = propertyStorage.initializer ? ` = ${propertyStorage.initializer}` : '';
+      lines.push(`  ${propertyStorage.type} ${safeCppName(property.name)}${initializer};`);
     }
     lines.push('};');
     return lines;
@@ -10611,8 +10617,11 @@ function createCppCallableObjectStructCpp(
 ): AnonymousStruct {
   const properties = representation.properties.map((property) => ({
     name: safeCppName(property.name),
-    optional: property.optional,
-    type: emitType(property.type, context),
+    ...emitCppObjectPropertyStorageCpp(
+      property,
+      emitOptionalTypeCpp(emitType(property.type, context), property.optional, context),
+      context,
+    ),
   }));
   const parameters = representation.callable.parameters.map((parameter, index) => ({
     name: `argument_${String(index)}`,
@@ -26150,17 +26159,26 @@ function emitOptionalTypeCpp(type: string, optional: boolean, context: EmitConte
 // The case is deliberately narrow. A property that is not `?`-marked, or whose type carries no absent
 // member, has no double absence and keeps whatever this declaration site already emitted — already
 // optional-wrapped, so the returned `optional` is false for it too.
+// A dual-sentinel variant also needs an explicit default: omitted object-literal fields use the C++
+// member initializer, and a bare variant would default to its first VALUE alternative instead of the
+// authored `undefined` state. This keeps omission zero-copy and local to the stored object.
 function emitCppObjectPropertyStorageCpp(
   property: Readonly<{ optional: boolean; type: IrType }>,
   emitted: string,
   context: EmitContext,
-): Readonly<{ optional: boolean; type: string }> {
+): Readonly<{ initializer?: string; optional: boolean; type: string }> {
   if (!property.optional || !hasIrTypeAbsentMember(property.type)) {
     return { optional: false, type: emitted };
   }
+  const readType = getIrObjectPropertyReadTypeCpp(property) ?? property.type;
+  const union = getIrUnionTypeCpp(readType, context, new Set());
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
   return {
+    ...(union && plan?.kind === 'dualSentinelVariant'
+      ? { initializer: emitCppUnionSentinelConstruction('undefined', union, plan.kind, context) }
+      : {}),
     optional: false,
-    type: emitCppMaterializedObjectPropertyTypeCpp(getIrObjectPropertyReadTypeCpp(property) ?? property.type, context),
+    type: emitCppMaterializedObjectPropertyTypeCpp(readType, context),
   };
 }
 

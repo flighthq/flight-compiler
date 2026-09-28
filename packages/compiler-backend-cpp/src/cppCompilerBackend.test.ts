@@ -5984,7 +5984,9 @@ describe('createCppCompilerBackend', () => {
         emitted.match(/if \(!contextual_union_source(?:_\d+)?\.has_value\(\)\) return std::variant</gu),
       ).toHaveLength(count);
       expect(emitted.match(/std::in_place_type<flight::Null>, flight::null/gu)).toHaveLength(count);
-      expect(emitted).not.toContain('std::in_place_type<flight::Undefined>, flight::undefined');
+      expect(emitted).not.toMatch(
+        /if \(!contextual_union_source(?:_\d+)?\.has_value\(\)\) return std::variant<[^;\n]+std::in_place_type<flight::Undefined>/u,
+      );
       expect(
         emitted.match(/std::in_place_type<flight::Ref<flight::types::Texture2D>>, contextual_union_value(?:_\d+)?/gu),
       ).toHaveLength(count);
@@ -6252,7 +6254,11 @@ describe('createCppCompilerBackend', () => {
     expect(cubeArm).toBeDefined();
     expect(options).toContain(`flight::Ref<flight::types::${cubeArm!}>`);
     expect(options).not.toContain(`struct ${cubeArm!}`);
-    expect(options.match(/flight::Null, flight::Undefined>/gu)).toHaveLength(3);
+    expect(
+      options.match(
+        /flight::Null, flight::Undefined> (?:diffuse|normal|specular)_map = std::variant<[^;\n]+std::in_place_type<flight::Undefined>, flight::undefined\};/gu,
+      ),
+    ).toHaveLength(3);
     expect(emitted.match(/out->(?:diffuse|normal|specular)_map =/gu)).toHaveLength(3);
     expect(emitted.match(new RegExp(`std::get_if<flight::Ref<flight::types::${cubeArm!}>>`, 'gu'))).toHaveLength(3);
     expect(emitted.match(/std::get_if<flight::Ref<flight::types::Texture2D>>/gu)).toHaveLength(3);
@@ -7770,11 +7776,13 @@ describe('createCppCompilerBackend', () => {
     // could not accept the write nor answer the test — g++ rejects the assignment outright.
     const both = emit('onFinished?: Signal<() => void> | null;');
     expect(both).toContain(
-      'std::variant<flight::Ref<Signal<std::function<void()>>>, flight::Null, flight::Undefined> on_finished;',
+      'std::variant<flight::Ref<Signal<std::function<void()>>>, flight::Null, flight::Undefined> on_finished = std::variant<flight::Ref<Signal<std::function<void()>>>, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined};',
     );
-    expect(both).toMatch(/std::variant<[^;\n]+flight::Null, flight::Undefined> on_event;/u);
+    expect(both).toMatch(
+      /std::variant<[^;\n]+flight::Null, flight::Undefined> on_event = std::variant<[^;\n]+flight::Null, flight::Undefined>\{std::in_place_type<flight::Undefined>, flight::undefined\};/u,
+    );
     expect(both).toContain(
-      'std::variant<flight::Ref<Signal<std::function<void()>>>, flight::Null, flight::Undefined> on_looped;',
+      'std::variant<flight::Ref<Signal<std::function<void()>>>, flight::Null, flight::Undefined> on_looped = std::variant<flight::Ref<Signal<std::function<void()>>>, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined};',
     );
     expect(both).not.toContain('std::optional<std::optional');
     expect(both).toContain('std::holds_alternative<flight::Null>(player->on_finished)');
@@ -7792,6 +7800,93 @@ describe('createCppCompilerBackend', () => {
     expect(() => emit('onFinished?: Signal<() => void> | number | null;')).toThrow(
       'present access requires optional C++ storage with one value domain',
     );
+  });
+
+  it('defaults the fourteen GlMeshProgram mixed-absence fields to undefined without row materialization', () => {
+    // These are the authoritative mixed-absence fields in @flighthq/types. `undefined` means that the
+    // location has not been resolved yet, while `null` records a completed lookup for a uniform the
+    // shader does not expose. An omitted object-literal member must therefore select the undefined arm:
+    // default-constructing the variant would instead select its first (location) arm.
+    const result = lower(
+      'GlMeshProgram.ts',
+      `export interface GlMeshProgram {
+         locColorScale?: WebGLUniformLocation | null;
+         locColorBias?: WebGLUniformLocation | null;
+         locColorMatrix0?: WebGLUniformLocation | null;
+         locColorMatrix1?: WebGLUniformLocation | null;
+         locColorMatrix2?: WebGLUniformLocation | null;
+         locColorMatrix3?: WebGLUniformLocation | null;
+         locColorMatrixOffset?: WebGLUniformLocation | null;
+         locObjectAlpha?: WebGLUniformLocation | null;
+         locAlphaIsCoverage?: WebGLUniformLocation | null;
+         locJointTexture?: WebGLUniformLocation | null;
+         locInstancePalette?: WebGLUniformLocation | null;
+         locInstanceColorPalette?: WebGLUniformLocation | null;
+         locJointNormalTexture?: WebGLUniformLocation | null;
+         locUvTransform?: WebGLUniformLocation | null;
+         locModel: WebGLUniformLocation | null;
+         locNormalMatrix: WebGLUniformLocation | null;
+         locViewProjection: WebGLUniformLocation | null;
+         program: WebGLProgram;
+       }
+       interface OptionalOnly { location?: WebGLUniformLocation }
+       interface RequiredNullable { location: WebGLUniformLocation | null }
+       export function create(program: WebGLProgram): GlMeshProgram {
+         return { locModel: null, locNormalMatrix: null, locViewProjection: null, program };
+       }
+       export function state(value: GlMeshProgram): number {
+         if (value.locColorScale === undefined) return 0;
+         if (value.locColorScale === null) return 1;
+         return 2;
+       }
+       export function omit(value: GlMeshProgram): void { value.locColorScale = undefined; }
+       export function absent(value: GlMeshProgram): void { value.locColorScale = null; }
+       export function present(value: GlMeshProgram, location: WebGLUniformLocation): void {
+         value.locColorScale = location;
+       }
+       export function optionalOnly(): OptionalOnly { return {}; }
+       export function requiredNull(): RequiredNullable { return { location: null }; }`,
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/webgl.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'WebGLProgram',
+          space: 'type' as const,
+          targetName: 'host::WebGlProgram',
+        },
+        {
+          headers: ['host/webgl.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'WebGLUniformLocation',
+          space: 'type' as const,
+          targetName: 'host::WebGlUniformLocation',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    const defaultedLocation =
+      /std::variant<host::WebGlUniformLocation, flight::Null, flight::Undefined> loc_[a-z0-9_]+ = std::variant<host::WebGlUniformLocation, flight::Null, flight::Undefined>\{std::in_place_type<flight::Undefined>, flight::undefined\};/gu;
+    expect(contents.match(defaultedLocation)).toHaveLength(14);
+    expect(contents).toContain('std::holds_alternative<flight::Undefined>(value->loc_color_scale)');
+    expect(contents).toContain('std::holds_alternative<flight::Null>(value->loc_color_scale)');
+    expect(contents).toContain(
+      '(value->loc_color_scale = std::variant<host::WebGlUniformLocation, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined})',
+    );
+    expect(contents).toContain(
+      '(value->loc_color_scale = std::variant<host::WebGlUniformLocation, flight::Null, flight::Undefined>{std::in_place_type<flight::Null>, flight::null})',
+    );
+    expect(contents.match(/std::optional<host::WebGlUniformLocation> location;/gu)).toHaveLength(2);
+    expect(contents).not.toContain('std::optional<host::WebGlUniformLocation> location =');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('make_structural_ref');
+    expect(contents).not.toContain('materialize_row');
   });
 
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
@@ -8160,7 +8255,7 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('return optional_chain_receiver.value()->curve;');
     expect(emitted).toContain('std::in_place_type<flight::Undefined>, flight::undefined');
     expect(emitted).toMatch(
-      /flight::Ref<kind_size_[0-9a-f]+>, flight::Ref<kind_width_[0-9a-f]+>, flight::Null, flight::Undefined> texture;/u,
+      /flight::Ref<kind_size_[0-9a-f]+>, flight::Ref<kind_width_[0-9a-f]+>, flight::Null, flight::Undefined> texture =/u,
     );
   });
 
@@ -10843,7 +10938,9 @@ describe('createCppCompilerBackend', () => {
     // either the value or the fallback, which that storage answers directly: the projection is a checked
     // read of the one value slot, with no cast, copy, or second storage. The result type is the slot's own
     // target, so nothing has to be converted either.
-    expect(contents).toContain('std::variant<double, flight::Null, flight::Undefined> frame_rate;');
+    expect(contents).toContain(
+      'std::variant<double, flight::Null, flight::Undefined> frame_rate = std::variant<double, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined};',
+    );
     expect(contents).toMatch(
       /return \(\[&\]\(\) -> double \{ const auto& coalesce_left = source->frame_rate; if \(\(std::holds_alternative<flight::Null>\(coalesce_left\) \|\| std::holds_alternative<flight::Undefined>\(coalesce_left\)\)\) return 30\.0; return std::get<0>\(coalesce_left\); \}\(\)\);/u,
     );
@@ -16007,7 +16104,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'flight::WeakMap<flight::Ref<flighthq_types::RenderTexture>, flight::Ref<flighthq_types::GlRenderTextureEntry>>',
     );
     expect(emitted).toContain(
-      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache;',
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache =',
     );
     expect(emitted).toContain('#include <flight/erased_ref.hpp>');
   });
@@ -16086,7 +16183,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'flight::WeakMap<flight::Ref<flighthq_types::TextureSource>, flight::Ref<flighthq_types::WgpuTextureSourceTextureEntry>> texture_source_premultiplied_texture_cache;',
     );
     expect(emitted).toContain(
-      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache;',
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache =',
     );
   });
 
@@ -16140,7 +16237,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
       'flight::WeakMap<flight::Ref<TextureSource>, flight::Ref<WgpuTextureSourceTextureEntry>> texture_source_premultiplied_texture_cache;',
     );
     expect(emitted).toContain(
-      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache;',
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache =',
     );
   });
 
@@ -26279,7 +26376,9 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted).not.toContain('flight::Any');
 
     const chained = emitIrModuleCpp(optionalChain.module, { runtimeProfile: 'flight-cpp' }).contents;
-    expect(chained).toContain('std::variant<flight::String, flight::Null, flight::Undefined> label;');
+    expect(chained).toContain(
+      'std::variant<flight::String, flight::Null, flight::Undefined> label = std::variant<flight::String, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined};',
+    );
     expect(chained).toMatch(
       /auto optional_chain_receiver = source->label; if \(!std::holds_alternative<flight::String>\(optional_chain_receiver\)\) return std::nullopt; return std::get<flight::String>\(optional_chain_receiver\)\.to_upper\(\);/u,
     );
