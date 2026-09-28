@@ -25099,7 +25099,11 @@ function emitOptionalExpressionCpp(
 function assertIrOptionalChainReceiverIsSingleSentinelCpp(type: Readonly<IrType>, context: EmitContext): void {
   const union = getIrUnionTypeCpp(type, context, new Set());
   if (union && getCppUnionRepresentationPlan(union, context).kind === 'dualSentinelVariant') {
-    emissionError(context, 'dual-sentinel optional chaining requires presence projection lowering');
+    emissionError(
+      context,
+      'dual-sentinel optional chaining requires presence projection lowering',
+      'cpp-dual-sentinel-optional-chain-projection-unproven',
+    );
   }
 }
 
@@ -25167,7 +25171,12 @@ function emitOptionalPropertyCallExpressionCpp(
   if (callee.kind !== 'property' || !callee.optional) return undefined;
   const semantics = callee.optionalChain;
   if (!semantics) return undefined;
-  assertIrOptionalChainReceiverIsSingleSentinelCpp(semantics.receiverType, context);
+  // The receiver's presence test is the projection, not `.has_value()`: a dual-sentinel receiver has no such
+  // member, and the projection states the same question in the storage's own terms -- one positive
+  // alternative is the complete proof, and the same exact alternative is read once the test succeeds. It
+  // refuses only when the receiver has several value domains, where a visitor would have to prove that every
+  // domain supports the call.
+  const receiverProjection = getCppOptionalChainReceiverProjectionCpp(semantics.receiverType, context);
   if (semantics.receiverNullish === 'excluded') {
     return emitExpression({ ...expression, callee: { ...callee, optional: false } }, context);
   }
@@ -25189,13 +25198,13 @@ function emitOptionalPropertyCallExpressionCpp(
   // spelling -- `url.split('.').pop()?.toLowerCase()` emitted `to_lower_case` while the identical call
   // written without the chain emitted `to_lower`. The table already knew the answer; this site was the
   // one not asking it.
-  const invocation = `optional_chain_receiver.value()${memberOperator}${getCppProjectedMemberNameCpp(callee, context)}(${arguments_})`;
+  const invocation = `${receiverProjection.value}${memberOperator}${getCppProjectedMemberNameCpp(callee, context)}(${arguments_})`;
   context.includes.add('optional');
   if (returns.kind === 'primitive' && returns.name === 'void') {
-    return `([&]() { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return; ${invocation}; }())`;
+    return `([&]() { auto optional_chain_receiver = ${receiver}; if (${receiverProjection.absent}) return; ${invocation}; }())`;
   }
   const payload = emitOptionalChainPayloadTypeCpp(returns, context);
-  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${invocation}; }())`;
+  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${receiver}; if (${receiverProjection.absent}) return std::nullopt; return ${invocation}; }())`;
 }
 
 function emitOptionalElementExpressionCpp(
@@ -25786,7 +25795,11 @@ function getCppOptionalChainReceiverProjectionCpp(
   // value domains still need a visitor which proves that every domain supports the requested operation.
   const value = plan.valueSlots.length === 1 ? plan.valueSlots[0] : undefined;
   if (!value) {
-    emissionError(context, 'dual-sentinel optional chaining requires one concrete receiver value domain');
+    emissionError(
+      context,
+      'dual-sentinel optional chaining requires one concrete receiver value domain',
+      'cpp-dual-sentinel-optional-chain-projection-unproven',
+    );
   }
   context.includes.add('variant');
   return {

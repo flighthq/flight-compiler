@@ -10639,9 +10639,10 @@ describe('createCppCompilerBackend', () => {
     expect(nullable).toContain('std::optional<double> rate');
     expect(nullable).toMatch(/return \(\[&\]\(\) -> std::optional<double> \{ auto nullish_coalesce_left/u);
 
-    // Optional CHAINING over the same storage still refuses -- the projection it needs is a different one
-    // (the chain's receiver short-circuit) and it is not this lane's, so the refusal stands with its own
-    // message rather than being approximated here.
+    // Optional CHAINING over the same storage is the sibling projection, and `valueOf` on a primitive
+    // receiver is what still refuses here -- NOT the chain: the presence projection succeeds on the variant
+    // and the call then has no resolved member to report a result for. A reference member through the same
+    // storage expresses the projection fully, and the family test pins that.
     const chained = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(
         lower(
@@ -10651,7 +10652,8 @@ describe('createCppCompilerBackend', () => {
         { runtimeProfile: 'flight-cpp' },
       ),
     );
-    expect(chained.message).toContain('dual-sentinel optional chaining requires presence projection lowering');
+    expect(chained.rule).toBe('cpp-optional-property-call-missing-callable-result');
+    expect(chained.message).toContain('optional property call valueOf requires callable result evidence');
   });
 
   it('reads one shared payload from optional variants produced by local and imported factories', () => {
@@ -25741,18 +25743,19 @@ Resolver make_resolver(TextureRef texture) {
     expect(output).toContain('co_return std::optional<double>{co_await loader()}');
   });
 
-  it('projects dual-sentinel coalescing and still refuses its optional chaining', () => {
-    // The coalesce asks for presence and then takes either the value or the fallback, which the three-state
-    // storage answers directly: the projection is a checked read of the one value slot. The chain's
-    // projection is a different one -- the receiver short-circuits before the member is reached -- so it is
-    // still refused rather than approximated.
+  it('projects dual-sentinel coalescing and chaining through their presence tests', () => {
+    // Both operations ask the same question -- is the receiver present? -- and the three-state storage
+    // answers it directly: one positive alternative is the complete proof, and the same exact alternative is
+    // read once the test succeeds. The coalesce projects to the value or the fallback, the chain to the
+    // member call or absence.
     const coalesce = lower(
       'dual-coalesce.ts',
       'export function read(value: number | null | undefined): number { return value ?? 0; }',
     );
     const optionalChain = lower(
       'dual-chain.ts',
-      'export function text(value: number | null | undefined): string | undefined { return value?.toString(); }',
+      `interface Source { readonly label?: string | null }
+       export function upper(source: Source): string { return source.label?.toUpperCase() ?? ''; }`,
     );
 
     const emitted = emitIrModuleCpp(coalesce.module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -25761,9 +25764,40 @@ Resolver make_resolver(TextureRef texture) {
       /const auto& coalesce_left(?:_\d+)? = value; if \(\(std::holds_alternative<flight::Null>\(coalesce_left\) \|\| std::holds_alternative<flight::Undefined>\(coalesce_left\)\)\) return 0\.0; return std::get<0>\(coalesce_left\);/u,
     );
     expect(emitted).not.toContain('flight::Any');
-    expect(() => emitIrModuleCpp(optionalChain.module, { runtimeProfile: 'flight-cpp' })).toThrow(
-      'dual-sentinel optional chaining requires presence projection lowering',
+
+    const chained = emitIrModuleCpp(optionalChain.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(chained).toContain('std::variant<flight::String, flight::Null, flight::Undefined> label;');
+    expect(chained).toMatch(
+      /auto optional_chain_receiver = source->label; if \(!std::holds_alternative<flight::String>\(optional_chain_receiver\)\) return std::nullopt; return std::get<flight::String>\(optional_chain_receiver\)\.to_upper\(\);/u,
     );
+    expect(chained).not.toContain('flight::Any');
+
+    // A single-sentinel receiver keeps the optional test it has always used, so the projection is chosen per
+    // storage rather than replacing the lane.
+    const singleSentinel = emitIrModuleCpp(
+      lower(
+        'single-chain.ts',
+        `interface Source { readonly label: string | undefined }
+         export function upper(source: Source): string { return source.label?.toUpperCase() ?? ''; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(singleSentinel).toContain('if (!optional_chain_receiver.has_value()) return std::nullopt;');
+
+    // Several value domains still refuse under the family's own rule id: the chain would have to visit the
+    // domains and prove each one supports the call, which is a different lowering from a presence read.
+    const multiDomain = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'multi-domain-chain.ts',
+          `interface Source { readonly value?: number | string | null }
+           export function text(source: Source): string { return source.value?.toString() ?? ''; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(multiDomain.rule).toBe('cpp-dual-sentinel-optional-chain-projection-unproven');
+    expect(multiDomain.message).toContain('requires one concrete receiver value domain');
   });
 
   it('emits nullish comparison with negated != operator', () => {
