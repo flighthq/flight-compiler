@@ -40131,6 +40131,74 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(failure.rule).toBe('cpp-intersection-member-shapeless');
   });
 
+  it('selects through a mixed-absence coalesce and attributes the shapes that still refuse', () => {
+    const renderState = `export interface GlRenderState { readonly depthTest?: boolean | null }
+       `;
+    const emit = (body: string) =>
+      emitIrModuleCpp(lower('GlRenderState.ts', `${renderState}${body}`).module, { runtimeProfile: 'flight-cpp' })
+        .contents;
+
+    // `a ?? b` where the RESULT carries absence too is a SELECT, not a projection: both operands already have
+    // the three-state carrier, so the operation reads each once and returns one of them -- no conversion, no
+    // second storage, and the mixed absence survives exactly as the source's type says.
+    const mixed = emit(
+      `export function f(state: GlRenderState, fallback: GlRenderState): boolean | null | undefined {
+         return state.depthTest ?? fallback.depthTest;
+       }`,
+    );
+    expect(mixed).toContain('-> std::variant<bool, flight::Null, flight::Undefined> { const auto& coalesce_left');
+    expect(mixed).toContain('= state->depth_test; if ((std::holds_alternative<flight::Null>(coalesce_left');
+    expect(mixed).toContain('return coalesce_left;');
+
+    // The single-value form keeps the projection it has always had: the result is the slot's own target.
+    const single = emit(`export function f(state: GlRenderState): boolean { return state.depthTest ?? false; }`);
+    expect(single).toContain('return std::get<0>(coalesce_left);');
+
+    // The shapes that already worked stay working, so this lane's change is additive rather than a
+    // re-routing of the mixed-absence reads.
+    const read = emit(
+      `export function read(state: GlRenderState): boolean | null | undefined { return state.depthTest; }
+       export function guard(state: GlRenderState): boolean { return state.depthTest == null; }
+       export function normalize(state: GlRenderState): boolean {
+         const depthTest = state.depthTest;
+         return depthTest === undefined ? false : depthTest === null ? false : depthTest;
+       }`,
+    );
+    expect(read).toMatch(/std::variant<bool, flight::Null, flight::Undefined> depth_test/u);
+    expect(read).toContain('std::holds_alternative<flight::Undefined>(optional_property)');
+    expect(read).toContain(
+      'std::holds_alternative<flight::Null>(state->depth_test) || std::holds_alternative<flight::Undefined>(state->depth_test)',
+    );
+
+    // Two shapes still refuse, and now they say which rule they are rather than landing unattributed:
+    // a coalesce nested a third level deep needs the projection to recurse through the fallback, and a
+    // comparison that asks for BOTH sentinels needs evidence naming the carrier it is asking about.
+    const nested = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'GlRenderState.ts',
+          `${renderState}export function f(state: GlRenderState, fallback: GlRenderState): boolean {
+             return state.depthTest ?? fallback.depthTest ?? false;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(nested.rule).toBe('cpp-dual-sentinel-coalesce-projection-unproven');
+    const comparison = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'GlRenderState.ts',
+          `${renderState}export function f(state: GlRenderState): number {
+             return state.depthTest === undefined ? 0 : state.depthTest === null ? 1 : 2;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(comparison.rule).toBe('cpp-dual-sentinel-comparison-unrepresented');
+  });
+
   it('names the flattening behind an unidentified heritage assertion and keeps its rewrite exact', () => {
     const shared = `interface RenderState { readonly pipeline: string }
        interface RenderProxyBase { readonly id: string }

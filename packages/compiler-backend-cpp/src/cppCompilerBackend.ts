@@ -3303,7 +3303,27 @@ function emitCppDualSentinelCoalesceProjectionCpp(
   expectedType: Readonly<IrType> | undefined,
   context: EmitContext,
 ): string | undefined {
-  if (plan.valueSlots.length !== 1 || !expectedType) return undefined;
+  if (!expectedType) return undefined;
+  // `a ?? b` where the RESULT is the same absent-carrying storage: the operation selects, it does not project.
+  // Both operands already have the carrier, so the whole thing is "the right when the left is absent, else the
+  // left" -- one read of each operand and no third storage, which is why a nested coalesce over the same
+  // mixed-absence union lowers here rather than needing a conversion.
+  const expectedUnion = getIrUnionTypeCpp(expectedType, context, new Set());
+  const expectedPlan = expectedUnion ? getCppUnionRepresentationPlan(expectedUnion, context) : undefined;
+  if (
+    expectedPlan?.kind === 'dualSentinelVariant' &&
+    expectedPlan.valueSlots.length === plan.valueSlots.length &&
+    expectedPlan.valueSlots.every((slot, index) => slot.targetType === plan.valueSlots[index]?.targetType)
+  ) {
+    const sentinels = getCppDualSentinelTargetTypes(context);
+    context.includes.add('variant');
+    const left = emitExpression(expression.left, context);
+    const fallback = emitExpression(expression.right, context, expectedType);
+    const valueName = getGeneratedTargetName('coalesce_left', context);
+    const absent = `(std::holds_alternative<${sentinels.null}>(${valueName}) || std::holds_alternative<${sentinels.undefined}>(${valueName}))`;
+    return `([&]() -> ${emitType(expectedType, context)} { const auto& ${valueName} = ${left}; if (${absent}) return ${fallback}; return ${valueName}; }())`;
+  }
+  if (plan.valueSlots.length !== 1) return undefined;
   const slot = plan.valueSlots[0]!;
   if (slot.targetType !== emitType(expectedType, context)) return undefined;
   const sentinels = getCppDualSentinelTargetTypes(context);
@@ -3621,7 +3641,11 @@ function emitExpression(
             context,
           );
           if (dualSentinelProjection) return dualSentinelProjection;
-          emissionError(context, 'dual-sentinel nullish coalescing requires presence projection lowering');
+          emissionError(
+            context,
+            'dual-sentinel nullish coalescing requires presence projection lowering',
+            'cpp-dual-sentinel-coalesce-projection-unproven',
+          );
         }
         const expectedUnion = expectedType ? getIrUnionTypeCpp(expectedType, context, new Set()) : undefined;
         const expectedPlan = expectedUnion ? getCppUnionRepresentationPlan(expectedUnion, context) : undefined;
@@ -11146,7 +11170,11 @@ function emitNullishComparisonCpp(
     const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
     const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
     if (!getCppOptionalParameterNullishStorageCpp(operand, context) && (!plan || plan.kind !== 'dualSentinelVariant')) {
-      emissionError(context, 'nullish comparison admitting null and undefined requires dual-sentinel union evidence');
+      emissionError(
+        context,
+        'nullish comparison admitting null and undefined requires dual-sentinel union evidence',
+        'cpp-dual-sentinel-comparison-unrepresented',
+      );
     }
   }
   return emitCppPresenceTestCpp(
