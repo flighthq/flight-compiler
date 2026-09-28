@@ -5300,9 +5300,23 @@ function emitExpression(
         expression.object.presence !== 'narrowedPresent' &&
         isCppAbsenceCarryingExpressionCpp(expression.object, context)
       ) {
+        // A type parameter is the one receiver where "narrow it" is not the whole answer: the parameter is
+        // emitted as the type argument itself, so the sentinel its constraint carries has no storage to
+        // narrow, and a guard over it reads a channel the emitted code does not have. Saying only "requires
+        // narrowed access" would send that author to write the guard they already wrote.
+        const receiverBinding = expression.object.reference.binding;
+        const receiverType = getCppBindingTypeCpp(receiverBinding.id, context);
+        const typeParameterReceiver =
+          receiverType?.kind === 'named' &&
+          receiverType.reference.kind === 'binding' &&
+          receiverType.reference.binding.kind === 'typeParameter'
+            ? receiverType.reference.binding
+            : undefined;
         emissionError(
           context,
-          `property ${expression.name} on C++ absence-carrying storage requires narrowed access`,
+          typeParameterReceiver
+            ? `property ${expression.name} on C++ absence-carrying storage requires narrowed access: the receiver is the type parameter ${typeParameterReceiver.name}, whose constraint is what carries the sentinel, and a C++ template parameter is emitted as the type argument itself -- so the guard's sentinel has no storage in the emitted code and narrowing cannot produce one. Declare the parameter as the concrete optional type its constraint names, or narrow the value into a non-optional local before the read`
+            : `property ${expression.name} on C++ absence-carrying storage requires narrowed access`,
           'cpp-optional-member-access-unproven',
         );
       }

@@ -9717,6 +9717,61 @@ describe('createCppCompilerBackend', () => {
     ).toBe('cpp-union-member-access-unguarded');
   });
 
+  it('names the constrained type parameter behind an absence-carrying member read', () => {
+    const generic = lower(
+      'explainGlyphAtlasEntry.ts',
+      `interface GlyphAtlasEntry { readonly glyph: number }
+       export function explain<T extends GlyphAtlasEntry | undefined>(entry: T): number {
+         if (entry === undefined) return 0;
+         return entry.glyph;
+       }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(generic, { runtimeProfile: 'flight-cpp' }));
+
+    // The guard here is exactly the narrowing the terse message asks for, so that sentence would send the
+    // author to write the line they already wrote. The receiver is a type parameter, whose sentinel lives
+    // in the CONSTRAINT while the parameter itself is emitted as the type argument -- there is no storage
+    // for the guard to narrow, and adding one is a change to the declaration, not to the read.
+    expect(failure.rule).toBe('cpp-optional-member-access-unproven');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('the receiver is the type parameter T');
+    expect(failure.message).toContain('a C++ template parameter is emitted as the type argument itself');
+    expect(failure.message).toContain('Declare the parameter as the concrete optional type its constraint names');
+
+    // The same guard over a concrete optional IS the narrowing the storage answers: the contrast is what
+    // makes the refusal above a statement about the receiver rather than about the guard.
+    const concrete = emitIrModuleCpp(
+      lower(
+        'explainConcreteEntry.ts',
+        `interface GlyphAtlasEntry { readonly glyph: number }
+         export function explain(entry: GlyphAtlasEntry | undefined): number {
+           if (entry === undefined) return 0;
+           return entry.glyph;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(concrete).toContain('std::optional<flight::Ref<GlyphAtlasEntry>> entry');
+    expect(concrete).toContain('if (!entry.has_value())');
+    expect(concrete).toContain('entry.value()->glyph');
+
+    // A concrete receiver with no narrowing keeps the terse sentence, so the added clause is scoped to the
+    // declaration that cannot answer, not to every refusal of this rule.
+    const unguarded = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'explainUnguardedEntry.ts',
+          `interface GlyphAtlasEntry { readonly glyph: number }
+           export function explain(entry: GlyphAtlasEntry | undefined): number { return entry.glyph; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(unguarded.rule).toBe('cpp-optional-member-access-unproven');
+    expect(unguarded.message).toContain('requires narrowed access');
+    expect(unguarded.message).not.toContain('the receiver is the type parameter');
+  });
+
   it('reads one shared payload from optional variants produced by local and imported factories', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
