@@ -1995,6 +1995,85 @@ function lowerImportedPermissionOutcomeModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedPermissionRequestOutcomeModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/Permission',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/Permission.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/Permission.ts',
+        `export type PermissionState = 'denied' | 'granted' | 'prompt';
+         export type PermissionRequestFailureReason =
+           | 'no-request-route'
+           | 'operation-failed'
+           | 'runtime-unavailable'
+           | 'timeout'
+           | 'unsupported';
+         export type PermissionRequestOutcome =
+           | { readonly reason: 'cleanup-failed'; readonly state: 'granted' }
+           | { readonly reason: 'denied'; readonly state: 'denied' }
+           | { readonly reason: 'dismissed'; readonly state: 'prompt' }
+           | { readonly reason: 'granted'; readonly state: 'granted' }
+           | { readonly reason: 'best-effort'; readonly state: PermissionState | null }
+           | { readonly reason: PermissionRequestFailureReason };`,
+      ),
+      source(
+        '@flighthq/permissions',
+        'permissions/src/permission.ts',
+        `import type { PermissionRequestOutcome } from '@flighthq/types/Permission';
+         type GeolocationAccessOutcome = {
+           readonly reason:
+             | 'cleanup-failed'
+             | 'denied'
+             | 'dismissed'
+             | 'granted'
+             | 'operation-failed'
+             | 'runtime-unavailable'
+             | 'timeout';
+         };
+         interface HostGeolocationCapability {
+           promptForAccess(): Promise<GeolocationAccessOutcome>;
+         }
+         export async function requestGeolocationAccessPermission(
+           hostGeolocation: Readonly<HostGeolocationCapability> | undefined,
+         ): Promise<PermissionRequestOutcome> {
+           if (hostGeolocation === undefined || typeof hostGeolocation.promptForAccess !== 'function') {
+             return { reason: 'runtime-unavailable' };
+           }
+           let outcome;
+           try {
+             outcome = await hostGeolocation.promptForAccess();
+           } catch {
+             return { reason: 'operation-failed' };
+           }
+           switch (outcome.reason) {
+             case 'granted': return { reason: 'granted', state: 'granted' };
+             case 'denied': return { reason: 'denied', state: 'denied' };
+             case 'dismissed': return { reason: 'dismissed', state: 'prompt' };
+             case 'cleanup-failed': return { reason: 'cleanup-failed', state: 'granted' };
+             default: return { reason: outcome.reason };
+           }
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedTreeViewSequenceModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -29095,6 +29174,48 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('flight::structural_ref_cast');
     expect(contents).not.toContain('static_pointer_cast');
     expect(contents).not.toContain('static_cast<flight::Ref');
+  });
+
+  it('uses a narrowed computed discriminant to construct an imported async permission outcome', () => {
+    const { moduleResolution, results } = lowerImportedPermissionRequestOutcomeModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const contents = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(contents).toContain('flight::Task<flighthq_types::PermissionRequestOutcome>');
+    expect(contents).toContain('std::in_place_type<flight::Ref<flighthq_types::reason_');
+    expect(contents).toContain('.reason = outcome->reason');
+    expect(contents).not.toContain('contextual_union_source');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('flight::structural_ref_cast');
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('static_cast<flight::Ref');
+  });
+
+  it('does not choose a contextual object union arm from an unchecked computed discriminant', () => {
+    const result = lower(
+      'dynamic-permission-outcome.ts',
+      `type PermissionRequestOutcome =
+         | { readonly reason: 'best-effort'; readonly state: string | null }
+         | { readonly reason: 'operation-failed' | 'runtime-unavailable' };
+       interface DynamicOutcome { readonly reason: any }
+       export async function request(outcome: DynamicOutcome): Promise<PermissionRequestOutcome> {
+         return { reason: outcome.reason };
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('is not a represented runtime domain');
   });
 
   it('refuses to preserve an awaited union owner when nested field storage differs', () => {

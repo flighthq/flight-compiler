@@ -17970,11 +17970,24 @@ function getCppLiteralDiscriminantMatchCpp(
   target: Readonly<IrType>,
   context: EmitContext,
 ): boolean | undefined {
-  if (expression.kind !== 'literal') return undefined;
-  if (target.kind === 'literal') return target.value === expression.value;
-  const union = getIrUnionTypeCpp(target, context, new Set());
-  if (!union || !union.types.every((member) => member.kind === 'literal')) return undefined;
-  return union.types.some((member) => member.kind === 'literal' && member.value === expression.value);
+  const literalTarget =
+    target.kind === 'literal'
+      ? target
+      : (() => {
+          const union = getIrUnionTypeCpp(target, context, new Set());
+          return union?.types.every((member) => member.kind === 'literal') ? union : undefined;
+        })();
+  if (!literalTarget) return undefined;
+  if (expression.kind === 'literal') {
+    if (literalTarget.kind === 'literal') return literalTarget.value === expression.value;
+    return literalTarget.types.some((member) => member.kind === 'literal' && member.value === expression.value);
+  }
+  // A switch can narrow a property to a remaining set of literal values even though its declared
+  // receiver still exposes the complete union. For a fresh contextual object, that source-side proof
+  // identifies the allocation owner without converting an existing object or guessing from the shared
+  // string carrier. An incompatible subset is a definitive non-match for this alternative.
+  if (expression.kind !== 'property' || !expression.narrowedType) return undefined;
+  return analyzeIrTypeStructuralAssignability(expression.narrowedType, literalTarget).status === 'compatible';
 }
 
 function isCppExpressionRepresentableAsRuntimeTypeCpp(
