@@ -19161,7 +19161,7 @@ function emitCppExternalObjectConstructionCpp(
   if (!construction) {
     emissionError(
       context,
-      `external object ${sourceName} construction requires an exact field contract`,
+      `external object ${sourceName} construction requires an exact field contract: the target profile has to declare this binding's object construction -- its kind and its sourceField-to-targetName pairs -- for the runtime value type it names, because the profile IS the contract and the compiler never reads the target header to guess one. Declare it there, or construct the value on the host side and pass it in`,
       'cpp-external-object-field-contract-missing',
     );
   }

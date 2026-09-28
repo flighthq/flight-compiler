@@ -11688,6 +11688,62 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     ).toThrow('malformed or ambiguous object-construction field contract');
   });
 
+  it('attributes a GPU dictionary construction to the profile field contract it needs', () => {
+    const result = lower(
+      'wgpuBitmapDisplacementEffect.ts',
+      `export function makeBlend(): GPUBlendState { return { color: 1, alpha: 2 }; }`,
+    );
+    const blendState = (withConstruction: boolean) => ({
+      headers: ['flight/host_sdl/wgpu.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'value' as const,
+      sourceName: 'GPUBlendState',
+      space: 'type' as const,
+      targetName: 'flight::host_sdl::WgpuBlendState',
+      ...(withConstruction
+        ? {
+            objectConstruction: {
+              fields: [
+                { sourceField: 'color', targetName: 'color' },
+                { sourceField: 'alpha', targetName: 'alpha' },
+              ],
+              kind: 'field-assignment' as const,
+            },
+          }
+        : {}),
+    });
+    const emit = (withConstruction: boolean) =>
+      emitIrModuleCpp(result.module, {
+        externalBindings: {
+          bindings: [blendState(withConstruction)],
+          schema: 'flight-cpp-external-bindings/1',
+        },
+        runtimeProfile: 'flight-cpp',
+      }).contents;
+
+    // The runtime half of this contract already exists -- `flight::host_sdl::WgpuBlendState` is a struct
+    // with `color` and `alpha`, and `flight::host_sdl::WgpuBlendComponent` with the three component
+    // members -- so this is not an emission gap: the wgpu profile declares the type as an external value
+    // carrier and stops there, and a value carrier with no field mapping cannot pin the source fields onto
+    // a struct the compiler has never read. The refusal is a target-runtime contract, classified as one,
+    // and it names the entry that closes it.
+    const missing = captureBackendEmissionFailure(() => emit(false));
+    expect(missing.rule).toBe('cpp-external-object-field-contract-missing');
+    expect(missing.classification).toBe('target-runtime');
+    expect(missing.message).toContain('external object GPUBlendState construction requires an exact field contract');
+    expect(missing.message).toContain('the profile IS the contract');
+    expect(missing.message).toContain('Declare it there, or construct the value on the host side and pass it in');
+
+    // Declaring the same fields in the profile is the whole difference: the construction lowers to the
+    // runtime's own value type, field by field, with no cast, copy, or invented storage.
+    const emitted = emit(true);
+    expect(emitted).toContain('#include <flight/host_sdl/wgpu.hpp>');
+    expect(emitted).toContain('flight::host_sdl::WgpuBlendState make_blend()');
+    expect(emitted).toMatch(/external_gpublend_state\.color = /u);
+    expect(emitted).toMatch(/external_gpublend_state\.alpha = /u);
+    expect(emitted).not.toContain('flight::Any');
+  });
+
   it('lowers PropertyKey intrinsically while preserving an unrelated Proxy refusal', () => {
     const propertyBag = lower(
       'property-key.ts',
