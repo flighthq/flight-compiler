@@ -666,6 +666,8 @@ function renderOpaquePropertyValueDomainMessage(
 ): string {
   const appLoopHandle = getAppLoopOpaqueFrameHandleGuidance(node, subject, kinds);
   if (appLoopHandle) return appLoopHandle;
+  const commandValue = getCommandPropertyInputOpaqueValueGuidance(node, subject, kinds);
+  if (commandValue) return commandValue;
   const materializationTraits = getSceneDocumentMaterializationOpaqueTraitsGuidance(node, subject, kinds);
   if (materializationTraits) return materializationTraits;
   const animationValue = getAnimationOpaqueValueGuidance(node, subject, kinds);
@@ -1006,6 +1008,24 @@ function getAppLoopOpaqueFrameHandleGuidance(
     return undefined;
   }
   return `${subject} is the private storage leg of HostAppLoopCapability's provider-issued cancellation token. Every scheduling path in startAppLoop assigns backend.requestFrame(tick) to frameHandle and immediately installs a cleanup closure that returns the currently scheduled token only to backend.cancelFrame on the same retained capability. Pause, frame-rate throttling, normal rescheduling, and initial scheduling all preserve that pairing; no application consumer inspects, coerces, serializes, exposes, or persists the token. createLoopState's initial null is never passed to cancelFrame because no cleanup closure exists until after the first requestFrame assignment. This paired identity transport is genuinely provider-opaque, so record a reviewed source-portability exception for this exact property while requestFrame remains its sole non-sentinel producer, cancelFrame remains its sole semantic consumer, and LoopState stays private. The exception does not justify the null as unknown assertion: initialize unknown directly with null or model the uninitialized state explicitly. If handles must cross portable storage, results, or providers, define one named closed AppLoopFrameHandle domain shared by HostAppLoopCapability, LoopState, and every provider. The compiler will not assume the web provider's numeric handle, choose a target-specific Any carrier, retain or insert a cast, copy or materialize the token, or change its identity.`;
+}
+
+function getCommandPropertyInputOpaqueValueGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    subject !== 'function:createSetNodePropertyCommandBatch/parameter:entries/property:value' ||
+    !hasOnlyUnknown(kinds) ||
+    getNodeName(node.name) !== 'value' ||
+    node.questionToken !== undefined ||
+    node.type?.kind !== ts.SyntaxKind.UnknownKeyword ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/command/src/command.ts')
+  ) {
+    return undefined;
+  }
+  return `${subject} is the caller-provided after-side of a heterogeneous node-property command. createSetNodePropertyCommandBatch retains each value unchanged as CommandPropertyEntry.after while readNodeProperty captures the matching before value from the same target and property. CommandHistory stores that plain command; merging preserves the original before and newest after only when target and property identity match; execute and redo write after back to that property, while undo writes before. No command-core consumer inspects, coerces, serializes, or interprets either value. Relative to generic command history this is genuinely opaque identity transport, so record a reviewed source-portability exception for this exact parameter property while values return only to their originating node property and do not enter portable persistence or cross-property interpretation. If portable histories support a bounded property set, replace unknown with one named closed CommandPropertyValue domain or property-discriminated entry arms shared by the single and batch constructors, CommandPropertyEntry.before and after, the reader and writer, merging, and every consumer. This exception records value erasure only: it does not prove indexed storage on NodeAny or justify the double assertions in readNodeProperty and writeNodeProperty; use a typed property-access capability or an owner with a declared index signature for that separate boundary. The compiler will not infer a property-indexed union, choose a target-specific Any carrier, retain or insert a cast, copy or materialize the value, serialize it, or change its identity.`;
 }
 
 function getHostAppLoopOpaqueHandleGuidance(

@@ -1046,6 +1046,116 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(1);
   });
 
+  it('keeps batch command property values as exact identity transport', () => {
+    const opaque = input(
+      'packages/command/src/command.ts',
+      `interface NodeAny { readonly id: number }
+       function createSetNodePropertyCommandBatch(
+         entries: readonly Readonly<{ property: string; target: NodeAny; value: unknown }>[],
+       ): void { void entries; }`,
+    );
+    const closed = input(
+      'packages/command/src/command.ts',
+      `interface NodeAny { readonly id: number }
+       type CommandPropertyValue = boolean | number | string | null;
+       function createSetNodePropertyCommandBatch(
+         entries: readonly Readonly<{ property: string; target: NodeAny; value: CommandPropertyValue }>[],
+       ): void { void entries; }`,
+    );
+    const controls = [
+      input(
+        'packages/command/src/otherCommand.ts',
+        `function createSetNodePropertyCommandBatch(
+           entries: readonly Readonly<{ property: string; value: unknown }>[],
+         ): void { void entries; }`,
+      ),
+      input(
+        'packages/other/src/command.ts',
+        `function createSetNodePropertyCommandBatch(
+           entries: readonly Readonly<{ property: string; value: unknown }>[],
+         ): void { void entries; }`,
+      ),
+      input(
+        'packages/command/src/command.ts',
+        `function createOtherCommand(
+           entries: readonly Readonly<{ property: string; value: unknown }>[],
+         ): void { void entries; }`,
+      ),
+      input(
+        'packages/command/src/command.ts',
+        `function createSetNodePropertyCommandBatch(
+           entries: readonly Readonly<{ payload: unknown; property: string }>[],
+         ): void { void entries; }`,
+      ),
+      input(
+        'packages/command/src/command.ts',
+        `function createSetNodePropertyCommandBatch(
+           entries: readonly Readonly<{ property: string; value?: unknown }>[],
+         ): void { void entries; }`,
+      ),
+      input(
+        'packages/command/src/command.ts',
+        `function createSetNodePropertyCommandBatch(
+           entries: readonly Readonly<{ property: string; value: any }>[],
+         ): void { void entries; }`,
+      ),
+      input(
+        'packages/command/src/command.ts',
+        `function createSetNodePropertyCommandBatch(
+           changes: readonly Readonly<{ property: string; value: unknown }>[],
+         ): void { void changes; }`,
+      ),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected an opaque batch command property finding');
+
+    expect(report.findings).toMatchObject([
+      {
+        rule: 'opaque-value-domain',
+        subject: 'function:createSetNodePropertyCommandBatch/parameter:entries/property:value',
+      },
+    ]);
+    expect(finding.message).toContain('caller-provided after-side of a heterogeneous node-property command');
+    expect(finding.message).toContain('readNodeProperty captures the matching before value');
+    expect(finding.message).toContain('original before and newest after');
+    expect(finding.message).toContain('execute and redo write after');
+    expect(finding.message).toContain('undo writes before');
+    expect(finding.message).toContain('genuinely opaque identity transport');
+    expect(finding.message).toContain('reviewed source-portability exception for this exact parameter property');
+    expect(finding.message).toContain('named closed CommandPropertyValue domain');
+    expect(finding.message).toContain('property-discriminated entry arms');
+    expect(finding.message).toContain('does not prove indexed storage on NodeAny');
+    expect(finding.message).toContain('double assertions in readNodeProperty and writeNodeProperty');
+    expect(finding.message).toContain('target-specific Any carrier');
+    expect(finding.message).toContain('retain or insert a cast');
+    expect(finding.message).toContain('copy or materialize the value');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('caller-provided after-side'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: [
+          {
+            findingIdentity: finding.identity,
+            reason: 'The command core returns the captured value only to its originating target property.',
+            rule: 'opaque-value-domain',
+          },
+        ],
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(1);
+  });
+
   it('preserves animation target and marker payloads as exact domain-owned references', () => {
     const target = input(
       'packages/types/src/AnimationChannel.ts',
