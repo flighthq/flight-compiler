@@ -39451,4 +39451,48 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
     expect(failure.rule).toBe('cpp-intersection-member-shapeless');
   });
+
+  it('names why a Partial record has no shape to recover and keeps the record rewrite sound', () => {
+    const refusal = (body: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('collisionEnableGuards.ts', body).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // `Partial<Record<K, V>>` over either key kind refuses, and the message says WHY there is nothing to
+    // recover: a dictionary's keys are optional already, so Partial adds no member set -- it widens each value
+    // to admit undefined, and the runtime record cannot hold that widening. Attributed to the source, because
+    // no target representation is missing: the source asks for something the carrier cannot state.
+    for (const [label, body] of [
+      [
+        'open key',
+        `export function guards(value: Partial<Record<string, boolean>>): number { return Object.keys(value).length; }`,
+      ],
+      [
+        'literal keys',
+        `export function guards(value: Partial<Record<'collision' | 'interaction', boolean>>): boolean { return value['collision'] === true; }`,
+      ],
+    ] as const) {
+      const failure = refusal(body);
+      expect(failure.rule, label).toBe('cpp-partial-shape-unresolvable');
+      expect(failure.classification, label).toBe('source-portability');
+      expect(failure.message, label).toContain("a JavaScript dictionary's keys are optional already");
+      expect(failure.message, label).toContain('that widening is what the runtime record cannot hold');
+      expect(failure.message, label).toContain('use the record directly through its key where the code only reads');
+    }
+
+    // The rewrite the refusal names is sound where the code only reads: the plain record is one carrier, and a
+    // keyed read through it compiles. That is what makes this a source rewrite rather than a missing lowering.
+    const contents = emitIrModuleCpp(
+      lower(
+        'collisionEnableGuards.ts',
+        `export function guards(value: Record<string, boolean>): number { return Object.keys(value).length; }
+         export function enabled(value: Record<string, boolean>): boolean { return value['collision'] === true; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(contents).toContain('flight::Record<flight::String, bool> value');
+    expect(contents).toContain('value.get(flight::String("collision")).value()');
+    expect(contents).toContain('flight::object_keys(value).size()');
+    expect(contents).not.toContain('flight::Any');
+  });
 });

@@ -27648,7 +27648,7 @@ function getCppPartialShapeRefusalCpp(subject: Readonly<IrType>): string {
     return 'Partial<T> over a primitive has no members to make optional: drop the Partial, the value already admits absence where it is declared';
   }
   if (subject.kind === 'named' && subject.reference.kind === 'ambient' && subject.reference.name === 'Record') {
-    return 'Partial<Record<K, V>> has an open member set with no fixed shape: declare the members the code reads, or use the record directly through its key';
+    return "Partial<Record<K, V>> has an open member set with no fixed shape: a JavaScript dictionary's keys are optional already, so Partial adds no member set to recover -- it widens each value to admit undefined, and that widening is what the runtime record cannot hold. Declare the members the code reads, or use the record directly through its key where the code only reads";
   }
   return `Partial<T> requires a statically resolvable C++ object shape; T is ${subject.kind}`;
 }
