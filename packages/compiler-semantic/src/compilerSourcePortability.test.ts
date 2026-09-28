@@ -148,6 +148,89 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
   });
 
+  it('separates closed Lottie sub-schemas from reviewed erased input boundaries', () => {
+    const opaque = input(
+      'LottieDocument.ts',
+      `export interface LottieTextData {
+         d: { readonly k: readonly string[] };
+         a?: unknown[];
+         m?: unknown;
+         p?: unknown;
+       }
+       export interface LottieDocument { chars?: unknown[] }`,
+    );
+    const closed = input(
+      'PortableLottieDocument.ts',
+      `interface LottieCharacterShapes { readonly kind: 'shapes'; readonly shapes: readonly string[] }
+       interface LottieCharacterPrecomposition { readonly kind: 'precomposition'; readonly refId: string }
+       interface LottieCharacterData {
+         readonly ch: string;
+         readonly data: LottieCharacterPrecomposition | LottieCharacterShapes;
+         readonly fFamily: string;
+         readonly size: number;
+         readonly style: string;
+         readonly w: number;
+       }
+       interface LottieTextRange { readonly name: string; readonly start: number }
+       interface LottieTextAlignmentOptions { readonly grouping: 1 | 2 | 3 | 4 }
+       interface LottieTextFollowPathOptions { readonly firstMargin: number; readonly lastMargin: number }
+       export interface LottieTextData {
+         d: { readonly k: readonly string[] };
+         a?: LottieTextRange[];
+         m?: LottieTextAlignmentOptions;
+         p?: LottieTextFollowPathOptions;
+       }
+       export interface LottieDocument { chars?: LottieCharacterData[] }`,
+    );
+    const unrelated = input(
+      'OtherDocument.ts',
+      `interface LottieDocument { chars?: unknown[] }
+       interface LottieTextData { a?: unknown[] }`,
+    );
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'interface:LottieDocument/property:chars',
+      'interface:LottieTextData/property:a',
+      'interface:LottieTextData/property:m',
+      'interface:LottieTextData/property:p',
+    ]);
+    expect(report.findings[0]?.message).toContain('character-data array');
+    expect(report.findings[0]?.message).toContain('distinct shapes/precomposition arms');
+    expect(report.findings[1]?.message).toContain('text-range array');
+    expect(report.findings[2]?.message).toContain('text-alignment options');
+    expect(report.findings[3]?.message).toContain('text follow-path options');
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+      expect(finding.message).toContain('outside portable runtime storage');
+      expect(finding.message).toContain('target-specific Any carrier');
+    }
+    expect(report.findings[1]?.message).toContain('will not merge LottieTextData.a, .m, and .p');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability([unrelated]).findings).toHaveLength(2);
+    expect(
+      analyzeTypeScriptSourcePortability([unrelated]).findings.every((finding) =>
+        finding.message.includes('Replace it with a named closed value type'),
+      ),
+    ).toBe(true);
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'Importer retains this unsupported Lottie field only as unexamined input JSON.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions.map(({ finding }) => finding.identity)).toEqual(
+      report.findings.map((finding) => finding.identity),
+    );
+  });
+
   it('requires a closed handle domain or a reviewed exception for intentional erasure', () => {
     const erased = input('appLoop.ts', 'interface LoopState { frameHandle: unknown }');
     const report = analyzeTypeScriptSourcePortability([erased]);
