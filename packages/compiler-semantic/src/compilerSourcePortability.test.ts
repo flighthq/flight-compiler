@@ -425,6 +425,114 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
 
+  it('keeps glTF material extension promotion on concrete material owners', () => {
+    const asserted = input(
+      'packages/scene3d-formats/src/gltfMaterialExtension.ts',
+      `interface Material { readonly kind: string; name: string | null }
+       type MaterialLike = Omit<Material, 'runtime'>;
+       interface StandardPbrMaterial extends Material {
+         readonly kind: 'StandardPbrMaterial';
+         roughness: number;
+       }
+       interface ExtendedPbrMaterial extends Material {
+         extensions: readonly { kind: string }[];
+         readonly kind: 'ExtendedPbrMaterial';
+         standard: { roughness: number };
+       }
+       interface Scene3DDocument { materials: MaterialLike[] }
+       declare function createExtendedPbrMaterial(): ExtendedPbrMaterial;
+       export function attachGltfPbrExtension(document: Scene3DDocument, index: number): boolean {
+         const existing = document.materials[index];
+         if (existing === undefined) return false;
+         if (existing.kind === 'ExtendedPbrMaterial') {
+           const extended = existing as unknown as ExtendedPbrMaterial;
+           extended.extensions = [...extended.extensions, { kind: 'next' }];
+           return true;
+         }
+         if (existing.kind !== 'StandardPbrMaterial') return false;
+         const standard = existing as unknown as StandardPbrMaterial;
+         const promoted = createExtendedPbrMaterial();
+         promoted.standard.roughness = standard.roughness;
+         document.materials[index] = promoted as unknown as MaterialLike;
+         return true;
+       }
+       export function findGltfPbrExtension(
+         document: Readonly<Scene3DDocument>,
+         index: number,
+       ): number | null {
+         const material = document.materials[index];
+         if (material === undefined || material.kind !== 'ExtendedPbrMaterial') return null;
+         const extended = material as unknown as ExtendedPbrMaterial;
+         return extended.extensions.length;
+       }`,
+    );
+    const typed = input(
+      'portableGltfMaterialExtension.ts',
+      `interface Material { readonly kind: string; name: string | null; runtime: object }
+       type EntityWithoutRuntime<Type extends Material> = Omit<Type, 'runtime'>;
+       interface StandardPbrMaterial extends Material {
+         readonly kind: 'StandardPbrMaterial';
+         roughness: number;
+       }
+       interface ExtendedPbrMaterial extends Material {
+         extensions: readonly { kind: string }[];
+         readonly kind: 'ExtendedPbrMaterial';
+         standard: { roughness: number };
+       }
+       type GltfMaterialLike =
+         | EntityWithoutRuntime<ExtendedPbrMaterial>
+         | EntityWithoutRuntime<StandardPbrMaterial>;
+       interface Scene3DDocument { materials: GltfMaterialLike[] }
+       declare function createExtendedPbrMaterial(): ExtendedPbrMaterial;
+       export function attach(document: Scene3DDocument, index: number): boolean {
+         const existing = document.materials[index];
+         if (existing === undefined) return false;
+         if (existing.kind === 'ExtendedPbrMaterial') {
+           existing.extensions = [...existing.extensions, { kind: 'next' }];
+           return true;
+         }
+         const promoted = createExtendedPbrMaterial();
+         promoted.standard.roughness = existing.roughness;
+         document.materials[index] = promoted;
+         return true;
+       }
+       export function find(document: Readonly<Scene3DDocument>, index: number): number | null {
+         const material = document.materials[index];
+         return material?.kind === 'ExtendedPbrMaterial' ? material.extensions.length : null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([asserted]).findings;
+
+    expect(findings).toHaveLength(4);
+    expect(findings.every((finding) => finding.rule === 'unchecked-double-assertion')).toBe(true);
+    const extended = findings.filter((finding) => finding.message.includes('recover ExtendedPbrMaterial'));
+    expect(extended).toHaveLength(2);
+    for (const finding of extended) {
+      expect(finding.message).toContain("MaterialLike's EntityWithoutRuntime<Material> base owner");
+      expect(finding.message).toContain('kind comparison checks a shared open registry string');
+      expect(finding.message).toContain('does not prove that the retained Material owner');
+      expect(finding.message).toContain('closed union of EntityWithoutRuntime');
+      expect(finding.message).toContain('kind discriminant narrows to the exact ExtendedPbrMaterial carrier');
+      expect(finding.message).toContain('will not reinterpret or cast the base owner');
+      expect(finding.message).toContain('copy or materialize a replacement material');
+      expect(finding.message).toContain('or add side storage');
+    }
+    const standard = findings.find((finding) => finding.message.includes('recover StandardPbrMaterial'));
+    expect(standard?.message).toContain('for the promotion from existing');
+    expect(standard?.message).toContain('independent StandardPbrMaterial owner');
+    expect(standard?.message).toContain('owner-preserving checked registry recovery');
+    const promoted = findings.find((finding) => finding.message.includes('store the exact promoted'));
+    expect(promoted?.message).toContain('retains the base Material owner');
+    expect(promoted?.message).toContain('Material and ExtendedPbrMaterial interfaces are independent owner carriers');
+    expect(promoted?.message).toContain('not representation-equivalent');
+    expect(promoted?.message).toContain('store promoted directly in its ExtendedPbrMaterial arm');
+    expect(promoted?.message).toContain('will preserve an exact or representation-equivalent carrier');
+    expect(promoted?.message).toContain('will not reinterpret or cast the owner');
+    expect(promoted?.message).toContain('copy or materialize a replacement material');
+    expect(promoted?.message).toContain('or add side storage');
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',

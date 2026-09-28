@@ -4456,8 +4456,15 @@ function emitExpression(
       const assertedFacetReference =
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
         hasFlightFacetReferenceRepresentationCpp(expression.type, context);
+      // A reference-preserving alias (for example EntityWithoutRuntime<Material>) emits under its alias
+      // spelling, so parsing the rendered type does not expose the Ref<T> carrier. The representation
+      // planner still proves that carrier. Recover the pre-erasure source here so the assertion compares
+      // the two real owners instead of lowering the inner unknown marker into Any and static-casting out.
       const representedErasedFlightSource =
-        assertedReferenceElement !== undefined || assertedFacetReference
+        assertedReferenceElement !== undefined ||
+        assertedFacetReference ||
+        (getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+          hasFlightReferenceRepresentationCpp(expression.type, context))
           ? getCppRepresentedErasedAssertionSourceCpp(expression.expression, context)
           : undefined;
       const erasedValueAssertion =

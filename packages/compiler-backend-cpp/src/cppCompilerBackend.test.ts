@@ -1215,6 +1215,145 @@ function lowerImportedPhysics3DLegacyAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedGltfMaterialExtensionAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;
+         export interface PbrExtension { readonly kind: string }
+         export interface Material extends Entity { readonly kind: string; name?: string | null }
+         export type MaterialLike = EntityWithoutRuntime<Material>;
+         export interface SurfaceMaterial extends Material {
+           alphaCutoff: number;
+           alphaMode: string;
+           doubleSided: boolean;
+         }
+         export interface StandardPbrMaterial extends SurfaceMaterial {
+           readonly kind: typeof StandardPbrMaterialKind;
+           roughness: number;
+         }
+         export interface ExtendedPbrMaterial extends SurfaceMaterial {
+           extensions: readonly PbrExtension[];
+           readonly kind: typeof ExtendedPbrMaterialKind;
+           standard: { roughness: number };
+         }
+         export const ExtendedPbrMaterialKind = 'ExtendedPbrMaterial';
+         export const StandardPbrMaterialKind = 'StandardPbrMaterial';
+         export interface Scene3DDocument { materials: MaterialLike[] }
+         export type GltfMaterialLike =
+           | EntityWithoutRuntime<ExtendedPbrMaterial>
+           | EntityWithoutRuntime<StandardPbrMaterial>;
+         export interface TypedScene3DDocument { materials: GltfMaterialLike[] }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/gltfMaterialExtensionAppend.ts',
+        `import type { ExtendedPbrMaterial, MaterialLike, PbrExtension } from '@flighthq/types/contract';
+         import { ExtendedPbrMaterialKind } from '@flighthq/types/contract';
+         export function append(material: MaterialLike, extension: PbrExtension): boolean {
+           if (material.kind !== ExtendedPbrMaterialKind) return false;
+           const extended = material as unknown as ExtendedPbrMaterial;
+           extended.extensions = [...extended.extensions, extension];
+           return true;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/gltfMaterialExtensionStandard.ts',
+        `import type { MaterialLike, StandardPbrMaterial } from '@flighthq/types/contract';
+         import { StandardPbrMaterialKind } from '@flighthq/types/contract';
+         export function roughness(material: MaterialLike): number {
+           if (material.kind !== StandardPbrMaterialKind) return 0;
+           const standard = material as unknown as StandardPbrMaterial;
+           return standard.roughness;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/gltfMaterialExtensionPromoted.ts',
+        `import type {
+           ExtendedPbrMaterial,
+           MaterialLike,
+           Scene3DDocument,
+         } from '@flighthq/types/contract';
+         export function store(
+           document: Scene3DDocument,
+           index: number,
+           promoted: ExtendedPbrMaterial,
+         ): void {
+           document.materials[index] = promoted as unknown as MaterialLike;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/gltfMaterialExtensionFind.ts',
+        `import type { ExtendedPbrMaterial, MaterialLike } from '@flighthq/types/contract';
+         import { ExtendedPbrMaterialKind } from '@flighthq/types/contract';
+         export function find(material: MaterialLike): number | null {
+           if (material.kind !== ExtendedPbrMaterialKind) return null;
+           const extended = material as unknown as ExtendedPbrMaterial;
+           return extended.extensions.length;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/gltfMaterialExtensionExact.ts',
+        `import type { ExtendedPbrMaterial, MaterialLike } from '@flighthq/types/contract';
+         export function retainExtended(value: ExtendedPbrMaterial): ExtendedPbrMaterial {
+           return value as unknown as ExtendedPbrMaterial;
+         }
+         export function retainMaterialLike(value: MaterialLike): MaterialLike {
+           return value as unknown as MaterialLike;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/gltfMaterialExtensionTyped.ts',
+        `import type {
+           ExtendedPbrMaterial,
+           GltfMaterialLike,
+           PbrExtension,
+           TypedScene3DDocument,
+         } from '@flighthq/types/contract';
+         import { ExtendedPbrMaterialKind } from '@flighthq/types/contract';
+         export function append(material: GltfMaterialLike, extension: PbrExtension): boolean {
+           if (material.kind !== ExtendedPbrMaterialKind) return false;
+           material.extensions = [...material.extensions, extension];
+           return true;
+         }
+         export function store(
+           document: TypedScene3DDocument,
+           index: number,
+           promoted: ExtendedPbrMaterial,
+         ): void {
+           document.materials[index] = promoted;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedMeshAndMovieClipAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -7847,6 +7986,64 @@ describe('createCppCompilerBackend', () => {
       expect(output).not.toContain('make_ref');
       expect(output).not.toContain('materialize');
       expect(output).not.toContain('row_set');
+    }
+  });
+
+  it('keeps glTF material extensions in exact concrete owner carriers', () => {
+    const { moduleResolution, results } = lowerImportedGltfMaterialExtensionAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const append = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const standard = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const promoted = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    const find = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+    const exact = session.emitModule(modules[5]!)[0]!.contents;
+    const typed = session.emitModule(modules[6]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [append, standard, find]) {
+      expect(failure).toMatchObject({
+        classification: 'source-portability',
+        rule: 'cpp-structural-assertion-owner-unproven',
+      });
+      expect(failure.message).toContain('flighthq_types::MaterialLike');
+      expect(failure.message).toContain('a tag or registry key carried beside the value does not prove');
+      expect(failure.message).toContain('type the retaining slot and every accessor result');
+      expect(failure.message).toContain('will not reinterpret the owner, cast it');
+      expect(failure.message).toContain('copy or materialize a replacement');
+      expect(failure.message).toContain('or add side storage');
+    }
+    expect(append.message).toContain('flight::Ref<flighthq_types::ExtendedPbrMaterial>');
+    expect(standard.message).toContain('flight::Ref<flighthq_types::StandardPbrMaterial>');
+    expect(find.message).toContain('flight::Ref<flighthq_types::ExtendedPbrMaterial>');
+    expect(promoted).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-reference-assertion-without-heritage',
+    });
+    expect(promoted.message).toContain('no heritage to cast along');
+    expect(promoted.message).toContain('independent owners');
+    expect(promoted.message).toContain('exact declared owner');
+    expect(promoted.message).toContain('checked dynamic owner');
+    expect(promoted.message).toContain('will not use a native pointer cast');
+    expect(promoted.message).toContain('materialize a replacement row');
+    expect(promoted.message).toContain('invent side storage');
+    expect(promoted.message).toContain('flight::Ref<flighthq_types::ExtendedPbrMaterial>');
+    expect(promoted.message).toContain('flighthq_types::MaterialLike');
+
+    expect(exact).toContain('return value;');
+    expect(typed).toContain('std::visit([](const auto& value) { return value->kind; }, material)');
+    expect(typed).toContain('std::get<1>(material)->extensions');
+    expect(typed).toContain('std::in_place_type<flight::Ref<flighthq_types::ExtendedPbrMaterial>>, promoted');
+    for (const output of [exact, typed]) {
+      expect(output).not.toContain('flight::Any');
+      expect(output).not.toContain('static_pointer_cast');
+      expect(output).not.toContain('structural_ref_cast');
+      expect(output).not.toContain('make_ref');
+      expect(output).not.toContain('materialize');
     }
   });
 

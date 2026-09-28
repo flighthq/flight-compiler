@@ -388,6 +388,37 @@ function getMaterialDoubleAssertionGuidance(
   return undefined;
 }
 
+function getGltfMaterialExtensionDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  const sourceFile = node.getSourceFile();
+  if (!normalizePathPortable(sourceFile.fileName).endsWith('/packages/scene3d-formats/src/gltfMaterialExtension.ts')) {
+    return undefined;
+  }
+  const target = getTypeAssertionType(node);
+  if (!ts.isTypeReferenceNode(target)) return undefined;
+  const targetName = getNodeName(target.typeName);
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner)) return undefined;
+  let retainedExpression: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retainedExpression)) retainedExpression = retainedExpression.expression;
+  const retainedSlot = retainedExpression.getText(sourceFile);
+  if (targetName === 'MaterialLike' && retainedSlot === 'promoted') {
+    return `${subject} uses a double assertion through ${bridge} to store the exact promoted ExtendedPbrMaterial owner as MaterialLike, but MaterialLike is EntityWithoutRuntime<Material>: removing the runtime key is identity-preserving and therefore retains the base Material owner rather than the promoted concrete owner. Flight's emitted Material and ExtendedPbrMaterial interfaces are independent owner carriers, so they are not representation-equivalent even though TypeScript accepts the structural view. Give Scene3DDocument.materials a closed union of EntityWithoutRuntime for each supported concrete material owner, then store promoted directly in its ExtendedPbrMaterial arm. The compiler will preserve an exact or representation-equivalent carrier, but will not reinterpret or cast the owner, copy or materialize a replacement material, or add side storage.`;
+  }
+  if (
+    (targetName !== 'ExtendedPbrMaterial' && targetName !== 'StandardPbrMaterial') ||
+    (retainedSlot !== 'existing' && retainedSlot !== 'material')
+  ) {
+    return undefined;
+  }
+  const access = retainedSlot === 'material' ? 'read' : targetName === 'ExtendedPbrMaterial' ? 'update' : 'promotion';
+  return `${subject} uses a double assertion through ${bridge} to recover ${targetName} for the ${access} from ${retainedSlot}, but the Scene3DDocument.materials slot retains only MaterialLike's EntityWithoutRuntime<Material> base owner. The preceding kind comparison checks a shared open registry string; it does not prove that the retained Material owner is the independent ${targetName} owner or supply that owner's declared cells. Give the document slot a closed union of EntityWithoutRuntime for the supported concrete material owners so the kind discriminant narrows to the exact ${targetName} carrier, or use an owner-preserving checked registry recovery that validates that concrete owner. The compiler will preserve an exact or representation-equivalent carrier, but will not reinterpret or cast the base owner, copy or materialize a replacement material, or add side storage.`;
+}
+
 function getNodeInteractiveStateBindingDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
@@ -1250,6 +1281,8 @@ function renderUncheckedDoubleAssertionMessage(
 ): string {
   const material = getMaterialDoubleAssertionGuidance(node, subject, bridge);
   if (material) return material;
+  const gltfMaterialExtension = getGltfMaterialExtensionDoubleAssertionGuidance(node, subject, bridge);
+  if (gltfMaterialExtension) return gltfMaterialExtension;
   const nodeInteractiveStateBinding = getNodeInteractiveStateBindingDoubleAssertionGuidance(node, subject, bridge);
   if (nodeInteractiveStateBinding) return nodeInteractiveStateBinding;
   const physics3DWorld = getPhysics3DWorldDoubleAssertionGuidance(node, subject, bridge);
