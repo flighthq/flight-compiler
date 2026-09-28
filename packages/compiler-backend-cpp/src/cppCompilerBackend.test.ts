@@ -39526,9 +39526,40 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(primitive.message).toContain('Declare the object shape the code reads');
   });
 
-  it('attributes conflicting generic runtime-slot owners to the source specialization', () => {
+  it('merges one stable runtime-slot carrier and attributes conflicting owners to the source specialization', () => {
+    const stable = emitIrModuleCpp(
+      lower(
+        'stable-runtime-slot-owner.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         interface NodeRuntime<Traits extends object> { traits: Traits | null }
+         interface Left<Traits extends object> {
+           left: boolean;
+           [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+         }
+         interface Right<Traits extends object> {
+           right: boolean;
+           [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+         }
+         export function getRuntime<Traits extends object>(
+           value: Left<Traits> & Right<Traits>,
+         ): NodeRuntime<Traits> | undefined {
+           return value[EntityRuntimeKey];
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // Both conjuncts name the same generic specialization, so their repeated computed member is one
+    // structural cell in the merged owner. The read stays on that owner without a cast, copied row,
+    // replacement referent, or side storage.
+    expect(stable).toContain('return value->entity_runtime_key;');
+    expect(stable).not.toContain('static_cast');
+    expect(stable).not.toContain('structural_ref_cast');
+    expect(stable).not.toContain('materialize');
+    expect(stable).not.toContain('row_set');
+
     const result = lower(
-      'generic-runtime-slot-owner.ts',
+      'nodeInteractionState.ts',
       `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
        interface EntityRuntime { binding: object | null }
        interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
@@ -39552,6 +39583,9 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(failure.rule).toBe('cpp-intersection-member-shapeless');
     expect(failure.classification).toBe('source-portability');
     expect(failure.message).toContain('EntityRuntimeKey declared at different types');
+    expect(failure.message).toContain('EntityRuntimeKey has incompatible C++ carriers [');
+    expect(failure.message).toContain('NodeRuntime<');
+    expect(failure.message).toContain('Each intersected member needs one stable C++ carrier');
     expect(failure.message).toContain('keep one nominal owner and the same generic specialization');
   });
 

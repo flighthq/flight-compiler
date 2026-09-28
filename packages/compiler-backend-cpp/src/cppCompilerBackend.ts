@@ -8762,20 +8762,19 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
         const shapeless = type.types.filter(
           (member) => !context.referenceRepresentationPlanner.resolveObjectShape(member, context.module),
         );
-        const conflicting =
-          shapeless.length === 0 ? collectCppIntersectionConflictingMemberNamesCpp(type, context) : [];
+        const conflicting = shapeless.length === 0 ? collectCppIntersectionMemberConflictsCpp(type, context) : [];
         const cause =
           shapeless.length > 0
             ? `no shape for ${shapeless
                 .map((member) => describeShapelessIntersectionMemberCpp(member, context))
                 .join(', ')}`
             : conflicting.length > 0
-              ? `${renderCppSubjectNameListCpp(conflicting)} declared at different types by more than one conjunct`
+              ? `${renderCppSubjectNameListCpp(conflicting.map((conflict) => conflict.name))} declared at different types by more than one conjunct (${conflicting.map((conflict) => `${conflict.name} has incompatible C++ carriers [${conflict.carriers.join(', ')}]`).join('; ')})`
               : 'no conjunct contributes a shape';
         const remedy =
           shapeless.length > 0
             ? 'Declare the object shape the code reads rather than intersecting a conjunct that has none'
-            : 'Declare one shape that holds each member once, at the type the code reads, rather than intersecting shapes that disagree. For a repeated computed owner slot, keep one nominal owner and the same generic specialization instead of intersecting owners with different slot types';
+            : 'Each intersected member needs one stable C++ carrier. Declare one shape that holds each member once, at the type the code reads, rather than intersecting shapes that disagree. For a repeated computed owner slot, keep one nominal owner and the same generic specialization instead of intersecting owners with different slot types';
         // The source is what has to change either way: an intersection of a non-object or of two
         // declarations that disagree has no member set at one type, so the target has nothing to
         // represent rather than something it lacks.
@@ -27696,25 +27695,27 @@ function getTypeReferenceTargetName(type: Readonly<IrType & { kind: 'named' }>, 
 // planner accepts those conjuncts, and a diagnostic that called them a conflict would send a reader to
 // rewrite a declaration that is already correct. Optionality is deliberately not compared -- `a?: T` and
 // `a: T` intersect to `a: T`, which the planner merges -- so only the member's type decides.
-function collectCppIntersectionConflictingMemberNamesCpp(
+function collectCppIntersectionMemberConflictsCpp(
   type: Readonly<Extract<IrType, { kind: 'intersection' }>>,
   context: EmitContext,
-): readonly string[] {
+): readonly Readonly<{ carriers: readonly string[]; name: string }>[] {
   const spellingContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set() };
-  const declared = new Map<string, string>();
-  const conflicting = new Set<string>();
+  const declared = new Map<string, Set<string>>();
   for (const member of type.types) {
     const properties = context.referenceRepresentationPlanner.resolveObjectShape(member, context.module);
     if (!properties) continue;
     for (const property of properties) {
       if (property.phantom) continue;
       const emitted = emitCppAliasResolvedValueTypeCpp(property.type, spellingContext);
-      const existing = declared.get(property.name);
-      if (existing === undefined) declared.set(property.name, emitted);
-      else if (existing !== emitted) conflicting.add(property.name);
+      const carriers = declared.get(property.name) ?? new Set<string>();
+      carriers.add(emitted);
+      declared.set(property.name, carriers);
     }
   }
-  return [...conflicting].sort(compareTextCodeUnits);
+  return [...declared]
+    .filter(([, carriers]) => carriers.size > 1)
+    .map(([name, carriers]) => ({ carriers: [...carriers].sort(compareTextCodeUnits), name }))
+    .sort((left, right) => compareTextCodeUnits(left.name, right.name));
 }
 
 // Why a `Partial<T>` has no C++ shape to build, in the terms the author can act on. The subject is named
