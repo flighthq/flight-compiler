@@ -4211,6 +4211,18 @@ function emitExpression(
         structuralTarget || structuralProjectionCandidate
           ? getCppPreErasureStructuralAssertionSourceCpp(expression.expression, context)
           : undefined;
+      // A native reference on the far side of an erased assertion marker is represented, but it is
+      // not already the structural-row carrier the outer assertion names. Keep that distinction from
+      // the truly Any-backed case below: the exact native owner makes the missing boundary actionable,
+      // while neither its declaration nor `as unknown as` performs a checked owner-to-row recovery.
+      const representedErasedStructuralSource =
+        (structuralTarget || structuralProjectionCandidate) && getCppRuntimeProfile(context.options) === 'flight-cpp'
+          ? getCppRepresentedErasedAssertionSourceCpp(expression.expression, context)
+          : undefined;
+      const representedErasedStructuralProjection =
+        representedErasedStructuralSource && representedErasedStructuralSource.expression.kind !== 'object'
+          ? getCppStructuralProjectionRowCpp(representedErasedStructuralSource.type, context)
+          : undefined;
       const structuralSourceExpression = preErasureStructuralSource?.expression ?? expression.expression;
       const structuralSourceType =
         preErasureStructuralSource?.type ?? getIrExpressionTypeEvidenceCpp(expression.expression, context);
@@ -4226,6 +4238,35 @@ function emitExpression(
           return emitExpression(expression.expression, context, expression.type);
         }
         if (!structuralSource && isCppErasedDynamicValueTypeCpp(structuralSourceType)) {
+          if (representedErasedStructuralSource && representedErasedStructuralProjection) {
+            const sourceName = describeDeclaredIrTypeForDiagnosticCpp(representedErasedStructuralSource.type);
+            const targetName = describeDeclaredIrTypeForDiagnosticCpp(expression.type);
+            const absent = collectCppStructuralRowAssertionAbsentMembersCpp(
+              representedErasedStructuralSource.type,
+              expression.type,
+              context,
+            );
+            const incompatible = collectCppStructuralRowAssertionIncompatibleMembersCpp(
+              representedErasedStructuralSource.type,
+              expression.type,
+              context,
+            );
+            const incompatibleNames = new Set(incompatible);
+            const undeclared = absent.filter((member) => !incompatibleNames.has(member));
+            const proof =
+              absent.length === 0
+                ? `${sourceName} exposes the row's named members, but flight-cpp stores it as the native carrier ${emitType(representedErasedStructuralSource.type, context)}, not as the asserted structural-row carrier; the erased assertion performs no runtime owner validation or row projection.`
+                : incompatible.length === 0
+                  ? `${sourceName} does not declare ${renderCppSubjectNameListCpp(absent)}, so its native owner has no proven cells for the asserted row.`
+                  : undeclared.length === 0
+                    ? `${sourceName} declares ${renderCppSubjectNameListCpp(incompatible)}, but ${incompatible.length === 1 ? 'that member uses' : 'those members use'} optionality or value representations that are not representation-equivalent to the asserted row's cells.`
+                    : `${sourceName} does not declare ${renderCppSubjectNameListCpp(undeclared)}, and ${renderCppSubjectNameListCpp(incompatible)} ${incompatible.length === 1 ? 'uses' : 'use'} optionality or value representations that are not representation-equivalent to the asserted row's cells.`;
+            emissionError(
+              context,
+              `an assertion through an erased type hides the represented source ${sourceName} before naming structural row ${targetName}. ${proof} Keep ${targetName} in the typed API boundary before the erased assertion (or pass the represented source directly to a consumer whose declared structural parameter proves the conversion), or add a checked runtime contract that validates the retained owner and recovers this exact row. The compiler will not convert the value through Any, cast or reinterpret its owner, copy or materialize a replacement row, or create side storage`,
+              'cpp-erased-structural-row-assertion-runtime-required',
+            );
+          }
           emissionError(
             context,
             `an actually erased value cannot be asserted as structural row ${describeIrTypeForDiagnosticCpp(expression.type)}: flight::Any has no structural-row alternative or checked row projection. Preserve the represented row through the assertion, or keep the API typed to the structural source before erasure; the compiler will not cast, copy, or materialize a replacement row`,
@@ -4572,7 +4613,7 @@ function emitExpression(
         emissionError(
           context,
           `an erased C++ value has no identity-preserving reading as ${emitType(expression.type, context)}: flight::Any has no array alternative or checked exact-array extraction. Keep the value in its exact array type before the erased boundary, or add that carrier and extraction to the runtime; the compiler will not reinterpret the erased value, cast it, or materialize a replacement array`,
-          'cpp-erased-value-assertion-unrepresented',
+          'cpp-erased-array-assertion-runtime-required',
         );
       }
       // A non-union assertion can state the same source-only distinction as the union lane above. A
@@ -29353,8 +29394,10 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-array-length-sparse-runtime-required',
   'cpp-contextual-structural-array-nominal-recovery-unproven',
   'cpp-contextual-union-secondary-intersection-carrier-unrepresented',
+  'cpp-erased-array-assertion-runtime-required',
   'cpp-erased-array-predicate-runtime-required',
   'cpp-erased-error-view-runtime-required',
+  'cpp-erased-structural-row-assertion-runtime-required',
   'cpp-erased-structural-row-construction-unrepresented',
   'cpp-erased-tag-unreportable',
   'cpp-erased-value-assertion-unrepresented',

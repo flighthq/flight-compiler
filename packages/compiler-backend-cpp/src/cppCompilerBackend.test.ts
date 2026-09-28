@@ -919,7 +919,15 @@ function lowerImportedTransformVelocityModules() {
         `export interface Node<Traits extends object> { enabled: boolean; traits: Traits }
          export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
          export interface HasTransform2D { x: number; y: number }
-         export type Transform2DNode<Traits extends object> = NodeOf<Traits> & HasTransform2D;`,
+         export type Transform2DNode<Traits extends object> = NodeOf<Traits> & HasTransform2D;
+         export type NodeAny = Node<any>;
+         export interface NodeData { id: number }
+         export interface ParticleData extends NodeData { particles: number }
+         export interface ParticleTraits extends HasTransform2D { data: NodeData | null; label: string }
+         export interface ParticleEmitter2D extends Transform2DNode<ParticleTraits> {
+           data: ParticleData;
+           particles: number;
+         }`,
       ),
       source(
         '@flighthq/velocity',
@@ -939,6 +947,24 @@ function lowerImportedTransformVelocityModules() {
            value: unknown,
          ): Readonly<Transform2DNode<Traits>> {
            return value as Readonly<Transform2DNode<Traits>>;
+         }`,
+      ),
+      source(
+        '@flighthq/interaction',
+        'interaction/src/focusManager.ts',
+        `import type { NodeAny, ParticleTraits, Transform2DNode } from '@flighthq/types/contract';
+         export function boundsCenter(node: NodeAny): Readonly<Transform2DNode<ParticleTraits>> {
+           return node as unknown as Readonly<Transform2DNode<ParticleTraits>>;
+         }`,
+      ),
+      source(
+        '@flighthq/particleemitter',
+        'particleemitter/src/updateParticleEmitter2D.ts',
+        `import type { ParticleEmitter2D, ParticleTraits, Transform2DNode } from '@flighthq/types/contract';
+         export function worldTransform(
+           emitter: ParticleEmitter2D,
+         ): Readonly<Transform2DNode<ParticleTraits>> {
+           return emitter as unknown as Readonly<Transform2DNode<ParticleTraits>>;
          }`,
       ),
     ],
@@ -3900,6 +3926,36 @@ describe('createCppCompilerBackend', () => {
     expect(trulyErased.classification).toBe('target-runtime');
     expect(trulyErased.message).toContain('flight::Any has no structural-row alternative or checked row projection');
     expect(trulyErased.message).toContain('keep the API typed to the structural source before erasure');
+  });
+
+  it('attributes native owners hidden by erased structural assertions to exact row recovery', () => {
+    const { moduleResolution, results } = lowerImportedTransformVelocityModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const focusManager = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+    const particleEmitter = captureBackendEmissionFailure(() => session.emitModule(modules[5]!));
+
+    for (const failure of [focusManager, particleEmitter]) {
+      expect(failure).toMatchObject({
+        classification: 'target-runtime',
+        rule: 'cpp-erased-structural-row-assertion-runtime-required',
+      });
+      expect(failure.message).toContain('assertion through an erased type hides the represented source');
+      expect(failure.message).toContain('checked runtime contract that validates the retained owner');
+      expect(failure.message).toContain('will not convert the value through Any');
+      expect(failure.message).toContain('cast or reinterpret its owner');
+      expect(failure.message).toContain('copy or materialize a replacement row');
+      expect(failure.message).toContain('create side storage');
+    }
+    expect(focusManager.message).toContain('NodeAny does not declare');
+    expect(focusManager.message).toContain('x');
+    expect(focusManager.message).toContain('y');
+    expect(particleEmitter.message).toContain('ParticleEmitter2D declares data');
+    expect(particleEmitter.message).toContain("not representation-equivalent to the asserted row's cells");
   });
 
   it.skipIf(!canCompileCpp)('compiles the pre-erasure transform velocity row assertion', () => {
@@ -15659,7 +15715,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     };
     expect(
       refusal(`export function path(commands: any[], i: number): number[] { return commands[i + 2] as number[]; }`),
-    ).toBe('cpp-erased-value-assertion-unrepresented');
+    ).toBe('cpp-erased-array-assertion-runtime-required');
     expect(
       emitIrModuleCpp(
         lower('erased-number.ts', `export function size(value: unknown): number { return value as number; }`).module,
@@ -15734,7 +15790,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     for (const failure of [unityParse, equalsSnapshot]) {
       expect(failure).toMatchObject({
         classification: 'target-runtime',
-        rule: 'cpp-erased-value-assertion-unrepresented',
+        rule: 'cpp-erased-array-assertion-runtime-required',
       });
       expect(failure.message).toContain('flight::Any has no array alternative or checked exact-array extraction');
       expect(failure.message).toContain('Keep the value in its exact array type before the erased boundary');
