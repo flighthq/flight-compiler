@@ -22667,6 +22667,7 @@ function getDenseArraySequentialAppendPlanCpp(
   const freshBodyArrayBindingIds = collectDenseArrayFreshBindingIdsCpp(body);
   let expectedOffset = 0;
   for (const bodyStatement of body) {
+    if (doesIrStatementMutateBindingCpp(bodyStatement, index.binding.id)) return undefined;
     const offset = getDenseArraySequentialAppendStatementOffsetCpp(bodyStatement, arrayBindingId, index.binding.id);
     if (offset !== undefined) {
       if (offset !== expectedOffset || offset >= step) return undefined;
@@ -22963,8 +22964,12 @@ function hasCompleteDenseArrayWritesCpp(
       nextIndex += 1;
     } else {
       const range = getDenseArrayWriteLoopRangeCpp(statement, arrayBindingId);
-      if (!range || range.start !== nextIndex || range.end > literalLength) return false;
-      nextIndex = range.end;
+      if (range) {
+        if (range.start !== nextIndex || range.end > literalLength) return false;
+        nextIndex = range.end;
+      } else if (doesIrStatementReferenceBindingCpp(statement, arrayBindingId)) {
+        return false;
+      }
     }
     if (nextIndex === literalLength) return true;
   }
@@ -23080,6 +23085,7 @@ function getDenseArrayCanonicalLoopCpp(
   ) {
     return undefined;
   }
+  if (doesIrStatementMutateBindingCpp(statement.body, index.binding.id)) return undefined;
   return { body: statement.body, bound: condition.right };
 }
 
@@ -23182,23 +23188,32 @@ function getDenseArrayWriteLoopRangeCpp(
     return undefined;
   }
   const end = getNonnegativeIntegerLiteralCpp(condition.right);
-  const body =
-    statement.body.kind === 'block' && statement.body.statements.length === 1
-      ? statement.body.statements[0]!
-      : statement.body;
-  if (
-    end === undefined ||
-    body.kind !== 'expression' ||
-    body.expression.kind !== 'assignment' ||
-    body.expression.operator !== '=' ||
-    body.expression.left.kind !== 'element' ||
-    !isIrBindingIdentifierCpp(body.expression.left.object, arrayBindingId) ||
-    !isIrBindingIdentifierCpp(body.expression.left.index, index.binding.id) ||
-    doesIrExpressionReferenceBindingCpp(body.expression.right, arrayBindingId)
-  ) {
-    return undefined;
+  if (end === undefined) return undefined;
+  const body = statement.body.kind === 'block' ? statement.body.statements : [statement.body];
+  let hasIndexedWrite = false;
+  for (const bodyStatement of body) {
+    if (doesIrStatementMutateBindingCpp(bodyStatement, index.binding.id)) return undefined;
+    if (
+      bodyStatement.kind === 'expression' &&
+      bodyStatement.expression.kind === 'assignment' &&
+      bodyStatement.expression.operator === '=' &&
+      bodyStatement.expression.left.kind === 'element' &&
+      isIrBindingIdentifierCpp(bodyStatement.expression.left.object, arrayBindingId) &&
+      isIrBindingIdentifierCpp(bodyStatement.expression.left.index, index.binding.id) &&
+      !doesIrExpressionReferenceBindingCpp(bodyStatement.expression.right, arrayBindingId)
+    ) {
+      if (hasIndexedWrite) return undefined;
+      hasIndexedWrite = true;
+      continue;
+    }
+    if (
+      doesIrStatementReferenceBindingCpp(bodyStatement, arrayBindingId) ||
+      doesIrStatementContainLoopControlCpp(bodyStatement)
+    ) {
+      return undefined;
+    }
   }
-  return { end, start };
+  return hasIndexedWrite ? { end, start } : undefined;
 }
 
 function getDenseArrayWholeWriteLoopStrideCpp(
@@ -23228,6 +23243,7 @@ function getDenseArrayWholeWriteLoopStrideCpp(
   ) {
     return undefined;
   }
+  if (doesIrStatementMutateBindingCpp(statement.body, index.binding.id)) return undefined;
   const stride = getDenseArrayLengthStrideCpp(length, condition.right, immutableBindingIds);
   if (stride === undefined) return undefined;
   const offsets = new Set<number>();
@@ -23349,6 +23365,24 @@ function doesIrStatementReferenceBindingCpp(statement: Readonly<IrStatement>, bi
     },
   });
   return referencesBinding;
+}
+
+function doesIrStatementMutateBindingCpp(statement: Readonly<IrStatement>, bindingId: string): boolean {
+  let mutatesBinding = false;
+  analyzeIrStatementSubtreeTraversal(statement, {
+    expression(candidate) {
+      if (
+        (candidate.kind === 'assignment' && isIrBindingIdentifierCpp(candidate.left, bindingId)) ||
+        (candidate.kind === 'unary' &&
+          (candidate.operator === '++' || candidate.operator === '--') &&
+          isIrBindingIdentifierCpp(candidate.operand, bindingId))
+      ) {
+        mutatesBinding = true;
+      }
+      return mutatesBinding ? false : undefined;
+    },
+  });
+  return mutatesBinding;
 }
 
 function doesIrStatementContainLoopControlCpp(statement: Readonly<IrStatement>): boolean {

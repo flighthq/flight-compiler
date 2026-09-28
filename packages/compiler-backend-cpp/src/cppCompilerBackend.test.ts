@@ -16826,6 +16826,70 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('flight::Array<double> result = flight::Array<double>(4.0)');
   });
 
+  it('emits a literal-sized lookup table when scalar loop work precedes each complete indexed write', () => {
+    const result = lower(
+      'bitmap-histogram-equalize-map.ts',
+      `export function buildEqualizeMap(bins: number[], total: number): number[] {
+        const map = new Array<number>(256);
+        let cdf = 0;
+        let cdfMin = -1;
+        for (let i = 0; i < 256; i++) {
+          cdf += bins[i];
+          if (bins[i] > 0 && cdfMin === -1) cdfMin = cdf;
+          map[i] = total === cdfMin ? i : Math.round(((cdf - cdfMin) / (total - cdfMin)) * 255);
+        }
+        return map;
+      }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('flight::Array<double> map = flight::Array<double>(256.0)');
+    expect(contents).toMatch(/map\.element\(i\)\s*=/u);
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-array-scalar-prelude-'));
+      const header = path.join(directory, 'array_scalar_prelude.hpp');
+      try {
+        writeFileSync(header, contents, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it('refuses literal-sized lookup loops whose prelude can skip, observe the array, or change the index', () => {
+    const failure = (file: string, body: string) => {
+      const result = lower(
+        file,
+        `export function values(skip: boolean): number[] {
+          const result = new Array<number>(4);
+          for (let index = 0; index < 4; index++) { ${body} }
+          return result;
+        }`,
+      );
+      return captureBackendEmissionFailure(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }));
+    };
+
+    const skipped = failure('array-length-loop-prelude-continue.ts', 'if (skip) continue; result[index] = index;');
+    const observed = failure(
+      'array-length-loop-prelude-observation.ts',
+      'const initialLength = result.length; result[index] = initialLength;',
+    );
+    const changedIndex = failure(
+      'array-length-loop-prelude-index-mutation.ts',
+      'if (skip) index += 1; result[index] = index;',
+    );
+
+    for (const refusal of [changedIndex, observed, skipped]) {
+      expect(refusal.rule).toBe('cpp-array-length-sparse-runtime-required');
+      expect(refusal.classification).toBe('target-runtime');
+    }
+  });
+
   it('emits dynamic-sized arrays when canonical loops initialize every slot before observation', () => {
     const result = lower(
       'array-dynamic-length-loop-fill-flight.ts',
