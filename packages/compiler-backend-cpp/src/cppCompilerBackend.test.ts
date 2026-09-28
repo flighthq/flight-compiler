@@ -40735,6 +40735,59 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(comparison.rule).toBe('cpp-dual-sentinel-comparison-unrepresented');
   });
 
+  it('attributes a multi-alternative interface-heritage union to the carriers it cannot narrow', () => {
+    const shared = `export interface SelectionBase { readonly kind: string }
+       export interface LassoSelection extends SelectionBase { readonly points: readonly number[] }
+       export interface MarqueeSelection extends SelectionBase { readonly x: number }
+       export interface Other { readonly other: number }
+       `;
+    const refusal = (body: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('selectionState.ts', `${shared}${body}`).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // Two alternatives, both heritage-related to the one target, neither sharing its carrier. Requiring
+    // exactly ONE such gap left this to the generic conversion message, which says the unions are not
+    // equivalent without saying why: every alternative is flattened into its own struct, so the widening has
+    // no relation to follow whichever one the value holds. The precise rule now covers both, and the
+    // single-alternative case keeps the reading it always had.
+    for (const [label, body] of [
+      [
+        'two alternatives',
+        `export function f(active: LassoSelection | MarqueeSelection | null): SelectionBase | null { return active; }`,
+      ],
+      ['one alternative', `export function f(active: LassoSelection | null): SelectionBase | null { return active; }`],
+    ] as const) {
+      const failure = refusal(body);
+      expect(failure.rule, label).toBe('cpp-contextual-union-interface-heritage-carrier-unrepresented');
+      expect(failure.classification, label).toBe('target-runtime');
+      expect(failure.message, label).toContain('each interface struct is emitted flattened');
+      expect(failure.message, label).toContain('no pointer cast exists to follow');
+    }
+
+    // A union with no heritage relation is NOT claimed by that rule: it keeps the generic conversion refusal
+    // and its source-portability attribution, so the widened detection cannot swallow unrelated conversions.
+    const unrelated = refusal(`export function f(value: Other | null): SelectionBase | null { return value; }`);
+    expect(unrelated.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(unrelated.classification).toBe('source-portability');
+    const mixed = refusal(
+      `export function f(value: Other | LassoSelection | null): SelectionBase | null { return value; }`,
+    );
+    expect(mixed.rule).toBe('cpp-contextual-union-inequivalent');
+
+    // The same carrier on both sides still lowers, which is the control that the detection is about the
+    // CARRIERS rather than about nullable conversion as such.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'selectionState.ts',
+          `${shared}export function f(value: SelectionBase | null): SelectionBase | null { return value; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('return value;');
+  });
+
   it('draws the line between a mixed-absence coalesce it lowers and one it still refuses', () => {
     const renderState = `export interface GlScene3DRuntime { readonly count?: number | null | undefined }
        `;

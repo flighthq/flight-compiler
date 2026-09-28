@@ -16501,7 +16501,12 @@ function getCppInterfaceHeritageUnionCarrierGapCpp(
       targetCarrier: targetSlot.targetType,
     });
   }
-  return gaps.length === 1 ? gaps[0] : undefined;
+  // One alternative or five, the reason is the same: every present alternative is heritage-related to the one
+  // target and none of them shares its carrier, so the conversion has no relation to follow whichever one the
+  // value happens to hold. Refusing on the first is therefore not a narrowing of the refusal but the whole of
+  // it; requiring exactly one gap left the multi-alternative case to the generic message, which does not say
+  // why.
+  return gaps[0];
 }
 
 // Widen a represented source union into a nullable destination only when every present source slot
