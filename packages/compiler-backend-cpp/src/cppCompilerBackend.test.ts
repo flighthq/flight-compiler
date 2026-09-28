@@ -309,7 +309,7 @@ function lowerImportedClosedKeyStorageModules() {
          }`,
       ),
       source(
-        'scene.ts',
+        'flightDocumentText.ts',
         `import type { InteractiveState, InteractiveStatePhase, InteractiveStates, OptionalCounters } from '@flighthq/types/contract';
          export function assignInteractiveState(
            states: InteractiveStates,
@@ -4034,7 +4034,7 @@ describe('createCppCompilerBackend', () => {
     ).toBe('cpp-object-index-without-closed-key-set');
   });
 
-  it('uses exact imported storage for closed keys and refuses a heterogeneous property assertion', () => {
+  it('uses exact imported storage for flightDocumentText closed keys and refuses a heterogeneous assertion', () => {
     const { moduleResolution, results } = lowerImportedClosedKeyStorageModules();
     const modules = results.map((result) => result.module);
     const session = createCppCompilerBackend().createEmissionSession!({
@@ -4044,11 +4044,25 @@ describe('createCppCompilerBackend', () => {
     });
     const guiFailure = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
     const sceneOutput = session.emitModule(modules[3]!)[0]!.contents;
+    // The source remains valid when the emission graph deliberately omits its imported declaration, but
+    // the backend no longer has the owner that proves named-member storage. The same access must refuse
+    // rather than guessing from the key literals or materializing a replacement object.
+    const unavailableOwnerSession = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [modules[3]!],
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const unavailableOwner = captureBackendEmissionFailure(() => unavailableOwnerSession.emitModule(modules[3]!));
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(guiFailure.rule).toBe('cpp-closed-key-result-assertion-discards-alternatives');
     expect(guiFailure.classification).toBe('source-portability');
     expect(guiFailure.message).toContain('narrow the key before the indexed read');
+    expect(unavailableOwner.rule).toBe('cpp-closed-key-access-without-object-storage');
+    expect(unavailableOwner.classification).toBe('compiler-restriction');
+    expect(unavailableOwner.message).toContain('finite key set proves which members may be selected');
+    expect(unavailableOwner.message).toContain('does not retain one exact flight::Ref owner');
+    expect(unavailableOwner.message).toContain('will not cast, copy, or materialize an owner');
     expect(sceneOutput).toContain('selection_receiver->disabled = std::optional<');
     expect(sceneOutput).toContain('selection_receiver->hover = std::optional<');
     expect(sceneOutput).toContain('selection_receiver->pressed = std::optional<');

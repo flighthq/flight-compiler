@@ -12449,9 +12449,10 @@ function getCppClosedKeyElementMembersCpp(
     representation?.kind !== 'represented' ||
     representation.valueRepresentation !== 'flightReference'
   ) {
+    const receiver = objectType ? describeDeclaredIrTypeForDiagnosticCpp(objectType) : 'an unevidenced receiver';
     emissionError(
       context,
-      'closed-key element access requires represented object storage',
+      `closed-key element access over ${receiver} requires represented object storage: the finite key set proves which members may be selected, but the receiver does not retain one exact flight::Ref owner whose shape defines those members. Accept a concrete declared object type at this boundary (or a Record when keyed storage is intended); the compiler will not cast, copy, or materialize an owner to make the access possible`,
       'cpp-closed-key-access-without-object-storage',
     );
   }
