@@ -1015,6 +1015,80 @@ function lowerImportedSceneResourceAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedSwfBoundsAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (file: string, text: string) => ({
+    packageName: file.startsWith('types/') ? '@flighthq/types' : '@flighthq/swf',
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const swfDataTypes = `interface SwfRectangle { height: number; width: number; x: number; y: number }
+    interface SwfAuthoredBoundsData extends Node2DData { authoredBounds: SwfRectangle }
+    interface SwfMorphBoundsData extends SwfAuthoredBoundsData {
+      morphEndBounds: SwfRectangle;
+      morphStartBounds: SwfRectangle;
+    }
+    interface SwfShapeNodeData extends ShapeData, SwfAuthoredBoundsData {}`;
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        'types/src/contract.ts',
+        `export interface NodeData { name: string }
+         export interface Node2DData extends NodeData {}
+         export interface ShapeData extends Node2DData { commands: string[] }
+         export interface MorphShapeData extends ShapeData { progress: number }`,
+      ),
+      source(
+        'swf/src/swfNodeAuthoredBounds.ts',
+        `import type { Node2DData, ShapeData } from '@flighthq/types/contract';
+         ${swfDataTypes}
+         export function setAuthoredBounds(data: Node2DData, bounds: SwfRectangle): void {
+           (data as unknown as SwfAuthoredBoundsData).authoredBounds = bounds;
+         }`,
+      ),
+      source(
+        'swf/src/swfNodeMorphBounds.ts',
+        `import type { MorphShapeData, Node2DData, ShapeData } from '@flighthq/types/contract';
+         ${swfDataTypes}
+         export function setMorphBounds(data: MorphShapeData, bounds: SwfRectangle): void {
+           const swf = data as unknown as SwfMorphBoundsData;
+           swf.morphStartBounds = bounds;
+           swf.morphEndBounds = bounds;
+           swf.authoredBounds = bounds;
+         }`,
+      ),
+      source(
+        'swf/src/swfNodeShapeBounds.ts',
+        `import type { Node2DData, ShapeData } from '@flighthq/types/contract';
+         ${swfDataTypes}
+         export function setShapeBounds(data: ShapeData, bounds: SwfRectangle): void {
+           (data as unknown as SwfShapeNodeData).authoredBounds = bounds;
+         }`,
+      ),
+      source(
+        'swf/src/swfNodeTypedBounds.ts',
+        `import type { Node2DData, ShapeData } from '@flighthq/types/contract';
+         ${swfDataTypes}
+         export function setTypedBounds(data: SwfMorphBoundsData, bounds: SwfRectangle): void {
+           data.morphStartBounds = bounds;
+           data.morphEndBounds = bounds;
+           data.authoredBounds = bounds;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedMeshAndMovieClipAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -7308,6 +7382,50 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('flight::Ref<flighthq_types::Node2DData>');
     expect(failure.message).toContain('flight::Ref<SwfAuthoredBoundsData>');
     expect(failure.message).toContain('reads authoredBounds, which the source type does not declare');
+  });
+
+  it('keeps the SWF bounds extension assertions on their declared storage boundary', () => {
+    const { moduleResolution, results } = lowerImportedSwfBoundsAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const authored = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const morph = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const shape = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    const typed = session.emitModule(modules[4]!)[0]!.contents;
+
+    // All six upstream sites mutate an existing node-data owner. Crossing `unknown` retains that owner,
+    // but cannot add the SWF-only bounds cells its declared Node2D/Shape/Morph data type never contained.
+    // The exact source rewrite starts with the concrete retained owner, so its three writes are direct and
+    // require no cast, copied row, replacement object, materialization, or side storage.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of [authored, morph, shape]) {
+      expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+      expect(failure.classification).toBe('source-portability');
+      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('construct');
+      expect(failure.message).toContain('type the retaining slot and every accessor result as');
+    }
+    expect(authored.message).toContain('flight::Ref<flighthq_types::Node2DData>');
+    expect(authored.message).toContain('flight::Ref<SwfAuthoredBoundsData');
+    expect(authored.message).toContain('authoredBounds');
+    expect(morph.message).toContain('flight::Ref<flighthq_types::MorphShapeData>');
+    expect(morph.message).toContain('flight::Ref<SwfMorphBoundsData');
+    expect(morph.message).toContain('authoredBounds, morphEndBounds and morphStartBounds');
+    expect(shape.message).toContain('flight::Ref<flighthq_types::ShapeData>');
+    expect(shape.message).toContain('flight::Ref<SwfShapeNodeData');
+    expect(shape.message).toContain('authoredBounds');
+    expect(typed).toContain('(data->morph_start_bounds = bounds)');
+    expect(typed).toContain('(data->morph_end_bounds = bounds)');
+    expect(typed).toContain('(data->authored_bounds = bounds)');
+    expect(typed).not.toContain('static_cast');
+    expect(typed).not.toContain('structural_ref_cast');
+    expect(typed).not.toContain('make_ref');
+    expect(typed).not.toContain('materialize');
+    expect(typed).not.toContain('row_set');
   });
 
   it('names the missing owners in mesh morph and movie clip runtime assertions', () => {

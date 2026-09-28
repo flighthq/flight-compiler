@@ -123,6 +123,73 @@ describe('analyzeTypeScriptSourcePortability', () => {
     ]);
   });
 
+  it('requires SWF bounds cells on the retained node data owner before mutation', () => {
+    const asserted = input(
+      'packages/swf/src/swfNode.ts',
+      `interface Rectangle { height: number; width: number; x: number; y: number }
+       interface Node2DData { name: string }
+       interface ShapeData extends Node2DData { commands: string[] }
+       interface MorphShapeData extends ShapeData { progress: number }
+       interface SwfAuthoredBoundsData extends Node2DData { authoredBounds: Rectangle }
+       interface SwfMorphBoundsData extends SwfAuthoredBoundsData {
+         morphEndBounds: Rectangle;
+         morphStartBounds: Rectangle;
+       }
+       interface SwfShapeNodeData extends ShapeData, SwfAuthoredBoundsData {}
+       function createSwfTexturedSprite(target: { data: Node2DData }, bounds: Rectangle): void {
+         (target.data as unknown as SwfAuthoredBoundsData).authoredBounds = bounds;
+       }
+       function createSwfEditTextTarget(node: { data: Node2DData }, bounds: Rectangle): void {
+         (node.data as unknown as SwfAuthoredBoundsData).authoredBounds = bounds;
+       }
+       function createSwfMorphShapeTarget(shape: { data: MorphShapeData }, bounds: Rectangle): void {
+         const data = shape.data as unknown as SwfMorphBoundsData;
+         data.morphStartBounds = bounds;
+         (shape.data as unknown as SwfAuthoredBoundsData).authoredBounds = bounds;
+       }
+       function applySwfMorphBounds(shape: { data: MorphShapeData }): void {
+         const data = shape.data as unknown as SwfMorphBoundsData;
+         data.authoredBounds = data.morphStartBounds;
+       }
+       function createSwfScale9ShapeNode(target: { data: ShapeData }, bounds: Rectangle): void {
+         (target.data as unknown as SwfShapeNodeData).authoredBounds = bounds;
+       }`,
+    );
+    const typed = input(
+      'portableSwfNode.ts',
+      `interface Rectangle { height: number; width: number; x: number; y: number }
+       interface SwfMorphBoundsData {
+         authoredBounds: Rectangle;
+         morphEndBounds: Rectangle;
+         morphStartBounds: Rectangle;
+         progress: number;
+       }
+       function applySwfMorphBounds(data: SwfMorphBoundsData): void {
+         data.authoredBounds = data.morphStartBounds;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([asserted]).findings;
+
+    expect(findings).toHaveLength(6);
+    expect(findings.filter((finding) => finding.message.includes('as SwfAuthoredBoundsData;'))).toHaveLength(3);
+    expect(findings.filter((finding) => finding.message.includes('as SwfMorphBoundsData;'))).toHaveLength(2);
+    expect(findings.filter((finding) => finding.message.includes('as SwfShapeNodeData;'))).toHaveLength(1);
+    expect(findings.filter((finding) => finding.message.includes('retained by target.data'))).toHaveLength(2);
+    expect(findings.filter((finding) => finding.message.includes('retained by node.data'))).toHaveLength(1);
+    expect(findings.filter((finding) => finding.message.includes('retained by shape.data'))).toHaveLength(3);
+    for (const finding of findings) {
+      expect(finding).toMatchObject({ rule: 'unchecked-double-assertion' });
+      expect(finding.message).toContain('already-constructed');
+      expect(finding.message).toContain('does not create those cells');
+      expect(finding.message).toContain('exact portable data type retained by');
+      expect(finding.message).toContain('reviewed source-portability exception');
+      expect(finding.message).toContain('cannot supply storage on another target');
+      expect(finding.message).toContain('will not reinterpret the owner, copy or materialize replacement data');
+      expect(finding.message).toContain('or add side storage');
+    }
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',

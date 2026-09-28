@@ -4364,8 +4364,16 @@ function emitExpression(
       // represented target reference. Storage evidence is required here: an `unknown` annotation over a
       // concrete initializer is not an Any and must not acquire Any's extraction operations.
       const hasErasedStorage = hasCppErasedDynamicTestOperandCpp(expression.expression, sourceEvidence, context);
+      const assertedReferenceElement = getCppReferenceElementTypeNameCpp(
+        emitType(expression.type, { ...context, anonymousStructs: new Map(), includes: new Set() }),
+      );
+      const representedErasedFlightSource =
+        assertedReferenceElement !== undefined
+          ? getCppRepresentedErasedAssertionSourceCpp(expression.expression, context)
+          : undefined;
       const erasedValueAssertion =
-        hasErasedStorage || isCppOptionalErasedDynamicValueTypeCpp(sourceEvidence, context)
+        !representedErasedFlightSource &&
+        (hasErasedStorage || isCppOptionalErasedDynamicValueTypeCpp(sourceEvidence, context))
           ? getCppErasedValueAssertionCpp(
               expression.type,
               hasErasedStorage ? { kind: 'unknown', source: 'unknown' } : sourceEvidence,
@@ -4401,8 +4409,28 @@ function emitExpression(
       const assertedExpression =
         asserted ??
         assertedGenericFactory ??
-        getCppErasedValueAssertionCpp(expression.type, sourceEvidence, expression.expression, context);
+        (representedErasedFlightSource
+          ? undefined
+          : getCppErasedValueAssertionCpp(expression.type, sourceEvidence, expression.expression, context));
       if (assertedExpression) return assertedExpression;
+      if (representedErasedFlightSource) {
+        if (areCppTypesRepresentationEquivalent(representedErasedFlightSource.type, expression.type, context)) {
+          return emitExpression(representedErasedFlightSource.expression, context, undefined, false);
+        }
+        const sourceRuntimeType = getIrTypeRuntimeDomainCpp(representedErasedFlightSource.type, context, new Set());
+        const targetRuntimeType = getIrTypeRuntimeDomainCpp(expression.type, context, new Set());
+        const classHeritageRelated =
+          sourceRuntimeType && targetRuntimeType
+            ? isCppClassHeritageRelatedCpp(sourceRuntimeType, targetRuntimeType, context)
+            : false;
+        if (
+          !classHeritageRelated &&
+          collectCppStructuralRowAssertionAbsentMembersCpp(representedErasedFlightSource.type, expression.type, context)
+            .length > 0
+        ) {
+          refuseCppStructuralAssertionOwnerUnprovenCpp(context, representedErasedFlightSource.type, expression.type);
+        }
+      }
       const externalAssertionTarget =
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
         isCppErasedDynamicValueTypeCpp(sourceEvidence) &&
@@ -4484,8 +4512,13 @@ function emitExpression(
       // A non-union assertion can state the same source-only distinction as the union lane above. A
       // mutable and readonly array have one C++ carrier, so emitting the value itself is the complete
       // conversion and avoids a redundant cast (and copy) of an already exact target representation.
-      if (sourceEvidence && areCppTypesRepresentationEquivalent(sourceEvidence, expression.type, context)) {
-        return emitExpression(expression.expression, context, undefined, false);
+      const assertionSourceEvidence = representedErasedFlightSource?.type ?? sourceEvidence;
+      const assertionSourceExpression = representedErasedFlightSource?.expression ?? expression.expression;
+      if (
+        assertionSourceEvidence &&
+        areCppTypesRepresentationEquivalent(assertionSourceEvidence, expression.type, context)
+      ) {
+        return emitExpression(assertionSourceExpression, context, undefined, false);
       }
       // A reference cast is only a cast the target compiler accepts when the two records are the same type
       // or related by CLASS heritage. An interface's members flatten into an independent struct, so a
@@ -4499,8 +4532,8 @@ function emitExpression(
       // classes remain the older compiler restriction: their owners are represented, but no heritage
       // permits the requested cast. A directly asserted intersection likewise retains its more precise
       // source rewrite below because the author's declared intersection is the missing boundary.
-      const referenceSource = sourceEvidence
-        ? getIrTypeRuntimeDomainCpp(sourceEvidence, context, new Set())
+      const referenceSource = assertionSourceEvidence
+        ? getIrTypeRuntimeDomainCpp(assertionSourceEvidence, context, new Set())
         : undefined;
       if (
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
@@ -4546,10 +4579,10 @@ function emitExpression(
         const pointerTarget = getCppReferenceElementTypeNameCpp(emitType(expression.type, context));
         if (pointerTarget) {
           context.includes.add('memory');
-          return `std::static_pointer_cast<${pointerTarget}>(${emitExpression(expression.expression, context)})`;
+          return `std::static_pointer_cast<${pointerTarget}>(${emitExpression(assertionSourceExpression, context)})`;
         }
       }
-      return `static_cast<${emitType(expression.type, context)}>(${emitExpression(expression.expression, context)})`;
+      return `static_cast<${emitType(expression.type, context)}>(${emitExpression(assertionSourceExpression, context)})`;
     }
     case 'conditional': {
       refuseCppErasedArrayPredicateValueCpp(expression, context);

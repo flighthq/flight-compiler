@@ -353,6 +353,40 @@ function getUncheckedDoubleAssertionObjectLiteralTarget(node: ts.AsExpression | 
   return ts.isObjectLiteralExpression(source) ? targetName : undefined;
 }
 
+function getSwfNodeDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  const source = normalizePathPortable(node.getSourceFile().fileName);
+  if (!source.endsWith('/packages/swf/src/swfNode.ts') && !source.endsWith('/packages/swf/src/swfDocument.ts')) {
+    return undefined;
+  }
+  const target = getTypeAssertionType(node);
+  if (!ts.isTypeReferenceNode(target)) return undefined;
+  const targetName = getNodeName(target.typeName);
+  const fields =
+    targetName === 'SwfMorphBoundsData'
+      ? 'authoredBounds, morphEndBounds, and morphStartBounds'
+      : targetName === 'SwfAuthoredBoundsData' || targetName === 'SwfShapeNodeData'
+        ? 'authoredBounds'
+        : undefined;
+  if (fields === undefined) return undefined;
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner)) return undefined;
+  let retainedExpression: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retainedExpression)) retainedExpression = retainedExpression.expression;
+  const retainedSlot = retainedExpression.getText(node.getSourceFile());
+  const retainedOwner =
+    targetName === 'SwfMorphBoundsData' || (targetName === 'SwfAuthoredBoundsData' && retainedSlot === 'shape.data')
+      ? 'MorphShapeData'
+      : targetName === 'SwfShapeNodeData'
+        ? 'ShapeData'
+        : 'Node2DData';
+  return `${subject} uses a double assertion through ${bridge} to add ${fields} to the already-constructed ${retainedSlot} owner declared as ${retainedOwner}, then treat it as ${targetName}; erasing the type spelling does not create those cells or prove that the retained owner ever had them. Declare ${fields} on the exact portable data type retained by ${retainedSlot}, make the creator construct that concrete owner before a base-typed slot stores it, and keep that type through every accessor that mutates or reads the fields. If this open-object mutation is intentionally JavaScript-only, a reviewed source-portability exception can document that boundary but cannot supply storage on another target. The compiler will not reinterpret the owner, copy or materialize replacement data, or add side storage.`;
+}
+
 function renderAssertionBridge(node: ts.TypeNode): 'any' | 'never' | 'unknown' {
   if (node.kind === ts.SyntaxKind.AnyKeyword) return 'any';
   if (node.kind === ts.SyntaxKind.NeverKeyword) return 'never';
@@ -671,6 +705,8 @@ function renderUncheckedDoubleAssertionMessage(
   subject: string,
   bridge: 'any' | 'never' | 'unknown',
 ): string {
+  const swfNode = getSwfNodeDoubleAssertionGuidance(node, subject, bridge);
+  if (swfNode) return swfNode;
   if (isTypeScriptMutableIndexSignatureView(getTypeAssertionType(node))) {
     return `${subject} uses a double assertion through ${bridge} to claim mutable index-signature storage; the bridge neither proves nor creates writable dynamic cells on the source owner. For an intentionally open key or extension domain, declare a mutable string index signature on the base/output type and construct every value in that carrier; a registry of keys or roles does not recover cells on an owner that lacks them. If the keys are closed, replace the dynamic writes with a finite union of declared members. A reviewed exception can record the source contract but cannot supply that storage; copying or materializing a Record, or adding side storage, would change object identity.`;
   }
