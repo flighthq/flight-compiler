@@ -28444,18 +28444,28 @@ function getCppNamespaceImportMemberTargetNameCpp(
 // the target's own exports, follows the target's star re-exports transitively through the module-resolution
 // plan, and resolves every name to the declaration that provides it -- so no package name is written here and
 // no source is rewritten. The resolved chain decides the namespaces and the spellings.
+type CppStarReexportSpace = 'type' | 'value';
+
 interface CppStarReexportOrigin {
   readonly bindingId: string;
   readonly declaration: Readonly<IrDeclaration> | undefined;
   readonly module: Readonly<IrModule>;
   readonly name: string;
+  readonly spaces: readonly CppStarReexportSpace[];
+}
+
+interface CppStarReexportSelection {
+  readonly origin: Readonly<CppStarReexportOrigin>;
+  readonly spaces: readonly CppStarReexportSpace[];
 }
 
 function emitCppCrossPackageStarReexports(target: Readonly<IrModule>, context: EmitContext): string[] {
   const origins = collectCppStarReexportOrigins(target, context, new Set([getCppModuleIdentityKey(context.module)]));
   const lines: string[] = [];
   for (const name of [...origins.keys()].sort(compareTextCodeUnits)) {
-    lines.push(...emitCppStarReexportLines(getCppSingleStarReexportOrigin(origins.get(name), name, context), context));
+    for (const selection of getCppStarReexportSelections(origins.get(name), name, context)) {
+      lines.push(...emitCppStarReexportLines(selection, context));
+    }
   }
   return lines;
 }
@@ -28464,46 +28474,61 @@ function emitCppCrossPackageStarReexports(target: Readonly<IrModule>, context: E
 // declaration occupies: a class or enum is one name usable as both type and value, an interface or type alias
 // exists only as a type, and a function or constant only as a value. The two lanes can name one declaration
 // differently, which is why the spellings are collected rather than assumed equal.
-function emitCppStarReexportLines(origin: Readonly<CppStarReexportOrigin>, context: EmitContext): string[] {
+function emitCppStarReexportLines(selection: Readonly<CppStarReexportSelection>, context: EmitContext): string[] {
+  const { origin, spaces } = selection;
   const namespace = getCppCompilerPackageNamespace(origin.module.packageName, context.options.packageTargets);
-  const spaces: readonly ('type' | 'value')[] =
-    origin.declaration === undefined
-      ? ['type', 'value']
-      : origin.declaration.kind === 'class' || origin.declaration.kind === 'enum'
-        ? ['type', 'value']
-        : origin.declaration.kind === 'function' || origin.declaration.kind === 'variable'
-          ? ['value']
-          : ['type'];
   const spellings = new Set(
     spaces.map((space) => getCppResolvedExportTargetName(origin.module, origin.name, space, context)),
   );
   return [...spellings].sort(compareTextCodeUnits).map((spelling) => `using ${namespace}::${spelling};`);
 }
 
-function getCppSingleStarReexportOrigin(
+function getCppStarReexportSelections(
   declarations: ReadonlyMap<string, Readonly<CppStarReexportOrigin>> | undefined,
   name: string,
   context: EmitContext,
-): Readonly<CppStarReexportOrigin> {
+): readonly Readonly<CppStarReexportSelection>[] {
   const resolved = declarations === undefined ? [] : [...declarations.values()];
-  const first = resolved[0];
-  if (first === undefined) {
+  if (resolved.length === 0) {
     emissionError(
       context,
       `cross-package export-all re-exports ${name}, which no resolved module declares`,
       'cpp-export-all-unresolved',
     );
   }
-  // Two declarations of one name is the ambiguity a star re-export cannot resolve: C++ would have to
-  // choose, and the source did not.
-  if (resolved.length > 1) {
-    emissionError(
-      context,
-      `cross-package export-all re-exports ${name} from more than one declaration`,
-      'cpp-export-all-ambiguous',
-    );
+
+  // TypeScript has separate type and value export namespaces. A const and a type alias can therefore
+  // intentionally publish one spelling without ambiguity; retain both exact declarations and emit each
+  // lane. More than one declaration in the same lane still requires a choice the source did not make.
+  const selected = new Map<string, { origin: Readonly<CppStarReexportOrigin>; spaces: CppStarReexportSpace[] }>();
+  for (const space of ['type', 'value'] as const) {
+    const candidates = resolved.filter((origin) => origin.spaces.includes(space));
+    if (candidates.length > 1) {
+      const origins = candidates
+        .map((origin) => describeCppStarReexportOrigin(origin))
+        .sort(compareTextCodeUnits)
+        .join(', ');
+      emissionError(
+        context,
+        `cross-package export-all re-exports ${name} from distinct declarations in its ${space} namespace: ${origins}. Their exact declaration identities differ, and no local import/re-export provenance connects them to one declaration, so a C++ using-declaration cannot reproduce the source surface without choosing one. Export the intended declaration explicitly from the source barrel, rename one of the competing exports, or keep the ambiguous stars behind separate entry points; flight-cpp will not select one by traversal order, module order, matching spelling, cast, copy, or materialization`,
+        'cpp-export-all-ambiguous',
+      );
+    }
+    const candidate = candidates[0];
+    if (candidate) {
+      const selection = selected.get(candidate.bindingId) ?? { origin: candidate, spaces: [] };
+      selection.spaces.push(space);
+      selected.set(candidate.bindingId, selection);
+    }
   }
-  return first;
+  return [...selected.values()];
+}
+
+function describeCppStarReexportOrigin(origin: Readonly<CppStarReexportOrigin>): string {
+  const declaration = origin.declaration;
+  const subject =
+    declaration && 'binding' in declaration ? `${declaration.kind} ${declaration.binding.name}` : origin.name;
+  return `${origin.module.packageName}/${origin.module.source} (${subject})`;
 }
 
 // Every name the module's own exports put on its public surface, mapped to the declarations that provide
@@ -28521,10 +28546,21 @@ function collectCppStarReexportOrigins(
   // A relative specifier resolves against the module that wrote it, so the walking context follows the walk.
   const moduleContext = module === context.module ? context : { ...context, module };
   const record = (name: string, origin: Readonly<CppStarReexportOrigin>): void => {
+    if (origin.spaces.length === 0) return;
     const declarations = origins.get(name) ?? new Map<string, CppStarReexportOrigin>();
-    declarations.set(origin.bindingId, origin);
+    const prior = declarations.get(origin.bindingId);
+    declarations.set(
+      origin.bindingId,
+      prior
+        ? { ...prior, spaces: [...new Set([...prior.spaces, ...origin.spaces])] }
+        : { ...origin, spaces: [...origin.spaces] },
+    );
     origins.set(name, declarations);
   };
+  const route = (origin: Readonly<CppStarReexportOrigin>, typeOnly: boolean): Readonly<CppStarReexportOrigin> => ({
+    ...origin,
+    spaces: typeOnly ? origin.spaces.filter((space) => space === 'type') : origin.spaces,
+  });
   for (const exported of module.exports) {
     // `export *` never carries a default export, so a star re-export does not either.
     if (exported.kind === 'default') continue;
@@ -28534,7 +28570,7 @@ function collectCppStarReexportOrigins(
       // the module-resolution plan owns that gap.
       if (starTarget === undefined) continue;
       for (const [name, declarations] of collectCppStarReexportOrigins(starTarget, context, nextVisiting)) {
-        for (const origin of declarations.values()) record(name, origin);
+        for (const origin of declarations.values()) record(name, route(origin, exported.typeOnly));
       }
       continue;
     }
@@ -28548,13 +28584,70 @@ function collectCppStarReexportOrigins(
       );
     }
     if (exported.kind === 'local') {
+      const declaration = module.declarations.find(
+        (candidate) => 'binding' in candidate && candidate.binding.id === exported.binding.id,
+      );
+      // `import { Name } ...; export { Name };` introduces a wrapper-local binding, not another
+      // declaration. Follow that authored route to its leaf so two wrappers around one declaration
+      // deduplicate by the leaf identity while two genuinely distinct leaves remain ambiguous.
+      if (declaration === undefined) {
+        const imported = module.imports.flatMap((item) =>
+          item.bindings.flatMap((binding) =>
+            binding.binding.id === exported.binding.id ? [{ binding, specifier: item.specifier }] : [],
+          ),
+        )[0];
+        if (imported) {
+          if (exported.exported !== imported.binding.imported) {
+            emissionError(
+              context,
+              `cross-package export-all re-exports ${imported.binding.imported} under the name ${exported.exported}, which a using-declaration cannot reproduce`,
+              'cpp-export-all-renamed',
+            );
+          }
+          const importedTarget = getCppResolvedImportModule(imported.specifier, moduleContext);
+          if (importedTarget === undefined) {
+            emissionError(
+              context,
+              `cross-package export-all re-exports ${exported.exported}, whose local import module did not resolve`,
+              'cpp-export-all-unresolved',
+            );
+          }
+          const importedOrigins = collectCppStarReexportOrigins(importedTarget, context, nextVisiting).get(
+            imported.binding.imported,
+          );
+          if (importedOrigins === undefined || importedOrigins.size === 0) {
+            emissionError(
+              context,
+              `cross-package export-all re-exports ${exported.exported}, which its resolved local import does not export`,
+              'cpp-export-all-unresolved',
+            );
+          }
+          for (const origin of importedOrigins.values()) {
+            record(exported.exported, route(origin, exported.typeOnly || imported.binding.typeOnly));
+          }
+          continue;
+        }
+      }
+      const spaces: readonly CppStarReexportSpace[] =
+        declaration === undefined
+          ? exported.typeOnly
+            ? ['type']
+            : ['type', 'value']
+          : declaration.kind === 'class' || declaration.kind === 'enum'
+            ? exported.typeOnly
+              ? ['type']
+              : ['type', 'value']
+            : declaration.kind === 'function' || declaration.kind === 'variable'
+              ? exported.typeOnly
+                ? []
+                : ['value']
+              : ['type'];
       record(exported.exported, {
         bindingId: exported.binding.id,
-        declaration: module.declarations.find(
-          (candidate) => 'binding' in candidate && candidate.binding.id === exported.binding.id,
-        ),
+        declaration,
         module,
         name: exported.exported,
+        spaces,
       });
       continue;
     }
@@ -28575,14 +28668,15 @@ function collectCppStarReexportOrigins(
         'cpp-export-all-unresolved',
       );
     }
-    record(
-      exported.exported,
-      getCppSingleStarReexportOrigin(
-        collectCppStarReexportOrigins(namedTarget, context, nextVisiting).get(exported.imported),
-        exported.imported,
+    const namedOrigins = collectCppStarReexportOrigins(namedTarget, context, nextVisiting).get(exported.imported);
+    if (namedOrigins === undefined || namedOrigins.size === 0) {
+      emissionError(
         context,
-      ),
-    );
+        `cross-package export-all re-exports ${exported.exported}, which its resolved module does not export`,
+        'cpp-export-all-unresolved',
+      );
+    }
+    for (const origin of namedOrigins.values()) record(exported.exported, route(origin, exported.typeOnly));
   }
   return origins;
 }

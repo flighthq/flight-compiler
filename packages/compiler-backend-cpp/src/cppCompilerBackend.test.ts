@@ -35628,6 +35628,213 @@ describe('emitIrModuleCpp reexport emission', () => {
     expect(contents).toContain('other.hpp');
   });
 
+  it('deduplicates local import re-exports that retain one declaration identity', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './shared',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/shared.ts' },
+        },
+        {
+          specifier: './first',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/first.ts' },
+        },
+        {
+          specifier: './second',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/second.ts' },
+        },
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/index.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/shared.ts',
+          'export interface Shared { value: number }\nexport function read(value: Shared): number { return value.value; }',
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/first.ts',
+          "import { read } from './shared'; import type { Shared } from './shared'; export { read }; export type { Shared };",
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/second.ts',
+          "import { read } from './shared'; import type { Shared } from './shared'; export { read }; export type { Shared };",
+        ),
+        source('@flighthq/types', 'packages/types/src/index.ts', "export * from './first'; export * from './second';"),
+        source('@flighthq/sdk', 'packages/sdk/src/types.ts', "export * from '@flighthq/types';"),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {},
+    });
+
+    const contents = session.emitModule(modules[4]!)[0]?.contents ?? '';
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(contents.match(/using flighthq_types::Shared;/gu)).toHaveLength(1);
+    expect(contents.match(/using flighthq_types::read;/gu)).toHaveLength(1);
+  });
+
+  it.each([
+    ['bitmap.ts', 'ImageChannel', 'ImageChannel.ts', '@flighthq/bitmap', 'bitmapImageChannel.ts'],
+    ['contract.ts', 'PathCommand', 'Path.ts', '@flighthq/shape', 'shapeCommands.ts'],
+    ['index.ts', 'PathCommand', 'Path.ts', '@flighthq/shape', 'shapeCommands.ts'],
+    ['shape.ts', 'PathCommand', 'Path.ts', '@flighthq/shape', 'shapeCommands.ts'],
+    ['types.ts', 'AbcMultinameKind', 'Abc.ts', '@flighthq/types', undefined],
+  ] as const)(
+    'retains the type and value declarations exported through sdk/%s for %s',
+    (facade, name, leafFile, targetPackage, forwardFile) => {
+      const leafPath = `packages/types/src/${leafFile}`;
+      const typesSurfacePath = `packages/types/src/${forwardFile ? 'contract.ts' : 'index.ts'}`;
+      const targetDirectory = targetPackage.slice('@flighthq/'.length);
+      const forwardPath = forwardFile ? `packages/${targetDirectory}/src/${forwardFile}` : undefined;
+      const targetPath = forwardFile ? `packages/${targetDirectory}/src/index.ts` : typesSurfacePath;
+      const leafSpecifier = `./${leafFile.slice(0, -3)}`;
+      const forwardSpecifier = forwardFile ? `./${forwardFile.slice(0, -3)}` : undefined;
+      const resolution: CompilerModuleResolutionPlan = {
+        edges: [
+          { specifier: leafSpecifier, target: { packageName: '@flighthq/types', source: leafPath } },
+          ...(forwardFile && forwardPath && forwardSpecifier
+            ? [
+                {
+                  specifier: '@flighthq/types/contract',
+                  target: { packageName: '@flighthq/types', source: typesSurfacePath },
+                },
+                {
+                  specifier: forwardSpecifier,
+                  target: { packageName: targetPackage, source: forwardPath },
+                },
+                { specifier: targetPackage, target: { packageName: targetPackage, source: targetPath } },
+              ]
+            : [{ specifier: targetPackage, target: { packageName: targetPackage, source: targetPath } }]),
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      };
+      const source = (packageName: string, file: string, body: string) => ({
+        packageName,
+        sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+        upstreamDirectory: '/flight',
+      });
+      const lowered = lowerTypeScriptSources(
+        [
+          source(
+            '@flighthq/types',
+            leafPath,
+            `export const ${name} = { Value: 1 } as const; export type ${name} = (typeof ${name})[keyof typeof ${name}];`,
+          ),
+          source('@flighthq/types', typesSurfacePath, `export * from '${leafSpecifier}';`),
+          ...(forwardFile && forwardPath && forwardSpecifier
+            ? [
+                source(targetPackage, forwardPath, `export { ${name} } from '@flighthq/types/contract';`),
+                source(targetPackage, targetPath, `export * from '${forwardSpecifier}';`),
+              ]
+            : []),
+          source('@flighthq/sdk', `packages/sdk/src/${facade}`, `export * from '${targetPackage}';`),
+        ],
+        resolution,
+      );
+      const modules = lowered.map((result) => result.module);
+      const session = createCppCompilerBackend().createEmissionSession!({
+        moduleResolution: resolution,
+        modules,
+        options: {},
+      });
+
+      const contents = session.emitModule(modules.at(-1)!)[0]?.contents ?? '';
+      const usingLines = contents.split('\n').filter((line) => line.startsWith('using flighthq_types::'));
+      const valueName = name.replace(/([a-z0-9])([A-Z])/gu, '$1_$2').toLowerCase();
+
+      expect(lowered.flatMap((result) => result.diagnostics)).toEqual([]);
+      expect(usingLines).toEqual(
+        expect.arrayContaining([`using flighthq_types::${name};`, `using flighthq_types::${valueName};`]),
+      );
+      expect(usingLines).toHaveLength(2);
+    },
+  );
+
+  it('keeps distinct declarations ambiguous across local import re-export routes', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './first-source',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/first-source.ts' },
+        },
+        {
+          specifier: './second-source',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/second-source.ts' },
+        },
+        {
+          specifier: './first',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/first.ts' },
+        },
+        {
+          specifier: './second',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/second.ts' },
+        },
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/index.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source('@flighthq/types', 'packages/types/src/first-source.ts', 'export interface Shared { first: number }'),
+        source('@flighthq/types', 'packages/types/src/second-source.ts', 'export interface Shared { second: number }'),
+        source(
+          '@flighthq/types',
+          'packages/types/src/first.ts',
+          "import type { Shared } from './first-source'; export type { Shared };",
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/second.ts',
+          "import type { Shared } from './second-source'; export type { Shared };",
+        ),
+        source('@flighthq/types', 'packages/types/src/index.ts', "export * from './first'; export * from './second';"),
+        source('@flighthq/sdk', 'packages/sdk/src/types.ts', "export * from '@flighthq/types';"),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {},
+    });
+
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[5]!));
+
+    expect(failure.rule).toBe('cpp-export-all-ambiguous');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('@flighthq/types/packages/types/src/first-source.ts (interface Shared)');
+    expect(failure.message).toContain('@flighthq/types/packages/types/src/second-source.ts (interface Shared)');
+    expect(failure.message).toContain('exact declaration identities differ');
+    expect(failure.message).toContain('will not select one by traversal order');
+  });
+
   it('refuses a name two star targets both export', () => {
     const first = lowerPackage('@flighthq/other', 'first.ts', 'export function area(): number { return 1; }').module;
     const second = lowerPackage('@flighthq/other', 'second.ts', 'export function area(): number { return 2; }').module;
@@ -35650,7 +35857,12 @@ describe('emitIrModuleCpp reexport emission', () => {
     const failure = captureBackendEmissionFailure(() => session.emitModule(facade));
 
     expect(failure.rule).toBe('cpp-export-all-ambiguous');
+    expect(failure.classification).toBe('compiler-restriction');
     expect(failure.message).toContain('area');
+    expect(failure.message).toContain('@flighthq/other/packages/other/src/first.ts (function area)');
+    expect(failure.message).toContain('@flighthq/other/packages/other/src/second.ts (function area)');
+    expect(failure.message).toContain('exact declaration identities differ');
+    expect(failure.message).toContain('will not select one by traversal order');
   });
 
   it('refuses a renamed re-export it cannot reproduce as a using-declaration', () => {
