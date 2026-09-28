@@ -271,6 +271,94 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
 
+  it('keeps interactive state bindings and property access on their concrete owners', () => {
+    const asserted = input(
+      'packages/interaction/src/nodeInteractiveStateBinding.ts',
+      `declare const EntityRuntimeKey: unique symbol;
+       interface EntityRuntime { binding: object | null }
+       interface NodeInteractiveStateBinding { readonly bindingBrand: true }
+       interface NodeAny { readonly kind: string }
+       type NodeInteractiveStateProperty = 'alpha' | 'scaleX' | 'scaleY' | 'visible' | 'x' | 'y';
+       type NodeInteractiveStateTransitionValue = boolean | number;
+       function createNodeInteractiveStateBinding(result: { runtime: EntityRuntime }): NodeInteractiveStateBinding {
+         return { [EntityRuntimeKey]: result.runtime } as unknown as NodeInteractiveStateBinding;
+       }
+       function readNodeInteractiveState(
+         runtime: { node: NodeAny },
+         property: NodeInteractiveStateProperty,
+       ): unknown {
+         const target = runtime.node as unknown as Record<NodeInteractiveStateProperty, unknown>;
+         return target[property];
+       }
+       function writeNodeInteractiveState(
+         node: NodeAny,
+         property: NodeInteractiveStateProperty,
+         value: NodeInteractiveStateTransitionValue,
+       ): void {
+         const target = node as unknown as Record<
+           NodeInteractiveStateProperty,
+           NodeInteractiveStateTransitionValue
+         >;
+         target[property] = value;
+       }
+       function readNodeInteractiveStateOpen(
+         node: NodeAny,
+         property: NodeInteractiveStateProperty,
+       ): unknown {
+         return (node as unknown as Record<string, unknown>)[property];
+       }`,
+    );
+    const typed = input(
+      'portableNodeInteractiveStateBinding.ts',
+      `interface NodeInteractiveStateBinding { readonly bindingBrand: true }
+       interface InteractiveTarget {
+         alpha: number;
+         scaleX: number;
+         scaleY: number;
+         visible: boolean;
+         x: number;
+         y: number;
+       }
+       declare function createBinding(): NodeInteractiveStateBinding;
+       export function create(): NodeInteractiveStateBinding { return createBinding(); }
+       export function read(target: InteractiveTarget): number { return target.x; }
+       export function write(target: InteractiveTarget, value: number): void { target.x = value; }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([asserted]).findings.filter(
+      (finding) => finding.rule === 'unchecked-double-assertion',
+    );
+
+    expect(findings).toHaveLength(4);
+    const binding = findings.find((finding) => finding.subject === 'function:createNodeInteractiveStateBinding');
+    const closedRead = findings.find((finding) => finding.subject === 'function:readNodeInteractiveState');
+    const write = findings.find((finding) => finding.subject === 'function:writeNodeInteractiveState');
+    const openRead = findings.find((finding) => finding.subject === 'function:readNodeInteractiveStateOpen');
+    expect(binding?.message).toContain('fresh { [EntityRuntimeKey]: result.runtime } literal');
+    expect(binding?.message).toContain('branded NodeInteractiveStateBinding owner');
+    expect(binding?.message).toContain('concrete Entity owner and binding facet tag');
+    expect(binding?.message).toContain('entity API that owns and initializes its runtime slot');
+    expect(binding?.message).toContain('will preserve an already proven NodeInteractiveStateBinding carrier');
+    expect(binding?.message).toContain('will not reinterpret this literal, cast it, copy or materialize');
+    for (const read of [closedRead, openRead]) {
+      expect(read?.message).toContain('concrete Node owner beneath the assertion is not a Record');
+      expect(read?.message).toContain('owner-preserving named-property view');
+      expect(read?.message).toContain('named Node2D/interactive capability');
+      expect(read?.message).toContain('while retaining');
+      expect(read?.message).toContain('will not cast the owner, copy or materialize a Record');
+      expect(read?.message).toContain('or add side storage');
+    }
+    expect(closedRead?.message).toContain('closed NodeInteractiveStateProperty key union');
+    expect(openRead?.message).toContain('through a string key');
+    expect(write?.message).toContain('not representation-equivalent to that keyed carrier');
+    expect(write?.message).toContain('read-only named-property view cannot supply writes');
+    expect(write?.message).toContain('alpha, scaleX, scaleY, visible, x, and y');
+    expect(write?.message).toContain('matching boolean or number value');
+    expect(write?.message).toContain('will not reinterpret or cast the owner');
+    expect(write?.message).toContain('copy or materialize replacement keyed storage');
+    expect(write?.message).toContain('or add side storage');
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',

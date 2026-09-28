@@ -7576,6 +7576,125 @@ describe('createCppCompilerBackend', () => {
     expect(exact).not.toContain('row_set');
   });
 
+  it('keeps interactive state assertions on represented owners', () => {
+    const common = `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+      interface EntityRuntime { binding: object | null }
+      interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+      declare const BindingBrand: unique symbol;
+      interface NodeInteractiveStateBinding extends Entity { readonly [BindingBrand]: true }
+      interface InteractiveRuntime extends EntityRuntime { disposed: boolean }
+      interface NodeAny extends Entity { kind: string }
+      type NodeInteractiveStateProperty = 'alpha' | 'scaleX' | 'scaleY' | 'visible' | 'x' | 'y';
+      type NodeInteractiveStateTransitionValue = boolean | number;`;
+    const results = [
+      lower(
+        'interactive-fresh.ts',
+        `${common}
+         export function create(runtime: InteractiveRuntime): NodeInteractiveStateBinding {
+           return { [EntityRuntimeKey]: runtime } as unknown as NodeInteractiveStateBinding;
+         }`,
+      ),
+      lower(
+        'interactive-read.ts',
+        `${common}
+         export function read(node: NodeAny, property: NodeInteractiveStateProperty): unknown {
+           const target = node as unknown as Record<NodeInteractiveStateProperty, unknown>;
+           return target[property];
+         }`,
+      ),
+      lower(
+        'interactive-write.ts',
+        `${common}
+         export function write(
+           node: NodeAny,
+           property: NodeInteractiveStateProperty,
+           value: NodeInteractiveStateTransitionValue,
+         ): void {
+           const target = node as unknown as Record<
+             NodeInteractiveStateProperty,
+             NodeInteractiveStateTransitionValue
+           >;
+           target[property] = value;
+         }`,
+      ),
+      lower(
+        'interactive-string-read.ts',
+        `${common}
+         export function read(node: NodeAny, property: NodeInteractiveStateProperty): unknown {
+           return (node as unknown as Record<string, unknown>)[property];
+         }`,
+      ),
+      lower(
+        'interactive-exact-binding.ts',
+        `${common}
+         export function retain(binding: NodeInteractiveStateBinding): NodeInteractiveStateBinding {
+           return binding as unknown as NodeInteractiveStateBinding;
+         }`,
+      ),
+      lower(
+        'interactive-exact-record.ts',
+        `${common}
+         export function retain(
+           value: Record<NodeInteractiveStateProperty, NodeInteractiveStateTransitionValue>,
+         ): Record<NodeInteractiveStateProperty, NodeInteractiveStateTransitionValue> {
+           return value as unknown as Record<
+             NodeInteractiveStateProperty,
+             NodeInteractiveStateTransitionValue
+           >;
+         }`,
+      ),
+    ];
+    const fresh = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(results[0]!.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const read = emitIrModuleCpp(results[1]!.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const write = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(results[2]!.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const stringRead = emitIrModuleCpp(results[3]!.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const exactBinding = emitIrModuleCpp(results[4]!.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const exactRecord = emitIrModuleCpp(results[5]!.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(fresh.rule).toBe('cpp-erased-facet-reference-assertion-unrepresented');
+    expect(fresh.classification).toBe('source-portability');
+    expect(fresh.message).toContain('fresh object literal');
+    expect(fresh.message).toContain('branded facet identity NodeInteractiveStateBinding');
+    expect(fresh.message).toContain('flight::Ref<Entity> owner');
+    expect(fresh.message).toContain('runtime slot');
+    expect(fresh.message).toContain('will not reinterpret the literal, cast it, copy or materialize');
+    expect(fresh.message).toContain('or add side storage');
+
+    expect(read).toContain('flight::NamedProperties target');
+    for (const output of [read, stringRead]) {
+      expect(output).toContain('flight::named_properties(node)');
+      expect(output).toContain('.get(property)');
+      expect(output).not.toContain('flight::Record<NodeInteractiveStateProperty, flight::Any> target');
+      expect(output).not.toContain('flight::Any::object(node)');
+      expect(output).not.toContain('static_cast<flight::Record');
+    }
+
+    expect(write.rule).toBe('cpp-erased-record-assertion-unrepresented');
+    expect(write.classification).toBe('source-portability');
+    expect(write.message).toContain('flight::Ref<NodeAny>');
+    expect(write.message).toContain('Record keyed storage are not representation-equivalent');
+    expect(write.message).toContain('finite key union on a typed object');
+    expect(write.message).toContain('dispatch to its declared fields');
+    expect(write.message).toContain('will not cast between owners');
+    expect(write.message).toContain('copy or materialize replacement keyed storage');
+    expect(write.message).toContain('or add side storage');
+
+    expect(exactBinding).toContain('return binding;');
+    expect(exactRecord).toContain('return value;');
+    for (const output of [exactBinding, exactRecord]) {
+      expect(output).not.toContain('static_cast');
+      expect(output).not.toContain('flight::Any::object');
+      expect(output).not.toContain('make_ref');
+      expect(output).not.toContain('materialize');
+      expect(output).not.toContain('row_set');
+    }
+  });
+
   it('names the missing owners in mesh morph and movie clip runtime assertions', () => {
     const { moduleResolution, results } = lowerImportedMeshAndMovieClipAssertionModules();
     const modules = results.map((result) => result.module);

@@ -4128,6 +4128,48 @@ function emitExpression(
         context.includes.add('flight/structural_ref.hpp');
         return `flight::named_properties(${emitExpression(namedPropertiesSource, context)})`;
       }
+      const erasedRecordMarker =
+        expression.expression.kind === 'cast' && isCppErasedDynamicValueTypeCpp(expression.expression.type);
+      const targetRecord = erasedRecordMarker
+        ? getCppRecordTypeArgumentsCpp(expression.type, context, new Set())
+        : undefined;
+      const representedRecordSource = targetRecord
+        ? getCppRepresentedErasedAssertionSourceCpp(expression.expression, context)
+        : undefined;
+      if (
+        targetRecord &&
+        !(
+          representedRecordSource &&
+          context.referenceRepresentationPlanner.resolveStructuralRow(representedRecordSource.type, context.module)
+        )
+      ) {
+        const representedSource = representedRecordSource;
+        if (
+          representedSource &&
+          areCppTypesRepresentationEquivalent(representedSource.type, expression.type, context)
+        ) {
+          return emitExpression(representedSource.expression, context, undefined, false);
+        }
+        const target = emitType(expression.type, {
+          ...context,
+          anonymousStructs: new Map(),
+          includes: new Set(),
+        });
+        if (representedSource) {
+          emissionError(
+            context,
+            `an erased assertion hides the represented source carrier ${emitType(representedSource.type, context)} before naming ${target}, but a Flight object reference and Record keyed storage are not representation-equivalent. Keep the exact Record carrier from its construction boundary, or keep a finite key union on a typed object and dispatch to its declared fields; the compiler will not cast between owners, copy or materialize replacement keyed storage, or add side storage`,
+            'cpp-erased-record-assertion-unrepresented',
+            'source-portability',
+          );
+        }
+        emissionError(
+          context,
+          `an erased dynamic value cannot be recovered as ${target}: flight::Any has no checked Record extraction that preserves keyed-storage identity. Keep the value in its exact Record type before erasure, or use an owner-preserving named-property read view when only checked string-keyed reads are required; the compiler will not cast the erased value, copy or materialize replacement keyed storage, or add side storage`,
+          'cpp-erased-record-assertion-unrepresented',
+          'target-runtime',
+        );
+      }
       const structuralCloneRecordView = getCppStructuralCloneRecordViewPlanCpp(expression, context);
       if (structuralCloneRecordView) {
         const typeParameter = emitType(structuralCloneRecordView.typeParameter, context);
@@ -4367,8 +4409,11 @@ function emitExpression(
       const assertedReferenceElement = getCppReferenceElementTypeNameCpp(
         emitType(expression.type, { ...context, anonymousStructs: new Map(), includes: new Set() }),
       );
+      const assertedFacetReference =
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        hasFlightFacetReferenceRepresentationCpp(expression.type, context);
       const representedErasedFlightSource =
-        assertedReferenceElement !== undefined
+        assertedReferenceElement !== undefined || assertedFacetReference
           ? getCppRepresentedErasedAssertionSourceCpp(expression.expression, context)
           : undefined;
       const erasedValueAssertion =
@@ -4429,6 +4474,27 @@ function emitExpression(
             .length > 0
         ) {
           refuseCppStructuralAssertionOwnerUnprovenCpp(context, representedErasedFlightSource.type, expression.type);
+        }
+        const assertedFacet = context.referenceRepresentationPlanner.resolveFacetReference(
+          expression.type,
+          context.module,
+        );
+        if (assertedFacet) {
+          const target = emitType(expression.type, context);
+          if (representedErasedFlightSource.expression.kind === 'object') {
+            emissionError(
+              context,
+              `a fresh object literal asserted through an erased type cannot acquire the branded facet identity ${target}: its fields do not prove that it shares the declared ${emitType(assertedFacet.base, context)} owner or its facet tag. Construct the binding through the API that owns its runtime slot, or record a reviewed source-portability exception at a JavaScript-only boundary; the compiler will not reinterpret the literal, cast it, copy or materialize a replacement owner, or add side storage`,
+              'cpp-erased-facet-reference-assertion-unrepresented',
+              'source-portability',
+            );
+          }
+          emissionError(
+            context,
+            `an erased assertion hides the represented source carrier ${emitType(representedErasedFlightSource.type, context)} before naming the branded facet ${target}, but those carriers are not representation-equivalent. Keep the exact facet carrier through the assertion or acquire it through the API that proves the shared ${emitType(assertedFacet.base, context)} owner and facet tag; the compiler will not reinterpret the source carrier, cast it, copy or materialize a replacement owner, or add side storage`,
+            'cpp-erased-facet-reference-assertion-unrepresented',
+            'source-portability',
+          );
         }
       }
       const externalAssertionTarget =
@@ -7122,12 +7188,12 @@ function isCppNamedPropertiesSourceCpp(type: Readonly<IrType>, context: EmitCont
   return Boolean(runtime && hasFlightReferenceRepresentationCpp(runtime, context));
 }
 
-// The object a `value as unknown as Record<string, unknown>` dynamic view reads through, or undefined
-// when the expression is not that view.
+// The object a `value as unknown as Record<StringKey, unknown>` dynamic view reads through, or undefined
+// when the expression is not that view. `StringKey` may be `string` or a closed string-literal union.
 //
 // The cast is how the SDK makes a dynamic named read type-check, and the inner `as unknown` is the
 // compiler's own erased marker rather than something the source wrote, so both are seen through. The
-// result is the view the runtime builds, not a `Record`: `Record<string, unknown>` here names a set of
+// result is the view the runtime builds, not a `Record`: `Record<StringKey, unknown>` here names a set of
 // properties to read by name. A typed reference, structural row, or `Any` object alternative can supply
 // that view without materialising a record.
 function getCppNamedPropertiesViewSourceCpp(
@@ -7135,7 +7201,7 @@ function getCppNamedPropertiesViewSourceCpp(
   context: EmitContext,
 ): Readonly<IrExpression> | undefined {
   if (expression.kind !== 'cast' || getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
-  if (!isCppUnknownRecordTypeCpp(expression.type, 'string')) return undefined;
+  if (!isCppUnknownStringKeyedRecordTypeCpp(expression.type, context)) return undefined;
   // A constructed object is not what this view is for. `Object.keys(host)` enumerates the properties an
   // object was GIVEN, and an object literal's properties are the ones the compiler just wrote -- its
   // shape is already known, so a dynamic view over it would be asking the runtime a question the
@@ -7148,6 +7214,24 @@ function getCppNamedPropertiesViewSourceCpp(
       : inner;
   const sourceType = getIrExpressionTypeEvidenceCpp(source, context);
   return sourceType && isCppNamedPropertiesSourceCpp(sourceType, context) ? source : undefined;
+}
+
+function isCppUnknownStringKeyedRecordTypeCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'ambient' ||
+    type.reference.name !== 'Record' ||
+    type.typeArguments.length !== 2
+  ) {
+    return false;
+  }
+  const record = { key: type.typeArguments[0]!, value: type.typeArguments[1]! };
+  return Boolean(
+    record &&
+    record.value.kind === 'unknown' &&
+    record.value.source === 'unknown' &&
+    isCppStringValueTypeCpp(record.key, context, new Set()),
+  );
 }
 
 // `Object.hasOwn` asks storage whether a key exists; it must not infer presence from the stored value.
@@ -7291,7 +7375,7 @@ function isCppStringKeyIndexCpp(index: Readonly<IrExpression>, context: EmitCont
   const type = getIrExpressionTypeEvidenceCpp(index, context);
   if (!type) return false;
   if (type.kind === 'literal') return typeof type.value === 'string';
-  return type.kind === 'primitive' && type.name === 'string';
+  return isCppStringValueTypeCpp(type, context, new Set());
 }
 
 // Whether an expression is bound to the `value as unknown as Record<string, unknown>` view the source
@@ -7911,6 +7995,11 @@ function isCppStringValueTypeCpp(
 ): boolean {
   if (type.kind === 'primitive') return type.name === 'string';
   if (type.kind === 'literal') return typeof type.value === 'string';
+  if (type.kind === 'union') {
+    return (
+      type.types.length > 0 && type.types.every((member) => isCppStringValueTypeCpp(member, context, resolvingAliases))
+    );
+  }
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return false;
   const bindingId = type.reference.binding.id;
   if (resolvingAliases.has(bindingId)) return false;

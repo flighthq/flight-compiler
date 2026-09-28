@@ -353,6 +353,45 @@ function getUncheckedDoubleAssertionObjectLiteralTarget(node: ts.AsExpression | 
   return ts.isObjectLiteralExpression(source) ? targetName : undefined;
 }
 
+function getNodeInteractiveStateBindingDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  const sourceFile = node.getSourceFile();
+  const source = normalizePathPortable(sourceFile.fileName);
+  if (!source.endsWith('/packages/interaction/src/nodeInteractiveStateBinding.ts')) return undefined;
+  const target = getTypeAssertionType(node);
+  if (!ts.isTypeReferenceNode(target)) return undefined;
+  const targetName = getNodeName(target.typeName);
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner)) return undefined;
+  let retainedExpression: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retainedExpression)) retainedExpression = retainedExpression.expression;
+  const retainedSlot = retainedExpression.getText(sourceFile);
+  if (targetName === 'NodeInteractiveStateBinding' && ts.isObjectLiteralExpression(retainedExpression)) {
+    return `${subject} uses a double assertion through ${bridge} to claim that the fresh ${retainedSlot} literal is the branded NodeInteractiveStateBinding owner; its EntityRuntimeKey field does not prove that the literal shares the concrete Entity owner and binding facet tag represented by NodeInteractiveStateBinding. Construct the binding through the entity API that owns and initializes its runtime slot, and retain that exact binding type through accessors. If this construction is intentionally JavaScript-only, record a reviewed source-portability exception for this exact boundary. The compiler will preserve an already proven NodeInteractiveStateBinding carrier, but will not reinterpret this literal, cast it, copy or materialize a replacement owner, or add side storage.`;
+  }
+  if (targetName !== 'Record' || target.typeArguments?.length !== 2) return undefined;
+  const key = target.typeArguments[0]!;
+  const value = target.typeArguments[1]!;
+  const finiteInteractiveKey =
+    ts.isTypeReferenceNode(key) && getNodeName(key.typeName) === 'NodeInteractiveStateProperty';
+  const openStringKey = key.kind === ts.SyntaxKind.StringKeyword;
+  const unknownValue = value.kind === ts.SyntaxKind.UnknownKeyword;
+  const transitionValue =
+    ts.isTypeReferenceNode(value) && getNodeName(value.typeName) === 'NodeInteractiveStateTransitionValue';
+  if ((finiteInteractiveKey || openStringKey) && unknownValue) {
+    const keyDomain = finiteInteractiveKey ? 'the closed NodeInteractiveStateProperty key union' : 'a string key';
+    return `${subject} uses a double assertion through ${bridge} to name ${retainedSlot} as Record storage for a read through ${keyDomain}, but the concrete Node owner beneath the assertion is not a Record and must retain its identity. A portable read may use an owner-preserving named-property view that reads the existing declared fields without constructing keyed storage; preferably accept a named Node2D/interactive capability and dispatch the finite property union to those fields. If this dynamic read is intentionally JavaScript-only, record a reviewed source-portability exception for this exact boundary. The compiler may lower the checked read view while retaining ${retainedSlot}, but will not cast the owner, copy or materialize a Record, or add side storage.`;
+  }
+  if (finiteInteractiveKey && transitionValue) {
+    return `${subject} uses a double assertion through ${bridge} to name ${retainedSlot} as writable Record<NodeInteractiveStateProperty, NodeInteractiveStateTransitionValue> storage, but the concrete Node owner beneath the assertion is not representation-equivalent to that keyed carrier and a read-only named-property view cannot supply writes. Accept a named Node2D/interactive target that declares alpha, scaleX, scaleY, visible, x, and y, then dispatch the closed property union to those fields with the matching boolean or number value. If the open-object write is intentionally JavaScript-only, record a reviewed source-portability exception for this exact boundary. The compiler will not reinterpret or cast the owner, copy or materialize replacement keyed storage, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getSwfNodeDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
@@ -1075,6 +1114,8 @@ function renderUncheckedDoubleAssertionMessage(
   subject: string,
   bridge: 'any' | 'never' | 'unknown',
 ): string {
+  const nodeInteractiveStateBinding = getNodeInteractiveStateBindingDoubleAssertionGuidance(node, subject, bridge);
+  if (nodeInteractiveStateBinding) return nodeInteractiveStateBinding;
   const physics3DWorld = getPhysics3DWorldDoubleAssertionGuidance(node, subject, bridge);
   if (physics3DWorld) return physics3DWorld;
   const swfNode = getSwfNodeDoubleAssertionGuidance(node, subject, bridge);
