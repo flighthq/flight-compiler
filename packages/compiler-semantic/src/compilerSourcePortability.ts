@@ -419,6 +419,41 @@ function getGltfMaterialExtensionDoubleAssertionGuidance(
   return `${subject} uses a double assertion through ${bridge} to recover ${targetName} for the ${access} from ${retainedSlot}, but the Scene3DDocument.materials slot retains only MaterialLike's EntityWithoutRuntime<Material> base owner. The preceding kind comparison checks a shared open registry string; it does not prove that the retained Material owner is the independent ${targetName} owner or supply that owner's declared cells. Give the document slot a closed union of EntityWithoutRuntime for the supported concrete material owners so the kind discriminant narrows to the exact ${targetName} carrier, or use an owner-preserving checked registry recovery that validates that concrete owner. The compiler will preserve an exact or representation-equivalent carrier, but will not reinterpret or cast the base owner, copy or materialize a replacement material, or add side storage.`;
 }
 
+function getAwd2MaterialHandlerDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  const sourceFile = node.getSourceFile();
+  if (!normalizePathPortable(sourceFile.fileName).endsWith('/packages/scene3d-formats/src/awd2MaterialHandler.ts')) {
+    return undefined;
+  }
+  const target = getTypeAssertionType(node);
+  if (!ts.isTypeReferenceNode(target)) return undefined;
+  const targetName = getNodeName(target.typeName);
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner)) return undefined;
+  let retainedExpression: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retainedExpression)) retainedExpression = retainedExpression.expression;
+  const retainedSlot = retainedExpression.getText(sourceFile);
+  if (
+    targetName === 'Material' &&
+    ts.isCallExpression(retainedExpression) &&
+    ts.isIdentifier(retainedExpression.expression) &&
+    retainedExpression.expression.text === 'createShadedMaterial'
+  ) {
+    return `${subject} uses a double assertion through ${bridge} to replace the exact ShadedMaterial owner returned by createShadedMaterial with the base Material owner. Flight emits those interfaces as independent reference owners, so inherited TypeScript structure does not make their carriers representation-equivalent. Keep the factory result as ShadedMaterial and use its declared SurfaceMaterial trailer and Material name fields directly. The compiler will preserve the exact ShadedMaterial carrier, but will not reinterpret or cast it as Material, copy or materialize a replacement owner, or add side storage.`;
+  }
+  if (targetName === 'SurfaceMaterial' && retainedSlot === 'material') {
+    return `${subject} uses a double assertion through ${bridge} to recover SurfaceMaterial from material after the local binding has already retained only the base Material owner. The earlier createShadedMaterial call does not travel through that base-typed owner, and Material declares no alphaMode or other SurfaceMaterial trailer cells. Keep material as the exact ShadedMaterial factory result and assign alphaMode directly on that owner. The compiler will not reinterpret or cast the base owner, copy or materialize a replacement surface material, or add side storage.`;
+  }
+  if (targetName === 'MaterialLike' && retainedSlot === 'material') {
+    return `${subject} uses a double assertion through ${bridge} from Material to MaterialLike, but MaterialLike is EntityWithoutRuntime<Material>, an identity-preserving view of that same Material owner. This bridge is representation-equivalent and can remain a carrier no-op, but it cannot restore the ShadedMaterial owner erased by the earlier assertion. Remove the redundant assertion; for an end-to-end portable import, retain ShadedMaterial from createShadedMaterial and store it in a concrete EntityWithoutRuntime<ShadedMaterial> arm of the document material union. The compiler will preserve the same represented Material carrier here, but will not use that equivalence to cast back to ShadedMaterial, copy or materialize a replacement, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getNodeInteractiveStateBindingDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
@@ -1312,6 +1347,8 @@ function renderUncheckedDoubleAssertionMessage(
   if (material) return material;
   const gltfMaterialExtension = getGltfMaterialExtensionDoubleAssertionGuidance(node, subject, bridge);
   if (gltfMaterialExtension) return gltfMaterialExtension;
+  const awd2MaterialHandler = getAwd2MaterialHandlerDoubleAssertionGuidance(node, subject, bridge);
+  if (awd2MaterialHandler) return awd2MaterialHandler;
   const nodeInteractiveStateBinding = getNodeInteractiveStateBindingDoubleAssertionGuidance(node, subject, bridge);
   if (nodeInteractiveStateBinding) return nodeInteractiveStateBinding;
   const physics3DWorld = getPhysics3DWorldDoubleAssertionGuidance(node, subject, bridge);

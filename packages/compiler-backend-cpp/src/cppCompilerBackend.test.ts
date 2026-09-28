@@ -1354,6 +1354,110 @@ function lowerImportedGltfMaterialExtensionAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedAwd2MaterialHandlerAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+      {
+        specifier: '@flighthq/shading/contract',
+        target: { packageName: '@flighthq/shading', source: 'packages/shading/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;
+         export interface Material extends Entity { readonly kind: string; name: string | null }
+         export type MaterialLike = EntityWithoutRuntime<Material>;
+         export interface SurfaceMaterial extends Material { alphaMode: 'blend' | 'opaque' }
+         export interface ShadedMaterial extends SurfaceMaterial {
+           readonly kind: 'ShadedMaterial';
+           diffuse: number;
+         }
+         export interface Scene3DDocument { materials: MaterialLike[] }
+         export type AwdMaterialLike = EntityWithoutRuntime<ShadedMaterial>;
+         export interface TypedScene3DDocument { materials: AwdMaterialLike[] }`,
+      ),
+      source(
+        '@flighthq/shading',
+        'shading/src/contract.ts',
+        `import type { ShadedMaterial } from '@flighthq/types/contract';
+         export function createShadedMaterial(material: ShadedMaterial): ShadedMaterial { return material; }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/awd2MaterialHandlerFactory.ts',
+        `import { createShadedMaterial } from '@flighthq/shading/contract';
+         import type { Material, ShadedMaterial } from '@flighthq/types/contract';
+         export function resolve(seed: ShadedMaterial): Material {
+           return createShadedMaterial(seed) as unknown as Material;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/awd2MaterialHandlerSurface.ts',
+        `import type { Material, SurfaceMaterial } from '@flighthq/types/contract';
+         export function blend(material: Material): void {
+           (material as unknown as SurfaceMaterial).alphaMode = 'blend';
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/awd2MaterialHandlerLike.ts',
+        `import type { Material, MaterialLike, Scene3DDocument } from '@flighthq/types/contract';
+         export function store(document: Scene3DDocument, material: Material): void {
+           document.materials.push(material as unknown as MaterialLike);
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/awd2MaterialHandlerExact.ts',
+        `import type { MaterialLike, ShadedMaterial } from '@flighthq/types/contract';
+         export function retainShaded(value: ShadedMaterial): ShadedMaterial {
+           return value as unknown as ShadedMaterial;
+         }
+         export function retainLike(value: MaterialLike): MaterialLike {
+           return value as unknown as MaterialLike;
+         }`,
+      ),
+      source(
+        '@flighthq/scene3d-formats',
+        'scene3d-formats/src/awd2MaterialHandlerTyped.ts',
+        `import { createShadedMaterial } from '@flighthq/shading/contract';
+         import type { ShadedMaterial, TypedScene3DDocument } from '@flighthq/types/contract';
+         export function resolve(
+           document: TypedScene3DDocument,
+           seed: ShadedMaterial,
+           blend: boolean,
+           name: string | null,
+         ): void {
+           const material = createShadedMaterial(seed);
+           if (blend) material.alphaMode = 'blend';
+           material.name = name;
+           document.materials.push(material);
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedMeshAndMovieClipAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -8039,6 +8143,61 @@ describe('createCppCompilerBackend', () => {
     expect(typed).toContain('std::get<1>(material)->extensions');
     expect(typed).toContain('std::in_place_type<flight::Ref<flighthq_types::ExtendedPbrMaterial>>, promoted');
     for (const output of [exact, typed]) {
+      expect(output).not.toContain('flight::Any');
+      expect(output).not.toContain('static_pointer_cast');
+      expect(output).not.toContain('structural_ref_cast');
+      expect(output).not.toContain('make_ref');
+      expect(output).not.toContain('materialize');
+    }
+  });
+
+  it('keeps AWD2 material construction on the exact shaded owner', () => {
+    const { moduleResolution, results } = lowerImportedAwd2MaterialHandlerAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const factory = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const surface = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    const like = session.emitModule(modules[4]!)[0]!.contents;
+    const exact = session.emitModule(modules[5]!)[0]!.contents;
+    const typed = session.emitModule(modules[6]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(factory).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-reference-assertion-without-heritage',
+    });
+    expect(factory.message).toContain('flight::Ref<flighthq_types::ShadedMaterial>');
+    expect(factory.message).toContain('flight::Ref<flighthq_types::Material>');
+    expect(factory.message).toContain('no heritage to cast along');
+    expect(factory.message).toContain('independent owners');
+    expect(factory.message).toContain('exact declared owner');
+    expect(factory.message).toContain('will not use a native pointer cast');
+    expect(factory.message).toContain('materialize a replacement row');
+    expect(factory.message).toContain('invent side storage');
+
+    expect(surface).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-structural-assertion-owner-unproven',
+    });
+    expect(surface.message).toContain('flight::Ref<flighthq_types::Material>');
+    expect(surface.message).toContain('flight::Ref<flighthq_types::SurfaceMaterial>');
+    expect(surface.message).toContain('alphaMode');
+    expect(surface.message).toContain('type the retaining slot and every accessor result');
+    expect(surface.message).toContain('will not reinterpret the owner, cast it');
+    expect(surface.message).toContain('copy or materialize a replacement');
+    expect(surface.message).toContain('or add side storage');
+
+    expect(like).toContain('document->materials.push(material);');
+    expect(exact).toContain('return value;');
+    expect(typed).toContain('auto material = flighthq_shading::create_shaded_material(seed);');
+    expect(typed).toContain('material->alpha_mode = flight::String("blend")');
+    expect(typed).toContain('material->name = name');
+    expect(typed).toContain('document->materials.push(material);');
+    for (const output of [like, exact, typed]) {
       expect(output).not.toContain('flight::Any');
       expect(output).not.toContain('static_pointer_cast');
       expect(output).not.toContain('structural_ref_cast');

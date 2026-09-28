@@ -533,6 +533,88 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
 
+  it('keeps AWD2 material construction on the exact shaded owner', () => {
+    const asserted = input(
+      'packages/scene3d-formats/src/awd2MaterialHandler.ts',
+      `interface Material { readonly kind: string; name: string | null; runtime: object }
+       type MaterialLike = Omit<Material, 'runtime'>;
+       interface SurfaceMaterial extends Material { alphaMode: 'blend' | 'opaque' }
+       interface ShadedMaterial extends SurfaceMaterial {
+         readonly kind: 'ShadedMaterial';
+         diffuse: number;
+       }
+       interface Scene3DDocument { materials: MaterialLike[] }
+       declare function createShadedMaterial(): ShadedMaterial;
+       export function resolveAwdMaterial(
+         document: Scene3DDocument,
+         alpha: number | null,
+         name: string,
+       ): void {
+         const material = createShadedMaterial() as unknown as Material;
+         if (alpha !== null && alpha < 1) {
+           (material as unknown as SurfaceMaterial).alphaMode = 'blend';
+         }
+         material.name = name.length > 0 ? name : null;
+         document.materials.push(material as unknown as MaterialLike);
+       }`,
+    );
+    const typed = input(
+      'portableAwd2MaterialHandler.ts',
+      `interface Material { readonly kind: string; name: string | null; runtime: object }
+       type EntityWithoutRuntime<Type extends Material> = Omit<Type, 'runtime'>;
+       interface SurfaceMaterial extends Material { alphaMode: 'blend' | 'opaque' }
+       interface ShadedMaterial extends SurfaceMaterial {
+         readonly kind: 'ShadedMaterial';
+         diffuse: number;
+       }
+       type AwdMaterialLike = EntityWithoutRuntime<ShadedMaterial>;
+       interface Scene3DDocument { materials: AwdMaterialLike[] }
+       declare function createShadedMaterial(): ShadedMaterial;
+       export function resolveAwdMaterial(
+         document: Scene3DDocument,
+         alpha: number | null,
+         name: string,
+       ): void {
+         const material = createShadedMaterial();
+         if (alpha !== null && alpha < 1) material.alphaMode = 'blend';
+         material.name = name.length > 0 ? name : null;
+         document.materials.push(material);
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([asserted]).findings;
+
+    expect(findings).toHaveLength(3);
+    expect(findings.every((finding) => finding.rule === 'unchecked-double-assertion')).toBe(true);
+    const material = findings.find((finding) => finding.message.includes('exact ShadedMaterial owner returned'));
+    expect(material?.message).toContain('replace');
+    expect(material?.message).toContain('independent reference owners');
+    expect(material?.message).toContain('does not make their carriers representation-equivalent');
+    expect(material?.message).toContain('Keep the factory result as ShadedMaterial');
+    expect(material?.message).toContain('use its declared SurfaceMaterial trailer and Material name fields directly');
+    expect(material?.message).toContain('will not reinterpret or cast it as Material');
+    expect(material?.message).toContain('copy or materialize a replacement owner');
+    expect(material?.message).toContain('or add side storage');
+    const surface = findings.find((finding) => finding.message.includes('recover SurfaceMaterial'));
+    expect(surface?.message).toContain('retained only the base Material owner');
+    expect(surface?.message).toContain('earlier createShadedMaterial call does not travel through');
+    expect(surface?.message).toContain('declares no alphaMode');
+    expect(surface?.message).toContain('assign alphaMode directly on that owner');
+    expect(surface?.message).toContain('will not reinterpret or cast the base owner');
+    expect(surface?.message).toContain('copy or materialize a replacement surface material');
+    expect(surface?.message).toContain('or add side storage');
+    const like = findings.find((finding) => finding.message.includes('from Material to MaterialLike'));
+    expect(like?.message).toContain('identity-preserving view of that same Material owner');
+    expect(like?.message).toContain('bridge is representation-equivalent');
+    expect(like?.message).toContain('carrier no-op');
+    expect(like?.message).toContain('cannot restore the ShadedMaterial owner erased by the earlier assertion');
+    expect(like?.message).toContain('concrete EntityWithoutRuntime<ShadedMaterial> arm');
+    expect(like?.message).toContain('will preserve the same represented Material carrier here');
+    expect(like?.message).toContain('will not use that equivalence to cast back to ShadedMaterial');
+    expect(like?.message).toContain('copy or materialize a replacement');
+    expect(like?.message).toContain('or add side storage');
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',
