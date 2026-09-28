@@ -641,6 +641,8 @@ function renderOpaquePropertyValueDomainMessage(
   subject: string,
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string {
+  const appLoopHandle = getAppLoopOpaqueFrameHandleGuidance(node, subject, kinds);
+  if (appLoopHandle) return appLoopHandle;
   const materializationTraits = getSceneDocumentMaterializationOpaqueTraitsGuidance(node, subject, kinds);
   if (materializationTraits) return materializationTraits;
   const animationValue = getAnimationOpaqueValueGuidance(node, subject, kinds);
@@ -964,6 +966,23 @@ function getFlightTypesOpaquePropertyGuidance(
     }
   }
   return undefined;
+}
+
+function getAppLoopOpaqueFrameHandleGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    subject !== 'interface:LoopState/property:frameHandle' ||
+    !hasOnlyUnknown(kinds) ||
+    node.questionToken !== undefined ||
+    node.type?.kind !== ts.SyntaxKind.UnknownKeyword ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/app/src/appLoop.ts')
+  ) {
+    return undefined;
+  }
+  return `${subject} is the private storage leg of HostAppLoopCapability's provider-issued cancellation token. Every scheduling path in startAppLoop assigns backend.requestFrame(tick) to frameHandle and immediately installs a cleanup closure that returns the currently scheduled token only to backend.cancelFrame on the same retained capability. Pause, frame-rate throttling, normal rescheduling, and initial scheduling all preserve that pairing; no application consumer inspects, coerces, serializes, exposes, or persists the token. createLoopState's initial null is never passed to cancelFrame because no cleanup closure exists until after the first requestFrame assignment. This paired identity transport is genuinely provider-opaque, so record a reviewed source-portability exception for this exact property while requestFrame remains its sole non-sentinel producer, cancelFrame remains its sole semantic consumer, and LoopState stays private. The exception does not justify the null as unknown assertion: initialize unknown directly with null or model the uninitialized state explicitly. If handles must cross portable storage, results, or providers, define one named closed AppLoopFrameHandle domain shared by HostAppLoopCapability, LoopState, and every provider. The compiler will not assume the web provider's numeric handle, choose a target-specific Any carrier, retain or insert a cast, copy or materialize the token, or change its identity.`;
 }
 
 function getHostAppLoopOpaqueHandleGuidance(

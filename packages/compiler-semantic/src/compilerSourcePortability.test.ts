@@ -881,6 +881,79 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(2);
   });
 
+  it('keeps AppLoop frame-handle storage on the paired provider boundary', () => {
+    const opaque = input(
+      'packages/app/src/appLoop.ts',
+      `interface LoopState {
+         frameHandle: unknown;
+         lastTime: number;
+       }`,
+    );
+    const closed = input(
+      'packages/app/src/appLoop.ts',
+      `type AppLoopFrameHandle = number;
+       interface LoopState {
+         frameHandle: AppLoopFrameHandle;
+         lastTime: number;
+       }`,
+    );
+    const controls = [
+      input('packages/app/src/otherLoop.ts', 'interface LoopState { frameHandle: unknown }'),
+      input('packages/other/src/appLoop.ts', 'interface LoopState { frameHandle: unknown }'),
+      input('packages/app/src/appLoop.ts', 'interface OtherState { frameHandle: unknown }'),
+      input('packages/app/src/appLoop.ts', 'interface LoopState { frameHandle?: unknown }'),
+      input('packages/app/src/appLoop.ts', 'interface LoopState { frameHandle: any }'),
+      input('packages/app/src/appLoop.ts', 'interface LoopState { frameHandle: unknown | null }'),
+      input('packages/app/src/appLoop.ts', 'interface LoopState { handle: unknown }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected an opaque AppLoop frame-handle finding');
+
+    expect(report.findings).toMatchObject([
+      { rule: 'opaque-value-domain', subject: 'interface:LoopState/property:frameHandle' },
+    ]);
+    expect(finding.message).toContain('private storage leg of HostAppLoopCapability');
+    expect(finding.message).toContain('backend.requestFrame(tick)');
+    expect(finding.message).toContain('backend.cancelFrame on the same retained capability');
+    expect(finding.message).toContain('Pause, frame-rate throttling, normal rescheduling, and initial scheduling');
+    expect(finding.message).toContain('initial null is never passed to cancelFrame');
+    expect(finding.message).toContain('paired identity transport is genuinely provider-opaque');
+    expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+    expect(finding.message).toContain('requestFrame remains its sole non-sentinel producer');
+    expect(finding.message).toContain('cancelFrame remains its sole semantic consumer');
+    expect(finding.message).toContain('does not justify the null as unknown assertion');
+    expect(finding.message).toContain('named closed AppLoopFrameHandle domain');
+    expect(finding.message).toContain("will not assume the web provider's numeric handle");
+    expect(finding.message).toContain('target-specific Any carrier');
+    expect(finding.message).toContain('retain or insert a cast');
+    expect(finding.message).toContain('copy or materialize the token');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('private storage leg of HostAppLoopCapability'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: [
+          {
+            findingIdentity: finding.identity,
+            reason: 'The private token is returned only to the same provider for cancellation.',
+            rule: 'opaque-value-domain',
+          },
+        ],
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(1);
+  });
+
   it('preserves animation target and marker payloads as exact domain-owned references', () => {
     const target = input(
       'packages/types/src/AnimationChannel.ts',
