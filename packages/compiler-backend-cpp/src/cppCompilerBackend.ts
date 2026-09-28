@@ -4129,9 +4129,19 @@ function emitExpression(
           const readonlySourceName = structuralSourceType
             ? describeDeclaredIrTypeForDiagnosticCpp(structuralSourceType)
             : 'source';
+          const writableTargetName = describeDeclaredIrTypeForDiagnosticCpp(expression.type);
+          const absent = collectCppStructuralRowAssertionAbsentMembersCpp(
+            structuralSourceType,
+            expression.type,
+            context,
+          );
+          const absentOwnerRemediation =
+            absent.length === 0
+              ? ''
+              : ` Making only that boundary writable is insufficient here: the source owner does not declare ${renderCppSubjectNameListCpp(absent)}, so it has no cells for the asserted row to mutate. Declare both the storage slot and the accessor result as the full writable ${writableTargetName} row where initialization establishes those cells, rather than widening ${readonlySourceName} at the use site.`;
           emissionError(
             context,
-            `a structural assertion from the readonly row ${readonlySourceName} to the writable row ${describeDeclaredIrTypeForDiagnosticCpp(expression.type)} claims mutation the source refused: a readonly row never becomes writable, because the boundary the value came through said its subject must not be mutated through it, and no cast, copy, or re-view can carry a capability the source withheld. Assert to the readonly row where the value is only read, or declare the source -- its parameter, slot, or accessor result -- as the writable type where that object may really be mutated`,
+            `a structural assertion from the readonly row ${readonlySourceName} to the writable row ${writableTargetName} claims mutation the source refused: a readonly row never becomes writable, because the boundary the value came through said its subject must not be mutated through it, and no cast, copy, or re-view can carry a capability the source withheld. Assert to the readonly row where the value is only read, or declare the source -- its parameter, slot, or accessor result -- as the writable type where that object may really be mutated.${absentOwnerRemediation}`,
             'cpp-structural-assertion-writable-capability-unproven',
           );
         }

@@ -3396,6 +3396,129 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('flight::Any');
   });
 
+  it('requires the bounds runtime slot and accessor to carry their writable cells', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/runtime.ts' },
+        },
+        {
+          specifier: '@flighthq/entity/contract',
+          target: { packageName: '@flighthq/entity', source: 'packages/entity/src/runtime.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'types/src/runtime.ts',
+          `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           export interface EntityRuntime { binding: object | null; uid?: string }
+           export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+           export interface NodeRuntime<Traits extends object> extends EntityRuntime { traits?: Traits }
+           export interface Node<Traits extends object> extends Entity {
+             [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+           }
+           export interface HasBoundsRectangle {}
+           export type BoundsNode<Traits extends object> = Node<Traits> & HasBoundsRectangle;
+           export interface HasBoundsRectangleRuntime extends EntityRuntime {
+             boundsRectangle: number | null;
+             isLocalBoundsRectangleValid: boolean;
+             localBoundsRectangle: number | null;
+             worldBoundsRectangle: number | null;
+           }`,
+        ),
+        source(
+          '@flighthq/entity',
+          'entity/src/runtime.ts',
+          `import type { Entity, EntityRuntime } from '@flighthq/types/contract';
+           import { EntityRuntimeKey } from '@flighthq/types/contract';
+           export function getEntityRuntime(source: Readonly<Entity>): Readonly<EntityRuntime> {
+             return source[EntityRuntimeKey]!;
+           }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/boundsRectangle.ts',
+          `import { getEntityRuntime } from '@flighthq/entity/contract';
+           import type {
+             BoundsNode,
+             HasBoundsRectangleRuntime,
+             NodeRuntime,
+           } from '@flighthq/types/contract';
+           export function ensureNodeLocalBoundsRectangle<Traits extends object>(
+             target: BoundsNode<Traits>,
+           ): void {
+             const runtime = getEntityRuntime(target) as
+               NodeRuntime<Traits> & HasBoundsRectangleRuntime;
+             runtime.boundsRectangle = null;
+             runtime.isLocalBoundsRectangleValid = true;
+           }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/typedBoundsRectangle.ts',
+          `import type {
+             HasBoundsRectangleRuntime,
+             NodeRuntime,
+           } from '@flighthq/types/contract';
+           import { EntityRuntimeKey } from '@flighthq/types/contract';
+           interface BoundsNodeRuntime<Traits extends object>
+             extends NodeRuntime<Traits>, HasBoundsRectangleRuntime {}
+           interface BoundsRuntimeHolder<Traits extends object> {
+             [EntityRuntimeKey]: BoundsNodeRuntime<Traits> | undefined;
+           }
+           function getBoundsRuntime<Traits extends object>(
+             source: BoundsRuntimeHolder<Traits>,
+           ): BoundsNodeRuntime<Traits> {
+             return source[EntityRuntimeKey]!;
+           }
+           export function ensureNodeLocalBoundsRectangle<Traits extends object>(
+             target: BoundsRuntimeHolder<Traits>,
+           ): void {
+             const runtime = getBoundsRuntime(target);
+             runtime.boundsRectangle = null;
+             runtime.isLocalBoundsRectangleValid = true;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const emitted = session.emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(refused.classification).toBe('source-portability');
+    expect(refused.message).toContain('Making only that boundary writable is insufficient here');
+    expect(refused.message).toContain('boundsRectangle');
+    expect(refused.message).toContain('isLocalBoundsRectangleValid');
+    expect(refused.message).toContain('Declare both the storage slot and the accessor result');
+    expect(refused.message).toContain('rather than widening Readonly<EntityRuntime> at the use site');
+    // The source fix is the real capability proof: both the stored owner and the accessor carry one named
+    // full writable runtime type, so the same writes lower directly without a cast, copied row, or side owner.
+    expect(emitted).toContain('get_bounds_runtime<Traits>(target)');
+    expect(emitted).toContain('(runtime->bounds_rectangle = std::nullopt)');
+    expect(emitted).toContain('(runtime->is_local_bounds_rectangle_valid = true)');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize_row');
+    expect(emitted).not.toContain('make_ref');
+  });
+
   it('reuses the pre-erasure row owner for the transform velocity child assertion', () => {
     const { moduleResolution, results } = lowerImportedTransformVelocityModules();
     const modules = results.map((result) => result.module);
