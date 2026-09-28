@@ -3192,69 +3192,6 @@ function emitCppAliasExpandedValueTypeCpp(type: Readonly<IrType>, context: EmitC
   return emitType(resolveCppNestedTypeAliasesCpp(type, context), context);
 }
 
-// TypeScript lets a callable with source-only OPTIONAL trailing parameters enter a callable that never
-// supplies them. The two std::function spellings are nevertheless different owner types. A stateless
-// function declaration can be named from a forwarding lambda, but adapting a local callable value would
-// have to retain that value somewhere: capturing by value copies its target and mutable closure state,
-// while capturing by reference can escape the local's lifetime. There is no source-language ownership
-// transfer at an ordinary assignment/call boundary that licenses moving the local instead.
-//
-// Refuse that exact represented-carrier gap before the target compiler reports an opaque std::function
-// conversion error. The return types must already agree, as they do for the SWF MorphShape | null result;
-// this is not a union alternative mismatch and no object/row conversion is involved.
-function refuseCppOwnedCallableParameterErasureCpp(
-  expression: Readonly<IrExpression>,
-  expectedType: Readonly<IrType>,
-  context: EmitContext,
-): void {
-  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return;
-  if (getCppFunctionDeclarationForBindingCpp(expression.reference.binding.id, context)) return;
-  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
-  if (!sourceType || getIrUnionTypeCpp(sourceType, context, new Set())) return;
-  if (getIrUnionTypeCpp(expectedType, context, new Set())) return;
-  const source = getCppClosedCallableType(sourceType, context, new Set());
-  const target = getCppClosedCallableType(expectedType, context, new Set());
-  if (
-    !source ||
-    !target ||
-    source.typeParameters.length > 0 ||
-    target.typeParameters.length > 0 ||
-    source.parameters.length <= target.parameters.length ||
-    source.parameters.slice(target.parameters.length).some((parameter) => !parameter.optional || parameter.rest) ||
-    !hasCppCompatibleCallableReturnRepresentationCpp(source.returns, target.returns, context)
-  ) {
-    return;
-  }
-  const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
-  const sharedParametersAgree = target.parameters.every((targetParameter, index) => {
-    const sourceParameter = source.parameters[index];
-    return (
-      sourceParameter !== undefined &&
-      sourceParameter.rest === targetParameter.rest &&
-      emitOptionalTypeCpp(
-        emitCppParameterTypeCpp(sourceParameter.type, sourceParameter.rest, isolatedContext),
-        sourceParameter.optional,
-        isolatedContext,
-      ) ===
-        emitOptionalTypeCpp(
-          emitCppParameterTypeCpp(targetParameter.type, targetParameter.rest, isolatedContext),
-          targetParameter.optional,
-          isolatedContext,
-        )
-    );
-  });
-  if (!sharedParametersAgree) return;
-  const sourceCarrier = emitType(source, context);
-  const targetCarrier = emitType(target, context);
-  if (sourceCarrier === targetCarrier) return;
-  emissionError(
-    context,
-    `contextual callable conversion from owned carrier ${sourceCarrier} to ${targetCarrier} would have to retain a local callable while erasing its source-only optional parameters. A value-capturing adapter would copy callable state, a reference-capturing adapter could outlive the local, and TypeScript assignment does not transfer ownership of the binding. Give the stored callback the destination's exact parameter list and perform any diagnostic-bearing decode separately, or add a shared owner-preserving callable adapter to the target runtime contract`,
-    'cpp-callable-owner-preserving-adapter-unrepresented',
-    'target-runtime',
-  );
-}
-
 // The one alternative a runtime value type is, when the value and the alternative spell the same C++
 // type through different alias names. `-1` for no alternative and for several: two slots the same value
 // fits are two answers, and picking one would choose the alternative the author did not.
@@ -3294,7 +3231,6 @@ function emitExpression(
     if (structuralConversion) return structuralConversion;
     const recordConversion = emitCppContextualStructuralRecordConversionCpp(expression, expectedType, context);
     if (recordConversion) return recordConversion;
-    refuseCppOwnedCallableParameterErasureCpp(expression, expectedType, context);
   }
   if (expectedType && constructExpectedUnion) {
     const constructed = emitContextualUnionExpressionCpp(expression, expectedType, context);

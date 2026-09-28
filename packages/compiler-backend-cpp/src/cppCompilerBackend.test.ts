@@ -19079,70 +19079,46 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('static_cast');
   });
 
-  it('refuses to copy an optional-parameter decoder into a zero-argument nullable factory', () => {
+  it('stores the surviving SWF morph bitmap resolver in its nullable callable carrier', () => {
     const result = lower(
       'swfDefineMorphShapeHandler.ts',
-      `interface Diagnostic { readonly message: string }
-       interface MorphShape { readonly id: number }
-       interface State {
-         readonly diagnostics: Diagnostic[];
-         readonly morphShapes: Map<number, () => MorphShape | null>;
+      `interface Texture2D { readonly id: number }
+       class State { readonly textureId = 1 }
+       type BitmapResolver = (characterId: number, repeat: boolean, smoothed: boolean) => Texture2D | null;
+       function acquire(
+         state: State,
+         characterId: number,
+         repeat: boolean,
+         smoothed: boolean,
+       ): Texture2D {
+         void characterId; void repeat; void smoothed;
+         return { id: state.textureId };
        }
-       function decodeMorph(diagnostics?: Diagnostic[]): MorphShape | null {
-         return diagnostics === undefined ? null : { id: 1 };
-       }
-       export function register(state: State, characterId: number): void {
-         const decode = (diagnostics?: Diagnostic[]): MorphShape | null => decodeMorph(diagnostics);
-         if (decode(state.diagnostics) === null) return;
-         state.morphShapes.set(characterId, decode);
+       function createMorph(_resolveBitmapFill: BitmapResolver | null): void {}
+       export function decode(state: State): void {
+         createMorph(
+           (fillCharacterId, repeat, smoothed) =>
+             acquire(state, fillCharacterId, repeat, smoothed),
+         );
        }`,
     );
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
-    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
-    expect(failure).toMatchObject({
-      classification: 'target-runtime',
-      rule: 'cpp-callable-owner-preserving-adapter-unrepresented',
-    });
-    // Both sides return the same optional MorphShape owner; only the callable owners differ. The local
-    // is invoked once with diagnostics before it is stored, so treating it as a stateless declaration is
-    // unsound: a value-capturing wrapper duplicates callable state and a reference wrapper would dangle.
-    expect(failure.message).toContain(
-      'std::function<std::optional<flight::Ref<MorphShape>>(std::optional<flight::Array<flight::Ref<Diagnostic>>>)>',
-    );
-    expect(failure.message).toContain('std::function<std::optional<flight::Ref<MorphShape>>()>');
-    expect(failure.message).toContain('A value-capturing adapter would copy callable state');
-    expect(failure.message).toContain("Give the stored callback the destination's exact parameter list");
-
-    const portable = lower(
-      'swfDefineMorphShapeHandlerPortable.ts',
-      `interface Diagnostic { readonly message: string }
-       interface MorphShape { readonly id: number }
-       interface State {
-         readonly diagnostics: Diagnostic[];
-         readonly morphShapes: Map<number, () => MorphShape | null>;
-       }
-       function decodeMorph(diagnostics?: Diagnostic[]): MorphShape | null {
-         return diagnostics === undefined ? null : { id: 1 };
-       }
-       export function register(state: State, characterId: number): void {
-         if (decodeMorph(state.diagnostics) === null) return;
-         const decode = (): MorphShape | null => decodeMorph();
-         state.morphShapes.set(characterId, decode);
-       }`,
-    );
-    const contents = emitIrModuleCpp(portable.module, { runtimeProfile: 'flight-cpp' }).contents;
-    expect(portable.diagnostics).toEqual([]);
+    // The historical value returned a present Texture2D while the resolver admitted Texture2D | null.
+    // The current inline closure is built directly in that contextual std::function carrier, so its one
+    // capture owner is retained and its result constructs the optional slot. No callable adapter, target
+    // cast, or object/row materialization is involved.
     expect(contents).toContain(
-      'std::function<std::optional<flight::Ref<MorphShape>>()> decode = [=]() -> std::optional<flight::Ref<MorphShape>>',
+      'std::optional<std::function<std::optional<flight::Ref<Texture2D>>(double, bool, bool)>>{[=]',
     );
+    expect(contents).toMatch(/return acquire\([^;]*fill_character_id, repeat, smoothed\);/u);
+    expect(contents).not.toContain('contextual_callable =');
     expect(contents).not.toContain('static_cast');
     expect(contents).not.toContain('make_structural_ref');
     if (canCompileCpp && cppToolchain) {
-      const directory = mkdtempSync(path.join(tmpdir(), 'flight-swf-morph-callable-'));
-      const header = path.join(directory, 'swf_morph_callable.hpp');
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-swf-morph-resolver-'));
+      const header = path.join(directory, 'swf_morph_resolver.hpp');
       try {
         writeFileSync(header, contents, 'utf8');
         const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
