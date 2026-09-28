@@ -15796,7 +15796,11 @@ function getCppCallableUnionValueSlotCpp(
     const contextualRecordReturn =
       hasCppExactCallableParameterRepresentationCpp(source, target, context) &&
       contextualRecordMembers?.every((member) => isCppRuntimeTypeRepresentableInAnyCpp(member.runtimeType, context));
-    return hasCppCompatibleCallableReturnRepresentationCpp(source.returns, target.returns, context) ||
+    const declaredFunction =
+      expression.kind === 'identifier' &&
+      expression.reference.kind === 'binding' &&
+      getCppFunctionDeclarationForBindingCpp(expression.reference.binding.id, context) !== undefined;
+    return hasCppCompatibleCallableReturnRepresentationCpp(source.returns, target.returns, context, declaredFunction) ||
       contextualRecordReturn
       ? [index]
       : [];
@@ -16093,6 +16097,7 @@ function hasCppCompatibleCallableReturnRepresentationCpp(
   source: Readonly<IrType>,
   target: Readonly<IrType>,
   context: EmitContext,
+  allowStructuralOptional = false,
 ): boolean {
   if (emitType(source, context) === emitType(target, context)) return true;
   // A source whose RESULT is erased -- `() => any` -- is a callable the source language allows wherever a
@@ -16100,6 +16105,14 @@ function hasCppCompatibleCallableReturnRepresentationCpp(
   // runtime's own accessors rather than reinterpreted. Only an `any`-sourced result qualifies; `unknown` is
   // a result the source language does NOT assign to a closed one, and stays refused.
   if (isCppAnySourcedDynamicValueCpp(source) && canEmitCppErasedCallableReturnCpp(target, context)) return true;
+  const structuralOptional = allowStructuralOptional
+    ? getCppCallableOptionalStructuralReturnPlanCpp(source, target, {
+        ...context,
+        anonymousStructs: new Map(),
+        includes: new Set<string>(),
+      })
+    : undefined;
+  if (structuralOptional) return true;
   // A nominal reference returned through its own structural row is the same object with a
   // read-only call surface. Keep the slot's one declared std::function type and prove the
   // callable against it from the same emitType spellings used to write both signatures.
@@ -16147,6 +16160,88 @@ function hasCppCompatibleCallableReturnRepresentationCpp(
     context,
     new Set(),
   );
+}
+
+interface CppCallableOptionalStructuralReturnPlan {
+  readonly absence: 'null' | 'undefined';
+  readonly sourceValueType: Readonly<IrType>;
+  readonly targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>;
+  readonly targetUnion: Readonly<Extract<IrType, { kind: 'union' }>>;
+  readonly targetValueType: Readonly<IrType>;
+}
+
+// A nullable native owner may satisfy a nullable merged structural view without becoming a second
+// object. The runtime builds a row view over the native Ref, then changes only that view's schema; the
+// row keeps the original owner and `structural_ref_cast` cannot take its materializing branch because a
+// merged target has no single native object type to allocate. Keep this deliberately narrower than
+// general callable covariance: one value, the same one sentinel, and an ownerless merged target row.
+function getCppCallableOptionalStructuralReturnPlanCpp(
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppCallableOptionalStructuralReturnPlan> | undefined {
+  const sourceUnion = getIrUnionTypeCpp(source, context, new Set());
+  const targetUnion = getIrUnionTypeCpp(target, context, new Set());
+  if (!sourceUnion || !targetUnion) return undefined;
+  const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, context);
+  const targetPlan = getCppUnionRepresentationPlan(targetUnion, context);
+  if (
+    sourcePlan.kind !== 'optionalSingle' ||
+    targetPlan.kind !== 'optionalSingle' ||
+    sourcePlan.sentinels.null !== targetPlan.sentinels.null ||
+    sourcePlan.sentinels.undefined !== targetPlan.sentinels.undefined ||
+    sourcePlan.valueSlots.length !== 1 ||
+    targetPlan.valueSlots.length !== 1
+  ) {
+    return undefined;
+  }
+  const sourceValueType = sourcePlan.valueSlots[0]!.runtimeType;
+  const targetValueType = targetPlan.valueSlots[0]!.runtimeType;
+  const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(targetValueType, context.module);
+  if (
+    !targetRow ||
+    getCppStructuralRowObjectTypeCpp(targetRow) !== undefined ||
+    context.referenceRepresentationPlanner.resolveStructuralRow(sourceValueType, context.module) ||
+    !getCppStructuralProjectionRowCpp(sourceValueType, context) ||
+    getCppStructuralRowObjectWideningProofCpp(sourceValueType, targetValueType, context) !== 'proven'
+  ) {
+    return undefined;
+  }
+  if (!emitCppStructuralReferenceValueConversionCpp('source', sourceValueType, targetValueType, context)) {
+    return undefined;
+  }
+  const absence = sourceUnion.types.find(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  )?.kind;
+  return absence ? { absence, sourceValueType, targetPlan, targetUnion, targetValueType } : undefined;
+}
+
+function emitCppCallableOptionalStructuralReturnCpp(
+  invocation: string,
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const plan = getCppCallableOptionalStructuralReturnPlanCpp(source, target, context);
+  if (!plan) return undefined;
+  const value = getGeneratedTargetName('contextualCallableReturn', context);
+  const converted = emitCppStructuralReferenceValueConversionCpp(
+    `${value}.value()`,
+    plan.sourceValueType,
+    plan.targetValueType,
+    context,
+  )!;
+  const absent = emitCppUnionSentinelConstruction(plan.absence, plan.targetUnion, plan.targetPlan.kind, context);
+  const present = emitCppUnionValueConstruction(
+    converted,
+    plan.targetPlan.valueSlots[0]!.targetType,
+    plan.targetUnion,
+    plan.targetPlan.kind,
+    context,
+  );
+  context.includes.add('optional');
+  return `([&]() -> ${emitUnionTypeCpp(plan.targetUnion, context)} { auto ${value} = ${invocation}; if (!${value}.has_value()) return ${absent}; return ${present}; }())`;
 }
 
 function emitCppCallableParameterValueConversionCpp(
@@ -16219,11 +16314,23 @@ function emitCppContextualCallableUnionValueCpp(
   ) {
     return emitExpression(expression, context, targetType, false);
   }
+  const declaredFunction =
+    expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? getCppFunctionDeclarationForBindingCpp(expression.reference.binding.id, context)
+      : undefined;
+  const structuralOptionalReturn = declaredFunction
+    ? getCppCallableOptionalStructuralReturnPlanCpp(sourceType.returns, target.returns, {
+        ...context,
+        anonymousStructs: new Map(),
+        includes: new Set<string>(),
+      })
+    : undefined;
   const needsAdapter =
     // The result is part of the signature too: a source whose return is erased must be read through the
     // extraction, so the call cannot be stored directly even when every parameter already agrees.
     (isCppAnySourcedDynamicValueCpp(sourceType.returns) &&
       canEmitCppErasedCallableReturnCpp(target.returns, context)) ||
+    structuralOptionalReturn !== undefined ||
     sourceType.parameters.length !== target.parameters.length ||
     sourceType.parameters.some((parameter, index) => {
       const targetParameter = target.parameters[index];
@@ -16238,10 +16345,6 @@ function emitCppContextualCallableUnionValueCpp(
       return probe !== 'argument';
     });
   if (!needsAdapter) return emitExpression(expression, context, sourceType, false);
-  const declaredFunction =
-    expression.kind === 'identifier' && expression.reference.kind === 'binding'
-      ? getCppFunctionDeclarationForBindingCpp(expression.reference.binding.id, context)
-      : undefined;
   const emittedSource = emitExpression(expression, context, sourceType, false);
   // A declaration is a stateless function address, so the adapter can invoke it directly. Every other
   // expression is still evaluated once and retained by value; that is the only safe lifetime for a
@@ -16276,11 +16379,16 @@ function emitCppContextualCallableUnionValueCpp(
   const erasedReturn = isCppAnySourcedDynamicValueCpp(sourceType.returns)
     ? emitCppErasedCallableReturnCpp(invocation, target.returns, context)
     : undefined;
+  const structuralReturn = structuralOptionalReturn
+    ? emitCppCallableOptionalStructuralReturnCpp(invocation, sourceType.returns, target.returns, context)
+    : undefined;
   const body =
     erasedReturn === undefined
-      ? target.returns.kind === 'primitive' && target.returns.name === 'void'
-        ? `${invocation};`
-        : `return ${invocation};`
+      ? structuralReturn === undefined
+        ? target.returns.kind === 'primitive' && target.returns.name === 'void'
+          ? `${invocation};`
+          : `return ${invocation};`
+        : `return ${structuralReturn};`
       : `return ${erasedReturn};`;
   const capture = declaredFunction ? '' : `${sourceName} = ${emittedSource}`;
   return `[${capture}](${parameters.join(', ')}) -> ${returns} { ${body} }`;

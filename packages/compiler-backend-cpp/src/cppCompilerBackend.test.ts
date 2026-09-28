@@ -35312,6 +35312,159 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('create_specific()');
   });
 
+  it('keeps the removed SWF video handler signature on one owner-preserving callable path', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+             export interface NodeRuntime<Traits extends object> { readonly traits: Traits }
+             export interface Node<Traits extends object> {
+               readonly [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+               readonly traits: Traits;
+             }
+             export interface Node2DTraits { readonly x: number; readonly y: number }
+             export type Node2D = Node<Node2DTraits> & Node2DTraits;
+             export interface Sprite extends Node2D { readonly textureId: number }
+             export interface SwfTagParseResult { readonly version: number }
+             export interface SwfTagRectangle { readonly height: number; readonly width: number }
+             export interface ImportDiagnostic { readonly message: string }
+             export type SwfVideoHandler = (
+               result: Readonly<SwfTagParseResult>,
+               characterId: number,
+               bounds: Readonly<SwfTagRectangle> | null,
+               diagnostics?: ImportDiagnostic[],
+             ) => Node2D | null;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/swf',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/swf/src/swfVideoHandler.ts',
+            `import type {
+               Sprite,
+               SwfTagParseResult,
+               SwfTagRectangle,
+               SwfVideoHandler,
+             } from '@flighthq/types/contract';
+             function createVideoSprite(
+               result: Readonly<SwfTagParseResult>,
+               characterId: number,
+               bounds: Readonly<SwfTagRectangle> | null,
+             ): Sprite | null {
+               void result;
+               void characterId;
+               void bounds;
+               return null;
+             }
+             function setVideoHandler(handler: SwfVideoHandler | null): void { void handler; }
+             export function registerSwfVideoHandler(): void { setVideoHandler(createVideoSprite); }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/swf',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/swf/src/swfVideoHandlerStored.ts',
+            `import type {
+               Sprite,
+               SwfTagParseResult,
+               SwfTagRectangle,
+               SwfVideoHandler,
+             } from '@flighthq/types/contract';
+             function createVideoSprite(
+               result: Readonly<SwfTagParseResult>,
+               characterId: number,
+               bounds: Readonly<SwfTagRectangle> | null,
+             ): Sprite | null {
+               void result;
+               void characterId;
+               void bounds;
+               return null;
+             }
+             const storedVideoHandler = createVideoSprite;
+             function setVideoHandler(handler: SwfVideoHandler | null): void { void handler; }
+             export function registerStoredSwfVideoHandler(): void { setVideoHandler(storedVideoHandler); }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/swf': { includePrefix: 'flight/swf', namespace: 'flight::swf' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const outputs = modules.slice(0, 2).map((module) => session.emitModule(module)[0]!);
+    const emitted = outputs[1]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The removed upstream source supplied three arguments and returned a Sprite owner. Its destination
+    // supplied one more optional diagnostics argument and viewed that same owner through Node2D's row.
+    // A stateless declaration adapter keeps the exact destination signature, ignores only that trailing
+    // argument, and lets the represented StructuralRef conversion retain the Sprite owner.
+    expect(emitted).toContain('std::optional<std::function<std::optional<flight::types::Node2D>');
+    expect(emitted).toContain('>>{[](flight::StructuralRef');
+    expect(emitted).toMatch(
+      /auto contextual_callable_return = create_video_sprite[^\s(]*\(contextual_callable_argument0, contextual_callable_argument1, contextual_callable_argument2\)/u,
+    );
+    expect(emitted).toContain('flight::structural_ref_cast<flight::StructuralRef<flight::RowMerge<');
+    expect(emitted).not.toContain('contextual_callable_argument3);');
+    expect(emitted).not.toContain('make_structural_ref');
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('materialize_row');
+
+    const storedFailure = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    expect(storedFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(storedFailure.message).toContain("agrees with no alternative's signature");
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-swf-video-callable-'));
+      try {
+        for (const output of outputs) {
+          const outputPath = path.join(directory, output.path);
+          mkdirSync(path.dirname(outputPath), { recursive: true });
+          writeFileSync(outputPath, output.contents, 'utf8');
+        }
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, outputs[1]!.path), [
+          directory,
+          ...cppRuntimeIncludeDirectories,
+        ]);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('adapts a callable with optional trailing source parameters', () => {
     const result = lower(
       'callable-optional-source-parameters.ts',
