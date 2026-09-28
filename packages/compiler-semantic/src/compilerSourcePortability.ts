@@ -130,7 +130,7 @@ function analyzeTypeScriptSourcePortabilityInput(
       const opaque = getOpaqueTypeKinds(node.type);
       if (opaque.size > 0) {
         const subject = getSourcePortabilitySubject(node);
-        add(node.type, 'opaque-value-domain', subject, renderOpaqueValueDomainMessage(subject, 'aliases', opaque));
+        add(node.type, 'opaque-value-domain', subject, renderOpaqueTypeAliasValueDomainMessage(node, subject, opaque));
       }
     }
     ts.forEachChild(node, visit);
@@ -371,11 +371,22 @@ function renderOpaqueTypeKinds(kinds: ReadonlySet<OpaqueTypeKind>): string {
   return [...kinds].sort(compareTextCodeUnits).join(' or ');
 }
 
+function renderOpaqueTypeAliasValueDomainMessage(
+  node: ts.TypeAliasDeclaration,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string {
+  const pixiInput = getPixiParseOpaqueValueGuidance(node, subject, kinds);
+  return pixiInput ?? renderOpaqueValueDomainMessage(subject, 'aliases', kinds);
+}
+
 function renderOpaquePropertyValueDomainMessage(
   node: ts.PropertySignature,
   subject: string,
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string {
+  const pixiInput = getPixiParseOpaqueValueGuidance(node, subject, kinds);
+  if (pixiInput) return pixiInput;
   const textureAtlasDetection = getTextureAtlasDetectionOpaqueValueGuidance(node, subject, kinds);
   if (textureAtlasDetection) return textureAtlasDetection;
   const lottiePayload = getLottieOpaquePayloadGuidance(node, subject, kinds);
@@ -385,6 +396,113 @@ function renderOpaquePropertyValueDomainMessage(
   }
   const presence = node.questionToken ? 'an optional error payload' : 'an error payload';
   return `${subject} exposes unknown as ${presence}; JavaScript permits throwing values of any type, so neither the annotation nor its downstream uses prove one portable runtime representation. Normalize every producer at the catch or provider boundary into a named closed error payload shared by the result arms, storage, and consumers, using fields with explicit portable value types. If preserving arbitrary thrown values is intentional, record a reviewed source-portability exception for that boundary. The compiler will not infer Error, stringify the value, or choose a target-specific Any carrier.`;
+}
+
+function getPixiParseOpaqueValueGuidance(
+  node: ts.PropertySignature | ts.TypeAliasDeclaration,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    kinds.size !== 1 ||
+    !kinds.has('unknown') ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/particles-formats/src/pixiParse.ts')
+  ) {
+    return undefined;
+  }
+  const rewriteRefusal =
+    'The compiler will not choose a target-specific Any carrier, insert a cast, copy or materialize the parsed JSON, or bypass the normalizer.';
+  if (ts.isTypeAliasDeclaration(node)) {
+    if (subject !== 'type:PixiRaw') return undefined;
+    return `${subject} aliases unknown values for the open-key, untrusted Pixi JSON object; those raw values cross parser helper boundaries, but every current consumer either tests presence, reduces a guarded value to diagnostic evidence, or normalizes it to a closed value before portable asset storage. A reviewed source-portability exception for this exact alias is justified only while no raw member is returned or retained. If any raw member begins entering a result, diagnostic payload, or ParticleEmitterConfig storage, replace the open record with a named closed Pixi input schema covering that member and its supported alternatives. ${rewriteRefusal}`;
+  }
+  const field = getNodeName(node.name);
+  const owner = getEnclosingVariableName(node);
+  if (
+    (subject === 'function:collectPixiDiagnostics/property:x' ||
+      subject === 'function:collectPixiDiagnostics/property:y') &&
+    owner === 'accel' &&
+    (field === 'x' || field === 'y')
+  ) {
+    return `${subject} exposes unknown for the detection-only acceleration.${field} probe; rn accepts only a finite number or its closed default, and the consumer uses the result solely for a nonzero check that emits a fixed diagnostic, so no input value enters diagnostic or ParticleEmitterConfig storage. Record a reviewed source-portability exception for this exact property only while that remains the whole contract. If acceleration.${field} begins entering a result or portable asset field, declare a named closed Pixi acceleration schema before transporting it. ${rewriteRefusal}`;
+  }
+  if (subject.startsWith('function:rawToConfig/property:')) {
+    const storedProbe = getPixiRawToConfigStoredProbe(owner, field);
+    if (storedProbe) {
+      return `${subject} exposes unknown for Pixi ${storedProbe.input}; ${storedProbe.normalization}, and only ${storedProbe.output} enters portable ParticleEmitterConfig storage. A reviewed source-portability exception for this exact property is justified only while this normalization dominates every storage path. If the raw value can reach storage before that validation and defaulting, declare ${storedProbe.schema}. ${rewriteRefusal}`;
+    }
+  }
+  if (subject === 'function:readColor/property:value' && owner === 'valueObj' && field === 'value') {
+    return `${subject} exposes unknown for the Pixi color start/end wrapper value; readColor accepts it only after a string guard, parses the selected hex text into finite numeric channels or defaults, and only the resulting RGB numbers enter portable ParticleEmitterConfig storage. A reviewed source-portability exception for this exact property is justified only while this normalization dominates every storage path. If the wrapper value can reach storage before string validation and channel conversion, declare a named closed Pixi color-value schema. ${rewriteRefusal}`;
+  }
+  if (
+    subject === `function:readStartEnd/property:${field ?? ''}` &&
+    owner === 'o' &&
+    (field === 'start' || field === 'end')
+  ) {
+    return `${subject} exposes unknown for the Pixi start/end range member; readStartEnd accepts a direct number or delegates to a guarded wrapper, then rn admits only a finite number or the closed default, and only that number enters portable ParticleEmitterConfig storage for speed, scale, or alpha. A reviewed source-portability exception for this exact property is justified only while this normalization dominates every storage path. If the range member can reach storage before finite-number validation and defaulting, declare a named closed Pixi start/end value schema. ${rewriteRefusal}`;
+  }
+  const rangeEnd = owner === 'startObj' ? 'start' : owner === 'endObj' ? 'end' : undefined;
+  if (subject === 'function:readStartEnd/property:value' && field === 'value' && rangeEnd !== undefined) {
+    return `${subject} exposes unknown for the nested ${rangeEnd} wrapper in a Pixi start/end range; readStartEnd accepts it only after a number guard, then rn admits only a finite number or the closed default, and only that number enters portable ParticleEmitterConfig storage for speed, scale, or alpha. A reviewed source-portability exception for this exact property is justified only while this normalization dominates every storage path. If the wrapper value can reach storage before finite-number validation and defaulting, declare a named closed Pixi start/end wrapper schema. ${rewriteRefusal}`;
+  }
+  return undefined;
+}
+
+function getPixiRawToConfigStoredProbe(
+  owner: string | undefined,
+  field: string | undefined,
+): Readonly<{ input: string; normalization: string; output: string; schema: string }> | undefined {
+  if (owner === 'life' && (field === 'min' || field === 'max')) {
+    return {
+      input: `lifetime.${field}`,
+      normalization: 'rn admits only a finite number or the closed default',
+      output: `the closed lifetime${field === 'min' ? 'Min' : 'Max'} number`,
+      schema: 'a named closed Pixi lifetime schema',
+    };
+  }
+  if (owner === 'colorObj' && (field === 'start' || field === 'end')) {
+    return {
+      input: `color.${field}`,
+      normalization:
+        'readColor accepts a string or guarded value wrapper and converts it to finite RGB channels or defaults',
+      output: `the closed color${field === 'start' ? 'Start' : 'End'} channel numbers`,
+      schema: 'a named closed Pixi color endpoint schema',
+    };
+  }
+  if (owner === 'angleObj' && (field === 'min' || field === 'max')) {
+    return {
+      input: `angle.${field}`,
+      normalization: 'rn admits only a finite number or the closed default before the angle arithmetic',
+      output: 'closed direction and spread numbers',
+      schema: 'a named closed Pixi angle schema',
+    };
+  }
+  if (owner === 'spawnRect' && (field === 'w' || field === 'h')) {
+    return {
+      input: `spawnRect.${field}`,
+      normalization: 'rn admits only a finite number or the closed default',
+      output: `the closed emitter${field === 'w' ? 'Width' : 'Height'} number`,
+      schema: 'a named closed Pixi rectangle schema',
+    };
+  }
+  if (owner === 'spawnCircle' && field === 'r') {
+    return {
+      input: 'spawnCircle.r',
+      normalization: 'rn admits only a finite number or the closed default',
+      output: 'the closed emitterRadius number',
+      schema: 'a named closed Pixi circle schema',
+    };
+  }
+  return undefined;
+}
+
+function getEnclosingVariableName(node: ts.Node): string | undefined {
+  for (let current = node.parent; current; current = current.parent) {
+    if (ts.isVariableDeclaration(current)) return getNodeName(current.name);
+    if (ts.isFunctionLike(current)) return undefined;
+  }
+  return undefined;
 }
 
 function getTextureAtlasDetectionOpaqueValueGuidance(

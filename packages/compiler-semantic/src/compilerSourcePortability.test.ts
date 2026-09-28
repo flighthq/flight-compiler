@@ -310,6 +310,166 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('separates Pixi diagnostic probes from guarded values entering portable config storage', () => {
+    const opaque = input(
+      'packages/particles-formats/src/pixiParse.ts',
+      `type PixiRaw = Record<string, unknown>;
+       function collectPixiDiagnostics(): void {
+         const accel: { x?: unknown; y?: unknown } | undefined = undefined;
+         void accel;
+       }
+       function rawToConfig(): void {
+         const life: { min?: unknown; max?: unknown } | undefined = undefined;
+         const colorObj: { start?: unknown; end?: unknown } | undefined = undefined;
+         const angleObj: { min?: unknown; max?: unknown } | undefined = undefined;
+         const spawnRect: { w?: unknown; h?: unknown } | undefined = undefined;
+         const spawnCircle: { r?: unknown } | undefined = undefined;
+         void life; void colorObj; void angleObj; void spawnRect; void spawnCircle;
+       }
+       function readColor(): void {
+         const valueObj: { value?: unknown } | null | undefined = undefined;
+         void valueObj;
+       }
+       function readStartEnd(): void {
+         const o: { start?: unknown; end?: unknown } = {};
+         const startObj: { value?: unknown } | undefined = undefined;
+         const endObj: { value?: unknown } | undefined = undefined;
+         void o; void startObj; void endObj;
+       }`,
+    );
+    const closed = input(
+      'packages/particles-formats/src/pixiParse.ts',
+      `interface PixiAccelerationInput { readonly x?: number; readonly y?: number }
+       interface PixiRangeWrapper { readonly value?: number }
+       type PixiRangeEndpoint = number | PixiRangeWrapper;
+       interface PixiRangeInput { readonly end?: PixiRangeEndpoint; readonly start?: PixiRangeEndpoint }
+       interface PixiColorWrapper { readonly value?: string }
+       type PixiColorEndpoint = string | PixiColorWrapper;
+       interface PixiColorInput { readonly end?: PixiColorEndpoint; readonly start?: PixiColorEndpoint }
+       interface PixiLifetimeInput { readonly max?: number; readonly min?: number }
+       interface PixiAngleInput { readonly max?: number; readonly min?: number }
+       interface PixiRectangleInput { readonly h?: number; readonly w?: number }
+       interface PixiCircleInput { readonly r?: number }
+       interface PixiRaw {
+         readonly acceleration?: PixiAccelerationInput;
+         readonly alpha?: PixiRangeInput;
+         readonly angle?: PixiAngleInput;
+         readonly color?: PixiColorInput;
+         readonly lifetime?: PixiLifetimeInput;
+         readonly scale?: PixiRangeInput;
+         readonly spawnCircle?: PixiCircleInput;
+         readonly spawnRect?: PixiRectangleInput;
+         readonly speed?: PixiRangeInput;
+       }
+       function collectPixiDiagnostics(): void {
+         const accel: PixiAccelerationInput | undefined = undefined;
+         void accel;
+       }
+       function rawToConfig(): void {
+         const life: PixiLifetimeInput | undefined = undefined;
+         const colorObj: PixiColorInput | undefined = undefined;
+         const angleObj: PixiAngleInput | undefined = undefined;
+         const spawnRect: PixiRectangleInput | undefined = undefined;
+         const spawnCircle: PixiCircleInput | undefined = undefined;
+         void life; void colorObj; void angleObj; void spawnRect; void spawnCircle;
+       }
+       function readColor(): void {
+         const valueObj: PixiColorWrapper | null | undefined = undefined;
+         void valueObj;
+       }
+       function readStartEnd(): void {
+         const o: PixiRangeInput = {};
+         const startObj: PixiRangeWrapper | undefined = undefined;
+         const endObj: PixiRangeWrapper | undefined = undefined;
+         void o; void startObj; void endObj;
+       }`,
+    );
+    const renamed = input(
+      'packages/particles-formats/src/otherParse.ts',
+      `type PixiRaw = Record<string, unknown>;
+       function collectPixiDiagnostics(): void {
+         const accel: { x?: unknown; y?: unknown } | undefined = undefined;
+         void accel;
+       }`,
+    );
+    const sameBasename = input('packages/other/src/pixiParse.ts', 'type PixiRaw = Record<string, unknown>;');
+    const unrelated = input(
+      'packages/particles-formats/src/pixiParse.ts',
+      `function rawToConfig(): void {
+         const extension: { min?: unknown } = {};
+         void extension;
+       }`,
+    );
+    const anyAlias = input('packages/particles-formats/src/pixiParse.ts', 'type PixiRaw = Record<string, any>;');
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const messages = report.findings.map(({ message }) => message);
+
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'function:collectPixiDiagnostics/property:x',
+      'function:collectPixiDiagnostics/property:y',
+      'function:rawToConfig/property:end',
+      'function:rawToConfig/property:h',
+      'function:rawToConfig/property:max',
+      'function:rawToConfig/property:max',
+      'function:rawToConfig/property:min',
+      'function:rawToConfig/property:min',
+      'function:rawToConfig/property:r',
+      'function:rawToConfig/property:start',
+      'function:rawToConfig/property:w',
+      'function:readColor/property:value',
+      'function:readStartEnd/property:end',
+      'function:readStartEnd/property:start',
+      'function:readStartEnd/property:value',
+      'function:readStartEnd/property:value',
+      'type:PixiRaw',
+    ]);
+    expect(messages.filter((message) => message.includes('open-key, untrusted Pixi JSON object'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('detection-only acceleration.'))).toHaveLength(2);
+    expect(messages.filter((message) => message.includes('portable ParticleEmitterConfig storage'))).toHaveLength(14);
+    expect(messages.filter((message) => message.includes('Pixi lifetime.'))).toHaveLength(2);
+    expect(messages.filter((message) => message.includes('Pixi angle.'))).toHaveLength(2);
+    expect(messages.filter((message) => message.includes('Pixi color.'))).toHaveLength(2);
+    expect(messages.filter((message) => message.includes('Pixi spawnRect.'))).toHaveLength(2);
+    expect(messages.filter((message) => message.includes('Pixi spawnCircle.r'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('Pixi color start/end wrapper value'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('Pixi start/end range member'))).toHaveLength(2);
+    expect(messages.filter((message) => message.includes('nested start wrapper'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('nested end wrapper'))).toHaveLength(1);
+    for (const message of messages) {
+      expect(message).toContain('reviewed source-portability exception for this exact');
+      expect(message).toContain('target-specific Any carrier');
+      expect(message).toContain('insert a cast');
+      expect(message).toContain('copy or materialize the parsed JSON');
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const [control, count] of [
+      [renamed, 3],
+      [sameBasename, 1],
+      [unrelated, 1],
+      [anyAlias, 1],
+    ] as const) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(count);
+      expect(findings.every((finding) => finding.message.includes('Replace it with a named closed value type'))).toBe(
+        true,
+      );
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'Pixi JSON is guarded and normalized before any value enters portable asset storage.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(17);
+  });
+
   it('separates closed Lottie sub-schemas from reviewed erased input boundaries', () => {
     const opaque = input(
       'LottieDocument.ts',
