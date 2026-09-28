@@ -15903,6 +15903,71 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.message).toContain('Declare the collection over the exact source union');
   });
 
+  it('pins the shapeJson argument loop: the erased element refuses and the declared union emits', () => {
+    // The real site: formatShapeJson builds `const args: unknown[] = []` and pushes a guarded
+    // ShapeCommandToken read out of a slice. Under checked indexed access that read is
+    // `ShapeCommandToken | undefined`, so the argument arrives from absence-carrying storage with
+    // several present domains, and `unknown[]` erases rather than holding them. This differs from the
+    // ShapeJson-like fixture above, which pushes a call result: here the absence comes from the indexed
+    // read and the guards, not from a function's return type.
+    const loop = (declaration: string) =>
+      `interface Matrix { a: number; b: number; c: number; d: number; tx: number; ty: number }
+       interface Texture { source: string }
+       type ShapeCommandToken = Matrix | Texture | boolean | number | readonly number[] | string | null;
+       function isMatrixValue(value: unknown): value is Matrix {
+         return typeof value === 'object' && value !== null;
+       }
+       function isSerializableScalarOrArray(value: unknown): boolean {
+         const type = typeof value;
+         return type === 'number' || type === 'string' || type === 'boolean' || Array.isArray(value);
+       }
+       export function format(commands: readonly ShapeCommandToken[], argCount: number): string[] {
+         const entries: string[] = [];
+         let textureOrdinal = 0;
+         const commandArgs = commands.slice(2, 2 + argCount);
+         ${declaration}
+         for (let a = 0; a < argCount; a++) {
+           const value = commandArgs[a];
+           if (value === null) {
+             args.push(null);
+           } else if (isMatrixValue(value)) {
+             args.push({ a: value.a, b: value.b, c: value.c, d: value.d, tx: value.tx, ty: value.ty });
+           } else if (isSerializableScalarOrArray(value)) {
+             args.push(value);
+           } else {
+             args.push({ texture: { index: textureOrdinal++ } });
+           }
+         }
+         entries.push(String(args.length));
+         return entries;
+       }`;
+
+    // Erased element: the source is valid, since a ShapeCommandToken is assignable to unknown, so the
+    // refusal belongs to the target runtime -- and the message names both the carriers the element cannot
+    // hold and the element that cannot hold them.
+    const erased = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(lower('shapeJson.ts', loop('const args: unknown[] = [];')).module, {
+        runtimeProfile: 'flight-cpp',
+      }),
+    );
+    expect(erased.rule).toBe('cpp-collection-argument-multiple-present-domains');
+    expect(erased.classification).toBe('target-runtime');
+    expect(erased.message).toContain(
+      'represented present carriers [flight::Array<double>, flight::Ref<Texture>, bool, double, flight::String]',
+    );
+    expect(erased.message).toContain('element carrier flight::Any cannot receive them without changing representation');
+
+    // The remedy that message names, verified rather than asserted: declaring the collection over the
+    // source union emits, and each push selects the held alternative by type instead of erasing it.
+    const declared = emitIrModuleCpp(lower('shapeJson.ts', loop('const args: ShapeCommandToken[] = [];')).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    expect(declared).toContain('flight::Array<ShapeCommandToken> args');
+    expect(declared).toContain('std::in_place_type<flight::Ref<Matrix>>');
+    expect(declared).toContain('std::in_place_type<flight::String>');
+    expect(declared).toContain('std::visit(');
+  });
+
   it('widens an optional value into a nullable collection union', () => {
     const texture = lowerPackage(
       '@flighthq/types',
