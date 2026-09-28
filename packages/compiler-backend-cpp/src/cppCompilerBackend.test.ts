@@ -24777,81 +24777,137 @@ Resolver make_resolver(TextureRef texture) {
     expect(declaredCapability).not.toContain('make_ref<Command>');
   });
 
-  it('requires a typed effect runner to retain the readonly contact-shadows owner', () => {
-    const types = `interface RenderEffect { readonly kind: string }
-       interface ContactShadowsEffect extends RenderEffect {
-         readonly kind: 'ContactShadowsEffect';
-         readonly distance?: number;
-         readonly opacity?: number;
-         readonly samples?: number;
-         readonly smoothness?: number;
-       }
-       function applyContactShadowsEffect(effect: Readonly<ContactShadowsEffect>): number {
-         return (effect.opacity ?? 0.6) + (effect.distance ?? 0.5) + (effect.samples ?? 16);
-       }`;
-    const writableAssertion = lower(
-      'contact-shadows-writable-assertion.ts',
-      `${types}
-       type RenderEffectRunner = (effect: Readonly<RenderEffect>) => number;
-       export const runner: RenderEffectRunner = (effect) =>
-         applyContactShadowsEffect(effect as ContactShadowsEffect);`,
-    );
-    const writableFailure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(writableAssertion.module, { runtimeProfile: 'flight-cpp' }),
-    );
-
-    expect(writableAssertion.diagnostics).toEqual([]);
-    expect(writableFailure.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
-    expect(writableFailure.classification).toBe('source-portability');
-    expect(writableFailure.message).toContain(
-      'claims mutation only to pass the value to the readonly row Readonly<ContactShadowsEffect>',
-    );
-    expect(writableFailure.message).toContain(
-      'Spell the assertion as Readonly<ContactShadowsEffect> to remove the writable-capability claim',
-    );
-    expect(writableFailure.message).toContain('Readonly<RenderEffect> does not declare');
-    for (const member of ['distance', 'opacity', 'samples', 'smoothness']) {
-      expect(writableFailure.message).toContain(member);
-    }
-    expect(writableFailure.message).toContain('No writable carrier is justified for this read-only call');
-    expect(writableFailure.message).toContain(
-      'Preserve ContactShadowsEffect in the callback parameter through a named typed runner or carrier',
-    );
-    expect(writableFailure.message).toContain('a tag or registry key carried beside the value does not prove');
-    expect(writableFailure.message).toContain('will not cast, copy, materialize, or create side storage');
-
-    // Correcting only the capability spelling still leaves the owner erased at the callback boundary.
-    const readonlyAssertion = lower(
-      'contact-shadows-readonly-assertion.ts',
-      `${types}
-       export function run(effect: Readonly<RenderEffect>): number {
-         return applyContactShadowsEffect(effect as Readonly<ContactShadowsEffect>);
-       }`,
-    );
-    const readonlyFailure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(readonlyAssertion.module, { runtimeProfile: 'flight-cpp' }),
-    );
-    expect(readonlyFailure.rule).toBe('cpp-structural-assertion-owner-unproven');
-    expect(readonlyFailure.message).toContain('reads distance');
-    expect(readonlyFailure.message).toContain('Preserve the concrete owner in the source type');
-
-    // A typed runner retains the exact readonly owner and reads its existing cells directly.
-    const typed = emitIrModuleCpp(
-      lower(
-        'contact-shadows-typed-runner.ts',
+  it.each([
+    [
+      'glContactShadowsEffect.ts',
+      'ContactShadowsEffect',
+      ['distance', 'opacity', 'samples', 'smoothness'],
+      false,
+      'apply_contact_shadows_effect_to_gl',
+    ],
+    [
+      'glDropShadowEffect.ts',
+      'DropShadowEffect',
+      ['alpha', 'angle', 'blurX', 'blurY', 'color', 'distance', 'quality', 'sourceMode', 'strength'],
+      true,
+      'apply_drop_shadow_effect_to_gl',
+    ],
+    [
+      'glInnerGlowEffect.ts',
+      'InnerGlowEffect',
+      ['alpha', 'blurX', 'blurY', 'color', 'quality', 'sourceMode', 'strength'],
+      true,
+      'apply_inner_glow_effect_to_gl',
+    ],
+    [
+      'glInnerShadowEffect.ts',
+      'InnerShadowEffect',
+      ['alpha', 'angle', 'blurX', 'blurY', 'color', 'distance', 'quality', 'sourceMode', 'strength'],
+      true,
+      'apply_inner_shadow_effect_to_gl',
+    ],
+    [
+      'glOuterGlowEffect.ts',
+      'OuterGlowEffect',
+      ['alpha', 'blurX', 'blurY', 'color', 'quality', 'sourceMode', 'strength'],
+      true,
+      'apply_outer_glow_effect_to_gl',
+    ],
+  ] as const)(
+    'requires the typed effect runner in effects-gl/%s to retain the readonly %s owner',
+    (file, effectName, members, hasPool, emittedApplyName) => {
+      const applyName = `apply${effectName}ToGl`;
+      const contextArguments = `ctx.state, ctx.source, ctx.dest${hasPool ? ', ctx.pool' : ''}`;
+      const applyParameters = `state: number, source: number, dest: number${hasPool ? ', pool: number' : ''}`;
+      const memberDeclarations = members.map((member) => `${member}?: number;`).join('\n');
+      const types = `interface Effect { kind: string }
+         interface ${effectName} extends Effect {
+           kind: '${effectName}';
+           ${memberDeclarations}
+         }
+         interface GlEffectContext {
+           readonly state: number;
+           readonly source: number;
+           readonly dest: number;
+           readonly pool: number;
+         }
+         function ${applyName}(
+           ${applyParameters},
+           effect: Readonly<${effectName}>,
+         ): void {
+           const value = effect.${members[0]};
+           if (value === undefined) return;
+         }`;
+      const writableAssertion = lowerPackage(
+        '@flighthq/effects-gl',
+        file,
         `${types}
-         type RenderEffectRunner<Effect extends RenderEffect> = (effect: Readonly<Effect>) => number;
-         export const runner: RenderEffectRunner<ContactShadowsEffect> = (effect) =>
-           applyContactShadowsEffect(effect);`,
-      ).module,
-      { runtimeProfile: 'flight-cpp' },
-    ).contents;
-    expect(typed).toContain('apply_contact_shadows_effect(effect)');
-    expect(typed).not.toContain('structural_ref_cast');
-    expect(typed).not.toContain('materialize_row');
-    expect(typed).not.toContain('static_pointer_cast');
-    expect(typed).not.toContain('make_ref');
-  });
+         type GlEffectRunner = (ctx: Readonly<GlEffectContext>, effect: Readonly<Effect>) => void;
+         export const runner: GlEffectRunner = (ctx, effect) =>
+           ${applyName}(${contextArguments}, effect as ${effectName});`,
+      );
+      const writableFailure = captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(writableAssertion.module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+      expect(writableAssertion.diagnostics).toEqual([]);
+      expect(writableFailure.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+      expect(writableFailure.classification).toBe('source-portability');
+      expect(writableFailure.message).toContain(
+        `claims mutation only to pass the value to the readonly row Readonly<${effectName}>`,
+      );
+      expect(writableFailure.message).toContain(
+        `Spell the assertion as Readonly<${effectName}> to remove the writable-capability claim`,
+      );
+      expect(writableFailure.message).toContain('Readonly<Effect> does not declare');
+      for (const member of members) {
+        expect(writableFailure.message).toContain(member);
+      }
+      expect(writableFailure.message).toContain('No writable carrier is justified for this read-only call');
+      expect(writableFailure.message).toContain(
+        `Preserve ${effectName} in the callback parameter through a named typed runner or carrier`,
+      );
+      expect(writableFailure.message).toContain('a tag or registry key carried beside the value does not prove');
+      expect(writableFailure.message).toContain('will not cast, copy, materialize, or create side storage');
+
+      // Correcting only the capability spelling still leaves the owner erased at the callback boundary.
+      const readonlyAssertion = lowerPackage(
+        '@flighthq/effects-gl',
+        file,
+        `${types}
+         export function run(ctx: Readonly<GlEffectContext>, effect: Readonly<Effect>): void {
+           ${applyName}(${contextArguments}, effect as Readonly<${effectName}>);
+         }`,
+      );
+      const readonlyFailure = captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(readonlyAssertion.module, { runtimeProfile: 'flight-cpp' }),
+      );
+      expect(readonlyFailure.rule).toBe('cpp-structural-assertion-owner-unproven');
+      expect(readonlyFailure.message).toContain(`reads ${members[0]}`);
+      expect(readonlyFailure.message).toContain('Preserve the concrete owner in the source type');
+
+      // A typed runner retains the exact readonly owner and reads its existing cells directly.
+      const typed = emitIrModuleCpp(
+        lowerPackage(
+          '@flighthq/effects-gl',
+          file,
+          `${types}
+           type GlEffectRunner<SpecificEffect extends Effect> = (
+             ctx: Readonly<GlEffectContext>,
+             effect: Readonly<SpecificEffect>
+           ) => void;
+           export const runner: GlEffectRunner<${effectName}> = (ctx, effect) =>
+             ${applyName}(${contextArguments}, effect);`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+      expect(typed).toContain(`${emittedApplyName}(`);
+      expect(typed).not.toContain('structural_ref_cast');
+      expect(typed).not.toContain('materialize_row');
+      expect(typed).not.toContain('static_pointer_cast');
+      expect(typed).not.toContain('make_ref');
+    },
+  );
 
   it('keeps a structural source asserted to a derived partial row, which answers an unbound member', () => {
     const contents = emitIrModuleCpp(
