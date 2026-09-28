@@ -95,12 +95,7 @@ function analyzeTypeScriptSourcePortabilityInput(
       const subject = getSourcePortabilitySubject(node);
       const opaque = getOpaqueTypeKinds(node.type);
       if (opaque.size > 0) {
-        add(
-          node.type,
-          'opaque-value-domain',
-          subject,
-          `${subject} exposes ${renderOpaqueTypeKinds(opaque)}; replace it with the explicit domain type available at this boundary.`,
-        );
+        add(node.type, 'opaque-value-domain', subject, renderOpaqueValueDomainMessage(subject, 'exposes', opaque));
       }
       if (hasNullType(node.type) && (node.questionToken !== undefined || hasUndefinedType(node.type))) {
         add(
@@ -121,7 +116,7 @@ function analyzeTypeScriptSourcePortabilityInput(
           parameter.type,
           'opaque-value-domain',
           parameterSubject,
-          `${parameterSubject} exposes ${renderOpaqueTypeKinds(opaque)}; replace it with the explicit domain type available at this boundary.`,
+          renderOpaqueValueDomainMessage(parameterSubject, 'exposes', opaque),
         );
       }
       if (node.type) {
@@ -132,7 +127,7 @@ function analyzeTypeScriptSourcePortabilityInput(
             node.type,
             'opaque-value-domain',
             returnSubject,
-            `${returnSubject} exposes ${renderOpaqueTypeKinds(opaque)}; replace it with the explicit domain type available at this boundary.`,
+            renderOpaqueValueDomainMessage(returnSubject, 'exposes', opaque),
           );
         }
       }
@@ -140,12 +135,7 @@ function analyzeTypeScriptSourcePortabilityInput(
       const opaque = getOpaqueTypeKinds(node.type);
       if (opaque.size > 0) {
         const subject = getSourcePortabilitySubject(node);
-        add(
-          node.type,
-          'opaque-value-domain',
-          subject,
-          `${subject} aliases ${renderOpaqueTypeKinds(opaque)}; replace it with the explicit domain type available at this boundary.`,
-        );
+        add(node.type, 'opaque-value-domain', subject, renderOpaqueValueDomainMessage(subject, 'aliases', opaque));
       }
     }
     ts.forEachChild(node, visit);
@@ -333,6 +323,14 @@ function renderAssertionBridge(node: ts.TypeNode): 'any' | 'never' | 'unknown' {
   if (node.kind === ts.SyntaxKind.AnyKeyword) return 'any';
   if (node.kind === ts.SyntaxKind.NeverKeyword) return 'never';
   return 'unknown';
+}
+
+function renderOpaqueValueDomainMessage(
+  subject: string,
+  relationship: 'aliases' | 'exposes',
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string {
+  return `${subject} ${relationship} ${renderOpaqueTypeKinds(kinds)}; no exact runtime value domain can be recovered from that annotation or its downstream uses. Replace it with a named closed value type shared by the boundary, its storage, and its consumers; when intentional erasure is the contract, record a reviewed source-portability exception instead.`;
 }
 
 function renderOpaqueTypeKinds(kinds: ReadonlySet<OpaqueTypeKind>): string {

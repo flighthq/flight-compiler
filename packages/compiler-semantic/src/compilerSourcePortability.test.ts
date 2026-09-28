@@ -68,6 +68,38 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reformatted.findings[0]?.line).not.toBe(first.findings[0]?.line);
   });
 
+  it('requires one shared closed domain for a nested opaque parameter property', () => {
+    const opaque = input(
+      'command.ts',
+      `export function createSetNodePropertyCommandBatch(
+         entries: readonly Readonly<{ property: string; value: unknown }>[],
+       ): void { void entries; }`,
+    );
+    const explicit = input(
+      'portable-command.ts',
+      `type CommandPropertyValue = boolean | number | string | null;
+       interface CommandPropertyEntry {
+         readonly after: CommandPropertyValue;
+         readonly before: CommandPropertyValue;
+       }
+       export function createSetNodePropertyCommandBatch(
+         entries: readonly Readonly<{ property: string; value: CommandPropertyValue }>[],
+       ): CommandPropertyEntry[] {
+         return entries.map((entry) => ({ after: entry.value, before: entry.value }));
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([opaque]).findings).toMatchObject([
+      {
+        message:
+          'function:createSetNodePropertyCommandBatch/parameter:entries/property:value exposes unknown; no exact runtime value domain can be recovered from that annotation or its downstream uses. Replace it with a named closed value type shared by the boundary, its storage, and its consumers; when intentional erasure is the contract, record a reviewed source-portability exception instead.',
+        rule: 'opaque-value-domain',
+        subject: 'function:createSetNodePropertyCommandBatch/parameter:entries/property:value',
+      },
+    ]);
+    expect(analyzeTypeScriptSourcePortability([explicit]).findings).toEqual([]);
+  });
+
   it('excludes declaration, test-only, and generated inputs before visiting their syntax', () => {
     const text = 'interface Value { payload: any; absent?: string | null }';
     const sources = [
