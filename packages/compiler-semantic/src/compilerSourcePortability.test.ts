@@ -707,6 +707,103 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
 
+  it('keeps signal initialization, safe teardown, and tracked wrappers on represented callables', () => {
+    const signal = input(
+      'packages/signals/src/signal.ts',
+      `declare const nullSignalEmit: () => void;
+       export function initializeSignal<T extends (...args: any[]) => void>(
+         out: EntityConstruction<Signal<T>>,
+       ): void {
+         out.emit = nullSignalEmit as unknown as T;
+         out.data = null;
+       }`,
+    );
+    const safe = input(
+      'packages/signals/src/safe.ts',
+      `declare const nullSignalEmit: () => void;
+       function compactSignalData<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         data: SignalData<T>,
+       ): void {
+         if (data.slots.length === 0 && signal.data === data) {
+           signal.emit = nullSignalEmit as unknown as T;
+           signal.data = null;
+         }
+       }`,
+    );
+    const connection = input(
+      'packages/signals/src/connection.ts',
+      `export function connectSignalTracked<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         slot: T,
+       ): SignalConnection<T> {
+         const connection: SignalConnection<T> = { connected: true, paused: false, signal, slot };
+         const once = true;
+         const trackedSlot = ((...args: Parameters<T>): void => {
+           if (connection.paused) return;
+           if (once) connection.connected = false;
+           slot(...args);
+         }) as unknown as T;
+         connection.slot = trackedSlot;
+         return connection;
+       }`,
+    );
+    const typed = input(
+      'portableSignalCallables.ts',
+      `type SignalDispatch<Args extends readonly unknown[]> = (...args: Args) => void;
+       interface Signal<Args extends readonly unknown[]> {
+         emit: SignalDispatch<Args>;
+       }
+       interface SignalConnection<Args extends readonly unknown[]> {
+         paused: boolean;
+         slot: SignalDispatch<Args>;
+       }
+       function createNullSignalEmit<Args extends readonly unknown[]>(): SignalDispatch<Args> {
+         return (..._args: Args): void => {};
+       }
+       function initializeSignal<Args extends readonly unknown[]>(signal: Signal<Args>): void {
+         signal.emit = createNullSignalEmit<Args>();
+       }
+       function createTrackedSlot<Args extends readonly unknown[]>(
+         connection: SignalConnection<Args>,
+         slot: SignalDispatch<Args>,
+       ): SignalDispatch<Args> {
+         return (...args: Args): void => {
+           if (!connection.paused) slot(...args);
+         };
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([signal, safe, connection]).findings;
+
+    expect(findings).toHaveLength(3);
+    expect(findings.every((finding) => finding.rule === 'unchecked-double-assertion')).toBe(true);
+    const bySource = new Map(findings.map((finding) => [finding.module.source, finding]));
+    const initialized = bySource.get('packages/signals/src/signal.ts');
+    expect(initialized?.message).toContain('EntityConstruction<Signal<T>> owner');
+    expect(initialized?.message).toContain('checked callable-signature binding contract');
+    expect(initialized?.message).toContain("deliberately ignores T's instantiated arguments");
+    expect(initialized?.message).toContain('will not route it through Any');
+    expect(initialized?.message).toContain('copy or materialize the entity under construction');
+    expect(initialized?.message).toContain('or add side storage');
+    const safeTeardown = bySource.get('packages/signals/src/safe.ts');
+    expect(safeTeardown?.message).toContain('exact Signal<T> and SignalData<T> owners');
+    expect(safeTeardown?.message).toContain('safe-dispatch snapshots and every stored T slot');
+    expect(safeTeardown?.message).toContain('checked callable-signature binding contract');
+    expect(safeTeardown?.message).toContain('will not route it through Any');
+    expect(safeTeardown?.message).toContain('copy or materialize the signal/data owners');
+    expect(safeTeardown?.message).toContain('or add side storage');
+    const tracked = bySource.get('packages/signals/src/connection.ts');
+    expect(tracked?.message).toContain('trackedSlot closure');
+    expect(tracked?.message).toContain('Parameters<T>');
+    expect(tracked?.message).toContain('captured SignalConnection<T> and exact T slot');
+    expect(tracked?.message).toContain('checked callable-signature binding contract');
+    expect(tracked?.message).toContain("T's instantiated parameter list");
+    expect(tracked?.message).toContain('will not route it through Any');
+    expect(tracked?.message).toContain('copy or materialize the connection or slot owners');
+    expect(tracked?.message).toContain('or add side storage');
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',

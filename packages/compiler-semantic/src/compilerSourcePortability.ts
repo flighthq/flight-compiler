@@ -454,13 +454,17 @@ function getAwd2MaterialHandlerDoubleAssertionGuidance(
   return undefined;
 }
 
-function getSignalSlotDoubleAssertionGuidance(
+function getSignalCallableDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
   bridge: 'any' | 'never' | 'unknown',
 ): string | undefined {
   const sourceFile = node.getSourceFile();
-  if (!normalizePathPortable(sourceFile.fileName).endsWith('/packages/signals/src/slot.ts')) return undefined;
+  const source = normalizePathPortable(sourceFile.fileName);
+  const signalModule = ['connection.ts', 'safe.ts', 'signal.ts', 'slot.ts'].find((file) =>
+    source.endsWith(`/packages/signals/src/${file}`),
+  );
+  if (!signalModule) return undefined;
   const target = getTypeAssertionType(node);
   if (!ts.isTypeReferenceNode(target) || getNodeName(target.typeName) !== 'T') return undefined;
   let inner: ts.Expression = node.expression;
@@ -469,9 +473,20 @@ function getSignalSlotDoubleAssertionGuidance(
   let implementation: ts.Expression = inner.expression;
   while (ts.isParenthesizedExpression(implementation)) implementation = implementation.expression;
   if (ts.isIdentifier(implementation) && implementation.text === 'nullSignalEmit') {
+    if (signalModule === 'signal.ts') {
+      return `${subject} uses a double assertion through ${bridge} to install the represented zero-argument nullSignalEmit implementation while initializing the EntityConstruction<Signal<T>> owner. The bridge is not representation equivalence: each T instantiation may require a different emitted parameter signature. Preserve that exact entity-under-construction owner and construct only its emit callable through the checked callable-signature binding contract, which deliberately ignores T's instantiated arguments for this no-op implementation. Prefer a named Signal argument-tuple/dispatch type and an exact typed no-op factory so the source no longer needs this assertion. The compiler may bind this represented callable implementation to T, but will not route it through Any, cast between callable carriers, copy or materialize the entity under construction, or add side storage; a non-callable or genuinely erased source must be refused.`;
+    }
+    if (signalModule === 'safe.ts') {
+      return `${subject} uses a double assertion through ${bridge} to restore the represented zero-argument nullSignalEmit implementation after safe dispatch empties a signal. The bridge is not representation equivalence: each T instantiation may require a different emitted parameter signature. Preserve the exact Signal<T> and SignalData<T> owners, the safe-dispatch snapshots and every stored T slot, and construct only the emit callable through the checked callable-signature binding contract, which deliberately ignores T's instantiated arguments for this no-op implementation. Prefer a named Signal argument-tuple/dispatch type and an exact typed no-op factory so the source no longer needs this assertion. The compiler may bind this represented callable implementation to T, but will not route it through Any, cast between callable carriers, copy or materialize the signal/data owners, or add side storage; a non-callable or genuinely erased source must be refused.`;
+    }
+    if (signalModule !== 'slot.ts') return undefined;
     return `${subject} uses a double assertion through ${bridge} to install the represented zero-argument nullSignalEmit implementation in the open callable type parameter T. The bridge is not representation equivalence: each instantiation may require a different emitted parameter signature. Preserve the Signal<T> owner and every stored T slot, and construct only the emit callable through the checked callable-signature binding contract that either forwards T's exact parameters or deliberately ignores them for this no-op implementation. Prefer a named Signal argument-tuple/dispatch type and an exact typed no-op factory so the source no longer needs this assertion. The compiler may bind this represented callable implementation to T, but will not route it through Any, cast between callable carriers, copy or materialize the Signal or its slots, or add side storage; a non-callable or genuinely erased source must be refused.`;
   }
   if (ts.isArrowFunction(implementation) || ts.isFunctionExpression(implementation)) {
+    if (signalModule === 'connection.ts' && getEnclosingVariableName(node) === 'trackedSlot') {
+      return `${subject} uses a double assertion through ${bridge} to name the represented trackedSlot closure as the open callable type parameter T. Its Parameters<T> rest tuple preserves the invocation signature, but the assertion itself does not prove the open carrier. Preserve the captured SignalConnection<T> and exact T slot, including the connection, once, and slot capture identities, and construct only the wrapper callable through the checked callable-signature binding contract so invocation uses T's instantiated parameter list. Prefer a named Signal argument tuple and express the tracked wrapper in that exact dispatch type so the source no longer needs this assertion. The compiler may bind this represented closure implementation to T, but will not route it through Any, reinterpret or cast a callable owner, copy or materialize the connection or slot owners, or add side storage; a non-callable or genuinely erased source must be refused.`;
+    }
+    if (signalModule !== 'slot.ts') return undefined;
     return `${subject} uses a double assertion through ${bridge} to name the newly created dispatch implementation as the open callable type parameter T after its rest arguments were declared as any[]. Preserve the captured Signal<T>, SignalData<T>, and every stored T slot by reference, and construct only the returned emit callable through the checked callable-signature binding contract so invocation uses T's instantiated parameter list. Prefer a named Signal argument tuple and declare the dispatch closure with that exact tuple instead of erasing its arguments. The compiler may bind this represented function implementation to T, but will not route it through Any, reinterpret or cast a callable owner, copy or materialize the signal/data/slot owners, or add side storage; a non-callable or genuinely erased source must be refused.`;
   }
   return undefined;
@@ -1411,8 +1426,8 @@ function renderUncheckedDoubleAssertionMessage(
   if (gltfMaterialExtension) return gltfMaterialExtension;
   const awd2MaterialHandler = getAwd2MaterialHandlerDoubleAssertionGuidance(node, subject, bridge);
   if (awd2MaterialHandler) return awd2MaterialHandler;
-  const signalSlot = getSignalSlotDoubleAssertionGuidance(node, subject, bridge);
-  if (signalSlot) return signalSlot;
+  const signalCallable = getSignalCallableDoubleAssertionGuidance(node, subject, bridge);
+  if (signalCallable) return signalCallable;
   const nodeInteractiveStateBinding = getNodeInteractiveStateBindingDoubleAssertionGuidance(node, subject, bridge);
   if (nodeInteractiveStateBinding) return nodeInteractiveStateBinding;
   const physics3DWorld = getPhysics3DWorldDoubleAssertionGuidance(node, subject, bridge);

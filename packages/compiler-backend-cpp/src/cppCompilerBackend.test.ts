@@ -14581,6 +14581,50 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     );
   });
 
+  it('binds represented signal initialization and tracked closures without replacing owners', () => {
+    const represented = lowerPackage(
+      '@flighthq/signals',
+      'represented-callables.ts',
+      `const nullSignalEmit = (): void => {};
+       interface Signal<T extends (...args: any[]) => void> { emit: T }
+       interface SignalConnection<T extends (...args: any[]) => void> {
+         paused: boolean;
+         slot: T;
+       }
+       export function initializeSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = nullSignalEmit as unknown as T;
+       }
+       export function finishSafeDispatch<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = nullSignalEmit as unknown as T;
+       }
+       export function createTrackedSlot<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+         slot: T,
+         once: boolean,
+       ): T {
+         return ((...args: Parameters<T>): void => {
+           if (connection.paused) return;
+           if (once) connection.paused = true;
+           slot(...args);
+         }) as unknown as T;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(represented.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(represented.diagnostics).toEqual([]);
+    expect(emitted.match(/flight::bind_callable_v1<T>\(/g)).toHaveLength(3);
+    expect(emitted.match(/flight::bind_callable_v1<T>\(null_signal_emit\)/g)).toHaveLength(2);
+    expect(emitted).toContain('return flight::bind_callable_v1<T>([=]<typename... ArgsPack>');
+    expect(emitted).toContain('if (connection->paused)');
+    expect(emitted).toContain('slot(std::forward<ArgsPack>(args)...);');
+    expect(emitted).not.toContain('flight::Any::');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('reinterpret_cast');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('make_ref');
+    expect(emitted).not.toContain('materialize');
+  });
+
   it('binds process and browser host surfaces without making them compiler runtime policy', () => {
     const result = lower(
       'host-surfaces.ts',

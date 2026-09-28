@@ -696,6 +696,15 @@ function emitIrModuleCppWithContext(
         `shared mutable capture ${bindingPlan.binding.name} requires concrete binding type evidence`,
       );
     }
+    // A closure can copy a Flight Ref while preserving the one represented owner: referent mutation
+    // remains visible through every copy, and the source binding itself is never reassigned. A binding
+    // cell would add a second owner-shaped storage location solely because a property is mutated.
+    if (
+      capturedReferentOnlyBindingIds.has(bindingPlan.binding.id) &&
+      hasFlightReferenceRepresentationCpp(bindingType, context)
+    ) {
+      continue;
+    }
     const targetName = targetNames.get(bindingPlan.binding.id) ?? safeCppName(bindingPlan.binding.name);
     sharedCaptureTargetNames.set(bindingPlan.binding.id, generateUniqueName(`${targetName}_capture`, context));
   }
