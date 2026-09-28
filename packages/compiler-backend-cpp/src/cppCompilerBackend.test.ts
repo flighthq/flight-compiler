@@ -35773,7 +35773,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('>, table}');
   });
 
-  it('selects one generic registry union arm from an imported nominal argument', () => {
+  it('selects the FlightDocument registry arm and refuses its projected resource array', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -35793,13 +35793,15 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           packageName: '@flighthq/types',
           sourceFile: ts.createSourceFile(
             '/flight/packages/types/src/types.ts',
-            `export interface Binding { readonly name: string }
-             export interface Descriptor { readonly kind: string }
-             export interface Document { readonly resources: readonly Descriptor[] }
+            `export interface FlightDocumentResourceSchema { readonly kind: string }
+             export interface FlightDocumentResourceDescriptor { readonly kind: string }
+             export interface FlightDocument { readonly resources: FlightDocumentResourceDescriptor[] }
              export interface KeyedTable<T> { readonly entry: T; readonly shape: 'keyed' }
              export interface SlotTable<T> { readonly slot: T; readonly shape: 'slot' }
              export type RegistryTable<T> = KeyedTable<T> | SlotTable<T>;
-             export interface Registry { readonly bindings: KeyedTable<Binding> }`,
+             export interface FlightDocumentSchemaRegistry {
+               readonly resourceSchemas: KeyedTable<FlightDocumentResourceSchema>
+             }`,
             ts.ScriptTarget.Latest,
             true,
           ),
@@ -35810,8 +35812,13 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           sourceFile: ts.createSourceFile(
             '/flight/packages/registry/src/registry.ts',
             `import type { RegistryTable } from '@flighthq/types';
-             export function lookup<T>(_table: Readonly<RegistryTable<T>>): T | null { return null; }
-             export function forward<T>(table: Readonly<RegistryTable<T>>): T | null { return lookup(table); }`,
+             export function getRegistryTableEntry<T>(
+               _table: Readonly<RegistryTable<T>>,
+               _key: string,
+             ): T | null { return null; }
+             export function forward<T>(table: Readonly<RegistryTable<T>>, key: string): T | null {
+               return getRegistryTableEntry(table, key);
+             }`,
             ts.ScriptTarget.Latest,
             true,
           ),
@@ -35821,10 +35828,10 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           packageName: '@flighthq/consumer',
           sourceFile: ts.createSourceFile(
             '/flight/packages/consumer/src/consumer.ts',
-            `import { lookup } from '@flighthq/registry';
-             import type { Registry } from '@flighthq/types';
-             export function hasBinding(registry: Readonly<Registry>): boolean {
-               return lookup(registry.bindings) !== null;
+            `import { getRegistryTableEntry } from '@flighthq/registry';
+             import type { FlightDocumentSchemaRegistry } from '@flighthq/types';
+             export function hasResourceSchema(registry: Readonly<FlightDocumentSchemaRegistry>): boolean {
+               return getRegistryTableEntry(registry.resourceSchemas, 'Shape') !== null;
              }`,
             ts.ScriptTarget.Latest,
             true,
@@ -35835,10 +35842,12 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           packageName: '@flighthq/lookalike',
           sourceFile: ts.createSourceFile(
             '/flight/packages/lookalike/src/lookalike.ts',
-            `import { lookup } from '@flighthq/registry';
-             import type { Binding } from '@flighthq/types';
-             export function hasBinding(table: { readonly entry: Binding; readonly shape: 'keyed' }): boolean {
-               return lookup(table) !== null;
+            `import { getRegistryTableEntry } from '@flighthq/registry';
+             import type { FlightDocumentResourceSchema } from '@flighthq/types';
+             export function hasResourceSchema(
+               table: { readonly entry: FlightDocumentResourceSchema; readonly shape: 'keyed' },
+             ): boolean {
+               return getRegistryTableEntry(table, 'Shape') !== null;
              }`,
             ts.ScriptTarget.Latest,
             true,
@@ -35846,16 +35855,20 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           upstreamDirectory: '/flight',
         },
         {
-          packageName: '@flighthq/dependencies',
+          packageName: '@flighthq/scene-document',
           sourceFile: ts.createSourceFile(
-            '/flight/packages/dependencies/src/dependencies.ts',
-            `import { lookup } from '@flighthq/registry';
-             import type { Descriptor, Document, Registry } from '@flighthq/types';
-             export function dependencies(
-               document: Readonly<Document>,
-               registry: Readonly<Registry>,
-             ): readonly Readonly<Descriptor>[] | null {
-               if (lookup(registry.bindings) === null) return null;
+            '/flight/packages/scene-document/src/flightDocumentResourceDependencies.ts',
+            `import { getRegistryTableEntry } from '@flighthq/registry';
+             import type {
+               FlightDocument,
+               FlightDocumentResourceDescriptor,
+               FlightDocumentSchemaRegistry,
+             } from '@flighthq/types';
+             export function getFlightDocumentResourceDependencies(
+               document: Readonly<FlightDocument>,
+               schemas: Readonly<FlightDocumentSchemaRegistry>,
+             ): readonly Readonly<FlightDocumentResourceDescriptor>[] | null {
+               if (getRegistryTableEntry(schemas.resourceSchemas, 'Shape') === null) return null;
                return document.resources;
              }`,
             ts.ScriptTarget.Latest,
@@ -35876,17 +35889,39 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     const registry = session.emitModule(modules[1]!)[0]!.contents;
     const emitted = session.emitModule(modules[2]!)[0]!.contents;
-    expect(registry).toContain('return lookup<T>(table);');
-    expect(emitted).toContain('lookup<flight::Ref<flighthq_types::Binding>>');
+    expect(registry).toContain('return get_registry_table_entry<T>(table, key);');
+    expect(emitted).toContain('get_registry_table_entry<flight::Ref<flighthq_types::FlightDocumentResourceSchema>>');
     expect(emitted).toContain('std::in_place_type<flight::Ref<flighthq_types::KeyedTable<');
-    expect(emitted).toContain('flight::row_get<flight::RowKey<"bindings">>(registry)');
-    expect(captureBackendEmissionFailure(() => session.emitModule(modules[3]!)).rule).toBe(
-      'cpp-contextual-union-value-type-unrepresented',
-    );
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"resourceSchemas">>(registry)');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize_row');
+    expect(emitted).not.toContain('static_cast');
+
+    const lookalike = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    expect(lookalike).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-contextual-union-value-type-unrepresented',
+    });
+    expect(lookalike.message).toContain('leaves a member the destination requires optional or absent');
+
     const projectedArray = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
-    expect(projectedArray.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    const sourceArrayCarrier = 'flight::Array<flight::Ref<flighthq_types::FlightDocumentResourceDescriptor>>';
+    const targetElementCarrier =
+      'flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_types::FlightDocumentResourceDescriptor>>>>';
+    const targetArrayCarrier = `flight::Array<${targetElementCarrier}>`;
+    expect(projectedArray).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-contextual-union-value-type-unrepresented',
+    });
+    expect(projectedArray.message).toContain(`source array carrier ${sourceArrayCarrier}`);
+    expect(projectedArray.message).toContain(
+      'element carrier flight::Ref<flighthq_types::FlightDocumentResourceDescriptor>',
+    );
+    expect(projectedArray.message).toContain(`projected element array carrier ${targetArrayCarrier}`);
+    expect(projectedArray.message).toContain(`element carrier ${targetElementCarrier}`);
     expect(projectedArray.message).toContain("cannot become the destination's projected element array");
     expect(projectedArray.message).toContain('without changing array identity');
+    expect(projectedArray.message).toContain('Return the exact source array type');
   });
 
   it('retains the owner boundary for a predicate-narrowed intersection return', () => {

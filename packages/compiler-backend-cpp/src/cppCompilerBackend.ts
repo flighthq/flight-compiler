@@ -15280,6 +15280,10 @@ function emitContextualUnionExpressionInContextCpp(
       cause === 'callable-return-erasure'
         ? getCppContextualCallableErasedReturnGapCpp(expression, runtimeType, plan, context)
         : undefined;
+    const structuralArrayProjectionGap =
+      cause === 'structural-array-projection'
+        ? getCppStructuralArrayProjectionGapCpp(runtimeType, plan, context)
+        : undefined;
     emissionError(
       context,
       callableErasedReturnGap
@@ -15298,8 +15302,8 @@ function emitContextualUnionExpressionInContextCpp(
                 ? `contextual union value type ${targetType} is an intersection stored through one nominal base, but the destination names secondary constituent ${secondaryIntersectionCarrier.targets.map(describeIrTypeForDiagnosticCpp).join(', ')} through an independent C++ object carrier. Only the intersection's unique nominal base ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)} preserves the same owner; converting to the secondary carrier would require retyping or copying the object. Make the destination contract ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)}, declare one explicit common nominal base, or add owner-preserving structural-reference storage for that contract`
                 : cause === 'nominal-mismatch'
                   ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
-                  : cause === 'structural-array-projection'
-                    ? `contextual union array value type ${targetType} cannot become the destination's projected element array without changing array identity. Construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
+                  : structuralArrayProjectionGap
+                    ? `contextual union source array carrier ${targetType} with element carrier ${structuralArrayProjectionGap.sourceElementCarrier} cannot become the destination's projected element array carrier ${structuralArrayProjectionGap.targetCarrier} with element carrier ${structuralArrayProjectionGap.targetElementCarrier} without changing array identity. Return the exact source array type, construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
                     : `contextual union value type ${targetType} is not a represented runtime domain`,
       'cpp-contextual-union-value-type-unrepresented',
       cause === 'erased-kind' || cause === 'callable-return-erasure' || cause === 'structural-array-projection'
@@ -16654,6 +16658,52 @@ interface CppErasedValueUnionExtraction {
   readonly value: (value: string) => string;
 }
 
+interface CppStructuralArrayProjectionGap {
+  readonly sourceElementCarrier: string;
+  readonly targetCarrier: string;
+  readonly targetElementCarrier: string;
+}
+
+// A Flight array owns one invariant element carrier for its lifetime. A nominal reference array may be
+// source-assignable to a readonly structural projection, but the two arrays are different target types and
+// projecting each element later would allocate a replacement array. Preserve the exact two carrier names
+// for the refusal so the runtime boundary is explicit rather than described as an unrepresented value.
+function getCppStructuralArrayProjectionGapCpp(
+  runtimeType: Readonly<IrType>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): Readonly<CppStructuralArrayProjectionGap> | undefined {
+  const sourceArray = getIrArrayTypeCpp(runtimeType, context, new Set());
+  if (!sourceArray) return undefined;
+  const projected = plan.valueSlots.flatMap((slot): readonly CppStructuralArrayProjectionGap[] => {
+    const targetArray = getIrArrayTypeCpp(slot.runtimeType, context, new Set());
+    if (
+      !targetArray ||
+      !context.referenceRepresentationPlanner.resolveStructuralRow(targetArray.element, context.module)
+    ) {
+      return [];
+    }
+    const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(sourceArray.element, context.module);
+    const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(targetArray.element, context.module);
+    if (
+      !sourceShape ||
+      !targetShape ||
+      !areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context)
+    ) {
+      return [];
+    }
+    const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+    return [
+      {
+        sourceElementCarrier: emitType(sourceArray.element, isolatedContext),
+        targetCarrier: slot.targetType,
+        targetElementCarrier: emitType(targetArray.element, isolatedContext),
+      },
+    ];
+  });
+  return projected.length === 1 ? projected[0] : undefined;
+}
+
 // Builds a union carrier from an erased dynamic value by asking the runtime what it holds.
 //
 // A `flight::Any` is the one source whose alternatives a target can TEST, so storing one into a union is a
@@ -16695,30 +16745,7 @@ function getCppUnrepresentedUnionValueCauseCpp(
       ? 'callable-return-erasure'
       : 'callable-signature';
   }
-  const sourceArray = getIrArrayTypeCpp(runtimeType, context, new Set());
-  if (sourceArray) {
-    const projected = plan.valueSlots.filter((slot) => {
-      const targetArray = getIrArrayTypeCpp(slot.runtimeType, context, new Set());
-      if (
-        !targetArray ||
-        !context.referenceRepresentationPlanner.resolveStructuralRow(targetArray.element, context.module)
-      ) {
-        return false;
-      }
-      const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(
-        sourceArray.element,
-        context.module,
-      );
-      const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(
-        targetArray.element,
-        context.module,
-      );
-      return Boolean(
-        sourceShape && targetShape && areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context),
-      );
-    });
-    if (projected.length === 1) return 'structural-array-projection';
-  }
+  if (getCppStructuralArrayProjectionGapCpp(runtimeType, plan, context)) return 'structural-array-projection';
   const shape = context.referenceRepresentationPlanner.resolveObjectShape(runtimeType, context.module);
   if (!shape) return undefined;
   // One alternative that accepts the value is enough for the source language, and it accepts it when every
