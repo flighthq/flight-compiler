@@ -8806,7 +8806,7 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
           if (dependentDiscriminant) {
             emissionError(
               context,
-              `Extract cannot select one C++ type from dependent discriminant ${dependentDiscriminant.typeParameterName}: property ${dependentDiscriminant.propertyName} admits ${dependentDiscriminant.values.map((value) => JSON.stringify(value)).join(', ')}, whose literal types all use the same C++ ${dependentDiscriminant.carrierName} carrier. Return one complete declared union arm from each source branch, or split the generic declaration by arm; the compiler will not choose an arm with an unchecked cast or materialize a replacement structural row`,
+              `Extract cannot make the C++ function return type depend on runtime discriminant ${dependentDiscriminant.typeParameterName}: property ${dependentDiscriminant.propertyName} admits ${dependentDiscriminant.values.map((value) => JSON.stringify(value)).join(', ')}, whose literal types all use the same C++ ${dependentDiscriminant.carrierName} carrier. The runtime value can choose a variant alternative only after one return carrier is fixed, and a variant return would change the asserted Extract contract. Return one complete declared union arm from each source branch, or split the generic declaration by arm; the compiler will not choose an arm with an unchecked cast or materialize a replacement structural row`,
               'cpp-extract-dependent-discriminant-unrepresented',
             );
           }

@@ -39110,10 +39110,8 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(indeterminateFailure.rule).toBe('cpp-typescript-utility-unexpanded:Extract');
   });
 
-  it('attributes dependent discriminant Extract over complete arms to the source boundary', () => {
-    const result = lower(
-      'dependent-discriminant-extract.ts',
-      `interface StateBase { disposed: boolean; }
+  it('selects a fixed Extract arm but attributes a dependent discriminant to the source boundary', () => {
+    const stateDeclarations = `interface StateBase { disposed: boolean; }
        interface InputState extends StateBase {
          kind: 'input';
          messageSubscriptions: Set<string>;
@@ -39123,7 +39121,32 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
          kind: 'output';
          operations: (message: number) => void;
        }
-       type State = InputState | OutputState;
+       type State = InputState | OutputState;`;
+    const fixed = emitIrModuleCpp(
+      lower(
+        'fixed-discriminant-extract.ts',
+        `${stateDeclarations}
+         export type OutputOnly = Extract<State, { kind: 'output' }>;
+         export function keepOutput(state: OutputOnly): OutputOnly { return state; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // A literal written in the filter is type-level evidence: it selects the declaration the union
+    // already stores, so the selection introduces no second variant, cast, copied row, or replacement
+    // referent. The one variant below is the source union's own declaration.
+    expect(fixed).toContain('using OutputOnly = flight::Ref<OutputState>;');
+    expect(fixed).toContain('inline OutputOnly keep_output(OutputOnly state)');
+    expect(fixed).toContain('return state;');
+    expect(fixed.match(/std::variant/gu)).toHaveLength(1);
+    expect(fixed).not.toContain('static_pointer_cast');
+    expect(fixed).not.toContain('structural_ref_cast');
+    expect(fixed).not.toContain('make_ref');
+    expect(fixed).not.toContain('materialize');
+
+    const result = lower(
+      'midiResource.ts',
+      `${stateDeclarations}
        export function createState<
          Kind extends State['kind'],
          Operations extends State['operations'],
@@ -39135,15 +39158,17 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
     );
 
-    // Both literal tags lower to the same C++ string type, so Kind cannot choose a return carrier. The
-    // input value also becomes a complete arm only after its caller supplies messageSubscriptions. A
-    // variant return would change that asserted boundary, while a row replacement would copy the
-    // callable property. The source must therefore construct each complete arm explicitly.
+    // Both literal tags lower to the same C++ string type, so Kind's value cannot specialize the return
+    // ABI. It could branch into an already-chosen variant, but that would change the asserted Extract
+    // boundary; the input value also becomes complete only after its caller supplies
+    // messageSubscriptions. The source must therefore construct each complete arm explicitly.
     expect(failure.rule).toBe('cpp-extract-dependent-discriminant-unrepresented');
     expect(failure.classification).toBe('source-portability');
-    expect(failure.message).toContain('dependent discriminant Kind');
+    expect(failure.message).toContain('depend on runtime discriminant Kind');
     expect(failure.message).toContain('property kind admits "input", "output"');
     expect(failure.message).toContain('same C++ string carrier');
+    expect(failure.message).toContain('runtime value can choose a variant alternative only after one return carrier');
+    expect(failure.message).toContain('variant return would change the asserted Extract contract');
     expect(failure.message).toContain('one complete declared union arm');
     expect(failure.message).toContain('split the generic declaration by arm');
     expect(failure.message).toContain('will not choose an arm with an unchecked cast');
