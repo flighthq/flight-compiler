@@ -191,6 +191,7 @@ interface CppVariantArrayPredicateEvidence {
   readonly arrayType: Readonly<IrType>;
   readonly binding: Readonly<IrBindingIdentity>;
   readonly nonArrayType: Readonly<IrType>;
+  readonly optionalStorage: boolean;
 }
 
 interface CppWeakMapTypeArgumentPlan {
@@ -13624,10 +13625,10 @@ function getCppVariantArrayPredicateEvidenceCpp(
   const candidate = expression.arguments[0];
   if (candidate?.kind !== 'identifier' || candidate.reference.kind !== 'binding') return undefined;
   const declared = getCppBindingTypeCpp(candidate.reference.binding.id, context);
-  const union = declared ? getIrVariantUnionTypeCpp(declared, context, new Set()) : undefined;
+  const union = declared ? getIrUnionTypeCpp(declared, context, new Set()) : undefined;
   if (!union) return undefined;
   const plan = getCppUnionRepresentationPlan(union, context);
-  if (plan.kind !== 'multiVariant') return undefined;
+  if (plan.kind !== 'multiVariant' && plan.kind !== 'optionalVariant') return undefined;
 
   const classified = union.types.map((member) => {
     if (getIrArrayTypeCpp(member, context, new Set())) return { array: true as const, member };
@@ -13652,7 +13653,14 @@ function getCppVariantArrayPredicateEvidenceCpp(
   const nonArrayType = createIrTypeEvidenceUnionCpp(
     alternatives.filter((member) => !member.array).map((member) => member.member),
   );
-  return arrayType && nonArrayType ? { arrayType, binding: candidate.reference.binding, nonArrayType } : undefined;
+  return arrayType && nonArrayType
+    ? {
+        arrayType,
+        binding: candidate.reference.binding,
+        nonArrayType,
+        optionalStorage: plan.kind === 'optionalVariant',
+      }
+    : undefined;
 }
 
 function emitCppVariantArrayPredicateCpp(
@@ -13664,7 +13672,12 @@ function emitCppVariantArrayPredicateCpp(
   if (!evidence || candidate?.kind !== 'identifier') return undefined;
   context.includes.add('flight/array.hpp');
   context.includes.add('variant');
-  return `std::visit([](const auto& value) { return flight::is_array(value); }, ${emitExpression(candidate, context)})`;
+  const value = emitExpression(candidate, context);
+  // A nullable heterogeneous union stores absence outside the variant. Exclude it before visiting;
+  // the true branch can then extract the exact array alternative from that same stored variant.
+  const variant = evidence.optionalStorage ? `${value}.value()` : value;
+  const predicate = `std::visit([](const auto& value) { return flight::is_array(value); }, ${variant})`;
+  return evidence.optionalStorage ? `(${value}.has_value() && ${predicate})` : predicate;
 }
 
 function emitCppVariantPropertyArrayPredicateCpp(

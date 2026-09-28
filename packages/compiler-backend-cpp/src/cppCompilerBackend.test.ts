@@ -9739,6 +9739,48 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('values.value().size()');
   });
 
+  it('selects the array arm of a nullable recursive document value', () => {
+    const result = lower(
+      'packages/tokens/src/flightDocumentTokenReference.ts',
+      `export type FlightDocumentValue =
+         | boolean
+         | number
+         | string
+         | null
+         | FlightDocumentValue[]
+         | FlightDocumentFields;
+       export interface FlightDocumentFields { [name: string]: FlightDocumentValue }
+       export function count(value: FlightDocumentValue): number {
+         if (Array.isArray(value)) return value.length;
+         return 0;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('value.has_value()');
+    expect(emitted).toContain('std::visit([](const auto& value) { return flight::is_array(value); }, value.value())');
+    expect(emitted).toMatch(/std::get<\d+>\(value\.value\(\)\)\.size\(\)/u);
+    expect(emitted).not.toContain('static_cast<flight::Array');
+    expect(emitted).not.toContain('materialize_row');
+
+    const unguarded = lower(
+      'packages/tokens/src/unguardedFlightDocumentTokenReference.ts',
+      `export type FlightDocumentValue =
+         | boolean
+         | number
+         | string
+         | null
+         | FlightDocumentValue[]
+         | FlightDocumentFields;
+       export interface FlightDocumentFields { [name: string]: FlightDocumentValue }
+       export function count(value: FlightDocumentValue): number { return value.length; }`,
+    ).module;
+    expect(captureBackendEmissionFailure(() => emitIrModuleCpp(unguarded, { runtimeProfile: 'flight-cpp' })).rule).toBe(
+      'cpp-optional-member-access-unproven',
+    );
+  });
+
   // The same boundary read as a property that can be either absent kind at once: the storage is the
   // variant that keeps null and undefined distinct, and the guard proves one value alternative remains.
   it('unwraps an optional property receiver a guard clause left present', () => {
