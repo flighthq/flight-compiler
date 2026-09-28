@@ -100,6 +100,39 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([explicit]).findings).toEqual([]);
   });
 
+  it('requires real indexed storage instead of an asserted index-signature view', () => {
+    const asserted = input(
+      'command.ts',
+      `interface NodeAny { readonly enabled: boolean }
+       export function readNodeProperty(target: Readonly<NodeAny>, property: string): unknown {
+         return (target as unknown as Readonly<Record<string, unknown>>)[property];
+       }`,
+    );
+    const indexed = input(
+      'portable-command.ts',
+      `type CommandPropertyValue = boolean | number | string | null;
+       interface CommandPropertyTarget {
+         readonly [property: string]: CommandPropertyValue;
+       }
+       export function readNodeProperty(
+         target: Readonly<CommandPropertyTarget>,
+         property: string,
+       ): CommandPropertyValue {
+         return target[property];
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([asserted]).findings).toMatchObject([
+      {
+        message:
+          'function:readNodeProperty uses a double assertion through unknown to claim an index-signature view; the bridge neither checks that the source has indexed storage nor preserves an exact runtime carrier for computed access. Accept a declared Record or index-signature type at this boundary, or replace the dynamic key with checked access over a closed key/value domain; an assertion cannot create that storage.',
+        rule: 'unchecked-double-assertion',
+        subject: 'function:readNodeProperty',
+      },
+    ]);
+    expect(analyzeTypeScriptSourcePortability([indexed]).findings).toEqual([]);
+  });
+
   it('excludes declaration, test-only, and generated inputs before visiting their syntax', () => {
     const text = 'interface Value { payload: any; absent?: string | null }';
     const sources = [

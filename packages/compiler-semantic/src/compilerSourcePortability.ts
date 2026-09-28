@@ -81,15 +81,10 @@ function analyzeTypeScriptSourcePortabilityInput(
   };
   const visit = (node: ts.Node): void => {
     const assertionBridge = getUncheckedDoubleAssertionBridge(node);
-    if (assertionBridge !== undefined) {
+    if (assertionBridge !== undefined && isTypeAssertion(node)) {
       const bridge = renderAssertionBridge(assertionBridge);
       const subject = getSourcePortabilitySubject(node);
-      add(
-        node,
-        'unchecked-double-assertion',
-        subject,
-        `${subject} uses a double assertion through ${bridge}; replace it with a checked conversion or a narrower source type.`,
-      );
+      add(node, 'unchecked-double-assertion', subject, renderUncheckedDoubleAssertionMessage(node, subject, bridge));
     }
     if (ts.isPropertySignature(node) && node.type) {
       const subject = getSourcePortabilitySubject(node);
@@ -298,6 +293,17 @@ function isTypeAssertion(node: ts.Node): node is ts.AsExpression | ts.TypeAssert
   return ts.isAsExpression(node) || ts.isTypeAssertionExpression(node);
 }
 
+function isTypeScriptIndexSignatureView(node: ts.TypeNode): boolean {
+  if (ts.isParenthesizedTypeNode(node)) return isTypeScriptIndexSignatureView(node.type);
+  if (ts.isTypeLiteralNode(node)) return node.members.some(ts.isIndexSignatureDeclaration);
+  if (!ts.isTypeReferenceNode(node)) return false;
+  const reference = getNodeName(node.typeName);
+  if (reference === 'Record') return node.typeArguments?.length === 2;
+  return reference === 'Readonly' && node.typeArguments?.length === 1
+    ? isTypeScriptIndexSignatureView(node.typeArguments[0]!)
+    : false;
+}
+
 function isTypeScriptSourcePortabilityInput(sourceFile: ts.SourceFile): boolean {
   if (sourceFile.isDeclarationFile) return false;
   const portable = normalizePathPortable(sourceFile.fileName);
@@ -335,4 +341,15 @@ function renderOpaqueValueDomainMessage(
 
 function renderOpaqueTypeKinds(kinds: ReadonlySet<OpaqueTypeKind>): string {
   return [...kinds].sort(compareTextCodeUnits).join(' or ');
+}
+
+function renderUncheckedDoubleAssertionMessage(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string {
+  if (isTypeScriptIndexSignatureView(getTypeAssertionType(node))) {
+    return `${subject} uses a double assertion through ${bridge} to claim an index-signature view; the bridge neither checks that the source has indexed storage nor preserves an exact runtime carrier for computed access. Accept a declared Record or index-signature type at this boundary, or replace the dynamic key with checked access over a closed key/value domain; an assertion cannot create that storage.`;
+  }
+  return `${subject} uses a double assertion through ${bridge}; replace it with a checked conversion or a narrower source type.`;
 }
