@@ -4897,7 +4897,7 @@ describe('createCppCompilerBackend', () => {
     ).toBe('compiler-restriction');
   });
 
-  it('constructs a fresh satisfies object under its declared union-arm owner', () => {
+  it('refuses a fresh satisfies owner widened through an independent base owner', () => {
     const result = lower(
       'satisfies-union-arm-owner.ts',
       `interface RuntimeBase { binding: object | null; uid?: string }
@@ -4942,27 +4942,19 @@ describe('createCppCompilerBackend', () => {
          return state;
        }`,
     );
-    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
 
-    // The outer `satisfies` target owns the allocation, its nested contextual object owns the two
-    // signal references, and the generic calls materialize the callback types in place. Storing the
-    // resulting runtime through its declared base union therefore forwards one reference; it does not
-    // rebuild either row or copy the callable state into a replacement owner.
-    expect(emitted).toContain('flight::make_ref<LassoSelectionRuntime>');
-    expect(emitted).toContain('flight::make_ref<MarqueeSelectionRuntime>');
-    expect(emitted).toContain('flight::make_ref<SelectionStateRuntime<NodeType>>');
-    expect(emitted).toContain('flight::make_ref<SelectionSignals<NodeType>>');
-    expect(emitted.match(/std::optional<flight::Ref<RuntimeBase>>\{runtime\}/gu)).toHaveLength(4);
-    expect(emitted).toContain('create_signal<std::function<void(std::optional<flight::ErasedRef>)>>()');
-    expect(emitted).toContain('create_signal<std::function<void(flight::Array<NodeType>)>>()');
-    expect(emitted.match(/create_signal</gu)).toHaveLength(2);
-    expect(emitted).not.toContain('make_structural_ref');
-    expect(emitted).not.toContain('materialize_row');
-    expect(emitted).not.toContain('structural_ref_cast');
-    expect(emitted).not.toContain('static_cast');
-    expect(emitted).not.toContain('dynamic_cast');
-    expect(emitted).not.toContain('reinterpret_cast');
-    expect(emitted).not.toContain('static_pointer_cast');
+    // `satisfies` selects the derived owner for the fresh allocation, but it does not make that
+    // owner a C++ base of RuntimeBase. The emitted interface structs are flattened independently,
+    // so the optional base carrier cannot preserve the derived allocation's identity.
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-contextual-union-interface-heritage-carrier-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('from LassoSelectionRuntime to RuntimeBase');
+    expect(failure.message).toContain('no pointer cast exists to follow');
+    expect(failure.message).toContain('materializing the target would replace object identity');
   });
 
   it('stores the spritesheet registry result in its optional declared owner', () => {
@@ -28943,7 +28935,7 @@ Resolver make_resolver(TextureRef texture) {
     expect(lookalike.rule).toBe('cpp-contextual-union-inequivalent');
     expect(lookalike.classification).toBe('target-runtime');
     expect(lookalike.message).toContain('no checked target-runtime conversion exists');
-    expect(lookalike.message).toContain('keep both sides on the same declared union alias');
+    expect(lookalike.message).toContain('Keep both sides on the same declared union alias');
   });
 
   it('preserves imported alias storage when a Record miss changes from undefined to null', () => {
@@ -37870,7 +37862,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('set_guard(std::optional<std::function<void(Release)>>{warn});');
   });
 
-  it('selects a closed generic nominal union arm across an imported type argument spelling', () => {
+  it('refuses a generic nominal union arm selected only through interface heritage', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -37913,9 +37905,14 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     );
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-    const emitted = emitCppModuleCppSession(results, resolution, 1);
-    expect(emitted).toContain('std::in_place_type<flight::Ref<flighthq_types::KeyedTable<');
-    expect(emitted).toContain('>, table}');
+    const failure = captureBackendEmissionFailure(() => emitCppModuleCppSession(results, resolution, 1));
+    expect(failure.rule).toBe('cpp-contextual-union-interface-heritage-carrier-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('from BindingTable to KeyedTable');
+    expect(failure.message).toContain(
+      'independent flight::Ref<flighthq_types::BindingTable> and flight::Ref<KeyedTable<flight::Ref<flighthq_types::Binding>>> owner types',
+    );
+    expect(failure.message).toContain('interface structs emitted with the heritage as a C++ base relation');
   });
 
   it('selects the FlightDocument registry arm and refuses its projected resource array', () => {
@@ -38486,7 +38483,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('.key = std::optional<flight::Symbol>{key}');
   });
 
-  it('constructs one declared reference union arm and refuses unproven competitors', () => {
+  it('refuses an interface-heritage owner conversion and other unproven reference union competitors', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -38596,9 +38593,14 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       },
     });
 
-    const emitted = session.emitModule(modules[4]!)[0]!.contents;
-    expect(emitted).toContain('std::in_place_type<flight::Ref<Chosen>>');
-    expect(emitted).toContain('std::optional<flight::Ref<flight::types::Base>>{flight::factory::chosen()}');
+    const heritageFailure = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+    expect(heritageFailure.rule).toBe('cpp-contextual-union-interface-heritage-carrier-unrepresented');
+    expect(heritageFailure.classification).toBe('target-runtime');
+    expect(heritageFailure.message).toContain('from Chosen to Base');
+    expect(heritageFailure.message).toContain(
+      'independent flight::Ref<flight::types::Chosen> and flight::Ref<flight::types::Base> owner types',
+    );
+    expect(heritageFailure.message).toContain('materializing the target would replace object identity');
 
     const anonymousFailure = captureBackendEmissionFailure(() => session.emitModule(modules[5]!));
     const nullableFailure = captureBackendEmissionFailure(() => session.emitModule(modules[6]!));
