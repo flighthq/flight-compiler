@@ -471,6 +471,65 @@ function lowerImportedTypeAssertionModules() {
            return testImportedAabbPair(a as CollisionAabb2D, b as CollisionAabb2D);
          }`,
       ),
+      source(
+        '@flighthq/app',
+        'app/src/typedAppRenderView.ts',
+        `import type {
+           AppRenderView,
+           AppRenderViewResize,
+           EntityRuntime,
+           RenderState,
+           RenderTargetDimensions,
+         } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         interface AppRenderViewRuntime<
+           State extends RenderState = RenderState,
+           Target extends RenderTargetDimensions = RenderTargetDimensions,
+         > extends EntityRuntime {
+           attached: boolean;
+           resize: AppRenderViewResize<State, Target>;
+           synchronize: () => void;
+         }
+         interface TypedAppRenderView<
+           State extends RenderState = RenderState,
+           Target extends RenderTargetDimensions = RenderTargetDimensions,
+         > extends AppRenderView<State, Target> {
+           [EntityRuntimeKey]: AppRenderViewRuntime<State, Target> | undefined;
+         }
+         export function createAppRenderViewRuntime<
+           State extends RenderState,
+           Target extends RenderTargetDimensions,
+         >(
+           resize: AppRenderViewResize<State, Target>,
+           synchronize: () => void,
+         ): AppRenderViewRuntime<State, Target> {
+           return { attached: false, binding: null, resize, synchronize };
+         }
+         export function setAppRenderViewRuntime<
+           State extends RenderState,
+           Target extends RenderTargetDimensions,
+         >(
+           view: TypedAppRenderView<State, Target>,
+           runtime: AppRenderViewRuntime<State, Target>,
+         ): void {
+           view[EntityRuntimeKey] = runtime;
+         }
+         export function getAppRenderViewRuntime<
+           State extends RenderState,
+           Target extends RenderTargetDimensions,
+         >(
+           view: TypedAppRenderView<State, Target>,
+         ): AppRenderViewRuntime<State, Target> {
+           return view[EntityRuntimeKey]!;
+         }
+         export function attachAppRenderView<
+           State extends RenderState,
+           Target extends RenderTargetDimensions,
+         >(view: TypedAppRenderView<State, Target>): void {
+           const runtime = getAppRenderViewRuntime(view);
+           runtime.attached = true;
+         }`,
+      ),
     ],
     moduleResolution,
   );
@@ -6694,7 +6753,7 @@ describe('createCppCompilerBackend', () => {
       modules,
       options: { runtimeProfile: 'flight-cpp' },
     });
-    const contents = session.emitModule(modules.at(-1)!)[0]!.contents;
+    const contents = session.emitModule(modules[7]!)[0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(contents.match(/std::get_if<flight::Ref</g)).toHaveLength(2);
@@ -6779,6 +6838,7 @@ describe('createCppCompilerBackend', () => {
     const app = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
     const render = captureBackendEmissionFailure(() => session.emitModule(modules[5]!));
     const concrete = session.emitModule(modules[6]!)[0]!.contents;
+    const typedApp = session.emitModule(modules[8]!)[0]!.contents;
 
     // Both SDK assertions read EntityRuntime from EntityRuntimeKey. The derived runtime fields have no
     // cells in that represented owner, so checker assignability cannot identify a recoverable C++ value:
@@ -6789,15 +6849,30 @@ describe('createCppCompilerBackend', () => {
       expect(failure.classification).toBe('source-portability');
       expect(failure.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
       expect(failure.message).toContain('An assertion cannot add those cells');
-      expect(failure.message).toContain('type the slot or accessor as');
+      expect(failure.message).toContain('type the retaining slot and every accessor result as');
+      expect(failure.message).toContain(
+        'changing only the accessor result cannot recover a wider owner after a base-typed slot erased it',
+      );
     }
     expect(app.message).toContain('AppRenderViewRuntime');
     expect(app.message).toContain('attached, resize and synchronize');
+    expect(app.message).toContain('construct AppRenderViewRuntime<RenderState, RenderTargetDimensions> explicitly');
     expect(render.message).toContain('flighthq_types::RenderStateRuntime');
     expect(render.message).toContain('currentFrameId and renderProxyMap');
     expect(concrete).toContain('get_concrete_runtime');
     expect(concrete).not.toContain('static_pointer_cast');
     expect(concrete).not.toContain('structural_ref_cast');
+    // The sound source contract starts with the concrete runtime owner, carries that exact type in the
+    // EntityRuntimeKey slot, and returns it from the accessor. Reads and writes then stay on one owner;
+    // there is no assertion, copied row, side cell, or pointer recovery for the backend to invent.
+    expect(typedApp).toContain('flight::make_ref<AppRenderViewRuntime_');
+    expect(typedApp).toContain('(view->entity_runtime_key = std::optional<flight::Ref<AppRenderViewRuntime_');
+    expect(typedApp).toContain('return view->entity_runtime_key.value()');
+    expect(typedApp).toContain('(runtime->attached = true)');
+    expect(typedApp).not.toContain('static_pointer_cast');
+    expect(typedApp).not.toContain('structural_ref_cast');
+    expect(typedApp).not.toContain('materialize_row');
+    expect(typedApp).not.toContain('row_set');
   });
 
   it('names the base owner behind the current render-state runtime assertion', () => {
@@ -6824,7 +6899,7 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('registryMiss');
     expect(failure.message).toContain('tempStack');
     expect(failure.message).toContain('An assertion cannot add those cells');
-    expect(failure.message).toContain('type the slot or accessor as');
+    expect(failure.message).toContain('type the retaining slot and every accessor result as');
     expect(typed).toContain('get_render_state_runtime');
     expect(typed).not.toContain('static_pointer_cast');
     expect(typed).not.toContain('structural_ref_cast');
@@ -7052,7 +7127,7 @@ describe('createCppCompilerBackend', () => {
       expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
       expect(failure.classification).toBe('source-portability');
       expect(failure.message).toContain('An assertion cannot add those cells');
-      expect(failure.message).toContain('type the slot or accessor as');
+      expect(failure.message).toContain('type the retaining slot and every accessor result as');
     }
     expect(video.message).toContain('flight::Ref<flighthq_types::TextureSource>');
     expect(video.message).toContain('flight::Ref<flighthq_types::ImageResource>');
@@ -7169,7 +7244,7 @@ describe('createCppCompilerBackend', () => {
       expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
       expect(failure.classification).toBe('source-portability');
       expect(failure.message).toContain('An assertion cannot add those cells');
-      expect(failure.message).toContain('type the slot or accessor as');
+      expect(failure.message).toContain('type the retaining slot and every accessor result as');
     }
     expect(mesh.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
     expect(mesh.message).toContain('flight::Ref<flighthq_types::MeshGeometryRuntime>');
@@ -7200,7 +7275,7 @@ describe('createCppCompilerBackend', () => {
       expect(failure.classification).toBe('source-portability');
       expect(failure.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
       expect(failure.message).toContain('An assertion cannot add those cells');
-      expect(failure.message).toContain('type the slot or accessor as');
+      expect(failure.message).toContain('type the retaining slot and every accessor result as');
     }
     expect(dialog.message).toContain('flight::Ref<flighthq_types::FileDialogHandleRuntime>');
     expect(dialog.message).toContain('operations');
@@ -7232,7 +7307,7 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('flight::Ref<flighthq_types::SelectionStateRuntime<NodeType>>');
     expect(failure.message).toContain('reads activeNode, selectedNodeSet, selectedNodes and signals');
     expect(failure.message).toContain('An assertion cannot add those cells');
-    expect(failure.message).toContain('type the slot or accessor as');
+    expect(failure.message).toContain('type the retaining slot and every accessor result as');
     expect(typed).toContain('get_typed_selection_state_runtime');
     expect(typed).toContain(
       'std::optional<flight::Ref<flighthq_types::SelectionStateRuntime<NodeType>>> entity_runtime_key;',

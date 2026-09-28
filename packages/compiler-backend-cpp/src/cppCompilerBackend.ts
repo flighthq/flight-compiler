@@ -6077,13 +6077,14 @@ function refuseCppStructuralAssertionOwnerUnprovenCpp(
   const diagnosticContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set() };
   const sourceType = source ? emitType(source, diagnosticContext) : 'the unresolved source row';
   const targetType = target ? emitType(target, diagnosticContext) : 'the unresolved asserted row';
+  const declaredTargetType = target ? describeDeclaredIrTypeForDiagnosticCpp(target) : targetType;
   const missing =
     absent.length === 0
       ? 'members the source type does not declare'
       : `${renderCppSubjectNameListCpp(absent)}, which the source type does not declare`;
   emissionError(
     context,
-    `the asserted row from ${sourceType} to ${targetType} reads ${missing}, and a structural owner binds the members of the type the object was first reached as, so a member the source's own declaration lacks has no cell to answer the read. An assertion cannot add those cells or prove which wider owner was stored. Preserve the concrete owner in the source type through every storage or callback boundary, or make an intentionally erased registry validate and recover that owner before dispatch; a tag or registry key carried beside the value does not prove which owner the reference retains. Declare the source as a type that declares ${absent.length === 0 ? 'them' : renderCppSubjectNameListCpp(absent)} -- type the slot or accessor as ${targetType} where the concrete type is known, or construct that target explicitly -- rather than asserting past ${sourceType}.`,
+    `the asserted row from ${sourceType} to ${targetType} reads ${missing}, and a structural owner binds the members of the type the object was first reached as, so a member the source's own declaration lacks has no cell to answer the read. An assertion cannot add those cells or prove which wider owner was stored. Preserve the concrete owner in the source type through every storage or callback boundary, or make an intentionally erased registry validate and recover that owner before dispatch; a tag or registry key carried beside the value does not prove which owner the reference retains. Declare the source as a type that declares ${absent.length === 0 ? 'them' : renderCppSubjectNameListCpp(absent)} -- construct ${declaredTargetType} explicitly, then type the retaining slot and every accessor result as ${declaredTargetType} wherever that concrete owner is known; changing only the accessor result cannot recover a wider owner after a base-typed slot erased it -- rather than asserting past ${sourceType}.`,
     'cpp-structural-assertion-owner-unproven',
   );
 }
