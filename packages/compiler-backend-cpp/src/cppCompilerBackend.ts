@@ -15569,6 +15569,16 @@ function emitContextualUnionExpressionInContextCpp(
       cause === 'structural-array-projection'
         ? getCppStructuralArrayProjectionGapCpp(runtimeType, plan, context)
         : undefined;
+    const structuralArraySource = structuralArrayProjectionGap
+      ? expression.kind === 'property'
+        ? 'This property read already refers to an existing owning array; it is not a fresh allocation whose element carrier can be chosen at this return.'
+        : `This ${expression.kind} expression already refers to an existing owning array; only an array literal allocated in the declared destination context can choose the projected element carrier.`
+      : undefined;
+    const structuralArrayRemediation = structuralArrayProjectionGap
+      ? expression.kind === 'property'
+        ? `Change the source contract: declare the result as readonly ${describeIrTypeForDiagnosticCpp(structuralArrayProjectionGap.sourceElementType)}[] with its existing null arm, or declare the source field itself with the projected readonly-element type and construct every array in that declared context. If both declarations must remain, add an identity-preserving projected-array carrier or view to flight-cpp.`
+        : `Return the exact source array type, or construct a fresh local array only in the declared destination context so its element carrier is chosen at allocation. If both declarations must remain, add an identity-preserving projected-array carrier or view to flight-cpp.`
+      : undefined;
     emissionError(
       context,
       callableErasedReturnGap
@@ -15590,7 +15600,7 @@ function emitContextualUnionExpressionInContextCpp(
                   : cause === 'nominal-mismatch'
                     ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
                     : structuralArrayProjectionGap
-                      ? `contextual union source array carrier ${targetType} with element carrier ${structuralArrayProjectionGap.sourceElementCarrier} cannot become the destination's projected element array carrier ${structuralArrayProjectionGap.targetCarrier} with element carrier ${structuralArrayProjectionGap.targetElementCarrier} without changing array identity. Return the exact source array type, construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
+                      ? `contextual union source array carrier ${targetType} with element carrier ${structuralArrayProjectionGap.sourceElementCarrier} cannot become the destination's projected element array carrier ${structuralArrayProjectionGap.targetCarrier} with element carrier ${structuralArrayProjectionGap.targetElementCarrier} without changing array identity. ${structuralArraySource} An unchecked cast would reinterpret its invariant element storage; projecting the elements, copying or materializing an array, or adding side storage, would publish a different outer owner. ${structuralArrayRemediation}`
                       : `contextual union value type ${targetType} is not a represented runtime domain`,
       secondaryIntersectionCarrier
         ? 'cpp-contextual-union-secondary-intersection-carrier-unrepresented'
@@ -16951,6 +16961,7 @@ interface CppErasedValueUnionExtraction {
 }
 
 interface CppStructuralArrayProjectionGap {
+  readonly sourceElementType: Readonly<IrType>;
   readonly sourceElementCarrier: string;
   readonly targetCarrier: string;
   readonly targetElementCarrier: string;
@@ -16987,6 +16998,7 @@ function getCppStructuralArrayProjectionGapCpp(
     const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
     return [
       {
+        sourceElementType: sourceArray.element,
         sourceElementCarrier: emitType(sourceArray.element, isolatedContext),
         targetCarrier: slot.targetType,
         targetElementCarrier: emitType(targetArray.element, isolatedContext),

@@ -20348,6 +20348,35 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('static_cast');
   });
 
+  it('constructs a fresh returned array in its nullable projected element domain', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'fresh-projected-array-return.ts',
+        `interface Descriptor { readonly kind: string }
+         function makeDescriptor(): Descriptor { return { kind: 'Texture' }; }
+         export function dependencies(include: boolean): readonly Readonly<Descriptor>[] | null {
+           if (!include) return null;
+           const descriptors: Descriptor[] = [];
+           descriptors.push(makeDescriptor());
+           return descriptors;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    const element = 'flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Descriptor>>>>';
+    const projected = `flight::Array<${element}>`;
+    // The source allocates this array inside its one declared destination context. Choosing the
+    // projected element carrier at that allocation preserves the one outer owner; each pushed view
+    // retains its Descriptor referent and no later array conversion is inserted.
+    expect(contents).toContain(`${projected} descriptors = ${projected}{}`);
+    expect(contents).toContain('descriptors.push(flight::structural_ref_cast');
+    expect(contents).toContain(`return std::optional<${projected}>{descriptors};`);
+    expect(contents).not.toContain('flight::Array<flight::Ref<Descriptor>> descriptors');
+    expect(contents).not.toContain('flight::materialize_row');
+    expect(contents).not.toContain('static_cast');
+  });
+
   it('constructs imported scene light arrays in their contextual projected element domain', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
@@ -36810,6 +36839,21 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           ),
           upstreamDirectory: '/flight',
         },
+        {
+          packageName: '@flighthq/scene-document',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/scene-document/src/flightDocumentResourceDependenciesNominal.ts',
+            `import type { FlightDocument, FlightDocumentResourceDescriptor } from '@flighthq/types';
+             export function getFlightDocumentResourceDependenciesNominal(
+               document: Readonly<FlightDocument>,
+             ): readonly FlightDocumentResourceDescriptor[] | null {
+               return document.resources;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
       ],
       resolution,
     );
@@ -36855,7 +36899,28 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(projectedArray.message).toContain(`element carrier ${targetElementCarrier}`);
     expect(projectedArray.message).toContain("cannot become the destination's projected element array");
     expect(projectedArray.message).toContain('without changing array identity');
-    expect(projectedArray.message).toContain('Return the exact source array type');
+    expect(projectedArray.message).toContain('This property read already refers to an existing owning array');
+    expect(projectedArray.message).toContain('unchecked cast would reinterpret its invariant element storage');
+    expect(projectedArray.message).toContain(
+      'copying or materializing an array, or adding side storage, would publish a different outer owner',
+    );
+    expect(projectedArray.message).toContain(
+      'declare the result as readonly FlightDocumentResourceDescriptor[] with its existing null arm',
+    );
+    expect(projectedArray.message).toContain(
+      'declare the source field itself with the projected readonly-element type and construct every array in that declared context',
+    );
+    expect(projectedArray.message).toContain('identity-preserving projected-array carrier or view');
+
+    const nominal = session.emitModule(modules[5]!)[0]!.contents;
+    // This source-level alternative returns the exact owning array type the document field stores. The
+    // handle crosses unchanged; the compiler neither projects elements nor creates another outer owner.
+    expect(nominal).toContain(
+      'std::optional<flight::Array<flight::Ref<flighthq_types::FlightDocumentResourceDescriptor>>>',
+    );
+    expect(nominal).toContain('flight::row_get<flight::RowKey<"resources">>(document)');
+    expect(nominal).not.toContain('structural_ref_cast');
+    expect(nominal).not.toContain('materialize_row');
   });
 
   it('attributes a render cache adapter secondary carrier to missing runtime identity storage', () => {
