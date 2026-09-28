@@ -40469,6 +40469,62 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(comparison.rule).toBe('cpp-dual-sentinel-comparison-unrepresented');
   });
 
+  it('draws the line between a mixed-absence coalesce it lowers and one it still refuses', () => {
+    const renderState = `export interface GlScene3DRuntime { readonly count?: number | null | undefined }
+       `;
+    const module_ = (body: string) => lower('GlScene3DRuntime.ts', `${renderState}${body}`).module;
+    const emit = (body: string) => emitIrModuleCpp(module_(body), { runtimeProfile: 'flight-cpp' }).contents;
+    const refusal = (body: string) =>
+      captureBackendEmissionFailure(() => emitIrModuleCpp(module_(body), { runtimeProfile: 'flight-cpp' }));
+
+    // Lowers: a value fallback, and a same-storage operand. The select reads each operand once and keeps the
+    // mixed absence exactly as the source type says.
+    expect(emit(`export function f(s: GlScene3DRuntime): number { return s.count ?? 0; }`)).toContain(
+      'return std::get<0>(coalesce_left);',
+    );
+    expect(
+      emit(
+        `export function f(a: GlScene3DRuntime, b: GlScene3DRuntime): number | null | undefined {
+           return a.count ?? b.count;
+         }`,
+      ),
+    ).toContain('return coalesce_left;');
+    // A single-valued coalesce into an object member lowers as well, which is what a runtime builder does.
+    expect(
+      emit(`export function f(s: GlScene3DRuntime): GlScene3DRuntime { return { count: s.count ?? 0 }; }`),
+    ).toContain('return std::get<0>(coalesce_left);');
+
+    // Still refused, and the boundary is recorded here so the next attempt starts from it rather than from the
+    // whole family: a SENTINEL-LITERAL fallback (`?? null`, `?? undefined`) refuses where a value fallback and a
+    // same-storage operand both lower, and a comparison asking for both sentinels refuses on its own rule.
+    for (const [label, body, rule] of [
+      [
+        'null fallback',
+        `export function f(s: GlScene3DRuntime): number | null | undefined { return s.count ?? null; }`,
+        'cpp-dual-sentinel-coalesce-projection-unproven',
+      ],
+      [
+        'undefined fallback',
+        `export function f(s: GlScene3DRuntime): number | null | undefined { return s.count ?? undefined; }`,
+        'cpp-contextual-union-missing-expression-type:dualSentinelVariant',
+      ],
+      [
+        'three-deep nesting',
+        `export function f(a: GlScene3DRuntime, b: GlScene3DRuntime): number { return a.count ?? b.count ?? 0; }`,
+        'cpp-dual-sentinel-coalesce-projection-unproven',
+      ],
+    ] as const) {
+      expect(refusal(body).rule, label).toBe(rule);
+    }
+    expect(
+      refusal(
+        `export function f(s: GlScene3DRuntime): number {
+           return s.count === undefined ? 0 : s.count === null ? 1 : 2;
+         }`,
+      ).rule,
+    ).toBe('cpp-dual-sentinel-comparison-unrepresented');
+  });
+
   it('names the flattening behind an unidentified heritage assertion and keeps its rewrite exact', () => {
     const shared = `interface RenderState { readonly pipeline: string }
        interface RenderProxyBase { readonly id: string }
