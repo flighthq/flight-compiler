@@ -19626,6 +19626,133 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('flight::Array<double> result = flight::Array<double>((size * 3.0))');
   });
 
+  it('emits capacity-sized path and text arrays after exact loops prove every slot initialized', () => {
+    const paths = lower(
+      'path-capacity-loop-fill-flight.ts',
+      `export function directions(vertices: number[]): number[][] {
+        const count = vertices.length / 2;
+        const dirX = new Array<number>(count);
+        const dirY = new Array<number>(count);
+        const normalX = new Array<number>(count);
+        const normalY = new Array<number>(count);
+        for (let k = 0; k < count; k++) {
+          const next = (k + 1) % count;
+          const dx = vertices[next * 2] - vertices[k * 2];
+          const dy = vertices[next * 2 + 1] - vertices[k * 2 + 1];
+          const length = Math.sqrt(dx * dx + dy * dy);
+          dirX[k] = dx / length;
+          dirY[k] = dy / length;
+          normalX[k] = -dirY[k];
+          normalY[k] = dirX[k];
+        }
+        return [dirX, dirY, normalX, normalY];
+      }
+      export function strokeNormals(pts: number[]): number[] {
+        const n = pts.length >> 1;
+        if (n < 2) return [];
+        const normals = new Array<number>((n - 1) * 2);
+        for (let i = 0; i < n - 1; i++) {
+          const dx = pts[(i + 1) * 2] - pts[i * 2];
+          const dy = pts[(i + 1) * 2 + 1] - pts[i * 2 + 1];
+          const length = Math.sqrt(dx * dx + dy * dy);
+          if (length > 0) {
+            normals[i * 2] = -dy / length;
+            normals[i * 2 + 1] = dx / length;
+          } else {
+            normals[i * 2] = i > 0 ? normals[(i - 1) * 2] : 0;
+            normals[i * 2 + 1] = i > 0 ? normals[(i - 1) * 2 + 1] : 1;
+          }
+        }
+        return normals;
+      }
+      export function reverseVertexLoop(vertices: number[]): number[] {
+        const count = vertices.length / 2;
+        const out = new Array<number>(vertices.length);
+        out[0] = vertices[0];
+        out[1] = vertices[1];
+        for (let k = 1; k < count; k++) {
+          const source = count - k;
+          out[2 * k] = vertices[2 * source];
+          out[2 * k + 1] = vertices[2 * source + 1];
+        }
+        return out;
+      }`,
+    );
+    const carets = lower(
+      'text-caret-capacity-loop-fill-flight.ts',
+      `interface Glyph { readonly xAdvance: number }
+      interface Run { readonly glyphCount: number }
+      export function caretPositions(run: Run, glyphs: Glyph[]): number[] {
+        const count = run.glyphCount;
+        const positions = new Array<number>(count + 1);
+        positions[0] = 0;
+        let x = 0;
+        for (let i = 0; i < count; i++) {
+          x += glyphs[i].xAdvance;
+          positions[i + 1] = x;
+        }
+        return positions;
+      }`,
+    );
+
+    const pathContents = emitIrModuleCpp(paths.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const caretContents = emitIrModuleCpp(carets.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(paths.diagnostics).toEqual([]);
+    expect(carets.diagnostics).toEqual([]);
+    expect(pathContents).toContain('flight::Array<double> dir_x = flight::Array<double>(count)');
+    expect(pathContents).toContain('flight::Array<double> normals = flight::Array<double>(((n - 1.0) * 2.0))');
+    expect(pathContents).toContain('flight::Array<double>(static_cast<double>(vertices.size()))');
+    expect(pathContents).toContain('.clear()');
+    expect(pathContents).not.toMatch(/out\.element\([^)]*\)\s*=/u);
+    expect(caretContents).toContain('flight::Array<double>((count + 1.0))');
+    expect(caretContents).toContain('.clear()');
+    expect(caretContents.match(/\.push\(/gu)).toHaveLength(2);
+    expect(caretContents).not.toMatch(/positions\.element\([^)]*\)\s*=/u);
+  });
+
+  it('refuses capacity-sized loops with a skipped branch, trailing hole, or unguarded prior-slot read', () => {
+    const refusal = (file: string, body: string) => {
+      const result = lower(file, body);
+      return captureBackendEmissionFailure(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }));
+    };
+    const skippedBranch = refusal(
+      'array-capacity-skipped-branch-flight.ts',
+      `export function values(size: number, write: boolean): number[] {
+        const result = new Array<number>(size);
+        for (let index = 0; index < size; index++) {
+          if (write) result[index] = index;
+        }
+        return result;
+      }`,
+    );
+    const trailingHole = refusal(
+      'array-capacity-affine-trailing-hole-flight.ts',
+      `export function values(size: number): number[] {
+        const result = new Array<number>(size + 2);
+        result[0] = 0;
+        for (let index = 0; index < size; index++) result[index + 1] = index;
+        return result;
+      }`,
+    );
+    const unguardedPriorRead = refusal(
+      'array-capacity-unguarded-prior-read-flight.ts',
+      `export function values(size: number): number[] {
+        const result = new Array<number>(size * 2);
+        for (let index = 0; index < size; index++) {
+          result[index * 2] = index > 0 ? result[(index - 1) * 2] : 0;
+          result[index * 2 + 1] = result[(index - 1) * 2 + 1];
+        }
+        return result;
+      }`,
+    );
+
+    for (const failure of [skippedBranch, trailingHole, unguardedPriorRead]) {
+      expect(failure.rule).toBe('cpp-array-length-sparse-runtime-required');
+      expect(failure.classification).toBe('target-runtime');
+    }
+  });
+
   it('emits a zero-sized array because it contains no sparse slots', () => {
     const result = lower(
       'array-zero-length-flight.ts',
