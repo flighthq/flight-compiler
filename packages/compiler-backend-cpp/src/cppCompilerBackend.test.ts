@@ -10466,8 +10466,10 @@ describe('createCppCompilerBackend', () => {
     // The compound terminating guard proves both presence and exactly the `Texture2D` discriminant.
     // Selection is a checked std::get from the existing optional variant; the source and uvOffset reads
     // then use that same owner. No runtime contract extension, row rebuild, or native cast is needed.
-    expect(contents).toMatch(/std::get<\d+>\(texture\.value\(\)\)->source/u);
-    expect(contents).toMatch(/std::get<\d+>\(texture\.value\(\)\)->uv_offset/u);
+    const sourceSlot = /std::get<(\d+)>\(texture\.value\(\)\)->source/u.exec(contents)?.[1];
+    const uvOffsetSlot = /std::get<(\d+)>\(texture\.value\(\)\)->uv_offset/u.exec(contents)?.[1];
+    expect(sourceSlot).toBeDefined();
+    expect(uvOffsetSlot).toBe(sourceSlot);
     expect(contents).not.toContain('static_pointer_cast');
     expect(contents).not.toContain('materialize_row');
     expect(contents).not.toContain('make_structural_ref');
