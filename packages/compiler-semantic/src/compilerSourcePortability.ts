@@ -538,6 +538,8 @@ function renderOpaquePropertyValueDomainMessage(
   subject: string,
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string {
+  const materializationTraits = getSceneDocumentMaterializationOpaqueTraitsGuidance(node, subject, kinds);
+  if (materializationTraits) return materializationTraits;
   const animationValue = getAnimationOpaqueValueGuidance(node, subject, kinds);
   if (animationValue) return animationValue;
   const flightContract = getFlightTypesOpaquePropertyGuidance(node, subject, kinds);
@@ -704,6 +706,62 @@ function isNetResponseBodyOpaqueUnion(node: ts.TypeNode): boolean {
     node.types.some((type) => isNamedTypeReference(type, 'ArrayBuffer')) &&
     node.types.some((type) => isNamedTypeReference(type, 'Blob')) &&
     node.types.some((type) => hasNullType(type))
+  );
+}
+
+function getSceneDocumentMaterializationOpaqueTraitsGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    !hasOnlyUnknown(kinds) ||
+    getNodeName(node.name) !== 'traits' ||
+    getEnclosingVariableName(node) !== 'runtime' ||
+    !isReadonlyOptionalUnknownTraitsProbe(node)
+  ) {
+    return undefined;
+  }
+  const source = normalizePathPortable(node.getSourceFile().fileName);
+  if (source.endsWith('/packages/scene-document/src/sceneDocumentScene2DMaterialization.ts')) {
+    if (subject === 'function:adoptDocumentRoot2D/property:traits') {
+      return `${subject} is a locally erased view of the node returned by FlightDocumentNodeSchema.createNode, after raw document fields and resolved resources have already crossed the registered factory boundary. The declared Node runtime owns a named optional traits key, and createNode2DRuntime writes Node2DTraitsKey. Guard that the candidate has an allocated runtime, then use the typed isNode2D predicate or getNodeRuntime(root).traits comparison before installing it as the scene root. A reviewed exception is not justified because unknown is introduced only by this structural assertion, not by a provider-owned payload. The compiler will not choose a target-specific Any carrier, preserve or replace the assertion with a cast, or copy or materialize the candidate node.`;
+    }
+    if (subject === 'function:checkRootKindDimension/property:traits') {
+      return `${subject} is a locally erased view of the probe returned by FlightDocumentNodeSchema.createNode. The probe's declared Node runtime already carries the named optional traits-key contract; the dimension check needs only the closed Node2DTraitsKey or Node3DTraitsKey identity selected by dimension. Guard that the probe has an allocated runtime, then use typed node predicates or getNodeRuntime(probe).traits for that comparison. A reviewed exception is not justified because no raw document or provider value remains in this property: unknown is created by the assertion itself. The compiler will not choose a target-specific Any carrier, preserve or replace the assertion with a cast, or copy or materialize the probe node.`;
+    }
+    return undefined;
+  }
+  if (source.endsWith('/packages/scene-document/src/sceneDocumentScene3DMaterialization.ts')) {
+    if (subject === 'function:adoptDocumentRoot3D/property:traits') {
+      return `${subject} is a locally erased view of the node returned by FlightDocumentNodeSchema.createNode, after raw document fields and resolved resources have already crossed the registered factory boundary. The declared Node runtime owns a named optional traits key, and createNode3DRuntime writes Node3DTraitsKey. Guard that the candidate has an allocated runtime, then use a typed isNode3D predicate backed by getNodeRuntime(root).traits before installing it as the scene root. A reviewed exception is not justified because unknown is introduced only by this structural assertion, not by a provider-owned payload. The compiler will not choose a target-specific Any carrier, preserve or replace the assertion with a cast, or copy or materialize the candidate node.`;
+    }
+    if (subject === 'function:checkRootKindDimension3D/property:traits') {
+      return `${subject} is a locally erased view of the probe returned by FlightDocumentNodeSchema.createNode. The probe's declared Node runtime already carries the named optional traits-key contract, and this check needs only the closed Node3DTraitsKey identity. Guard that the probe has an allocated runtime, then use a typed isNode3D predicate backed by getNodeRuntime(probe).traits. A reviewed exception is not justified because no raw document or provider value remains in this property: unknown is created by the assertion itself. The compiler will not choose a target-specific Any carrier, preserve or replace the assertion with a cast, or copy or materialize the probe node.`;
+    }
+  }
+  return undefined;
+}
+
+function isReadonlyOptionalUnknownTraitsProbe(node: ts.PropertySignature): boolean {
+  const parent = node.parent;
+  if (!ts.isTypeLiteralNode(parent) || parent.members.length !== 1 || node.questionToken === undefined) return false;
+  if (node.type?.kind !== ts.SyntaxKind.UnknownKeyword) return false;
+  const readonlyType = parent.parent;
+  if (
+    !ts.isTypeReferenceNode(readonlyType) ||
+    getNodeName(readonlyType.typeName) !== 'Readonly' ||
+    readonlyType.typeArguments?.length !== 1 ||
+    readonlyType.typeArguments[0] !== parent
+  ) {
+    return false;
+  }
+  const union = readonlyType.parent;
+  return (
+    ts.isUnionTypeNode(union) &&
+    union.types.length === 2 &&
+    union.types.includes(readonlyType) &&
+    union.types.some((type) => type.kind === ts.SyntaxKind.UndefinedKeyword)
   );
 }
 

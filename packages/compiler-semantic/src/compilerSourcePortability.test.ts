@@ -1058,6 +1058,218 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toMatchObject([{ finding: { identity: finding.identity } }]);
   });
 
+  it('keeps Scene2D materialization dimension probes on the declared node traits contract', () => {
+    const opaque = input(
+      'packages/scene-document/src/sceneDocumentScene2DMaterialization.ts',
+      `declare const Node2DTraitsKey: symbol;
+       declare const Node3DTraitsKey: symbol;
+       declare function getEntityRuntime(node: object): object;
+       function adoptDocumentRoot2D(root: object): boolean {
+         const runtime = getEntityRuntime(root) as Readonly<{ traits?: unknown }> | undefined;
+         return runtime?.traits === Node2DTraitsKey;
+       }
+       function checkRootKindDimension(probe: object, dimension: 'Scene2D' | 'Scene3D'): boolean {
+         const runtime = getEntityRuntime(probe) as Readonly<{ traits?: unknown }> | undefined;
+         const expected = dimension === 'Scene2D' ? Node2DTraitsKey : Node3DTraitsKey;
+         return runtime?.traits === expected;
+       }`,
+    );
+    const closed = input(
+      'packages/scene-document/src/sceneDocumentScene2DMaterialization.ts',
+      `interface NodeAny { readonly id: number }
+       declare function hasEntityRuntime(node: NodeAny): boolean;
+       declare function isNode2D(node: NodeAny): boolean;
+       declare function isNode3D(node: NodeAny): boolean;
+       function adoptDocumentRoot2D(root: NodeAny): boolean {
+         return hasEntityRuntime(root) && isNode2D(root);
+       }
+       function checkRootKindDimension(probe: NodeAny, dimension: 'Scene2D' | 'Scene3D'): boolean {
+         if (!hasEntityRuntime(probe)) return false;
+         return dimension === 'Scene2D' ? isNode2D(probe) : isNode3D(probe);
+       }`,
+    );
+    const controls = [
+      input(
+        'packages/scene-document/src/OtherMaterialization.ts',
+        `function adoptDocumentRoot2D(root: object): void {
+           const runtime = root as Readonly<{ traits?: unknown }> | undefined;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/other/src/sceneDocumentScene2DMaterialization.ts',
+        `function checkRootKindDimension(root: object): void {
+           const runtime = root as Readonly<{ traits?: unknown }> | undefined;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene2DMaterialization.ts',
+        `function otherRootCheck(root: object): void {
+           const runtime = root as Readonly<{ traits?: unknown }> | undefined;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene2DMaterialization.ts',
+        `function adoptDocumentRoot2D(root: object): void {
+           const nodeRuntime = root as Readonly<{ traits?: unknown }> | undefined;
+           void nodeRuntime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene2DMaterialization.ts',
+        `function adoptDocumentRoot2D(root: object): void {
+           const runtime = root as Readonly<{ traits: unknown }> | undefined;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene2DMaterialization.ts',
+        `function adoptDocumentRoot2D(root: object): void {
+           const runtime = root as Readonly<{ traits?: unknown }>;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene2DMaterialization.ts',
+        `function adoptDocumentRoot2D(root: object): void {
+           const runtime = root as Readonly<{ traits?: any }> | undefined;
+           void runtime;
+         }`,
+      ),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'function:adoptDocumentRoot2D/property:traits',
+      'function:checkRootKindDimension/property:traits',
+    ]);
+    expect(report.findings[0]?.message).toContain('after raw document fields and resolved resources');
+    expect(report.findings[0]?.message).toContain('typed isNode2D predicate');
+    expect(report.findings[0]?.message).toContain('before installing it as the scene root');
+    expect(report.findings[1]?.message).toContain('closed Node2DTraitsKey or Node3DTraitsKey identity');
+    expect(report.findings[1]?.message).toContain('typed node predicates or getNodeRuntime(probe).traits');
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('A reviewed exception is not justified');
+      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('preserve or replace the assertion with a cast');
+      expect(finding.message).toMatch(/copy or materialize the (?:candidate|probe) node/u);
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('declared Node runtime'),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('keeps Scene3D materialization dimension probes on the declared node traits contract', () => {
+    const opaque = input(
+      'packages/scene-document/src/sceneDocumentScene3DMaterialization.ts',
+      `declare const Node3DTraitsKey: symbol;
+       declare function getEntityRuntime(node: object): object;
+       function adoptDocumentRoot3D(root: object): boolean {
+         const runtime = getEntityRuntime(root) as Readonly<{ traits?: unknown }> | undefined;
+         return runtime?.traits === Node3DTraitsKey;
+       }
+       function checkRootKindDimension3D(probe: object): boolean {
+         const runtime = getEntityRuntime(probe) as Readonly<{ traits?: unknown }> | undefined;
+         return runtime?.traits === Node3DTraitsKey;
+       }`,
+    );
+    const closed = input(
+      'packages/scene-document/src/sceneDocumentScene3DMaterialization.ts',
+      `interface NodeAny { readonly id: number }
+       declare function hasEntityRuntime(node: NodeAny): boolean;
+       declare function isNode3D(node: NodeAny): boolean;
+       function adoptDocumentRoot3D(root: NodeAny): boolean {
+         return hasEntityRuntime(root) && isNode3D(root);
+       }
+       function checkRootKindDimension3D(probe: NodeAny): boolean {
+         return hasEntityRuntime(probe) && isNode3D(probe);
+       }`,
+    );
+    const controls = [
+      input(
+        'packages/scene-document/src/OtherMaterialization.ts',
+        `function adoptDocumentRoot3D(root: object): void {
+           const runtime = root as Readonly<{ traits?: unknown }> | undefined;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/other/src/sceneDocumentScene3DMaterialization.ts',
+        `function checkRootKindDimension3D(root: object): void {
+           const runtime = root as Readonly<{ traits?: unknown }> | undefined;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene3DMaterialization.ts',
+        `function otherRootCheck(root: object): void {
+           const runtime = root as Readonly<{ traits?: unknown }> | undefined;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene3DMaterialization.ts',
+        `function adoptDocumentRoot3D(root: object): void {
+           const nodeRuntime = root as Readonly<{ traits?: unknown }> | undefined;
+           void nodeRuntime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene3DMaterialization.ts',
+        `function adoptDocumentRoot3D(root: object): void {
+           const runtime = root as Readonly<{ traits: unknown }> | undefined;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene3DMaterialization.ts',
+        `function adoptDocumentRoot3D(root: object): void {
+           const runtime = root as Readonly<{ traits?: unknown }>;
+           void runtime;
+         }`,
+      ),
+      input(
+        'packages/scene-document/src/sceneDocumentScene3DMaterialization.ts',
+        `function adoptDocumentRoot3D(root: object): void {
+           const runtime = root as Readonly<{ traits?: any }> | undefined;
+           void runtime;
+         }`,
+      ),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'function:adoptDocumentRoot3D/property:traits',
+      'function:checkRootKindDimension3D/property:traits',
+    ]);
+    expect(report.findings[0]?.message).toContain('after raw document fields and resolved resources');
+    expect(report.findings[0]?.message).toContain('typed isNode3D predicate');
+    expect(report.findings[0]?.message).toContain('before installing it as the scene root');
+    expect(report.findings[1]?.message).toContain('closed Node3DTraitsKey identity');
+    expect(report.findings[1]?.message).toContain('typed isNode3D predicate backed by getNodeRuntime(probe).traits');
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('A reviewed exception is not justified');
+      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('preserve or replace the assertion with a cast');
+      expect(finding.message).toMatch(/copy or materialize the (?:candidate|probe) node/u);
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('declared Node runtime'),
+        ),
+      ).toBe(true);
+    }
+  });
+
   it('requires tray-style failure results to normalize unknown error payloads at their producer boundary', () => {
     const opaque = input(
       'Tray.ts',
