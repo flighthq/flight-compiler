@@ -3726,6 +3726,18 @@ function emitExpression(
       if (arrayPushSpread) return arrayPushSpread;
       const typedArrayFill = emitCppTypedArrayRangeFillCpp(expression, context);
       if (typedArrayFill) return typedArrayFill;
+      // `valueOf` on a primitive IS the primitive: Number/String/Boolean.prototype.valueOf return their
+      // receiver, so the operation is the identity and there is no C++ member to call -- emitting one wrote
+      // `value.value_of()` on a `double`, which g++ rejects outright. Only a primitive receiver is rewritten;
+      // an object receiver may override `valueOf` with real work, and those are left to their own lanes.
+      if (
+        expression.callee.kind === 'property' &&
+        expression.callee.name === 'valueOf' &&
+        expression.arguments.length === 0 &&
+        getIrExpressionTypeEvidenceCpp(expression.callee.object, context)?.kind === 'primitive'
+      ) {
+        return emitExpression(expression.callee.object, context, expectedType);
+      }
       if (
         expression.callee.kind === 'property' &&
         expression.callee.name === 'toFixed' &&
@@ -25251,7 +25263,9 @@ function emitOptionalPropertyCallExpressionCpp(
   if (!returns || returns.kind === 'unknown')
     emissionError(
       context,
-      `optional property call ${callee.name} requires callable result evidence`,
+      receiverType.kind === 'primitive'
+        ? `optional property call ${callee.name} on the primitive receiver ${emitType(receiverType, context)} requires callable result evidence: a primitive's members are the runtime's own bindings, so only a member with a bound representation AND a declared result type can be called through a chain. Members the runtime lowers through a helper (Number.toFixed through flight::number_to_fixed, for instance) qualify; a member with no C++ representation at all cannot be called here -- not through a chain, and not directly either. Call it without the chain where the runtime binds it, or keep the value in a form whose members are declared`
+        : `optional property call ${callee.name} requires callable result evidence`,
       'cpp-optional-property-call-missing-callable-result',
     );
   const receiver = emitOptionalChainReceiverCpp(callee.object, context);

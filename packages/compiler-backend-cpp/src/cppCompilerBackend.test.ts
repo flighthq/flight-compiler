@@ -10805,7 +10805,64 @@ describe('createCppCompilerBackend', () => {
       ),
     );
     expect(chained.rule).toBe('cpp-optional-property-call-missing-callable-result');
-    expect(chained.message).toContain('optional property call valueOf requires callable result evidence');
+    expect(chained.message).toContain('optional property call valueOf on the primitive receiver double');
+  });
+
+  it('separates a helper-backed primitive member from one the runtime has no representation for', () => {
+    const primitiveMember = (body: string) =>
+      lower(
+        'primitive-members.ts',
+        `interface Source { readonly frameRate?: number | null }
+         ${body}`,
+      ).module;
+
+    // The chained call refuses for BOTH members, and the message names the receiver and the two cases.
+    for (const member of ['valueOf()', 'toFixed(2)']) {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          primitiveMember(`export function rate(source: Source): number { return source.frameRate?.${member} ?? 0; }`),
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      );
+      expect(failure.rule, member).toBe('cpp-optional-property-call-missing-callable-result');
+      expect(failure.message, member).toContain('on the primitive receiver double requires callable result evidence');
+      expect(failure.message, member).toContain('only a member with a bound representation AND a declared result type');
+    }
+
+    // The unchained call is where the difference shows, and it is the whole determination: a member the
+    // runtime lowers through a helper and the ambient surface declares a result for (`toFixed(digits?:
+    // number): string`) has exact evidence and lowers to that helper -- so a chained form COULD reuse it --
+    // while `valueOf` has no C++ representation at all and emits a member call on a `double`, which g++
+    // rejects ("request for member 'value_of' in 'value', which is of non-class type 'double'"). A chain
+    // therefore cannot make it sound, and this test does not pin that emission as if it were.
+    const unchained = emitIrModuleCpp(
+      primitiveMember(`export function rate(source: Source): string { return source.frameRate!.toFixed(2); }`),
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(unchained).toContain('flight::number_to_fixed(std::get<double>(source->frame_rate), 2.0)');
+    expect(unchained).not.toContain('flight::Any');
+
+    // `valueOf` is the other half: on a PRIMITIVE it is the identity -- Number/String/Boolean.prototype
+    // valueOf return their receiver -- so it is emitted as the value and nothing is called. Emitting a member
+    // instead wrote `value.value_of()` on a `double`, which g++ rejects outright; this is the exact evidence
+    // the identity is the only sound lowering, and it is exact for primitives rather than a guess about the
+    // runtime. An object receiver keeps its own method: a class may override `valueOf` with real work.
+    const identity = emitIrModuleCpp(
+      lower(
+        'primitive-members.ts',
+        `interface Source { readonly frameRate?: number | null }
+         export class Box { valueOf(): number { return 1; } }
+         export function numberValueOf(value: number): number { return value.valueOf(); }
+         export function memberValueOf(source: Source): number { return source.frameRate!.valueOf(); }
+         export function classValueOf(call: Box): number { return call.valueOf(); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(identity).toContain('inline double number_value_of(double value) {');
+    expect(identity).toContain('return value;');
+    expect(identity).toContain('return std::get<double>(source->frame_rate);');
+    expect(identity).not.toContain('.value_of()');
+    expect(identity).toContain('return call->value_of();');
   });
 
   it('reads one shared payload from optional variants produced by local and imported factories', () => {
