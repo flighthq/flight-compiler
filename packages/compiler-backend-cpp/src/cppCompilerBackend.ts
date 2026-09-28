@@ -10618,7 +10618,13 @@ function isCppExpressionExactlyRepresentableAsTypeCpp(
   if (expression.kind === 'function' && callable) {
     return isCppFunctionExpressionCompatibleWithCallableCpp(expression, callable, context);
   }
-  const source = getIrExpressionTypeEvidenceCpp(expression, context);
+  // Unary syntax records its result domain in operator semantics rather than the expression-type lane.
+  // That domain is still exact evidence for contextual construction: `-1` is a number and `!value` is a
+  // boolean, independent of the operand value. Keep the evidence here so a fresh object literal can be
+  // allocated in its one declared owner without first minting an anonymous carrier.
+  const source =
+    getIrExpressionTypeEvidenceCpp(expression, context) ??
+    (expression.kind === 'unary' ? getIrOperatorValueDomainTypeCpp(expression.semantics.result) : undefined);
   if (!source) return false;
   if (analyzeIrTypeStructuralAssignability(source, target).status === 'compatible') return true;
   return emitType(source, context) === emitType(target, context);

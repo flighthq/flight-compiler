@@ -36892,6 +36892,69 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted).toContain('return current_capture.read_binding().value();');
   });
 
+  it('keeps a loop-assigned object literal in its annotated nullable owner', () => {
+    const result = lower(
+      'contextual-union-loop-object.ts',
+      `interface Page { filename: string; height: number; width: number }
+       interface Region {
+         index: number;
+         name: string;
+         page: Page;
+         x: number;
+         y: number;
+       }
+       export function parse(names: string[]): Region[] {
+         const regions: Region[] = [];
+         let currentPage: Page | null = null;
+         let currentRegion: Region | null = null;
+         for (const name of names) {
+           if (currentRegion !== null) {
+             regions.push(currentRegion);
+             currentRegion = null;
+           }
+           if (currentPage === null) {
+             currentPage = { filename: '', height: 0, width: 0 };
+           }
+           currentRegion = { index: -1, name, page: currentPage, x: 0, y: 0 };
+         }
+         if (currentRegion !== null) regions.push(currentRegion);
+         return regions;
+       }`,
+    );
+
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('std::optional<flight::Ref<Region>> current_region = std::nullopt');
+    expect(emitted).toContain('flight::make_ref<Region>(Region{');
+    expect(emitted).toContain('.page = current_page.value()');
+    expect(emitted).toContain('regions.push(current_region.value())');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize');
+  });
+
+  it('does not retype an existing anonymous nullable object as a declared owner', () => {
+    const result = lower(
+      'contextual-union-existing-anonymous-object.ts',
+      `interface Page { filename: string; height: number; width: number }
+       interface Region { index: number; name: string; page: Page; x: number; y: number }
+       export function forward(
+         value: { index: number; name: string; page: Page; x: number; y: number } | null,
+       ): Region | null {
+         return value;
+       }`,
+    );
+
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('no checked target-runtime conversion exists');
+  });
+
   it('preserves one declared structural-row interface alias across contextual nullable unions', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
