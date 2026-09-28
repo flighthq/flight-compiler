@@ -1190,9 +1190,9 @@ function getCppInterfaceDeclarationTypeCpp(declaration: Readonly<IrInterfaceDecl
   };
 }
 
-// The index signature a carrier's declaration states, read directly or through an import, or undefined when
-// it states none. A carrier with one is not an object with a fixed member set, so the declaration is the only
-// place that says what a read through the index yields.
+// The index signature a carrier's declaration states, read directly or through an import/re-export chain,
+// or undefined when it states none. A carrier with one is not an object with a fixed member set, so the
+// declaration is the only place that says what a read through the index yields.
 function getCppDeclaredIndexSignatureCpp(
   type: Readonly<IrType>,
   context: EmitContext,
@@ -1203,10 +1203,16 @@ function getCppDeclaredIndexSignatureCpp(
   const owner = context.importBindingOwners.get(type.reference.binding.id);
   if (!owner) return undefined;
   const ownerContext = owner.module === context.module ? context : { ...context, module: owner.module };
-  const module = getCppResolvedImportModule(owner.specifier, ownerContext);
-  const imported = module?.declarations.find(
-    (candidate) => candidate.kind === 'interface' && candidate.binding.name === owner.imported,
+  const candidates = getCppResolvedImportModules(owner.specifier, ownerContext).flatMap((module) =>
+    getCppExportedTypeDeclarationOwnersCpp(module, owner.imported, context, new Set()),
   );
+  const unique = new Map(
+    candidates.map((candidate) => [
+      `${getCppModuleIdentityKey(candidate.module)}\0${candidate.declaration.binding.id}`,
+      candidate,
+    ]),
+  );
+  const imported = unique.size === 1 ? [...unique.values()][0]!.declaration : undefined;
   return imported?.kind === 'interface'
     ? getCppResolvedIndexSignatureCpp(imported, type.typeArguments, context)
     : undefined;
@@ -14170,6 +14176,43 @@ function emitNarrowedUnionMemberCpp(
   return emitCppNarrowedUnionValueCpp(binding, union, narrowedType, expression.narrowedMember, context);
 }
 
+// A recursive union alias is emitted as a named derived carrier, so narrowing a surrounding union back
+// to that alias must reconstruct the named carrier rather than its anonymous optional/variant base. An
+// imported reference has a different binding id from the declaration -- and may arrive through a barrel --
+// so resolve the declaration owner before asking whether the alias is recursive.
+function getCppRecursiveTypeAliasCarrierCpp(type: Readonly<IrType>, context: EmitContext): string | undefined {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  if (context.recursiveTypeAliasBindingIds.has(type.reference.binding.id)) return emitType(type, context);
+  const module = getCppNamedTypeBindingModuleCpp(type, context);
+  const owner = getCppNamedTypeDeclarationOwnerCpp(type, module, context);
+  if (owner?.declaration.kind !== 'typeAlias' || owner.declaration.type.kind !== 'union') return undefined;
+  const dependencies = collectIrModuleDeclarationDependenciesCpp(owner.module);
+  return collectCppRecursiveTypeAliasBindingIds(owner.module, dependencies).has(owner.declaration.binding.id)
+    ? emitType(type, context)
+    : undefined;
+}
+
+// This is called only after the contextual planner proves that the narrowed source and destination
+// have identical carrier kinds and slots. The remaining difference is the recursive destination alias's
+// named wrapper, which C++ cannot recover implicitly from the optional/variant base rebuilt by narrowing.
+function emitCppContextualRecursiveAliasNarrowingCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): string | undefined {
+  const carrier = getCppRecursiveTypeAliasCarrierCpp(expectedType, context);
+  if (carrier === undefined || expression.kind !== 'identifier' || expression.reference.kind !== 'binding') {
+    return undefined;
+  }
+  const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id) ?? expression.narrowedType;
+  if (!narrowedType) return undefined;
+  const bindingType = getCppBindingTypeCpp(expression.reference.binding.id, context);
+  const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const binding = emitInitializedBindingValueCpp(expression.reference.binding, context);
+  return emitCppNarrowedUnionValueCpp(binding, union, narrowedType, expression.narrowedMember, context, carrier);
+}
+
 function emitCppNarrowedPropertyUnionValueCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
@@ -14188,6 +14231,7 @@ function emitCppNarrowedUnionValueCpp(
   narrowedType: Readonly<IrType> | undefined,
   narrowedMember: string | undefined,
   context: EmitContext,
+  contextualNamedCarrier?: string | undefined,
 ): string | undefined {
   const plan = getCppUnionRepresentationPlan(union, {
     ...context,
@@ -14246,11 +14290,8 @@ function emitCppNarrowedUnionValueCpp(
       // Reconstruct that named carrier, rather than the equivalent raw optional/variant base: callers store
       // the declared owner and the base does not implicitly convert back to its derived wrapper.
       const namedCarrier =
-        narrowedType?.kind === 'named' &&
-        narrowedType.reference.kind === 'binding' &&
-        context.recursiveTypeAliasBindingIds.has(narrowedType.reference.binding.id)
-          ? emitType(narrowedType, context)
-          : undefined;
+        contextualNamedCarrier ??
+        (narrowedType ? getCppRecursiveTypeAliasCarrierCpp(narrowedType, context) : undefined);
       const carrier = namedCarrier ?? emitUnionTypeCpp(narrowedUnion, context);
       const branches = exactSlots.map((slot) => {
         const constructed = emitCppUnionValueConstruction(
@@ -14902,7 +14943,8 @@ function emitContextualUnionExpressionInContextCpp(
       hasEquivalentCppUnionRepresentation(expressionPlan, plan) ||
       hasEquivalentCppContextualUnionRepresentationCpp(expressionPlan, plan, context)
     ) {
-      return undefined;
+      const recursiveAliasNarrowing = emitCppContextualRecursiveAliasNarrowingCpp(expression, expectedType, context);
+      return recursiveAliasNarrowing;
     }
     const equivalentConversion = emitCppEquivalentUnionRepresentationConversionCpp(
       expression,

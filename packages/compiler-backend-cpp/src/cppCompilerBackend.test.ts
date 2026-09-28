@@ -15573,6 +15573,96 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(output).not.toContain('using Value =');
   });
 
+  it('stores a sentinel-narrowed imported recursive alias in its declared field carrier', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './FlightDocumentFieldSchema',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/FlightDocumentFieldSchema.ts' },
+        },
+        {
+          specifier: './flightDocumentTokenReference',
+          target: {
+            packageName: '@flighthq/tokens',
+            source: 'packages/tokens/src/flightDocumentTokenReference.ts',
+          },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(
+        `/flight/packages/${packageName.slice(packageName.lastIndexOf('/') + 1)}/src/${file}`,
+        text,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'FlightDocumentFieldSchema.ts',
+          `export type DocumentValue = boolean | number | string | null | DocumentValue[] | DocumentFields;
+           export interface DocumentFields { [name: string]: DocumentValue }`,
+        ),
+        source('@flighthq/types', 'contract.ts', `export * from './FlightDocumentFieldSchema';`),
+        source(
+          '@flighthq/tokens',
+          'flightDocumentTokenReference.ts',
+          `import type { DocumentValue } from '@flighthq/types/contract';
+           export const InvalidDocumentValue = Symbol('invalid-document-value');
+           export function substitute(value: DocumentValue): DocumentValue | typeof InvalidDocumentValue {
+             return InvalidDocumentValue;
+           }`,
+        ),
+        source(
+          '@flighthq/tokens',
+          'substitute.ts',
+          `import type { DocumentFields, DocumentValue } from '@flighthq/types/contract';
+           import { InvalidDocumentValue, substitute } from './flightDocumentTokenReference';
+           export function store(fields: DocumentFields, name: string, source: DocumentValue): boolean {
+             const value = substitute(source);
+             if (value === InvalidDocumentValue) return false;
+             fields[name] = value;
+             return true;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const types = modules.find((module) => module.source.endsWith('/FlightDocumentFieldSchema.ts'))!;
+    const tokens = modules.find((module) => module.source.endsWith('/substitute.ts'))!;
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const owner = session.emitModule(types)[0]!.contents;
+    const emitted = session.emitModule(tokens)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(owner).toContain('struct DocumentValue : public std::optional<std::variant<flight::Array<DocumentValue>');
+    expect(emitted).toContain('inline bool store(flight::Record<flight::String, flighthq_types::DocumentValue> fields');
+    expect(emitted).toContain('fields.set(name, assignment_value)');
+    expect(emitted).toContain('assignment_value = ([&]() -> flighthq_types::DocumentValue');
+    expect(emitted).toContain('return flighthq_types::DocumentValue{std::in_place');
+    expect(emitted).toContain('std::get_if<flight::Record<flight::String, flighthq_types::DocumentValue>>');
+    expect(emitted).not.toContain('assignment_value = ([&]() -> std::optional<std::variant');
+    expect(emitted).not.toContain('contextual_union_source');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize_row');
+    expect(emitted).not.toContain('make_ref');
+  });
+
   it('emits checker-resolved indexed-access aliases', () => {
     const result = lower(
       'indexed-alias.ts',
