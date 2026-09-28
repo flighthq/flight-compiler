@@ -1714,7 +1714,6 @@ function createIndeterminateImportedTypeAliasRepresentationPlanCpp(
   context: Readonly<ReferencePlanningContext>,
   identity: Readonly<CompilerTypeValueIdentityAnalysis>,
 ): CompilerCppReferenceRepresentationPlan | undefined {
-  if (identity.reason !== 'ambiguous-compound' && identity.reason !== 'unsupported-ambient-utility') return undefined;
   if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind !== 'import') {
     return undefined;
   }
@@ -1725,7 +1724,59 @@ function createIndeterminateImportedTypeAliasRepresentationPlanCpp(
     context.resolutionCache,
   );
   if (resolution.kind !== 'location' || resolution.location.declaration.kind !== 'typeAlias') return undefined;
+  if (
+    identity.reason !== 'ambiguous-compound' &&
+    identity.reason !== 'unsupported-ambient-utility' &&
+    (identity.reason !== 'unknown-type' ||
+      !isExactAcyclicImportedTypeAliasApplicationCpp(type, resolution.location, context))
+  ) {
+    return undefined;
+  }
   return createCompilerCppReferenceRepresentationSuccessCpp(identity, 'value', 'none', 'inlineValue', 'inlineValue');
+}
+
+// `unknown` is also the neutral IR placeholder for a source type form the lowerer deliberately leaves to
+// its declaration's published ABI, including mapped aliases. The imported name is still exact when the
+// export graph selects one alias and a valid application of that alias terminates. Follow only whole-alias
+// hops here: a recursive union is a real declared ABI, while `First = Second; Second = First` never reaches
+// one. Ambiguous exports and unresolved hops remain refusals rather than choosing a convenient declaration.
+function isExactAcyclicImportedTypeAliasApplicationCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  location: Readonly<ReferenceDeclarationLocation>,
+  context: Readonly<ReferencePlanningContext>,
+): boolean {
+  let application = type;
+  let current = location;
+  const aliasIdentities = new Set<string>();
+  for (;;) {
+    const key = current.identity;
+    if (aliasIdentities.has(key)) return false;
+    aliasIdentities.add(key);
+    const declaration = current.declaration;
+    if (declaration.kind !== 'typeAlias') return true;
+    let target: Readonly<IrType>;
+    try {
+      target = resolveIrTypeStructuralSubstitution(
+        declaration.type,
+        createIrTypeParameterSubstitutionPlan(declaration.typeParameters, application.typeArguments),
+      );
+    } catch (error) {
+      if (!isCompilerStructuralTypeSubstitutionFailure(error)) throw error;
+      return false;
+    }
+    if (target.kind !== 'named' || target.reference.kind !== 'binding') return true;
+    if (target.reference.binding.kind === 'typeParameter') return true;
+    const next = getReferenceDeclarationResolutionCpp(
+      target.reference,
+      current.module,
+      context.moduleSet,
+      context.resolutionCache,
+    );
+    if (next.kind !== 'location') return false;
+    if (next.location.declaration.kind !== 'typeAlias') return true;
+    application = target;
+    current = next.location;
+  }
 }
 
 function createNamedReferenceRepresentationPlanCpp(

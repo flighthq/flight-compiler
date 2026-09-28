@@ -14497,7 +14497,7 @@ function createCppImportedTypeRefusalCpp(
   }
   return {
     classification: 'source-portability',
-    message: `imported type ${name} does not resolve to one declaration (${plan.identity.reason}), so the target cannot name the type it holds. Declare the type it should be -- break an alias cycle, supply the type arguments a generic needs, or point the import at a declaration -- rather than leaving the reference unresolved.`,
+    message: `imported type ${name} cannot be traced to one exact, terminating declaration application (${plan.identity.reason}), so the target cannot name the type it holds. Make the import/re-export path select exactly one declaration, break any alias cycle, supply every generic type argument, or replace an erased alias target with a declared type.`,
   };
 }
 

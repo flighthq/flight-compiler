@@ -1045,6 +1045,144 @@ describe('createIrTypeReferenceRepresentationPlannerCpp', () => {
     }
   });
 
+  it('uses one reexported alias ABI for exact unknown bodies while preserving cycle and ambiguity controls', () => {
+    const exactResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './aliases',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/aliases.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const exactModules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/aliases.ts',
+            `export type NativeSurfaceHandle = unknown;
+             export type NumericProps<T> = { [K in keyof T as T[K] extends number ? K : never]?: number };
+             export type First = Second;
+             export type Second = First;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            "export * from './aliases';",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/consumer',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/consumer/src/consumer.ts',
+            `import type { First, NativeSurfaceHandle, NumericProps } from '@flighthq/types/contract';
+             export interface Model { x: number; label: string }
+             export interface UsesAliases {
+               cycle: First;
+               handle: NativeSurfaceHandle;
+             }
+             export function useProps<T extends object>(props: NumericProps<T>): void {}`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      exactResolution,
+    ).map((result) => result.module);
+    const aliases = exactModules[0];
+    const contract = exactModules[1];
+    const consumer = exactModules[2];
+    if (!aliases || !contract || !consumer) throw new TypeError('expected exact alias modules');
+    const firstDuplicate = lower('first-duplicate.ts', 'export type Duplicate = unknown;', '@flighthq/types');
+    const secondDuplicate = lower('second-duplicate.ts', 'export type Duplicate = unknown;', '@flighthq/types');
+    const ambiguousContract = lower(
+      'ambiguous-contract.ts',
+      "export * from './first-duplicate'; export * from './second-duplicate';",
+      '@flighthq/types',
+    );
+    const ambiguousConsumer = lower(
+      'ambiguous-consumer.ts',
+      "import type { Duplicate } from '@flighthq/types/ambiguous'; export interface UsesDuplicate { value: Duplicate }",
+      '@flighthq/consumer',
+    );
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        ...exactResolution.edges,
+        {
+          specifier: './first-duplicate',
+          target: { packageName: firstDuplicate.packageName, source: firstDuplicate.source },
+        },
+        {
+          specifier: './second-duplicate',
+          target: { packageName: secondDuplicate.packageName, source: secondDuplicate.source },
+        },
+        {
+          specifier: '@flighthq/types/ambiguous',
+          target: { packageName: ambiguousContract.packageName, source: ambiguousContract.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = [
+      aliases,
+      contract,
+      consumer,
+      firstDuplicate,
+      secondDuplicate,
+      ambiguousContract,
+      ambiguousConsumer,
+    ];
+    const planner = createIrTypeReferenceRepresentationPlannerCpp(modules, resolution);
+    const usesAliases = consumer.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'UsesAliases',
+    );
+    const usesDuplicate = ambiguousConsumer.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'UsesDuplicate',
+    );
+    const useProps = consumer.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'useProps',
+    );
+    if (usesAliases?.kind !== 'interface' || usesDuplicate?.kind !== 'interface' || useProps?.kind !== 'function') {
+      throw new TypeError('expected imported alias consumers');
+    }
+    const properties = new Map(usesAliases.properties.map((property) => [property.name, property.type]));
+
+    for (const type of [properties.get('handle'), useProps.parameters[0]?.type]) {
+      expect(planner.plan(type!, consumer)).toMatchObject({
+        category: 'value',
+        identity: { identity: 'indeterminate', reason: 'unknown-type' },
+        kind: 'represented',
+        storageRepresentation: 'inlineValue',
+        valueRepresentation: 'inlineValue',
+      });
+    }
+    expect(planner.plan(properties.get('cycle')!, consumer)).toMatchObject({
+      identity: { identity: 'indeterminate', reason: 'cyclic-reference' },
+      kind: 'refused',
+      reason: 'indeterminateIdentity',
+    });
+    expect(planner.resolveAlias(usesDuplicate.properties[0]!.type, ambiguousConsumer)).toBeUndefined();
+    expect(planner.plan(usesDuplicate.properties[0]!.type, ambiguousConsumer)).toMatchObject({
+      category: 'interface',
+      identity: { reason: 'unresolved-reference' },
+      kind: 'represented',
+    });
+  });
+
   it('preserves caller-owned generic and concrete identity through an imported identity alias', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [

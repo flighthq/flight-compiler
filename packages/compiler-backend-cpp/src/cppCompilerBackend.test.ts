@@ -4709,8 +4709,8 @@ describe('createCppCompilerBackend', () => {
     // says which declaration to write rather than naming the planner's reason alone.
     expect(failure.rule).toBe('cpp-imported-type-unsupported:indeterminateIdentity');
     expect(failure.classification).toBe('source-portability');
-    expect(failure.message).toContain('does not resolve to one declaration');
-    expect(failure.message).toContain('break an alias cycle');
+    expect(failure.message).toContain('one exact, terminating declaration application');
+    expect(failure.message).toContain('break any alias cycle');
   });
 
   it('attributes a variant member read to the guard the source has to state', () => {
