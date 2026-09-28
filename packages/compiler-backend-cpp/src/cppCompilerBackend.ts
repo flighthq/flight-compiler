@@ -5672,6 +5672,7 @@ function emitCppContextualStructuralReferenceCpp(
 ): string | undefined {
   const narrowedUnionFacet = emitCppContextualStructuralUnionAssertionFacetCpp(expression, expectedType, context);
   if (narrowedUnionFacet) return narrowedUnionFacet;
+  refuseCppContextualReadonlyStructuralAssertionCapabilityCpp(expression, expectedType, context);
   const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
   if (!sourceType) return undefined;
   const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
@@ -5680,6 +5681,59 @@ function emitCppContextualStructuralReferenceCpp(
   }
   const source = emitExpression(expression, context, undefined, false);
   return emitCppStructuralReferenceValueConversionCpp(source, sourceType, expectedType, context);
+}
+
+// A typed registry callback can erase a concrete row owner to its readonly base and then assert the
+// value back to a writable derived type only because a downstream call expects the readonly derived
+// view. The contextual readonly type proves that no write is needed, but it cannot prove the missing
+// derived cells: a kind or registry key travels beside the value, not in the row owner. Diagnose both
+// boundaries here, before recursively emitting the writable assertion without its call context.
+function refuseCppContextualReadonlyStructuralAssertionCapabilityCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): void {
+  if (expression.kind !== 'cast') return;
+  const expectedRow = context.referenceRepresentationPlanner.resolveStructuralRow(expectedType, context.module);
+  const assertedRow =
+    context.referenceRepresentationPlanner.resolveStructuralRow(expression.type, context.module) ??
+    getCppStructuralProjectionRowCpp(expression.type, context);
+  if (
+    !expectedRow ||
+    !assertedRow ||
+    !isCppStructuralRowSchemaReadonlyCpp(expectedRow) ||
+    isCppStructuralRowSchemaReadonlyCpp(assertedRow)
+  ) {
+    return;
+  }
+  const expectedOwner = getCppStructuralRowObjectTypeCpp(expectedRow);
+  const assertedOwner = getCppStructuralRowObjectTypeCpp(assertedRow);
+  if (
+    !expectedOwner ||
+    !assertedOwner ||
+    normalizeCompilerStructuralValueCanonical(expectedOwner) !==
+      normalizeCompilerStructuralValueCanonical(assertedOwner)
+  ) {
+    return;
+  }
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression.expression, context);
+  if (!sourceType) return;
+  const sourceRow =
+    getCppStructuralRowExpressionPlanCpp(expression.expression, context) ??
+    context.referenceRepresentationPlanner.resolveStructuralRow(sourceType, context.module) ??
+    getCppStructuralProjectionRowCpp(sourceType, context);
+  if (!sourceRow || !isCppStructuralRowSchemaReadonlyCpp(sourceRow)) return;
+  const absent = collectCppStructuralRowAssertionAbsentMembersCpp(sourceType, expression.type, context);
+  if (absent.length === 0) return;
+  const sourceName = describeDeclaredIrTypeForDiagnosticCpp(sourceType);
+  const assertedName = describeDeclaredIrTypeForDiagnosticCpp(expression.type);
+  const expectedName = describeDeclaredIrTypeForDiagnosticCpp(expectedType);
+  const missing = renderCppSubjectNameListCpp(absent);
+  emissionError(
+    context,
+    `a structural assertion from the readonly row ${sourceName} to the writable row ${assertedName} claims mutation only to pass the value to the readonly row ${expectedName}. Spell the assertion as ${expectedName} to remove the writable-capability claim, but that alone cannot recover the derived owner: ${sourceName} does not declare ${missing}, so the retained row has no proven cells for those members. No writable carrier is justified for this read-only call. Preserve ${assertedName} in the callback parameter through a named typed runner or carrier, or make an intentionally erased registry validate and recover that owner before invoking the typed runner; a tag or registry key carried beside the value does not prove which owner the reference retains. If mutation is intended elsewhere, the storage and accessor themselves must retain writable ${assertedName} capability rather than adding it with an assertion. The compiler will not cast, copy, materialize, or create side storage for either missing proof.`,
+    'cpp-structural-assertion-writable-capability-unproven',
+  );
 }
 
 // A collision registry callback receives an anonymous discriminated-union owner, then asserts the

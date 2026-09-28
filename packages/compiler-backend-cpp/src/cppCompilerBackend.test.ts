@@ -24295,6 +24295,82 @@ Resolver make_resolver(TextureRef texture) {
     expect(declaredCapability).not.toContain('make_ref<Command>');
   });
 
+  it('requires a typed effect runner to retain the readonly contact-shadows owner', () => {
+    const types = `interface RenderEffect { readonly kind: string }
+       interface ContactShadowsEffect extends RenderEffect {
+         readonly kind: 'ContactShadowsEffect';
+         readonly distance?: number;
+         readonly opacity?: number;
+         readonly samples?: number;
+         readonly smoothness?: number;
+       }
+       function applyContactShadowsEffect(effect: Readonly<ContactShadowsEffect>): number {
+         return (effect.opacity ?? 0.6) + (effect.distance ?? 0.5) + (effect.samples ?? 16);
+       }`;
+    const writableAssertion = lower(
+      'contact-shadows-writable-assertion.ts',
+      `${types}
+       type RenderEffectRunner = (effect: Readonly<RenderEffect>) => number;
+       export const runner: RenderEffectRunner = (effect) =>
+         applyContactShadowsEffect(effect as ContactShadowsEffect);`,
+    );
+    const writableFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(writableAssertion.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(writableAssertion.diagnostics).toEqual([]);
+    expect(writableFailure.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(writableFailure.classification).toBe('source-portability');
+    expect(writableFailure.message).toContain(
+      'claims mutation only to pass the value to the readonly row Readonly<ContactShadowsEffect>',
+    );
+    expect(writableFailure.message).toContain(
+      'Spell the assertion as Readonly<ContactShadowsEffect> to remove the writable-capability claim',
+    );
+    expect(writableFailure.message).toContain('Readonly<RenderEffect> does not declare');
+    for (const member of ['distance', 'opacity', 'samples', 'smoothness']) {
+      expect(writableFailure.message).toContain(member);
+    }
+    expect(writableFailure.message).toContain('No writable carrier is justified for this read-only call');
+    expect(writableFailure.message).toContain(
+      'Preserve ContactShadowsEffect in the callback parameter through a named typed runner or carrier',
+    );
+    expect(writableFailure.message).toContain('a tag or registry key carried beside the value does not prove');
+    expect(writableFailure.message).toContain('will not cast, copy, materialize, or create side storage');
+
+    // Correcting only the capability spelling still leaves the owner erased at the callback boundary.
+    const readonlyAssertion = lower(
+      'contact-shadows-readonly-assertion.ts',
+      `${types}
+       export function run(effect: Readonly<RenderEffect>): number {
+         return applyContactShadowsEffect(effect as Readonly<ContactShadowsEffect>);
+       }`,
+    );
+    const readonlyFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(readonlyAssertion.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(readonlyFailure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(readonlyFailure.message).toContain('reads distance');
+    expect(readonlyFailure.message).toContain('Preserve the concrete owner in the source type');
+
+    // A typed runner retains the exact readonly owner and reads its existing cells directly.
+    const typed = emitIrModuleCpp(
+      lower(
+        'contact-shadows-typed-runner.ts',
+        `${types}
+         type RenderEffectRunner<Effect extends RenderEffect> = (effect: Readonly<Effect>) => number;
+         export const runner: RenderEffectRunner<ContactShadowsEffect> = (effect) =>
+           applyContactShadowsEffect(effect);`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(typed).toContain('apply_contact_shadows_effect(effect)');
+    expect(typed).not.toContain('structural_ref_cast');
+    expect(typed).not.toContain('materialize_row');
+    expect(typed).not.toContain('static_pointer_cast');
+    expect(typed).not.toContain('make_ref');
+  });
+
   it('keeps a structural source asserted to a derived partial row, which answers an unbound member', () => {
     const contents = emitIrModuleCpp(
       lower(
