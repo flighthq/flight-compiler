@@ -376,6 +376,8 @@ function renderOpaquePropertyValueDomainMessage(
   subject: string,
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string {
+  const textureAtlasDetection = getTextureAtlasDetectionOpaqueValueGuidance(node, subject, kinds);
+  if (textureAtlasDetection) return textureAtlasDetection;
   const lottiePayload = getLottieOpaquePayloadGuidance(node, subject, kinds);
   if (lottiePayload) return lottiePayload;
   if (getNodeName(node.name) !== 'error' || kinds.size !== 1 || !kinds.has('unknown')) {
@@ -383,6 +385,35 @@ function renderOpaquePropertyValueDomainMessage(
   }
   const presence = node.questionToken ? 'an optional error payload' : 'an error payload';
   return `${subject} exposes unknown as ${presence}; JavaScript permits throwing values of any type, so neither the annotation nor its downstream uses prove one portable runtime representation. Normalize every producer at the catch or provider boundary into a named closed error payload shared by the result arms, storage, and consumers, using fields with explicit portable value types. If preserving arbitrary thrown values is intentional, record a reviewed source-portability exception for that boundary. The compiler will not infer Error, stringify the value, or choose a target-specific Any carrier.`;
+}
+
+function getTextureAtlasDetectionOpaqueValueGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    kinds.size !== 1 ||
+    !kinds.has('unknown') ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith(
+      '/packages/textureatlas-formats/src/textureAtlasDetect.ts',
+    )
+  ) {
+    return undefined;
+  }
+  if (subject === 'function:readJsonAtlasKind/property:frames') {
+    return `${subject} exposes unknown at the parsed-JSON recognition boundary; this detector only requires frames to be present, then inspects one frame behind array/object guards to obtain boolean format evidence, and never stores or passes the opaque value to an atlas parser. For that detection-only contract, record a reviewed source-portability exception for this exact property and preserve the guards. If frames begin crossing the detector boundary, declare a named closed detector document and frame schema before transporting them. The compiler will not reconstruct the Aseprite or TexturePacker schema, choose a target-specific Any carrier, insert a cast, or copy or materialize the parsed JSON.`;
+  }
+  if (subject === 'function:readJsonAtlasKind/property:meta') {
+    return `${subject} exposes unknown at the parsed-JSON recognition boundary; this detector passes meta only to a guarded app probe and never stores or passes the opaque value to an atlas parser. For that detection-only contract, record a reviewed source-portability exception for this exact property and preserve the guards, including the object and string checks. If meta begins crossing the detector boundary, declare a named closed detector document and metadata schema before transporting it. The compiler will not reconstruct the Aseprite or TexturePacker schema, choose a target-specific Any carrier, insert a cast, or copy or materialize the parsed JSON.`;
+  }
+  if (subject === 'function:hasFrameDuration/property:duration') {
+    return `${subject} exposes unknown only while probing an untrusted frame for the Aseprite duration discriminator; the detector accepts it only after object and number guards and immediately reduces it to boolean format evidence. For that detection-only contract, record a reviewed source-portability exception for this exact property and preserve the guards. If duration itself begins crossing the detector boundary, declare it in a named closed frame-probe schema. The compiler will not infer an atlas schema from the runtime check, choose a target-specific Any carrier, insert a cast, or copy or materialize the parsed JSON.`;
+  }
+  if (subject === 'function:readMetaApp/property:app') {
+    return `${subject} exposes unknown only while probing untrusted metadata for the format-producer string; the detector accepts it only after object and string guards and returns a closed string rather than the opaque value. For that detection-only contract, record a reviewed source-portability exception for this exact property and preserve the guards. If app begins crossing the detector boundary without validation, declare it in a named closed metadata-probe schema. The compiler will not infer an atlas schema from the runtime check, choose a target-specific Any carrier, insert a cast, or copy or materialize the parsed JSON.`;
+  }
+  return undefined;
 }
 
 function getLottieOpaquePayloadGuidance(

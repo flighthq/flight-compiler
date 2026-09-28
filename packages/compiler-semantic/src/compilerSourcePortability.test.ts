@@ -203,6 +203,113 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
   });
 
+  it('keeps texture-atlas JSON detection probes at a reviewed boundary', () => {
+    const opaque = input(
+      'packages/textureatlas-formats/src/textureAtlasDetect.ts',
+      `function readJsonAtlasKind(): void {
+         const obj: { frames?: unknown; meta?: unknown } = {};
+         void obj;
+       }
+       function hasFrameDuration(): void {
+         const frame: { duration?: unknown } = {};
+         void frame;
+       }
+       function readMetaApp(): void {
+         const meta: { app?: unknown } = {};
+         void meta;
+       }`,
+    );
+    const closed = input(
+      'packages/textureatlas-formats/src/textureAtlasDetect.ts',
+      `interface AtlasFrameProbe { readonly duration?: number }
+       interface AtlasMetaProbe { readonly app?: string }
+       function readJsonAtlasKind(): void {
+         const obj: {
+           readonly frames?: readonly AtlasFrameProbe[] | Readonly<Record<string, AtlasFrameProbe>>;
+           readonly meta?: AtlasMetaProbe;
+         } = {};
+         void obj;
+       }
+       function hasFrameDuration(): void {
+         const frame: AtlasFrameProbe = {};
+         void frame;
+       }
+       function readMetaApp(): void {
+         const meta: AtlasMetaProbe = {};
+         void meta;
+       }`,
+    );
+    const renamed = input(
+      'packages/textureatlas-formats/src/otherDetect.ts',
+      `function readJsonAtlasKind(): void {
+         const obj: { frames?: unknown; meta?: unknown } = {};
+         void obj;
+       }`,
+    );
+    const sameBasename = input(
+      'packages/other/src/textureAtlasDetect.ts',
+      `function readJsonAtlasKind(): void {
+         const obj: { frames?: unknown } = {};
+         void obj;
+       }`,
+    );
+    const unrelated = input(
+      'packages/textureatlas-formats/src/textureAtlasDetect.ts',
+      `function inspectExtension(): void {
+         const extension: { frames?: unknown } = {};
+         void extension;
+       }
+       function readMetaApp(): void {
+         const meta: { vendor?: unknown } = {};
+         void meta;
+       }`,
+    );
+    const anyProbe = input(
+      'packages/textureatlas-formats/src/textureAtlasDetect.ts',
+      `function readMetaApp(): void {
+         const meta: { app?: any } = {};
+         void meta;
+       }`,
+    );
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'function:hasFrameDuration/property:duration',
+      'function:readJsonAtlasKind/property:frames',
+      'function:readJsonAtlasKind/property:meta',
+      'function:readMetaApp/property:app',
+    ]);
+    expect(report.findings[0]?.message).toContain('Aseprite duration discriminator');
+    expect(report.findings[0]?.message).toContain('boolean format evidence');
+    expect(report.findings[1]?.message).toContain('parsed-JSON recognition boundary');
+    expect(report.findings[1]?.message).toContain('named closed detector document and frame schema');
+    expect(report.findings[2]?.message).toContain('guarded app probe');
+    expect(report.findings[2]?.message).toContain('named closed detector document and metadata schema');
+    expect(report.findings[3]?.message).toContain('format-producer string');
+    expect(report.findings[3]?.message).toContain('returns a closed string');
+    for (const finding of report.findings) {
+      expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+      expect(finding.message).toContain('preserve the guards');
+      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('insert a cast');
+      expect(finding.message).toContain('copy or materialize the parsed JSON');
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const [control, count] of [
+      [renamed, 2],
+      [sameBasename, 1],
+      [unrelated, 2],
+      [anyProbe, 1],
+    ] as const) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(count);
+      expect(findings.every((finding) => finding.message.includes('Replace it with a named closed value type'))).toBe(
+        true,
+      );
+    }
+  });
+
   it('separates closed Lottie sub-schemas from reviewed erased input boundaries', () => {
     const opaque = input(
       'LottieDocument.ts',
