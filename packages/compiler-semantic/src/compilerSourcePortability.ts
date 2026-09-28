@@ -90,7 +90,7 @@ function analyzeTypeScriptSourcePortabilityInput(
       const subject = getSourcePortabilitySubject(node);
       const opaque = getOpaqueTypeKinds(node.type);
       if (opaque.size > 0) {
-        add(node.type, 'opaque-value-domain', subject, renderOpaqueValueDomainMessage(subject, 'exposes', opaque));
+        add(node.type, 'opaque-value-domain', subject, renderOpaquePropertyValueDomainMessage(node, subject, opaque));
       }
       if (hasNullType(node.type) && (node.questionToken !== undefined || hasUndefinedType(node.type))) {
         add(
@@ -356,6 +356,18 @@ function renderOpaqueValueDomainMessage(
 
 function renderOpaqueTypeKinds(kinds: ReadonlySet<OpaqueTypeKind>): string {
   return [...kinds].sort(compareTextCodeUnits).join(' or ');
+}
+
+function renderOpaquePropertyValueDomainMessage(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string {
+  if (getNodeName(node.name) !== 'error' || kinds.size !== 1 || !kinds.has('unknown')) {
+    return renderOpaqueValueDomainMessage(subject, 'exposes', kinds);
+  }
+  const presence = node.questionToken ? 'an optional error payload' : 'an error payload';
+  return `${subject} exposes unknown as ${presence}; JavaScript permits throwing values of any type, so neither the annotation nor its downstream uses prove one portable runtime representation. Normalize every producer at the catch or provider boundary into a named closed error payload shared by the result arms, storage, and consumers, using fields with explicit portable value types. If preserving arbitrary thrown values is intentional, record a reviewed source-portability exception for that boundary. The compiler will not infer Error, stringify the value, or choose a target-specific Any carrier.`;
 }
 
 function renderUncheckedDoubleAssertionMessage(

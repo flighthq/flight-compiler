@@ -100,6 +100,54 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([explicit]).findings).toEqual([]);
   });
 
+  it('requires tray-style failure results to normalize unknown error payloads at their producer boundary', () => {
+    const opaque = input(
+      'Tray.ts',
+      `export type TrayCreateResult =
+         | { readonly outcome: 'created' }
+         | { readonly error?: unknown; readonly outcome: 'invalid-icon' }
+         | { readonly error?: unknown; readonly outcome: 'tray-create-failed' };
+       interface UnrelatedState { readonly payload: unknown }`,
+    );
+    const closed = input(
+      'PortableTray.ts',
+      `interface TrayErrorPayload {
+         readonly code: string | null;
+         readonly message: string;
+       }
+       export type TrayCreateResult =
+         | { readonly outcome: 'created' }
+         | { readonly error?: TrayErrorPayload; readonly outcome: 'invalid-icon' }
+         | { readonly error?: TrayErrorPayload; readonly outcome: 'tray-create-failed' };`,
+    );
+
+    const findings = analyzeTypeScriptSourcePortability([opaque]).findings;
+    const errorFindings = findings.filter(({ subject }) => subject.endsWith('/property:error'));
+    expect(errorFindings).toHaveLength(2);
+    expect(errorFindings.map(({ subject }) => subject)).toEqual([
+      'type:TrayCreateResult/arm:outcome=invalid-icon/property:error',
+      'type:TrayCreateResult/arm:outcome=tray-create-failed/property:error',
+    ]);
+    for (const finding of errorFindings) {
+      expect(finding).toMatchObject({ rule: 'opaque-value-domain' });
+      expect(finding.message).toContain('exposes unknown as an optional error payload');
+      expect(finding.message).toContain('JavaScript permits throwing values of any type');
+      expect(finding.message).toContain(
+        'Normalize every producer at the catch or provider boundary into a named closed error payload',
+      );
+      expect(finding.message).toContain('record a reviewed source-portability exception');
+      expect(finding.message).toContain(
+        'will not infer Error, stringify the value, or choose a target-specific Any carrier',
+      );
+    }
+    // The specialized remediation is scoped to the error boundary; other opaque properties retain the
+    // general closed-domain guidance, while one named portable payload clears every result arm.
+    const unrelated = findings.find(({ subject }) => subject === 'interface:UnrelatedState/property:payload');
+    expect(unrelated?.message).toContain('Replace it with a named closed value type');
+    expect(unrelated?.message).not.toContain('JavaScript permits throwing values');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+  });
+
   it('requires a closed handle domain or a reviewed exception for intentional erasure', () => {
     const erased = input('appLoop.ts', 'interface LoopState { frameHandle: unknown }');
     const report = analyzeTypeScriptSourcePortability([erased]);
