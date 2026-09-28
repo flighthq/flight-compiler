@@ -470,6 +470,117 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(17);
   });
 
+  it('requires Spine draw-order JSON to stay behind its storage normalizers', () => {
+    const opaque = input(
+      'packages/skeleton2d-formats/src/spineParse.ts',
+      `function parseSpineDrawOrderTimeline(): void {
+         const entry: { offsets?: unknown; time?: unknown } = {};
+         void entry;
+       }
+       function resolveSpineDrawOrder(): void {
+         const move: { offset?: unknown; slot?: unknown } = {};
+         void move;
+       }`,
+    );
+    const closed = input(
+      'packages/skeleton2d-formats/src/spineParse.ts',
+      `interface SpineDrawOrderMoveInput { readonly offset?: number; readonly slot?: string }
+       interface SpineDrawOrderFrameInput {
+         readonly offsets?: readonly SpineDrawOrderMoveInput[];
+         readonly time?: number;
+       }
+       function parseSpineDrawOrderTimeline(): void {
+         const entry: SpineDrawOrderFrameInput = {};
+         void entry;
+       }
+       function resolveSpineDrawOrder(): void {
+         const move: SpineDrawOrderMoveInput = {};
+         void move;
+       }`,
+    );
+    const renamed = input(
+      'packages/skeleton2d-formats/src/otherParse.ts',
+      `function parseSpineDrawOrderTimeline(): void {
+         const entry: { offsets?: unknown; time?: unknown } = {};
+         void entry;
+       }
+       function resolveSpineDrawOrder(): void {
+         const move: { offset?: unknown; slot?: unknown } = {};
+         void move;
+       }`,
+    );
+    const sameBasename = input(
+      'packages/other/src/spineParse.ts',
+      `function resolveSpineDrawOrder(): void {
+         const move: { offset?: unknown } = {};
+         void move;
+       }`,
+    );
+    const unrelated = input(
+      'packages/skeleton2d-formats/src/spineParse.ts',
+      `function parseSpineDrawOrderTimeline(): void {
+         const metadata: { time?: unknown } = {};
+         void metadata;
+       }`,
+    );
+    const anyProbe = input(
+      'packages/skeleton2d-formats/src/spineParse.ts',
+      `function resolveSpineDrawOrder(): void {
+         const move: { slot?: any } = {};
+         void move;
+       }`,
+    );
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const messages = report.findings.map(({ message }) => message);
+
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'function:parseSpineDrawOrderTimeline/property:offsets',
+      'function:parseSpineDrawOrderTimeline/property:time',
+      'function:resolveSpineDrawOrder/property:offset',
+      'function:resolveSpineDrawOrder/property:slot',
+    ]);
+    expect(messages.filter((message) => message.includes('Spine draw-order frame offsets'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('Spine draw-order frame time'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('Spine draw-order move offset'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('Spine draw-order move slot'))).toHaveLength(1);
+    for (const message of messages) {
+      expect(message).toContain('not a detection-only or diagnostic-only probe');
+      expect(message).toContain('portable Skeleton2DDrawOrderTimeline storage');
+      expect(message).toContain('reviewed source-portability exception for this exact property');
+      expect(message).toContain('named closed Spine draw-order');
+      expect(message).toContain('target-specific Any carrier');
+      expect(message).toContain('insert a cast');
+      expect(message).toContain('copy or materialize the parsed JSON');
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const [control, count] of [
+      [renamed, 4],
+      [sameBasename, 1],
+      [unrelated, 1],
+      [anyProbe, 1],
+    ] as const) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(count);
+      expect(findings.every((finding) => finding.message.includes('Replace it with a named closed value type'))).toBe(
+        true,
+      );
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'Spine draw-order JSON is validated and normalized before timeline storage.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(4);
+  });
+
   it('separates closed Lottie sub-schemas from reviewed erased input boundaries', () => {
     const opaque = input(
       'LottieDocument.ts',
