@@ -2138,6 +2138,116 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(1);
   });
 
+  it('keeps the Dissolve modifier map probe detection-only behind generic registry dispatch', () => {
+    const opaque = input(
+      'packages/shading/src/registerBuiltInModifiers.ts',
+      `interface Modifier { readonly kind: string }
+       const dissolveModifierDefinition = {
+         getDefineSignature(modifier: Readonly<Modifier>): string {
+           return (modifier as { map?: unknown }).map !== undefined ? 'm' : '';
+         },
+       };`,
+    );
+    const closed = input(
+      'packages/shading/src/registerBuiltInModifiers.ts',
+      `interface Modifier { readonly kind: string }
+       interface Texture { readonly id: number }
+       interface DissolveModifier extends Modifier {
+         readonly kind: 'DissolveModifier';
+         readonly map?: Texture;
+       }
+       interface ModifierDefinition<TModifier extends Modifier> {
+         readonly getDefineSignature: (modifier: Readonly<TModifier>) => string;
+         readonly kind: TModifier['kind'];
+       }
+       const dissolveModifierDefinition: ModifierDefinition<DissolveModifier> = {
+         kind: 'DissolveModifier',
+         getDefineSignature(modifier): string {
+           return modifier.map !== undefined ? 'm' : '';
+         },
+       };`,
+    );
+    const renamed = input(
+      'packages/shading/src/otherBuiltIns.ts',
+      `function getDefineSignature(modifier: object): string {
+         return (modifier as { map?: unknown }).map !== undefined ? 'm' : '';
+       }`,
+    );
+    const sameBasename = input(
+      'packages/other/src/registerBuiltInModifiers.ts',
+      `function getDefineSignature(modifier: object): string {
+         return (modifier as { map?: unknown }).map !== undefined ? 'm' : '';
+       }`,
+    );
+    const otherFunction = input(
+      'packages/shading/src/registerBuiltInModifiers.ts',
+      `function inspectModifier(modifier: object): boolean {
+         return (modifier as { map?: unknown }).map !== undefined;
+       }`,
+    );
+    const otherProperty = input(
+      'packages/shading/src/registerBuiltInModifiers.ts',
+      `function getDefineSignature(modifier: object): string {
+         return (modifier as { mask?: unknown }).mask !== undefined ? 'm' : '';
+       }`,
+    );
+    const anyProbe = input(
+      'packages/shading/src/registerBuiltInModifiers.ts',
+      `function getDefineSignature(modifier: object): string {
+         return (modifier as { map?: any }).map !== undefined ? 'm' : '';
+       }`,
+    );
+    const retainedUnknown = input(
+      'packages/shading/src/registerBuiltInModifiers.ts',
+      `function getDefineSignature(): void {
+         const modifier: { map?: unknown } = {};
+         void modifier;
+       }`,
+    );
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected an opaque Dissolve modifier map finding');
+
+    expect(report.findings).toMatchObject([
+      { rule: 'opaque-value-domain', subject: 'function:getDefineSignature/property:map' },
+    ]);
+    expect(finding.message).toContain("Dissolve built-in's detection-only map-presence probe");
+    expect(finding.message).toContain('registerBuiltInModifiers binds dissolveModifierDefinition');
+    expect(finding.message).toContain('getModifierDefineKey resolves that definition with the same base modifier');
+    expect(finding.message).toContain('open ModifierRegistry');
+    expect(finding.message).toContain("closed 'm' or empty signature");
+    expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+    expect(finding.message).toContain('kind-coupled');
+    expect(finding.message).toContain('validate and recover Readonly<DissolveModifier> before dispatch');
+    expect(finding.message).toContain('closed Texture | undefined field');
+    expect(finding.message).toContain('A registry tag or key is not that validation');
+    expect(finding.message).toContain('target-specific Any carrier');
+    expect(finding.message).toContain('retain or insert a cast');
+    expect(finding.message).toContain('copy or materialize the modifier or map');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of [renamed, sameBasename, otherFunction, otherProperty, anyProbe, retainedUnknown]) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('Replace it with a named closed value type');
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: [
+          {
+            findingIdentity: finding.identity,
+            reason: 'The generic registry callback reduces map presence to a closed signature and never transports it.',
+            rule: 'opaque-value-domain',
+          },
+        ],
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(1);
+  });
+
   it('requires Spine draw-order JSON to stay behind its storage normalizers', () => {
     const opaque = input(
       'packages/skeleton2d-formats/src/spineParse.ts',

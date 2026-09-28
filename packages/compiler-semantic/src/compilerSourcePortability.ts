@@ -612,6 +612,8 @@ function renderOpaquePropertyValueDomainMessage(
   if (animationValue) return animationValue;
   const flightContract = getFlightTypesOpaquePropertyGuidance(node, subject, kinds);
   if (flightContract) return flightContract;
+  const shadingModifier = getShadingBuiltInModifierOpaqueMapGuidance(node, subject, kinds);
+  if (shadingModifier) return shadingModifier;
   const spineDrawOrder = getSpineDrawOrderOpaqueValueGuidance(node, subject, kinds);
   if (spineDrawOrder) return spineDrawOrder;
   const pixiInput = getPixiParseOpaqueValueGuidance(node, subject, kinds);
@@ -1093,6 +1095,33 @@ function getSpineDrawOrderOpaqueValueGuidance(
     return `${subject} exposes unknown for the Spine draw-order move slot; the consumer accepts only a string whose name resolves to a setup slot, rejects the whole frame otherwise, and passes only the closed slotIndex number into the ordering resolver and portable Skeleton2DDrawOrderTimeline storage. This is not a detection-only or diagnostic-only probe. A reviewed source-portability exception for this exact property is justified only while the string guard, name lookup, and resolver dominate every storage path. If a raw slot value can cross that boundary, declare it in a named closed Spine draw-order move schema. ${rewriteRefusal}`;
   }
   return undefined;
+}
+
+function getShadingBuiltInModifierOpaqueMapGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    subject !== 'function:getDefineSignature/property:map' ||
+    !hasOnlyUnknown(kinds) ||
+    getNodeName(node.name) !== 'map' ||
+    node.questionToken === undefined ||
+    node.type?.kind !== ts.SyntaxKind.UnknownKeyword ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith(
+      '/packages/shading/src/registerBuiltInModifiers.ts',
+    ) ||
+    !ts.isTypeLiteralNode(node.parent) ||
+    node.parent.members.length !== 1
+  ) {
+    return undefined;
+  }
+  const assertion = node.parent.parent;
+  if (!isTypeAssertion(assertion) || getTypeAssertionType(assertion) !== node.parent) return undefined;
+  let source = assertion.expression;
+  while (ts.isParenthesizedExpression(source)) source = source.expression;
+  if (!ts.isIdentifier(source) || source.text !== 'modifier') return undefined;
+  return `${subject} exposes unknown only for the Dissolve built-in's detection-only map-presence probe. registerBuiltInModifiers binds dissolveModifierDefinition under DissolveModifierKind; getModifierDefineKey resolves that definition with the same base modifier's kind and invokes its generic callback with the same Modifier reference. createDissolveModifier is the built-in producer and writes the named DissolveModifier.map only when a Texture is supplied, but the open ModifierRegistry also accepts third-party definitions and its kind key alone does not recover a concrete structural owner. This callback asks only whether map is undefined, reduces that evidence to the closed 'm' or empty signature, and never inspects, returns, retains, serializes, or forwards the opaque value. Record a reviewed source-portability exception for this exact property while the probe remains presence-only and no map value crosses the callback boundary. If the callback must consume map or any other Dissolve field, make modifier-definition registration and lookup kind-coupled, validate and recover Readonly<DissolveModifier> before dispatch, and preserve its closed Texture | undefined field through the callback. A registry tag or key is not that validation. The compiler will not infer Texture from the kind, choose a target-specific Any carrier, retain or insert a cast, copy or materialize the modifier or map, or bypass owner validation.`;
 }
 
 function getPixiParseOpaqueValueGuidance(
