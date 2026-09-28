@@ -359,6 +359,72 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
 
+  it('keeps reflective material operations on their exact concrete owners', () => {
+    const asserted = input(
+      'packages/materials/src/material.ts',
+      `interface Material { readonly kind: string; name?: string | null }
+       function equalsMaterial(a: Readonly<Material>, b: Readonly<Material>): boolean {
+         if (a.kind !== b.kind) return false;
+         const aFields = a as unknown as Record<string, unknown>;
+         const bFields = b as unknown as Record<string, unknown>;
+         const aKeys = Object.keys(aFields);
+         if (aKeys.length !== Object.keys(bFields).length) return false;
+         for (const key of aKeys) {
+           if (!Object.hasOwn(bFields, key)) return false;
+           if (aFields[key] !== bFields[key]) return false;
+         }
+         return true;
+       }
+       function copyMaterialFields(dst: Material, src: Readonly<Material>): void {
+         const dstFields = dst as unknown as Record<string, unknown>;
+         const srcFields = src as unknown as Record<string, unknown>;
+         for (const key of Object.keys(srcFields)) dstFields[key] = srcFields[key];
+       }`,
+    );
+    const typed = input(
+      'portableMaterial.ts',
+      `interface ConcreteMaterial {
+         readonly kind: 'ConcreteMaterial';
+         amount: number;
+         name: string | null;
+       }
+       export function equalsMaterial(a: Readonly<ConcreteMaterial>, b: Readonly<ConcreteMaterial>): boolean {
+         return a.kind === b.kind && a.amount === b.amount && a.name === b.name;
+       }
+       export function copyMaterialFields(dst: ConcreteMaterial, src: Readonly<ConcreteMaterial>): void {
+         dst.amount = src.amount;
+         dst.name = src.name;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([asserted]).findings.filter(
+      (finding) => finding.rule === 'unchecked-double-assertion',
+    );
+
+    expect(findings).toHaveLength(4);
+    const byRetainedSlot = (slot: 'a' | 'b' | 'dst' | 'src') =>
+      findings.find((finding) => finding.message.includes(`concrete ${slot} Material owner`)) ??
+      findings.find((finding) => finding.message.includes(`the ${slot} `));
+    for (const slot of ['a', 'b', 'src'] as const) {
+      const read = byRetainedSlot(slot);
+      expect(read?.message).toContain('remains its exact concrete Material owner');
+      expect(read?.message).toContain('read-only NamedProperties view');
+      expect(read?.message).toContain('no Record is constructed');
+      expect(read?.message).toContain('reviewed source-portability exception');
+      expect(read?.message).toContain('will not cast the owner, copy or materialize a Record');
+      expect(read?.message).toContain('or add side storage');
+    }
+    const write = byRetainedSlot('dst');
+    expect(write?.message).toContain('writable Record<string, unknown> storage');
+    expect(write?.message).toContain('not representation-equivalent');
+    expect(write?.message).toContain('open kind family');
+    expect(write?.message).toContain('per-kind typed material copier and factory');
+    expect(write?.message).toContain('NamedProperties::set(String, Any) target-runtime contract');
+    expect(write?.message).toContain('will not reinterpret or cast the owner');
+    expect(write?.message).toContain('materialize a replacement owner');
+    expect(write?.message).toContain('or add side storage');
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',

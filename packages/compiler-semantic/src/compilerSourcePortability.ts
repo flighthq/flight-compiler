@@ -353,6 +353,41 @@ function getUncheckedDoubleAssertionObjectLiteralTarget(node: ts.AsExpression | 
   return ts.isObjectLiteralExpression(source) ? targetName : undefined;
 }
 
+function getMaterialDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  const sourceFile = node.getSourceFile();
+  if (!normalizePathPortable(sourceFile.fileName).endsWith('/packages/materials/src/material.ts')) {
+    return undefined;
+  }
+  const target = getTypeAssertionType(node);
+  if (
+    !ts.isTypeReferenceNode(target) ||
+    getNodeName(target.typeName) !== 'Record' ||
+    target.typeArguments?.length !== 2 ||
+    target.typeArguments[0]?.kind !== ts.SyntaxKind.StringKeyword ||
+    target.typeArguments[1]?.kind !== ts.SyntaxKind.UnknownKeyword
+  ) {
+    return undefined;
+  }
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner)) return undefined;
+  let retainedExpression: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retainedExpression)) retainedExpression = retainedExpression.expression;
+  const retainedSlot = retainedExpression.getText(sourceFile);
+  if (retainedSlot === 'dst') {
+    return `${subject} uses a double assertion through ${bridge} to name the concrete ${retainedSlot} Material owner as writable Record<string, unknown> storage, but those carriers are not representation-equivalent and the owner-preserving NamedProperties view is deliberately read-only. Material is an open kind family, so this site has no finite declared member set the compiler can dispatch. Route copying through a per-kind typed material copier and factory that retain and construct the exact concrete Material owner, or add an owner-preserving checked NamedProperties::set(String, Any) target-runtime contract that mutates an existing declared cell. The compiler will not reinterpret or cast the owner, copy into replacement storage, materialize a replacement owner, or add side storage.`;
+  }
+  if (retainedSlot === 'a' || retainedSlot === 'b' || retainedSlot === 'src') {
+    const role = retainedSlot === 'src' ? 'copy source' : 'equality operand';
+    return `${subject} uses a double assertion through ${bridge} to name the ${retainedSlot} ${role} as Record<string, unknown>, but the value remains its exact concrete Material owner rather than becoming keyed Record storage. A portable read can retain that owner behind a read-only NamedProperties view for Object.keys, Object.hasOwn, and computed value reads; no Record is constructed. Prefer a named material-reflection helper or a per-kind typed ${retainedSlot === 'src' ? 'copy' : 'equality'} operation, and record a reviewed source-portability exception only if this open-family reflective read is the intended boundary. The compiler may lower the owner-preserving read view, but will not cast the owner, copy or materialize a Record, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getNodeInteractiveStateBindingDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
@@ -1172,6 +1207,8 @@ function renderUncheckedDoubleAssertionMessage(
   subject: string,
   bridge: 'any' | 'never' | 'unknown',
 ): string {
+  const material = getMaterialDoubleAssertionGuidance(node, subject, bridge);
+  if (material) return material;
   const nodeInteractiveStateBinding = getNodeInteractiveStateBindingDoubleAssertionGuidance(node, subject, bridge);
   if (nodeInteractiveStateBinding) return nodeInteractiveStateBinding;
   const physics3DWorld = getPhysics3DWorldDoubleAssertionGuidance(node, subject, bridge);

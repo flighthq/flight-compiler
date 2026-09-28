@@ -7751,6 +7751,105 @@ describe('createCppCompilerBackend', () => {
     }
   });
 
+  it('keeps reflective material operations on their represented owners', () => {
+    const common = `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+      interface EntityRuntime { binding: object | null }
+      interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+      interface Material extends Entity { readonly kind: string; name?: string | null }`;
+    const results = [
+      lower(
+        'material-equality.ts',
+        `${common}
+         export function equalsMaterial(a: Readonly<Material>, b: Readonly<Material>): boolean {
+           if (a.kind !== b.kind) return false;
+           const aFields = a as unknown as Record<string, unknown>;
+           const bFields = b as unknown as Record<string, unknown>;
+           const aKeys = Object.keys(aFields);
+           const bKeys = Object.keys(bFields);
+           if (aKeys.length !== bKeys.length) return false;
+           for (const key of aKeys) {
+             if (!Object.hasOwn(bFields, key)) return false;
+             if (key === 'kind') continue;
+             if (aFields[key] !== bFields[key]) return false;
+           }
+           return true;
+         }`,
+      ),
+      lower(
+        'material-copy.ts',
+        `${common}
+         export function copyMaterialFields(dst: Material, src: Readonly<Material>): void {
+           const dstFields = dst as unknown as Record<string, unknown>;
+           const srcFields = src as unknown as Record<string, unknown>;
+           for (const key of Object.keys(srcFields)) dstFields[key] = srcFields[key];
+         }`,
+      ),
+      lower(
+        'material-source-read.ts',
+        `${common}
+         export function readMaterialField(src: Readonly<Material>, key: string): unknown {
+           const srcFields = src as unknown as Record<string, unknown>;
+           return srcFields[key];
+         }`,
+      ),
+      lower(
+        'material-exact-owner.ts',
+        `${common}
+         export function retain(material: Material): Material {
+           return material as unknown as Material;
+         }`,
+      ),
+      lower(
+        'material-exact-record.ts',
+        `export function retain(value: Record<string, unknown>): Record<string, unknown> {
+           return value as unknown as Record<string, unknown>;
+         }`,
+      ),
+    ];
+    const equality = emitIrModuleCpp(results[0]!.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const copy = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(results[1]!.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const sourceRead = emitIrModuleCpp(results[2]!.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const exactOwner = emitIrModuleCpp(results[3]!.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const exactRecord = emitIrModuleCpp(results[4]!.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(equality).toContain('flight::NamedProperties a_fields = flight::named_properties(a);');
+    expect(equality).toContain('flight::NamedProperties b_fields = flight::named_properties(b);');
+    expect(equality).toContain('b_fields.has(key)');
+    expect(equality).toContain('a_fields.get(key)');
+    expect(equality).toContain('b_fields.get(key)');
+    expect(sourceRead).toContain('flight::NamedProperties src_fields = flight::named_properties(src);');
+    expect(sourceRead).toContain('return src_fields.get(key);');
+    for (const output of [equality, sourceRead]) {
+      expect(output).not.toContain('flight::Record<flight::String, flight::Any>');
+      expect(output).not.toContain('flight::Any::object');
+      expect(output).not.toContain('static_cast<flight::Record');
+      expect(output).not.toContain('materialize');
+    }
+
+    expect(copy.rule).toBe('cpp-named-properties-write-unsupported');
+    expect(copy.classification).toBe('target-runtime');
+    expect(copy.message).toContain('owner-preserving view of Material');
+    expect(copy.message).toContain('Material remains the concrete object carrier and is not Record storage');
+    expect(copy.message).toContain('NamedProperties::set(String, Any) contract');
+    expect(copy.message).toContain('finite union of declared member names');
+    expect(copy.message).toContain('will not cast between owners, copy into replacement storage');
+    expect(copy.message).toContain('materialize a replacement owner');
+    expect(copy.message).toContain('or add side storage');
+
+    expect(exactOwner).toContain('return material;');
+    expect(exactRecord).toContain('return value;');
+    for (const output of [exactOwner, exactRecord]) {
+      expect(output).not.toContain('static_cast');
+      expect(output).not.toContain('flight::Any::object');
+      expect(output).not.toContain('make_ref');
+      expect(output).not.toContain('materialize');
+      expect(output).not.toContain('row_set');
+    }
+  });
+
   it('names the missing owners in mesh morph and movie clip runtime assertions', () => {
     const { moduleResolution, results } = lowerImportedMeshAndMovieClipAssertionModules();
     const modules = results.map((result) => result.module);

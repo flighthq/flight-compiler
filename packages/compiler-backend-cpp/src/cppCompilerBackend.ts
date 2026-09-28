@@ -3384,13 +3384,16 @@ function emitExpression(
       // rvalue and would not compile anyway.
       // The double cast is the view idiom the source writes to make a dynamic named read type-check;
       // a single cast of an object spread is the clone lane's, and its refusals are its own.
-      if (
-        expression.left.kind === 'element' &&
-        isCppNamedPropertiesErasedMarkerViewCpp(expression.left.object, context)
-      ) {
+      const namedPropertiesWriteSource =
+        expression.left.kind === 'element'
+          ? getCppNamedPropertiesErasedMarkerViewSourceCpp(expression.left.object, context)
+          : undefined;
+      if (namedPropertiesWriteSource) {
+        const sourceType = getIrExpressionTypeEvidenceCpp(namedPropertiesWriteSource, context);
+        const sourceOwner = sourceType ? describeDeclaredIrTypeForDiagnosticCpp(sourceType) : 'source object';
         emissionError(
           context,
-          'a dynamic named-property write requires target-runtime mutation support: flight::NamedProperties is deliberately read-only, and this key has no finite declared member set the compiler can dispatch. For an intentionally open extension domain, declare mutable string-indexed storage on the base/output type and construct every owner in that carrier; a registry of keys or roles cannot recover cells on an owner that lacks them. Otherwise add an owner-preserving checked NamedProperties::set(String, Any) contract, or keep the key as a finite union of declared member names and assign through the typed object. The compiler will not cast between owners, copy into replacement storage, or invent a side table',
+          `a dynamic named-property write through the owner-preserving view of ${sourceOwner} requires target-runtime mutation support: ${sourceOwner} remains the concrete object carrier and is not Record storage, flight::NamedProperties is deliberately read-only, and this key has no finite declared member set the compiler can dispatch. For an intentionally open extension domain, declare mutable string-indexed storage on the base/output type and construct every owner in that carrier; a registry of keys or roles cannot recover cells on an owner that lacks them. Otherwise add an owner-preserving checked NamedProperties::set(String, Any) contract, or keep the key as a finite union of declared member names and assign through the typed object. The compiler will not cast between owners, copy into replacement storage, materialize a replacement owner, or add side storage`,
           'cpp-named-properties-write-unsupported',
         );
       }
@@ -7419,20 +7422,21 @@ function isCppStringKeyIndexCpp(index: Readonly<IrExpression>, context: EmitCont
   return isCppStringValueTypeCpp(type, context, new Set());
 }
 
-// Whether an expression is bound to the `value as unknown as Record<string, unknown>` view the source
-// writes to reach a dynamic read. Narrower than the view test on purpose: the write refusal must catch
-// only the view, and an object spread cast reaches a different lane whose refusals are its own.
-function isCppNamedPropertiesErasedMarkerViewCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
-  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
+// The owner beneath a binding initialized from the `value as unknown as Record<string, unknown>` view,
+// or undefined when the binding is not that erased-marker view. Narrower than the general view test on
+// purpose: the write refusal must catch only this view, and an object spread cast reaches a different lane
+// whose refusals are its own. Returning the owner lets the refusal name the carrier it preserves.
+function getCppNamedPropertiesErasedMarkerViewSourceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrExpression> | undefined {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
   const initializer = context.bindingInitializers.get(expression.reference.binding.id);
-  if (!initializer || initializer.kind !== 'cast') return false;
+  if (!initializer || initializer.kind !== 'cast') return undefined;
   const inner = initializer.expression;
-  return (
-    inner.kind === 'cast' &&
-    inner.type.kind === 'unknown' &&
-    inner.type.source === 'unknown' &&
-    getCppNamedPropertiesViewSourceCpp(initializer, context) !== undefined
-  );
+  return inner.kind === 'cast' && inner.type.kind === 'unknown' && inner.type.source === 'unknown'
+    ? getCppNamedPropertiesViewSourceCpp(initializer, context)
+    : undefined;
 }
 
 function getCppReadonlyBareTypeParameterCpp(type: Readonly<IrType> | undefined): Readonly<IrType> | undefined {
