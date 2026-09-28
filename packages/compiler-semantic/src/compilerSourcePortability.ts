@@ -304,6 +304,21 @@ function isTypeScriptIndexSignatureView(node: ts.TypeNode): boolean {
     : false;
 }
 
+function isTypeScriptMutableIndexSignatureView(node: ts.TypeNode): boolean {
+  if (ts.isParenthesizedTypeNode(node)) return isTypeScriptMutableIndexSignatureView(node.type);
+  if (ts.isTypeLiteralNode(node)) {
+    return node.members.some(
+      (member) =>
+        ts.isIndexSignatureDeclaration(member) &&
+        !member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword),
+    );
+  }
+  if (!ts.isTypeReferenceNode(node)) return false;
+  const reference = getNodeName(node.typeName);
+  if (reference === 'Record') return node.typeArguments?.length === 2;
+  return false;
+}
+
 function isTypeScriptSourcePortabilityInput(sourceFile: ts.SourceFile): boolean {
   if (sourceFile.isDeclarationFile) return false;
   const portable = normalizePathPortable(sourceFile.fileName);
@@ -348,6 +363,9 @@ function renderUncheckedDoubleAssertionMessage(
   subject: string,
   bridge: 'any' | 'never' | 'unknown',
 ): string {
+  if (isTypeScriptMutableIndexSignatureView(getTypeAssertionType(node))) {
+    return `${subject} uses a double assertion through ${bridge} to claim mutable index-signature storage; the bridge neither proves nor creates writable dynamic cells on the source owner. For an intentionally open key domain, declare a mutable string index signature on the source/output type and construct values in that carrier; if the keys are closed, replace the dynamic writes with a finite union of declared members. A reviewed exception can record the source contract but cannot supply that storage; copying or materializing a Record, or adding side storage, would change object identity.`;
+  }
   if (isTypeScriptIndexSignatureView(getTypeAssertionType(node))) {
     return `${subject} uses a double assertion through ${bridge} to claim an index-signature view; the bridge neither checks that the source has indexed storage nor preserves an exact runtime carrier for computed access. Accept a declared Record or index-signature type at this boundary, or replace the dynamic key with checked access over a closed key/value domain; an assertion cannot create that storage.`;
   }

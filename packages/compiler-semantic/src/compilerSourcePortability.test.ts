@@ -177,6 +177,40 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([indexed]).findings).toEqual([]);
   });
 
+  it('requires declared mutable storage for an intentionally open effect domain', () => {
+    const asserted = input(
+      'effectDefaults.ts',
+      `interface Effect { readonly kind: string }
+       export function normalizeEffect(effect: Readonly<Effect>, out: Effect): boolean {
+         const effectRec = effect as Record<string, unknown>;
+         const outRec = out as unknown as Record<string, unknown>;
+         for (const key of Object.keys(effectRec)) outRec[key] = effectRec[key];
+         return true;
+       }`,
+    );
+    const indexed = input(
+      'portable-effectDefaults.ts',
+      `interface Effect {
+         readonly kind: string;
+         [property: string]: unknown;
+       }
+       export function normalizeEffect(effect: Readonly<Effect>, out: Effect): boolean {
+         for (const key of Object.keys(effect)) out[key] = effect[key];
+         return true;
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([asserted]).findings).toMatchObject([
+      {
+        message:
+          'function:normalizeEffect uses a double assertion through unknown to claim mutable index-signature storage; the bridge neither proves nor creates writable dynamic cells on the source owner. For an intentionally open key domain, declare a mutable string index signature on the source/output type and construct values in that carrier; if the keys are closed, replace the dynamic writes with a finite union of declared members. A reviewed exception can record the source contract but cannot supply that storage; copying or materializing a Record, or adding side storage, would change object identity.',
+        rule: 'unchecked-double-assertion',
+        subject: 'function:normalizeEffect',
+      },
+    ]);
+    expect(analyzeTypeScriptSourcePortability([indexed]).findings).toEqual([]);
+  });
+
   it('excludes declaration, test-only, and generated inputs before visiting their syntax', () => {
     const text = 'interface Value { payload: any; absent?: string | null }';
     const sources = [

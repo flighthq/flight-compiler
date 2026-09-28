@@ -20088,6 +20088,48 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.message).toContain('finite union of declared member names');
   });
 
+  it('requires declared dynamic storage for open effect default writes', () => {
+    const asserted = lower(
+      'asserted-effect-defaults.ts',
+      `interface Effect { readonly kind: string }
+       export function normalizeEffect(effect: Readonly<Effect>, out: Effect): boolean {
+         const effectRec = effect as Record<string, unknown>;
+         const outRec = out as unknown as Record<string, unknown>;
+         for (const key of Object.keys(effectRec)) outRec[key] = effectRec[key];
+         return true;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(asserted.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure.rule).toBe('cpp-named-properties-write-unsupported');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('owner-preserving checked NamedProperties::set(String, Any) contract');
+    expect(failure.message).toContain('finite union of declared member names');
+
+    const declared = lower(
+      'declared-effect-defaults.ts',
+      `interface Effect {
+         readonly kind: string;
+         [property: string]: unknown;
+       }
+       export function normalizeEffect(effect: Readonly<Effect>, out: Effect): boolean {
+         for (const key of Object.keys(effect)) out[key] = effect[key];
+         return true;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(declared.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(declared.diagnostics).toEqual([]);
+    expect(emitted).toContain('using Effect = flight::Record<flight::String, flight::Any>;');
+    expect(emitted).toContain('auto assignment_value = flight::row_get<flight::Any>(effect, key);');
+    expect(emitted).toContain('out.set(key, assignment_value);');
+    expect(emitted).not.toContain('flight::named_properties');
+    expect(emitted).not.toContain('materialize_row');
+    expect(emitted).not.toContain('static_cast');
+  });
+
   it('attributes a closed-key write whose value fits no member to the source', () => {
     const result = lower(
       'closed-key-write-unfitted.ts',
