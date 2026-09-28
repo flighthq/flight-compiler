@@ -10738,6 +10738,7 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::visit([](const auto& value) { return flight::is_array(value); }, value.value())');
     expect(emitted).toMatch(/std::get<\d+>\(value\.value\(\)\)\.size\(\)/u);
     expect(emitted).not.toContain('static_cast<flight::Array');
+    expect(emitted).not.toContain('structural_ref_cast');
     expect(emitted).not.toContain('materialize_row');
 
     const unguarded = lower(
@@ -10752,9 +10753,11 @@ describe('createCppCompilerBackend', () => {
        export interface FlightDocumentFields { [name: string]: FlightDocumentValue }
        export function count(value: FlightDocumentValue): number { return value.length; }`,
     ).module;
-    expect(captureBackendEmissionFailure(() => emitIrModuleCpp(unguarded, { runtimeProfile: 'flight-cpp' })).rule).toBe(
-      'cpp-optional-member-access-unproven',
-    );
+    const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(unguarded, { runtimeProfile: 'flight-cpp' }));
+    expect(failure.rule).toBe('cpp-optional-member-access-unproven');
+    expect(failure.message).toContain('property length');
+    expect(failure.message).toContain('no present-value proof reaches this read');
+    expect(failure.message).toContain('will not discard the absence state or call value() without that proof');
   });
 
   // The same boundary read as a property that can be either absent kind at once: the storage is the
@@ -10819,10 +10822,10 @@ describe('createCppCompilerBackend', () => {
   it('names the constrained type parameter behind an absence-carrying member read', () => {
     const generic = lower(
       'explainGlyphAtlasEntry.ts',
-      `interface GlyphAtlasEntry { readonly glyph: number }
+      `interface GlyphAtlasEntry { readonly width: number }
        export function explain<T extends GlyphAtlasEntry | undefined>(entry: T): number {
          if (entry === undefined) return 0;
-         return entry.glyph;
+         return entry.width;
        }`,
     ).module;
     const failure = captureBackendEmissionFailure(() => emitIrModuleCpp(generic, { runtimeProfile: 'flight-cpp' }));
@@ -10844,32 +10847,37 @@ describe('createCppCompilerBackend', () => {
     const concrete = emitIrModuleCpp(
       lower(
         'explainConcreteEntry.ts',
-        `interface GlyphAtlasEntry { readonly glyph: number }
+        `interface GlyphAtlasEntry { readonly width: number }
          export function explain(entry: GlyphAtlasEntry | undefined): number {
            if (entry === undefined) return 0;
-           return entry.glyph;
+           return entry.width;
          }`,
       ).module,
       { runtimeProfile: 'flight-cpp' },
     ).contents;
     expect(concrete).toContain('std::optional<flight::Ref<GlyphAtlasEntry>> entry');
     expect(concrete).toContain('if (!entry.has_value())');
-    expect(concrete).toContain('entry.value()->glyph');
+    expect(concrete).toContain('entry.value()->width');
+    expect(concrete).not.toContain('structural_ref_cast');
+    expect(concrete).not.toContain('materialize');
 
-    // A concrete receiver with no narrowing keeps the terse sentence, so the added clause is scoped to the
-    // declaration that cannot answer, not to every refusal of this rule.
+    // A concrete receiver with no narrowing names the proof the emitted optional needs, rather than the
+    // type-parameter storage gap above: this storage CAN answer after a guard over the exact receiver.
     const unguarded = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(
         lower(
           'explainUnguardedEntry.ts',
-          `interface GlyphAtlasEntry { readonly glyph: number }
-           export function explain(entry: GlyphAtlasEntry | undefined): number { return entry.glyph; }`,
+          `interface GlyphAtlasEntry { readonly width: number }
+           export function explain(entry: GlyphAtlasEntry | undefined): number { return entry.width; }`,
         ).module,
         { runtimeProfile: 'flight-cpp' },
       ),
     );
     expect(unguarded.rule).toBe('cpp-optional-member-access-unproven');
+    expect(unguarded.message).toContain('property width');
     expect(unguarded.message).toContain('requires narrowed access');
+    expect(unguarded.message).toContain('no present-value proof reaches this read');
+    expect(unguarded.message).toContain('Guard this exact receiver');
     expect(unguarded.message).not.toContain('the receiver is the type parameter');
   });
 
@@ -10898,6 +10906,8 @@ describe('createCppCompilerBackend', () => {
     expect(concrete).toContain('text.value().length()');
     expect(concrete).toContain('if (!plain.has_value())');
     expect(concrete).toContain('plain.value().length()');
+    expect(concrete).not.toContain('structural_ref_cast');
+    expect(concrete).not.toContain('materialize');
 
     // A constrained type parameter is the same read with no such storage: the parameter is emitted as the
     // type argument, so the guard has nothing to narrow and the refusal names the declaration to change --

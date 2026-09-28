@@ -5463,7 +5463,7 @@ function emitExpression(
           context,
           typeParameterReceiver
             ? `property ${expression.name} on C++ absence-carrying storage requires narrowed access: the receiver is the type parameter ${typeParameterReceiver.name}, whose constraint is what carries the sentinel, and a C++ template parameter is emitted as the type argument itself -- so the guard's sentinel has no storage in the emitted code and narrowing cannot produce one. Declare the parameter as the concrete optional type its constraint names, or narrow the value into a non-optional local before the read`
-            : `property ${expression.name} on C++ absence-carrying storage requires narrowed access`,
+            : `property ${expression.name} on C++ absence-carrying storage requires narrowed access: no present-value proof reaches this read. Guard this exact receiver (bind a property or call result to a local first if evaluating it again would produce a different value), then read the member only in the present branch. The compiler will not discard the absence state or call value() without that proof`,
           'cpp-optional-member-access-unproven',
         );
       }
