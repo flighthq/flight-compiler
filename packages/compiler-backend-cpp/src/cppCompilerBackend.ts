@@ -15363,13 +15363,15 @@ function emitContextualUnionExpressionInContextCpp(
             : intersectionUnionOwner
               ? `contextual union value type ${targetType} has a distinct intersection owner from its matching ${intersectionUnionOwner.contract} arm over nominal base ${describeIrTypeForDiagnosticCpp(intersectionUnionOwner.base)}. The source intersection and destination arm are sibling C++ object carriers; converting between them would require sibling retyping or copying the object. Name one shared declared arm type in the ${intersectionUnionOwner.contract} contract and use that same arm declaration in both the union and value storage`
               : secondaryIntersectionCarrier
-                ? `contextual union value type ${targetType} is an intersection stored through one nominal base, but the destination names secondary constituent ${secondaryIntersectionCarrier.targets.map(describeIrTypeForDiagnosticCpp).join(', ')} through an independent C++ object carrier. Only the intersection's unique nominal base ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)} preserves the same owner; converting to the secondary carrier would require retyping or copying the object. Make the destination contract ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)}, declare one explicit common nominal base, or add owner-preserving structural-reference storage for that contract`
+                ? `contextual union value type ${targetType} is stored through its intersection's own C++ object carrier, but the destination names secondary constituent ${secondaryIntersectionCarrier.targets.map(describeIrTypeForDiagnosticCpp).join(', ')} through an independent carrier. The runtime does not retain a checked owner-preserving view for that constituent, and the compiler will not replace one with an unchecked pointer cast, a materialized copy, or invented side storage. Keep the destination on the exact declared intersection owner, declare one explicit common nominal owner for both APIs, or add identity-preserving structural-reference storage for the constituent contract`
                 : cause === 'nominal-mismatch'
                   ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
                   : structuralArrayProjectionGap
                     ? `contextual union source array carrier ${targetType} with element carrier ${structuralArrayProjectionGap.sourceElementCarrier} cannot become the destination's projected element array carrier ${structuralArrayProjectionGap.targetCarrier} with element carrier ${structuralArrayProjectionGap.targetElementCarrier} without changing array identity. Return the exact source array type, construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
                     : `contextual union value type ${targetType} is not a represented runtime domain`,
-      'cpp-contextual-union-value-type-unrepresented',
+      secondaryIntersectionCarrier
+        ? 'cpp-contextual-union-secondary-intersection-carrier-unrepresented'
+        : 'cpp-contextual-union-value-type-unrepresented',
       cause === 'erased-kind' || cause === 'callable-return-erasure' || cause === 'structural-array-projection'
         ? 'target-runtime'
         : cause === 'partial-value'
@@ -16833,13 +16835,11 @@ function getCppUnrepresentedUnionValueCauseCpp(
   return 'nominal-mismatch';
 }
 
-// A nominal intersection implementation has exactly one C++ base; its other declared constituents are
-// emitted as direct refinements on that derived object. Passing the value to the base preserves the same
-// Ref owner, but passing it to another constituent's independently minted object carrier cannot: C++ has
-// neither an inheritance path nor an owner-preserving structural view for that target. Compare declaration
-// identities, not shapes, so an anonymous lookalike does not acquire even this more specific diagnosis.
+// A nominal intersection implementation has one selected C++ base; its other named constituents are
+// independent object carriers. C++ has neither an inheritance path nor an owner-preserving structural view
+// from the intersection to one of those secondary carriers. Compare declaration identities, not shapes,
+// so an anonymous lookalike does not acquire even this more specific diagnosis.
 interface CppSecondaryIntersectionCarrierConflict {
-  readonly base: Readonly<IrType>;
   readonly targets: readonly Readonly<IrType>[];
 }
 
@@ -16916,7 +16916,7 @@ function getCppSecondaryIntersectionCarrierConflictCpp(
       }
     }
   }
-  return targets.size > 0 ? { base, targets: [...targets.values()] } : undefined;
+  return targets.size > 0 ? { targets: [...targets.values()] } : undefined;
 }
 
 interface CppContextualCallableErasedReturnGap {
@@ -27924,6 +27924,7 @@ const cppDependentMemberPreservingAmbientWrappers = new Set(['NoInfer', 'Partial
 const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-array-length-sparse-runtime-required',
   'cpp-contextual-structural-array-nominal-recovery-unproven',
+  'cpp-contextual-union-secondary-intersection-carrier-unrepresented',
   'cpp-erased-array-predicate-runtime-required',
   'cpp-erased-error-view-runtime-required',
   'cpp-erased-structural-row-construction-unrepresented',

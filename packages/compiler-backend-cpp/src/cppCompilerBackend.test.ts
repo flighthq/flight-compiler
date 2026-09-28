@@ -36051,7 +36051,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(projectedArray.message).toContain('Return the exact source array type');
   });
 
-  it('retains the owner boundary for a predicate-narrowed intersection return', () => {
+  it('attributes a render cache adapter secondary carrier to missing runtime identity storage', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -36079,9 +36079,9 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           packageName: '@flighthq/types',
           sourceFile: ts.createSourceFile(
             '/flight/packages/types/src/types.ts',
-            `export type Adapter = { adapt: () => boolean | null };
-             export interface Cache { readonly value: number }
-             export interface Signals { readonly prepare: () => void }`,
+            `export type RenderProxyAdapter = { adapt: () => boolean | null };
+             export interface RenderCache { readonly value: number }
+             export interface RenderCacheAdapterSignals { readonly prepare: () => void }`,
             ts.ScriptTarget.Latest,
             true,
           ),
@@ -36104,10 +36104,17 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
           sourceFile: ts.createSourceFile(
             '/flight/packages/types/src/contract.ts',
             `import type { Entity } from './entity';
-             import type { Adapter, Cache, Signals } from './types';
-             export type { Adapter, Cache, Signals } from './types';
+             import type { RenderCache, RenderCacheAdapterSignals, RenderProxyAdapter } from './types';
+             export type { RenderCache, RenderCacheAdapterSignals, RenderProxyAdapter } from './types';
              export type { Entity } from './entity';
-             export type CacheAdapter = Entity & Adapter & { cache: Cache | null; signals: Signals | null };`,
+             export type RenderCacheAdapter = Entity &
+               RenderProxyAdapter & {
+                 cache: RenderCache | null;
+                 signals: RenderCacheAdapterSignals | null;
+               };
+             export function keepExact(
+               adapter: RenderCacheAdapter,
+             ): RenderCacheAdapter { return adapter; }`,
             ts.ScriptTarget.Latest,
             true,
           ),
@@ -36116,39 +36123,29 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
         {
           packageName: '@flighthq/render',
           sourceFile: ts.createSourceFile(
-            '/flight/packages/render/src/cache.ts',
-            `import type { Adapter, Cache, CacheAdapter } from '@flighthq/types/contract';
-             function getAdapter(): Adapter | null { return null; }
-             function createAdapter(_cache: Cache): CacheAdapter { throw new Error('stub'); }
-             function setAdapter(_adapter: Adapter | null): void {}
-             function isCacheAdapter(value: unknown): value is CacheAdapter {
+            '/flight/packages/render/src/renderCache.ts',
+            `import type {
+               RenderCache,
+               RenderCacheAdapter,
+               RenderProxyAdapter,
+             } from '@flighthq/types/contract';
+             function getRenderProxyAdapter(): RenderProxyAdapter | null { return null; }
+             function createRenderCacheAdapter(_cache: RenderCache): RenderCacheAdapter {
+               throw new Error('stub');
+             }
+             function setRenderProxyAdapter(_adapter: RenderProxyAdapter | null): void {}
+             function isRenderCacheAdapter(value: unknown): value is RenderCacheAdapter {
                return typeof value === 'object' && value !== null && 'cache' in value;
              }
-             export function use(cache: Cache): CacheAdapter {
-               const existing = getAdapter();
-               if (isCacheAdapter(existing)) {
+             export function useRenderCache(cache: RenderCache): RenderCacheAdapter {
+               const existing = getRenderProxyAdapter();
+               if (isRenderCacheAdapter(existing)) {
                  existing.cache = cache;
                  return existing;
                }
-               const adapter = createAdapter(cache);
-               setAdapter(adapter);
+               const adapter = createRenderCacheAdapter(cache);
+               setRenderProxyAdapter(adapter);
                return adapter;
-             }`,
-            ts.ScriptTarget.Latest,
-            true,
-          ),
-          upstreamDirectory: '/flight',
-        },
-        {
-          packageName: '@flighthq/render',
-          sourceFile: ts.createSourceFile(
-            '/flight/packages/render/src/entityCache.ts',
-            `import type { Cache, CacheAdapter, Entity } from '@flighthq/types/contract';
-             function createAdapter(_cache: Cache): CacheAdapter { throw new Error('stub'); }
-             function setEntity(_entity: Entity | null): void {}
-             export function keep(cache: Cache): void {
-               const adapter = createAdapter(cache);
-               setEntity(adapter);
              }`,
             ts.ScriptTarget.Latest,
             true,
@@ -36166,23 +36163,47 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     });
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-    const baseContents = session.emitModule(modules[4]!)[0]!.contents;
-    // The unique nominal base is a real C++ base of the generated intersection implementation, so this
-    // contextual optional construction shares the same Ref owner through the language's derived-to-base
-    // conversion. No structural row, cast, proxy, or replacement object is involved.
-    expect(baseContents).toContain('std::optional<flight::Ref<flighthq_types::Entity>>{adapter}');
-    expect(baseContents).not.toContain('structural_ref_cast');
-    expect(baseContents).not.toContain('static_pointer_cast');
-    expect(baseContents).not.toContain('make_ref');
+    const exactOutputs = [modules[0]!, modules[1]!, modules[2]!].flatMap((module) => session.emitModule(module));
+    const exactContents = exactOutputs.at(-1)!.contents;
+    // Keeping the exact declared intersection owner preserves the original Ref directly. No contextual
+    // constituent conversion, structural view, native cast, copied row, or replacement owner is involved.
+    expect(exactContents).toContain('return adapter;');
+    expect(exactContents).not.toContain('structural_ref_cast');
+    expect(exactContents).not.toContain('static_pointer_cast');
+    expect(exactContents).not.toContain('materialize_row');
+    expect(exactContents).not.toContain('make_ref');
 
     const failure = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
-    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
-    expect(failure.message).toContain('intersection stored through one nominal base');
-    expect(failure.message).toContain('secondary constituent Adapter');
-    expect(failure.message).toContain("Only the intersection's unique nominal base Entity preserves the same owner");
-    expect(failure.message).toContain('Make the destination contract Entity');
-    expect(failure.message).toContain('declare one explicit common nominal base');
-    expect(failure.message).toContain('owner-preserving structural-reference storage');
+    expect(failure.rule).toBe('cpp-contextual-union-secondary-intersection-carrier-unrepresented');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain("stored through its intersection's own C++ object carrier");
+    expect(failure.message).toContain('secondary constituent RenderProxyAdapter');
+    expect(failure.message).toContain('runtime does not retain a checked owner-preserving view');
+    expect(failure.message).toContain('will not replace one with an unchecked pointer cast');
+    expect(failure.message).toContain('a materialized copy, or invented side storage');
+    expect(failure.message).toContain('Keep the destination on the exact declared intersection owner');
+    expect(failure.message).toContain('declare one explicit common nominal owner');
+    expect(failure.message).toContain('identity-preserving structural-reference storage');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-render-cache-intersection-owner-'));
+      try {
+        for (const output of exactOutputs) {
+          const outputPath = path.join(directory, output.path);
+          mkdirSync(path.dirname(outputPath), { recursive: true });
+          writeFileSync(outputPath, output.contents, 'utf8');
+        }
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, exactOutputs.at(-1)!.path), [
+          directory,
+          ...cppRuntimeIncludeDirectories,
+        ]);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
   });
 
   it('matches a contextual optional callable with one covariant nullable nominal return', () => {
