@@ -6310,6 +6310,9 @@ function refuseCppStructuralAssertionOwnerUnprovenCpp(
   target: Readonly<IrType> | undefined,
 ): never {
   const absent = collectCppStructuralRowAssertionAbsentMembersCpp(source, target, context);
+  const incompatible = collectCppStructuralRowAssertionIncompatibleMembersCpp(source, target, context);
+  const incompatibleSet = new Set(incompatible);
+  const undeclared = absent.filter((name) => !incompatibleSet.has(name));
   const diagnosticContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set() };
   const sourceType = source ? emitType(source, diagnosticContext) : 'the unresolved source row';
   const targetType = target ? emitType(target, diagnosticContext) : 'the unresolved asserted row';
@@ -6317,12 +6320,52 @@ function refuseCppStructuralAssertionOwnerUnprovenCpp(
   const missing =
     absent.length === 0
       ? 'members the source type does not declare'
-      : `${renderCppSubjectNameListCpp(absent)}, which the source type does not declare`;
+      : incompatible.length === 0
+        ? `${renderCppSubjectNameListCpp(absent)}, which the source type does not declare`
+        : undeclared.length === 0
+          ? `${renderCppSubjectNameListCpp(incompatible)}, whose optionality or value representation is not representation-equivalent to the source type's cells`
+          : `${renderCppSubjectNameListCpp(undeclared)}, which the source type does not declare, and ${renderCppSubjectNameListCpp(incompatible)}, whose optionality or value representation is not representation-equivalent to the source type's cells`;
+  const declarationRequirement =
+    incompatible.length === 0
+      ? `declares ${absent.length === 0 ? 'them' : renderCppSubjectNameListCpp(absent)}`
+      : `carries ${renderCppSubjectNameListCpp(absent)} with the asserted optionality and value representation`;
   emissionError(
     context,
-    `the asserted row from ${sourceType} to ${targetType} reads ${missing}, and a structural owner binds the members of the type the object was first reached as, so a member the source's own declaration lacks has no cell to answer the read. An assertion cannot add those cells or prove which wider owner was stored. Preserve the concrete owner in the source type through every storage or callback boundary, or make an intentionally erased registry validate and recover that owner before dispatch; a tag or registry key carried beside the value does not prove which owner the reference retains. Declare the source as a type that declares ${absent.length === 0 ? 'them' : renderCppSubjectNameListCpp(absent)} -- construct ${declaredTargetType} explicitly, then type the retaining slot and every accessor result as ${declaredTargetType} wherever that concrete owner is known; changing only the accessor result cannot recover a wider owner after a base-typed slot erased it -- rather than asserting past ${sourceType}.`,
+    `the asserted row from ${sourceType} to ${targetType} reads ${missing}, and a structural owner binds the members and storage representations of the type the object was first reached as, so a member the source's own declaration lacks or carries differently has no compatible cell to answer the read. An assertion cannot add those cells or change their representation, or prove which wider owner was stored. Preserve the concrete owner in the source type through every storage or callback boundary, or make an intentionally erased registry validate and recover that owner before dispatch; a tag or registry key carried beside the value does not prove which owner the reference retains. Declare the source as a type that ${declarationRequirement} -- construct ${declaredTargetType} explicitly, then type the retaining slot and every accessor result as ${declaredTargetType} wherever that concrete owner is known; changing only the accessor result cannot recover a wider owner after a base-typed slot erased it -- rather than asserting past ${sourceType}. The compiler will not reinterpret the owner, cast it, copy or materialize a replacement, or add side storage.`,
     'cpp-structural-assertion-owner-unproven',
   );
+}
+
+// A member can be present by name and still have no cell the asserted row can use. Optional storage is
+// a different carrier from a required value, and a differently represented value cannot be reinterpreted
+// merely because both declarations spell the same property name. Keep those cases separate from wholly
+// absent members so the refusal tells the source author whether to add a cell or retain its exact layout.
+function collectCppStructuralRowAssertionIncompatibleMembersCpp(
+  source: Readonly<IrType> | undefined,
+  target: Readonly<IrType> | undefined,
+  context: EmitContext,
+): readonly string[] {
+  if (source === undefined || target === undefined) return [];
+  const sourceProperties = resolveCppObjectShapeInTypeOwnerCpp(source, context);
+  const targetProperties = resolveCppObjectShapeInTypeOwnerCpp(target, context);
+  if (!sourceProperties || !targetProperties) return [];
+  const sourceFields = new Map(
+    sourceProperties
+      .filter((property) => !property.phantom)
+      .map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property]),
+  );
+  return targetProperties
+    .filter((property) => {
+      if (property.phantom) return false;
+      const sourceProperty = sourceFields.get(getCppStructuralRowPropertyIdentityCpp(property, context));
+      return Boolean(
+        sourceProperty &&
+        (sourceProperty.optional !== property.optional ||
+          emitType(sourceProperty.type, context) !== emitType(property.type, context)),
+      );
+    })
+    .map((property) => property.name)
+    .sort(compareTextCodeUnits);
 }
 
 // The members the asserted row reads that the source's own declaration cannot answer, in canonical order.

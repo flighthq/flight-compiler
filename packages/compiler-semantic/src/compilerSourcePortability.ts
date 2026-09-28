@@ -387,6 +387,70 @@ function getSwfNodeDoubleAssertionGuidance(
   return `${subject} uses a double assertion through ${bridge} to add ${fields} to the already-constructed ${retainedSlot} owner declared as ${retainedOwner}, then treat it as ${targetName}; erasing the type spelling does not create those cells or prove that the retained owner ever had them. Declare ${fields} on the exact portable data type retained by ${retainedSlot}, make the creator construct that concrete owner before a base-typed slot stores it, and keep that type through every accessor that mutates or reads the fields. If this open-object mutation is intentionally JavaScript-only, a reviewed source-portability exception can document that boundary but cannot supply storage on another target. The compiler will not reinterpret the owner, copy or materialize replacement data, or add side storage.`;
 }
 
+function getPhysics3DWorldDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  const source = normalizePathPortable(node.getSourceFile().fileName);
+  if (!source.endsWith('/packages/physics3d/src/world.ts')) return undefined;
+  const target = getTypeAssertionType(node);
+  const targetName = ts.isTypeReferenceNode(target) ? getNodeName(target.typeName) : undefined;
+  const legacyView =
+    targetName === 'SerializedPhysics3DWorld'
+      ? {
+          difference:
+            'it changes required index and jointEvents cells into optional storage and asks solver for the removed constraintByPair cell',
+          owner: 'Physics3DWorld',
+          view: targetName,
+        }
+      : targetName === 'SerializedPhysics3DSolverConfig'
+        ? {
+            difference: 'it changes the required maxCcdRotationSubsteps number into optional storage',
+            owner: 'Physics3DSolverConfig',
+            view: targetName,
+          }
+        : targetName === 'SerializedPhysics3DBody'
+          ? {
+              difference: 'it changes the required colliders array into optional storage',
+              owner: 'RigidBody3D',
+              view: targetName,
+            }
+          : targetName === 'SerializedPhysics3DContact'
+            ? {
+                difference: 'it changes the required colliderA and colliderB numbers into optional storage',
+                owner: 'Physics3DContact',
+                view: targetName,
+              }
+            : isPhysics3DSerializedVersionProbe(target)
+              ? {
+                  difference: 'it changes the required numeric version cell into optional unknown storage',
+                  owner: 'Physics3DWorld',
+                  view: '{ version?: unknown }',
+                }
+              : undefined;
+  if (legacyView === undefined) return undefined;
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner)) return undefined;
+  let retainedExpression: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retainedExpression)) retainedExpression = retainedExpression.expression;
+  const retainedSlot = retainedExpression.getText(node.getSourceFile());
+  return `${subject} uses a double assertion through ${bridge} to reinterpret the already-constructed ${retainedSlot} owner declared as ${legacyView.owner} as the legacy ${legacyView.view} view; that view is not representation-equivalent to the retained carrier because ${legacyView.difference}. Keep reconstructed input in a named versioned serialized DTO at the format boundary, validate and default its optional fields before admitting it to ${legacyView.owner}, and construct and retain the current ${legacyView.owner} with its declared layout. If in-place JavaScript migration must preserve the raw object's identity, declare one stable serialized storage owner with those optional cells from construction and keep that exact type throughout migration, then record a reviewed source-portability exception for the JavaScript-only boundary. The compiler will preserve an already proven representation-equivalent owner, but will not reinterpret this carrier, cast it, copy or materialize a replacement, or add side storage.`;
+}
+
+function isPhysics3DSerializedVersionProbe(node: ts.TypeNode): boolean {
+  if (!ts.isTypeLiteralNode(node) || node.members.length !== 1) return false;
+  const member = node.members[0];
+  return Boolean(
+    member &&
+    ts.isPropertySignature(member) &&
+    getNodeName(member.name) === 'version' &&
+    member.questionToken !== undefined &&
+    member.type?.kind === ts.SyntaxKind.UnknownKeyword,
+  );
+}
+
 function renderAssertionBridge(node: ts.TypeNode): 'any' | 'never' | 'unknown' {
   if (node.kind === ts.SyntaxKind.AnyKeyword) return 'any';
   if (node.kind === ts.SyntaxKind.NeverKeyword) return 'never';
@@ -877,6 +941,8 @@ function renderUncheckedDoubleAssertionMessage(
   subject: string,
   bridge: 'any' | 'never' | 'unknown',
 ): string {
+  const physics3DWorld = getPhysics3DWorldDoubleAssertionGuidance(node, subject, bridge);
+  if (physics3DWorld) return physics3DWorld;
   const swfNode = getSwfNodeDoubleAssertionGuidance(node, subject, bridge);
   if (swfNode) return swfNode;
   if (isTypeScriptMutableIndexSignatureView(getTypeAssertionType(node))) {

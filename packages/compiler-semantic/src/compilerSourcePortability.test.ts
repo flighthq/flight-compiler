@@ -190,6 +190,87 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
 
+  it('keeps physics3d legacy hydration on a declared serialized owner', () => {
+    const asserted = input(
+      'packages/physics3d/src/world.ts',
+      `interface Physics3DWorld {
+         version: number;
+         index: { kind: string };
+         jointEvents: { broke: number[] };
+         solver: { constraintByContact: Map<number, number> };
+       }
+       interface Physics3DSolverConfig { maxCcdRotationSubsteps: number }
+       interface RigidBody3D { colliders: number[] }
+       interface Physics3DContact { colliderA: number; colliderB: number }
+       interface SerializedPhysics3DWorld {
+         index?: { kind: string };
+         jointEvents?: { broke: number[] };
+         solver: { constraintByPair?: Map<number, number> };
+       }
+       interface SerializedPhysics3DSolverConfig { maxCcdRotationSubsteps?: number }
+       interface SerializedPhysics3DBody { colliders?: number[] }
+       interface SerializedPhysics3DContact { colliderA?: number; colliderB?: number }
+       function hydratePhysics3DWorld(
+         world: Physics3DWorld,
+         config: Physics3DSolverConfig,
+         body: RigidBody3D,
+         contact: Physics3DContact,
+       ): void {
+         const version = (world as unknown as { version?: unknown }).version;
+         const serializedWorld = world as unknown as SerializedPhysics3DWorld;
+         const serializedConfig = config as unknown as SerializedPhysics3DSolverConfig;
+         (body as unknown as SerializedPhysics3DBody).colliders ??= [];
+         const serializedContact = contact as unknown as SerializedPhysics3DContact;
+         void version;
+         void serializedWorld;
+         void serializedConfig;
+         void serializedContact;
+       }`,
+    );
+    const typed = input(
+      'portablePhysics3DWorld.ts',
+      `interface SerializedPhysics3DWorld {
+         version?: number;
+         colliderA?: number;
+         colliderB?: number;
+       }
+       export function hydratePhysics3DWorld(world: SerializedPhysics3DWorld): void {
+         world.colliderA ??= 0;
+         world.colliderB ??= 0;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([asserted]).findings.filter(
+      (finding) => finding.rule === 'unchecked-double-assertion',
+    );
+
+    expect(findings).toHaveLength(5);
+    for (const target of [
+      '{ version?: unknown }',
+      'SerializedPhysics3DWorld',
+      'SerializedPhysics3DSolverConfig',
+      'SerializedPhysics3DBody',
+      'SerializedPhysics3DContact',
+    ]) {
+      expect(findings.filter((finding) => finding.message.includes(`legacy ${target} view`))).toHaveLength(1);
+    }
+    for (const finding of findings) {
+      expect(finding).toMatchObject({
+        rule: 'unchecked-double-assertion',
+        subject: 'function:hydratePhysics3DWorld',
+      });
+      expect(finding.message).toContain('already-constructed');
+      expect(finding.message).toContain('not representation-equivalent');
+      expect(finding.message).toContain('named versioned serialized DTO at the format boundary');
+      expect(finding.message).toContain('stable serialized storage owner');
+      expect(finding.message).toContain("preserve the raw object's identity");
+      expect(finding.message).toContain('reviewed source-portability exception');
+      expect(finding.message).toContain('will preserve an already proven representation-equivalent owner');
+      expect(finding.message).toContain('will not reinterpret this carrier, cast it, copy or materialize');
+      expect(finding.message).toContain('or add side storage');
+    }
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',

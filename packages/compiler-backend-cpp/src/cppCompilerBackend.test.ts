@@ -1089,6 +1089,106 @@ function lowerImportedSwfBoundsAssertionModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedPhysics3DLegacyAssertionModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (file: string, text: string) => ({
+    packageName: file.startsWith('types/') ? '@flighthq/types' : '@flighthq/physics3d',
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        'types/src/contract.ts',
+        `export interface SpatialIndexBackend3D { kind: string }
+         export interface Physics3DJointEvents { broke: number[] }
+         export interface Physics3DSolverState { constraintByContact: Map<number, number> }
+         export interface Physics3DSolverConfig { maxCcdRotationSubsteps: number }
+         export interface RigidBody3D { colliders: number[] }
+         export interface Physics3DContact { colliderA: number; colliderB: number }
+         export interface Physics3DWorld {
+           version: number;
+           index: SpatialIndexBackend3D;
+           jointEvents: Physics3DJointEvents;
+           solver: Physics3DSolverState;
+         }`,
+      ),
+      source(
+        'physics3d/src/worldVersionProbe.ts',
+        `import type { Physics3DWorld } from '@flighthq/types/contract';
+         export function hasSerializedVersion(world: Physics3DWorld): boolean {
+           const version = (world as unknown as { version?: unknown }).version;
+           return version !== undefined;
+         }`,
+      ),
+      source(
+        'physics3d/src/worldLegacyView.ts',
+        `import type {
+           Physics3DJointEvents,
+           Physics3DWorld,
+           SpatialIndexBackend3D,
+         } from '@flighthq/types/contract';
+         interface SerializedPhysics3DWorld {
+           index?: SpatialIndexBackend3D;
+           jointEvents?: Physics3DJointEvents;
+           solver: { constraintByPair?: Map<number, number> };
+         }
+         export function serializedWorld(world: Physics3DWorld): SerializedPhysics3DWorld {
+           return world as unknown as SerializedPhysics3DWorld;
+         }`,
+      ),
+      source(
+        'physics3d/src/worldLegacyConfig.ts',
+        `import type { Physics3DSolverConfig } from '@flighthq/types/contract';
+         interface SerializedPhysics3DSolverConfig { maxCcdRotationSubsteps?: number }
+         export function serializedConfig(
+           config: Physics3DSolverConfig,
+         ): SerializedPhysics3DSolverConfig {
+           return config as unknown as SerializedPhysics3DSolverConfig;
+         }`,
+      ),
+      source(
+        'physics3d/src/worldLegacyBody.ts',
+        `import type { RigidBody3D } from '@flighthq/types/contract';
+         interface SerializedPhysics3DBody { colliders?: number[] }
+         export function serializedBody(body: RigidBody3D): SerializedPhysics3DBody {
+           return body as unknown as SerializedPhysics3DBody;
+         }`,
+      ),
+      source(
+        'physics3d/src/worldLegacyContact.ts',
+        `import type { Physics3DContact } from '@flighthq/types/contract';
+         interface SerializedPhysics3DContact { colliderA?: number; colliderB?: number }
+         export function serializedContact(contact: Physics3DContact): SerializedPhysics3DContact {
+           return contact as unknown as SerializedPhysics3DContact;
+         }`,
+      ),
+      source(
+        'physics3d/src/worldExactOwner.ts',
+        `import type { Physics3DWorld } from '@flighthq/types/contract';
+         interface SerializedPhysics3DContact { colliderA?: number; colliderB?: number }
+         export function retainWorld(world: Physics3DWorld): Physics3DWorld {
+           return world as unknown as Physics3DWorld;
+         }
+         export function defaultSerializedContact(contact: SerializedPhysics3DContact): void {
+           contact.colliderA ??= 0;
+           contact.colliderB ??= 0;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
 function lowerImportedMeshAndMovieClipAssertionModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -7426,6 +7526,54 @@ describe('createCppCompilerBackend', () => {
     expect(typed).not.toContain('make_ref');
     expect(typed).not.toContain('materialize');
     expect(typed).not.toContain('row_set');
+  });
+
+  it('keeps physics3d legacy hydration on its declared owner representation', () => {
+    const { moduleResolution, results } = lowerImportedPhysics3DLegacyAssertionModules();
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const failures = modules
+      .slice(1, 6)
+      .map((module) => captureBackendEmissionFailure(() => session.emitModule(module)));
+    const exact = session.emitModule(modules[6]!)[0]!.contents;
+
+    // A reconstructed document cannot first occupy a current required-field owner and then regain the
+    // optional cells of its legacy schema through `unknown`. The source boundary must retain one declared
+    // serialized carrier until migration is complete. The one representation-equivalent assertion keeps
+    // its exact owner, and a correctly typed optional carrier defaults its own cells directly.
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const failure of failures) {
+      expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+      expect(failure.classification).toBe('source-portability');
+      expect(failure.message).toContain(
+        "whose optionality or value representation is not representation-equivalent to the source type's cells",
+      );
+      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('or change their representation');
+      expect(failure.message).toContain('construct');
+      expect(failure.message).toContain('with the asserted optionality and value representation');
+      expect(failure.message).toContain('type the retaining slot and every accessor result as');
+      expect(failure.message).toContain('will not reinterpret the owner, cast it, copy or materialize');
+      expect(failure.message).toContain('or add side storage');
+    }
+    expect(failures[0]!.message).toContain('version');
+    expect(failures[1]!.message).toContain('index, jointEvents and solver');
+    expect(failures[2]!.message).toContain('maxCcdRotationSubsteps');
+    expect(failures[3]!.message).toContain('colliders');
+    expect(failures[4]!.message).toContain('colliderA and colliderB');
+    expect(exact).toContain('return world;');
+    expect(exact).toContain('contact->collider_a');
+    expect(exact).toContain('contact->collider_b');
+    expect(exact).not.toContain('flight::Any');
+    expect(exact).not.toContain('static_cast');
+    expect(exact).not.toContain('structural_ref_cast');
+    expect(exact).not.toContain('make_ref');
+    expect(exact).not.toContain('materialize');
+    expect(exact).not.toContain('row_set');
   });
 
   it('names the missing owners in mesh morph and movie clip runtime assertions', () => {
