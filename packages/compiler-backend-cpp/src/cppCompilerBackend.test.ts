@@ -36227,6 +36227,136 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(incompatibleFailure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
   });
 
+  it('refuses local collision intersection owners and compiles scratch values with shared declared arm owners', () => {
+    const resolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './gjk3D',
+          target: { packageName: '@flighthq/collision', source: 'packages/collision/src/gjk3D.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          `export interface CollisionSphere3D { x: number; y: number; z: number; radius: number }
+           export interface CollisionConvex3D { points: number[] }
+           export type CollisionShape3D =
+             | (CollisionSphere3D & { kind: 'sphere' })
+             | (CollisionConvex3D & { kind: 'convex' });
+           export interface CollisionSphereShape3D extends CollisionSphere3D { kind: 'sphere' }
+           export interface CollisionConvexShape3D extends CollisionConvex3D { kind: 'convex' }
+           export type CollisionShape3DPortable = CollisionSphereShape3D | CollisionConvexShape3D;`,
+        ),
+        source(
+          '@flighthq/collision',
+          'packages/collision/src/gjk3D.ts',
+          `import type { CollisionShape3D, CollisionShape3DPortable } from '@flighthq/types/contract';
+           export function testCollisionSupportOverlap3D(
+             a: Readonly<CollisionShape3D>,
+             b: Readonly<CollisionShape3D>,
+           ): boolean { return a.kind === b.kind; }
+           export function testCollisionSupportOverlap3DPortable(
+             a: Readonly<CollisionShape3DPortable>,
+             b: Readonly<CollisionShape3DPortable>,
+           ): boolean { return a.kind === b.kind; }`,
+        ),
+        source(
+          '@flighthq/collision',
+          'packages/collision/src/pointContainment3D.ts',
+          `import type { CollisionConvex3D, CollisionSphere3D } from '@flighthq/types/contract';
+           import { testCollisionSupportOverlap3D } from './gjk3D';
+           const scratchHull: CollisionConvex3D & { kind: 'convex' } = { kind: 'convex', points: [] };
+           const scratchProbe: CollisionSphere3D & { kind: 'sphere' } = {
+             kind: 'sphere', x: 0, y: 0, z: 0, radius: 0,
+           };
+           export function contains(points: number[]): boolean {
+             scratchHull.points = points;
+             return testCollisionSupportOverlap3D(scratchHull, scratchProbe);
+           }`,
+        ),
+        source(
+          '@flighthq/collision',
+          'packages/collision/src/pointContainment3DPortable.ts',
+          `import type { CollisionConvexShape3D, CollisionSphereShape3D } from '@flighthq/types/contract';
+           import { testCollisionSupportOverlap3DPortable } from './gjk3D';
+           const scratchHull: CollisionConvexShape3D = { kind: 'convex', points: [] };
+           const scratchProbe: CollisionSphereShape3D = { kind: 'sphere', x: 0, y: 0, z: 0, radius: 0 };
+           export function contains(points: number[]): boolean {
+             scratchHull.points = points;
+             return testCollisionSupportOverlap3DPortable(scratchHull, scratchProbe);
+           }`,
+        ),
+      ],
+      resolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: resolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/collision': { includePrefix: 'flight/collision', namespace: 'flight::collision' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('distinct intersection owner');
+    expect(failure.message).toContain('CollisionConvex3D');
+    expect(failure.message).toContain('CollisionShape3D');
+    expect(failure.message).toContain('sibling retyping or copying');
+
+    const outputs = [modules[0]!, modules[1]!, modules[3]!].flatMap((module) => session.emitModule(module));
+    const emitted = outputs.at(-1)!.contents;
+    expect(emitted).toContain('test_collision_support_overlap3_dportable(');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::CollisionConvexShape3D>>');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::CollisionSphereShape3D>>');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('make_structural_ref');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('dynamic_cast');
+    expect(emitted).not.toContain('reinterpret_cast');
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('materialize_row');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-collision-intersection-owner-'));
+      try {
+        for (const output of outputs) {
+          const outputPath = path.join(directory, output.path);
+          mkdirSync(path.dirname(outputPath), { recursive: true });
+          writeFileSync(outputPath, output.contents, 'utf8');
+        }
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, outputs.at(-1)!.path), [
+          directory,
+          ...cppRuntimeIncludeDirectories,
+        ]);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('remaps an imported intersection union through Readonly without losing its exact arms', () => {
     const resolution: CompilerModuleResolutionPlan = {
       edges: [

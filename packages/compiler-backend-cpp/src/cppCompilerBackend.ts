@@ -15243,10 +15243,15 @@ function emitContextualUnionExpressionInContextCpp(
     // exists between two nominal types that are not the same type. A callable is the exception that proves
     // the vocabulary: it IS a represented domain, so a refusal is about the signatures agreeing rather
     // than about representation, and it is worded and attributed as that.
-    const secondaryIntersectionCarrier = getCppSecondaryIntersectionCarrierConflictCpp(runtimeType, plan, context);
-    const cause = secondaryIntersectionCarrier
-      ? ('intersection-secondary-carrier' as const)
-      : getCppUnrepresentedUnionValueCauseCpp(expression, runtimeType, plan, context);
+    const intersectionUnionOwner = getCppIntersectionUnionOwnerConflictCpp(runtimeType, expectedType, plan, context);
+    const secondaryIntersectionCarrier = intersectionUnionOwner
+      ? undefined
+      : getCppSecondaryIntersectionCarrierConflictCpp(runtimeType, plan, context);
+    const cause = intersectionUnionOwner
+      ? ('intersection-union-owner' as const)
+      : secondaryIntersectionCarrier
+        ? ('intersection-secondary-carrier' as const)
+        : getCppUnrepresentedUnionValueCauseCpp(expression, runtimeType, plan, context);
     const callableErasedReturnGap =
       cause === 'callable-return-erasure'
         ? getCppContextualCallableErasedReturnGapCpp(expression, runtimeType, plan, context)
@@ -15263,13 +15268,15 @@ function emitContextualUnionExpressionInContextCpp(
               )}]. A callable is a represented domain, so the obstacle is that the destination's signature cannot call this one. Declare the value's parameters so the destination's signature supplies them, and its result as one the destination holds`
           : cause === 'partial-value'
             ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
-            : secondaryIntersectionCarrier
-              ? `contextual union value type ${targetType} is an intersection stored through one nominal base, but the destination names secondary constituent ${secondaryIntersectionCarrier.targets.map(describeIrTypeForDiagnosticCpp).join(', ')} through an independent C++ object carrier. Only the intersection's unique nominal base ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)} preserves the same owner; converting to the secondary carrier would require retyping or copying the object. Make the destination contract ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)}, declare one explicit common nominal base, or add owner-preserving structural-reference storage for that contract`
-              : cause === 'nominal-mismatch'
-                ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
-                : cause === 'structural-array-projection'
-                  ? `contextual union array value type ${targetType} cannot become the destination's projected element array without changing array identity. Construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
-                  : `contextual union value type ${targetType} is not a represented runtime domain`,
+            : intersectionUnionOwner
+              ? `contextual union value type ${targetType} has a distinct intersection owner from its matching ${intersectionUnionOwner.contract} arm over nominal base ${describeIrTypeForDiagnosticCpp(intersectionUnionOwner.base)}. The source intersection and destination arm are sibling C++ object carriers; converting between them would require sibling retyping or copying the object. Name one shared declared arm type in the ${intersectionUnionOwner.contract} contract and use that same arm declaration in both the union and value storage`
+              : secondaryIntersectionCarrier
+                ? `contextual union value type ${targetType} is an intersection stored through one nominal base, but the destination names secondary constituent ${secondaryIntersectionCarrier.targets.map(describeIrTypeForDiagnosticCpp).join(', ')} through an independent C++ object carrier. Only the intersection's unique nominal base ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)} preserves the same owner; converting to the secondary carrier would require retyping or copying the object. Make the destination contract ${describeIrTypeForDiagnosticCpp(secondaryIntersectionCarrier.base)}, declare one explicit common nominal base, or add owner-preserving structural-reference storage for that contract`
+                : cause === 'nominal-mismatch'
+                  ? `contextual union value type ${targetType} is not a represented runtime domain: the value's type resembles an alternative but is not the declaration it names. Pass the declared type, or declare the destination union over the type the value has`
+                  : cause === 'structural-array-projection'
+                    ? `contextual union array value type ${targetType} cannot become the destination's projected element array without changing array identity. Construct a fresh local array only in that declared destination context so its element carrier is chosen at allocation, or add identity-preserving projected-array storage to the runtime`
+                    : `contextual union value type ${targetType} is not a represented runtime domain`,
       'cpp-contextual-union-value-type-unrepresented',
       cause === 'erased-kind' || cause === 'callable-return-erasure' || cause === 'structural-array-projection'
         ? 'target-runtime'
@@ -16719,6 +16726,53 @@ function getCppUnrepresentedUnionValueCauseCpp(
 interface CppSecondaryIntersectionCarrierConflict {
   readonly base: Readonly<IrType>;
   readonly targets: readonly Readonly<IrType>[];
+}
+
+interface CppIntersectionUnionOwnerConflict {
+  readonly base: Readonly<IrType>;
+  readonly contract: string;
+}
+
+// An inline intersection is its own object owner even when it repeats a declared union arm exactly.
+// Both source and target may name the same nominal payload base and literal discriminant while still
+// emitting sibling C++ structs. The source language accepts that structural conversion, but a Ref to
+// one sibling cannot become a Ref to the other without retyping or copying. Identify the unique arm so
+// the refusal can direct construction into the union's owner instead of calling the shape unrepresented.
+function getCppIntersectionUnionOwnerConflictCpp(
+  type: Readonly<IrType>,
+  expectedType: Readonly<IrType>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): Readonly<CppIntersectionUnionOwnerConflict> | undefined {
+  if (type.kind !== 'intersection') return undefined;
+  const base = getCppNominalIntersectionBaseCpp(type, context)?.type;
+  if (!base || base.kind !== 'named') return undefined;
+  const baseIdentity = getCppNominalTypeArgumentIdentityCpp(base, context, new Set());
+  if (!baseIdentity) return undefined;
+  const sourceShape = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
+  if (!sourceShape) return undefined;
+  const matches = plan.valueSlots.flatMap((slot, slotIndex) => {
+    const alternatives = slot.sourceAlternatives.filter((alternative) => {
+      if (alternative.kind !== 'intersection') return false;
+      const sharesBase = alternative.types.some(
+        (member) =>
+          member.kind === 'named' && getCppNominalTypeArgumentIdentityCpp(member, context, new Set()) === baseIdentity,
+      );
+      if (!sharesBase) return false;
+      const targetShape = context.referenceRepresentationPlanner.resolveObjectShape(alternative, context.module);
+      return Boolean(targetShape && areCppObjectShapesRepresentationEquivalent(sourceShape, targetShape, context));
+    });
+    return alternatives.length === 1 ? [slotIndex] : [];
+  });
+  if (matches.length !== 1) return undefined;
+  const contractType =
+    expectedType.kind === 'named' &&
+    expectedType.reference.kind === 'ambient' &&
+    expectedType.reference.name === 'Readonly' &&
+    expectedType.typeArguments.length === 1
+      ? expectedType.typeArguments[0]!
+      : expectedType;
+  return { base, contract: describeIrTypeForDiagnosticCpp(contractType) };
 }
 
 function getCppSecondaryIntersectionCarrierConflictCpp(
