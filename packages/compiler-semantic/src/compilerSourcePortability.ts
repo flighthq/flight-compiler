@@ -595,6 +595,13 @@ function getResidualFlightTypeAliasOpaqueValueGuidance(
 ): string | undefined {
   if (!hasOnlyUnknown(kinds)) return undefined;
   if (
+    isFlightTypesSource(node, 'FlightDocumentNodeSchema.ts') &&
+    subject === 'type:FlightDocumentResourceLookup' &&
+    isReadonlyUnknownRecord(node.type)
+  ) {
+    return `${subject} is the transient identity map between the open resource-resolver registry and the open node-schema registry. Each registered resolver creates its own live resource value, materialization records that value under the authored key, and registered node factories receive the same lookup and own every interpretation; the scene-document core neither inspects nor serializes a resolved value, and writers receive an empty lookup. This is a genuinely registry-owned opaque resource boundary. Record a reviewed source-portability exception for this exact alias while node schemas own all narrowing and no resolved value enters document fields, results, or portable persistence. If portable code must inspect resources, introduce a named closed tagged FlightDocumentResource handle domain shared by resolvers and node schemas while keeping native resource owners private. The compiler will not infer a union from registered kinds, choose a target-specific Any carrier, insert a cast, or copy or materialize a live resource.`;
+  }
+  if (
     isFlightTypesSource(node, 'AppWindow.ts') &&
     subject === 'type:NativeWindowHandle' &&
     node.type.kind === ts.SyntaxKind.UnknownKeyword
@@ -683,6 +690,30 @@ function getFlightTypesOpaquePropertyGuidance(
   kinds: ReadonlySet<OpaqueTypeKind>,
 ): string | undefined {
   if (!hasOnlyUnknown(kinds)) return undefined;
+  if (
+    isFlightTypesSource(node, 'AsepriteSchema.ts') &&
+    subject === 'interface:AsepriteMeta/property:slices' &&
+    node.questionToken !== undefined &&
+    isUnknownArrayType(node.type)
+  ) {
+    return `${subject} exposes the Aseprite JSON slice array through AsepriteDocument. parseAsepriteSpritesheetDocument casts JSON.parse directly to that document and returns it, so ignoring slices during spritesheet conversion does not make the public value an unexamined boundary. Replace unknown[] with named closed AsepriteSlice, AsepriteSliceKey, and point schemas covering each slice name and optional color plus every key's frame, bounds, optional center, and optional pivot, then validate or normalize the parsed JSON before constructing or returning AsepriteDocument. A reviewed source-portability exception is justified only if slices are rejected or dropped at ingress and cannot enter the returned document, storage, or serialization. The compiler will not infer the Aseprite schema from JSON, choose a target-specific Any carrier, insert a cast, or copy or materialize the slice payload.`;
+  }
+  if (
+    isFlightTypesSource(node, 'Assets.ts') &&
+    subject === 'interface:AssetEntry/property:value' &&
+    node.questionToken === undefined &&
+    node.type?.kind === ts.SyntaxKind.UnknownKeyword
+  ) {
+    return `${subject} retains the decoded resource produced by the AssetLoaderAdapter selected for the entry's descriptor type. acquireAsset stores and returns that same value, getAsset returns the resident identity, and release or library disposal gives it back to the paired adapter; the asset core never inspects or serializes it. This is a genuinely adapter-owned opaque resource boundary. Record a reviewed source-portability exception for this exact property while only the originating adapter and type-aware application callers interpret the value, the asset core remains identity transport, and values never enter portable persistence or cross-adapter interpretation. If portable code must inspect assets, introduce typed per-kind access capabilities with a named closed handle domain and keep decoded native resources private to their adapters. The compiler will not infer a value type from AssetType or generic call sites, choose a target-specific Any carrier, insert a cast, or copy or materialize the decoded resource.`;
+  }
+  if (
+    isFlightTypesSource(node, 'GuiDialog.ts') &&
+    subject === 'interface:GuiDialogCloseResult/property:value' &&
+    node.questionToken !== undefined &&
+    node.type?.kind === ts.SyntaxKind.UnknownKeyword
+  ) {
+    return `${subject} is the application-owned result of accepting or dismissing a dialog entry. closeGuiDialog reads only entryId to validate the active entry, removes that entry, and emits the same result through onClose without inspecting, coercing, retaining, or serializing value. This is a genuinely application-opaque result boundary. Record a reviewed source-portability exception for this exact property while producers and listeners exclusively own the payload meaning and the GUI core remains identity transport. If close values enter portable persistence or shared interpretation, replace unknown with a named closed GuiDialogCloseValue domain or entry-discriminated result arms shared by close callers and listeners. The compiler will not infer a schema from entryId or listeners, choose a target-specific Any carrier, insert a cast, or copy or materialize the payload.`;
+  }
   if (isFlightTypesSource(node, 'Log.ts') && isReadonlyUnknownRecord(node.type) && node.questionToken === undefined) {
     const owner =
       subject === 'interface:LogContext/property:fields'
@@ -761,6 +792,10 @@ function isReadonlyUnknownRecord(node: ts.TypeNode | undefined): boolean {
   if (!inner || !ts.isTypeReferenceNode(inner) || getNodeName(inner.typeName) !== 'Record') return false;
   const [key, value] = inner.typeArguments ?? [];
   return key?.kind === ts.SyntaxKind.StringKeyword && value?.kind === ts.SyntaxKind.UnknownKeyword;
+}
+
+function isUnknownArrayType(node: ts.TypeNode | undefined): boolean {
+  return Boolean(node && ts.isArrayTypeNode(node) && node.elementType.kind === ts.SyntaxKind.UnknownKeyword);
 }
 
 function isStringOrReadonlyUnknownRecord(node: ts.TypeNode): boolean {

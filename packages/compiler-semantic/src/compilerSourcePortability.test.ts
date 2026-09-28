@@ -742,6 +742,234 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('requires Aseprite slices to use a closed schema at JSON ingress', () => {
+    const opaque = input(
+      'packages/types/src/AsepriteSchema.ts',
+      `interface AsepriteMeta { slices?: unknown[] }
+       interface AsepriteDocument { meta: AsepriteMeta }`,
+    );
+    const closed = input(
+      'packages/types/src/AsepriteSchema.ts',
+      `interface AsepriteRect { h: number; w: number; x: number; y: number }
+       interface AsepritePoint { x: number; y: number }
+       interface AsepriteSliceKey { bounds: AsepriteRect; center?: AsepriteRect; frame: number; pivot?: AsepritePoint }
+       interface AsepriteSlice { color?: string; keys: readonly AsepriteSliceKey[]; name: string }
+       interface AsepriteMeta { slices?: readonly AsepriteSlice[] }`,
+    );
+    const controls = [
+      input('packages/types/src/Other.ts', 'interface AsepriteMeta { slices?: unknown[] }'),
+      input('packages/other/src/AsepriteSchema.ts', 'interface AsepriteMeta { slices?: unknown[] }'),
+      input('packages/types/src/AsepriteSchema.ts', 'interface OtherMeta { slices?: unknown[] }'),
+      input('packages/types/src/AsepriteSchema.ts', 'interface AsepriteMeta { slices: unknown[] }'),
+      input('packages/types/src/AsepriteSchema.ts', 'interface AsepriteMeta { slices?: unknown }'),
+      input('packages/types/src/AsepriteSchema.ts', 'interface AsepriteMeta { slices?: any[] }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings).toMatchObject([
+      { rule: 'opaque-value-domain', subject: 'interface:AsepriteMeta/property:slices' },
+    ]);
+    const message = report.findings[0]?.message;
+    expect(message).toContain('exposes the Aseprite JSON slice array through AsepriteDocument');
+    expect(message).toContain('parseAsepriteSpritesheetDocument casts JSON.parse directly');
+    expect(message).toContain('named closed AsepriteSlice, AsepriteSliceKey, and point schemas');
+    expect(message).toContain('validate or normalize the parsed JSON');
+    expect(message).toContain('reviewed source-portability exception is justified only if slices are rejected');
+    expect(message).toContain('target-specific Any carrier');
+    expect(message).toContain('insert a cast');
+    expect(message).toContain('copy or materialize the slice payload');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message: controlMessage }) => !controlMessage.includes('AsepriteSliceKey'),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('preserves asset cache values as exact adapter-owned resources', () => {
+    const opaque = input(
+      'packages/types/src/Assets.ts',
+      'interface AssetEntry { loadPromise: Promise<unknown> | null; resident: boolean; value: unknown }',
+    );
+    const closed = input(
+      'packages/types/src/Assets.ts',
+      'interface AssetEntry<T> { loadPromise: Promise<T> | null; resident: boolean; value: T }',
+    );
+    const controls = [
+      input('packages/types/src/Other.ts', 'interface AssetEntry { value: unknown }'),
+      input('packages/other/src/Assets.ts', 'interface AssetEntry { value: unknown }'),
+      input('packages/types/src/Assets.ts', 'interface OtherEntry { value: unknown }'),
+      input('packages/types/src/Assets.ts', 'interface AssetEntry { value?: unknown }'),
+      input('packages/types/src/Assets.ts', 'interface AssetEntry { value: unknown[] }'),
+      input('packages/types/src/Assets.ts', 'interface AssetEntry { value: any }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual(['interface:AssetEntry/property:value']);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected the AssetEntry value finding');
+    expect(finding.message).toContain('AssetLoaderAdapter selected for the entry');
+    expect(finding.message).toContain('getAsset returns the resident identity');
+    expect(finding.message).toContain('genuinely adapter-owned opaque resource boundary');
+    expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+    expect(finding.message).toContain('typed per-kind access capabilities');
+    expect(finding.message).toContain('target-specific Any carrier');
+    expect(finding.message).toContain('insert a cast');
+    expect(finding.message).toContain('copy or materialize the decoded resource');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('adapter-owned opaque resource boundary'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: [
+          {
+            findingIdentity: finding.identity,
+            reason: 'The cache returns each decoded resource only to callers and its paired adapter.',
+            rule: 'opaque-value-domain',
+          },
+        ],
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toMatchObject([{ finding: { identity: finding.identity } }]);
+  });
+
+  it('keeps resolved document resources inside the paired open registries', () => {
+    const opaque = input(
+      'packages/types/src/FlightDocumentNodeSchema.ts',
+      'type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;',
+    );
+    const closed = input(
+      'packages/types/src/FlightDocumentNodeSchema.ts',
+      `interface FlightDocumentResourceHandle { readonly kind: string; readonly resourceId: string }
+       type FlightDocumentResourceLookup = Readonly<Record<string, FlightDocumentResourceHandle>>;`,
+    );
+    const controls = [
+      input('packages/types/src/Other.ts', 'type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;'),
+      input(
+        'packages/other/src/FlightDocumentNodeSchema.ts',
+        'type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;',
+      ),
+      input('packages/types/src/FlightDocumentNodeSchema.ts', 'type FlightDocumentResourceLookup = unknown;'),
+      input(
+        'packages/types/src/FlightDocumentNodeSchema.ts',
+        'type FlightDocumentResourceLookup = Record<string, unknown>;',
+      ),
+      input(
+        'packages/types/src/FlightDocumentNodeSchema.ts',
+        'type FlightDocumentResourceLookup = Readonly<Record<number, unknown>>;',
+      ),
+      input(
+        'packages/types/src/FlightDocumentNodeSchema.ts',
+        'type FlightDocumentResourceLookup = Readonly<Record<string, any>>;',
+      ),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected the FlightDocumentResourceLookup finding');
+    expect(finding).toMatchObject({ rule: 'opaque-value-domain', subject: 'type:FlightDocumentResourceLookup' });
+    expect(finding.message).toContain('transient identity map between the open resource-resolver registry');
+    expect(finding.message).toContain('writers receive an empty lookup');
+    expect(finding.message).toContain('genuinely registry-owned opaque resource boundary');
+    expect(finding.message).toContain('reviewed source-portability exception for this exact alias');
+    expect(finding.message).toContain('named closed tagged FlightDocumentResource handle domain');
+    expect(finding.message).toContain('target-specific Any carrier');
+    expect(finding.message).toContain('insert a cast');
+    expect(finding.message).toContain('copy or materialize a live resource');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('registry-owned opaque resource boundary'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: [
+          {
+            findingIdentity: finding.identity,
+            reason: 'Each node schema alone interprets the live resources created by registered resolvers.',
+            rule: 'opaque-value-domain',
+          },
+        ],
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toMatchObject([{ finding: { identity: finding.identity } }]);
+  });
+
+  it('preserves dialog close values as application-owned signal payloads', () => {
+    const opaque = input(
+      'packages/types/src/GuiDialog.ts',
+      'interface GuiDialogCloseResult { entryId: string; reason: string; value?: unknown }',
+    );
+    const closed = input(
+      'packages/types/src/GuiDialog.ts',
+      `type GuiDialogCloseValue = boolean | number | string | null;
+       interface GuiDialogCloseResult { entryId: string; reason: string; value?: GuiDialogCloseValue }`,
+    );
+    const controls = [
+      input('packages/types/src/Other.ts', 'interface GuiDialogCloseResult { value?: unknown }'),
+      input('packages/other/src/GuiDialog.ts', 'interface GuiDialogCloseResult { value?: unknown }'),
+      input('packages/types/src/GuiDialog.ts', 'interface OtherResult { value?: unknown }'),
+      input('packages/types/src/GuiDialog.ts', 'interface GuiDialogCloseResult { value: unknown }'),
+      input('packages/types/src/GuiDialog.ts', 'interface GuiDialogCloseResult { value?: unknown[] }'),
+      input('packages/types/src/GuiDialog.ts', 'interface GuiDialogCloseResult { value?: any }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected the GuiDialogCloseResult value finding');
+    expect(finding).toMatchObject({
+      rule: 'opaque-value-domain',
+      subject: 'interface:GuiDialogCloseResult/property:value',
+    });
+    expect(finding.message).toContain('application-owned result of accepting or dismissing a dialog entry');
+    expect(finding.message).toContain('emits the same result through onClose');
+    expect(finding.message).toContain('genuinely application-opaque result boundary');
+    expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+    expect(finding.message).toContain('named closed GuiDialogCloseValue domain');
+    expect(finding.message).toContain('target-specific Any carrier');
+    expect(finding.message).toContain('insert a cast');
+    expect(finding.message).toContain('copy or materialize the payload');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('application-opaque result boundary'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: [
+          {
+            findingIdentity: finding.identity,
+            reason: 'The GUI core emits the application payload unchanged and never retains or interprets it.',
+            rule: 'opaque-value-domain',
+          },
+        ],
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toMatchObject([{ finding: { identity: finding.identity } }]);
+  });
+
   it('requires tray-style failure results to normalize unknown error payloads at their producer boundary', () => {
     const opaque = input(
       'Tray.ts',
