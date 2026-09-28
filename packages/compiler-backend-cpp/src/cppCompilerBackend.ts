@@ -3529,6 +3529,8 @@ function emitExpression(
       if (inferredNullishComparison) return inferredNullishComparison;
       const ambientTypeofComparison = emitAmbientTypeofUndefinedComparisonCpp(expression, context);
       if (ambientTypeofComparison) return ambientTypeofComparison;
+      const runtimeOwnedTypeofComparison = emitCppRuntimeOwnedTypeofComparisonCpp(expression, context);
+      if (runtimeOwnedTypeofComparison) return runtimeOwnedTypeofComparison;
       const typeofTagComparison = emitCppInferredOptionalTypeofTagComparisonCpp(expression, context);
       if (typeofTagComparison) return typeofTagComparison;
       const typeofFunctionComparison = emitCppInferredOptionalTypeofFunctionComparisonCpp(expression, context);
@@ -5551,6 +5553,7 @@ function emitExpression(
           context.includes.add('flight/any.hpp');
           return `${emitExpression(expression.operand, context)}.type_of()`;
         }
+        refuseCppErasedIndexedTypeofCpp(expression.operand, context);
         emissionError(
           context,
           "typeof requires closed runtime type evidence: the declared type does not decide it, and the target cannot ask a value it stores as a concrete carrier. State the type where the value is read: a closed union whose alternatives are distinguishable is lowered as a variant test, and a value the runtime owns -- a parameter declared `unknown` or `any` -- is answered by the runtime's own `typeof`",
@@ -25180,6 +25183,28 @@ function refuseCppErasedArrayPredicateValueCpp(
   );
 }
 
+// A checker-side Array.isArray guard can permit an indexed read from `unknown`, but it cannot add a
+// carrier alternative to the emitted Any. If the element reaches typeof through that erased receiver,
+// report the missing runtime extraction contract rather than blaming the final tag comparison. Treating
+// the read as an optional Any here would fabricate an array handle and lose the original value identity.
+function refuseCppErasedIndexedTypeofCpp(operand: Readonly<IrExpression>, context: EmitContext): void {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return;
+  const element =
+    operand.kind === 'element'
+      ? operand
+      : operand.kind === 'identifier' && operand.reference.kind === 'binding'
+        ? context.bindingInitializers.get(operand.reference.binding.id)
+        : undefined;
+  if (element?.kind !== 'element') return;
+  const receiverType = getCppNullishComparisonOperandTypeCpp(element.object, context);
+  if (!hasCppErasedDynamicTestOperandCpp(element.object, receiverType, context)) return;
+  emissionError(
+    context,
+    'typeof follows an indexed read whose receiver is still flight::Any after source narrowing, but flight::Any has no array alternative or checked exact-array extraction for the guarded value. Keep the value in its exact array type before the erased boundary, or add the array carrier, predicate, and identity-preserving extraction to the runtime; the compiler will not reinterpret the erased value, cast it, or materialize a replacement array',
+    'cpp-erased-array-predicate-runtime-required',
+  );
+}
+
 function getIrAssignmentTargetTypeCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -27494,6 +27519,49 @@ function emitAmbientTypeofUndefinedComparisonCpp(
     ) !== undefined;
   const absent = expression.operator === '==' || expression.operator === '===';
   return present !== absent ? 'true' : 'false';
+}
+
+// An external runtime call can retain a closed dynamic domain even when the source deliberately writes
+// `unknown`. JSON.parse is the measured case: its exact carrier is JsonValue, whose kind tag distinguishes
+// every JSON alternative without converting the value to Any. Answer a direct typeof comparison from that
+// tag, and carry the same storage fact across one immutable local through externalBindingStorageTargetTypes.
+// This is deliberately not a source-type rule: an arbitrary `unknown` remains on Any, while a Record read
+// remains on its own erased value carrier. The runtime-owned carrier is used only when the external profile
+// elected it for this exact expression.
+function emitCppRuntimeOwnedTypeofComparisonCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    expression.operator !== '==' &&
+    expression.operator !== '===' &&
+    expression.operator !== '!=' &&
+    expression.operator !== '!=='
+  ) {
+    return undefined;
+  }
+  const comparison = getCppTypeofTagComparisonCpp(expression.left, expression.right);
+  if (!comparison) return undefined;
+  const storageTarget =
+    getCppExternalCallResultTargetCpp(comparison.operand, context) ??
+    (comparison.operand.kind === 'identifier' && comparison.operand.reference.kind === 'binding'
+      ? context.externalBindingStorageTargetTypes.get(comparison.operand.reference.binding.id)
+      : undefined);
+  if (storageTarget !== 'flight::JsonValue') return undefined;
+  const value = getGeneratedTargetName('typeofJsonValue', context);
+  const kind = `${value}.kind()`;
+  const test =
+    comparison.tag === 'boolean'
+      ? `${kind} == flight::JsonValue::Kind::boolean`
+      : comparison.tag === 'number'
+        ? `${kind} == flight::JsonValue::Kind::number`
+        : comparison.tag === 'string'
+          ? `${kind} == flight::JsonValue::Kind::string`
+          : comparison.tag === 'object'
+            ? `(${kind} == flight::JsonValue::Kind::null || ${kind} == flight::JsonValue::Kind::array || ${kind} == flight::JsonValue::Kind::object)`
+            : 'false';
+  const result = expression.operator === '==' || expression.operator === '===' ? test : `!(${test})`;
+  return `([&]() { const auto& ${value} = ${emitExpression(comparison.operand, context)}; return ${result}; }())`;
 }
 
 function emitPrefixUnaryOperator(operator: string): string {

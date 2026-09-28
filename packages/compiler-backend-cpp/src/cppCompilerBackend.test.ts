@@ -22384,6 +22384,61 @@ Resolver make_resolver(TextureRef texture) {
     expect(closed).toContain('return value.index() == 0;');
   });
 
+  it('asks the retained erased carrier for typeof in JSON format readers', () => {
+    const result = lower(
+      'json-format-typeof.ts',
+      `type JsonObject = Record<string, unknown>;
+       function isObject(value: unknown): value is JsonObject {
+         return typeof value === 'object' && value !== null && !Array.isArray(value);
+       }
+       function readJsonNumber(value: unknown): number {
+         return typeof value === 'number' ? value : 0;
+       }
+       export function readPage(pages: JsonObject, id: string): boolean {
+         const file = pages[id];
+         return typeof file === 'string';
+       }
+       export function readFields(root: JsonObject): number {
+         const common = root.common;
+         if (!isObject(common)) return 0;
+         if (typeof common.lineHeight !== 'number') return 0;
+         const nested = common.nested;
+         if (!isObject(nested) || typeof nested.value !== 'number') return 0;
+         return readJsonNumber(common.base) + nested.value;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('.type_of()');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('attributes typeof after an erased array predicate to the missing runtime extraction', () => {
+    const result = lower(
+      'json-format-erased-array-typeof.ts',
+      `type JsonObject = Record<string, unknown>;
+       export function readPage(root: JsonObject, id: number): boolean {
+         const pages = root.pages;
+         if (!Array.isArray(pages)) return false;
+         const file = pages[id];
+         return typeof file === 'string';
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-erased-array-predicate-runtime-required',
+    });
+    expect(failure.message).toContain('receiver is still flight::Any after source narrowing');
+    expect(failure.message).toContain('no array alternative or checked exact-array extraction');
+    expect(failure.message).toContain('will not reinterpret the erased value, cast it, or materialize');
+  });
+
   it('lowers a typeof presence guard as the storage own presence', () => {
     // `typeof value !== 'undefined'` is a presence test the source states, and the semantic lowering
     // already records it as a union member test on `undefined`. The union stores ONE optional, so the
@@ -27273,6 +27328,48 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted.match(/flight::Json::parse\(text\)/gu)).toHaveLength(4);
     expect(emitted).not.toContain('flight::Any');
     expect(emitted).not.toContain('std::optional<flight::JsonValue>');
+  });
+
+  it('reads typeof checks from the exact JSON result carrier', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'json-result-typeof.ts',
+        `export function isObject(text: string): boolean {
+           const value: unknown = JSON.parse(text);
+           return typeof value === 'object';
+         }
+         export function isNumber(text: string): boolean {
+           const value: unknown = JSON.parse(text);
+           return typeof value === 'number';
+         }
+         export function isNotString(text: string): boolean {
+           const value: unknown = JSON.parse(text);
+           return typeof value !== 'string';
+         }
+         export function directBoolean(text: string): boolean {
+           return typeof JSON.parse(text) === 'boolean';
+         }
+         export function cannotBeUndefined(text: string): boolean {
+           return typeof JSON.parse(text) !== 'undefined';
+         }
+         export function erased(value: unknown): boolean { return typeof value === 'number'; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('flight::JsonValue value = flight::Json::parse(text);');
+    expect(emitted).toContain('flight::JsonValue::Kind::null');
+    expect(emitted).toContain('flight::JsonValue::Kind::array');
+    expect(emitted).toContain('flight::JsonValue::Kind::object');
+    expect(emitted).toContain('flight::JsonValue::Kind::number');
+    expect(emitted).toContain('flight::JsonValue::Kind::string');
+    expect(emitted).toContain('flight::JsonValue::Kind::boolean');
+    expect(emitted).toContain('return (value.type_of() == flight::String("number"));');
+    expect(emitted).toContain('return !(false);');
+    expect(emitted.match(/flight::Json::parse\(text\)/gu)).toHaveLength(5);
+    expect(emitted).not.toContain('flight::Any value = flight::Json::parse');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('materialize');
   });
 
   // The invariant the erased election exists to hold: a position the SOURCE wrote as `any` or
