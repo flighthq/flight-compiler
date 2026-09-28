@@ -29974,36 +29974,103 @@ Resolver make_resolver(TextureRef texture) {
   });
 
   it('attributes a Node2D hit-area view with incompatible generic cells to the target runtime', () => {
-    const result = lower(
-      'node-hit-area.ts',
+    const node = ts.createSourceFile(
+      '/flight/packages/types/src/Node.ts',
       `const RuntimeKey = Symbol('RuntimeKey');
-       interface EntityRuntime {}
-       interface Entity { readonly [RuntimeKey]: EntityRuntime | undefined }
-       interface NodeTraits { readonly enabled: boolean; readonly name: string | null }
-       interface NodeRuntime<Traits extends object> extends EntityRuntime { readonly traits: Traits }
-       interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {
+       export interface EntityRuntime {}
+       export interface Entity { readonly [RuntimeKey]: EntityRuntime | undefined }
+       export interface NodeData extends Entity {}
+       export interface NodeTraits { readonly data: NodeData | null; readonly enabled: boolean; readonly name: string | null }
+       export interface NodeRuntime<Traits extends object> extends EntityRuntime { readonly traits: Traits }
+       export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity {
          readonly [RuntimeKey]: NodeRuntime<Traits> | undefined;
        }
-       type NodeAny = Node<any>;
-       interface Node2DTraits extends NodeTraits { readonly x: number; readonly y: number }
-       type Node2D = Node<Node2DTraits> & Node2DTraits;
-       interface Rectangle extends Entity { readonly height: number; readonly width: number }
-       interface Path extends Entity { readonly commands: readonly number[] }
-       type HitArea = Readonly<Rectangle> | Readonly<Path> | Readonly<NodeAny> | 'bounds';
-       function setNodeHitArea(_source: NodeAny, _hitArea: HitArea | null): void {}
+       export type NodeAny = Node<any>;
+       export interface Node2DData extends NodeData {}
+       export interface Node2DTraits extends NodeTraits {
+         readonly data: Node2DData | null;
+         readonly x: number;
+         readonly y: number;
+       }
+       export type Node2D = Node<Node2DTraits> & Node2DTraits;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const nodeInteraction = ts.createSourceFile(
+      '/flight/packages/types/src/NodeInteraction.ts',
+      `import type { Entity, NodeAny } from './Node';
+       export interface Rectangle extends Entity { readonly height: number; readonly width: number }
+       export interface Path extends Entity { readonly commands: readonly number[] }
+       export type HitArea = Readonly<Rectangle> | Readonly<Path> | Readonly<NodeAny> | 'bounds';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const typesContract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export * from './Node';
+       export * from './NodeInteraction';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const interaction = ts.createSourceFile(
+      '/flight/packages/interaction/src/contract.ts',
+      `import type { HitArea, NodeAny } from '@flighthq/types/contract';
+       export function setNodeHitArea(_source: NodeAny, _hitArea: HitArea | null): void {}`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const gui = ts.createSourceFile(
+      '/flight/packages/gui/src/guiController.ts',
+      `import { setNodeHitArea } from '@flighthq/interaction/contract';
+       import type { Node2D } from '@flighthq/types/contract';
        export function configure(target: Node2D, hitArea: Node2D): void {
          setNodeHitArea(target, hitArea);
        }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Node',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Node.ts' },
+        },
+        {
+          specifier: './NodeInteraction',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/NodeInteraction.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/interaction/contract',
+          target: { packageName: '@flighthq/interaction', source: 'packages/interaction/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: node, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: nodeInteraction, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: typesContract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/interaction', sourceFile: interaction, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/gui', sourceFile: gui, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
     );
 
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
-    );
+    const failure = captureBackendEmissionFailure(() => emitCppModuleCppSession(results, moduleResolution, 4));
 
-    expect(result.diagnostics).toEqual([]);
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(failure.rule).toBe('cpp-contextual-union-value-type-unrepresented');
     expect(failure.classification).toBe('target-runtime');
-    expect(failure.message).toContain('can enter Readonly<NodeAny> in TypeScript only because');
+    expect(failure.message).toContain(
+      'can enter Readonly<NodeAny> in TypeScript through structural and generic assignability',
+    );
+    expect(failure.message).toContain('use incompatible C++ cell carriers');
+    expect(failure.message).toContain('crosses into target any erasure');
     expect(failure.message).toContain('no checked identity-preserving structural row conversion');
     expect(failure.message).toContain('unchecked cast');
     expect(failure.message).toContain('copying or materializing a row');

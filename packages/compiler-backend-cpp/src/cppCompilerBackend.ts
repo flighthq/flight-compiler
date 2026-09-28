@@ -15484,7 +15484,7 @@ function emitContextualUnionExpressionInContextCpp(
                 ', ',
               )}]. A callable is a represented domain, so the obstacle is that the destination's signature cannot call this one. Declare the value's parameters so the destination's signature supplies them, and its result as one the destination holds`
           : erasedTargetCellGap
-            ? `contextual union source carrier ${targetType} can enter ${describeDeclaredIrTypeForDiagnosticCpp(erasedTargetCellGap.target)} in TypeScript only because required ${erasedTargetCellGap.members.length === 1 ? 'member' : 'members'} ${renderCppSubjectNameListCpp(erasedTargetCellGap.members)} ${erasedTargetCellGap.members.length === 1 ? 'is' : 'are'} erased through any, but the source owner binds ${erasedTargetCellGap.members.length === 1 ? 'that member' : 'those members'} to concrete C++ storage while ${erasedTargetCellGap.targetCarrier} expects an any-erased cell carrier. flight-cpp has no checked identity-preserving structural row conversion for that mismatch; an unchecked cast would reinterpret the owner's cells, while copying or materializing a row, or adding side storage, would change its identity. Keep the union arm on the exact declared source owner, or add a runtime checked concrete-to-erased generic cell projection that preserves the owner`
+            ? `contextual union source carrier ${targetType} can enter ${describeDeclaredIrTypeForDiagnosticCpp(erasedTargetCellGap.target)} in TypeScript through structural and generic assignability, but required ${erasedTargetCellGap.members.length === 1 ? 'member' : 'members'} ${renderCppSubjectNameListCpp(erasedTargetCellGap.members)} ${erasedTargetCellGap.members.length === 1 ? 'uses' : 'use'} incompatible C++ cell carriers; ${renderCppSubjectNameListCpp(erasedTargetCellGap.erasedMembers)} ${erasedTargetCellGap.erasedMembers.length === 1 ? 'crosses' : 'cross'} into target any erasure. ${erasedTargetCellGap.targetCarrier} therefore has no checked identity-preserving structural row conversion from the source owner; an unchecked cast would reinterpret the owner's cells, while copying or materializing a row, or adding side storage, would change its identity. Keep the union arm on the exact declared source owner, or add a runtime checked concrete-to-erased generic cell projection that preserves the owner`
             : cause === 'partial-value'
               ? `contextual union value type ${targetType} is not a represented runtime domain: the value leaves a member the destination requires optional or absent, or gives it an incompatible type, so it is not the shape an alternative declares. Pass the declared type, or make every required member compatible where the value is declared`
               : intersectionUnionOwner
@@ -16966,6 +16966,7 @@ function getCppUnrepresentedUnionValueCauseCpp(
 }
 
 interface CppContextualUnionErasedTargetCellGap {
+  readonly erasedMembers: readonly string[];
   readonly members: readonly string[];
   readonly target: Readonly<IrType>;
   readonly targetCarrier: string;
@@ -16976,7 +16977,8 @@ interface CppContextualUnionErasedTargetCellGap {
 // a concrete cell, while the target schema would read that cell through an erased carrier. The safe
 // conversion implemented above goes the other way -- an explicitly any-backed owner may be checked while
 // read through a concrete readonly schema. Identify only the reversed case where every target cell exists
-// with the same optionality and EVERY storage mismatch is explained by `any` in the readonly target.
+// with the same optionality, every additional storage mismatch is structurally assignable, and at least
+// one incompatible cell crosses into `any` in the readonly target.
 function getCppContextualUnionErasedTargetCellGapCpp(
   source: Readonly<IrType>,
   plan: ReturnType<typeof getCppUnionRepresentationPlan>,
@@ -16999,24 +17001,34 @@ function getCppContextualUnionErasedTargetCellGapCpp(
       .resolveObjectShape(target, context.module)
       ?.filter((property) => !property.phantom);
     if (!targetProperties || targetProperties.length === 0) return [];
+    const erasedMembers: string[] = [];
     const members: string[] = [];
     for (const targetProperty of targetProperties) {
       const sourceProperty = sourceFields.get(getCppStructuralRowPropertyIdentityCpp(targetProperty, context));
       if (!sourceProperty) return [];
       if (sourceProperty.optional !== targetProperty.optional) return [];
       if (areCppTypesRepresentationEquivalent(sourceProperty.type, targetProperty.type, context)) continue;
+      const targetErasesConcreteCell =
+        !hasCppExplicitAnyTypeCpp(sourceProperty.type, context, new Set()) &&
+        hasCppExplicitAnyTypeCpp(targetProperty.type, context, new Set());
       if (
-        hasCppExplicitAnyTypeCpp(sourceProperty.type, context, new Set()) ||
-        !hasCppExplicitAnyTypeCpp(targetProperty.type, context, new Set())
+        !targetErasesConcreteCell &&
+        !context.referenceRepresentationPlanner.isStructurallyAssignable(
+          sourceProperty.type,
+          targetProperty.type,
+          context.module,
+        )
       ) {
         return [];
       }
       members.push(targetProperty.name);
+      if (targetErasesConcreteCell) erasedMembers.push(targetProperty.name);
     }
-    if (members.length === 0) return [];
+    if (erasedMembers.length === 0) return [];
     const diagnosticContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
     return [
       {
+        erasedMembers: [...new Set(erasedMembers)].sort(compareTextCodeUnits),
         members: [...new Set(members)].sort(compareTextCodeUnits),
         target,
         targetCarrier: emitType(target, diagnosticContext),
