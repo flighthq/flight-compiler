@@ -9853,6 +9853,54 @@ describe('createCppCompilerBackend', () => {
     expect(unguarded.message).not.toContain('the receiver is the type parameter');
   });
 
+  it('separates a concrete optional text receiver from a sentinel-carrying type parameter', () => {
+    // The textlayout shape: a rich-text member read behind an absence test. Where the receiver's declaration
+    // carries the sentinel, the storage is a real `std::optional` and the guard is the whole proof -- the
+    // read lowers through it, unwrapped, with no cast and no materialization.
+    const concrete = emitIrModuleCpp(
+      lower(
+        'richTextContent.ts',
+        `interface RichTextContent { readonly plain?: string }
+         export function measure(text: string | undefined): number {
+           if (text === undefined) return 0;
+           return text.length;
+         }
+         export function plainLength(content: RichTextContent): number {
+           const plain = content.plain;
+           if (plain === undefined) return 0;
+           return plain.length;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(concrete).toContain('std::optional<flight::String> text');
+    expect(concrete).toContain('if (!text.has_value())');
+    expect(concrete).toContain('text.value().length()');
+    expect(concrete).toContain('if (!plain.has_value())');
+    expect(concrete).toContain('plain.value().length()');
+
+    // A constrained type parameter is the same read with no such storage: the parameter is emitted as the
+    // type argument, so the guard has nothing to narrow and the refusal names the declaration to change --
+    // the GlyphAtlas case, reached here through an interface constraint rather than a callable member.
+    const constrained = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'richTextContentConstrained.ts',
+          `interface RichTextContent { readonly plain?: string }
+           export function measure<T extends RichTextContent | undefined>(content: T): number {
+             if (content === undefined) return 0;
+             return content.plain ? content.plain.length : 0;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(constrained.rule).toBe('cpp-optional-member-access-unproven');
+    expect(constrained.classification).toBe('compiler-restriction');
+    expect(constrained.message).toContain('the receiver is the type parameter T');
+    expect(constrained.message).toContain('Declare the parameter as the concrete optional type its constraint names');
+  });
+
   it('reads one shared payload from optional variants produced by local and imported factories', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
