@@ -5689,6 +5689,8 @@ function emitExpression(
             ? `flight::String(${JSON.stringify(value)})`
             : `std::string(${JSON.stringify(value)})`;
         }
+        const runtimeOwnedTypeof = emitCppRuntimeOwnedTypeofCpp(expression.operand, context);
+        if (runtimeOwnedTypeof) return runtimeOwnedTypeof;
         // An erased dynamic value has no static type to fold, and it does not need one: the runtime
         // names the operation, and `Any::type_of` is ECMAScript `typeof` including the `null` that
         // reports `object`. Answering it at run time is what the value is for; folding it would be
@@ -5701,6 +5703,7 @@ function emitExpression(
           return `${emitExpression(expression.operand, context)}.type_of()`;
         }
         refuseCppErasedIndexedTypeofCpp(expression.operand, context);
+        refuseCppJsonValueMemberTypeofCpp(expression.operand, context);
         emissionError(
           context,
           "typeof requires closed runtime type evidence: the declared type does not decide it, and the target cannot ask a value it stores as a concrete carrier. State the type where the value is read: a closed union whose alternatives are distinguishable is lowered as a variant test, and a value the runtime owns -- a parameter declared `unknown` or `any` -- is answered by the runtime's own `typeof`",
@@ -25726,6 +25729,62 @@ function refuseCppErasedIndexedTypeofCpp(operand: Readonly<IrExpression>, contex
   );
 }
 
+// A JSON.parse result keeps the runtime's exact JsonValue carrier, whose own kind can answer `typeof`.
+// A property or indexed read crosses a different boundary: the source asks for JavaScript's dynamic
+// member semantics, while the runtime exposes neither an owner-preserving named-property view nor an
+// owner-preserving array extraction for JsonValue. Follow immutable initializer aliases only far enough
+// to name that missing boundary; an arbitrary unknown, Record parameter, or unrelated external result
+// must not acquire JSON provenance from its annotation or from this diagnostic path.
+function refuseCppJsonValueMemberTypeofCpp(operand: Readonly<IrExpression>, context: EmitContext): void {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return;
+  const access = getCppJsonValueMemberTypeofAccessCpp(operand, context, new Set());
+  if (!access) return;
+  const boundary = access === 'element' ? 'indexed array-element' : 'named-property';
+  const article = access === 'element' ? 'an' : 'a';
+  emissionError(
+    context,
+    `typeof follows ${article} ${boundary} read rooted in the exact flight::JsonValue returned by JSON.parse. JsonValue's closed kind tag can answer typeof on the retained value itself, but the runtime contract exposes no owner-preserving JavaScript ${boundary} view that can produce this member with its original absence and identity. Keep the test on the exact JSON value before the member boundary, normalize into a named closed input schema, or add that owner-preserving JSON member capability to the runtime; the compiler will not cast JsonValue to Any, copy a JSON member, or materialize replacement storage`,
+    'cpp-json-value-member-typeof-runtime-required',
+  );
+}
+
+function getCppJsonValueMemberTypeofAccessCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+  resolvingBindings: ReadonlySet<string>,
+): 'element' | 'property' | undefined {
+  if (expression.kind === 'property' || expression.kind === 'element') {
+    return hasCppJsonValueExpressionOriginCpp(expression.object, context, resolvingBindings)
+      ? expression.kind
+      : undefined;
+  }
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.reference.binding.id;
+  if (resolvingBindings.has(bindingId) || !context.immutableInitializerBindingIds.has(bindingId)) return undefined;
+  const initializer = context.bindingInitializers.get(bindingId);
+  return initializer
+    ? getCppJsonValueMemberTypeofAccessCpp(initializer, context, new Set(resolvingBindings).add(bindingId))
+    : undefined;
+}
+
+function hasCppJsonValueExpressionOriginCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+  resolvingBindings: ReadonlySet<string>,
+): boolean {
+  if (getCppRuntimeOwnedTypeofTargetCpp(expression, context) === 'flight::JsonValue') return true;
+  if (expression.kind === 'property' || expression.kind === 'element') {
+    return hasCppJsonValueExpressionOriginCpp(expression.object, context, resolvingBindings);
+  }
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return false;
+  const bindingId = expression.reference.binding.id;
+  if (resolvingBindings.has(bindingId) || !context.immutableInitializerBindingIds.has(bindingId)) return false;
+  const initializer = context.bindingInitializers.get(bindingId);
+  return Boolean(
+    initializer && hasCppJsonValueExpressionOriginCpp(initializer, context, new Set(resolvingBindings).add(bindingId)),
+  );
+}
+
 function getIrAssignmentTargetTypeCpp(
   expression: Readonly<IrExpression>,
   context: EmitContext,
@@ -28044,11 +28103,40 @@ function emitAmbientTypeofUndefinedComparisonCpp(
 
 // An external runtime call can retain a closed dynamic domain even when the source deliberately writes
 // `unknown`. JSON.parse is the measured case: its exact carrier is JsonValue, whose kind tag distinguishes
-// every JSON alternative without converting the value to Any. Answer a direct typeof comparison from that
-// tag, and carry the same storage fact across one immutable local through externalBindingStorageTargetTypes.
-// This is deliberately not a source-type rule: an arbitrary `unknown` remains on Any, while a Record read
-// remains on its own erased value carrier. The runtime-owned carrier is used only when the external profile
-// elected it for this exact expression.
+// every JSON alternative without converting the value to Any. Carry that storage fact through the binding
+// recorded by externalBindingStorageTargetTypes. This is deliberately not a source-type rule: an arbitrary
+// `unknown` remains on Any, while a Record read remains on its own erased value carrier. The runtime-owned
+// carrier is used only when the external profile elected it for this exact expression.
+function getCppRuntimeOwnedTypeofTargetCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): string | undefined {
+  return (
+    getCppExternalCallResultTargetCpp(expression, context) ??
+    (expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? context.externalBindingStorageTargetTypes.get(expression.reference.binding.id)
+      : undefined)
+  );
+}
+
+// JsonValue's six alternatives form a closed subset of ECMAScript's typeof domain. Preserve the retained
+// carrier by reference and answer from its tag: JSON null, arrays, and objects all report "object", while
+// the three scalar alternatives report their corresponding primitive tag. No erased-carrier conversion or
+// member materialization is needed.
+function emitCppRuntimeOwnedTypeofCpp(expression: Readonly<IrExpression>, context: EmitContext): string | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    getCppRuntimeOwnedTypeofTargetCpp(expression, context) !== 'flight::JsonValue'
+  ) {
+    return undefined;
+  }
+  const value = getGeneratedTargetName('typeofJsonValue', context);
+  const kind = getGeneratedTargetName('typeofJsonKind', context);
+  return `([&]() -> flight::String { const auto& ${value} = ${emitExpression(expression, context)}; const auto ${kind} = ${value}.kind(); if (${kind} == flight::JsonValue::Kind::boolean) return flight::String("boolean"); if (${kind} == flight::JsonValue::Kind::number) return flight::String("number"); if (${kind} == flight::JsonValue::Kind::string) return flight::String("string"); return flight::String("object"); }())`;
+}
+
+// A comparison needs only one kind predicate, so retain the smaller expression rather than constructing
+// the complete tag string produced for a first-class unary typeof result.
 function emitCppRuntimeOwnedTypeofComparisonCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'binary' }>>,
   context: EmitContext,
@@ -28063,11 +28151,7 @@ function emitCppRuntimeOwnedTypeofComparisonCpp(
   }
   const comparison = getCppTypeofTagComparisonCpp(expression.left, expression.right);
   if (!comparison) return undefined;
-  const storageTarget =
-    getCppExternalCallResultTargetCpp(comparison.operand, context) ??
-    (comparison.operand.kind === 'identifier' && comparison.operand.reference.kind === 'binding'
-      ? context.externalBindingStorageTargetTypes.get(comparison.operand.reference.binding.id)
-      : undefined);
+  const storageTarget = getCppRuntimeOwnedTypeofTargetCpp(comparison.operand, context);
   if (storageTarget !== 'flight::JsonValue') return undefined;
   const value = getGeneratedTargetName('typeofJsonValue', context);
   const kind = `${value}.kind()`;
@@ -29190,6 +29274,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-external-record-conversion-incomplete',
   'cpp-external-record-conversion-missing',
   'cpp-external-record-conversion-wrong-space',
+  'cpp-json-value-member-typeof-runtime-required',
   'cpp-named-properties-write-unsupported',
   'cpp-number-to-fixed-runtime-helper-required',
   'cpp-object-has-own-storage-unrepresented',

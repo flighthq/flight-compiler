@@ -22858,6 +22858,58 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('materialize');
   });
 
+  it.each([
+    [
+      'bitmapFontJson.ts',
+      `type JsonObject = Record<string, unknown>;
+       function isObject(value: unknown): value is JsonObject {
+         return typeof value === 'object' && value !== null && !Array.isArray(value);
+       }
+       export function readPage(text: string): boolean {
+         let root: unknown;
+         try { root = JSON.parse(text); } catch { return false; }
+         if (!isObject(root)) return false;
+         if (Array.isArray(root.pages)) {
+           for (let id = 0; id < root.pages.length; id += 1) {
+             const file = root.pages[id];
+             if (typeof file === 'string') return true;
+           }
+         }
+         return false;
+       }`,
+      'indexed array-element',
+    ],
+    [
+      'explainBitmapFontParse.ts',
+      `type JsonObject = Record<string, unknown>;
+       function isObject(value: unknown): value is JsonObject {
+         return typeof value === 'object' && value !== null && !Array.isArray(value);
+       }
+       export function hasLineHeight(text: string): boolean {
+         let root: unknown;
+         try { root = JSON.parse(text); } catch { return false; }
+         if (!isObject(root)) return false;
+         const common = root.common;
+         return isObject(common) && typeof common.lineHeight === 'number';
+       }`,
+      'named-property',
+    ],
+  ])('attributes a JSON member typeof in %s to the missing runtime view', (file, source, boundary) => {
+    const result = lowerPackage('@flighthq/bitmapfont-formats', file, source);
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-json-value-member-typeof-runtime-required',
+    });
+    expect(failure.message).toContain(boundary);
+    expect(failure.message).toContain('exact flight::JsonValue returned by JSON.parse');
+    expect(failure.message).toContain('no owner-preserving JavaScript');
+    expect(failure.message).toContain('will not cast JsonValue to Any, copy a JSON member, or materialize');
+  });
+
   it('attributes typeof after an erased array predicate to the missing runtime extraction', () => {
     const result = lower(
       'json-format-erased-array-typeof.ts',
@@ -27869,6 +27921,41 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted).not.toContain('flight::Any value = flight::Json::parse');
     expect(emitted).not.toContain('static_cast');
     expect(emitted).not.toContain('materialize');
+  });
+
+  it.each([
+    ['@flighthq/particles-formats', 'pixiParse.ts'],
+    ['@flighthq/particles-formats', 'unityParse.ts'],
+  ])('answers a first-class typeof from the exact JSON result carrier in %s/%s', (packageName, file) => {
+    const emitted = emitIrModuleCpp(
+      lowerPackage(
+        packageName,
+        file,
+        `export function describeJson(text: string): string {
+           let raw: unknown;
+           try { raw = JSON.parse(text); } catch { return 'error'; }
+           if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+             return raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw;
+           }
+           return 'object';
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('const auto& typeof_json_value = raw;');
+    expect(emitted).toMatch(
+      /const auto& (typeof_json_value(?:_\d+)?) = raw; const auto typeof_json_kind = \1\.kind\(\);/u,
+    );
+    expect(emitted).toContain('flight::JsonValue::Kind::boolean');
+    expect(emitted).toContain('flight::JsonValue::Kind::number');
+    expect(emitted).toContain('flight::JsonValue::Kind::string');
+    expect(emitted).toContain('return flight::String("object");');
+    expect(emitted).not.toContain('raw.type_of()');
+    expect(emitted).not.toContain('static_pointer_cast');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize');
+    expect(emitted).not.toContain('make_ref');
   });
 
   // The invariant the erased election exists to hold: a position the SOURCE wrote as `any` or
