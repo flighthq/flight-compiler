@@ -10385,6 +10385,137 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('std::optional<flight::String>{std::visit(');
   });
 
+  it('selects the current imported sprite texture arm before reading its source', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface Vector2 { readonly x: number; readonly y: number }
+             interface TextureCommon { readonly uvOffset: Vector2 }
+             export interface ImageResource { readonly width: number; readonly height: number }
+             export interface VoxelGrid { readonly depth: number }
+             export interface Texture2D extends TextureCommon {
+               readonly dimension: '2d';
+               readonly source: ImageResource | null;
+             }
+             export type Texture =
+               | Texture2D
+               | (TextureCommon & {
+                   readonly dimension: '2d-array';
+                   readonly sources: readonly (ImageResource | null)[];
+                 })
+               | (TextureCommon & { readonly dimension: '3d'; readonly source: VoxelGrid | null })
+               | (TextureCommon & {
+                   readonly dimension: 'cube';
+                   readonly sources: readonly (ImageResource | null)[];
+                 });
+             export interface SpriteData { readonly texture: Texture | null }
+             export interface Sprite { readonly data: SpriteData }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/interaction',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/interaction/src/registerSpriteHitTest.ts',
+            `import type { Sprite } from '@flighthq/types/contract';
+             export function sample(sprite: Sprite): number {
+               const texture = sprite.data.texture;
+               if (texture === null || texture.dimension !== '2d') return 0;
+               const image = texture.source;
+               if (image === null) return 0;
+               return texture.uvOffset.x * image.width;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/interaction': { includePrefix: 'test/interaction', namespace: 'flighthq_interaction' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const outputs = modules.map((module) => session.emitModule(module)[0]!);
+    const contents = outputs[1]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The compound terminating guard proves both presence and exactly the `Texture2D` discriminant.
+    // Selection is a checked std::get from the existing optional variant; the source and uvOffset reads
+    // then use that same owner. No runtime contract extension, row rebuild, or native cast is needed.
+    expect(contents).toMatch(/std::get<\d+>\(texture\.value\(\)\)->source/u);
+    expect(contents).toMatch(/std::get<\d+>\(texture\.value\(\)\)->uv_offset/u);
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('materialize_row');
+    expect(contents).not.toContain('make_structural_ref');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-sprite-texture-narrowing-'));
+      try {
+        for (const output of outputs) {
+          const outputPath = path.join(directory, output.path);
+          mkdirSync(path.dirname(outputPath), { recursive: true });
+          writeFileSync(outputPath, output.contents, 'utf8');
+        }
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, outputs[1]!.path), [
+          directory,
+          ...cppRuntimeIncludeDirectories,
+        ]);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it('keeps a heterogeneous common variant property refused without a discriminant guard', () => {
+    const result = lower(
+      'registerSpriteHitTestUnguarded.ts',
+      `interface ImageResource { readonly width: number }
+       interface VoxelGrid { readonly depth: number }
+       type Texture =
+         | { readonly dimension: '2d'; readonly source: ImageResource | null }
+         | { readonly dimension: '3d'; readonly source: VoxelGrid | null };
+       export function hasSource(texture: Texture): boolean { return texture.source !== null; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-union-member-access-unguarded',
+    });
+    expect(failure.message).toContain('every alternative holds it, but at C++ types the variant cannot read as one');
+    expect(failure.message).toContain('Narrow the union to one alternative where the member is read');
+  });
+
   it('recovers indexed utility and RegExp call result evidence', () => {
     const module = lower(
       'runtime-container-evidence.ts',
