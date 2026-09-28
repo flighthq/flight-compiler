@@ -23594,6 +23594,37 @@ Resolver make_resolver(TextureRef texture) {
     expect(exact).not.toContain('structural_ref_cast');
     expect(exact).not.toContain('materialize');
     expect(exact).not.toContain('make_ref');
+
+    // The source-level rewrite available to the erased callback is to make the capability part of its
+    // declared owner: add `readonly children?: readonly Command[]` to Command, remove the assertion, and
+    // guard absence. That binds a real cell on the base owner instead of asking the compiler to invent one.
+    const declaredCapability = emitIrModuleCpp(
+      lower(
+        'command-binding-declared-capability.ts',
+        `interface Command {
+           readonly children?: readonly Command[];
+           readonly kind: string;
+           readonly label: string;
+         }
+         interface CommandBinding { readonly execute: (command: Readonly<Command>) => void }
+         export function compositeCommandBinding(): CommandBinding {
+           return {
+             execute: (command) => {
+               const children = command.children;
+               if (children === undefined || children.length === 0) return;
+             },
+           };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(declaredCapability).toContain('std::optional<flight::Array<flight::Ref<Command>>> children;');
+    expect(declaredCapability).toContain('flight::named_properties(command).get(flight::String("children"))');
+    expect(declaredCapability).toContain('children.has_value()');
+    expect(declaredCapability).toContain('children.size()');
+    expect(declaredCapability).not.toContain('structural_ref_cast');
+    expect(declaredCapability).not.toContain('materialize');
+    expect(declaredCapability).not.toContain('make_ref<Command>');
   });
 
   it('keeps a structural source asserted to a derived partial row, which answers an unbound member', () => {
