@@ -4379,15 +4379,45 @@ function emitExpression(
         assertedGenericFactory ??
         getCppErasedValueAssertionCpp(expression.type, sourceEvidence, expression.expression, context);
       if (assertedExpression) return assertedExpression;
-      if (
+      const externalAssertionTarget =
         getCppRuntimeProfile(context.options) === 'flight-cpp' &&
         isCppErasedDynamicValueTypeCpp(sourceEvidence) &&
-        hasCppExternalRuntimeReferenceRepresentationCpp(expression.type, context)
+        hasCppExternalRuntimeReferenceRepresentationCpp(expression.type, context);
+      const representedErasedExternalSource = externalAssertionTarget
+        ? getCppRepresentedErasedAssertionSourceCpp(expression.expression, context)
+        : undefined;
+      if (
+        representedErasedExternalSource &&
+        representedErasedExternalSource.expression.kind !== 'object' &&
+        areCppTypesRepresentationEquivalent(representedErasedExternalSource.type, expression.type, context)
       ) {
+        // The bridge erased only TypeScript's spelling. The value already occupies the exact external
+        // carrier the assertion names, so preserving the expression is the complete identity conversion.
+        return emitExpression(representedErasedExternalSource.expression, context, undefined, false);
+      }
+      if (externalAssertionTarget) {
+        const target = emitType(expression.type, context);
+        if (representedErasedExternalSource?.expression.kind === 'object') {
+          emissionError(
+            context,
+            `a fresh object literal asserted through an erased type cannot acquire the external reference identity ${target}: the literal proves only its structural fields, not the host owner, prototype, or capability the runtime binding represents. Keep the mock in a named structural fake type and inject it through an explicit host/test adapter, or record a reviewed source-portability exception at that JavaScript-only boundary; the compiler will not reinterpret the literal, copy it, materialize a replacement owner, or invent native identity`,
+            'cpp-erased-external-reference-assertion-unrepresented',
+            'source-portability',
+          );
+        }
+        if (representedErasedExternalSource) {
+          emissionError(
+            context,
+            `an erased assertion hides the represented source carrier ${emitType(representedErasedExternalSource.type, context)} before naming the external reference ${target}, but those carriers are not representation-equivalent. Keep the exact external type through the assertion or convert at an explicit host boundary; the compiler will not reinterpret the source carrier, copy it, materialize a replacement owner, or invent native identity`,
+            'cpp-erased-external-reference-assertion-unrepresented',
+            'source-portability',
+          );
+        }
         emissionError(
           context,
-          'an erased dynamic value cannot be asserted to a host reference without a proven exact external extraction',
+          `an erased dynamic value cannot be asserted to the external reference ${target} without a checked exact external extraction. Keep the API typed to that external carrier before erasure, or add a runtime contract that validates and recovers it; the compiler will not use a native cast, copy, or replacement owner`,
           'cpp-erased-external-reference-assertion-unrepresented',
+          'target-runtime',
         );
       }
       // A double assertion can erase spelling without erasing storage. When the expression immediately

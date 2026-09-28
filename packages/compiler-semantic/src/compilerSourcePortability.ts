@@ -340,6 +340,19 @@ function getUncheckedDoubleAssertionBridge(node: ts.Node): ts.TypeNode | undefin
     : undefined;
 }
 
+function getUncheckedDoubleAssertionObjectLiteralTarget(node: ts.AsExpression | ts.TypeAssertion): string | undefined {
+  const target = getTypeAssertionType(node);
+  if (!ts.isTypeReferenceNode(target)) return undefined;
+  const targetName = getNodeName(target.typeName);
+  if (targetName === undefined) return undefined;
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner)) return undefined;
+  let source: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(source)) source = source.expression;
+  return ts.isObjectLiteralExpression(source) ? targetName : undefined;
+}
+
 function renderAssertionBridge(node: ts.TypeNode): 'any' | 'never' | 'unknown' {
   if (node.kind === ts.SyntaxKind.AnyKeyword) return 'any';
   if (node.kind === ts.SyntaxKind.NeverKeyword) return 'never';
@@ -409,6 +422,10 @@ function renderUncheckedDoubleAssertionMessage(
   }
   if (isTypeScriptIndexSignatureView(getTypeAssertionType(node))) {
     return `${subject} uses a double assertion through ${bridge} to claim an index-signature view; the bridge neither checks that the source has indexed storage nor preserves an exact runtime carrier for computed access. Accept a declared Record or index-signature type at this boundary, or replace the dynamic key with checked access over a closed key/value domain; an assertion cannot create that storage.`;
+  }
+  const objectLiteralTarget = getUncheckedDoubleAssertionObjectLiteralTarget(node);
+  if (objectLiteralTarget !== undefined) {
+    return `${subject} uses a double assertion through ${bridge} to claim that a fresh object literal is ${objectLiteralTarget}; the bridge checks neither the target's required surface nor any host identity, prototype, or native capability that ${objectLiteralTarget} represents. Keep the mock in a named structural fake type covering the members it actually implements and inject it through an explicit host/test adapter. If this partial object is deliberately a JavaScript-only stand-in for ${objectLiteralTarget}, record a reviewed source-portability exception for this exact boundary. The compiler will preserve an already proven ${objectLiteralTarget} carrier, but will not reinterpret this literal, copy it, materialize a replacement owner, or invent native identity.`;
   }
   return `${subject} uses a double assertion through ${bridge}; replace it with a checked conversion or a narrower source type.`;
 }

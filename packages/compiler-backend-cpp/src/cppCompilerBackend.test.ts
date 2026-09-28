@@ -3799,8 +3799,8 @@ describe('createCppCompilerBackend', () => {
     expect(lookalikeFailure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
   });
 
-  it('refuses to recover a host reference from an erased Flight object', () => {
-    const result = lower(
+  it('preserves exact external identity across erased syntax and refuses structural or truly erased substitutes', () => {
+    const structural = lower(
       'erased-host-reference.ts',
       `export function create(width: number, height: number): CanvasImageSource {
          return { height, width } as unknown as CanvasImageSource;
@@ -3816,14 +3816,79 @@ describe('createCppCompilerBackend', () => {
           space: 'type' as const,
           targetName: 'flight::host_sdl::ImageSource',
         },
+        {
+          headers: ['flight/wgpu.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'GPUTexture',
+          space: 'type' as const,
+          targetName: 'flight::wgpu::GpuTexture',
+        },
       ],
       schema: 'flight-cpp-external-bindings/1' as const,
     };
 
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
+    const exact = emitIrModuleCpp(
+      lower(
+        'exact-host-reference.ts',
+        `export function keep(value: CanvasImageSource): CanvasImageSource {
+           return value as unknown as CanvasImageSource;
+         }`,
+      ).module,
+      { externalBindings, runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const structuralFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(structural.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
     );
-    expect(failure.rule).toBe('cpp-erased-external-reference-assertion-unrepresented');
+    const erasedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'unknown-host-reference.ts',
+          `export function recover(value: unknown): CanvasImageSource {
+             return value as CanvasImageSource;
+           }`,
+        ).module,
+        { externalBindings, runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    const mismatchedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'mismatched-host-reference.ts',
+          `export function convert(value: GPUTexture): CanvasImageSource {
+             return value as unknown as CanvasImageSource;
+           }`,
+        ).module,
+        { externalBindings, runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    expect(exact).toContain('return value;');
+    expect(exact).not.toContain('static_cast');
+    expect(exact).not.toContain('flight::Any');
+    expect(structuralFailure).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-erased-external-reference-assertion-unrepresented',
+    });
+    expect(structuralFailure.message).toContain('fresh object literal');
+    expect(structuralFailure.message).toContain('flight::host_sdl::ImageSource');
+    expect(structuralFailure.message).toContain('named structural fake type');
+    expect(structuralFailure.message).toContain('reviewed source-portability exception');
+    expect(structuralFailure.message).toContain('will not reinterpret the literal, copy it, materialize');
+    expect(erasedFailure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-erased-external-reference-assertion-unrepresented',
+    });
+    expect(erasedFailure.message).toContain('checked exact external extraction');
+    expect(erasedFailure.message).toContain('Keep the API typed to that external carrier before erasure');
+    expect(mismatchedFailure).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-erased-external-reference-assertion-unrepresented',
+    });
+    expect(mismatchedFailure.message).toContain('flight::wgpu::GpuTexture');
+    expect(mismatchedFailure.message).toContain('flight::host_sdl::ImageSource');
+    expect(mismatchedFailure.message).toContain('not representation-equivalent');
+    expect(mismatchedFailure.message).toContain('will not reinterpret the source carrier, copy it, materialize');
   });
 
   it('applies complete ambient bindings to imported indexed property evidence exactly once', () => {

@@ -68,6 +68,61 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reformatted.findings[0]?.line).not.toBe(first.findings[0]?.line);
   });
 
+  it('separates fresh WebGPU mock literals from assertions that may retain an existing carrier', () => {
+    const mocks = input(
+      'packages/render-wgpu/src/wgpuTestHelper.ts',
+      `function makeBuffer(): GPUBuffer { return {} as unknown as GPUBuffer; }
+       function makeTexture(): GPUTexture { return {} as unknown as GPUTexture; }
+       function makeRenderPassEncoder(): GPURenderPassEncoder {
+         return {} as unknown as GPURenderPassEncoder;
+       }
+       function makeCommandEncoder(): GPUCommandEncoder { return {} as unknown as GPUCommandEncoder; }
+       function makePipeline(): GPURenderPipeline { return {} as unknown as GPURenderPipeline; }
+       function makeDevice(): GPUDevice { return {} as unknown as GPUDevice; }
+       function makeAdapter(): GPUAdapter { return {} as unknown as GPUAdapter; }
+       function installGpu(): GPU { return {} as unknown as GPU; }
+       function makeCanvasContext(): GPUCanvasContext { return {} as unknown as GPUCanvasContext; }`,
+    );
+    const existing = input(
+      'existingGpuCarrier.ts',
+      `declare const buffer: GPUBuffer;
+       export const same = buffer as unknown as GPUBuffer;`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([mocks]).findings;
+    const targetNames = [
+      'GPU',
+      'GPUAdapter',
+      'GPUBuffer',
+      'GPUCanvasContext',
+      'GPUCommandEncoder',
+      'GPUDevice',
+      'GPURenderPassEncoder',
+      'GPURenderPipeline',
+      'GPUTexture',
+    ];
+
+    expect(findings).toHaveLength(9);
+    for (const targetName of targetNames) {
+      expect(
+        findings.filter((finding) => finding.message.includes(`fresh object literal is ${targetName};`)),
+      ).toHaveLength(1);
+    }
+    for (const finding of findings) {
+      expect(finding).toMatchObject({ rule: 'unchecked-double-assertion' });
+      expect(finding.message).toContain("checks neither the target's required surface nor any host identity");
+      expect(finding.message).toContain('named structural fake type');
+      expect(finding.message).toContain('reviewed source-portability exception for this exact boundary');
+      expect(finding.message).toContain('will not reinterpret this literal, copy it, materialize');
+    }
+    expect(analyzeTypeScriptSourcePortability([existing]).findings).toMatchObject([
+      {
+        message:
+          'module uses a double assertion through unknown; replace it with a checked conversion or a narrower source type.',
+        rule: 'unchecked-double-assertion',
+      },
+    ]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',
