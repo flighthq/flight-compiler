@@ -39618,6 +39618,59 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(failure.rule).toBe('cpp-intersection-member-shapeless');
   });
 
+  it('names the flattening behind an unidentified heritage assertion and keeps its rewrite exact', () => {
+    const shared = `interface RenderState { readonly pipeline: string }
+       interface RenderProxyBase { readonly id: string }
+       interface RenderProxy extends RenderProxyBase { readonly state: RenderState | null }
+       type AnyProxy = RenderProxy | RenderState;
+       `;
+    const emit = (body: string) =>
+      emitIrModuleCpp(lower('renderProxy.ts', `${shared}${body}`).module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The value holds the target's members through one alternative, and the alternative is identifiable -- but
+    // the two interface declarations flatten into separate C++ structs with no base relation, so there is no
+    // narrowing between them. The refusal now names that instead of calling it work the compiler has not done
+    // yet, and says which pairs DO narrow.
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'renderProxy.ts',
+          `${shared}export function f(value: AnyProxy): string { return (value as RenderProxyBase).id; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(failure.rule).toBe('cpp-type-assertion-unidentified');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('separate flattened C++ structs with no base relation between them');
+    expect(failure.message).toContain('a CLASS heritage pair narrows here, because those structs really do inherit');
+    expect(failure.message).toContain(
+      "Assert to the alternative the value actually holds and read this target's members from it",
+    );
+
+    // The rewrite the refusal names is exact: asserting to the concrete alternative reads the same member off
+    // the same object -- the derived interface already carries the base's members, flattened into its struct.
+    expect(emit(`export function f(value: AnyProxy): string { return (value as RenderProxy).id; }`)).toContain(
+      'std::get<flight::Ref<RenderProxy>>(value)->id',
+    );
+
+    // And the mechanism itself works where the relation is real: a CLASS heritage pair narrows through the
+    // emitted inheritance, so the refusal is about flattened interfaces rather than about assertions.
+    const classHeritage = emitIrModuleCpp(
+      lower(
+        'renderProxy.ts',
+        `class ProxyBase { readonly id: string = ''; }
+         class RenderProxy extends ProxyBase { readonly depth: number = 0; }
+         class RenderState { readonly pipeline: string = ''; }
+         type AnyProxy = RenderProxy | RenderState;
+         export function f(value: AnyProxy): string { return (value as ProxyBase).id; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(classHeritage).toContain('std::static_pointer_cast<ProxyBase>(std::get<flight::Ref<RenderProxy>>(value))');
+    expect(classHeritage).not.toContain('flight::Any');
+  });
+
   it('names why a Partial record has no shape to recover and keeps the record rewrite sound', () => {
     const refusal = (body: string) =>
       captureBackendEmissionFailure(() =>

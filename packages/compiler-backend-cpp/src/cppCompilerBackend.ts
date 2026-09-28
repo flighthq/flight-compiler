@@ -13027,7 +13027,7 @@ function emitUnionMemberAssertionCpp(
           : projectedImplementor
             ? "; the value reaches this slot as an interface row projected from the instance, so the instance's own identity is not carried and no cast can recover it -- narrowing back needs identity the carrier does not hold"
             : relatedToAnAlternative
-              ? '; the value can hold the target through an alternative the target cannot narrow from, and that narrowing is not lowered yet'
+              ? "; the value holds the target through an alternative whose members already satisfy it, but the two are separate flattened C++ structs with no base relation between them, so there is no narrowing to follow -- a CLASS heritage pair narrows here, because those structs really do inherit. Assert to the alternative the value actually holds and read this target's members from it, or declare the slot as this target where the concrete type is known"
               : ''
       }`,
       'cpp-type-assertion-unidentified',
