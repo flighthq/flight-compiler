@@ -13315,7 +13315,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.message).toContain('Narrow the value to one alternative add accepts');
   });
 
-  it('attributes a represented collection argument without an exact element carrier to the target runtime', () => {
+  it('attributes a represented collection subtype argument without an exact element carrier to the target runtime', () => {
     const subtype = lower(
       'collection-subtype-domain.ts',
       `interface Alpha { value: number }
@@ -13338,8 +13338,10 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(subtypeFailure.rule).toBe('cpp-collection-argument-multiple-present-domains');
     expect(subtypeFailure.classification).toBe('target-runtime');
     expect(subtypeFailure.message).toContain('cannot receive them without changing representation');
+  });
 
-    const genericRead = lower(
+  it('passes a present map lookup union whose exact owner matches the collection element', () => {
+    const result = lower(
       'collection-generic-read.ts',
       `interface Alpha { value: number }
        interface Beta { other: number }
@@ -13351,12 +13353,13 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
          target.add(found);
        }`,
     );
-    const genericReadFailure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(genericRead.module, { runtimeProfile: 'flight-cpp' }),
-    );
-    expect(genericReadFailure.rule).toBe('cpp-collection-argument-multiple-present-domains');
-    expect(genericReadFailure.classification).toBe('target-runtime');
-    expect(genericReadFailure.message).toContain('cannot receive them without changing representation');
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Map.get now preserves the declared Alpha-or-Beta owner. After absence is narrowed away, the
+    // lookup payload and Set element are the same variant, so the owner crosses directly.
+    expect(contents).toContain('target.add(found.value());');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
   });
 
   it('attributes a ShapeJson-like guarded union push into erased storage to the target runtime', () => {
@@ -13389,6 +13392,9 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.rule).toBe('cpp-collection-argument-multiple-present-domains');
     expect(failure.classification).toBe('target-runtime');
     expect(failure.message).toContain('element carrier flight::Any');
+    expect(failure.message).toContain('flight::Array<double>');
+    expect(failure.message).toContain('flight::Ref<Texture>');
+    expect(failure.message).not.toContain('flight::Ref<Matrix>');
     expect(failure.message).toContain('Declare the collection over the exact source union');
   });
 
