@@ -20416,6 +20416,80 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted).not.toContain('static_cast');
   });
 
+  it('keeps open effect interpolation storage on its base/output carrier', () => {
+    const asserted = lower(
+      'asserted-effect-interpolation.ts',
+      `interface Effect { readonly kind: string }
+       type EffectFieldRole = 'boolean' | 'number';
+       type EffectFieldRoles = Readonly<Record<string, Readonly<Record<string, EffectFieldRole>>>>;
+       export function lerpEffect(
+         a: Readonly<Effect>,
+         b: Readonly<Effect>,
+         t: number,
+         out: Effect,
+         roles: EffectFieldRoles,
+       ): boolean {
+         if (a.kind !== b.kind) return false;
+         const aRec = a as Record<string, unknown>;
+         const bRec = b as Record<string, unknown>;
+         const outRecord = out as unknown as Record<string, unknown>;
+         void t;
+         void roles;
+         for (const key of Object.keys(aRec)) outRecord[key] = bRec[key];
+         return true;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(asserted.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-named-properties-write-unsupported',
+    });
+    expect(failure.message).toContain('intentionally open extension domain');
+    expect(failure.message).toContain('mutable string-indexed storage on the base/output type');
+    expect(failure.message).toContain('registry of keys or roles cannot recover cells');
+    expect(failure.message).toContain('finite union of declared member names');
+    expect(failure.message).toContain('will not cast between owners, copy into replacement storage');
+
+    const indexed = lower(
+      'indexed-effect-interpolation.ts',
+      `interface Effect {
+         readonly kind: string;
+         [field: string]: unknown;
+       }
+       export function lerpEffect(a: Readonly<Effect>, b: Readonly<Effect>, out: Effect): boolean {
+         if (a.kind !== b.kind) return false;
+         for (const key of Object.keys(a)) out[key] = b[key];
+         return true;
+       }`,
+    );
+    const indexedEmission = emitIrModuleCpp(indexed.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(indexed.diagnostics).toEqual([]);
+    expect(indexedEmission).toContain('using Effect = flight::Record<flight::String, flight::Any>;');
+    expect(indexedEmission).toContain('out.set(key, assignment_value);');
+    expect(indexedEmission).not.toContain('flight::named_properties');
+    expect(indexedEmission).not.toContain('materialize_row');
+    expect(indexedEmission).not.toContain('static_cast');
+
+    const closed = lower(
+      'closed-effect-interpolation.ts',
+      `interface Effect { amount: number; readonly kind: 'blur' }
+       export function lerpEffect(a: Readonly<Effect>, b: Readonly<Effect>, t: number, out: Effect): boolean {
+         if (a.kind !== b.kind) return false;
+         out.amount = a.amount + (b.amount - a.amount) * t;
+         return true;
+       }`,
+    );
+    const closedEmission = emitIrModuleCpp(closed.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(closed.diagnostics).toEqual([]);
+    expect(closedEmission).toContain('(out->amount = (flight::row_get<flight::RowKey<"amount">>(a) +');
+    expect(closedEmission).not.toContain('flight::named_properties');
+    expect(closedEmission).not.toContain('flight::Record');
+    expect(closedEmission).not.toContain('static_cast');
+  });
+
   it('attributes a closed-key write whose value fits no member to the source', () => {
     const result = lower(
       'closed-key-write-unfitted.ts',

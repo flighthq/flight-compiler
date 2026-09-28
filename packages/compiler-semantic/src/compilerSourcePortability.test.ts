@@ -271,12 +271,93 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([asserted]).findings).toMatchObject([
       {
         message:
-          'function:normalizeEffect uses a double assertion through unknown to claim mutable index-signature storage; the bridge neither proves nor creates writable dynamic cells on the source owner. For an intentionally open key domain, declare a mutable string index signature on the source/output type and construct values in that carrier; if the keys are closed, replace the dynamic writes with a finite union of declared members. A reviewed exception can record the source contract but cannot supply that storage; copying or materializing a Record, or adding side storage, would change object identity.',
+          'function:normalizeEffect uses a double assertion through unknown to claim mutable index-signature storage; the bridge neither proves nor creates writable dynamic cells on the source owner. For an intentionally open key or extension domain, declare a mutable string index signature on the base/output type and construct every value in that carrier; a registry of keys or roles does not recover cells on an owner that lacks them. If the keys are closed, replace the dynamic writes with a finite union of declared members. A reviewed exception can record the source contract but cannot supply that storage; copying or materializing a Record, or adding side storage, would change object identity.',
         rule: 'unchecked-double-assertion',
         subject: 'function:normalizeEffect',
       },
     ]);
     expect(analyzeTypeScriptSourcePortability([indexed]).findings).toEqual([]);
+  });
+
+  it('keeps open effect interpolation storage on its base/output carrier', () => {
+    const asserted = input(
+      'effectInterpolation.ts',
+      `interface Effect { readonly kind: string }
+       type EffectFieldRole = 'boolean' | 'number';
+       type EffectFieldRoles = Readonly<Record<string, Readonly<Record<string, EffectFieldRole>>>>;
+       const EFFECT_FIELD_ROLES: EffectFieldRoles = {};
+       export function lerpEffect(
+         a: Readonly<Effect>,
+         b: Readonly<Effect>,
+         t: number,
+         out: Effect,
+         roles: EffectFieldRoles = EFFECT_FIELD_ROLES,
+       ): boolean {
+         if (a.kind !== b.kind) return false;
+         const aRec = a as Record<string, unknown>;
+         const bRec = b as Record<string, unknown>;
+         const outRecord = out as unknown as Record<string, unknown>;
+         for (const key of Object.keys(aRec)) {
+           if (roles[a.kind]?.[key] === 'number') outRecord[key] = t;
+           else outRecord[key] = bRec[key];
+         }
+         return true;
+       }`,
+    );
+    const indexed = input(
+      'indexed-effectInterpolation.ts',
+      `interface Effect {
+         readonly kind: string;
+         [field: string]: unknown;
+       }
+       export function lerpEffect(a: Readonly<Effect>, b: Readonly<Effect>, out: Effect): boolean {
+         if (a.kind !== b.kind) return false;
+         for (const key of Object.keys(a)) out[key] = b[key];
+         return true;
+       }`,
+    );
+    const closed = input(
+      'closed-effectInterpolation.ts',
+      `interface BlurEffect { amount: number; readonly kind: 'blur' }
+       interface ToggleEffect { enabled: boolean; readonly kind: 'toggle' }
+       type Effect = BlurEffect | ToggleEffect;
+       export function lerpEffect(a: Readonly<Effect>, b: Readonly<Effect>, out: Effect): boolean {
+         if (a.kind === 'blur' && b.kind === 'blur' && out.kind === 'blur') out.amount = b.amount;
+         else if (a.kind === 'toggle' && b.kind === 'toggle' && out.kind === 'toggle') out.enabled = b.enabled;
+         else return false;
+         return true;
+       }`,
+    );
+    const report = analyzeTypeScriptSourcePortability([asserted]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected an effect interpolation assertion finding');
+
+    expect(report.findings).toMatchObject([
+      {
+        message:
+          'function:lerpEffect uses a double assertion through unknown to claim mutable index-signature storage; the bridge neither proves nor creates writable dynamic cells on the source owner. For an intentionally open key or extension domain, declare a mutable string index signature on the base/output type and construct every value in that carrier; a registry of keys or roles does not recover cells on an owner that lacks them. If the keys are closed, replace the dynamic writes with a finite union of declared members. A reviewed exception can record the source contract but cannot supply that storage; copying or materializing a Record, or adding side storage, would change object identity.',
+        rule: 'unchecked-double-assertion',
+        subject: 'function:lerpEffect',
+      },
+    ]);
+    expect(analyzeTypeScriptSourcePortability([indexed, closed]).findings).toEqual([]);
+    expect(
+      analyzeTypeScriptSourcePortability([asserted], {
+        exceptionPolicy: {
+          exceptions: [
+            {
+              findingIdentity: finding.identity,
+              reason: 'Effect kinds and registered field roles are an intentionally open web contract.',
+              rule: 'unchecked-double-assertion',
+            },
+          ],
+          schema: 'flight-compiler-source-portability-exceptions/1',
+        },
+      }),
+    ).toMatchObject({
+      acceptedExceptions: [{ finding: { identity: finding.identity } }],
+      findings: [],
+    });
   });
 
   it('excludes declaration, test-only, and generated inputs before visiting their syntax', () => {

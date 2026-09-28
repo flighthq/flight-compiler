@@ -3320,7 +3320,7 @@ function emitExpression(
       ) {
         emissionError(
           context,
-          'a dynamic named-property write requires target-runtime mutation support: flight::NamedProperties is deliberately read-only, and this key has no finite declared member set the compiler can dispatch. Add an owner-preserving checked NamedProperties::set(String, Any) contract, or keep the key as a finite union of declared member names and assign through the typed object',
+          'a dynamic named-property write requires target-runtime mutation support: flight::NamedProperties is deliberately read-only, and this key has no finite declared member set the compiler can dispatch. For an intentionally open extension domain, declare mutable string-indexed storage on the base/output type and construct every owner in that carrier; a registry of keys or roles cannot recover cells on an owner that lacks them. Otherwise add an owner-preserving checked NamedProperties::set(String, Any) contract, or keep the key as a finite union of declared member names and assign through the typed object. The compiler will not cast between owners, copy into replacement storage, or invent a side table',
           'cpp-named-properties-write-unsupported',
         );
       }
