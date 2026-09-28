@@ -144,6 +144,74 @@ describe('analyzeTypeScriptSourcePortability', () => {
     });
   });
 
+  it('keeps optional nullable callbacks as mixed absence until the API elects one state model', () => {
+    const mixed = input(
+      'AnimationPlayer.ts',
+      `interface AnimationClipEvent { readonly name: string }
+       interface Signal<T> { readonly id: number }
+       interface AnimationPlayer {
+         onEvent?: Signal<(event: Readonly<AnimationClipEvent>) => void> | null;
+         onFinished?: Signal<() => void> | null;
+         onLooped?: Signal<() => void> | null;
+       }`,
+    );
+    const optional = input(
+      'OptionalAnimationPlayer.ts',
+      `interface Signal<T> { readonly id: number }
+       interface AnimationPlayer { onFinished?: Signal<() => void> }`,
+    );
+    const nullable = input(
+      'NullableAnimationPlayer.ts',
+      `interface AnimationClipEvent { readonly name: string }
+       interface Signal<T> { readonly id: number }
+       interface AnimationPlayer {
+         onEvent: Signal<(event: Readonly<AnimationClipEvent>) => void> | null;
+         onFinished: Signal<() => void> | null;
+         onLooped: Signal<() => void> | null;
+       }`,
+    );
+    const explicit = input(
+      'ExplicitAnimationPlayer.ts',
+      `interface Signal<T> { readonly id: number }
+       type CallbackState =
+         | { readonly state: 'unset' }
+         | { readonly state: 'disabled' }
+         | { readonly signal: Signal<() => void>; readonly state: 'bound' };
+       interface AnimationPlayer { onFinished: CallbackState }`,
+    );
+
+    // A callback-bearing Signal does not make the two implicit absence spellings one source contract. The
+    // measured constructors write null, and every direct use collapses null and undefined with `== null`, so
+    // making these properties required-nullable is the exact narrow source fix. The declaration nevertheless
+    // exposes three distinguishable states to other consumers until it chooses that one sentinel (or names
+    // all three states explicitly), so the gate must not infer the choice from current downstream uses.
+    expect(analyzeTypeScriptSourcePortability([mixed]).findings).toMatchObject([
+      {
+        message:
+          'interface:AnimationPlayer/property:onEvent combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:AnimationPlayer/property:onEvent',
+      },
+      {
+        message:
+          'interface:AnimationPlayer/property:onFinished combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:AnimationPlayer/property:onFinished',
+      },
+      {
+        message:
+          'interface:AnimationPlayer/property:onLooped combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:AnimationPlayer/property:onLooped',
+      },
+    ]);
+    expect(
+      analyzeTypeScriptSourcePortability([optional, nullable, explicit]).findings.filter(
+        (finding) => finding.rule === 'mixed-absence',
+      ),
+    ).toEqual([]);
+  });
+
   it('requires real indexed storage instead of an asserted index-signature view', () => {
     const asserted = input(
       'command.ts',

@@ -7477,22 +7477,49 @@ describe('createCppCompilerBackend', () => {
   });
 
   it('stores an optional property that also admits null through one plan, and refuses two value domains', () => {
-    // The real shape: `onFinished?: Signal<() => void> | null` from @flighthq/types. A `?` marker and a
-    // `null` in the same type are two spellings of one three-state question, so the declaration and every
-    // crossing that reads or writes it must ask the same authority.
+    // The three real AnimationPlayer signal shapes from @flighthq/types. A `?` marker and a `null` in the
+    // same type are two spellings of one three-state question, so the declaration and every crossing that
+    // reads or writes it must ask the same authority. Current constructors write null and all direct uses
+    // collapse null/undefined with a nullish guard; that makes required-nullable the narrow source remedy,
+    // but the backend still has to preserve the authored three states until the declaration changes.
     //
     // Lowered together and with the resolution plan, because the property's declared type lives in the
     // provider package: without the edge the consumer cannot see that `onFinished` admits absence at all.
     const fields = (onFinished: string): string =>
-      `export interface Signal<T> { readonly id: number }
-       export interface AnimationPlayer { readonly id: number; ${onFinished} }`;
+      `export interface AnimationClipEvent { readonly name: string }
+       export interface Signal<T> { readonly id: number }
+       export interface AnimationPlayer {
+         readonly id: number;
+         onEvent?: Signal<(event: Readonly<AnimationClipEvent>) => void> | null;
+         ${onFinished}
+         onLooped?: Signal<() => void> | null;
+       }`;
     const consumerSource = (): string =>
-      `import type { AnimationPlayer, Signal } from '@flighthq/types';
+      `import type { AnimationClipEvent, AnimationPlayer, Signal } from '@flighthq/types';
+       function createSignal<T>(): Signal<T> { return { id: 1 }; }
        function emitSignal<T>(signal: Signal<T>): void { void signal.id; }
-       export function stop(player: AnimationPlayer): void { player.onFinished = null; }
-       export function enable(player: AnimationPlayer): void { if (player.onFinished == null) player.onFinished = null; }
-       export function finish(player: AnimationPlayer): void {
+       export function stop(player: AnimationPlayer): void {
+         player.onEvent = null;
+         player.onFinished = null;
+         player.onLooped = null;
+       }
+       export function enable(player: AnimationPlayer): void {
+         if (player.onEvent == null) {
+           player.onEvent = createSignal<(event: Readonly<AnimationClipEvent>) => void>();
+         }
+         if (player.onFinished == null) player.onFinished = createSignal<() => void>();
+         if (player.onLooped == null) player.onLooped = createSignal<() => void>();
+       }
+       export function emitAll(player: AnimationPlayer): void {
+         if (player.onEvent != null) emitSignal(player.onEvent);
          if (player.onFinished != null) emitSignal(player.onFinished);
+         if (player.onLooped != null) emitSignal(player.onLooped);
+       }
+       export function finishedOr(
+         player: AnimationPlayer,
+         fallback: Signal<() => void>,
+       ): Signal<() => void> {
+         return player.onFinished ?? fallback;
        }`;
     const emit = (onFinished: string): string => {
       const [types, consumer] = lowerTypeScriptSources(
@@ -7552,8 +7579,15 @@ describe('createCppCompilerBackend', () => {
     expect(both).toContain(
       'std::variant<flight::Ref<Signal<std::function<void()>>>, flight::Null, flight::Undefined> on_finished;',
     );
+    expect(both).toMatch(/std::variant<[^;\n]+flight::Null, flight::Undefined> on_event;/u);
+    expect(both).toContain(
+      'std::variant<flight::Ref<Signal<std::function<void()>>>, flight::Null, flight::Undefined> on_looped;',
+    );
     expect(both).not.toContain('std::optional<std::optional');
     expect(both).toContain('std::holds_alternative<flight::Null>(player->on_finished)');
+    expect(both).toMatch(
+      /const auto& coalesce_left = player->on_finished; if \(\(std::holds_alternative<flight::Null>\(coalesce_left\) \|\| std::holds_alternative<flight::Undefined>\(coalesce_left\)\)\) return fallback; return std::get<0>\(coalesce_left\);/u,
+    );
     // The access unwraps through the plan rather than reading the property bare, which is what the
     // previous storage forced and what no `Ref<Signal<T>>` parameter can accept.
     expect(both).toContain(
