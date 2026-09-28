@@ -654,6 +654,108 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(22);
   });
 
+  it('keeps Tray creation wrapper errors at their proven provider-opaque boundary', () => {
+    const opaqueText = `async function createTrayIcon(): Promise<void> {
+         const out = allocateEntity<Entity & { error?: unknown; outcome: 'tray-create-failed' }>();
+         void out;
+       }
+       function initializeTrayCreateFailedResult(
+         out: EntityConstruction<Entity & { error?: unknown; outcome: 'tray-create-failed' }>,
+       ): void { void out; }
+       function initializeTrayCreateProviderFailureResult(
+         out: EntityConstruction<Entity & { error?: unknown; outcome: string }>,
+       ): void { void out; }`;
+    const opaque = input('packages/tray/src/tray.ts', opaqueText);
+    const closed = input(
+      'packages/tray/src/tray.ts',
+      `interface TrayErrorPayload { readonly message: string; readonly operation: 'create' }
+       ${opaqueText.replaceAll('unknown', 'TrayErrorPayload')}`,
+    );
+    const controls = [
+      input('packages/tray/src/other.ts', opaqueText),
+      input('packages/other/src/tray.ts', opaqueText),
+      input(
+        'packages/tray/src/tray.ts',
+        `function other(
+           out: EntityConstruction<Entity & { error?: unknown; outcome: 'tray-create-failed' }>,
+         ): void { void out; }`,
+      ),
+      input(
+        'packages/tray/src/tray.ts',
+        `function initializeTrayCreateFailedResult(
+           out: EntityConstruction<Entity & { error?: any; outcome: 'tray-create-failed' }>,
+         ): void { void out; }`,
+      ),
+      input(
+        'packages/tray/src/tray.ts',
+        `function initializeTrayCreateFailedResult(
+           out: EntityConstruction<Entity & { error: unknown; outcome: 'tray-create-failed' }>,
+         ): void { void out; }`,
+      ),
+      input(
+        'packages/tray/src/tray.ts',
+        `function initializeTrayCreateFailedResult(
+           out: EntityConstruction<Entity & { error?: unknown | null; outcome: 'tray-create-failed' }>,
+         ): void { void out; }`,
+      ),
+      input(
+        'packages/tray/src/tray.ts',
+        `function initializeTrayCreateProviderFailureResult(
+           out: EntityConstruction<Entity & { error?: unknown; outcome: number }>,
+         ): void { void out; }`,
+      ),
+      input(
+        'packages/tray/src/tray.ts',
+        `function initializeTrayCreateProviderFailureResult(
+           out: EntityConstruction<Entity & { error?: unknown[]; outcome: string }>,
+         ): void { void out; }`,
+      ),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    expect(report.findings.map(({ subject }) => subject)).toEqual([
+      'function:createTrayIcon/arm:outcome=tray-create-failed/property:error',
+      'function:initializeTrayCreateFailedResult/parameter:out/arm:outcome=tray-create-failed/property:error',
+      'function:initializeTrayCreateProviderFailureResult/parameter:out/property:error',
+    ]);
+    const messages = report.findings.map(({ message }) => message);
+    expect(messages.filter((message) => message.includes('catches an arbitrary rejection'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('assigns the catch argument directly'))).toHaveLength(1);
+    expect(messages.filter((message) => message.includes('non-created host capability result'))).toHaveLength(1);
+    for (const message of messages) {
+      expect(message).toContain('crosses createTrayIcon unchanged');
+      expect(message).toContain('not inspected or serialized');
+      expect(message).toContain('not retained in TrayRuntime');
+      expect(message).toContain('genuinely provider-opaque');
+      expect(message).toContain('named closed TrayErrorPayload');
+      expect(message).toContain('reviewed source-portability exception for this exact property');
+      expect(message).toContain('target-specific Any carrier');
+      expect(message).toContain('insert a cast');
+      expect(message).toContain('copy or materialize the payload');
+    }
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('genuinely provider-opaque'),
+        ),
+      ).toBe(true);
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'The wrapper returns provider-owned diagnostics unchanged and never retains or inspects them.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(3);
+  });
+
   it('keeps texture-atlas JSON detection probes at a reviewed boundary', () => {
     const opaque = input(
       'packages/textureatlas-formats/src/textureAtlasDetect.ts',

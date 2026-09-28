@@ -441,6 +441,8 @@ function renderOpaquePropertyValueDomainMessage(
   if (textureAtlasDetection) return textureAtlasDetection;
   const lottiePayload = getLottieOpaquePayloadGuidance(node, subject, kinds);
   if (lottiePayload) return lottiePayload;
+  const trayWrapperError = getTrayWrapperOpaqueErrorGuidance(node, subject, kinds);
+  if (trayWrapperError) return trayWrapperError;
   const trayError = getTrayOpaqueErrorGuidance(node, subject, kinds);
   if (trayError) return trayError;
   if (getNodeName(node.name) !== 'error' || kinds.size !== 1 || !kinds.has('unknown')) {
@@ -448,6 +450,52 @@ function renderOpaquePropertyValueDomainMessage(
   }
   const presence = node.questionToken ? 'an optional error payload' : 'an error payload';
   return `${subject} exposes unknown as ${presence}; JavaScript permits throwing values of any type, so neither the annotation nor its downstream uses prove one portable runtime representation. Normalize every producer at the catch or provider boundary into a named closed error payload shared by the result arms, storage, and consumers, using fields with explicit portable value types. If preserving arbitrary thrown values is intentional, record a reviewed source-portability exception for that boundary. The compiler will not infer Error, stringify the value, or choose a target-specific Any carrier.`;
+}
+
+function getTrayWrapperOpaqueErrorGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    !hasOnlyUnknown(kinds) ||
+    getNodeName(node.name) !== 'error' ||
+    node.questionToken === undefined ||
+    node.type?.kind !== ts.SyntaxKind.UnknownKeyword ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/tray/src/tray.ts')
+  ) {
+    return undefined;
+  }
+  const flow = getTrayWrapperOpaqueErrorFlow(node, subject);
+  if (flow === undefined) return undefined;
+  return `${subject} preserves an optional unknown error while constructing the public Tray creation result; ${flow} The value crosses createTrayIcon unchanged, is not inspected or serialized, and is not retained in TrayRuntime, so it remains genuinely provider-opaque rather than a recoverable portable domain. If portable consumers need machine-readable failure data, normalize at the catch or host-provider boundary into one named closed TrayErrorPayload shared by TrayCreateCapabilityResult, TrayCreateResult, these construction helpers, and consumers. If arbitrary caught or provider-supplied data is intentionally returned only as an unexamined diagnostic, record a reviewed source-portability exception for this exact property. The compiler will not infer Error, stringify the value, choose a target-specific Any carrier, insert a cast, or copy or materialize the payload.`;
+}
+
+function getTrayWrapperOpaqueErrorFlow(node: ts.PropertySignature, subject: string): string | undefined {
+  if (!ts.isTypeLiteralNode(node.parent)) return undefined;
+  const outcome = node.parent.members.find(
+    (member): member is ts.PropertySignature =>
+      ts.isPropertySignature(member) && getNodeName(member.name) === 'outcome' && member.questionToken === undefined,
+  )?.type;
+  switch (subject) {
+    case 'function:createTrayIcon/arm:outcome=tray-create-failed/property:error':
+      if (!isStringLiteralType(outcome, 'tray-create-failed')) return undefined;
+      return 'createTrayIcon catches an arbitrary rejection, passes that same value to initializeTrayCreateFailedResult, and immediately returns the finished result.';
+    case 'function:initializeTrayCreateFailedResult/parameter:out/arm:outcome=tray-create-failed/property:error':
+      if (!isStringLiteralType(outcome, 'tray-create-failed')) return undefined;
+      return 'initializeTrayCreateFailedResult assigns the catch argument directly to the tray-create-failed result and has no other production or consumption path.';
+    case 'function:initializeTrayCreateProviderFailureResult/parameter:out/property:error':
+      if (outcome?.kind !== ts.SyntaxKind.StringKeyword) return undefined;
+      return 'createTrayIcon reads the optional error from a non-created host capability result, passes it to initializeTrayCreateProviderFailureResult, and returns the finished wrapper without narrowing.';
+    default:
+      return undefined;
+  }
+}
+
+function isStringLiteralType(node: ts.TypeNode | undefined, value: string): boolean {
+  return (
+    node !== undefined && ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal) && node.literal.text === value
+  );
 }
 
 function getFlightLogOpaqueValueGuidance(
