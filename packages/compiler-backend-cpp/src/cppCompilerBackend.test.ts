@@ -5985,6 +5985,47 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('explicitly represent both owners');
   });
 
+  it('refuses a nullable picking material widening and keeps the same-type control', () => {
+    const lowerSources = (attributeType: string, valueType: string) =>
+      lower(
+        'sceneHitAttributes.ts',
+        `interface Material { readonly kind: string }
+         interface Material3D extends Material { readonly depth: number }
+         export interface HitAttributes { readonly material: ${attributeType} }
+         export function take(attributes: HitAttributes, material: ${valueType}): void {
+           attributes.material = material;
+         }`,
+      ).module;
+    const emit = (attributeType: string, valueType: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lowerSources(attributeType, valueType), { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // The picking shape: a nullable destination typed as the base interface assigned a nullable derived one.
+    // TypeScript accepts it through interface heritage, and the emitted structs are flattened independently --
+    // `Material3D` does not derive from `Material` in C++ -- so the widening has no cast to follow and no
+    // storage that could carry the owner. The refusal names both carriers and the rewrites, and stays
+    // target-runtime because the carrier is what is missing, not the source's shape.
+    const heritage = emit('Material | null', 'Material3D | null');
+    expect(heritage.rule).toBe('cpp-contextual-union-interface-heritage-carrier-unrepresented');
+    expect(heritage.classification).toBe('target-runtime');
+    expect(heritage.message).toContain('from Material3D to Material');
+    expect(heritage.message).toContain('independent flight::Ref<Material3D> and flight::Ref<Material> owner types');
+    expect(heritage.message).toContain('each interface struct is emitted flattened');
+    expect(heritage.message).toContain(
+      'Declaring the destination as the derived interface where the concrete type is known',
+    );
+    expect(heritage.message).toContain('interface structs emitted with the heritage as a C++ base relation');
+
+    // The same assignment with no heritage at all is one carrier on both sides, so it lowers: the refusal is
+    // about the two owners and not about nullable assignment to an interface-typed member.
+    const sameType = emitIrModuleCpp(lowerSources('Material | null', 'Material | null'), {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    expect(sameType).toContain('std::optional<flight::Ref<Material>> material');
+    expect(sameType).toContain('(attributes->material = material)');
+  });
+
   it('does not infer the array find contract for a lookalike receiver', () => {
     const result = lower(
       'lookalike-find.ts',
