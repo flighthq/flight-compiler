@@ -6886,6 +6886,142 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('that narrowing is not lowered yet');
   });
 
+  it('classifies an optional render proxy base owner asserted as its wider interface', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './RenderProxy',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RenderProxy.ts' },
+        },
+        {
+          specifier: './RenderProxy2D',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RenderProxy2D.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/RenderProxy.ts',
+            `export interface Renderable { kind: string }
+             export interface RenderProxy {
+               next: RenderProxy | null;
+               rendererMapId: number;
+               source: Renderable;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/RenderProxy2D.ts',
+            `import type { RenderProxy } from './RenderProxy';
+             export interface RenderProxy2D extends RenderProxy {
+               clipDepth: number;
+               transform2D: number;
+               traverseChildren: boolean;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export * from './RenderProxy';
+             export * from './RenderProxy2D';
+             import type { Renderable, RenderProxy } from './RenderProxy';
+             export interface RenderStateRuntime {
+               rendererMapId: number;
+               renderProxyMap: WeakMap<Renderable, RenderProxy>;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/render',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/render/src/renderProxy.ts',
+            `import type {
+               Renderable,
+               RenderProxy2D,
+               RenderStateRuntime,
+             } from '@flighthq/types/contract';
+             export function getRenderProxy2D(
+               runtime: RenderStateRuntime,
+               source: Renderable,
+             ): RenderProxy2D | undefined {
+               const node = runtime.renderProxyMap.get(source) as RenderProxy2D | undefined;
+               if (node !== undefined && node.rendererMapId !== runtime.rendererMapId) return undefined;
+               return node;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/render',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/render/src/typedRenderProxy.ts',
+            `import type { Renderable, RenderProxy2D } from '@flighthq/types/contract';
+             export function getRenderProxy2D(
+               renderProxyMap: WeakMap<Renderable, RenderProxy2D>,
+               source: Renderable,
+             ): RenderProxy2D | undefined {
+               return renderProxyMap.get(source);
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
+    const represented = session.emitModule(modules[4]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The map retains only the base-interface owner. There is no variant index, discriminator, or nominal
+    // C++ inheritance that could prove the wider owner, and its extra cells cannot be recovered by a cast.
+    expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('flight::Ref<flighthq_types::RenderProxy>');
+    expect(failure.message).toContain('flight::Ref<flighthq_types::RenderProxy2D>');
+    expect(failure.message).toContain('clipDepth, transform2D and traverseChildren');
+    expect(failure.message).toContain('An assertion cannot add those cells');
+
+    // Typing the storage with the concrete owner preserves the same object through the optional result;
+    // no pointer cast, reconstructed row, or replacement object is necessary.
+    expect(represented).toContain('std::optional<flight::Ref<flighthq_types::RenderProxy2D>>');
+    expect(represented).toContain('render_proxy_map.get(source)');
+    expect(represented).not.toContain('static_pointer_cast');
+    expect(represented).not.toContain('structural_ref_cast');
+    expect(represented).not.toContain('make_ref');
+    expect(represented).not.toContain('materialize_row');
+  });
+
   it('keeps an assertion that relates to no alternative attributed to the source', () => {
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
