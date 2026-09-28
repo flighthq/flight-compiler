@@ -41293,6 +41293,110 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(comparison.rule).toBe('cpp-dual-sentinel-comparison-unrepresented');
   });
 
+  it('names the guard a missing present-value proof needs, across three call sites', () => {
+    const refusal = (file: string, body: string) =>
+      captureBackendEmissionFailure(() => emitIrModuleCpp(lower(file, body).module, { runtimeProfile: 'flight-cpp' }));
+
+    // tokens: a local bound from an optional member, read without a guard. The storage is optional, so the
+    // read needs presence; the message says which guard, and that the compiler will not unpack without it.
+    const token = refusal(
+      'flightDocumentTokenReference.ts',
+      `export interface Token { readonly value: string }
+       export interface Reference { readonly token?: Token | null }
+       export function read(reference: Reference): string { const token = reference.token; return token.value; }`,
+    );
+    expect(token.rule).toBe('cpp-optional-member-access-unproven');
+    expect(token.classification).toBe('compiler-restriction');
+    expect(token.message).toContain('property value on C++ absence-carrying storage requires narrowed access');
+    expect(token.message).toContain('no present-value proof reaches this read');
+    expect(token.message).toContain('Guard this exact receiver');
+    expect(token.message).toContain('will not discard the absence state or call value() without that proof');
+
+    // glyphatlas: the receiver is a type parameter whose constraint admits the sentinel, so the read has no
+    // presence proof and the same rule applies. The message names the constraint rather than a member.
+    const unguarded = refusal(
+      'explainGlyphAtlasEntry.ts',
+      `export interface Entry { readonly glyph: number }
+       export function explain<T extends Entry | undefined>(entry: T): number { return entry.glyph; }`,
+    );
+    expect(unguarded.rule).toBe('cpp-optional-member-access-unproven');
+    expect(unguarded.classification).toBe('compiler-restriction');
+
+    // The same constrained receiver behind a guard is refused by the presence-test rule instead, because
+    // there is no absence channel to test: the guard cannot be the proof here, so the message names the
+    // declaration that would give the test somewhere to look rather than this read.
+    const guarded = refusal(
+      'explainGlyphAtlasEntry.ts',
+      `export interface Entry { readonly glyph: number }
+       export function explain<T extends Entry | undefined>(entry: T): number {
+         if (entry === undefined) return 0;
+         return entry.glyph;
+       }`,
+    );
+    expect(guarded.rule).toBe('cpp-presence-test-without-absence-storage');
+    expect(guarded.message).toContain('a C++ template parameter is emitted as the type argument itself');
+    expect(guarded.message).toContain(
+      'Declare the parameter as the concrete optional type its constraint names, or narrow the value into a non-optional local before testing it',
+    );
+
+    // textlayout: an optional member bound to a local and then read. The binding is what loses the proof --
+    // the inline form emits, which is the control further down -- and the refusal says so.
+    const bound = refusal(
+      'richTextContent.ts',
+      `export interface TextStyle { readonly size: number }
+       export interface RichText { readonly style?: TextStyle }
+       export function measure(content: RichText): string {
+         const style = content.style;
+         return style.size.toFixed(2);
+       }`,
+    );
+    expect(bound.rule).toBe('cpp-optional-member-access-unproven');
+    expect(bound.message).toContain('no present-value proof reaches this read');
+
+    // A bare member read on optional storage, whose message carried no remedy at all before this lane: it
+    // now names the three ways to prove the payload present and says what the compiler will not do without one.
+    const payload = refusal(
+      'richTextContent.ts',
+      `export function measure(text: string | undefined): number { return text.length; }`,
+    );
+    expect(payload.rule).toBe('cpp-member-projection-without-present-storage');
+    expect(payload.classification).toBe('compiler-restriction');
+    expect(payload.message).toContain('member length on optional C++ storage requires proven present payload');
+    expect(payload.message).toContain(
+      'Guard the receiver, read it through an optional chain, or narrow it into a present local first',
+    );
+    expect(payload.message).toContain('will not call value() without that proof');
+
+    // The control that keeps it about the missing proof rather than about optional storage: the same read
+    // behind a guard lowers, because the guard is the proof.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'richTextContent.ts',
+          `export function measure(text: string | undefined): number {
+             if (text === undefined) return 0;
+             return text.length;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('text.value().length()');
+
+    // And the control that says the binding is what loses the proof, not the optional member: read inline,
+    // the same member path lowers, so the refusal above is about the local's absent-declared type.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'richTextContent.ts',
+          `export interface TextStyle { readonly size: number }
+           export interface RichText { readonly style?: TextStyle }
+           export function measure(content: RichText): number { return content.style.size; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toBeDefined();
+  });
+
   it('refuses erasing a scene3d structural row and names the carrier the runtime lacks', () => {
     const shared = `interface SceneNode { readonly id: string; readonly kind: string }
        interface Node2D extends SceneNode { readonly x: number }

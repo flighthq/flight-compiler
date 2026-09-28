@@ -12170,7 +12170,7 @@ function assertCppPresentOptionalStorageMemberReceiverCpp(
   if (receiver.presence !== 'narrowedPresent') {
     emissionError(
       context,
-      `member ${expression.name} on optional C++ storage requires proven present payload`,
+      `member ${expression.name} on optional C++ storage requires proven present payload: nothing proved the payload present, so the read would unpack storage that may be holding absence. Guard the receiver, read it through an optional chain, or narrow it into a present local first; the compiler will not call value() without that proof`,
       'cpp-member-projection-without-present-storage',
     );
   }
