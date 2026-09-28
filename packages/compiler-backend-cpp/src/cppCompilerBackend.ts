@@ -3798,6 +3798,23 @@ function emitExpression(
         context.includes.add('string');
         return value;
       }
+      // Numbers and booleans are C++ BUILTINS (`double`, `bool`), not classes, so they have no members at
+      // all: every ambient member the branches above did not claim would be emitted as `value.to_precision()`
+      // on a `double`, which g++ rejects -- a silently invalid emission rather than a refusal. Strings are
+      // not in this set: `string` emits as `flight::String`, a class with real members.
+      if (
+        expression.callee.kind === 'property' &&
+        getIrExpressionTypeEvidenceCpp(expression.callee.object, context)?.kind === 'primitive'
+      ) {
+        const receiver = getIrExpressionTypeEvidenceCpp(expression.callee.object, context)!;
+        if (receiver.kind === 'primitive' && (receiver.name === 'number' || receiver.name === 'boolean')) {
+          emissionError(
+            context,
+            `${receiver.name} has no C++ members, so the ambient member ${expression.callee.name} cannot be called on it: the emitted ${emitType(receiver, context)} is a builtin, and only the members this compiler binds have a representation (Number.toFixed through flight::number_to_fixed, and toString through flight::to_string). Convert the value to a form whose members are declared, or compute the result without the member; the compiler will not emit a call the builtin cannot answer`,
+            'cpp-primitive-member-call-unrepresented',
+          );
+        }
+      }
       if (expression.callee.kind === 'property' && expression.callee.member) {
         const binding = getCompilerCppAmbientMemberBinding(
           expression.callee.member,
@@ -25294,6 +25311,33 @@ function emitOptionalCallExpressionCpp(
   return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${invocation}; }())`;
 }
 
+// A chained call on a primitive receiver whose member IS bound AND whose chain evidence carries the chain's
+// own absence. `valueOf` is the case that qualifies today: on a primitive it is the value, so the chain adds
+// the presence test and nothing else -- an exact result type, the value itself, no cast, copy, or side
+// storage.
+//
+// `toFixed` and `toString` are deliberately NOT here even though their unchained forms lower through exact
+// helpers (`flight::number_to_fixed`, `flight::to_string`). Their chain evidence records the ambient member's
+// own result (`string`) without the absence the chain contributes, so the surrounding `??` treats the chain
+// as present and drops the fallback -- emitting `<std::optional<String>>` where the declared type says
+// `String`, which g++ rejects ("could not convert ... from 'std::optional<flight::String>' to
+// 'flight::String'"). That is an evidence gap in the chain's result type, and until it is closed in the
+// semantic layer a projection here would either drop absence or mismatch the declared type. Both refuse,
+// with the message naming the receiver and the distinction.
+function emitCppOptionalPrimitiveMemberCallCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  callee: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  receiverType: Readonly<IrType>,
+  projection: Readonly<{ absent: string; value: string }>,
+  context: EmitContext,
+): string | undefined {
+  const payloadType = emitOptionalChainPayloadIrTypeCpp(receiverType, context);
+  if (payloadType.kind !== 'primitive' || payloadType.name !== 'number') return undefined;
+  if (callee.name !== 'valueOf' || expression.arguments.length !== 0) return undefined;
+  context.includes.add('optional');
+  return `([&]() -> std::optional<${emitType(payloadType, context)}> { auto optional_chain_receiver = ${emitOptionalChainReceiverCpp(callee.object, context)}; if (${projection.absent}) return std::nullopt; return ${projection.value}; }())`;
+}
+
 function emitOptionalPropertyCallExpressionCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   context: EmitContext,
@@ -25311,6 +25355,14 @@ function emitOptionalPropertyCallExpressionCpp(
   if (semantics.receiverNullish === 'excluded') {
     return emitExpression({ ...expression, callee: { ...callee, optional: false } }, context);
   }
+  const primitiveMemberCall = emitCppOptionalPrimitiveMemberCallCpp(
+    expression,
+    callee,
+    semantics.receiverType,
+    receiverProjection,
+    context,
+  );
+  if (primitiveMemberCall) return primitiveMemberCall;
   const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
   const callableReturns = getCppCallableReturnType(semantics.valueType, context, new Set());
   const recovered = getCppOptionalPropertyCallResultTypeEvidenceCpp(expression, context);
@@ -25319,7 +25371,7 @@ function emitOptionalPropertyCallExpressionCpp(
     emissionError(
       context,
       receiverType.kind === 'primitive'
-        ? `optional property call ${callee.name} on the primitive receiver ${emitType(receiverType, context)} requires callable result evidence: a primitive's members are the runtime's own bindings, so only a member with a bound representation AND a declared result type can be called through a chain. Members the runtime lowers through a helper (Number.toFixed through flight::number_to_fixed, for instance) qualify; a member with no C++ representation at all cannot be called here -- not through a chain, and not directly either. Call it without the chain where the runtime binds it, or keep the value in a form whose members are declared`
+        ? `optional property call ${callee.name} on the primitive receiver ${emitType(receiverType, context)} requires callable result evidence: a primitive's members are the runtime's own bindings, so a chained call needs BOTH a representation this compiler binds and result evidence that carries the chain's own absence. A member whose evidence records only the ambient result -- Number.toFixed returns string, without the undefined the chain contributes -- cannot be projected here, because the fallback around it would be dropped and the emitted optional would mismatch the declared type; a member with no C++ representation at all cannot be called at all, chain or not. Call it where the receiver is not optional, or keep the value in a form whose members are declared`
         : `optional property call ${callee.name} requires callable result evidence`,
       'cpp-optional-property-call-missing-callable-result',
     );
