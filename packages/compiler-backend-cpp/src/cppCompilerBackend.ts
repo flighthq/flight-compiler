@@ -5467,6 +5467,22 @@ function emitExpression(
           'cpp-optional-member-access-unproven',
         );
       }
+      // A record has no members to name: its carrier is the runtime's keyed dictionary, so `guards.collision`
+      // on `Record<'collision' | 'interaction', boolean>` was emitted as the member access `value.collision`,
+      // which g++ rejects ("has no member named 'collision'") while the indexed spelling of the same read
+      // emits correctly. The key is static here -- the source wrote it -- so the property read becomes the
+      // same keyed lookup the indexed form uses: the record's own absence handling, no cast, no copy, no
+      // materialization. It is emitted only when the receiver IS a record keyed by strings; every other
+      // receiver keeps the member access it has always had.
+      if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        const receiverEvidence = getIrExpressionTypeEvidenceCpp(expression.object, context);
+        const record = receiverEvidence
+          ? getCppRecordTypeArgumentsCpp(receiverEvidence, context, new Set())
+          : undefined;
+        if (record && emitType(record.key, context) === 'flight::String') {
+          return `${emitExpression(expression.object, context)}.get(flight::String(${JSON.stringify(expression.name)})).value()`;
+        }
+      }
       return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${safeCppName(expression.name)}`;
     }
     case 'regexp':

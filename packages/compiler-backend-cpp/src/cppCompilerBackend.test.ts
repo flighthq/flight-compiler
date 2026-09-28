@@ -39617,4 +39617,28 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(contents).toContain('flight::object_keys(value).size()');
     expect(contents).not.toContain('flight::Any');
   });
+
+  it('reads a record property through the keyed lookup its carrier actually has', () => {
+    // The carrier is a dictionary, so a record has no members to name. `guards.collision` was emitted as the
+    // member access `guards.collision`, which g++ rejects on `flight::Record<...>` ("has no member named
+    // 'collision'"), while the indexed spelling of the same read already emitted correctly. The key is static
+    // here, so the property read becomes that same keyed lookup -- one carrier, the record's own absence
+    // handling, no cast, copy, or materialization.
+    const contents = emitIrModuleCpp(
+      lower(
+        'collisionEnableGuards.ts',
+        `export function enabled(guards: Record<'collision' | 'interaction', boolean>): boolean {
+           return guards.collision === true;
+         }
+         export function disabled(guards: Record<string, boolean>): boolean {
+           return guards.interaction !== true;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(contents).toContain('guards.get(flight::String("collision")).value()');
+    expect(contents).toContain('guards.get(flight::String("interaction")).value()');
+    expect(contents).not.toMatch(/guards\.(collision|interaction)/u);
+    expect(contents).not.toContain('flight::Any');
+  });
 });
