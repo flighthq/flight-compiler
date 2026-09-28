@@ -615,6 +615,98 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
 
+  it('keeps signal dispatch binding on represented callable implementations', () => {
+    const asserted = input(
+      'packages/signals/src/slot.ts',
+      `const nullSignalEmit = (): void => {};
+       interface Signal<T extends (...args: any[]) => void> {
+         data: SignalData<T> | null;
+         emit: T;
+       }
+       interface SignalData<T extends (...args: any[]) => void> {
+         depth: number;
+         slots: (T | null)[];
+       }
+       export function clearSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = nullSignalEmit as unknown as T;
+         signal.data = null;
+       }
+       export function disconnectSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = nullSignalEmit as unknown as T;
+       }
+       function makeDispatch<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         data: SignalData<T>,
+       ): T {
+         return ((...args: any[]) => {
+           for (const slot of data.slots) if (slot !== null) slot(...args);
+           void signal;
+         }) as unknown as T;
+       }
+       function compactSignalData<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+       ): void {
+         signal.emit = nullSignalEmit as unknown as T;
+       }`,
+    );
+    const typed = input(
+      'portableSignalSlot.ts',
+      `type SignalDispatch<Args extends readonly unknown[]> = (...args: Args) => void;
+       interface Signal<Args extends readonly unknown[]> {
+         data: SignalData<Args> | null;
+         emit: SignalDispatch<Args>;
+       }
+       interface SignalData<Args extends readonly unknown[]> {
+         slots: (SignalDispatch<Args> | null)[];
+       }
+       function createNullSignalEmit<Args extends readonly unknown[]>(): SignalDispatch<Args> {
+         return (..._args: Args): void => {};
+       }
+       function makeDispatch<Args extends readonly unknown[]>(
+         signal: Signal<Args>,
+         data: SignalData<Args>,
+       ): SignalDispatch<Args> {
+         return (...args: Args): void => {
+           for (const slot of data.slots) if (slot !== null) slot(...args);
+           void signal;
+         };
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([asserted]).findings;
+
+    expect(findings).toHaveLength(4);
+    expect(findings.every((finding) => finding.rule === 'unchecked-double-assertion')).toBe(true);
+    const noOps = findings.filter((finding) => finding.message.includes('zero-argument nullSignalEmit'));
+    expect(noOps).toHaveLength(3);
+    for (const finding of noOps) {
+      expect(finding.message).toContain('open callable type parameter T');
+      expect(finding.message).toContain('bridge is not representation equivalence');
+      expect(finding.message).toContain('Preserve the Signal<T> owner and every stored T slot');
+      expect(finding.message).toContain('checked callable-signature binding contract');
+      expect(finding.message).toContain("forwards T's exact parameters or deliberately ignores them");
+      expect(finding.message).toContain('named Signal argument-tuple/dispatch type');
+      expect(finding.message).toContain('may bind this represented callable implementation to T');
+      expect(finding.message).toContain('will not route it through Any');
+      expect(finding.message).toContain('cast between callable carriers');
+      expect(finding.message).toContain('copy or materialize the Signal or its slots');
+      expect(finding.message).toContain('or add side storage');
+      expect(finding.message).toContain('non-callable or genuinely erased source must be refused');
+    }
+    const dispatch = findings.find((finding) => finding.message.includes('newly created dispatch implementation'));
+    expect(dispatch?.message).toContain('rest arguments were declared as any[]');
+    expect(dispatch?.message).toContain('captured Signal<T>, SignalData<T>, and every stored T slot by reference');
+    expect(dispatch?.message).toContain('checked callable-signature binding contract');
+    expect(dispatch?.message).toContain("T's instantiated parameter list");
+    expect(dispatch?.message).toContain('named Signal argument tuple');
+    expect(dispatch?.message).toContain('may bind this represented function implementation to T');
+    expect(dispatch?.message).toContain('will not route it through Any');
+    expect(dispatch?.message).toContain('reinterpret or cast a callable owner');
+    expect(dispatch?.message).toContain('copy or materialize the signal/data/slot owners');
+    expect(dispatch?.message).toContain('or add side storage');
+    expect(dispatch?.message).toContain('non-callable or genuinely erased source must be refused');
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',

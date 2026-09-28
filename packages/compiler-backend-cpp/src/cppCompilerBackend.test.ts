@@ -14494,6 +14494,93 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     );
   });
 
+  it('keeps signal slot owners while binding only represented dispatch callables', () => {
+    const signalSlot = lowerPackage(
+      '@flighthq/signals',
+      'slot.ts',
+      `const nullSignalEmit = (): void => {};
+       interface Signal<T extends (...args: any[]) => void> {
+         data: SignalData<T> | null;
+         emit: T;
+       }
+       interface SignalData<T extends (...args: any[]) => void> {
+         slots: (T | null)[];
+       }
+       export function clearSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = nullSignalEmit as unknown as T;
+         signal.data = null;
+       }
+       export function disconnectSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = nullSignalEmit as unknown as T;
+       }
+       export function makeDispatch<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         data: SignalData<T>,
+       ): T {
+         return ((...args: any[]): void => {
+           const slots: (T | null)[] = data.slots;
+           for (const slot of slots) if (slot !== null) slot(...args);
+           void signal;
+         }) as unknown as T;
+       }
+       export function compactSignalData<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = nullSignalEmit as unknown as T;
+       }
+       export function retainDispatch<T extends (...args: any[]) => void>(value: T): T {
+         return value as unknown as T;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(signalSlot.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(signalSlot.diagnostics).toEqual([]);
+    expect(emitted.match(/flight::bind_callable_v1<T>\(/g)).toHaveLength(4);
+    expect(emitted).toContain('(signal->emit = flight::bind_callable_v1<T>(null_signal_emit));');
+    expect(emitted).toContain('slot.value()(std::forward<ArgsPack>(args)...);');
+    expect(emitted).toContain('return value;');
+    expect(emitted).not.toContain('flight::Any::');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('reinterpret_cast');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('make_ref');
+    expect(emitted).not.toContain('materialize');
+
+    const erased = lower(
+      'erased-signal-dispatch.ts',
+      `export function recover<T extends (...args: any[]) => void>(value: unknown): T {
+         return value as unknown as T;
+       }`,
+    ).module;
+    const erasedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(erased, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(erasedFailure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-generic-callable-assertion-source-unproven',
+    });
+    expect(erasedFailure.message).toContain('requires a represented function implementation');
+    expect(erasedFailure.message).toContain('an erased source cannot be recovered');
+    expect(erasedFailure.message).toContain('without Any, a native cast, owner materialization, or side storage');
+
+    const nonCallable = lower(
+      'non-callable-signal-dispatch.ts',
+      `interface NotCallable { value: number }
+       export function recover<T extends (...args: any[]) => void>(value: NotCallable): T {
+         return value as unknown as T;
+       }`,
+    ).module;
+    const nonCallableFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(nonCallable, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(nonCallableFailure).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-generic-callable-assertion-source-unproven',
+    });
+    expect(nonCallableFailure.message).toContain('represented non-callable source NotCallable');
+    expect(nonCallableFailure.message).toContain(
+      'preserve its declared carrier instead of casting, copying, materializing an owner, or adding side storage',
+    );
+  });
+
   it('binds process and browser host surfaces without making them compiler runtime policy', () => {
     const result = lower(
       'host-surfaces.ts',

@@ -4491,7 +4491,32 @@ function emitExpression(
         expression.expression.kind === 'cast' &&
         expression.expression.type.kind === 'unknown'
       ) {
-        return `${getCompilerCallableSignatureAbiCpp().bind}<${callableTypeParameter}>(${emitExpression(expression.expression.expression, context)})`;
+        const implementation = expression.expression.expression;
+        const implementationType = getIrExpressionTypeEvidenceCpp(implementation, context);
+        if (
+          implementationType &&
+          implementationType.kind !== 'function' &&
+          areCppTypesRepresentationEquivalent(implementationType, expression.type, context)
+        ) {
+          return emitExpression(implementation, context, undefined, false);
+        }
+        if (!implementationType || isCppErasedDynamicValueTypeCpp(implementationType)) {
+          emissionError(
+            context,
+            `open generic callable ${callableTypeParameter} requires a represented function implementation before its checked callable-signature binding; an erased source cannot be recovered without Any, a native cast, owner materialization, or side storage`,
+            'cpp-generic-callable-assertion-source-unproven',
+            'target-runtime',
+          );
+        }
+        if (implementationType.kind !== 'function') {
+          emissionError(
+            context,
+            `open generic callable ${callableTypeParameter} cannot bind the represented non-callable source ${describeIrTypeForDiagnosticCpp(implementationType)}; preserve its declared carrier instead of casting, copying, materializing an owner, or adding side storage`,
+            'cpp-generic-callable-assertion-source-unproven',
+            'source-portability',
+          );
+        }
+        return `${getCompilerCallableSignatureAbiCpp().bind}<${callableTypeParameter}>(${emitExpression(implementation, context)})`;
       }
       const callableObject = getCppCallableObjectIrTypeCpp(expression.type, context, new Set());
       if (callableObject && getCppRuntimeProfile(context.options) === 'flight-cpp') {
