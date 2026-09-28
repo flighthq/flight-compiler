@@ -5116,6 +5116,87 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('Narrow or convert the source expression');
   });
 
+  it('attributes a mapped-type receiver with no members to the member its read needs named', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const init = (parameter: string) => ({
+      packageName: '@flighthq/node',
+      sourceFile: ts.createSourceFile(
+        '/flight/packages/node/src/hasBoundsRectangle.ts',
+        `import type { BoundsNodeAny, HasBoundsRectangleRuntime, MethodsOf } from '@flighthq/types/contract';
+         export function init(target: HasBoundsRectangleRuntime, ${parameter}): void {
+           target.isLocalBoundsRectangleValid = methods?.isLocalBoundsRectangleValid ?? null;
+         }`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    });
+    const emit = (parameter: string) => {
+      const results = lowerTypeScriptSources(
+        [
+          {
+            packageName: '@flighthq/types',
+            sourceFile: ts.createSourceFile(
+              '/flight/packages/types/src/contract.ts',
+              `export interface BoundsNodeAny { readonly id: string }
+               export interface HasBoundsRectangleRuntime {
+                 isLocalBoundsRectangleValid: ((source: Readonly<BoundsNodeAny>) => boolean) | null;
+               }
+               export type MethodsOf<T> = {
+                 [K in keyof T as T[K] extends (...args: any) => any ? K : never]: T[K];
+               };`,
+              ts.ScriptTarget.Latest,
+              true,
+            ),
+            upstreamDirectory: '/flight',
+          },
+          init(parameter),
+        ],
+        moduleResolution,
+      );
+      const modules = results.map((result) => result.module);
+      return {
+        session: createCppCompilerBackend().createEmissionSession!({
+          moduleResolution,
+          modules,
+          options: { runtimeProfile: 'flight-cpp' },
+        }),
+        target: modules[1]!,
+      };
+    };
+
+    // `MethodsOf<HasBoundsRectangleRuntime>` is a mapped type with a conditional key remap, and across an
+    // import it resolves to an object with no members: the read's receiver is `Readonly<Partial<object>>`,
+    // so the member it names has no type to plan the contextual optional from. The generic sentence left the
+    // author to guess which of the read's parts was evidence-free.
+    const mapped = emit(`methods?: Readonly<Partial<MethodsOf<HasBoundsRectangleRuntime>>>`);
+    const failure = captureBackendEmissionFailure(() => mapped.session.emitModule(mapped.target));
+    expect(failure.rule).toBe('cpp-contextual-union-missing-expression-type:optionalSingle');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain('property isLocalBoundsRectangleValid has no type evidence');
+    expect(failure.message).toContain('its receiver Readonly<Partial<object>> resolves to an object with no members');
+    expect(failure.message).toContain('a mapped type over an imported declaration resolves empty like this');
+    expect(failure.message).toContain('a declared member, or a Pick<...> of it');
+
+    // Naming the member beside the mapping is the whole difference -- the shape the neighbouring test pins
+    // with its compiled header -- so the refusal is a statement about the mapped receiver, not the read.
+    for (const named of [
+      `methods?: Readonly<Partial<MethodsOf<HasBoundsRectangleRuntime> & Pick<HasBoundsRectangleRuntime, 'isLocalBoundsRectangleValid'>>>`,
+      'methods?: Readonly<Partial<HasBoundsRectangleRuntime>>',
+    ]) {
+      const namedSession = emit(named);
+      expect(() => namedSession.session.emitModule(namedSession.target)).not.toThrow();
+    }
+  });
+
   it('keeps imported HasBoundsRectangle method defaults in their exact callable carriers', () => {
     const { moduleResolution, results } = lowerImportedHasBoundsRectangleModules();
     const modules = results.map((result) => result.module);

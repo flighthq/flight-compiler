@@ -14744,6 +14744,50 @@ function emitContextualUnionExpressionCpp(
   return emitContextualUnionExpressionInContextCpp(expression, expectedType, context);
 }
 
+// The member read whose receiver resolved to a shape with no members, seen through the layers a contextual
+// union construction wraps it in -- an optional chain and the nullish coalescing that supplies the
+// absence. It is the difference between "this read's type evidence is missing" and "there was nothing here
+// to give evidence": a mapped type over an imported declaration can resolve to an empty object, and the
+// member read then has no property to plan from.
+function getCppContextualUnionEmptyShapeMemberReadCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<{ name: string; receiver: IrType }> | undefined {
+  if (expression.kind === 'property') {
+    const receiver = getIrExpressionTypeEvidenceCpp(expression.object, context);
+    return receiver && isEmptyResolvedObjectShapeCpp(receiver) ? { name: expression.name, receiver } : undefined;
+  }
+  if (expression.kind === 'binary' && expression.operator === '??') {
+    return getCppContextualUnionEmptyShapeMemberReadCpp(expression.left, context);
+  }
+  return undefined;
+}
+
+// Whether a type resolved to a shape that names no members at all. Ambient member-preserving wrappers are
+// opened because they never decide membership, and every member of an intersection has to be empty for the
+// merge itself to name nothing.
+function isEmptyResolvedObjectShapeCpp(type: Readonly<IrType>): boolean {
+  if (type.kind === 'object') return type.properties.length === 0;
+  // An optional receiver is a union with a sentinel: the sentinel is not a shape, so it neither has nor
+  // lacks members, and the present alternatives are what the read reaches.
+  if (type.kind === 'union') {
+    const present = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    return present.length > 0 && present.every((member) => isEmptyResolvedObjectShapeCpp(member));
+  }
+  if (type.kind === 'intersection') {
+    return type.types.length > 0 && type.types.every((member) => isEmptyResolvedObjectShapeCpp(member));
+  }
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    cppDependentMemberPreservingAmbientWrappers.has(type.reference.name) &&
+    type.typeArguments.length === 1
+  ) {
+    return isEmptyResolvedObjectShapeCpp(type.typeArguments[0]!);
+  }
+  return false;
+}
+
 function emitContextualUnionExpressionInContextCpp(
   expression: Readonly<IrExpression>,
   expectedType: Readonly<IrType>,
@@ -14954,6 +14998,26 @@ function emitContextualUnionExpressionInContextCpp(
         context,
         `property ${expression.name} has a checker-recorded result type, but its receiver reached C++ storage erased; preserve the receiver's concrete type through destructuring or iteration before constructing the contextual ${plan.kind} union`,
         'cpp-contextual-union-recorded-property-erased-receiver',
+      );
+    }
+    // The read's receiver resolved to a shape with no members, so there is no property here for the plan to
+    // read evidence from -- and naming the member where it is declared is what supplies it. The corpus
+    // shape is `methods?.isLocalBoundsRectangleValid` over `Readonly<Partial<MethodsOf<Runtime>>>`: the
+    // mapped type's conditional key remap resolves to an empty object across an import, so `MethodsOf`
+    // contributes nothing and the member's own declaration has to be named as well.
+    const emptyShapeRead = getCppContextualUnionEmptyShapeMemberReadCpp(expression, context);
+    if (emptyShapeRead) {
+      // Name the shape the read actually reaches rather than the union that carries its sentinel: "union"
+      // is not something the author can look at.
+      const receiverShape =
+        emptyShapeRead.receiver.kind === 'union'
+          ? (emptyShapeRead.receiver.types.find((member) => member.kind !== 'null' && member.kind !== 'undefined') ??
+            emptyShapeRead.receiver)
+          : emptyShapeRead.receiver;
+      emissionError(
+        context,
+        `property ${emptyShapeRead.name} has no type evidence for a contextual ${plan.kind} construction: its receiver ${describeDeclaredIrTypeForDiagnosticCpp(receiverShape)} resolves to an object with no members, so the read has nothing to take a type from -- a mapped type over an imported declaration resolves empty like this. Name the member where it is declared as well as in the mapping -- a declared member, or a Pick<...> of it -- so its type survives into the IR`,
+        `cpp-contextual-union-missing-expression-type:${plan.kind}`,
       );
     }
     emissionError(
