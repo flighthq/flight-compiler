@@ -681,6 +681,8 @@ function renderOpaquePropertyValueDomainMessage(
 ): string {
   const appLoopHandle = getAppLoopOpaqueFrameHandleGuidance(node, subject, kinds);
   if (appLoopHandle) return appLoopHandle;
+  const nodeRuntimeSlot = getNodeRuntimeSlotOpaqueWriteGuidance(node, subject, kinds);
+  if (nodeRuntimeSlot) return nodeRuntimeSlot;
   const commandValue = getCommandPropertyInputOpaqueValueGuidance(node, subject, kinds);
   if (commandValue) return commandValue;
   const materializationTraits = getSceneDocumentMaterializationOpaqueTraitsGuidance(node, subject, kinds);
@@ -1041,6 +1043,62 @@ function getCommandPropertyInputOpaqueValueGuidance(
     return undefined;
   }
   return `${subject} is the caller-provided after-side of a heterogeneous node-property command. createSetNodePropertyCommandBatch retains each value unchanged as CommandPropertyEntry.after while readNodeProperty captures the matching before value from the same target and property. CommandHistory stores that plain command; merging preserves the original before and newest after only when target and property identity match; execute and redo write after back to that property, while undo writes before. No command-core consumer inspects, coerces, serializes, or interprets either value. Relative to generic command history this is genuinely opaque identity transport, so record a reviewed source-portability exception for this exact parameter property while values return only to their originating node property and do not enter portable persistence or cross-property interpretation. If portable histories support a bounded property set, replace unknown with one named closed CommandPropertyValue domain or property-discriminated entry arms shared by the single and batch constructors, CommandPropertyEntry.before and after, the reader and writer, merging, and every consumer. This exception records value erasure only: it does not prove indexed storage on NodeAny or justify the double assertions in readNodeProperty and writeNodeProperty; use a typed property-access capability or an owner with a declared index signature for that separate boundary. The compiler will not infer a property-indexed union, choose a target-specific Any carrier, retain or insert a cast, copy or materialize the value, serialize it, or change its identity.`;
+}
+
+function getNodeRuntimeSlotOpaqueWriteGuidance(
+  node: ts.PropertySignature,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    subject !== 'function:initializeNode/property:computed' ||
+    !hasOnlyUnknown(kinds) ||
+    node.questionToken === undefined ||
+    node.type?.kind !== ts.SyntaxKind.UnknownKeyword ||
+    !ts.isComputedPropertyName(node.name) ||
+    !ts.isIdentifier(node.name.expression) ||
+    node.name.expression.text !== 'EntityRuntimeKey' ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/node/src/node.ts')
+  ) {
+    return undefined;
+  }
+  const view = node.parent;
+  if (!ts.isTypeLiteralNode(view) || view.members.length !== 1) return undefined;
+  const assertion = view.parent;
+  if (
+    !ts.isAsExpression(assertion) ||
+    assertion.type !== view ||
+    !ts.isIdentifier(assertion.expression) ||
+    assertion.expression.text !== 'node'
+  ) {
+    return undefined;
+  }
+  let assertedUse: ts.Expression = assertion;
+  while (ts.isParenthesizedExpression(assertedUse.parent) && assertedUse.parent.expression === assertedUse) {
+    assertedUse = assertedUse.parent;
+  }
+  const access = assertedUse.parent;
+  if (
+    !ts.isElementAccessExpression(access) ||
+    access.expression !== assertedUse ||
+    !ts.isIdentifier(access.argumentExpression) ||
+    access.argumentExpression.text !== 'EntityRuntimeKey'
+  ) {
+    return undefined;
+  }
+  const assignment = access.parent;
+  if (
+    !ts.isBinaryExpression(assignment) ||
+    assignment.left !== access ||
+    assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !ts.isCallExpression(assignment.right) ||
+    !ts.isIdentifier(assignment.right.expression) ||
+    assignment.right.expression.text !== 'runtimeFactory' ||
+    assignment.right.arguments.length !== 0
+  ) {
+    return undefined;
+  }
+  return `${subject} erases the computed EntityRuntimeKey cell to optional unknown only for the direct runtimeFactory() write into the existing node owner. That local asserted view discards the exact relation already declared by Node<Traits>[EntityRuntimeKey]: NodeRuntime<Traits> | undefined: Runtime extends NodeRuntime<Traits>, the selected NodeRuntimeFactory<Runtime> produces the written value, allocateEntity created this same owner, and getNodeRuntime reads the same slot. Replace the unknown view with a direct typed node[EntityRuntimeKey] = runtimeFactory() assignment or one named generic runtime-slot setter whose owner, value, and return types preserve that relation. If generic mapped-type or intersection inference rejects the direct write, repair that relation in semantic lowering rather than weakening the source carrier to unknown. A reviewed source-portability exception is not justified because no opaque provider payload crosses this boundary. The compiler will preserve the exact node owner, computed slot, and runtime subtype, but will not choose a target-specific Any carrier, retain or insert a cast, copy or materialize the node or runtime, or add side storage.`;
 }
 
 function getHostAppLoopOpaqueHandleGuidance(

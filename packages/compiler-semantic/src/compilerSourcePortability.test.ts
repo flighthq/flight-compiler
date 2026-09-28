@@ -1253,6 +1253,130 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(1);
   });
 
+  it('keeps initializeNode runtime installation on its declared computed slot', () => {
+    const declarations = `declare const EntityRuntimeKey: unique symbol;
+       interface NodeRuntime<Traits extends object> { readonly traits?: Traits }
+       interface Node<Traits extends object> {
+         [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+       }
+       type EntityConstruction<Value> = { -readonly [Key in keyof Value]: Value[Key] };
+       type NodeRuntimeFactory<Runtime> = () => Runtime;`;
+    const opaque = input(
+      'packages/node/src/node.ts',
+      `${declarations}
+       function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+         node: EntityConstruction<Node<Traits>>,
+         runtimeFactory: NodeRuntimeFactory<Runtime>,
+       ): void {
+         (node as { [EntityRuntimeKey]?: unknown })[EntityRuntimeKey] = runtimeFactory();
+       }`,
+    );
+    const closed = input(
+      'packages/node/src/node.ts',
+      `${declarations}
+       function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+         node: EntityConstruction<Node<Traits>>,
+         runtimeFactory: NodeRuntimeFactory<Runtime>,
+       ): void {
+         node[EntityRuntimeKey] = runtimeFactory();
+       }`,
+    );
+    const controls = [
+      input(
+        'packages/node/src/otherNode.ts',
+        `${declarations}
+         function initializeNode(node: Node<object>, runtimeFactory: () => NodeRuntime<object>): void {
+           (node as { [EntityRuntimeKey]?: unknown })[EntityRuntimeKey] = runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/other/src/node.ts',
+        `${declarations}
+         function initializeNode(node: Node<object>, runtimeFactory: () => NodeRuntime<object>): void {
+           (node as { [EntityRuntimeKey]?: unknown })[EntityRuntimeKey] = runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeOtherNode(node: Node<object>, runtimeFactory: () => NodeRuntime<object>): void {
+           (node as { [EntityRuntimeKey]?: unknown })[EntityRuntimeKey] = runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode(out: Node<object>, runtimeFactory: () => NodeRuntime<object>): void {
+           (out as { [EntityRuntimeKey]?: unknown })[EntityRuntimeKey] = runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode(node: Node<object>, runtimeFactory: () => NodeRuntime<object>): void {
+           (node as { [EntityRuntimeKey]: unknown })[EntityRuntimeKey] = runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode(node: Node<object>, runtimeFactory: () => NodeRuntime<object>): void {
+           (node as { [EntityRuntimeKey]?: any })[EntityRuntimeKey] = runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode(node: Node<object>, runtimeFactory: () => NodeRuntime<object>): void {
+           (node as { [EntityRuntimeKey]?: unknown; ready?: boolean })[EntityRuntimeKey] = runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode(
+           node: Node<object>,
+           runtimeFactory: () => NodeRuntime<object>,
+           runtime: NodeRuntime<object>,
+         ): void {
+           (node as { [EntityRuntimeKey]?: unknown })[EntityRuntimeKey] = runtime;
+           void runtimeFactory;
+         }`,
+      ),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected an opaque computed runtime-slot finding');
+
+    expect(report.findings).toMatchObject([
+      {
+        rule: 'opaque-value-domain',
+        subject: 'function:initializeNode/property:computed',
+      },
+    ]);
+    expect(finding.message).toContain('direct runtimeFactory() write into the existing node owner');
+    expect(finding.message).toContain('Node<Traits>[EntityRuntimeKey]: NodeRuntime<Traits> | undefined');
+    expect(finding.message).toContain('Runtime extends NodeRuntime<Traits>');
+    expect(finding.message).toContain('allocateEntity created this same owner');
+    expect(finding.message).toContain('getNodeRuntime reads the same slot');
+    expect(finding.message).toContain('direct typed node[EntityRuntimeKey] = runtimeFactory() assignment');
+    expect(finding.message).toContain('repair that relation in semantic lowering');
+    expect(finding.message).toContain('reviewed source-portability exception is not justified');
+    expect(finding.message).toContain('target-specific Any carrier');
+    expect(finding.message).toContain('retain or insert a cast');
+    expect(finding.message).toContain('copy or materialize the node or runtime');
+    expect(finding.message).toContain('side storage');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message }) => !message.includes('direct runtimeFactory() write into the existing node owner'),
+        ),
+      ).toBe(true);
+    }
+  });
+
   it('preserves animation target and marker payloads as exact domain-owned references', () => {
     const target = input(
       'packages/types/src/AnimationChannel.ts',
