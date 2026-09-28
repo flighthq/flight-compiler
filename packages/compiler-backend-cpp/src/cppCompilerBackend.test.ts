@@ -18989,6 +18989,82 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('static_cast');
   });
 
+  it('refuses to copy an optional-parameter decoder into a zero-argument nullable factory', () => {
+    const result = lower(
+      'swfDefineMorphShapeHandler.ts',
+      `interface Diagnostic { readonly message: string }
+       interface MorphShape { readonly id: number }
+       interface State {
+         readonly diagnostics: Diagnostic[];
+         readonly morphShapes: Map<number, () => MorphShape | null>;
+       }
+       function decodeMorph(diagnostics?: Diagnostic[]): MorphShape | null {
+         return diagnostics === undefined ? null : { id: 1 };
+       }
+       export function register(state: State, characterId: number): void {
+         const decode = (diagnostics?: Diagnostic[]): MorphShape | null => decodeMorph(diagnostics);
+         if (decode(state.diagnostics) === null) return;
+         state.morphShapes.set(characterId, decode);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-callable-owner-preserving-adapter-unrepresented',
+    });
+    // Both sides return the same optional MorphShape owner; only the callable owners differ. The local
+    // is invoked once with diagnostics before it is stored, so treating it as a stateless declaration is
+    // unsound: a value-capturing wrapper duplicates callable state and a reference wrapper would dangle.
+    expect(failure.message).toContain(
+      'std::function<std::optional<flight::Ref<MorphShape>>(std::optional<flight::Array<flight::Ref<Diagnostic>>>)>',
+    );
+    expect(failure.message).toContain('std::function<std::optional<flight::Ref<MorphShape>>()>');
+    expect(failure.message).toContain('A value-capturing adapter would copy callable state');
+    expect(failure.message).toContain("Give the stored callback the destination's exact parameter list");
+
+    const portable = lower(
+      'swfDefineMorphShapeHandlerPortable.ts',
+      `interface Diagnostic { readonly message: string }
+       interface MorphShape { readonly id: number }
+       interface State {
+         readonly diagnostics: Diagnostic[];
+         readonly morphShapes: Map<number, () => MorphShape | null>;
+       }
+       function decodeMorph(diagnostics?: Diagnostic[]): MorphShape | null {
+         return diagnostics === undefined ? null : { id: 1 };
+       }
+       export function register(state: State, characterId: number): void {
+         if (decodeMorph(state.diagnostics) === null) return;
+         const decode = (): MorphShape | null => decodeMorph();
+         state.morphShapes.set(characterId, decode);
+       }`,
+    );
+    const contents = emitIrModuleCpp(portable.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(portable.diagnostics).toEqual([]);
+    expect(contents).toContain(
+      'std::function<std::optional<flight::Ref<MorphShape>>()> decode = [=]() -> std::optional<flight::Ref<MorphShape>>',
+    );
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('make_structural_ref');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-swf-morph-callable-'));
+      const header = path.join(directory, 'swf_morph_callable.hpp');
+      try {
+        writeFileSync(header, contents, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('attributes a callable the destination cannot call to the signature, not to a value domain', () => {
     const refusal = (file: string, source: string) =>
       captureBackendEmissionFailure(() =>
