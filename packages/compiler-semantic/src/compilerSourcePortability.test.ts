@@ -1965,6 +1965,71 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(17);
   });
 
+  it('keeps Tiled JSON erasure confined behind parser normalization', () => {
+    const opaque = input(
+      'packages/tilemap-formats/src/tiledJsonParse.ts',
+      'type JsonObject = Record<string, unknown>;',
+    );
+    const closed = input(
+      'packages/tilemap-formats/src/tiledJsonParse.ts',
+      `type TiledJsonPrimitive = boolean | number | string | null;
+       type TiledJsonValue = TiledJsonPrimitive | TiledJsonObject | readonly TiledJsonValue[];
+       type TiledJsonObject = Readonly<Record<string, TiledJsonValue>>;`,
+    );
+    const renamed = input('packages/tilemap-formats/src/otherParse.ts', 'type JsonObject = Record<string, unknown>;');
+    const sameBasename = input('packages/other/src/tiledJsonParse.ts', 'type JsonObject = Record<string, unknown>;');
+    const unrelated = input(
+      'packages/tilemap-formats/src/tiledJsonParse.ts',
+      'type ExtensionObject = Record<string, unknown>;',
+    );
+    const anyRecord = input('packages/tilemap-formats/src/tiledJsonParse.ts', 'type JsonObject = Record<string, any>;');
+    const readonlyRecord = input(
+      'packages/tilemap-formats/src/tiledJsonParse.ts',
+      'type JsonObject = Readonly<Record<string, unknown>>;',
+    );
+
+    const report = analyzeTypeScriptSourcePortability([opaque]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected an opaque Tiled JSON finding');
+
+    expect(report.findings).toMatchObject([{ rule: 'opaque-value-domain', subject: 'type:JsonObject' }]);
+    expect(finding.message).toContain('untrusted Tiled TMJ/TSJ JSON ingress');
+    expect(finding.message).toContain('parseJson is the sole producer');
+    expect(finding.message).toContain('JSON.parse');
+    expect(finding.message).toContain('non-array object');
+    expect(finding.message).toContain('layer data becomes a Uint32Array');
+    expect(finding.message).toContain('closed TiledProperty scalar domain');
+    expect(finding.message).toContain('typed TiledMap and TiledTileset values');
+    expect(finding.message).toContain('reviewed source-portability exception for this exact alias');
+    expect(finding.message).toContain('recursive named closed TiledJsonValue and TiledJsonObject domains');
+    expect(finding.message).toContain('will not assume that unknown contains only JSON values');
+    expect(finding.message).toContain('target-specific Any carrier');
+    expect(finding.message).toContain('insert a cast');
+    expect(finding.message).toContain('copy or materialize the parsed JSON');
+    expect(finding.message).toContain('bypass the existing validation path');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of [renamed, sameBasename, unrelated, anyRecord, readonlyRecord]) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('Replace it with a named closed value type');
+    }
+
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: [
+          {
+            findingIdentity: finding.identity,
+            reason: 'Tiled JSON members are guarded and normalized before typed asset or diagnostic output.',
+            rule: 'opaque-value-domain',
+          },
+        ],
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(1);
+  });
+
   it('requires Spine draw-order JSON to stay behind its storage normalizers', () => {
     const opaque = input(
       'packages/skeleton2d-formats/src/spineParse.ts',

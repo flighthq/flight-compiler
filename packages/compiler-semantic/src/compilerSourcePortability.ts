@@ -552,6 +552,8 @@ function renderOpaqueTypeAliasValueDomainMessage(
   if (residualFlightType) return residualFlightType;
   const logData = getFlightLogOpaqueValueGuidance(node, subject, kinds);
   if (logData) return logData;
+  const tiledJson = getTiledJsonOpaqueValueGuidance(node, subject, kinds);
+  if (tiledJson) return tiledJson;
   const pixiInput = getPixiParseOpaqueValueGuidance(node, subject, kinds);
   return pixiInput ?? renderOpaqueValueDomainMessage(subject, 'aliases', kinds);
 }
@@ -954,6 +956,13 @@ function isStringOrReadonlyUnknownRecord(node: ts.TypeNode): boolean {
   );
 }
 
+function isUnknownRecord(node: ts.TypeNode | undefined): boolean {
+  if (!node || !ts.isTypeReferenceNode(node) || getNodeName(node.typeName) !== 'Record') return false;
+  if (node.typeArguments?.length !== 2) return false;
+  const [key, value] = node.typeArguments;
+  return key?.kind === ts.SyntaxKind.StringKeyword && value?.kind === ts.SyntaxKind.UnknownKeyword;
+}
+
 function getTrayOpaqueErrorGuidance(
   node: ts.PropertySignature,
   subject: string,
@@ -1189,6 +1198,22 @@ function getTextureAtlasDetectionOpaqueValueGuidance(
     return `${subject} exposes unknown only while probing untrusted metadata for the format-producer string; the detector accepts it only after object and string guards and returns a closed string rather than the opaque value. For that detection-only contract, record a reviewed source-portability exception for this exact property and preserve the guards. If app begins crossing the detector boundary without validation, declare it in a named closed metadata-probe schema. The compiler will not infer an atlas schema from the runtime check, choose a target-specific Any carrier, insert a cast, or copy or materialize the parsed JSON.`;
   }
   return undefined;
+}
+
+function getTiledJsonOpaqueValueGuidance(
+  node: ts.TypeAliasDeclaration,
+  subject: string,
+  kinds: ReadonlySet<OpaqueTypeKind>,
+): string | undefined {
+  if (
+    subject !== 'type:JsonObject' ||
+    !hasOnlyUnknown(kinds) ||
+    !isUnknownRecord(node.type) ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/tilemap-formats/src/tiledJsonParse.ts')
+  ) {
+    return undefined;
+  }
+  return `${subject} aliases unknown values only at the untrusted Tiled TMJ/TSJ JSON ingress. parseJson is the sole producer: JSON.parse yields an erased value, and isJsonObject admits only a non-array object before the record crosses parser-helper boundaries. Every current member consumer then guards or normalizes the raw value: arrayField and objectField re-establish object structure; boolField, numField, strField, numOrString, and the enum normalizers produce closed scalars or defaults; layer data becomes a Uint32Array; and coercePropertyValue produces the closed TiledProperty scalar domain. Only typed TiledMap and TiledTileset values or fixed diagnostic details leave the parser. A reviewed source-portability exception for this exact alias is justified only while parseJson remains the sole producer, every raw member stays behind those guards and normalizers, and no JsonObject or unknown member is returned, retained, serialized, or placed in a diagnostic. If raw JSON must cross that boundary, declare recursive named closed TiledJsonValue and TiledJsonObject domains and validate the parsed root before transporting it. The compiler will not assume that unknown contains only JSON values, choose a target-specific Any carrier, insert a cast, copy or materialize the parsed JSON, or bypass the existing validation path.`;
 }
 
 function getLottieOpaquePayloadGuidance(
