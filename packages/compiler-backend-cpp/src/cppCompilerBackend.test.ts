@@ -3138,12 +3138,12 @@ describe('createCppCompilerBackend', () => {
     const typedSceneSkeleton = session.emitModule(modules[5]!)[0]!.contents;
     const typedSkinning = session.emitModule(modules[6]!)[0]!.contents;
 
-    // The two isMesh calls would need to construct an erased value for an ABI that accepts unknown. The
-    // skinning assertion uses the same erased marker inline. A widened row can retain a concrete Mesh
-    // owner, a custom geometry-bearing node owner, or only its projected schema, so selecting one nominal
-    // reference would lose valid source identities. Typed predicates keep that owner and narrow the row.
+    // The two isMesh calls would need to construct an erased value for an ABI that accepts unknown. A
+    // widened row can retain a concrete Mesh owner, a custom geometry-bearing node owner, or only its
+    // projected schema, so selecting one nominal reference would lose valid source identities. Typed
+    // predicates keep that owner and narrow the row.
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-    for (const failure of [sceneSkeleton, resourceReveal, skinning]) {
+    for (const failure of [sceneSkeleton, resourceReveal]) {
       expect(failure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
       expect(failure.classification).toBe('target-runtime');
       expect(failure.message).toContain(
@@ -3153,12 +3153,97 @@ describe('createCppCompilerBackend', () => {
         'for a structural capability probe, accept the source row type and inspect a Readonly<Partial<Target>> view before narrowing it',
       );
     }
+    // The skinning assertion crosses the same `unknown` marker but is not the erasure question: both
+    // sides are rows, so the re-view keeps the owner and asks only whether the capability travels.
+    // `scene` is a Readonly row and `Mesh` is not, and the runtime's row conversion never turns a readonly
+    // row into a writable one -- the source said its subject must not be mutated through it, and a
+    // conversion is not a place to change that answer. Emitting the cast would hand g++ a conversion the
+    // runtime's constraint rejects, so the assertion is what has to change: read through the readonly row,
+    // or declare the source writable where the object may really be mutated.
+    expect(skinning.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(skinning.classification).toBe('source-portability');
+    expect(skinning.message).toContain('a readonly row never becomes writable');
+    expect(skinning.message).toContain('Assert to the readonly row where the value is only read');
     expect(typedSceneSkeleton).toContain('flighthq_scene3d::is_mesh_node(node)');
     expect(typedSceneSkeleton).toContain('row_get<flight::RowKey<"materials">>(node)');
     expect(typedSceneSkeleton).not.toContain('flight::Any');
     expect(typedSkinning).toContain('is_mesh_node(scene)');
     expect(typedSkinning).toContain('prepare_mesh_skinning(scene);');
     expect(typedSkinning).not.toContain('flight::Any');
+  });
+
+  it('refuses a writable assertion over a readonly row while keeping the writable source case', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/runtime.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/consumer',
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/runtime.ts',
+            `export interface BaseRuntime { version: number }
+             export interface DerivedRuntime extends BaseRuntime { cache: number | null }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        source(
+          'consumer/src/readonlyCache.ts',
+          `import type { BaseRuntime, DerivedRuntime } from '@flighthq/types/contract';
+           export function cache(value: Readonly<BaseRuntime>): void {
+             const derived = value as DerivedRuntime;
+             derived.cache = 1;
+           }`,
+        ),
+        source(
+          'consumer/src/readonlyProbe.ts',
+          `import type { BaseRuntime } from '@flighthq/types/contract';
+           export function probe(value: Readonly<BaseRuntime>): Readonly<BaseRuntime & { extra: number }> {
+             return value;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const emitted = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // `flight-cpp`'s row conversion reads in one direction: `row_convertible_to` requires
+    // `!schema_readonly<From> || schema_readonly<To>`, and its own comment says why -- "a readonly row
+    // never becomes writable, because the source said its subject must not be mutated through it and a
+    // conversion is not a place to change that answer". Emitting the cast would hand g++ a conversion the
+    // constraint rejects, and emitting the readonly view instead is no better: a write through it is a
+    // static assertion failure ("a readonly structural row cannot be written") far from the assertion that
+    // asked. Both are checked, so the assertion is what has to change, and the refusal says how.
+    expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(refused.classification).toBe('source-portability');
+    expect(refused.message).toContain('a readonly row never becomes writable');
+    expect(refused.message).toContain('Assert to the readonly row where the value is only read');
+    // The same readonly boundary asserted to a READONLY row is the conversion the runtime accepts, so the
+    // refusal is scoped to the capability the assertion adds, not to readonly sources in general.
+    expect(emitted).toContain('flight::RowReadonly<');
+    expect(emitted).not.toContain('flight::RowWritable<');
+    expect(emitted).not.toContain('flight::Any');
   });
 
   it('reuses the pre-erasure row owner for the transform velocity child assertion', () => {
@@ -8266,7 +8351,7 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('return runtime->uid.value();');
   });
 
-  it('keeps structural interface casts as writable rows and constructs foreign anonymous fields', () => {
+  it('constructs foreign anonymous fields and refuses a readonly view asserted writable', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/runtime.ts',
       `export interface BaseRuntime { version: number }
@@ -8283,14 +8368,22 @@ describe('createCppCompilerBackend', () => {
       ts.ScriptTarget.Latest,
       true,
     );
-    const consumer = ts.createSourceFile(
+    // The two concerns live in separate modules so each keeps its own evidence: the readonly assertion
+    // refuses (see below), and the anonymous-field probe still emits and is asserted on what it emits.
+    const cacheSource = ts.createSourceFile(
       '/flight/packages/consumer/src/cache.ts',
       `import { runtime } from '@flighthq/host/contract';
-       import type { BaseRuntime, DerivedRuntime, Gradient } from '@flighthq/types/contract';
+       import type { BaseRuntime, DerivedRuntime } from '@flighthq/types/contract';
        export function cache(value: Readonly<BaseRuntime>): void {
          const derived = runtime(value) as DerivedRuntime;
          derived.cache = { value: 1 };
-       }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/consumer/src/gradient.ts',
+      `import type { Gradient } from '@flighthq/types/contract';
        export function gradient(values: readonly number[]): Gradient {
          const keys = values.map((value) => ({ time: 0, color: { r: value, g: value, b: value } }));
          return { keys };
@@ -8315,22 +8408,25 @@ describe('createCppCompilerBackend', () => {
       [
         { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
         { packageName: '@flighthq/host', sourceFile: host, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/consumer', sourceFile: cacheSource, upstreamDirectory: '/flight' },
         { packageName: '@flighthq/consumer', sourceFile: consumer, upstreamDirectory: '/flight' },
       ],
       moduleResolution,
     ).map((result) => result.module);
-    const emitted = createCppCompilerBackend().createEmissionSession!({
+    const session = createCppCompilerBackend().createEmissionSession!({
       moduleResolution,
       modules,
       options: { runtimeProfile: 'flight-cpp' },
-    }).emitModule(modules[2]!)[0]!.contents;
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const emitted = session.emitModule(modules[3]!)[0]!.contents;
 
-    expect(emitted).toContain(
-      'flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<flighthq_types::DerivedRuntime>>>> derived = flight::structural_ref_cast',
-    );
-    expect(emitted).toMatch(
-      /flight::row_set<flight::RowKey<"cache">>\(derived, flight::make_ref<flighthq_types::value_[0-9a-f]{16}>/u,
-    );
+    // `runtime` hands back a Readonly view, so `as DerivedRuntime` is a readonly row asserted writable --
+    // the conversion `row_convertible_to` refuses, and the one whose write would then trip "a readonly
+    // structural row cannot be written" if the view were kept instead. The assertion is the thing that
+    // has to change, so the module refuses and names the two rewrites rather than emitting either.
+    expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(refused.classification).toBe('source-portability');
     expect(emitted).not.toMatch(/struct value_[0-9a-f]{16}/u);
     expect(emitted).toContain('return flight::make_ref<flighthq_types::Key>');
     expect(emitted).toMatch(/flight::make_ref<flighthq_types::r_g_b_[0-9a-f]{16}>/u);
@@ -33230,7 +33326,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
                return null;
              }
              export function getNodeRoot<Traits extends object>(
-               source: Readonly<Node<Traits>>,
+               source: NodeOf<Traits>,
              ): NodeOf<Traits> {
                return source as NodeOf<Traits>;
              }`,
@@ -34217,16 +34313,24 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       moduleResolution,
     );
     const modules = results.map((result) => result.module);
-    const emitted = createCppCompilerBackend().createEmissionSession!({
-      moduleResolution,
-      modules,
-      options: { runtimeProfile: 'flight-cpp' },
-    }).emitModule(modules[1]!)[0]!.contents;
+    const failure = captureBackendEmissionFailure(() =>
+      createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules,
+        options: { runtimeProfile: 'flight-cpp' },
+      }).emitModule(modules[1]!),
+    );
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-    expect(emitted).toContain('get_node_ancestors');
-    expect(emitted).toContain('get_node_parent<Traits>(current.value())');
-    expect(emitted).not.toContain('flight::Any');
+    // Both accessors re-assert a Readonly row as the mutable `NodeOf`/`Node` row, so the module refuses
+    // before the parent reassignment is reached: the runtime's `row_convertible_to` never turns a readonly
+    // row writable, and keeping the readonly view instead would turn the write into a static assertion
+    // failure. That costs this case the reassignment lowering it was written for; the shape has to declare
+    // its source writable first, and a writable `NodeOf` source is not a drop-in here -- reading its
+    // `string | null` member has no absence channel in that storage, which is a separate gap.
+    expect(failure.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('a readonly row never becomes writable');
   });
 
   it('returns the concrete overload result from findNodeByName', () => {

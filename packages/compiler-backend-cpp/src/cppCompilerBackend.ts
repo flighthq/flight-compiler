@@ -4046,6 +4046,30 @@ function emitExpression(
           !structuralSource && structuralSourceType
             ? getCppStructuralProjectionRowCpp(structuralSourceType, context)
             : undefined;
+        // The runtime's row conversion reads in one direction only: "a readonly row never becomes writable,
+        // because the source said its subject must not be mutated through it and a conversion is not a place
+        // to change that answer". The capability belongs to the boundary the value came through, not to the
+        // assertion, so an `as unknown as` marker cannot reopen it either, and the `structural_ref_cast`
+        // either return below would emit is one the runtime's converting constructor rejects. The
+        // owner-proof exemption keeps a writable row CONSTRUCTION (the carrier its own writes fill in) off
+        // the member-widening proof, which is a different question from capability, so this check belongs
+        // ahead of both returns rather than beside that exemption.
+        const capabilityTargetRow = structuralProjectionTarget ?? structuralTarget!;
+        const capabilitySourceRow = sourceProjection ?? structuralSource;
+        if (
+          capabilitySourceRow &&
+          isCppStructuralRowSchemaReadonlyCpp(capabilitySourceRow) &&
+          !isCppStructuralRowSchemaReadonlyCpp(capabilityTargetRow)
+        ) {
+          const readonlySourceName = structuralSourceType
+            ? describeIrTypeForDiagnosticCpp(structuralSourceType)
+            : 'source';
+          emissionError(
+            context,
+            `a structural assertion from the readonly row ${readonlySourceName} to the writable row ${describeIrTypeForDiagnosticCpp(expression.type)} claims mutation the source refused: a readonly row never becomes writable, because the boundary the value came through said its subject must not be mutated through it, and no cast, copy, or re-view can carry a capability the source withheld. Assert to the readonly row where the value is only read, or declare the source -- its parameter, slot, or accessor result -- as the writable type where that object may really be mutated`,
+            'cpp-structural-assertion-writable-capability-unproven',
+          );
+        }
         if (sourceProjection) {
           const projectionSource = getCppStructuralRowObjectTypeCpp(sourceProjection);
           const projectionTargetObject = getCppStructuralRowObjectTypeCpp(
@@ -5753,6 +5777,24 @@ function isCppStructuralRowPartialPlanCpp(row: Readonly<CompilerCppStructuralRow
     case 'merge':
       return row.rows.some((member) => isCppStructuralRowPartialPlanCpp(member));
     default:
+      return false;
+  }
+}
+
+// The runtime's own capability trait, mirrored: `RowReadonly` is readonly, `RowWritable`, `RowOf`, and
+// `RowMerge` are writable, and `RowPartial`/`RowRequired` answer for the row they wrap. It is deliberately
+// not "contains a readonly row anywhere" -- `RowWritable<RowReadonly<Row>>` is writable to the runtime --
+// because that difference is the whole question a re-viewing assertion asks.
+function isCppStructuralRowSchemaReadonlyCpp(row: Readonly<CompilerCppStructuralRowPlan>): boolean {
+  switch (row.kind) {
+    case 'readonly':
+      return true;
+    case 'partial':
+    case 'required':
+      return isCppStructuralRowSchemaReadonlyCpp(row.row);
+    case 'merge':
+    case 'rowOf':
+    case 'writable':
       return false;
   }
 }
@@ -27727,6 +27769,7 @@ const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-empty-array-element-type-unproven',
   'cpp-logical-or-present-domain-unproven',
   'cpp-object-create-record-context-required',
+  'cpp-structural-assertion-writable-capability-unproven',
   'cpp-structural-assertion-owner-unproven',
   'cpp-structural-variant-assertion-without-nominal-storage',
 ]);
