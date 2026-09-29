@@ -30873,6 +30873,27 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted).toContain('}, std::nullopt)');
   });
 
+  it('materializes omitted optional arguments through optional callable invocations', () => {
+    const result = lower(
+      'omitted-optional-call-arguments.ts',
+      `interface Hooks {
+         readonly ready?: (attempt?: number) => number;
+         readonly close?: (reason?: string) => void;
+       }
+       export function ready(callback: ((attempt?: number) => number) | undefined): number | undefined {
+         return callback?.();
+       }
+       export function close(hooks: Hooks): void { hooks.close?.(); }
+       export function closeWithReason(hooks: Hooks, reason: string): void { hooks.close?.(reason); }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.match(/optional_chain_receiver\.value\(\)\(std::nullopt\)/gu)).toHaveLength(2);
+    expect(emitted).toContain('optional_chain_receiver.value()(reason)');
+    expect(emitted).not.toContain('optional_chain_receiver.value()()');
+  });
+
   it('does not invent an absent carrier for an omitted required callable-member argument', () => {
     const result = lower(
       'omitted-required-callable-member-argument.ts',

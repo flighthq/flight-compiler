@@ -26843,7 +26843,11 @@ function emitOptionalCallExpressionCpp(
   }
   const valueType = emitOptionalChainPayloadIrTypeCpp(semantics.valueType, context);
   const callee = emitOptionalChainReceiverCpp(expression.callee, context);
-  const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context)).join(', ');
+  const arguments_ = appendCppOmittedInvocationArguments(
+    expression,
+    expression.arguments.map((argument) => emitExpression(argument, context)),
+    context,
+  ).join(', ');
   const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
   const invocation = getCppCallableObjectIrTypeCpp(receiverType, context, new Set())
     ? `(*optional_chain_receiver.value())(${arguments_})`
@@ -26933,7 +26937,14 @@ function emitOptionalPropertyCallExpressionCpp(
     );
   const receiver = emitOptionalChainReceiverCpp(callee.object, context);
   const memberOperator = hasFlightReferenceRepresentationCpp(receiverType, context) ? '->' : '.';
-  const arguments_ = expression.arguments.map((argument) => emitExpression(argument, context)).join(', ');
+  // Optional invocation changes whether the callee runs, not the callee's parameter ABI. Its present
+  // branch therefore uses the same omitted-argument completion as a direct call; otherwise a source
+  // `fn?.()` attempts to call `std::function<void(std::optional<T>)>` with no C++ argument at all.
+  const arguments_ = appendCppOmittedInvocationArguments(
+    expression,
+    expression.arguments.map((argument) => emitExpression(argument, context)),
+    context,
+  ).join(', ');
   // The member is spelled the same way here as everywhere else. This path wrote `safeCppName` of the
   // source name directly, so an ambient member reached through an optional chain kept its TypeScript
   // spelling -- `url.split('.').pop()?.toLowerCase()` emitted `to_lower_case` while the identical call
