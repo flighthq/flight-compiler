@@ -9442,6 +9442,94 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  it('requires an exact runtime binding for the ArrayLike indexed-collection domain', () => {
+    const result = lower(
+      'ArrayLikeCollections.ts',
+      `export interface AnimationTrack {
+         times: ArrayLike<number>;
+         values: ArrayLike<number>;
+       }
+       export interface GltfAccessorData {
+         count: number;
+         data: ArrayLike<number>;
+       }
+       export interface GltfImportOptions {
+         externalBuffers?: Readonly<Record<string, ArrayLike<number>>>;
+       }
+       export interface LayoutTree { readonly nodeCount: number }
+       export type LayoutResolver = (
+         out: Float32Array,
+         tree: Readonly<LayoutTree>,
+         intrinsicSizes: ArrayLike<number>,
+         parentIndex: number,
+         childIndex: number,
+       ) => string | null;`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/indexed_view.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'ArrayLike',
+          space: 'type' as const,
+          targetName: 'host::IndexedReadView',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: ArrayLike[type]');
+    expect(failure.message).toContain(
+      'ArrayLike is a read-only indexed collection domain rather than a concrete array owner',
+    );
+    expect(failure.message).toContain('one externalBindings entry for the exact type-space source symbol');
+    expect(failure.message).toContain('stable generic target view');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('preserve the element type, length and numeric-index relation, ordering');
+    expect(failure.message).toContain('caller-owned backing through animation track storage');
+    expect(failure.message).toContain('glTF accessor and external-buffer inputs');
+    expect(failure.message).toContain('layout intrinsic-size calls');
+    expect(failure.message).toContain('does not permit materializing a vector or replacement array');
+    expect(failure.message).toContain('adding mutation not present in the source contract');
+    expect(failure.message).toContain('erasing the element type into Any');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('host::IndexedReadView<double> times;');
+    expect(contents).toContain('host::IndexedReadView<double> values;');
+    expect(contents).toContain('host::IndexedReadView<double> data;');
+    expect(contents).toContain('using LayoutResolver = std::function<');
+    expect(contents).toContain(', host::IndexedReadView<double>, double, double)>;');
+    expect(contents.match(/host::IndexedReadView<double>/gu)).toHaveLength(5);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify the ArrayBufferLike backing domain as an ArrayLike indexed collection', () => {
+    const result = lower('ArrayBufferLikeOnly.ts', 'export type RuntimeBacking = ArrayBufferLike;');
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: ArrayBufferLike[type])',
+    );
+    expect(failure.message).not.toContain(
+      'ArrayLike is a read-only indexed collection domain rather than a concrete array owner',
+    );
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',

@@ -29630,10 +29630,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const arrayBufferLikeRemediation = renderMissingArrayBufferLikeBindingRemediationCpp(
     completeness.missingExternalSymbols,
   );
+  const arrayLikeRemediation = renderMissingArrayLikeBindingRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -29771,6 +29772,14 @@ function renderMissingArrayBufferLikeBindingRemediationCpp(
   );
   if (!hasArrayBufferLike) return '';
   return ` ArrayBufferLike is the target-runtime backing-store domain for typed-array and data-view owners. Add one externalBindings entry for the exact type-space source symbol, with its stable target domain carrier, required headers, and truthful ownership and nullability; preserve the full permitted backing-store alternative set and the original buffer owner, byte range, typed-array element kind, and zero-copy sharing through geometry data-view caches and physics ABI command and readback buffers. A manifest entry names the represented runtime domain; it does not permit narrowing every backing to ArrayBuffer, copying into replacement storage, erasing the element or view contract into Any, void-pointer erasure, native-pointer casts or reinterpretation, or side storage.`;
+}
+
+function renderMissingArrayLikeBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasArrayLike = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'ArrayLike');
+  if (!hasArrayLike) return '';
+  return ` ArrayLike is a read-only indexed collection domain rather than a concrete array owner. Add one externalBindings entry for the exact type-space source symbol, with its stable generic target view, required headers, and truthful ownership and nullability; preserve the element type, length and numeric-index relation, ordering, and caller-owned backing through animation track storage, glTF accessor and external-buffer inputs, and layout intrinsic-size calls. A manifest entry names the represented runtime view; it does not permit materializing a vector or replacement array, adding mutation not present in the source contract, erasing the element type into Any, native-pointer casts or reinterpretation, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {
