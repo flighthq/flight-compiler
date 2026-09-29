@@ -20048,21 +20048,56 @@ int main() {
     expect(emitted.contents).not.toContain('const flight::Ref<Counter> counter');
   });
 
-  it('recovers an owning reference when a class returns or compares this', () => {
-    const result = lower(
-      'self.ts',
-      `export class Chain {
-         self(): Chain { return this; }
-         same(other: Chain): boolean { return this === other; }
-       }
-       export function create(): Chain { return new Chain().self(); }`,
-    );
-    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+  it('refuses a receiver that would have to become the reference that declares it', () => {
+    // This test previously pinned `flight::ref_from_this(*this)`, an emission that cannot compile: the
+    // pinned runtime has no such member (g++: 'ref_from_this' is not a member of 'flight'), and the
+    // this-typed form was rejected just as firmly ('could not convert ... Counter* to
+    // flight::Ref<Counter>'). Nothing sound is available to put there -- flight::Ref is a shared
+    // pointer, the runtime exposes no enable_shared_from_this and no object-to-reference conversion,
+    // and make_ref only ever allocates a different object -- so the receiver as a reference is refused
+    // rather than approximated, and attributed to the runtime contract it needs.
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('self.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
 
-    expect(emitted.contents).toContain('struct Chain : public flight::ReferenceEnabled');
-    expect(emitted.contents).toContain('return flight::ref_from_this(*this)');
-    expect(emitted.contents).toContain('(flight::ref_from_this(*this) == other)');
-    expect(emitted.contents).toContain('flight::make_ref<Chain>()->self()');
+    // A class returning its own receiver through the class name.
+    const named = refusal(`export class Chain { self(): Chain { return this; } }
+       export function create(): Chain { return new Chain().self(); }`);
+    expect(named.rule).toBe('cpp-receiver-reference-unavailable');
+    expect(named.classification).toBe('target-runtime');
+    expect(named.message).toContain('no conversion from an object to the reference that owns it');
+    expect(named.message).toContain('Take the receiver as a parameter');
+
+    // The same method declared with a `this` return type, which is the polymorphic form.
+    expect(
+      refusal(`export class Counter { private n: number = 0; bump(): this { this.n += 1; return this; } }`).rule,
+    ).toBe('cpp-receiver-reference-unavailable');
+
+    // Through an interface the class implements: the expected type is a reference too, and the
+    // conversion it would need is the same one.
+    expect(
+      refusal(`export interface Node2 { readonly v: number }
+       export class Impl implements Node2 { readonly v: number = 0; me(): Node2 { return this; } }`).rule,
+    ).toBe('cpp-receiver-reference-unavailable');
+
+    // The controls that keep this about the receiver-as-reference and not about receivers: reading
+    // through the receiver, mutating through it, and returning a reference that arrived as a parameter
+    // all still emit, and none of them mentions the symbol the runtime does not have.
+    const controls = lower(
+      'controls.ts',
+      `export class Box {
+         private n: number = 0;
+         pick(other: Box): Box { return other; }
+         read(): number { return this.n; }
+         bump(): void { this.n += 1; }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(controls.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain('return other;');
+    expect(emitted).toContain('return this->n;');
+    expect(emitted).toContain('this->n += 1.0');
+    expect(emitted).not.toContain('ref_from_this');
   });
 
   it('evaluates nullable property receivers once and safely projects indexed values', () => {
@@ -31917,15 +31952,19 @@ Resolver make_resolver(TextureRef texture) {
   });
 
   it('emits this return type as class name in class context', () => {
+    // The return type keeps its meaning: `this` names the declaring class, so it emits as a reference
+    // to it. The body returns a reference that arrived as a parameter rather than the receiver itself,
+    // which is the only form that can be produced -- returning the receiver is refused with
+    // cpp-receiver-reference-unavailable, because the runtime has no conversion to it.
     const result = lower(
       'this-type.ts',
       `export class Builder {
         value: number = 0;
-        set(n: number): this { this.value = n; return this; }
+        merge(other: Builder): this { return other; }
       }`,
     );
     const emitted = emitIrModuleCpp(result.module);
-    expect(emitted.contents).toContain('Builder set(');
+    expect(emitted.contents).toContain('Builder merge(');
   });
 
   it('skips non-super statements before extracting super call', () => {

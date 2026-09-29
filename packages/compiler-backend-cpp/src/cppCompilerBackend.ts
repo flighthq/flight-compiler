@@ -5093,12 +5093,26 @@ function emitExpression(
       ) {
         emissionError(context, 'Proxy values require exact structural write-proxy construction');
       }
+      // A receiver that has to become a reference cannot: `flight::Ref` is a shared pointer, and the
+      // pinned runtime exposes no way back from an object to the reference that owns it -- no
+      // `enable_shared_from_this`, no conversion helper, and `make_ref` only ever allocates a new one.
+      // Emitting the conversion anyway named a function the runtime does not have
+      // ('ref_from_this' is not a member of 'flight'), and emitting the raw receiver where a reference
+      // is expected does not convert either. Both are refused rather than approximated, because no
+      // representation-preserving lowering can produce this value without copying the object or
+      // inventing storage for its owner.
       if (
         expression.reference.kind === 'this' &&
-        expectedType &&
-        hasFlightReferenceRepresentationCpp(expectedType, context)
+        expectedType !== undefined &&
+        (hasFlightReferenceRepresentationCpp(expectedType, context) ||
+          (expectedType.kind === 'unknown' && expectedType.source === 'this'))
       ) {
-        return 'flight::ref_from_this(*this)';
+        emissionError(
+          context,
+          'the receiver cannot become the reference that declares it: flight::Ref is a shared pointer and the pinned flight-cpp runtime exposes no conversion from an object to the reference that owns it, so no representation-preserving lowering can produce this value. Take the receiver as a parameter, or carry the reference it was reached through, instead of returning the receiver itself',
+          'cpp-receiver-reference-unavailable',
+          'target-runtime',
+        );
       }
       if (
         expression.reference.kind === 'binding' &&
