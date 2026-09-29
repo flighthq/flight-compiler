@@ -29626,10 +29626,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const abortHandleRemediation = renderMissingAbortHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   const canvasHandleRemediation = renderMissingCanvasHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   const streamHandleRemediation = renderMissingStreamHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
+  const blobHandleRemediation = renderMissingBlobHandleBindingRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -29749,6 +29750,14 @@ function renderMissingStreamHandleBindingsRemediationCpp(
     .map((identity) => identity.sourceName);
   if (handles.length === 0) return '';
   return ` Web stream endpoint handles ${handles.join(', ')} are host-owned stateful identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; preserve the readable or writable direction, element contract, ordering and backpressure, and lock and close lifecycle, and reuse the same endpoint carrier through file-system returns, process standard I/O, and transport boundaries. A manifest entry names the represented runtime carrier; it does not permit replacing a stream with an eager buffer or array, collapsing the endpoint direction, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing a replacement stream, or side storage.`;
+}
+
+function renderMissingBlobHandleBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasBlob = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'Blob');
+  if (!hasBlob) return '';
+  return ` Blob is a host-owned immutable binary object identity. Add one externalBindings entry for the exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; preserve the same Blob owner, byte sequence, media type, and size through file-system results, object-URL creation, and network response unions, including their exact null, string, and unknown alternatives. A manifest entry names the represented runtime carrier; it does not permit replacing Blob with a string or eager byte array, collapsing a response union or erasing its Blob arm into Any, void-pointer erasure, native-pointer casts or reinterpretation, copying or materializing a replacement Blob, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

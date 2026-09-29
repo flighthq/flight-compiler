@@ -9282,6 +9282,66 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain('Web stream endpoint handles');
   });
 
+  it('requires an exact runtime binding for the Blob object identity', () => {
+    const result = lower(
+      'BlobHandles.ts',
+      `export interface CapacitorFilesystemReadResult { data: Blob | string }
+       export interface HostVideoCapability { createObjectUrl?(data: Blob): string }
+       export type NetResponseBody = string | unknown | ArrayBuffer | Blob | null;`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/blob.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'Blob',
+          space: 'type' as const,
+          targetName: 'host::Blob',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: Blob[type]');
+    expect(failure.message).toContain('Blob is a host-owned immutable binary object identity');
+    expect(failure.message).toContain('one externalBindings entry for the exact type-space source symbol');
+    expect(failure.message).toContain('stable target wrapper');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('preserve the same Blob owner, byte sequence, media type, and size');
+    expect(failure.message).toContain('through file-system results, object-URL creation, and network response unions');
+    expect(failure.message).toContain('including their exact null, string, and unknown alternatives');
+    expect(failure.message).toContain('does not permit replacing Blob with a string or eager byte array');
+    expect(failure.message).toContain('collapsing a response union or erasing its Blob arm into Any');
+    expect(failure.message).toContain('void-pointer erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('copying or materializing a replacement Blob');
+    expect(failure.message).toContain('or side storage');
+    expect(contents.match(/host::Blob/gu)).toHaveLength(3);
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify the Blob value-space constructor as an object identity type', () => {
+    const result = lower('BlobConstructor.ts', 'export function readBlobConstructor(): unknown { return Blob; }');
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain('runtime external symbol binding plan is incomplete (missing: Blob[value])');
+    expect(failure.message).not.toContain('Blob is a host-owned immutable binary object identity');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
