@@ -8901,6 +8901,95 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain('WebGL object handles');
   });
 
+  it('requires exact runtime bindings for WebGPU object handles', () => {
+    const result = lower(
+      'WgpuRenderPass.ts',
+      `export interface WgpuRenderPass {
+         colorView: GPUTextureView;
+         encoder: GPURenderPassEncoder | null;
+       }
+       export interface WgpuSavedPassState {
+         colorFormat: GPUTextureFormat | undefined;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/wgpu.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'GPURenderPassEncoder',
+          space: 'type' as const,
+          targetName: 'host::GpuRenderPassEncoder',
+        },
+        {
+          headers: ['host/wgpu.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'GPUTextureFormat',
+          space: 'type' as const,
+          targetName: 'host::GpuTextureFormat',
+        },
+        {
+          headers: ['host/wgpu.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'GPUTextureView',
+          space: 'type' as const,
+          targetName: 'host::GpuTextureView',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain(
+      'missing: GPURenderPassEncoder[type], GPUTextureFormat[type], GPUTextureView[type]',
+    );
+    expect(failure.message).toContain(
+      'WebGPU object handles GPURenderPassEncoder, GPUTextureView are host-owned opaque identities',
+    );
+    expect(failure.message).toContain('one externalBindings entry for each exact type-space source symbol');
+    expect(failure.message).toContain('stable target wrapper');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('reuse that mapping in every module that carries the handle');
+    expect(failure.message).toContain('does not permit void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('copying or materializing replacement handles');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('host::GpuTextureView color_view;');
+    expect(contents).toContain('std::optional<host::GpuRenderPassEncoder> encoder;');
+    expect(contents).toContain('std::optional<host::GpuTextureFormat> color_format;');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify WebGPU configuration and result types as object handles', () => {
+    const result = lower(
+      'WgpuConfiguration.ts',
+      `export interface WgpuRenderOptions { format?: GPUTextureFormat }
+       export interface WgpuDeviceSignals { info: GPUDeviceLostInfo }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: GPUDeviceLostInfo[type], GPUTextureFormat[type])',
+    );
+    expect(failure.message).not.toContain('WebGPU object handles');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',

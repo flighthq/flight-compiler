@@ -29622,10 +29622,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
       : undefined,
   ].filter((problem): problem is string => problem !== undefined);
   const webGlHandleRemediation = renderMissingWebGlHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
+  const webGpuHandleRemediation = renderMissingWebGpuHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -29659,6 +29660,47 @@ function renderMissingWebGlHandleBindingsRemediationCpp(
     .map((identity) => identity.sourceName);
   if (handles.length === 0) return '';
   return ` WebGL object handles ${handles.join(', ')} are host-owned opaque identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability, and reuse that mapping in every module that carries the handle. A manifest entry names the represented runtime carrier; it does not permit void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing replacement handles, or side storage.`;
+}
+
+function isWebGpuObjectHandleSourceNameCpp(sourceName: string): boolean {
+  switch (sourceName) {
+    case 'GPU':
+    case 'GPUAdapter':
+    case 'GPUBindGroup':
+    case 'GPUBindGroupLayout':
+    case 'GPUBuffer':
+    case 'GPUCanvasContext':
+    case 'GPUCommandBuffer':
+    case 'GPUCommandEncoder':
+    case 'GPUComputePassEncoder':
+    case 'GPUComputePipeline':
+    case 'GPUDevice':
+    case 'GPUExternalTexture':
+    case 'GPUPipelineLayout':
+    case 'GPUQuerySet':
+    case 'GPUQueue':
+    case 'GPURenderBundle':
+    case 'GPURenderBundleEncoder':
+    case 'GPURenderPassEncoder':
+    case 'GPURenderPipeline':
+    case 'GPUSampler':
+    case 'GPUShaderModule':
+    case 'GPUTexture':
+    case 'GPUTextureView':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function renderMissingWebGpuHandleBindingsRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const handles = missing
+    .filter((identity) => identity.space === 'type' && isWebGpuObjectHandleSourceNameCpp(identity.sourceName))
+    .map((identity) => identity.sourceName);
+  if (handles.length === 0) return '';
+  return ` WebGPU object handles ${handles.join(', ')} are host-owned opaque identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability, and reuse that mapping in every module that carries the handle. A manifest entry names the represented runtime carrier; it does not permit void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing replacement handles, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {
