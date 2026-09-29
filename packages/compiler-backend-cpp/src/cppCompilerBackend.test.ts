@@ -22437,6 +22437,85 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(failure.message).not.toContain('ProxyHandler is a target-runtime interception contract');
   });
 
+  it('requires an exact runtime binding for the WeakSet identity-membership domain', () => {
+    const result = lower(
+      'WeakTextureSet.ts',
+      `export interface GlContextRuntime {
+         mipmappedTextures?: WeakSet<WebGLTexture>;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const contents = emitIrModuleCpp(result.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/weak_set.hpp'],
+            nullability: 'non-null',
+            ownership: 'shared',
+            sourceName: 'WeakSet',
+            space: 'type',
+            targetName: 'host::WeakIdentitySet',
+          },
+          {
+            headers: ['host/webgl.hpp'],
+            nullability: 'non-null',
+            ownership: 'shared',
+            sourceName: 'WebGLTexture',
+            space: 'type',
+            targetName: 'host::GlTexture',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: WeakSet[type], WebGLTexture[type]');
+    expect(failure.message).toContain(
+      'WeakSet is a target-runtime weak-identity membership domain rather than an owning collection',
+    );
+    expect(failure.message).toContain('one externalBindings entry for the exact generic type-space source symbol');
+    expect(failure.message).toContain('stable target weak-set carrier');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('Preserve the element reference type');
+    expect(failure.message).toContain('identity-based add, delete, and has behavior');
+    expect(failure.message).toContain('non-enumerability, non-retaining reachability');
+    expect(failure.message).toContain('same collection owner through optional stored state');
+    expect(failure.message).toContain('does not permit replacing WeakSet with Set, a list, or an array');
+    expect(failure.message).toContain('retaining strong references');
+    expect(failure.message).toContain('using structural equality');
+    expect(failure.message).toContain('exposing enumeration');
+    expect(failure.message).toContain('copying or materializing a key list');
+    expect(failure.message).toContain('void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('std::optional<host::WeakIdentitySet<host::GlTexture>> mipmapped_textures;');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify the WeakSet value-space constructor as a weak collection type', () => {
+    const result = lower(
+      'WeakSetConstructor.ts',
+      'export function readWeakSetConstructor(): unknown { return WeakSet; }',
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain('runtime external symbol binding plan is incomplete (missing: WeakSet[value])');
+    expect(failure.message).not.toContain('WeakSet is a target-runtime weak-identity membership domain');
+  });
+
   it('uses ambient undefined as contextual evidence when clearing a computed optional slot', () => {
     const result = lower(
       'runtime-slot-reset.ts',

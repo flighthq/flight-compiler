@@ -29840,10 +29840,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
     completeness.missingExternalSymbols,
   );
   const proxyHandlerRemediation = renderMissingProxyHandlerBindingRemediationCpp(completeness.missingExternalSymbols);
+  const weakSetRemediation = renderMissingWeakSetBindingRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}${proxyHandlerRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}${proxyHandlerRemediation}${weakSetRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -30040,6 +30041,14 @@ function renderMissingProxyHandlerBindingRemediationCpp(
   );
   if (!hasProxyHandler) return '';
   return ` ProxyHandler is a target-runtime interception contract rather than an ordinary record value. Add one externalBindings entry for the exact type-space source symbol, with its stable target handler representation, required headers, and truthful ownership and nullability. Preserve the proxied target owner identity, the declared computed or named key domain, trap side effects, the forwarded write on that same owner, and the boolean success result; lower an exact structural set trap only through an explicit target proxy-construction contract. A manifest entry names the represented handler contract; it does not make arbitrary get, deleteProperty, defineProperty, apply, or dynamic-key traps portable, and it does not permit ignoring interception, replacing the target with a snapshot Record, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing a replacement owner, or side storage.`;
+}
+
+function renderMissingWeakSetBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasWeakSet = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'WeakSet');
+  if (!hasWeakSet) return '';
+  return ` WeakSet is a target-runtime weak-identity membership domain rather than an owning collection. Add one externalBindings entry for the exact generic type-space source symbol, with its stable target weak-set carrier, required headers, and truthful ownership and nullability. Preserve the element reference type, identity-based add, delete, and has behavior, non-enumerability, non-retaining reachability, and the same collection owner through optional stored state. A manifest entry names the represented runtime carrier; it does not permit replacing WeakSet with Set, a list, or an array, retaining strong references, using structural equality, exposing enumeration, copying or materializing a key list, void-pointer or Any erasure, native-pointer casts or reinterpretation, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {
