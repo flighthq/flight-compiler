@@ -23418,6 +23418,107 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('static_cast<flight::Ref<');
   });
 
+  it('keeps create-factory results on the exact owner allocated by the factory', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'material-factory-owner.ts',
+          `interface SurfaceMaterial {
+             alphaCutoff: number;
+             readonly kind: string;
+           }
+           interface DepthMaterial extends SurfaceMaterial {
+             far: number;
+             near: number;
+           }
+           function createSurfaceMaterial(
+             kind: string,
+             opts?: Readonly<Partial<SurfaceMaterial>>,
+           ): SurfaceMaterial {
+             return { alphaCutoff: opts?.alphaCutoff ?? 0.5, kind };
+           }
+           export function createDepthMaterial(opts?: Readonly<Partial<DepthMaterial>>): DepthMaterial {
+             const material = createSurfaceMaterial('DepthMaterial', opts) as DepthMaterial;
+             material.far = opts?.far ?? 1;
+             material.near = opts?.near ?? 0;
+             return material;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-reference-assertion-without-heritage',
+    });
+    expect(failure.message).toContain('createSurfaceMaterial factory result');
+    expect(failure.message).toContain('already allocated and returned');
+    expect(failure.message).toContain('target-typed use');
+    expect(failure.message).toContain('kind, options, or other arguments');
+    expect(failure.message).toContain('generic in the exact owner it allocates and returns');
+    expect(failure.message).toContain('preallocate flight::Ref<DepthMaterial>');
+    expect(failure.message).toContain('named generic shared-layer initializers');
+    expect(failure.message).toContain('retain flight::Ref<DepthMaterial> through target-specific writes');
+    expect(failure.message).toContain('kind or registry tag is not owner validation');
+    expect(failure.message).toContain('checked recovery contract');
+    expect(failure.message).toContain('will not use a native pointer cast');
+    expect(failure.message).toContain('reinterpret the factory result');
+    expect(failure.message).toContain('copy or materialize a replacement owner');
+    expect(failure.message).toContain('side storage');
+
+    const accessorFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'material-accessor-owner.ts',
+          `interface SurfaceMaterial { readonly kind: string }
+           interface DepthMaterial extends SurfaceMaterial { readonly far: number }
+           function getSurfaceMaterial(): SurfaceMaterial { return { kind: 'SurfaceMaterial' }; }
+           export function readDepth(): DepthMaterial {
+             return getSurfaceMaterial() as DepthMaterial;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(accessorFailure.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(accessorFailure.message).toContain('Keep the exact declared owner at the API boundary');
+    expect(accessorFailure.message).not.toContain('factory result');
+    expect(accessorFailure.message).not.toContain('shared-layer initializers');
+
+    const exact = emitIrModuleCpp(
+      lower(
+        'exact-material-factory-owner.ts',
+        `interface SurfaceMaterial {
+           alphaCutoff: number;
+           readonly kind: string;
+         }
+         interface DepthMaterial extends SurfaceMaterial {
+           far: number;
+           near: number;
+         }
+         function initializeSurfaceMaterial(
+           material: SurfaceMaterial,
+           opts?: Readonly<Partial<SurfaceMaterial>>,
+         ): void {
+           material.alphaCutoff = opts?.alphaCutoff ?? 0.5;
+         }
+         export function createDepthMaterial(opts?: Readonly<Partial<DepthMaterial>>): DepthMaterial {
+           const material: DepthMaterial = { alphaCutoff: 0.5, far: 1, kind: 'DepthMaterial', near: 0 };
+           initializeSurfaceMaterial(material, opts);
+           material.far = opts?.far ?? 1;
+           material.near = opts?.near ?? 0;
+           return material;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(exact).toContain('return material;');
+    expect(exact).not.toContain('flight::Any');
+    expect(exact).not.toContain('static_pointer_cast');
+    expect(exact).not.toContain('structural_ref_cast');
+  });
+
   it('names the asserted intersection a class reference cannot be narrowed to', () => {
     // An intersection has no name of its own in C++, so the assertion's target is an anonymous owner type
     // holding the flattened members. That carrier is a generated name the author cannot act on, and it is
