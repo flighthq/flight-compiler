@@ -69,6 +69,145 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps specialized runtime-factory findings policy-owned and baseline-stable by source identity', () => {
+    const source = createMemoryWorkspaceSource(createRuntimeFactoryWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node', '@flighthq/scene2d'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const options = {
+      classification: {
+        rules: { 'unchecked-double-assertion': 'compiler-defect' as const },
+        schema: 'flight-compiler-check-classification/1' as const,
+      },
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    };
+    const report = createCompilerPackageCheckReport(compilation.report, options);
+    const expectedSourceIdentities = [
+      'flight-compiler-source-portability-finding/1:["@flighthq/node","packages/node/src/node.ts","unchecked-double-assertion","function:initializeNode","sha256:20ecf28d83c3b5f39eb276b8e51ea488f2f250c45ecec11670c6ceb2d77c15e9"]:0',
+      'flight-compiler-source-portability-finding/1:["@flighthq/scene2d","packages/scene2d/src/displayObject.ts","unchecked-double-assertion","function:createNode2D","sha256:6c0582712563f9f4e004869b450578118a9dc3a585c7b4a88561ab5f01b4aba3"]:0',
+    ];
+    const expectedCheckIdentities = [
+      ['@flighthq/node', 'packages/node/src/node.ts', 'Node', expectedSourceIdentities[0]],
+      ['@flighthq/scene2d', 'packages/scene2d/src/displayObject.ts', 'DisplayObject', expectedSourceIdentities[1]],
+    ].map(
+      ([packageName, sourceName, moduleName, sourceIdentity]) =>
+        `flight-compiler-check-finding/1:${JSON.stringify([
+          packageName,
+          sourceName,
+          moduleName,
+          'source',
+          'source-portability',
+          'unchecked-double-assertion',
+          sourceIdentity,
+        ])}`,
+    );
+
+    expect(compilation.report.modules).toHaveLength(4);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ identity }) => identity)).toEqual(expectedSourceIdentities);
+    expect(sourcePortability.findings[0]?.message).toContain('Runtime is a caller-selected subtype');
+    expect(sourcePortability.findings[1]?.message).toContain(
+      'base createNode2DRuntime fallback as NodeRuntimeFactory<R>',
+    );
+    expect(report.directFindings.map(({ identity }) => identity)).toEqual(expectedCheckIdentities);
+    expect(report.directFindings.map(({ sourceFindingIdentity }) => sourceFindingIdentity)).toEqual(
+      expectedSourceIdentities,
+    );
+    expect(
+      report.directFindings.map(({ code, policyClass, rule, stage }) => ({ code, policyClass, rule, stage })),
+    ).toEqual([
+      {
+        code: 'source-portability',
+        policyClass: 'source-portability',
+        rule: 'unchecked-double-assertion',
+        stage: 'source',
+      },
+      {
+        code: 'source-portability',
+        policyClass: 'source-portability',
+        rule: 'unchecked-double-assertion',
+        stage: 'source',
+      },
+    ]);
+    expect(report.totals).toMatchObject({ directFindings: 2, directOccurrences: 2 });
+    expect(
+      report.packages.map(({ directFindings, directOccurrences, findingsByPolicy, name }) => ({
+        directFindings,
+        directOccurrences,
+        findingsByPolicy,
+        name,
+      })),
+    ).toEqual([
+      {
+        directFindings: 1,
+        directOccurrences: 1,
+        findingsByPolicy: {
+          'compiler-defect': 0,
+          'compiler-restriction': 0,
+          'source-portability': 1,
+          'target-runtime': 0,
+          unclassified: 0,
+        },
+        name: '@flighthq/node',
+      },
+      {
+        directFindings: 1,
+        directOccurrences: 1,
+        findingsByPolicy: {
+          'compiler-defect': 0,
+          'compiler-restriction': 0,
+          'source-portability': 1,
+          'target-runtime': 0,
+          unclassified: 0,
+        },
+        name: '@flighthq/scene2d',
+      },
+    ]);
+
+    const baseline = createCompilerPackageCheckBaseline(report);
+    const revisedMessages = ['revised initializeNode guidance', 'revised createNode2D guidance'];
+    const revisedReport = createCompilerPackageCheckReport(compilation.report, {
+      ...options,
+      sourcePortability: {
+        ...sourcePortability,
+        findings: sourcePortability.findings.map((finding, index) => ({
+          ...finding,
+          message: revisedMessages[index] ?? finding.message,
+        })),
+      },
+    });
+    const comparison = compareCompilerPackageCheckBaseline(revisedReport, baseline);
+
+    expect(baseline.findingIdentities).toEqual(expectedCheckIdentities);
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.resolvedFindingIdentities).toEqual([]);
+    expect(comparison.unchanged.map(({ identity }) => identity)).toEqual(expectedCheckIdentities);
+    expect(comparison.unchanged.map(({ occurrences }) => occurrences[0]?.message)).toEqual(revisedMessages);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('admits an unchanged direct finding and rejects a newly introduced one without writing the workspace', () => {
     const files = createWorkspaceFiles();
     const snapshot = structuredClone(files);
@@ -240,6 +379,47 @@ function createPackageManifest(name: string, dependencies: Readonly<Record<strin
     name,
     version: '1.0.0',
   });
+}
+
+function createRuntimeFactoryWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/node/package.json': createPackageManifest('@flighthq/node'),
+    '/flight/packages/node/src/index.ts': `export { initializeNode } from './node.js';`,
+    '/flight/packages/node/src/node.ts': `interface NodeRuntime<Traits extends object> { readonly traits?: Traits }
+type NodeRuntimeFactory<Runtime> = (obj?: Readonly<Partial<Runtime>>) => Runtime;
+function createNodeRuntime<Traits extends object>(): NodeRuntime<Traits> { return {}; }
+export function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+  createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+): void {
+  const runtimeFactory =
+    createNodeRuntimeFactory ?? (createNodeRuntime as unknown as NodeRuntimeFactory<Runtime>);
+  void runtimeFactory();
+}`,
+    '/flight/packages/scene2d/package.json': createPackageManifest('@flighthq/scene2d'),
+    '/flight/packages/scene2d/src/index.ts': `export { createNode2D } from './displayObject.js';`,
+    '/flight/packages/scene2d/src/displayObject.ts': `interface Node2DRuntime { readonly scene2d: true }
+type NodeRuntimeFactory<Runtime> = (obj?: Readonly<Partial<Runtime>>) => Runtime;
+type Node2DRuntimeFactory<Runtime extends Node2DRuntime> = NodeRuntimeFactory<Runtime>;
+function initializeNode<Runtime extends Node2DRuntime>(
+  out: object,
+  kind: string,
+  obj: object,
+  createData: () => object,
+  runtimeFactory: NodeRuntimeFactory<Runtime>,
+): void { void out; void kind; void obj; void createData; void runtimeFactory(); }
+function createNode2DRuntime(): Node2DRuntime { return { scene2d: true }; }
+export function createNode2D<R extends Node2DRuntime>(
+  createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+): void {
+  initializeNode(
+    {},
+    'Node2D',
+    {},
+    () => ({}),
+    createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>),
+  );
+}`,
+  };
 }
 
 function createWorkspaceFiles(): Record<string, string> {
