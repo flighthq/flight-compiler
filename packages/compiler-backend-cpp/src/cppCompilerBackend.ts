@@ -26725,6 +26725,22 @@ function emitCppRecordIndexedAssignmentCpp(
   context: EmitContext,
 ): string | undefined {
   if (target.kind !== 'element') return undefined;
+  // The `x as Record<string, unknown>` cast is the read side of the owner-preserving view, so a keyed
+  // write through it has no setter to reach: flight::NamedProperties is deliberately read-only, and
+  // emitting `${view}.set(...)` named a member the runtime does not have ('class flight::NamedProperties'
+  // has no member named 'set'). The read side of this view is exactly what the cast means, so the write
+  // is refused here rather than emitted against a carrier that cannot accept it, and the same remedy as
+  // the other dynamic named-write paths is offered.
+  if (
+    getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+    getCppNamedPropertiesViewExpressionCpp(target.object, context)
+  ) {
+    emissionError(
+      context,
+      'a dynamic named-property write through the owner-preserving view requires target-runtime mutation support: flight::NamedProperties is deliberately read-only, so the write cannot reach the owner it views. Keep the key as a finite union of declared member names and assign through the typed object, or add an owner-preserving checked NamedProperties::set(String, Any) contract. The compiler will not cast between owners, copy into replacement storage, materialize a replacement owner, or add side storage',
+      'cpp-named-properties-write-unsupported',
+    );
+  }
   const receiverType = getIrExpressionTypeEvidenceCpp(target.object, context);
   const record = getCppRecordTypeArgumentsCpp(receiverType, context, new Set());
   if (!record) return undefined;

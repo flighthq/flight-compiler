@@ -24276,6 +24276,48 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.message).toContain('finite union of declared member names');
   });
 
+  it('refuses a keyed write through a single-cast named view and keeps record storage writable', () => {
+    // The shape is textlayout's mergeTextFormat. The read side of the cast is the owner-preserving view
+    // and the emitter lowers it correctly -- `Object.keys` arrives through the view's own key
+    // enumeration -- but the write side then has no setter to reach, and emitting it anyway named a
+    // member the runtime does not have: 'class flight::NamedProperties' has no member named 'set'. The
+    // double-cast form of this write was already refused; this is the single-cast form that reached the
+    // record-assignment lane instead.
+    const merged = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'text-format.ts',
+          `interface TextFormat { readonly size?: number; readonly leading?: number; readonly align?: string }
+           export function mergeTextFormat(base: TextFormat, override: TextFormat): TextFormat {
+             const result: TextFormat = { ...base };
+             for (const key of Object.keys(override) as (keyof TextFormat)[]) {
+               const value = override[key];
+               if (value != null) {
+                 (result as Record<string, unknown>)[key] = value;
+               }
+             }
+             return result;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(merged.rule).toBe('cpp-named-properties-write-unsupported');
+    expect(merged.classification).toBe('target-runtime');
+    expect(merged.message).toContain('flight::NamedProperties is deliberately read-only');
+
+    // The control that keeps this about the view rather than about keyed writes: storage the source
+    // actually declared as a record still takes its write.
+    const record = emitIrModuleCpp(
+      lower(
+        'record-storage.ts',
+        `export function setKey(record: Record<string, number>, key: string, value: number): void { record[key] = value; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(record).toContain('record.set(key, assignment_value)');
+  });
+
   it('requires declared dynamic storage for open effect default writes', () => {
     const asserted = lower(
       'asserted-effect-defaults.ts',
