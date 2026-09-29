@@ -29512,13 +29512,44 @@ function assertRuntimeExternalSymbolBindingsCpp(
       ? `duplicate: ${completeness.duplicateExternalSymbols.map((identity) => `${identity.sourceName}[${identity.space}]`).join(', ')}`
       : undefined,
   ].filter((problem): problem is string => problem !== undefined);
+  const webGlHandleRemediation = renderMissingWebGlHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
+}
+
+function isWebGlObjectHandleSourceNameCpp(sourceName: string): boolean {
+  switch (sourceName) {
+    case 'WebGLBuffer':
+    case 'WebGLFramebuffer':
+    case 'WebGLProgram':
+    case 'WebGLQuery':
+    case 'WebGLRenderbuffer':
+    case 'WebGLSampler':
+    case 'WebGLShader':
+    case 'WebGLSync':
+    case 'WebGLTexture':
+    case 'WebGLTransformFeedback':
+    case 'WebGLUniformLocation':
+    case 'WebGLVertexArrayObject':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function renderMissingWebGlHandleBindingsRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const handles = missing
+    .filter((identity) => identity.space === 'type' && isWebGlObjectHandleSourceNameCpp(identity.sourceName))
+    .map((identity) => identity.sourceName);
+  if (handles.length === 0) return '';
+  return ` WebGL object handles ${handles.join(', ')} are host-owned opaque identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability, and reuse that mapping in every module that carries the handle. A manifest entry names the represented runtime carrier; it does not permit void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing replacement handles, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

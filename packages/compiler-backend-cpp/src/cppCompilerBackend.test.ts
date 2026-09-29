@@ -8843,9 +8843,26 @@ describe('createCppCompilerBackend', () => {
       ],
       schema: 'flight-cpp-external-bindings/1' as const,
     };
+    const missingBindings = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
     const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
+    expect(missingBindings.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(missingBindings.classification).toBe('target-runtime');
+    expect(missingBindings.message).toContain('missing: WebGLProgram[type], WebGLUniformLocation[type]');
+    expect(missingBindings.message).toContain(
+      'WebGL object handles WebGLProgram, WebGLUniformLocation are host-owned opaque identities',
+    );
+    expect(missingBindings.message).toContain('one externalBindings entry for each exact type-space source symbol');
+    expect(missingBindings.message).toContain('stable target wrapper');
+    expect(missingBindings.message).toContain('truthful ownership and nullability');
+    expect(missingBindings.message).toContain('reuse that mapping in every module that carries the handle');
+    expect(missingBindings.message).toContain('does not permit void-pointer or Any erasure');
+    expect(missingBindings.message).toContain('native-pointer casts or reinterpretation');
+    expect(missingBindings.message).toContain('copying or materializing replacement handles');
+    expect(missingBindings.message).toContain('or side storage');
     const defaultedLocation =
       /std::variant<host::WebGlUniformLocation, flight::Null, flight::Undefined> loc_[a-z0-9_]+ = std::variant<host::WebGlUniformLocation, flight::Null, flight::Undefined>\{std::in_place_type<flight::Undefined>, flight::undefined\};/gu;
     expect(contents.match(defaultedLocation)).toHaveLength(14);
@@ -8862,6 +8879,26 @@ describe('createCppCompilerBackend', () => {
     expect(contents).not.toContain('flight::Any');
     expect(contents).not.toContain('make_structural_ref');
     expect(contents).not.toContain('materialize_row');
+  });
+
+  it('does not classify WebGL configuration value types as object handles', () => {
+    const result = lower(
+      'GlContext.ts',
+      `export interface GlContextOptions {
+         readonly contextAttributes?: WebGLContextAttributes;
+         readonly powerPreference?: WebGLPowerPreference;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: WebGLContextAttributes[type], WebGLPowerPreference[type])',
+    );
+    expect(failure.message).not.toContain('WebGL object handles');
   });
 
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
