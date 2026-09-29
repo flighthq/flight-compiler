@@ -27860,6 +27860,51 @@ Resolver make_resolver(TextureRef texture) {
     expect(output.match(/flight::row_field<flight::RowKey<"alpha">>/gu)).toHaveLength(1);
   });
 
+  it('evaluates closed-row defaults before applying an optional trailing spread', () => {
+    const result = lower(
+      'trailing-closed-row-spread.ts',
+      `interface Data { text: string }
+       interface Label { alpha: number; data: Data; name: string | null }
+       function readAlpha(): number { return 0.5; }
+       function readName(): string | null { return null; }
+       function readOverrides(
+         overrides?: Readonly<Partial<Label>>,
+       ): Readonly<Partial<Label>> | undefined { return overrides; }
+       export function create(overrides?: Readonly<Partial<Label>>): Readonly<Partial<Label>> {
+         return { alpha: readAlpha(), name: readName(), ...readOverrides(overrides) };
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('auto structural_spread_fallback_alpha = read_alpha();');
+    expect(output).toContain('auto structural_spread_fallback_name = read_name();');
+    expect(output).toContain('auto&& structural_spread_source = read_overrides(overrides);');
+    expect(output).toContain(
+      'if (flight::row_has<flight::RowKey<"alpha">>(structural_spread_source.value())) structural_spread_field_alpha = flight::row_get<flight::RowKey<"alpha">>(structural_spread_source.value());',
+    );
+    expect(output).toContain(
+      'if (flight::row_has<flight::RowKey<"name">>(structural_spread_source.value())) structural_spread_field_name = flight::row_get<flight::RowKey<"name">>(structural_spread_source.value());',
+    );
+    expect(output.indexOf('read_alpha()')).toBeLessThan(output.indexOf('read_name()'));
+    expect(output.indexOf('read_name()')).toBeLessThan(output.indexOf('read_overrides(overrides)'));
+    expect(output.match(/flight::row_field<flight::RowKey<"alpha">>/gu)).toHaveLength(1);
+    expect(output.match(/flight::row_field<flight::RowKey<"name">>/gu)).toHaveLength(1);
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-trailing-closed-row-spread-'));
+      const header = path.join(directory, 'trailing_closed_row_spread.hpp');
+      try {
+        writeFileSync(header, output, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('resolves an imported target against a local spread schema for closed row construction', () => {
     const model = lowerPackage(
       '@flighthq/types',
@@ -27933,8 +27978,16 @@ Resolver make_resolver(TextureRef texture) {
          return { ...common, label: 'ready' };
        }`,
     );
+    const incompatibleTrailing = lower(
+      'incompatible-trailing-row-spread.ts',
+      `interface Shape { alpha: number }
+       interface Common { alpha: string }
+       export function create(common: Common): Readonly<Partial<Shape>> {
+         return { alpha: 0.5, ...common };
+       }`,
+    );
 
-    for (const result of [incompatible, optional]) {
+    for (const result of [incompatible, optional, incompatibleTrailing]) {
       const failure = captureBackendEmissionFailure(() =>
         emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
       );

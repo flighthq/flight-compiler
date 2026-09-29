@@ -250,11 +250,18 @@ interface CppStructuralClosedRowSpreadConstructionPlan {
         property: Readonly<IrObjectTypeProperty>;
         sourceProperty: Readonly<IrObjectTypeProperty>;
       }
+    | {
+        kind: 'spreadOverProperty';
+        member: Readonly<Extract<IrObjectMember, { kind: 'property' }>>;
+        property: Readonly<IrObjectTypeProperty>;
+        sourceProperty: Readonly<IrObjectTypeProperty>;
+      }
     | { kind: 'spread'; property: Readonly<IrObjectTypeProperty> }
   >[];
   readonly source: Readonly<IrExpression>;
   readonly sourceKind: 'reference' | 'structuralRow';
   readonly sourceMayBeAbsent: boolean;
+  readonly spreadPosition: 'leading' | 'trailing';
   readonly sourceType: Readonly<IrType>;
 }
 
@@ -5434,6 +5441,79 @@ function emitExpression(
           const source = emitExpression(closedSpreadConstruction.source, context, closedSpreadConstruction.sourceType);
           const evaluations: string[] = [];
           const valueNames = new Map<string, string>();
+          if (closedSpreadConstruction.spreadPosition === 'trailing') {
+            const fallbackNames = new Map<string, string>();
+            for (const member of expression.members) {
+              if (member.kind === 'spread') break;
+              if (member.kind !== 'property') throw new TypeError('expected trailing structural-row property');
+              const field = closedSpreadConstruction.fields.find(
+                (candidate) => candidate.kind !== 'spread' && candidate.member === member,
+              );
+              if (!field) throw new TypeError(`expected trailing structural spread field ${member.name}`);
+              const sourceProperty = field.kind === 'spreadOverProperty' ? field.sourceProperty : undefined;
+              const value = emitExpression(member.value, context, field.property.type);
+              if (sourceProperty && (closedSpreadConstruction.sourceMayBeAbsent || sourceProperty.optional)) {
+                const fallbackName = getGeneratedTargetName(`structuralSpreadFallback_${member.name}`, context);
+                evaluations.push(`auto ${fallbackName} = ${value};`);
+                fallbackNames.set(member.name, fallbackName);
+              } else {
+                const valueName = getGeneratedTargetName(`structuralSpreadField_${member.name}`, context);
+                evaluations.push(`auto ${valueName} = ${value};`);
+                valueNames.set(member.name, valueName);
+              }
+            }
+            evaluations.push(`auto&& ${sourceName} = ${source};`);
+            for (const field of closedSpreadConstruction.fields) {
+              if (field.kind === 'property' || field.kind === 'overriddenSpread') continue;
+              const sourceProperty = field.kind === 'spread' ? field.property : field.sourceProperty;
+              const sourceValue = closedSpreadConstruction.sourceMayBeAbsent ? `${sourceName}.value()` : sourceName;
+              const key = `flight::RowKey<${JSON.stringify(sourceProperty.name)}>`;
+              const value = `flight::row_get<${key}>(${sourceValue})`;
+              if (field.kind === 'spreadOverProperty') {
+                const fallbackName = fallbackNames.get(sourceProperty.name);
+                const valueName = valueNames.get(sourceProperty.name);
+                const finalValueName = fallbackName
+                  ? getGeneratedTargetName(`structuralSpreadField_${sourceProperty.name}`, context)
+                  : valueName;
+                if (!finalValueName) throw new TypeError(`expected trailing spread value ${sourceProperty.name}`);
+                if (fallbackName) {
+                  evaluations.push(`std::remove_cvref_t<decltype(${value})> ${finalValueName} = ${fallbackName};`);
+                  valueNames.set(sourceProperty.name, finalValueName);
+                }
+                const assign = sourceProperty.optional
+                  ? `if (flight::row_has<${key}>(${sourceValue})) ${finalValueName} = ${value};`
+                  : `${finalValueName} = ${value};`;
+                evaluations.push(
+                  closedSpreadConstruction.sourceMayBeAbsent ? `if (${sourceName}.has_value()) { ${assign} }` : assign,
+                );
+                continue;
+              }
+              const valueName = getGeneratedTargetName(`structuralSpreadField_${sourceProperty.name}`, context);
+              if (closedSpreadConstruction.sourceMayBeAbsent) {
+                const valueType = sourceProperty.optional
+                  ? `std::remove_cvref_t<decltype(${value})>`
+                  : emitOptionalTypeCpp(
+                      getCppStructuralClosedRowCellStorageTypeCpp(sourceProperty.type, context),
+                      true,
+                      context,
+                    );
+                evaluations.push(`${valueType} ${valueName}; if (${sourceName}.has_value()) ${valueName} = ${value};`);
+              } else {
+                evaluations.push(`auto ${valueName} = ${value};`);
+              }
+              valueNames.set(sourceProperty.name, valueName);
+            }
+            const fields = closedSpreadConstruction.fields.map((field) => {
+              const propertyName = field.kind === 'property' ? field.member.name : field.property.name;
+              const valueName = valueNames.get(propertyName);
+              if (!valueName) throw new TypeError(`expected trailing structural spread field ${propertyName}`);
+              return `flight::row_field<flight::RowKey<${JSON.stringify(propertyName)}>>(std::move(${valueName}))`;
+            });
+            context.includes.add('flight/structural_ref.hpp');
+            context.includes.add('type_traits');
+            context.includes.add('utility');
+            return `([&]() { ${evaluations.join(' ')} return flight::make_structural_ref<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>(${fields.join(', ')}); }())`;
+          }
           for (const field of closedSpreadConstruction.fields) {
             if (field.kind === 'property') continue;
             const sourceProperty = field.kind === 'spread' ? field.property : field.sourceProperty;
@@ -7004,11 +7084,11 @@ function getCppStructuralOpenRowConstructionPlanCpp(
 
 // A spread object names runtime copy semantics, but a closed structural row can implement the common
 // construction form without cloning either reference: read each proven source cell once and place that
-// value in the new target row. Keep the accepted form deliberately narrow. One leading spread followed
-// by distinct named properties has a complete source shape proving that no enumerable field is silently
-// dropped. A named property may replace a source cell, but emission must still read that source cell
-// before evaluating the replacement. Every value is bound in source order because C++ function-argument
-// evaluation order cannot carry the source language's ordering guarantee.
+// value in the new target row. Keep the accepted form deliberately narrow. One edge spread and distinct
+// named properties have a complete source shape proving that no enumerable field is silently dropped. A
+// leading spread is read before later replacements. A trailing optional spread evaluates defaults first,
+// then replaces only the cells the source carries. Every value is bound in source order because C++
+// function-argument evaluation order cannot carry the source language's ordering guarantee.
 function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
   type: Readonly<IrType>,
@@ -7016,8 +7096,21 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   context: EmitContext,
 ): Readonly<CppStructuralClosedRowSpreadConstructionPlan> | undefined {
   if (!expression.copySemantics || expression.members.length < 2) return undefined;
-  const [spread, ...members] = expression.members;
-  if (spread?.kind !== 'spread' || members.some((member) => member.kind !== 'property')) return undefined;
+  const spreadIndex = expression.members.findIndex((member) => member.kind === 'spread');
+  if (
+    spreadIndex < 0 ||
+    (spreadIndex !== 0 && spreadIndex !== expression.members.length - 1) ||
+    expression.members.filter((member) => member.kind === 'spread').length !== 1 ||
+    expression.members.some((member) => member.kind !== 'property' && member.kind !== 'spread')
+  ) {
+    return undefined;
+  }
+  const spread = expression.members[spreadIndex];
+  if (spread?.kind !== 'spread') return undefined;
+  const spreadPosition = spreadIndex === 0 ? ('leading' as const) : ('trailing' as const);
+  const members = expression.members.filter(
+    (member): member is Extract<IrObjectMember, { kind: 'property' }> => member.kind === 'property',
+  );
 
   const targetObject = getCppStructuralRowObjectTypeCpp(row);
   if (
@@ -7043,8 +7136,15 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   const sourceUnion = sourceType ? getIrUnionTypeCpp(sourceType, context, new Set()) : undefined;
   const sourceUnionPlan = sourceUnion ? getCppUnionRepresentationPlan(sourceUnion, isolatedContext) : undefined;
   const sourceMayBeAbsent = sourceUnionPlan?.kind === 'optionalSingle';
+  const sourceValueMembers = sourceUnion?.types.filter(
+    (member) => member.kind !== 'null' && member.kind !== 'undefined',
+  );
   const sourceObjectType = sourceMayBeAbsent
-    ? getCppNonNullableType(sourceType!, context, new Set())
+    ? spreadPosition === 'trailing'
+      ? sourceValueMembers?.length === 1
+        ? sourceValueMembers[0]
+        : undefined
+      : getCppNonNullableType(sourceType!, context, new Set())
     : sourceUnion
       ? undefined
       : sourceType;
@@ -7078,6 +7178,7 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
       ? ('reference' as const)
       : undefined;
   if (!sourceKind) return undefined;
+  if (spreadPosition === 'trailing' && sourceKind !== 'structuralRow') return undefined;
 
   const fields: CppStructuralClosedRowSpreadConstructionPlan['fields'][number][] = [];
   const supplied = new Set<string>();
@@ -7085,27 +7186,35 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   for (const sourceProperty of sourceProperties) {
     const targetProperty = targetByName.get(sourceProperty.name);
     const explicit = explicitByName.get(sourceProperty.name);
+    const sourceWins = spreadPosition === 'trailing';
+    const sourceCompatible =
+      targetProperty &&
+      sourceProperty.role === targetProperty.role &&
+      context.referenceRepresentationPlanner.isStructurallyAssignable(
+        sourceProperty.type,
+        targetProperty.type,
+        context.module,
+      ) &&
+      getCppStructuralClosedRowCellStorageTypeCpp(sourceProperty.type, isolatedContext) ===
+        getCppStructuralClosedRowCellStorageTypeCpp(targetProperty.type, isolatedContext);
     if (
       !targetProperty ||
       supplied.has(sourceProperty.name) ||
-      (!explicit &&
+      (sourceWins &&
+        (!sourceCompatible ||
+          (!targetProperty.optional && !explicit && (sourceMayBeAbsent || sourceProperty.optional)))) ||
+      (!sourceWins &&
+        !explicit &&
         (Boolean(sourceMayBeAbsent && !sourceProperty.optional) ||
-          sourceProperty.role !== targetProperty.role ||
-          (sourceProperty.optional && !targetProperty.optional) ||
-          !context.referenceRepresentationPlanner.isStructurallyAssignable(
-            sourceProperty.type,
-            targetProperty.type,
-            context.module,
-          ) ||
-          getCppStructuralClosedRowCellStorageTypeCpp(sourceProperty.type, isolatedContext) !==
-            getCppStructuralClosedRowCellStorageTypeCpp(targetProperty.type, isolatedContext)))
+          !sourceCompatible ||
+          (sourceProperty.optional && !targetProperty.optional)))
     ) {
       return undefined;
     }
     supplied.add(sourceProperty.name);
     if (explicit) {
       overridden.add(sourceProperty.name);
-      fields.push({ kind: 'overriddenSpread', sourceProperty, ...explicit });
+      fields.push({ kind: sourceWins ? 'spreadOverProperty' : 'overriddenSpread', sourceProperty, ...explicit });
     } else {
       fields.push({ kind: 'spread', property: sourceProperty });
     }
@@ -7125,7 +7234,7 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   ) {
     return undefined;
   }
-  return { fields, source: spread.expression, sourceKind, sourceMayBeAbsent, sourceType };
+  return { fields, source: spread.expression, sourceKind, sourceMayBeAbsent, sourceType, spreadPosition };
 }
 
 function getCppStructuralClosedRowCellStorageTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
