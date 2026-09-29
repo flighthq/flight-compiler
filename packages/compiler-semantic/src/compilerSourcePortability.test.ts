@@ -3591,6 +3591,85 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings.every((finding) => !finding.message.includes('reused per-draw proxy slot'))).toBe(true);
   });
 
+  it('explains the one-sentinel contract for mesh deformation slots', () => {
+    const source = input(
+      'packages/types/src/Mesh.ts',
+      `interface Aabb { readonly minX: number }
+       interface MeshMorph { readonly weights: Float32Array }
+       interface Skin { readonly skeleton: object }
+       interface Mesh {
+         morph?: MeshMorph | null;
+         skin?: Skin | null;
+       }
+       interface MeshDeformRuntime {
+         deformedLocalBounds?: Aabb | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:Mesh/property:morph',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:Mesh/property:skin',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:MeshDeformRuntime/property:deformedLocalBounds',
+      },
+    ]);
+    for (const [index, finding] of findings.entries()) {
+      const name = ['morph', 'skin', 'deformedLocalBounds'][index];
+      expect(finding.message).toContain(
+        `gives the mesh deformation slot ${name} both an omitted state and explicit null`,
+      );
+      expect(finding.message).toContain('createMesh leaves morph and skin absent');
+      expect(finding.message).toContain('cloneMesh and sceneDocument assign only a present deformer');
+      expect(finding.message).toContain('prepareScene3DSkinning creates deformedLocalBounds lazily');
+      expect(finding.message).toContain('every direct reader collapses null and undefined');
+      expect(finding.message).toContain(
+        'Make morph, skin, and deformedLocalBounds optional non-null fields and use omission or undefined as the sole inactive state',
+      );
+      expect(finding.message).toContain('name a closed deformation-state union and handle both states explicitly');
+      expect(finding.message).toContain('will not preserve a redundant null sentinel');
+      expect(finding.message).toContain('infer or create a deformer or bounds value');
+      expect(finding.message).toContain('rewrite or clone the mesh');
+      expect(finding.message).toContain('copy or materialize deformation storage, or add side storage');
+    }
+  });
+
+  it('keeps unrelated optional-nullable mesh properties on generic mixed-absence guidance', () => {
+    const unrelatedOwner = input('OtherMesh.ts', 'interface OtherMesh { skin?: Skin | null }');
+    const unrelatedMember = input('packages/types/src/Mesh.ts', 'interface Mesh { bounds?: Aabb | null }');
+    const unrelatedLocation = input('packages/example/src/Mesh.ts', 'interface Mesh { morph?: MeshMorph | null }');
+    const findings = analyzeTypeScriptSourcePortability([unrelatedOwner, unrelatedMember, unrelatedLocation]).findings;
+
+    expect(findings).toMatchObject([
+      {
+        message:
+          'interface:OtherMesh/property:skin combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:OtherMesh/property:skin',
+      },
+      {
+        message:
+          'interface:Mesh/property:morph combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:Mesh/property:morph',
+      },
+      {
+        message:
+          'interface:Mesh/property:bounds combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:Mesh/property:bounds',
+      },
+    ]);
+    expect(findings.every((finding) => !finding.message.includes('mesh deformation slot'))).toBe(true);
+  });
+
   it('requires real indexed storage instead of an asserted index-signature view', () => {
     const asserted = input(
       'command.ts',

@@ -286,6 +286,22 @@ function getScene3DRenderProxyMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getMeshDeformationMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  const name = getNodeName(node.name);
+  if (
+    ts.isInterfaceDeclaration(node.parent) &&
+    normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/Mesh.ts') &&
+    ((node.parent.name.text === 'Mesh' && (name === 'morph' || name === 'skin')) ||
+      (node.parent.name.text === 'MeshDeformRuntime' && name === 'deformedLocalBounds'))
+  ) {
+    return `${subject} gives the mesh deformation slot ${name} both an omitted state and explicit null, but the represented contract has one inactive state: createMesh leaves morph and skin absent, cloneMesh and sceneDocument assign only a present deformer, prepareScene3DSkinning creates deformedLocalBounds lazily, and every direct reader collapses null and undefined with a nullish guard or fallback. Make morph, skin, and deformedLocalBounds optional non-null fields and use omission or undefined as the sole inactive state. If an API must distinguish never configured from explicitly cleared, name a closed deformation-state union and handle both states explicitly. The compiler will not preserve a redundant null sentinel, infer or create a deformer or bounds value, rewrite or clone the mesh, copy or materialize deformation storage, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getTypeLiteralDiscriminant(node: ts.TypeLiteralNode): string | undefined {
   for (const member of node.members) {
     if (!ts.isPropertySignature(member) || member.questionToken || !member.type || !ts.isLiteralTypeNode(member.type)) {
@@ -328,6 +344,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (anchorLayout) return anchorLayout;
   const scene3DRenderProxy = getScene3DRenderProxyMixedAbsencePropertyMessage(node, subject);
   if (scene3DRenderProxy) return scene3DRenderProxy;
+  const meshDeformation = getMeshDeformationMixedAbsencePropertyMessage(node, subject);
+  if (meshDeformation) return meshDeformation;
   const callableOwner = node.type ? getMixedAbsenceGenericCallableOwner(node.type) : undefined;
   if (callableOwner) {
     const ownerType = callableOwner.getText(node.getSourceFile());
