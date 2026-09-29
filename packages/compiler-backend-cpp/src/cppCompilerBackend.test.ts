@@ -11825,6 +11825,45 @@ int main() {
     expect(failure.classification).toBe('source-portability');
   });
 
+  it('refuses a for-of over a reference operand and keeps every collection iterating', () => {
+    // A range-for over an emitted reference has no begin(). The corpus run that surfaced this reported
+    // exactly that shape -- "const std::shared_ptr<flight::types::TextFormat> has no begin" -- against a
+    // loop the emitter had already written. The element type is what proves iterability, so its absence
+    // together with a reference representation is positive evidence that the operand cannot be iterated,
+    // and the module is refused with that evidence rather than emitted as C++ no compiler accepts.
+    const reference = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'text-format.ts',
+          `export class TextFormat { readonly count: number = 0 }
+           export function total(format: TextFormat): number { let n = 0; for (const x of format) { n += 1; } return n; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(reference.rule).toBe('cpp-for-of-reference-operand-unrepresented');
+    expect(reference.classification).toBe('target-runtime');
+    expect(reference.message).toContain('TextFormat is emitted as a reference');
+    expect(reference.message).toContain('has no begin()');
+
+    // The controls that keep this about the operand's representation rather than about for-of: every
+    // collection the target represents still iterates, including through a member of a reference.
+    const emitted = emitIrModuleCpp(
+      lower(
+        'collections.ts',
+        `export interface Item { readonly v: number }
+         export class Holder { readonly items: readonly Item[] = []; }
+         export function arrays(values: readonly number[]): number { let n = 0; for (const v of values) { n += v; } return n; }
+         export function sets(values: Set<number>): number { let n = 0; for (const v of values) { n += v; } return n; }
+         export function members(holder: Holder): number { let n = 0; for (const i of holder.items) { n += i.v; } return n; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(emitted).toContain('for (auto v : values) {');
+    expect(emitted).toContain('for (auto i : holder->items) {');
+    expect(emitted).not.toContain('for (auto x : format)');
+  });
+
   it('refuses a for-of source alias that names multiple runtime alternatives', () => {
     const result = lower(
       'ambiguous-xml-content.ts',

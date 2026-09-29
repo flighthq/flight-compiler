@@ -8608,6 +8608,28 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
         emissionError(context, 'string for-of requires a Unicode code-point iteration runtime contract');
       }
       const collectionView = getCppCollectionIterationView(statement.iterable, context);
+      // A range-for needs the operand to have begin()/end(). Every collection the target represents is
+      // taken above; what is left that still reaches the plain loop is an operand whose emitted type is
+      // a reference -- a shared pointer -- which has neither, and the loop that came out did not
+      // compile: "const std::shared_ptr<flight::types::TextFormat> has no begin". The element type is
+      // what proves iterability here, so its absence together with a reference representation is
+      // positive evidence that this operand cannot be iterated, and the source is told which of the two
+      // things it probably meant rather than being handed a loop the target cannot compile.
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        !collectionView &&
+        !iterableElementType &&
+        iterableType !== undefined &&
+        hasFlightReferenceRepresentationCpp(iterableType, context)
+      ) {
+        emissionError(
+          context,
+          `for-of requires an iterable C++ representation and ${describeDeclaredIrTypeForDiagnosticCpp(
+            iterableType,
+          )} is emitted as a reference: flight::Ref is a shared pointer, so a range-for over it has no begin(). Iterate the collection the reference holds, or spread that collection into a local first`,
+          'cpp-for-of-reference-operand-unrepresented',
+        );
+      }
       const iterableExpression = collectionView?.collection ?? statement.iterable;
       const literalElementType =
         !collectionView && statement.iterable.kind === 'array' && statement.variable.type
@@ -30713,6 +30735,9 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-external-record-conversion-incomplete',
   'cpp-external-record-conversion-missing',
   'cpp-external-record-conversion-wrong-space',
+  // Iterating a reference needs the collection the reference holds, which is the owner-preserving view
+  // the runtime does not yet expose.
+  'cpp-for-of-reference-operand-unrepresented',
   'cpp-json-value-member-typeof-runtime-required',
   'cpp-named-properties-write-unsupported',
   'cpp-number-to-fixed-runtime-helper-required',
