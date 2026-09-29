@@ -9607,6 +9607,82 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  it('requires an exact runtime binding for the Map values iterator materialized by Martinez', () => {
+    const result = lower(
+      'MartinezKernel.ts',
+      `interface UniqueSegment { readonly ax: number; readonly ay: number }
+       export interface MartinezIteration { readonly values: MapIterator<UniqueSegment> }
+       export function mergeCoincidentSegments(
+         segments: readonly UniqueSegment[],
+       ): UniqueSegment[] {
+         const map = new Map<string, UniqueSegment>();
+         for (const segment of segments) map.set(String(segment.ax), segment);
+         return [...map.values()];
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/map_iterator.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'MapIterator',
+          space: 'type' as const,
+          targetName: 'host::MapIterator',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: MapIterator[type]');
+    expect(failure.message).toContain(
+      'MapIterator is a stateful traversal cursor over one Map owner, not a detached array or generic collection',
+    );
+    expect(failure.message).toContain('one externalBindings entry for the exact generic type-space source symbol');
+    expect(failure.message).toContain('stable target iterator carrier');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('preserve the yielded value type');
+    expect(failure.message).toContain('same backing Map owner and lifetime');
+    expect(failure.message).toContain('insertion order, current cursor position, done transitions');
+    expect(failure.message).toContain('source-visible mutation behavior');
+    expect(failure.message).toContain('mergeCoincidentSegments returning [...map.values()]');
+    expect(failure.message).toContain('appending each value to one fresh UniqueSegment[] through map.forEach');
+    expect(failure.message).toContain('does not permit eagerly snapshotting or restarting the cursor');
+    expect(failure.message).toContain('substituting keys or entries for values');
+    expect(failure.message).toContain('reordering results');
+    expect(failure.message).toContain('erasing the yielded type into Any');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('copying or materializing the Map owner');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('#include <host/map_iterator.hpp>');
+    expect(contents).toContain('array_spread_collection = map');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast<host::MapIterator');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify the SetIterator type as a MapIterator cursor', () => {
+    const result = lower('SetIteratorOnly.ts', 'export interface SetCursor { values: SetIterator<number> }');
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: SetIterator[type])',
+    );
+    expect(failure.message).not.toContain('MapIterator is a stateful traversal cursor');
+  });
+
   it('requires an exact runtime binding for the HTMLElement DOM owner identity', () => {
     const result = lower(
       'HtmlElementHandles.ts',

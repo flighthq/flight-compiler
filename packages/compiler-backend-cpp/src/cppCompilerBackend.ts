@@ -29920,6 +29920,7 @@ function assertRuntimeExternalSymbolBindingsCpp(
     completeness.missingExternalSymbols,
   );
   const arrayLikeRemediation = renderMissingArrayLikeBindingRemediationCpp(completeness.missingExternalSymbols);
+  const mapIteratorRemediation = renderMissingMapIteratorBindingRemediationCpp(completeness.missingExternalSymbols);
   const htmlElementRemediation = renderMissingHtmlElementBindingRemediationCpp(completeness.missingExternalSymbols);
   const fontFaceRemediation = renderMissingFontFaceBindingRemediationCpp(completeness.missingExternalSymbols);
   const timerHandleRemediation = renderMissingTimerHandleBindingRemediationCpp(completeness.missingExternalSymbols);
@@ -29931,7 +29932,7 @@ function assertRuntimeExternalSymbolBindingsCpp(
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${sharedArrayBufferRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}${proxyHandlerRemediation}${weakSetRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${sharedArrayBufferRemediation}${arrayLikeRemediation}${mapIteratorRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}${proxyHandlerRemediation}${weakSetRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -30087,6 +30088,14 @@ function renderMissingArrayLikeBindingRemediationCpp(
   const hasArrayLike = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'ArrayLike');
   if (!hasArrayLike) return '';
   return ` ArrayLike is a read-only indexed collection domain rather than a concrete array owner. Add one externalBindings entry for the exact type-space source symbol, with its stable generic target view, required headers, and truthful ownership and nullability; preserve the element type, length and numeric-index relation, ordering, and caller-owned backing through animation track storage, glTF accessor and external-buffer inputs, and layout intrinsic-size calls. A manifest entry names the represented runtime view; it does not permit materializing a vector or replacement array, adding mutation not present in the source contract, erasing the element type into Any, native-pointer casts or reinterpretation, or side storage.`;
+}
+
+function renderMissingMapIteratorBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasMapIterator = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'MapIterator');
+  if (!hasMapIterator) return '';
+  return ` MapIterator is a stateful traversal cursor over one Map owner, not a detached array or generic collection. Add one externalBindings entry for the exact generic type-space source symbol, with its stable target iterator carrier, required headers, and truthful ownership and nullability; preserve the yielded value type, the same backing Map owner and lifetime, insertion order, current cursor position, done transitions, and source-visible mutation behavior. For immediate materialization such as mergeCoincidentSegments returning [...map.values()], avoid making the cursor a runtime boundary by appending each value to one fresh UniqueSegment[] through map.forEach and returning that array. A manifest entry names the represented iterator; it does not permit eagerly snapshotting or restarting the cursor, substituting keys or entries for values, reordering results, erasing the yielded type into Any, native-pointer casts or reinterpretation, copying or materializing the Map owner, or side storage.`;
 }
 
 function renderMissingHtmlElementBindingRemediationCpp(
