@@ -29836,10 +29836,13 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const htmlElementRemediation = renderMissingHtmlElementBindingRemediationCpp(completeness.missingExternalSymbols);
   const fontFaceRemediation = renderMissingFontFaceBindingRemediationCpp(completeness.missingExternalSymbols);
   const timerHandleRemediation = renderMissingTimerHandleBindingRemediationCpp(completeness.missingExternalSymbols);
+  const webAudioHandleRemediation = renderMissingWebAudioHandleBindingsRemediationCpp(
+    completeness.missingExternalSymbols,
+  );
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -30013,6 +30016,19 @@ function renderMissingTimerHandleBindingRemediationCpp(
   );
   if (!hasTimerHandle) return '';
   return ` timers.global.NodeJS.Timeout is a target-runtime scheduled-task handle identity. Add one externalBindings entry for the exact type-space source symbol, with its stable target handle, required headers, and truthful ownership and nullability; preserve the same handle from ReturnType<typeof setInterval> or ReturnType<typeof setTimeout> through nullable stored state to the matching clearInterval or clearTimeout boundary. Bind each missing scheduling and cancellation function as its separate exact value-space identity, and give each scheduling binding a callResultType that names the same handle carrier. A manifest entry names the represented runtime carrier; it does not permit replacing a handle with its delay or a boolean flag, defaulting it to a numeric token without an explicit target contract, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing a replacement handle, or side storage.`;
+}
+
+function renderMissingWebAudioHandleBindingsRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const handles = missing
+    .filter(
+      (identity) =>
+        identity.space === 'type' && (identity.sourceName === 'AudioBuffer' || identity.sourceName === 'AudioContext'),
+    )
+    .map((identity) => identity.sourceName);
+  if (handles.length === 0) return '';
+  return ` Web Audio object handles ${handles.join(', ')} are host-owned stateful identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability. Preserve the AudioBuffer owner, decoded sample storage, channel layout, frame count, sample rate, duration, and lifetime through the nullable AudioResource.buffer slot; reuse the same AudioContext engine owner and lifecycle through the optional nullable LoadScene2DAudioResourcesOptions.context decoder input. A manifest entry names the represented runtime carrier; it does not permit replacing AudioBuffer with its URL, encoded bytes, or a copied sample array, replacing AudioContext with an options or sample-rate record, recreating either owner at a use site, void-pointer or Any erasure, native-pointer casts or reinterpretation, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

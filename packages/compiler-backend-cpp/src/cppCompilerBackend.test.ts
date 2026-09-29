@@ -9810,6 +9810,94 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  it('requires exact runtime bindings for Web Audio object handles', () => {
+    const result = lower(
+      'WebAudioHandles.ts',
+      `export interface AudioResource {
+         buffer: AudioBuffer | null;
+       }
+       export interface LoadScene2DAudioResourcesOptions {
+         context?: AudioContext | null;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/audio.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'AudioBuffer',
+          space: 'type' as const,
+          targetName: 'host::AudioBuffer',
+        },
+        {
+          headers: ['host/audio.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'AudioContext',
+          space: 'type' as const,
+          targetName: 'host::AudioContext',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: AudioBuffer[type], AudioContext[type]');
+    expect(failure.message).toContain(
+      'Web Audio object handles AudioBuffer, AudioContext are host-owned stateful identities',
+    );
+    expect(failure.message).toContain('one externalBindings entry for each exact type-space source symbol');
+    expect(failure.message).toContain('stable target wrapper');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('Preserve the AudioBuffer owner, decoded sample storage, channel layout');
+    expect(failure.message).toContain('frame count, sample rate, duration, and lifetime');
+    expect(failure.message).toContain('nullable AudioResource.buffer slot');
+    expect(failure.message).toContain('reuse the same AudioContext engine owner and lifecycle');
+    expect(failure.message).toContain('optional nullable LoadScene2DAudioResourcesOptions.context decoder input');
+    expect(failure.message).toContain(
+      'does not permit replacing AudioBuffer with its URL, encoded bytes, or a copied sample array',
+    );
+    expect(failure.message).toContain('replacing AudioContext with an options or sample-rate record');
+    expect(failure.message).toContain('recreating either owner at a use site');
+    expect(failure.message).toContain('void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('std::optional<host::AudioBuffer> buffer;');
+    expect(contents).toContain('std::variant<host::AudioContext, flight::Null, flight::Undefined> context');
+    expect(contents).toContain('std::in_place_type<flight::Undefined>');
+    expect(contents.match(/host::AudioBuffer/gu)).toHaveLength(1);
+    expect(contents.match(/host::AudioContext/gu)).toHaveLength(2);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify Web Audio value-space constructors as object handle types', () => {
+    const result = lower(
+      'WebAudioConstructors.ts',
+      `export function readAudioBufferConstructor(): unknown { return AudioBuffer; }
+       export function readAudioContextConstructor(): unknown { return AudioContext; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: AudioBuffer[value], AudioContext[value])',
+    );
+    expect(failure.message).not.toContain('Web Audio object handles');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
