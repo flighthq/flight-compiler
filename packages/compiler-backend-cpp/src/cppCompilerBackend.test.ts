@@ -15688,6 +15688,73 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emitted).not.toContain('materialize');
   });
 
+  it('refuses generic callable-owner re-instantiation and retains exact owners in operation closures', () => {
+    const incompatible = lowerPackage(
+      '@flighthq/signals',
+      'generic-owner-variance.ts',
+      `interface Signal<T extends (...args: any[]) => void> { emit: T }
+       interface SignalConnection<T extends (...args: any[]) => void> {
+         connected: boolean;
+         paused: boolean;
+         signal: Signal<T>;
+         slot: T;
+       }
+       export function widen<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+       ): SignalConnection<(...args: any[]) => void> {
+         return connection as unknown as SignalConnection<(...args: any[]) => void>;
+       }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(incompatible, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(failure).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-generic-owner-argument-assertion-unproven',
+    });
+    expect(failure.message).toContain('cannot re-instantiate the represented generic owner');
+    expect(failure.message).toContain('flight::Ref<SignalConnection<T>>');
+    expect(failure.message).toContain('flight::Ref<SignalConnection<std::function<void(flight::Array<flight::Any>)>>>');
+    expect(failure.message).toContain('type arguments representation-equivalent');
+    expect(failure.message).toContain('member and callable cells of each concrete owner');
+    expect(failure.message).toContain('store an operation closure that captures the exact owner');
+    expect(failure.message).toContain('explicit type-erased handle and target-runtime contract');
+    expect(failure.message).toContain('will not treat type-parameter variance as representation equivalence');
+    expect(failure.message).toContain('reinterpret or cast the owner');
+    expect(failure.message).toContain('copy or materialize a replacement');
+    expect(failure.message).toContain('or add side storage');
+
+    const portable = lowerPackage(
+      '@flighthq/signals',
+      'generic-owner-operation.ts',
+      `interface SignalConnection<T extends (...args: any[]) => void> { paused: boolean; slot: T }
+       interface SignalScope { disconnectors: (() => void)[] }
+       export function retain<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+       ): SignalConnection<T> {
+         return connection as unknown as SignalConnection<T>;
+       }
+       export function retainInScope<T extends (...args: any[]) => void>(
+         scope: SignalScope,
+         connection: SignalConnection<T>,
+       ): void {
+         scope.disconnectors.push((): void => { connection.paused = true; });
+       }`,
+    );
+    const emitted = emitIrModuleCpp(portable.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(portable.diagnostics).toEqual([]);
+    expect(emitted).toContain('return connection;');
+    expect(emitted).toContain('(connection->paused = true);');
+    expect(emitted).not.toContain('make_binding_cell');
+    expect(emitted).not.toContain('flight::Any::');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('reinterpret_cast');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize');
+  });
+
   it('binds process and browser host surfaces without making them compiler runtime policy', () => {
     const result = lower(
       'host-surfaces.ts',

@@ -579,6 +579,44 @@ function getSignalCallableDoubleAssertionGuidance(
   return undefined;
 }
 
+function getGenericOwnerArgumentDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  const target = getTypeAssertionType(node);
+  if (!ts.isTypeReferenceNode(target) || !target.typeArguments?.length) return undefined;
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner)) return undefined;
+  let retained: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retained)) retained = retained.expression;
+  if (!ts.isIdentifier(retained)) return undefined;
+  let body: ts.Block | undefined;
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    if (!ts.isFunctionLike(current) || !('body' in current)) continue;
+    body = current.body && ts.isBlock(current.body) ? current.body : undefined;
+    break;
+  }
+  const declaration = body ? getVariableDeclaration(body, retained.text) : undefined;
+  const source = declaration?.type;
+  if (
+    !source ||
+    !ts.isTypeReferenceNode(source) ||
+    getNodeName(source.typeName) !== getNodeName(target.typeName) ||
+    !source.typeArguments?.length ||
+    source.typeArguments.length !== target.typeArguments.length
+  ) {
+    return undefined;
+  }
+  const sourceArguments = source.typeArguments.map((argument) => argument.getText(node.getSourceFile()));
+  const targetArguments = target.typeArguments.map((argument) => argument.getText(node.getSourceFile()));
+  if (sourceArguments.every((argument, index) => argument === targetArguments[index])) return undefined;
+  const sourceType = source.getText(node.getSourceFile());
+  const targetType = target.getText(node.getSourceFile());
+  return `${subject} uses a double assertion through ${bridge} to re-parameterize the represented ${sourceType} owner as ${targetType}. Sharing the generic declaration name does not make those instantiations representation-equivalent: their type arguments determine the member and callable cells bound to each concrete owner. Preserve ${retained.text} as ${sourceType}. If heterogeneous storage needs only one closed operation, store an operation closure that captures this exact owner; otherwise declare an explicit type-erased handle and target-runtime contract instead of widening the generic owner. The compiler will preserve an unchanged generic instantiation, but will not treat type-parameter variance as representation equivalence, reinterpret or cast the owner, copy or materialize a replacement, or add side storage.`;
+}
+
 function getNodeInteractiveStateBindingDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
@@ -1575,6 +1613,8 @@ function renderUncheckedDoubleAssertionMessage(
   if (awd2MaterialHandler) return awd2MaterialHandler;
   const signalCallable = getSignalCallableDoubleAssertionGuidance(node, subject, bridge);
   if (signalCallable) return signalCallable;
+  const genericOwnerArgument = getGenericOwnerArgumentDoubleAssertionGuidance(node, subject, bridge);
+  if (genericOwnerArgument) return genericOwnerArgument;
   const nodeInteractiveStateBinding = getNodeInteractiveStateBindingDoubleAssertionGuidance(node, subject, bridge);
   if (nodeInteractiveStateBinding) return nodeInteractiveStateBinding;
   const physics3DWorld = getPhysics3DWorldDoubleAssertionGuidance(node, subject, bridge);

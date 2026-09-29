@@ -4586,6 +4586,13 @@ function emitExpression(
         if (areCppTypesRepresentationEquivalent(representedErasedFlightSource.type, expression.type, context)) {
           return emitExpression(representedErasedFlightSource.expression, context, undefined, false);
         }
+        if (haveSameCppGenericOwnerDeclarationCpp(representedErasedFlightSource.type, expression.type)) {
+          refuseCppGenericOwnerArgumentAssertionUnprovenCpp(
+            context,
+            representedErasedFlightSource.type,
+            expression.type,
+          );
+        }
         const sourceRuntimeType = getIrTypeRuntimeDomainCpp(representedErasedFlightSource.type, context, new Set());
         const targetRuntimeType = getIrTypeRuntimeDomainCpp(expression.type, context, new Set());
         const classHeritageRelated =
@@ -6683,6 +6690,36 @@ function refuseCppStructuralAssertionOwnerUnprovenCpp(
     context,
     `the asserted row from ${sourceType} to ${targetType} reads ${missing}, and a structural owner binds the members and storage representations of the type the object was first reached as, so a member the source's own declaration lacks or carries differently has no compatible cell to answer the read. An assertion cannot add those cells or change their representation, or prove which wider owner was stored. Preserve the concrete owner in the source type through every storage or callback boundary, or make an intentionally erased registry validate and recover that owner before dispatch; a tag or registry key carried beside the value does not prove which owner the reference retains. Declare the source as a type that ${declarationRequirement} -- construct ${declaredTargetType} explicitly, then type the retaining slot and every accessor result as ${declaredTargetType} wherever that concrete owner is known; changing only the accessor result cannot recover a wider owner after a base-typed slot erased it -- rather than asserting past ${sourceType}. The compiler will not reinterpret the owner, cast it, copy or materialize a replacement, or add side storage.`,
     'cpp-structural-assertion-owner-unproven',
+  );
+}
+
+function haveSameCppGenericOwnerDeclarationCpp(left: Readonly<IrType>, right: Readonly<IrType>): boolean {
+  if (
+    left.kind !== 'named' ||
+    right.kind !== 'named' ||
+    left.typeArguments.length === 0 ||
+    right.typeArguments.length === 0
+  ) {
+    return false;
+  }
+  if (left.reference.kind !== right.reference.kind) return false;
+  return left.reference.kind === 'ambient'
+    ? left.reference.name === (right.reference.kind === 'ambient' ? right.reference.name : undefined)
+    : left.reference.binding.id === (right.reference.kind === 'binding' ? right.reference.binding.id : undefined);
+}
+
+function refuseCppGenericOwnerArgumentAssertionUnprovenCpp(
+  context: EmitContext,
+  source: Readonly<IrType>,
+  target: Readonly<IrType>,
+): never {
+  const diagnosticContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set() };
+  const sourceType = emitType(source, diagnosticContext);
+  const targetType = emitType(target, diagnosticContext);
+  emissionError(
+    context,
+    `the erased assertion cannot re-instantiate the represented generic owner ${sourceType} as ${targetType}: sharing one generic declaration does not make different type arguments representation-equivalent, because those arguments bind the member and callable cells of each concrete owner. Preserve the exact source instantiation through its retaining slot. If heterogeneous storage needs one closed operation, store an operation closure that captures the exact owner; otherwise declare an explicit type-erased handle and target-runtime contract. The compiler will not treat type-parameter variance as representation equivalence, reinterpret or cast the owner, copy or materialize a replacement, or add side storage.`,
+    'cpp-generic-owner-argument-assertion-unproven',
   );
 }
 
@@ -30383,6 +30420,7 @@ const cppNullTaggedStoragePredicates: ReadonlyMap<string, string> = new Map([['f
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-closed-key-result-assertion-discards-alternatives',
   'cpp-extract-dependent-discriminant-unrepresented',
+  'cpp-generic-owner-argument-assertion-unproven',
   // A typeof test the emitter cannot fold is one the source can state: every type is assignable to
   // `unknown`, and a value preserved in that carrier is answered by the runtime's own `typeof` (proved by
   // the `unknown` and `any` spellings emitting `.type_of()` while the undeclared domain refuses). The

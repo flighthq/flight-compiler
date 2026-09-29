@@ -941,6 +941,56 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
 
+  it('refuses re-parameterizing represented generic callable owners', () => {
+    const asserted = input(
+      'packages/signals/src/connection.ts',
+      `export function retainInScope<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+         scope: SignalScope,
+       ): void {
+         const retained: SignalConnection<T> = connection;
+         scope.connections.push(retained as unknown as SignalConnection<(...args: any[]) => void>);
+       }`,
+    );
+    const exact = input(
+      'exactGenericOwner.ts',
+      `export function retain<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+       ): SignalConnection<T> {
+         const retained: SignalConnection<T> = connection;
+         return retained as unknown as SignalConnection<T>;
+       }`,
+    );
+    const typed = input(
+      'portableSignalScope.ts',
+      `interface SignalScope { disconnectors: (() => void)[] }
+       function retainInScope<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+         scope: SignalScope,
+       ): void {
+         scope.disconnectors.push((): void => disconnectSignalConnection(connection));
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([asserted]).findings;
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ rule: 'unchecked-double-assertion', subject: 'function:retainInScope' });
+    expect(findings[0]?.message).toContain('represented SignalConnection<T> owner');
+    expect(findings[0]?.message).toContain('SignalConnection<(...args: any[]) => void>');
+    expect(findings[0]?.message).toContain('type arguments determine the member and callable cells');
+    expect(findings[0]?.message).toContain('store an operation closure that captures this exact owner');
+    expect(findings[0]?.message).toContain('explicit type-erased handle and target-runtime contract');
+    expect(findings[0]?.message).toContain('will not treat type-parameter variance as representation equivalence');
+    expect(findings[0]?.message).toContain('reinterpret or cast the owner');
+    expect(findings[0]?.message).toContain('copy or materialize a replacement');
+    expect(findings[0]?.message).toContain('or add side storage');
+    const exactFinding = analyzeTypeScriptSourcePortability([exact]).findings[0];
+    expect(exactFinding?.message).toBe(
+      'function:retain uses a double assertion through unknown; replace it with a checked conversion or a narrower source type.',
+    );
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',
