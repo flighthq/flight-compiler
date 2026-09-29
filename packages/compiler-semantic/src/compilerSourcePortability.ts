@@ -1036,6 +1036,96 @@ function getEntityRuntimeStripDoubleAssertionGuidance(
   return `${subject} uses ${bridge} only to project the fresh { ...source } clone after delete copy[EntityRuntimeKey] into EntityWithoutRuntime<Type>. The spread creates a new generic Type row owner, Record<PropertyKey, unknown> supplies the symbol-keyed mutation view, and deleting the declared EntityRuntimeKey removes the sole cell excluded by EntityWithoutRuntime<Type>; every other Type cell stays on the same copy owner with its exact representation. Express this as one named generic entity-runtime strip operation, or return the compiler-proven Omit projection directly, so the source no longer needs a double assertion. This proof is limited to the fresh clone, the PropertyKey record view, the exact runtime-key deletion, and the matching EntityWithoutRuntime<Type> result; an arbitrary owner, key, or Omit assertion is not representation evidence. A reviewed source-portability exception is not justified for a general double assertion. The compiler may clone the generic row once, clear its runtime slot, and preserve that clone as the projected result, but will not route it through Any, cast or reinterpret the source owner, copy or materialize a second replacement, or add side storage.`;
 }
 
+function getEntityGuardProxyDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  const guardedEntity = subject === 'function:createGuardedEntity/function:set';
+  const guardedRuntime = subject === 'function:createGuardedEntityRuntime/function:set';
+  if (
+    bridge !== 'unknown' ||
+    (!guardedEntity && !guardedRuntime) ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/entity/src/guards.ts') ||
+    !isPropertyKeyUnknownRecord(getTypeAssertionType(node))
+  ) {
+    return undefined;
+  }
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner) || getTypeAssertionType(inner).kind !== ts.SyntaxKind.UnknownKeyword) return undefined;
+  let retained: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retained)) retained = retained.expression;
+  if (!ts.isIdentifier(retained) || retained.text !== 'target') return undefined;
+  let targetView: ts.Expression = node;
+  while (ts.isParenthesizedExpression(targetView.parent) && targetView.parent.expression === targetView) {
+    targetView = targetView.parent;
+  }
+  const access = targetView.parent;
+  if (
+    !ts.isElementAccessExpression(access) ||
+    access.expression !== targetView ||
+    !ts.isIdentifier(access.argumentExpression) ||
+    access.argumentExpression.text !== 'prop'
+  ) {
+    return undefined;
+  }
+  const assignment = access.parent;
+  if (
+    !ts.isBinaryExpression(assignment) ||
+    assignment.left !== access ||
+    assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !ts.isIdentifier(assignment.right) ||
+    assignment.right.text !== 'value'
+  ) {
+    return undefined;
+  }
+  const statement = assignment.parent;
+  if (!ts.isExpressionStatement(statement) || statement.expression !== assignment || !ts.isBlock(statement.parent)) {
+    return undefined;
+  }
+  const block = statement.parent;
+  const statementIndex = block.statements.indexOf(statement);
+  const observation = block.statements[statementIndex - 1];
+  const success = block.statements[statementIndex + 1];
+  if (
+    statementIndex < 0 ||
+    !observation ||
+    !isEntityGuardSlotObservation(observation, guardedEntity) ||
+    !success ||
+    !ts.isReturnStatement(success) ||
+    success.expression?.kind !== ts.SyntaxKind.TrueKeyword
+  ) {
+    return undefined;
+  }
+  const owner = guardedEntity ? 'generic Type & Entity' : 'EntityRuntime';
+  const observedSlot = guardedEntity ? 'EntityRuntimeKey runtime slot' : 'binding slot';
+  return `${subject} uses a double assertion through unknown only to forward the Proxy set trap's PropertyKey and unknown value onto the same ${owner} target after observing the ${observedSlot}. This is an open interception protocol over a retained typed owner, not evidence that the owner is mutable Record<PropertyKey, unknown> storage: that record view erases the declared types of every known cell, while a finite-key rewrite would stop the proxy from forwarding ordinary entity writes. Replace the asserted element assignment with Reflect.set(target, prop, value) and return its boolean result, or route it through one named proxy-write forwarder with the same target, key, value, receiver, setter/prototype, and success semantics. If the guard deliberately promises every forwarded write succeeds, make that invariant explicit in the forwarder rather than discarding a false result with return true. The compiler will preserve the exact target owner, trap ordering, observed slot, and forwarded value identity, but will not reinterpret or cast the owner as a Record, route declared cells through Any, assume the unknown value satisfies an arbitrary known property, copy or materialize the target, suppress the forwarding result, or add side storage.`;
+}
+
+function isEntityGuardSlotObservation(statement: ts.Statement, guardedEntity: boolean): boolean {
+  if (!ts.isIfStatement(statement)) return false;
+  const conditions: ts.Expression[] = [statement.expression];
+  for (let index = 0; index < conditions.length; index += 1) {
+    const condition = conditions[index]!;
+    if (ts.isBinaryExpression(condition) && condition.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+      conditions.push(condition.left, condition.right);
+      continue;
+    }
+    if (
+      !ts.isBinaryExpression(condition) ||
+      condition.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      !ts.isIdentifier(condition.left) ||
+      condition.left.text !== 'prop'
+    ) {
+      continue;
+    }
+    if (guardedEntity && ts.isIdentifier(condition.right) && condition.right.text === 'EntityRuntimeKey') return true;
+    if (!guardedEntity && ts.isStringLiteral(condition.right) && condition.right.text === 'binding') return true;
+  }
+  return false;
+}
+
 function isNamedGenericTypeReference(node: ts.TypeNode | undefined, name: string, argumentName: string): boolean {
   if (!node || !ts.isTypeReferenceNode(node) || getNodeName(node.typeName) !== name) return false;
   const argument = node.typeArguments?.[0];
@@ -2453,6 +2543,8 @@ function renderUncheckedDoubleAssertionMessage(
 ): string {
   const entityRuntimeStrip = getEntityRuntimeStripDoubleAssertionGuidance(node, subject, bridge);
   if (entityRuntimeStrip) return entityRuntimeStrip;
+  const entityGuardProxy = getEntityGuardProxyDoubleAssertionGuidance(node, subject, bridge);
+  if (entityGuardProxy) return entityGuardProxy;
   const nodeBoundsParent = getNodeBoundsParentDoubleAssertionGuidance(node, subject, bridge);
   if (nodeBoundsParent) return nodeBoundsParent;
   const nodeRuntimeFactory = getNodeRuntimeFactoryDoubleAssertionGuidance(node, subject, bridge);

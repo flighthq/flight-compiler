@@ -205,6 +205,211 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('forwards entity guard proxy writes without claiming record storage', () => {
+    const declarations = `declare const EntityRuntimeKey: unique symbol;
+       interface Entity { [EntityRuntimeKey]: object | undefined }
+       interface EntityRuntime { binding: object | null }
+       declare function observe(): void;`;
+    const source = input(
+      'packages/entity/src/guards.ts',
+      `${declarations}
+       function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+         return new Proxy(entity, {
+           set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+             return true;
+           },
+         });
+       }
+       function createGuardedEntityRuntime(runtime: EntityRuntime): EntityRuntime {
+         return new Proxy(runtime, {
+           set(target, prop, value) {
+             if (prop === 'binding') observe();
+             (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+             return true;
+           },
+         });
+       }`,
+    );
+    const resolved = input(
+      'packages/entity/src/guards.ts',
+      `${declarations}
+       function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+         return new Proxy(entity, {
+           set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             return Reflect.set(target, prop, value);
+           },
+         });
+       }
+       function createGuardedEntityRuntime(runtime: EntityRuntime): EntityRuntime {
+         return new Proxy(runtime, {
+           set(target, prop, value) {
+             if (prop === 'binding') observe();
+             return Reflect.set(target, prop, value);
+           },
+         });
+       }`,
+    );
+    const report = analyzeTypeScriptSourcePortability([source]);
+
+    expect(report.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'unchecked-double-assertion',
+        subject: 'function:createGuardedEntity/function:set',
+      },
+      {
+        rule: 'unchecked-double-assertion',
+        subject: 'function:createGuardedEntityRuntime/function:set',
+      },
+    ]);
+    for (const finding of report.findings) {
+      expect(finding.message).toContain("Proxy set trap's PropertyKey and unknown value");
+      expect(finding.message).toContain('open interception protocol over a retained typed owner');
+      expect(finding.message).toContain('not evidence that the owner is mutable Record<PropertyKey, unknown>');
+      expect(finding.message).toContain('erases the declared types of every known cell');
+      expect(finding.message).toContain(
+        'finite-key rewrite would stop the proxy from forwarding ordinary entity writes',
+      );
+      expect(finding.message).toContain('Reflect.set(target, prop, value)');
+      expect(finding.message).toContain('return its boolean result');
+      expect(finding.message).toContain('one named proxy-write forwarder');
+      expect(finding.message).toContain('target, key, value, receiver, setter/prototype, and success semantics');
+      expect(finding.message).toContain('make that invariant explicit in the forwarder');
+      expect(finding.message).toContain('discarding a false result with return true');
+      expect(finding.message).toContain('preserve the exact target owner');
+      expect(finding.message).toContain('trap ordering');
+      expect(finding.message).toContain('forwarded value identity');
+      expect(finding.message).toContain('will not reinterpret or cast the owner as a Record');
+      expect(finding.message).toContain('route declared cells through Any');
+      expect(finding.message).toContain('assume the unknown value satisfies an arbitrary known property');
+      expect(finding.message).toContain('copy or materialize the target');
+      expect(finding.message).toContain('suppress the forwarding result');
+      expect(finding.message).toContain('or add side storage');
+    }
+    expect(report.findings[0]?.message).toContain('same generic Type & Entity target');
+    expect(report.findings[0]?.message).toContain('EntityRuntimeKey runtime slot');
+    expect(report.findings[1]?.message).toContain('same EntityRuntime target');
+    expect(report.findings[1]?.message).toContain('binding slot');
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+  });
+
+  it('keeps entity guard proxy guidance exact to transparent set forwarding', () => {
+    const declarations = `declare const EntityRuntimeKey: unique symbol;
+       declare const otherProp: PropertyKey;
+       declare const otherValue: unknown;
+       interface Entity { [EntityRuntimeKey]: object | undefined }
+       declare function observe(): void;`;
+    const controls = [
+      input(
+        'packages/example/src/guards.ts',
+        `${declarations}
+         function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           return new Proxy(entity, { set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+             return true;
+           } });
+         }`,
+      ),
+      input(
+        'packages/entity/src/guards.ts',
+        `${declarations}
+         function wrapEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           return new Proxy(entity, { set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+             return true;
+           } });
+         }`,
+      ),
+      input(
+        'packages/entity/src/guards.ts',
+        `${declarations}
+         function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           return new Proxy(entity, { set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             (target as unknown as Record<string, unknown>)[prop] = value;
+             return true;
+           } });
+         }`,
+      ),
+      input(
+        'packages/entity/src/guards.ts',
+        `${declarations}
+         function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           return new Proxy(entity, { set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             (entity as unknown as Record<PropertyKey, unknown>)[prop] = value;
+             return true;
+           } });
+         }`,
+      ),
+      input(
+        'packages/entity/src/guards.ts',
+        `${declarations}
+         function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           return new Proxy(entity, { set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             (target as unknown as Record<PropertyKey, unknown>)[otherProp] = value;
+             return true;
+           } });
+         }`,
+      ),
+      input(
+        'packages/entity/src/guards.ts',
+        `${declarations}
+         function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           return new Proxy(entity, { set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             (target as unknown as Record<PropertyKey, unknown>)[prop] = otherValue;
+             return true;
+           } });
+         }`,
+      ),
+      input(
+        'packages/entity/src/guards.ts',
+        `${declarations}
+         function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           return new Proxy(entity, { set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+             return false;
+           } });
+         }`,
+      ),
+      input(
+        'packages/entity/src/guards.ts',
+        `${declarations}
+         function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           return new Proxy(entity, { set(target, prop, value) {
+             if (prop === EntityRuntimeKey) observe();
+             (target as any as Record<PropertyKey, unknown>)[prop] = value;
+             return true;
+           } });
+         }`,
+      ),
+      input(
+        'packages/entity/src/guards.ts',
+        `${declarations}
+         function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+           return new Proxy(entity, { set(target, prop, value) {
+             (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+             return true;
+           } });
+         }`,
+      ),
+    ];
+
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).not.toContain('open interception protocol over a retained typed owner');
+      expect(findings[0]?.message).not.toContain('Reflect.set(target, prop, value)');
+    }
+  });
+
   it('explains the missing spatial-family proof on node width and height parent lookups', () => {
     const source = input(
       'packages/node/src/boundsRectangle.ts',
