@@ -370,6 +370,17 @@ function isOptionalNullableStringProperty(node: ts.PropertySignature): boolean {
   return type.kind === ts.SyntaxKind.StringKeyword;
 }
 
+function isRequiredNullableUndefinedNumberProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken !== undefined || !hasNullType(node.type) || !hasUndefinedType(node.type)) {
+    return false;
+  }
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  return type.kind === ts.SyntaxKind.NumberKeyword;
+}
+
 function getBitmapTextOptionsMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -384,6 +395,22 @@ function getBitmapTextOptionsMixedAbsencePropertyMessage(
     return `${subject} gives the BitmapText construction option ${name} both omission and explicit null, but createBitmapText applies this option only to fresh BitmapTextData: initializeBitmapTextData has already defaulted maxLines and wrapWidth to null, and applyBitmapTextOptions writes each field only when it is not undefined, so either absence spelling produces the same stored disabled state. Keep BitmapTextData and the dedicated setters required nullable, but make maxLines and wrapWidth optional number fields in BitmapTextOptions so omission is the sole construction-time absence. If the same input shape later becomes a mutation patch, define a named closed update state whose unchanged, disabled, and numeric cases are explicit. The compiler will not choose or collapse an absence sentinel, infer a numeric default because zero is a present limit or width, rewrite existing BitmapTextData, call a setter, or add side storage.`;
   }
   return undefined;
+}
+
+function getCapacitorPositionCoordsMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'CapacitorPositionCoords' ||
+    getNodeName(node.name) !== 'altitudeAccuracy' ||
+    !isFlightTypesSource(node, 'CapacitorApi.ts') ||
+    !isRequiredNullableUndefinedNumberProperty(node)
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the Capacitor geolocation provider coordinate altitudeAccuracy both explicit null and explicit undefined, but host-capacitor's toGeoPosition evaluates coords.altitudeAccuracy ?? 0 into required numeric GeoPosition.altitudeAccuracy. Both absence sentinels therefore become the same zero fallback at provider ingress, while a present zero remains a real reported accuracy. Keep GeoPosition.altitudeAccuracy a required number and retain one explicit nullish normalization at the adapter boundary, but give CapacitorPositionCoords.altitudeAccuracy exactly one provider-side absence representation: use required number | null when the provider guarantees the field with null for unavailable data, or optional number without null when omission is its contract. If null and omission carry different provider meanings, model a named closed provider state and normalize each arm deliberately before constructing GeoPosition. The compiler will not choose or collapse an absence sentinel, infer which provider contract applies, replace a present zero, select or synthesize a numeric fallback, rewrite the host adapter or canonical coordinate storage, reinterpret or cast the value, or add side storage.`;
 }
 
 function getInteractionManagerOptionsMixedAbsencePropertyMessage(
@@ -565,6 +592,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (attachmentPointStorage) return attachmentPointStorage;
   const bitmapTextOptions = getBitmapTextOptionsMixedAbsencePropertyMessage(node, subject);
   if (bitmapTextOptions) return bitmapTextOptions;
+  const capacitorPositionCoords = getCapacitorPositionCoordsMixedAbsencePropertyMessage(node, subject);
+  if (capacitorPositionCoords) return capacitorPositionCoords;
   const interactionManagerOptions = getInteractionManagerOptionsMixedAbsencePropertyMessage(node, subject);
   if (interactionManagerOptions) return interactionManagerOptions;
   const normalizedStringOption = getNormalizedStringOptionMixedAbsencePropertyMessage(node, subject);

@@ -3966,6 +3966,97 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the provider-boundary normalization for Capacitor altitude accuracy', () => {
+    const source = input(
+      'packages/types/src/CapacitorApi.ts',
+      `interface CapacitorPositionCoords {
+         accuracy: number;
+         altitude: number | null;
+         altitudeAccuracy: number | null | undefined;
+         latitude: number;
+         longitude: number;
+       }
+       interface GeoPosition {
+         altitudeAccuracy: number;
+       }
+       function toGeoPosition(coords: Readonly<CapacitorPositionCoords>): GeoPosition {
+         return { altitudeAccuracy: coords.altitudeAccuracy ?? 0 };
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toMatchObject([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:CapacitorPositionCoords/property:altitudeAccuracy',
+      },
+    ]);
+    const message = findings[0]?.message;
+    expect(message).toContain(
+      'gives the Capacitor geolocation provider coordinate altitudeAccuracy both explicit null and explicit undefined',
+    );
+    expect(message).toContain("host-capacitor's toGeoPosition evaluates coords.altitudeAccuracy ?? 0");
+    expect(message).toContain('required numeric GeoPosition.altitudeAccuracy');
+    expect(message).toContain('Both absence sentinels therefore become the same zero fallback at provider ingress');
+    expect(message).toContain('a present zero remains a real reported accuracy');
+    expect(message).toContain('Keep GeoPosition.altitudeAccuracy a required number');
+    expect(message).toContain('retain one explicit nullish normalization at the adapter boundary');
+    expect(message).toContain('give CapacitorPositionCoords.altitudeAccuracy exactly one provider-side absence');
+    expect(message).toContain('required number | null when the provider guarantees the field');
+    expect(message).toContain('optional number without null when omission is its contract');
+    expect(message).toContain('model a named closed provider state');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('replace a present zero');
+    expect(message).toContain('select or synthesize a numeric fallback');
+    expect(message).toContain('rewrite the host adapter or canonical coordinate storage');
+    expect(message).toContain('reinterpret or cast the value');
+    expect(message).toContain('or add side storage');
+  });
+
+  it('keeps unrelated nullish numbers generic and accepts one provider-side absence', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/CapacitorApi.ts',
+        'interface OtherPositionCoords { altitudeAccuracy: number | null | undefined }',
+      ),
+      input(
+        'packages/types/src/CapacitorApi.ts',
+        'interface CapacitorPositionCoords { verticalAccuracy: number | null | undefined }',
+      ),
+      input(
+        'packages/example/src/CapacitorApi.ts',
+        'interface CapacitorPositionCoords { altitudeAccuracy: number | null | undefined }',
+      ),
+      input(
+        'packages/types/src/CapacitorApi.ts',
+        'interface CapacitorPositionCoords { altitudeAccuracy: string | null | undefined }',
+      ),
+      input(
+        'packages/types/src/CapacitorApi.ts',
+        'interface CapacitorPositionCoords { altitudeAccuracy?: number | null }',
+      ),
+    ];
+    const resolved = input(
+      'ResolvedCapacitorPositionCoords.ts',
+      `interface CapacitorPositionCoordsWithNull { altitudeAccuracy: number | null }
+       interface CapacitorPositionCoordsWithOmission { altitudeAccuracy?: number }
+       type ProviderAltitudeAccuracy =
+         | { readonly state: 'missing' }
+         | { readonly state: 'reported'; readonly value: number };
+       interface GeoPosition { altitudeAccuracy: number }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+      expect(findings[0]?.message).not.toContain('Capacitor geolocation provider coordinate');
+    }
+  });
+
   it('explains construction-only absence for scene owner options', () => {
     const camera = input(
       'packages/types/src/Camera3DOptions.ts',
