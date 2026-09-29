@@ -247,7 +247,7 @@ function getSourcePortabilitySubject(node: ts.Node): string {
   return parts.reverse().join('/') || 'module';
 }
 
-function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string {
+function getAnchorLayoutMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string | undefined {
   const name = getNodeName(node.name);
   if (
     ts.isInterfaceDeclaration(node.parent) &&
@@ -262,7 +262,7 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   ) {
     return `${subject} gives the anchor constraint ${name} both an omitted state and explicit null, but the represented layout contract uses them identically: style construction omits inactive constraints, isOptionalNumber accepts null and undefined, and anchorLayoutResolver collapses either before opposing-pin stretch, intrinsic-size fallback, or aligned placement. Make all six bottom, height, left, right, top, and width constraints optional number fields and reserve null for the enclosing itemStyle no-style sentinel. If callers need a distinct explicit-clear state, name a closed constraint-state union and handle it separately. The compiler will not preserve a redundant third sentinel in target storage, infer a numeric default because zero is a real pin or size, collapse a present value, or add side storage.`;
   }
-  return `${subject} combines an optional property with null; choose one absence representation or make all three states explicit.`;
+  return undefined;
 }
 
 function getTypeLiteralDiscriminant(node: ts.TypeLiteralNode): string | undefined {
@@ -300,6 +300,38 @@ function hasUndefinedType(node: ts.TypeNode): boolean {
   if (node.kind === ts.SyntaxKind.UndefinedKeyword) return true;
   if (ts.isParenthesizedTypeNode(node)) return hasUndefinedType(node.type);
   return ts.isUnionTypeNode(node) && node.types.some(hasUndefinedType);
+}
+
+function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string {
+  const anchorLayout = getAnchorLayoutMixedAbsencePropertyMessage(node, subject);
+  if (anchorLayout) return anchorLayout;
+  const callableOwner = node.type ? getMixedAbsenceGenericCallableOwner(node.type) : undefined;
+  if (!callableOwner) {
+    return `${subject} combines an optional property with null; choose one absence representation or make all three states explicit.`;
+  }
+  const ownerType = callableOwner.getText(node.getSourceFile());
+  const undefinedState = node.questionToken ? 'an implicit undefined state' : 'an explicit undefined state';
+  return `${subject} gives the generic callable owner ${ownerType} both ${undefinedState} and an explicit null state. A present owner retains its exact callable type argument; neither absence state owns a callable. If undefined and null both mean that the callback facility is not enabled, declare the property as a required ${ownerType} | null, initialize it to null in every construction path, and retain the nullish guard at reads. If omission is the sole absence contract, remove null instead; if the two states differ, replace the two absence states with a named discriminated state. The compiler will preserve all authored states, but will not choose or collapse an absence sentinel, allocate or clone a callable owner, re-parameterize its callable argument, route it through Any, reinterpret or cast it, or add side storage.`;
+}
+
+function getMixedAbsenceGenericCallableOwner(node: ts.TypeNode): ts.TypeReferenceNode | undefined {
+  while (ts.isParenthesizedTypeNode(node)) node = node.type;
+  const members = ts.isUnionTypeNode(node) ? node.types : [node];
+  const present = members.filter(
+    (member) =>
+      member.kind !== ts.SyntaxKind.UndefinedKeyword &&
+      !(ts.isLiteralTypeNode(member) && member.literal.kind === ts.SyntaxKind.NullKeyword),
+  );
+  if (present.length !== 1) return undefined;
+  let owner = present[0]!;
+  while (ts.isParenthesizedTypeNode(owner)) owner = owner.type;
+  if (!ts.isTypeReferenceNode(owner) || !owner.typeArguments?.length) return undefined;
+  return owner.typeArguments.some((argument) => {
+    while (ts.isParenthesizedTypeNode(argument)) argument = argument.type;
+    return ts.isFunctionTypeNode(argument);
+  })
+    ? owner
+    : undefined;
 }
 
 function isTypeAssertion(node: ts.Node): node is ts.AsExpression | ts.TypeAssertion {

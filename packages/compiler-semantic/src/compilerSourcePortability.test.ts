@@ -3251,7 +3251,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     });
   });
 
-  it('keeps optional nullable callbacks as mixed absence until the API elects one state model', () => {
+  it('guides optional nullable generic callable owners to one explicit state model', () => {
     const mixed = input(
       'AnimationPlayer.ts',
       `interface AnimationClipEvent { readonly name: string }
@@ -3286,6 +3286,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
          | { readonly signal: Signal<() => void>; readonly state: 'bound' };
        interface AnimationPlayer { onFinished: CallbackState }`,
     );
+    const unrelated = input(
+      'GenericMixedAbsence.ts',
+      'interface Box<T> { value: T } interface Contract { value?: Box<number> | null }',
+    );
 
     // A callback-bearing Signal does not make the two implicit absence spellings one source contract. The
     // measured constructors write null, and every direct use collapses null and undefined with `== null`, so
@@ -3294,29 +3298,46 @@ describe('analyzeTypeScriptSourcePortability', () => {
     // all three states explicitly), so the gate must not infer the choice from current downstream uses.
     expect(analyzeTypeScriptSourcePortability([mixed]).findings).toMatchObject([
       {
-        message:
-          'interface:AnimationPlayer/property:onEvent combines an optional property with null; choose one absence representation or make all three states explicit.',
+        message: expect.stringContaining(
+          'generic callable owner Signal<(event: Readonly<AnimationClipEvent>) => void>',
+        ),
         rule: 'mixed-absence',
         subject: 'interface:AnimationPlayer/property:onEvent',
       },
       {
-        message:
-          'interface:AnimationPlayer/property:onFinished combines an optional property with null; choose one absence representation or make all three states explicit.',
+        message: expect.stringContaining('generic callable owner Signal<() => void>'),
         rule: 'mixed-absence',
         subject: 'interface:AnimationPlayer/property:onFinished',
       },
       {
-        message:
-          'interface:AnimationPlayer/property:onLooped combines an optional property with null; choose one absence representation or make all three states explicit.',
+        message: expect.stringContaining('generic callable owner Signal<() => void>'),
         rule: 'mixed-absence',
         subject: 'interface:AnimationPlayer/property:onLooped',
       },
     ]);
+    for (const finding of analyzeTypeScriptSourcePortability([mixed]).findings) {
+      expect(finding.message).toContain('both an implicit undefined state and an explicit null state');
+      expect(finding.message).toContain('present owner retains its exact callable type argument');
+      expect(finding.message).toContain('declare the property as a required Signal<');
+      expect(finding.message).toContain('initialize it to null in every construction path');
+      expect(finding.message).toContain('retain the nullish guard at reads');
+      expect(finding.message).toContain('remove null instead');
+      expect(finding.message).toContain('named discriminated state');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('allocate or clone a callable owner');
+      expect(finding.message).toContain('re-parameterize its callable argument');
+      expect(finding.message).toContain('route it through Any');
+      expect(finding.message).toContain('reinterpret or cast it');
+      expect(finding.message).toContain('or add side storage');
+    }
     expect(
       analyzeTypeScriptSourcePortability([optional, nullable, explicit]).findings.filter(
         (finding) => finding.rule === 'mixed-absence',
       ),
     ).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability([unrelated]).findings[0]?.message).toBe(
+      'interface:Contract/property:value combines an optional property with null; choose one absence representation or make all three states explicit.',
+    );
   });
 
   it('explains the one-sentinel contract for anchor layout constraints', () => {
