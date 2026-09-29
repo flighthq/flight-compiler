@@ -347,6 +347,17 @@ function isOptionalNullableNamedTypeProperty(node: ts.PropertySignature | undefi
   return ts.isTypeReferenceNode(type) && getNodeName(type.typeName) === name;
 }
 
+function isOptionalNullableNamedTypeUnionProperty(node: ts.PropertySignature, names: readonly string[]): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const presentNames = getMixedAbsencePresentTypes(node.type).map((member) => {
+    while (ts.isParenthesizedTypeNode(member)) member = member.type;
+    return ts.isTypeReferenceNode(member) && member.typeArguments === undefined
+      ? getNodeName(member.typeName)
+      : undefined;
+  });
+  return presentNames.length === names.length && names.every((name) => presentNames.includes(name));
+}
+
 function isOptionalNullableFunctionProperty(node: ts.PropertySignature): boolean {
   if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
   const present = getMixedAbsencePresentTypes(node.type);
@@ -599,6 +610,26 @@ function getScene3DDiagnosticGuardMixedAbsencePropertyMessage(
   return `${subject} gives the opt-in ${backend} Scene3D diagnostic guard slot ${field} both omission and explicit null, but the represented per-state runtime has one disabled state. getGlScene3DRuntime currently omits colorSpaceGuard, customShaderGuard, deformGuard, and forwardLightSelectionGuard while assigning pbrExtensionGuard: null; getWgpuScene3DRuntime assigns customShaderGuard: null and forwardLightSelectionGuard: null. Each enable function overwrites its exact slot with the diagnostic closure, while enabled probes and render consumers collapse undefined and null through != null, !== null, optional call, or a nullish local guard. Make all five GL guard slots and both WebGPU guard slots required fields with their exact callable type | null, and initialize every slot to null in the corresponding runtime object literal. Null initialization does not import or install a diagnostic implementation, so the separately imported enable modules and their logging dependencies remain shakeable. If disabled and not-yet-configured must differ, replace the absence sentinels with one named closed guard state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or install a diagnostic guard, invoke or synthesize a callback, widen its callable signature, change the render-state or runtime owner, or add side storage.`;
 }
 
+function getGlRenderPassTrackingMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'GlRenderStateRuntime' ||
+    !isFlightTypesSource(node, 'GlRenderState.ts')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  const isTarget =
+    field === 'currentRenderTarget' &&
+    isOptionalNullableNamedTypeUnionProperty(node, ['GlCubeRenderTarget', 'GlRenderTarget']);
+  const isScissor = field === 'currentScissorRect' && isOptionalNullableNamedTypeProperty(node, 'GlScissorRect');
+  if (!isTarget && !isScissor) return undefined;
+  return `${subject} gives the active GL render-pass tracking slot ${field} both omission and explicit null, but the represented runtime has one outside-pass or inactive state. createGlRenderStateRuntime already assigns runtime.currentRenderTarget = null; _createGlRenderStateFromContext and test helpers assign runtime.currentScissorRect = null, while saveGlPassState normalizes both slots with ?? null and restoreGlPassState, GL state brackets, and cube-face passes save and restore them directly. beginGlRenderPass writes the current target and active scissor together, invalidateGlRenderStateCache clears the tracked scissor to null, and consumers use == null or ?? null before target and scissor work. Make currentRenderTarget a required GlCubeRenderTarget | GlRenderTarget | null field and currentScissorRect a required GlScissorRect | null field, initialize both in createGlRenderStateRuntime so every exported construction path receives the complete contract, and preserve the direct pass save and restore assignments; the analogous Canvas and WebGPU pass-state slots are already required nullable. If a lifecycle must distinguish an uninitialized runtime from a constructed runtime outside a pass, model that as a closed runtime or pass state rather than as a second field-level absence sentinel. The compiler will not choose or collapse an absence sentinel, infer a render target or scissor rectangle, bind or clear a framebuffer, alter the pass or clip stack, copy or materialize a target or rectangle, or add side storage.`;
+}
+
 function getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -687,6 +718,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (renderProxyColorMatrix) return renderProxyColorMatrix;
   const scene3DDiagnosticGuard = getScene3DDiagnosticGuardMixedAbsencePropertyMessage(node, subject);
   if (scene3DDiagnosticGuard) return scene3DDiagnosticGuard;
+  const glRenderPassTracking = getGlRenderPassTrackingMixedAbsencePropertyMessage(node, subject);
+  if (glRenderPassTracking) return glRenderPassTracking;
   const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
     node,
     subject,

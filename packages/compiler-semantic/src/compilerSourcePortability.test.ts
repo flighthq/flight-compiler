@@ -4594,6 +4594,148 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the required nullable contract for GL render-pass tracking slots', () => {
+    const source = input(
+      'packages/types/src/GlRenderState.ts',
+      `interface GlCubeRenderTarget { readonly cube: true }
+       interface GlRenderTarget { readonly width: number }
+       interface GlScissorRect { readonly height: number; readonly width: number; readonly x: number; readonly y: number }
+       interface GlRenderStateRuntime {
+         currentScissorRect?: GlScissorRect | null;
+         currentRenderTarget?: GlCubeRenderTarget | GlRenderTarget | null;
+       }
+       interface SavedGlPassState {
+         renderTarget: GlCubeRenderTarget | GlRenderTarget | null;
+         scissorRect: GlScissorRect | null;
+       }
+       function createGlRenderStateRuntime(): GlRenderStateRuntime {
+         const runtime = {} as GlRenderStateRuntime;
+         runtime.currentRenderTarget = null;
+         return runtime;
+       }
+       function initializeGlRenderState(runtime: GlRenderStateRuntime): void {
+         runtime.currentScissorRect = null;
+       }
+       function saveGlPassState(runtime: Readonly<GlRenderStateRuntime>): SavedGlPassState {
+         return {
+           renderTarget: runtime.currentRenderTarget ?? null,
+           scissorRect: runtime.currentScissorRect ?? null,
+         };
+       }
+       function restoreGlPassState(runtime: GlRenderStateRuntime, saved: Readonly<SavedGlPassState>): void {
+         runtime.currentRenderTarget = saved.renderTarget;
+         runtime.currentScissorRect = saved.scissorRect;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:GlRenderStateRuntime/property:currentRenderTarget',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:GlRenderStateRuntime/property:currentScissorRect',
+      },
+    ]);
+    for (const [index, finding] of findings.entries()) {
+      const field = ['currentRenderTarget', 'currentScissorRect'][index];
+      expect(finding.message).toContain(
+        `gives the active GL render-pass tracking slot ${field} both omission and explicit null`,
+      );
+      expect(finding.message).toContain('the represented runtime has one outside-pass or inactive state');
+      expect(finding.message).toContain(
+        'createGlRenderStateRuntime already assigns runtime.currentRenderTarget = null',
+      );
+      expect(finding.message).toContain(
+        '_createGlRenderStateFromContext and test helpers assign runtime.currentScissorRect = null',
+      );
+      expect(finding.message).toContain('saveGlPassState normalizes both slots with ?? null');
+      expect(finding.message).toContain('restoreGlPassState, GL state brackets, and cube-face passes save and restore');
+      expect(finding.message).toContain('beginGlRenderPass writes the current target and active scissor together');
+      expect(finding.message).toContain('invalidateGlRenderStateCache clears the tracked scissor to null');
+      expect(finding.message).toContain('consumers use == null or ?? null before target and scissor work');
+      expect(finding.message).toContain(
+        'Make currentRenderTarget a required GlCubeRenderTarget | GlRenderTarget | null field',
+      );
+      expect(finding.message).toContain('currentScissorRect a required GlScissorRect | null field');
+      expect(finding.message).toContain('initialize both in createGlRenderStateRuntime');
+      expect(finding.message).toContain('preserve the direct pass save and restore assignments');
+      expect(finding.message).toContain('analogous Canvas and WebGPU pass-state slots are already required nullable');
+      expect(finding.message).toContain('model that as a closed runtime or pass state');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('infer a render target or scissor rectangle');
+      expect(finding.message).toContain('bind or clear a framebuffer');
+      expect(finding.message).toContain('alter the pass or clip stack');
+      expect(finding.message).toContain('copy or materialize a target or rectangle, or add side storage');
+    }
+  });
+
+  it('keeps unrelated pass slots generic and accepts required GL pass tracking', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface GlCubeRenderTarget {}
+         interface GlRenderTarget {}
+         interface OtherGlRuntime { currentRenderTarget?: GlCubeRenderTarget | GlRenderTarget | null }`,
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        'interface GlScissorRect {} interface GlRenderStateRuntime { savedScissorRect?: GlScissorRect | null }',
+      ),
+      input(
+        'packages/example/src/GlRenderState.ts',
+        'interface GlScissorRect {} interface GlRenderStateRuntime { currentScissorRect?: GlScissorRect | null }',
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        'interface GlRenderTarget {} interface GlRenderStateRuntime { currentRenderTarget?: GlRenderTarget | null }',
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        'interface WgpuScissorRect {} interface GlRenderStateRuntime { currentScissorRect?: WgpuScissorRect | null }',
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface GlCubeRenderTarget {}
+         interface GlRenderTarget {}
+         interface OtherTarget {}
+         interface GlRenderStateRuntime {
+           currentRenderTarget?: GlCubeRenderTarget | GlRenderTarget | OtherTarget | null;
+         }`,
+      ),
+    ];
+    const resolved = input(
+      'packages/types/src/GlRenderState.ts',
+      `interface GlCubeRenderTarget {}
+       interface GlRenderTarget {}
+       interface GlScissorRect {}
+       interface GlRenderStateRuntime {
+         currentRenderTarget: GlCubeRenderTarget | GlRenderTarget | null;
+         currentScissorRect: GlScissorRect | null;
+       }`,
+    );
+    const omitted = input(
+      'packages/types/src/GlRenderState.ts',
+      `interface GlCubeRenderTarget {}
+       interface GlRenderTarget {}
+       interface GlScissorRect {}
+       interface GlRenderStateRuntime {
+         currentRenderTarget?: GlCubeRenderTarget | GlRenderTarget;
+         currentScissorRect?: GlScissorRect;
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved, omitted]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('active GL render-pass tracking slot');
+    }
+  });
+
   it('explains normalized optional-null string inputs at their required-nullable boundaries', () => {
     const gltf = input(
       'packages/types/src/GltfExtension.ts',
