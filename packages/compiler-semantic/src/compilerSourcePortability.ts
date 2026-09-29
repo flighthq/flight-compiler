@@ -1215,25 +1215,49 @@ function getNodeBoundsParentDoubleAssertionGuidance(
   return `${subject} uses a double assertion through unknown to claim that getNodeParent(source), whose declared result is NodeOf<Traits> | null, also carries the Spatial2DNode<Traits> bounds and transform capabilities required as computeNodeBoundsRectangle's target coordinate space. The current Spatial2DNode alias appends HasBoundsRectangle and HasTransform2D outside Traits, while these getters quantify only Traits extends object, so the shared Traits parameter does not prove that a parent returned by the node runtime owns either capability. Put the spatial capabilities inside the family contract: define or constrain Traits to a named HasBoundsRectangle & HasTransform2D base, accept the matching NodeOf<Traits> spatial owner, and pass getNodeParent(source) directly once NodeRuntime<Traits>.parent retains that proof. If the hierarchy genuinely permits a non-spatial parent, use a typed spatial predicate and choose null or another explicit coordinate space when it fails. The compiler will preserve the exact parent owner and null sentinel, but will not infer intersection members that the generic parameter omits, reinterpret or cast the parent, copy or materialize a replacement node, synthesize bounds or transform state, or add side storage.`;
 }
 
+interface RuntimeFactoryDoubleAssertionGuidance {
+  readonly baseRuntimeType: string;
+  readonly fallbackDescription: string;
+  readonly fallbackFactory: string;
+  readonly genericType: string;
+  readonly invocation: string;
+  readonly repair: string;
+  readonly targetFactoryType: string;
+}
+
+function renderRuntimeFactoryDoubleAssertionGuidance(
+  subject: string,
+  guidance: RuntimeFactoryDoubleAssertionGuidance,
+): string {
+  return `${subject} uses a double assertion through unknown to treat the ${guidance.fallbackDescription} as ${guidance.targetFactoryType}. ${guidance.genericType} is a caller-selected subtype constrained only by ${guidance.baseRuntimeType}, while ${guidance.fallbackFactory} produces the base ${guidance.baseRuntimeType}; the fallback cannot promise subtype-only fields or initialization, and the assertion also hides the factories' distinct optional input contracts even though ${guidance.invocation}. ${guidance.repair} Alternatively, name a zero-argument NodeRuntimeAllocator<${guidance.baseRuntimeType}> seam that accepts subtype-producing allocators covariantly. If callers must observe ${guidance.genericType}, expose that relation in the constructed node result instead of inventing it on the default branch. The compiler will preserve the exact produced runtime owner and its declared generic relation, but will not infer subtype members, reinterpret or cast a factory, call a factory with a synthetic seed, copy or materialize a runtime, or add side storage.`;
+}
+
 function getNodeRuntimeFactoryDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
   bridge: 'any' | 'never' | 'unknown',
 ): string | undefined {
-  if (
-    bridge !== 'unknown' ||
-    subject !== 'function:initializeNode' ||
-    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/node/src/node.ts') ||
-    !isNamedGenericTypeReference(getTypeAssertionType(node), 'NodeRuntimeFactory', 'Runtime')
-  ) {
-    return undefined;
-  }
+  if (bridge !== 'unknown') return undefined;
+  const source = normalizePathPortable(node.getSourceFile().fileName);
+  const target = getTypeAssertionType(node);
+  const isInitializeNode =
+    subject === 'function:initializeNode' &&
+    source.endsWith('/packages/node/src/node.ts') &&
+    isNamedGenericTypeReference(target, 'NodeRuntimeFactory', 'Runtime');
+  const isCreateNode2D =
+    subject === 'function:createNode2D' &&
+    source.endsWith('/packages/scene2d/src/displayObject.ts') &&
+    isNamedGenericTypeReference(target, 'NodeRuntimeFactory', 'R');
+  if (!isInitializeNode && !isCreateNode2D) return undefined;
+
+  const fallbackFactory = isInitializeNode ? 'createNodeRuntime' : 'createNode2DRuntime';
+  const selectedFactory = isInitializeNode ? 'createNodeRuntimeFactory' : 'createNode2DRuntimeFactory';
   let inner: ts.Expression = node.expression;
   while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
   if (!isTypeAssertion(inner) || getTypeAssertionType(inner).kind !== ts.SyntaxKind.UnknownKeyword) return undefined;
   let retained: ts.Expression = inner.expression;
   while (ts.isParenthesizedExpression(retained)) retained = retained.expression;
-  if (!ts.isIdentifier(retained) || retained.text !== 'createNodeRuntime') return undefined;
+  if (!ts.isIdentifier(retained) || retained.text !== fallbackFactory) return undefined;
   let selected: ts.Expression = node;
   while (ts.isParenthesizedExpression(selected.parent) && selected.parent.expression === selected) {
     selected = selected.parent;
@@ -1244,20 +1268,53 @@ function getNodeRuntimeFactoryDoubleAssertionGuidance(
     selection.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken ||
     selection.right !== selected ||
     !ts.isIdentifier(selection.left) ||
-    selection.left.text !== 'createNodeRuntimeFactory'
+    selection.left.text !== selectedFactory
   ) {
     return undefined;
   }
-  const declaration = selection.parent;
+
+  if (isInitializeNode) {
+    const declaration = selection.parent;
+    if (
+      !ts.isVariableDeclaration(declaration) ||
+      declaration.initializer !== selection ||
+      !ts.isIdentifier(declaration.name) ||
+      declaration.name.text !== 'runtimeFactory'
+    ) {
+      return undefined;
+    }
+    return renderRuntimeFactoryDoubleAssertionGuidance(subject, {
+      baseRuntimeType: 'NodeRuntime<Traits>',
+      fallbackDescription: 'generic createNodeRuntime fallback',
+      fallbackFactory,
+      genericType: 'Runtime',
+      invocation: 'initializeNode invokes the selected factory with no argument',
+      repair:
+        'Branch before the call: invoke createNodeRuntimeFactory() when it is present, otherwise invoke createNodeRuntime<Traits>(), then store the resulting exact runtime owner through Node<Traits>[EntityRuntimeKey], whose declared base slot accepts either result.',
+      targetFactoryType: 'NodeRuntimeFactory<Runtime>',
+    });
+  }
+
+  const call = selection.parent;
   if (
-    !ts.isVariableDeclaration(declaration) ||
-    declaration.initializer !== selection ||
-    !ts.isIdentifier(declaration.name) ||
-    declaration.name.text !== 'runtimeFactory'
+    !ts.isCallExpression(call) ||
+    !ts.isIdentifier(call.expression) ||
+    call.expression.text !== 'initializeNode' ||
+    call.arguments.length !== 5 ||
+    call.arguments[4] !== selection
   ) {
     return undefined;
   }
-  return `${subject} uses a double assertion through unknown to treat the generic createNodeRuntime fallback as NodeRuntimeFactory<Runtime>. Runtime is a caller-selected subtype constrained only by NodeRuntime<Traits>, while createNodeRuntime produces the base NodeRuntime<Traits>; the fallback cannot promise subtype-only fields or initialization, and the assertion also hides the factories' distinct optional input contracts even though initializeNode invokes the selected factory with no argument. Branch before the call: invoke createNodeRuntimeFactory() when it is present, otherwise invoke createNodeRuntime<Traits>(), then store the resulting exact runtime owner through Node<Traits>[EntityRuntimeKey], whose declared base slot accepts either result. Alternatively, name a zero-argument NodeRuntimeAllocator<NodeRuntime<Traits>> seam that accepts subtype-producing allocators covariantly. If callers must observe Runtime, expose that relation in the constructed node result instead of inventing it on the default branch. The compiler will preserve the exact produced runtime owner and its declared generic relation, but will not infer subtype members, reinterpret or cast a factory, call a factory with a synthetic seed, copy or materialize a runtime, or add side storage.`;
+  return renderRuntimeFactoryDoubleAssertionGuidance(subject, {
+    baseRuntimeType: 'Node2DRuntime',
+    fallbackDescription: 'base createNode2DRuntime fallback',
+    fallbackFactory,
+    genericType: 'R',
+    invocation: 'createNode2D forwards the selected factory to initializeNode, which invokes it with no argument',
+    repair:
+      'Select a zero-argument allocator before initializeNode: use () => createNode2DRuntimeFactory() when it is present and createNode2DRuntime otherwise, then pass that exact NodeRuntimeAllocator<Node2DRuntime>. Because createNode2D returns Node2D rather than a result exposing R, remove the caller-selected R parameter unless the public result is changed to carry that relation.',
+    targetFactoryType: 'NodeRuntimeFactory<R>',
+  });
 }
 
 function getTextureCubeFacesDoubleAssertionGuidance(

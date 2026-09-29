@@ -647,6 +647,215 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
   });
 
+  it('explains why the base Scene2D runtime factory cannot promise a caller-selected subtype', () => {
+    const declarations = `interface Node2DRuntime { readonly scene2d: true }
+       type NodeRuntimeFactory<Runtime> = (obj?: Readonly<Partial<Runtime>>) => Runtime;
+       type Node2DRuntimeFactory<Runtime extends Node2DRuntime> = NodeRuntimeFactory<Runtime>;
+       type NodeRuntimeAllocator<Runtime> = () => Runtime;
+       declare const out: object;
+       declare const kind: string;
+       declare const obj: object;
+       declare const createData: () => object;
+       declare function initializeNode<Runtime extends Node2DRuntime>(
+         out: object,
+         kind: string,
+         obj: object,
+         createData: () => object,
+         runtimeFactory: NodeRuntimeFactory<Runtime>,
+       ): void;
+       declare function createNode2DRuntime(): Node2DRuntime;`;
+    const source = input(
+      'packages/scene2d/src/displayObject.ts',
+      `${declarations}
+       function createNode2D<R extends Node2DRuntime>(
+         createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+       ): void {
+         initializeNode(
+           out,
+           kind,
+           obj,
+           createData,
+           createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>),
+         );
+       }`,
+    );
+    const resolved = input(
+      'packages/scene2d/src/displayObject.ts',
+      `${declarations}
+       function createNode2D(createNode2DRuntimeFactory?: Node2DRuntimeAllocator): void {
+         const runtimeFactory: NodeRuntimeAllocator<Node2DRuntime> =
+           createNode2DRuntimeFactory !== undefined
+             ? () => createNode2DRuntimeFactory()
+             : () => createNode2DRuntime();
+         initializeNode(out, kind, obj, createData, runtimeFactory);
+       }
+       type Node2DRuntimeAllocator = NodeRuntimeAllocator<Node2DRuntime>;`,
+    );
+    const nodeSource = input(
+      'packages/node/src/node.ts',
+      `interface NodeRuntime<Traits extends object> { readonly traits?: Traits }
+       type NodeRuntimeFactory<Runtime> = (obj?: Readonly<Partial<Runtime>>) => Runtime;
+       declare function createNodeRuntime<Traits extends object>(): NodeRuntime<Traits>;
+       function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+         createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+       ): void {
+         const runtimeFactory =
+           createNodeRuntimeFactory ?? (createNodeRuntime as unknown as NodeRuntimeFactory<Runtime>);
+         void runtimeFactory();
+       }`,
+    );
+    const report = analyzeTypeScriptSourcePortability([source]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected a Scene2D runtime factory assertion finding');
+
+    expect(report.findings).toMatchObject([
+      {
+        rule: 'unchecked-double-assertion',
+        subject: 'function:createNode2D',
+      },
+    ]);
+    expect(finding.message).toContain('base createNode2DRuntime fallback as NodeRuntimeFactory<R>');
+    expect(finding.message).toContain('R is a caller-selected subtype constrained only by Node2DRuntime');
+    expect(finding.message).toContain('createNode2DRuntime produces the base Node2DRuntime');
+    expect(finding.message).toContain('cannot promise subtype-only fields or initialization');
+    expect(finding.message).toContain("factories' distinct optional input contracts");
+    expect(finding.message).toContain('createNode2D forwards the selected factory to initializeNode');
+    expect(finding.message).toContain('use () => createNode2DRuntimeFactory() when it is present');
+    expect(finding.message).toContain('createNode2DRuntime otherwise');
+    expect(finding.message).toContain('pass that exact NodeRuntimeAllocator<Node2DRuntime>');
+    expect(finding.message).toContain('createNode2D returns Node2D rather than a result exposing R');
+    expect(finding.message).toContain('remove the caller-selected R parameter');
+    expect(finding.message).toContain('zero-argument NodeRuntimeAllocator<Node2DRuntime> seam');
+    expect(finding.message).toContain('preserve the exact produced runtime owner');
+    expect(finding.message).toContain('will not infer subtype members');
+    expect(finding.message).toContain('reinterpret or cast a factory');
+    expect(finding.message).toContain('call a factory with a synthetic seed');
+    expect(finding.message).toContain('copy or materialize a runtime');
+    expect(finding.message).toContain('or add side storage');
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+
+    const familyFindings = analyzeTypeScriptSourcePortability([nodeSource, source]).findings;
+    expect(familyFindings).toHaveLength(2);
+    expect(new Set(familyFindings.map(({ identity }) => identity)).size).toBe(2);
+    expect(familyFindings.map(({ subject }) => subject)).toEqual(['function:initializeNode', 'function:createNode2D']);
+    expect(familyFindings.every(({ message }) => message.includes('caller-selected subtype'))).toBe(true);
+  });
+
+  it('keeps Scene2D runtime factory guidance exact to the initializeNode argument', () => {
+    const declarations = `interface Node2DRuntime { readonly scene2d: true }
+       interface OtherRuntime extends Node2DRuntime { readonly other: true }
+       type NodeRuntimeFactory<Runtime> = (obj?: Readonly<Partial<Runtime>>) => Runtime;
+       type Node2DRuntimeFactory<Runtime extends Node2DRuntime> = NodeRuntimeFactory<Runtime>;
+       declare const out: object;
+       declare const kind: string;
+       declare const obj: object;
+       declare const createData: () => object;
+       declare function createNode2DRuntime(): Node2DRuntime;
+       declare function createOtherRuntime(): OtherRuntime;`;
+    const controls = [
+      input(
+        'packages/example/src/displayObject.ts',
+        `${declarations}
+         function createNode2D<R extends Node2DRuntime>(
+           createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+         ): void {
+           initializeNode(out, kind, obj, createData,
+             createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>));
+         }`,
+      ),
+      input(
+        'packages/scene2d/src/displayObject.ts',
+        `${declarations}
+         function createOther2D<R extends Node2DRuntime>(
+           createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+         ): void {
+           initializeNode(out, kind, obj, createData,
+             createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>));
+         }`,
+      ),
+      input(
+        'packages/scene2d/src/displayObject.ts',
+        `${declarations}
+         function createNode2D<R extends Node2DRuntime>(
+           createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+         ): void {
+           initializeNode(out, kind, obj, createData,
+             createNode2DRuntimeFactory ??
+               (createNode2DRuntime as unknown as NodeRuntimeFactory<Node2DRuntime>));
+         }`,
+      ),
+      input(
+        'packages/scene2d/src/displayObject.ts',
+        `${declarations}
+         function createNode2D<R extends Node2DRuntime>(
+           createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+         ): void {
+           initializeNode(out, kind, obj, createData,
+             createNode2DRuntimeFactory ?? (createOtherRuntime as unknown as NodeRuntimeFactory<R>));
+         }`,
+      ),
+      input(
+        'packages/scene2d/src/displayObject.ts',
+        `${declarations}
+         function createNode2D<R extends Node2DRuntime>(
+           fallbackFactory?: Node2DRuntimeFactory<R>,
+         ): void {
+           initializeNode(out, kind, obj, createData,
+             fallbackFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>));
+         }`,
+      ),
+      input(
+        'packages/scene2d/src/displayObject.ts',
+        `${declarations}
+         function createNode2D<R extends Node2DRuntime>(
+           createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+         ): void {
+           createNode(out, kind, obj, createData,
+             createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>));
+         }`,
+      ),
+      input(
+        'packages/scene2d/src/displayObject.ts',
+        `${declarations}
+         function createNode2D<R extends Node2DRuntime>(
+           createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+         ): void {
+           initializeNode(out, kind, obj,
+             createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>));
+         }`,
+      ),
+      input(
+        'packages/scene2d/src/displayObject.ts',
+        `${declarations}
+         function createNode2D<R extends Node2DRuntime>(
+           createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+         ): void {
+           const runtimeFactory =
+             createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>);
+           initializeNode(out, kind, obj, createData, runtimeFactory);
+         }`,
+      ),
+      input(
+        'packages/scene2d/src/displayObject.ts',
+        `${declarations}
+         function createNode2D<R extends Node2DRuntime>(
+           createNode2DRuntimeFactory?: Node2DRuntimeFactory<R>,
+         ): void {
+           initializeNode(out, kind, obj, createData,
+             createNode2DRuntimeFactory ?? (createNode2DRuntime as any as NodeRuntimeFactory<R>));
+         }`,
+      ),
+    ];
+
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('replace it with a checked conversion or a narrower source type');
+      expect(findings[0]?.message).not.toContain('caller-selected subtype');
+      expect(findings[0]?.message).not.toContain('NodeRuntimeAllocator');
+    }
+  });
+
   it('keeps node runtime factory guidance exact to the generic fallback selection', () => {
     const declarations = `interface NodeRuntime<Traits extends object> { readonly traits?: Traits }
        interface OtherRuntime<Traits extends object> extends NodeRuntime<Traits> { readonly other: true }
