@@ -29916,6 +29916,9 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const arrayBufferLikeRemediation = renderMissingArrayBufferLikeBindingRemediationCpp(
     completeness.missingExternalSymbols,
   );
+  const sharedArrayBufferRemediation = renderMissingSharedArrayBufferBindingRemediationCpp(
+    completeness.missingExternalSymbols,
+  );
   const arrayLikeRemediation = renderMissingArrayLikeBindingRemediationCpp(completeness.missingExternalSymbols);
   const htmlElementRemediation = renderMissingHtmlElementBindingRemediationCpp(completeness.missingExternalSymbols);
   const fontFaceRemediation = renderMissingFontFaceBindingRemediationCpp(completeness.missingExternalSymbols);
@@ -29928,7 +29931,7 @@ function assertRuntimeExternalSymbolBindingsCpp(
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}${proxyHandlerRemediation}${weakSetRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${sharedArrayBufferRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}${proxyHandlerRemediation}${weakSetRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -30066,6 +30069,16 @@ function renderMissingArrayBufferLikeBindingRemediationCpp(
   );
   if (!hasArrayBufferLike) return '';
   return ` ArrayBufferLike is the target-runtime backing-store domain for typed-array and data-view owners. Add one externalBindings entry for the exact type-space source symbol, with its stable target domain carrier, required headers, and truthful ownership and nullability; preserve the full permitted backing-store alternative set and the original buffer owner, byte range, typed-array element kind, and zero-copy sharing through geometry data-view caches and physics ABI command and readback buffers. A manifest entry names the represented runtime domain; it does not permit narrowing every backing to ArrayBuffer, copying into replacement storage, erasing the element or view contract into Any, void-pointer erasure, native-pointer casts or reinterpretation, or side storage.`;
+}
+
+function renderMissingSharedArrayBufferBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasSharedArrayBuffer = missing.some(
+    (identity) => identity.space === 'type' && identity.sourceName === 'SharedArrayBuffer',
+  );
+  if (!hasSharedArrayBuffer) return '';
+  return ` SharedArrayBuffer is a shared-memory backing-store identity, not the ordinary private ArrayBuffer carrier. Add one externalBindings entry for the exact type-space source symbol, with its stable shared-memory target owner, required headers, and truthful ownership and nullability; preserve the same backing owner, byte length, aliasing between typed-array or DataView views, cross-agent mutation visibility, and lifetime wherever the source admits shared backing. If a module only allocates private typed-array storage, narrow its annotations and results to the matching typed array over ArrayBuffer at the source boundary instead of binding shared memory. A manifest entry names the represented shared backing; it does not permit copying into ArrayBuffer, a vector, or replacement storage, dropping shared visibility, erasing the view or element contract into Any, void-pointer erasure, native-pointer casts or reinterpretation, or side storage.`;
 }
 
 function renderMissingArrayLikeBindingRemediationCpp(

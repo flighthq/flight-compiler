@@ -9411,6 +9411,7 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('void-pointer erasure');
     expect(failure.message).toContain('native-pointer casts or reinterpretation');
     expect(failure.message).toContain('or side storage');
+    expect(failure.message).not.toContain('SharedArrayBuffer is a shared-memory backing-store identity');
     expect(contents).toContain('flight::ArrayBufferLike buffer;');
     expect(contents.match(/flight::Uint8Array data;/gu)).toHaveLength(2);
     expect(contents.match(/flight::Uint32Array ids;/gu)).toHaveLength(2);
@@ -9440,6 +9441,82 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain(
       'ArrayBufferLike is the target-runtime backing-store domain for typed-array and data-view owners',
     );
+  });
+
+  it('requires an exact runtime binding for the SharedArrayBuffer backing owner', () => {
+    const result = lower(
+      'SharedArrayBufferStorage.ts',
+      `export interface SharedStorage {
+         backing: SharedArrayBuffer;
+         bytes: Uint8Array<SharedArrayBuffer>;
+       }
+       export function retainSharedBacking(storage: Readonly<SharedStorage>): SharedArrayBuffer {
+         return storage.backing;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/shared_array_buffer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'SharedArrayBuffer',
+          space: 'type' as const,
+          targetName: 'host::SharedArrayBuffer',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: SharedArrayBuffer[type]');
+    expect(failure.message).toContain(
+      'SharedArrayBuffer is a shared-memory backing-store identity, not the ordinary private ArrayBuffer carrier',
+    );
+    expect(failure.message).toContain('one externalBindings entry for the exact type-space source symbol');
+    expect(failure.message).toContain('stable shared-memory target owner');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('preserve the same backing owner, byte length');
+    expect(failure.message).toContain('aliasing between typed-array or DataView views');
+    expect(failure.message).toContain('cross-agent mutation visibility, and lifetime');
+    expect(failure.message).toContain('only allocates private typed-array storage');
+    expect(failure.message).toContain('typed array over ArrayBuffer at the source boundary');
+    expect(failure.message).toContain('does not permit copying into ArrayBuffer, a vector, or replacement storage');
+    expect(failure.message).toContain('dropping shared visibility');
+    expect(failure.message).toContain('erasing the view or element contract into Any');
+    expect(failure.message).toContain('void-pointer erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('#include <host/shared_array_buffer.hpp>');
+    expect(contents).toContain('host::SharedArrayBuffer backing;');
+    expect(contents).toContain('host::SharedArrayBuffer retain_shared_backing(');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify the SharedArrayBuffer value-space constructor as a shared backing type', () => {
+    const result = lower(
+      'SharedArrayBufferConstructor.ts',
+      'export function readSharedArrayBufferConstructor(): unknown { return SharedArrayBuffer; }',
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: SharedArrayBuffer[value])',
+    );
+    expect(failure.message).not.toContain('SharedArrayBuffer is a shared-memory backing-store identity');
   });
 
   it('requires an exact runtime binding for the ArrayLike indexed-collection domain', () => {
