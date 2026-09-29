@@ -2521,6 +2521,80 @@ function lowerImportedPermissionOutcomeModules() {
   return { moduleResolution, results };
 }
 
+function lowerImportedGeolocationAccessModules() {
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export type GeolocationAccessOutcome = {
+           readonly reason:
+             | 'cleanup-failed'
+             | 'denied'
+             | 'dismissed'
+             | 'granted'
+             | 'operation-failed'
+             | 'runtime-unavailable'
+             | 'timeout';
+         };
+         export interface HostGeolocationCapability {
+           promptForAccess(): Promise<GeolocationAccessOutcome>;
+         }`,
+      ),
+      source(
+        '@flighthq/geolocation',
+        'geolocation/src/geolocationAccess.ts',
+        `import type { GeolocationAccessOutcome, HostGeolocationCapability } from '@flighthq/types/contract';
+         export async function promptForGeolocationAccess(
+           hostGeolocation: Readonly<HostGeolocationCapability> | undefined,
+         ): Promise<GeolocationAccessOutcome> {
+           if (hostGeolocation === undefined || typeof hostGeolocation.promptForAccess !== 'function') {
+             return { reason: 'runtime-unavailable' };
+           }
+           try {
+             return await hostGeolocation.promptForAccess();
+           } catch {
+             return { reason: 'operation-failed' };
+           }
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  return { moduleResolution, results };
+}
+
+function emitImportedGeolocationAccessModules() {
+  const { moduleResolution, results } = lowerImportedGeolocationAccessModules();
+  const modules = results.map((result) => result.module);
+  const session = createCppCompilerBackend().createEmissionSession!({
+    moduleResolution,
+    modules,
+    options: {
+      packageTargets: {
+        '@flighthq/geolocation': { includePrefix: 'test/geolocation', namespace: 'flighthq_geolocation' },
+        '@flighthq/types': { includePrefix: 'test/types', namespace: 'flighthq_types' },
+      },
+      runtimeProfile: 'flight-cpp',
+    },
+  });
+  return { emitted: modules.map((module) => session.emitModule(module)[0]!), results };
+}
+
 function lowerImportedPermissionRequestOutcomeModules() {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
@@ -4852,6 +4926,48 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).toContain('co_return co_await flight::row_get<flight::RowKey<"prompt">>(host)()');
     expect(emitted).toContain('co_return flight::make_ref<Outcome>(Outcome{.reason = flight::String("ok")})');
     expect(emitted).not.toContain('co_await {');
+  });
+
+  it('qualifies imported geolocation outcome literals where an async return requires an expression', () => {
+    const { emitted, results } = emitImportedGeolocationAccessModules();
+    const access = emitted[1]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(access).toContain(
+      'co_return flight::make_ref<flighthq_types::GeolocationAccessOutcome>(flighthq_types::GeolocationAccessOutcome{.reason = flight::String("runtime-unavailable")})',
+    );
+    expect(access).toContain(
+      'co_return flight::make_ref<flighthq_types::GeolocationAccessOutcome>(flighthq_types::GeolocationAccessOutcome{.reason = flight::String("operation-failed")})',
+    );
+    expect(access).toContain(
+      'co_return co_await flight::row_get<flight::RowKey<"promptForAccess">>(host_geolocation.value())()',
+    );
+    expect(access).not.toContain('co_return co_await {');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles imported geolocation outcome literals at async return boundaries', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { emitted, results } = emitImportedGeolocationAccessModules();
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-geolocation-async-return-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    try {
+      for (const output of emitted) {
+        const outputPath = path.join(directory, output.path);
+        mkdirSync(path.dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, output.contents, 'utf8');
+      }
+      const access = emitted[1]!;
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, access.path), [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   // The identity boundary a cross-module fix has to respect. Two records that differ only in a literal
