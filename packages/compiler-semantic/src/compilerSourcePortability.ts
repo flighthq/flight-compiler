@@ -672,6 +672,31 @@ function getColorAdjustmentFeatureMixedAbsencePropertyMessage(
   return `${subject} gives the ${backend} color-adjustment material feature ${role} both omission and explicit null, but the represented opt-in feature contract has one disabled state. ${build} constructs a fresh registry and currently copies options.colorAdjustmentFeature only when it is not undefined, while ${get} returns registries.colorAdjustmentFeature ?? null, so omitted and explicit-null options and either registry absence spelling all resolve to the same unavailable feature. ${register} later overwrites that exact live registry slot with the backend feature singleton, and no path restores undefined. Declare ${options}.colorAdjustmentFeature as optional ${feature} without null, make ${registries}.colorAdjustmentFeature a required ${feature} | null field, and have ${build} assign registries.colorAdjustmentFeature = options.colorAdjustmentFeature ?? null so the construction boundary normalizes once while a present feature owner passes unchanged. Keep colorAdjustmentFeatureGuard separate: it is diagnostic policy and never enables rendering behavior. If disabled, registered, and another lifecycle state must differ, replace the absence spellings with one named closed feature-registration state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or register a color-adjustment feature, enable color adjustments, select or execute shader behavior, copy or materialize the feature owner, change its backend-specific contract or diagnostic guard, reinterpret or cast the feature, or add side storage.`;
 }
 
+function getCompressedTexturePolicyOptionMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (!ts.isInterfaceDeclaration(node.parent)) return undefined;
+  const owner = node.parent.name.text;
+  const source = normalizePathPortable(node.getSourceFile().fileName);
+  const isGl = owner === 'GlRenderStateOptions' && source.endsWith('/packages/types/src/GlRenderStateOptions.ts');
+  const isWgpu = owner === 'WgpuRenderStateOptions' && source.endsWith('/packages/types/src/WgpuRenderStateOptions.ts');
+  if (!isGl && !isWgpu) return undefined;
+  const field = getNodeName(node.name);
+  if (field !== 'compressedTextureDecoder' && field !== 'compressedTextureUpload') return undefined;
+  const backendPrefix = isGl ? 'Gl' : 'Wgpu';
+  const capability = `${backendPrefix}CompressedTexture${field === 'compressedTextureDecoder' ? 'Decoder' : 'Uploader'}`;
+  if (!isOptionalNullableNamedTypeProperty(node, capability)) return undefined;
+  const backend = isGl ? 'GL' : 'WebGPU';
+  const build = isGl ? 'buildGlRenderRegistries' : 'buildWgpuRenderRegistries';
+  const options = `${backendPrefix}RenderStateOptions`;
+  const registries = `${backendPrefix}RenderRegistries`;
+  const registerDecoder = `register${backendPrefix}CompressedTextureDecoder`;
+  const registerUpload = `register${backendPrefix}CompressedTextureUpload`;
+  const role = field === 'compressedTextureDecoder' ? 'RGBA fallback decoder' : 'container uploader';
+  return `${subject} gives the ${backend} compressed-texture ${role} construction option both omission and explicit null, but the represented fresh-state contract has one disabled input state. ${build} assigns registries.compressedTextureDecoder = options.compressedTextureDecoder ?? null and registries.compressedTextureUpload = options.compressedTextureUpload ?? null into required nullable live registry slots, so either option absence spelling constructs the same disabled policy while a present ${capability} owner passes unchanged. The draw bridge checks uploadEntry == null before the compressed path and passes decoderEntry ?? null into the uploader; ${registerDecoder} later writes the exact decoder or null, while ${registerUpload} installs the backend uploader when called without its optional clear argument and writes null when explicitly clearing it. Declare ${options}.compressedTextureDecoder as optional ${backendPrefix}CompressedTextureDecoder and ${options}.compressedTextureUpload as optional ${backendPrefix}CompressedTextureUploader, both without null; keep ${registries} fields required nullable and retain the registrars' nullable live-update contracts. If a future options merger must distinguish an omitted unchanged policy from an explicit clear, give that merger a named closed policy-update state and resolve it before ${build}. The compiler will not choose or collapse an absence sentinel, install or clear a compressed-texture policy, invoke a decoder or uploader, infer format or device support, allocate decoded pixels or a texture, copy or materialize either capability owner, change the GL or WebGPU callable contract, reinterpret or cast a capability, or add side storage.`;
+}
+
 function getScene3DDiagnosticGuardMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -813,6 +838,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (renderProxyColorMatrix) return renderProxyColorMatrix;
   const colorAdjustmentFeature = getColorAdjustmentFeatureMixedAbsencePropertyMessage(node, subject);
   if (colorAdjustmentFeature) return colorAdjustmentFeature;
+  const compressedTexturePolicyOption = getCompressedTexturePolicyOptionMixedAbsencePropertyMessage(node, subject);
+  if (compressedTexturePolicyOption) return compressedTexturePolicyOption;
   const scene3DDiagnosticGuard = getScene3DDiagnosticGuardMixedAbsencePropertyMessage(node, subject);
   if (scene3DDiagnosticGuard) return scene3DDiagnosticGuard;
   const glRenderPassTracking = getGlRenderPassTrackingMixedAbsencePropertyMessage(node, subject);

@@ -5116,6 +5116,177 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains one construction-time absence state for backend compressed-texture policies', () => {
+    const sources = [
+      input(
+        'packages/types/src/GlRenderStateOptions.ts',
+        `type GlCompressedTextureDecoder = (data: Uint8Array) => Uint8ClampedArray | null;
+         type GlCompressedTextureUploader = (data: Uint8Array, decode: GlCompressedTextureDecoder | null) => boolean;
+         interface GlRenderStateOptions {
+           compressedTextureDecoder?: GlCompressedTextureDecoder | null;
+           compressedTextureUpload?: GlCompressedTextureUploader | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderStateOptions.ts',
+        `type WgpuCompressedTextureDecoder = (data: Uint8Array) => Uint8ClampedArray | null;
+         type WgpuCompressedTextureUploader = (
+           data: Uint8Array,
+           decode: WgpuCompressedTextureDecoder | null,
+         ) => object | null;
+         interface WgpuRenderStateOptions {
+           compressedTextureDecoder?: WgpuCompressedTextureDecoder | null;
+           compressedTextureUpload?: WgpuCompressedTextureUploader | null;
+         }`,
+      ),
+    ];
+    const findings = analyzeTypeScriptSourcePortability(sources).findings;
+    const expected = [
+      ['Gl', 'GL', 'compressedTextureDecoder', 'RGBA fallback decoder', 'Decoder'],
+      ['Gl', 'GL', 'compressedTextureUpload', 'container uploader', 'Uploader'],
+      ['Wgpu', 'WebGPU', 'compressedTextureDecoder', 'RGBA fallback decoder', 'Decoder'],
+      ['Wgpu', 'WebGPU', 'compressedTextureUpload', 'container uploader', 'Uploader'],
+    ] as const;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expected.map(([prefix, , field]) => ({
+        rule: 'mixed-absence',
+        subject: `interface:${prefix}RenderStateOptions/property:${field}`,
+      })),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const [prefix, backend, , role, typeSuffix] = expected[index]!;
+      expect(finding.message).toContain(
+        `gives the ${backend} compressed-texture ${role} construction option both omission and explicit null`,
+      );
+      expect(finding.message).toContain('the represented fresh-state contract has one disabled input state');
+      expect(finding.message).toContain(
+        'assigns registries.compressedTextureDecoder = options.compressedTextureDecoder ?? null',
+      );
+      expect(finding.message).toContain('registries.compressedTextureUpload = options.compressedTextureUpload ?? null');
+      expect(finding.message).toContain('into required nullable live registry slots');
+      expect(finding.message).toContain('either option absence spelling constructs the same disabled policy');
+      expect(finding.message).toContain(`a present ${prefix}CompressedTexture${typeSuffix} owner passes unchanged`);
+      expect(finding.message).toContain('checks uploadEntry == null before the compressed path');
+      expect(finding.message).toContain('passes decoderEntry ?? null into the uploader');
+      expect(finding.message).toContain(`register${prefix}CompressedTextureDecoder`);
+      expect(finding.message).toContain('writes the exact decoder or null');
+      expect(finding.message).toContain(`register${prefix}CompressedTextureUpload`);
+      expect(finding.message).toContain(
+        'installs the backend uploader when called without its optional clear argument',
+      );
+      expect(finding.message).toContain('writes null when explicitly clearing it');
+      expect(finding.message).toContain(
+        `${prefix}RenderStateOptions.compressedTextureDecoder as optional ${prefix}CompressedTextureDecoder`,
+      );
+      expect(finding.message).toContain(
+        `${prefix}RenderStateOptions.compressedTextureUpload as optional ${prefix}CompressedTextureUploader`,
+      );
+      expect(finding.message).toContain('both without null');
+      expect(finding.message).toContain(`keep ${prefix}RenderRegistries fields required nullable`);
+      expect(finding.message).toContain("retain the registrars' nullable live-update contracts");
+      expect(finding.message).toContain('named closed policy-update state');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('install or clear a compressed-texture policy');
+      expect(finding.message).toContain('invoke a decoder or uploader');
+      expect(finding.message).toContain('infer format or device support');
+      expect(finding.message).toContain('allocate decoded pixels or a texture');
+      expect(finding.message).toContain('copy or materialize either capability owner');
+      expect(finding.message).toContain('change the GL or WebGPU callable contract');
+      expect(finding.message).toContain('reinterpret or cast a capability');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps unrelated compressed-texture slots generic and accepts split option and registry contracts', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/GlRenderStateOptions.ts',
+        `type GlCompressedTextureDecoder = () => void;
+         interface OtherGlOptions { compressedTextureDecoder?: GlCompressedTextureDecoder | null }`,
+      ),
+      input(
+        'packages/example/src/GlRenderStateOptions.ts',
+        `type GlCompressedTextureDecoder = () => void;
+         interface GlRenderStateOptions { compressedTextureDecoder?: GlCompressedTextureDecoder | null }`,
+      ),
+      input(
+        'packages/types/src/GlRenderStateOptions.ts',
+        `type GlCompressedTextureDecoder = () => void;
+         interface GlRenderStateOptions { compressedTextureEncoder?: GlCompressedTextureDecoder | null }`,
+      ),
+      input(
+        'packages/types/src/GlRenderStateOptions.ts',
+        `type GlCompressedTextureUploader = () => void;
+         interface GlRenderStateOptions { compressedTextureDecoder?: GlCompressedTextureUploader | null }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderStateOptions.ts',
+        `type GlCompressedTextureDecoder = () => void;
+         interface WgpuRenderStateOptions { compressedTextureDecoder?: GlCompressedTextureDecoder | null }`,
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `type GlCompressedTextureDecoder = () => void;
+         interface GlRenderRegistries { compressedTextureDecoder?: GlCompressedTextureDecoder | null }`,
+      ),
+      input(
+        'packages/types/src/GlRenderStateOptions.ts',
+        `type GlCompressedTextureDecoder = () => void;
+         interface GlRenderStateOptions {
+           compressedTextureDecoder?: Readonly<GlCompressedTextureDecoder> | null;
+         }`,
+      ),
+    ];
+    const resolved = [
+      input(
+        'packages/types/src/GlRenderStateOptions.ts',
+        `type GlCompressedTextureDecoder = () => void;
+         type GlCompressedTextureUploader = () => void;
+         interface GlRenderStateOptions {
+           compressedTextureDecoder?: GlCompressedTextureDecoder;
+           compressedTextureUpload?: GlCompressedTextureUploader;
+         }`,
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `type GlCompressedTextureDecoder = () => void;
+         type GlCompressedTextureUploader = () => void;
+         interface GlRenderRegistries {
+           compressedTextureDecoder: GlCompressedTextureDecoder | null;
+           compressedTextureUpload: GlCompressedTextureUploader | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderStateOptions.ts',
+        `type WgpuCompressedTextureDecoder = () => void;
+         type WgpuCompressedTextureUploader = () => void;
+         interface WgpuRenderStateOptions {
+           compressedTextureDecoder?: WgpuCompressedTextureDecoder;
+           compressedTextureUpload?: WgpuCompressedTextureUploader;
+         }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderState.ts',
+        `type WgpuCompressedTextureDecoder = () => void;
+         type WgpuCompressedTextureUploader = () => void;
+         interface WgpuRenderRegistries {
+           compressedTextureDecoder: WgpuCompressedTextureDecoder | null;
+           compressedTextureUpload: WgpuCompressedTextureUploader | null;
+         }`,
+      ),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability(resolved).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('compressed-texture RGBA fallback decoder construction option');
+      expect(findings[0]?.message).not.toContain('compressed-texture container uploader construction option');
+    }
+  });
+
   it('explains the required nullable contract for opt-in Scene3D diagnostic guards', () => {
     const gl = input(
       'packages/types/src/GlScene3DRuntime.ts',
