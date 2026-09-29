@@ -3774,6 +3774,98 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings.every((finding) => !finding.message.includes('mesh deformation slot'))).toBe(true);
   });
 
+  it('explains the construction-only absence contract for BitmapText numeric options', () => {
+    const source = input(
+      'packages/types/src/BitmapText.ts',
+      `interface BitmapTextOptions {
+         align?: 'left' | 'right';
+         maxLines?: number | null;
+         wrapWidth?: number | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['maxLines', 'wrapWidth'].map((name) => ({
+        rule: 'mixed-absence',
+        subject: `interface:BitmapTextOptions/property:${name}`,
+      })),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const name = ['maxLines', 'wrapWidth'][index];
+      expect(finding.message).toContain(
+        `gives the BitmapText construction option ${name} both omission and explicit null`,
+      );
+      expect(finding.message).toContain('createBitmapText applies this option only to fresh BitmapTextData');
+      expect(finding.message).toContain(
+        'initializeBitmapTextData has already defaulted maxLines and wrapWidth to null',
+      );
+      expect(finding.message).toContain('applyBitmapTextOptions writes each field only when it is not undefined');
+      expect(finding.message).toContain('either absence spelling produces the same stored disabled state');
+      expect(finding.message).toContain('Keep BitmapTextData and the dedicated setters required nullable');
+      expect(finding.message).toContain(
+        'make maxLines and wrapWidth optional number fields in BitmapTextOptions so omission is the sole construction-time absence',
+      );
+      expect(finding.message).toContain(
+        'named closed update state whose unchanged, disabled, and numeric cases are explicit',
+      );
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('zero is a present limit or width');
+      expect(finding.message).toContain('rewrite existing BitmapTextData, call a setter, or add side storage');
+    }
+  });
+
+  it('keeps unrelated numeric options generic and accepts split BitmapText construction and storage contracts', () => {
+    const unrelatedOwner = input('OtherTextOptions.ts', 'interface OtherTextOptions { maxLines?: number | null }');
+    const unrelatedMember = input(
+      'packages/types/src/BitmapText.ts',
+      'interface BitmapTextOptions { letterSpacing?: number | null }',
+    );
+    const unrelatedLocation = input(
+      'packages/example/src/BitmapText.ts',
+      'interface BitmapTextOptions { wrapWidth?: number | null }',
+    );
+    const splitContract = input(
+      'BitmapTextSplit.ts',
+      `interface BitmapTextData {
+         maxLines: number | null;
+         wrapWidth: number | null;
+       }
+       interface BitmapTextCreateOptions {
+         maxLines?: number;
+         wrapWidth?: number;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([
+      unrelatedOwner,
+      unrelatedMember,
+      unrelatedLocation,
+      splitContract,
+    ]).findings;
+
+    expect(findings).toMatchObject([
+      {
+        message:
+          'interface:OtherTextOptions/property:maxLines combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:OtherTextOptions/property:maxLines',
+      },
+      {
+        message:
+          'interface:BitmapTextOptions/property:wrapWidth combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:BitmapTextOptions/property:wrapWidth',
+      },
+      {
+        message:
+          'interface:BitmapTextOptions/property:letterSpacing combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:BitmapTextOptions/property:letterSpacing',
+      },
+    ]);
+    expect(findings.every((finding) => !finding.message.includes('BitmapText construction option'))).toBe(true);
+  });
+
   it('requires real indexed storage instead of an asserted index-signature view', () => {
     const asserted = input(
       'command.ts',

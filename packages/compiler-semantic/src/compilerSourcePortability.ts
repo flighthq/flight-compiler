@@ -347,6 +347,22 @@ function isOptionalNullableNamedTypeProperty(node: ts.PropertySignature | undefi
   return ts.isTypeReferenceNode(type) && getNodeName(type.typeName) === name;
 }
 
+function getBitmapTextOptionsMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  const name = getNodeName(node.name);
+  if (
+    ts.isInterfaceDeclaration(node.parent) &&
+    node.parent.name.text === 'BitmapTextOptions' &&
+    normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/BitmapText.ts') &&
+    (name === 'maxLines' || name === 'wrapWidth')
+  ) {
+    return `${subject} gives the BitmapText construction option ${name} both omission and explicit null, but createBitmapText applies this option only to fresh BitmapTextData: initializeBitmapTextData has already defaulted maxLines and wrapWidth to null, and applyBitmapTextOptions writes each field only when it is not undefined, so either absence spelling produces the same stored disabled state. Keep BitmapTextData and the dedicated setters required nullable, but make maxLines and wrapWidth optional number fields in BitmapTextOptions so omission is the sole construction-time absence. If the same input shape later becomes a mutation patch, define a named closed update state whose unchanged, disabled, and numeric cases are explicit. The compiler will not choose or collapse an absence sentinel, infer a numeric default because zero is a present limit or width, rewrite existing BitmapTextData, call a setter, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getTypeLiteralDiscriminant(node: ts.TypeLiteralNode): string | undefined {
   for (const member of node.members) {
     if (!ts.isPropertySignature(member) || member.questionToken || !member.type || !ts.isLiteralTypeNode(member.type)) {
@@ -393,6 +409,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (meshDeformation) return meshDeformation;
   const attachmentPointStorage = getAttachmentPointStorageMixedAbsencePropertyMessage(node, subject);
   if (attachmentPointStorage) return attachmentPointStorage;
+  const bitmapTextOptions = getBitmapTextOptionsMixedAbsencePropertyMessage(node, subject);
+  if (bitmapTextOptions) return bitmapTextOptions;
   const callableOwner = node.type ? getMixedAbsenceGenericCallableOwner(node.type) : undefined;
   if (callableOwner) {
     const ownerType = callableOwner.getText(node.getSourceFile());
