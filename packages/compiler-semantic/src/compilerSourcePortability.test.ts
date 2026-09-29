@@ -4083,6 +4083,144 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains normalized optional-null string inputs at their required-nullable boundaries', () => {
+    const gltf = input(
+      'packages/types/src/GltfExtension.ts',
+      `interface GltfImportOptions { basePath?: string | null }
+       interface ImageResourceReference { basePath: string | null; uri: string }
+       function createExternalImageResourceReference(uri: string, basePath: string | null): ImageResourceReference {
+         return { basePath, uri };
+       }
+       function buildGltfImageResourceReference(
+         uri: string,
+         options: Readonly<GltfImportOptions> | undefined,
+       ): ImageResourceReference {
+         return createExternalImageResourceReference(uri, options?.basePath ?? null);
+       }`,
+    );
+    const scene2D = input(
+      'packages/types/src/Scene2DResources.ts',
+      `interface Scene2DDocumentImportContext { mimeType: string | null; url: string | null }
+       interface Scene2DDocumentLoadOptions { mimeType?: string | null }
+       function loadScene2DDocumentFromUrl(
+         url: string,
+         options?: Readonly<Scene2DDocumentLoadOptions>,
+       ): Scene2DDocumentImportContext {
+         return { mimeType: options?.mimeType ?? null, url };
+       }`,
+    );
+    const textInput = input(
+      'packages/types/src/TextInputEditingOptions.ts',
+      `interface ReplaceTextInputOptions { mergeKind?: string | null }
+       interface TextInputHistoryEntry { mergeKind: string | null }
+       function replaceTextInputRange(
+         options?: Readonly<ReplaceTextInputOptions>,
+       ): TextInputHistoryEntry {
+         const mergeKind = options?.mergeKind ?? null;
+         if (mergeKind !== null) void mergeKind.length;
+         return { mergeKind };
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([gltf, scene2D, textInput]).findings;
+    const expected = [
+      {
+        boundary:
+          'buildGltfImageResourceReference passes options?.basePath ?? null to createExternalImageResourceReference',
+        destination: 'ImageResourceReference.basePath',
+        field: 'basePath',
+        owner: 'GltfImportOptions',
+        presentMeaning: 'base path',
+        subject: 'interface:GltfImportOptions/property:basePath',
+      },
+      {
+        boundary:
+          'loadScene2DDocumentFromUrl writes mimeType: options?.mimeType ?? null into the required nullable Scene2DDocumentImportContext',
+        destination: 'Scene2DDocumentImportContext.mimeType',
+        field: 'mimeType',
+        owner: 'Scene2DDocumentLoadOptions',
+        presentMeaning: 'MIME hint',
+        subject: 'interface:Scene2DDocumentLoadOptions/property:mimeType',
+      },
+      {
+        boundary:
+          'replaceTextInputRange passes options?.mergeKind ?? null to recordTextInputEdit, whose required nullable parameter is stored in TextInputHistoryEntry',
+        destination: 'recordTextInputEdit mergeKind and TextInputHistoryEntry.mergeKind',
+        field: 'mergeKind',
+        owner: 'ReplaceTextInputOptions',
+        presentMeaning: 'merge tag',
+        subject: 'interface:ReplaceTextInputOptions/property:mergeKind',
+      },
+    ];
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expected.map(({ subject }) => ({ rule: 'mixed-absence', subject })),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const target = expected[index]!;
+      expect(finding.message).toContain(
+        `gives the normalized string input ${target.owner}.${target.field} both omission and explicit null`,
+      );
+      expect(finding.message).toContain(target.boundary);
+      expect(finding.message).toContain('That ?? null boundary makes the two absence spellings identical');
+      expect(finding.message).toContain(`an empty string remains a present ${target.presentMeaning}`);
+      expect(finding.message).toContain(`Keep ${target.destination} required nullable`);
+      expect(finding.message).toContain(`declare ${target.owner}.${target.field} as an optional string`);
+      expect(finding.message).toContain('omission is the sole input-side absence');
+      expect(finding.message).toContain('one named closed input state and handle each arm explicitly');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('replace a present empty string with null or a default');
+      expect(finding.message).toContain(`synthesize a replacement ${target.presentMeaning}`);
+      expect(finding.message).toContain('rewrite the caller or downstream storage');
+      expect(finding.message).toContain('reinterpret or cast the value');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps unrelated string options generic and accepts one input absence state', () => {
+    const optionalInputs = [
+      input('packages/types/src/GltfExtension.ts', 'interface GltfImportOptions { basePath?: string }'),
+      input('packages/types/src/Scene2DResources.ts', 'interface Scene2DDocumentLoadOptions { mimeType?: string }'),
+      input(
+        'packages/types/src/TextInputEditingOptions.ts',
+        'interface ReplaceTextInputOptions { mergeKind?: string }',
+      ),
+    ];
+    const requiredStorage = input(
+      'NormalizedStringStorage.ts',
+      `interface ImportContext { mimeType: string | null }
+       interface ResourceReference { basePath: string | null }
+       interface HistoryEntry { mergeKind: string | null }`,
+    );
+    const explicit = input(
+      'ExplicitStringInput.ts',
+      `type StringInput =
+         | { readonly state: 'omitted' }
+         | { readonly state: 'cleared' }
+         | { readonly state: 'supplied'; readonly value: string };
+       interface UpdateOptions { value: StringInput }`,
+    );
+    const unrelated = [
+      input('packages/types/src/GltfExtension.ts', 'interface OtherGltfOptions { basePath?: string | null }'),
+      input(
+        'packages/types/src/Scene2DResources.ts',
+        'interface Scene2DDocumentLoadOptions { contentType?: string | null }',
+      ),
+      input(
+        'packages/example/src/TextInputEditingOptions.ts',
+        'interface ReplaceTextInputOptions { mergeKind?: string | null }',
+      ),
+      input('packages/types/src/GltfExtension.ts', 'interface GltfImportOptions { basePath?: number | null }'),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability([...optionalInputs, requiredStorage, explicit]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('normalized string input');
+    }
+  });
+
   it('explains the required nullable contract for FlightDocument node interaction metadata', () => {
     const source = input(
       'packages/types/src/FlightDocument.ts',

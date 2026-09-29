@@ -347,6 +347,15 @@ function isOptionalNullableNamedTypeProperty(node: ts.PropertySignature | undefi
   return ts.isTypeReferenceNode(type) && getNodeName(type.typeName) === name;
 }
 
+function isOptionalNullableStringProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  return type.kind === ts.SyntaxKind.StringKeyword;
+}
+
 function getBitmapTextOptionsMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -378,6 +387,54 @@ function getInteractionManagerOptionsMixedAbsencePropertyMessage(
   const owner = name === 'cursorBackend' ? 'CursorBackend' : name === 'spatialIndex' ? 'SpatialIndex2D' : undefined;
   if (owner === undefined || !isOptionalNullableNamedTypeProperty(node, owner)) return undefined;
   return `${subject} gives the InteractionManager construction option ${name} both omission and explicit null, but createInteractionManager passes its options once into initializeInteractionManager for a fresh manager, where out.cursorBackend = options.cursorBackend ?? null and out.spatialIndex = options.spatialIndex ?? null normalize either spelling to the same disabled service. Runtime consumers such as applyInteractionCursor, findInteractionTarget, and refreshInteractionSpatialIndex then test the required nullable fields against null. Keep the InteractionManager cursorBackend and spatialIndex fields required nullable so installed services can be cleared explicitly, but make both fields optional non-null in InteractionManagerOptions so omission is the sole construction-time absence. If the options shape later becomes a mutation patch, define a named closed update state whose unchanged, disabled, and installed cases are explicit. The compiler will not choose or collapse an absence sentinel, construct a cursor backend or spatial index, rewrite the manager, change service-owner identity, or add side storage.`;
+}
+
+function getNormalizedStringOptionMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (!ts.isInterfaceDeclaration(node.parent) || !isOptionalNullableStringProperty(node)) return undefined;
+  const field = getNodeName(node.name);
+  const owner = node.parent.name.text;
+  let guidance:
+    | {
+        readonly destination: string;
+        readonly normalization: string;
+        readonly presentMeaning: string;
+      }
+    | undefined;
+  if (isFlightTypesSource(node, 'GltfExtension.ts') && owner === 'GltfImportOptions' && field === 'basePath') {
+    guidance = {
+      destination: 'ImageResourceReference.basePath',
+      normalization:
+        'buildGltfImageResourceReference passes options?.basePath ?? null to createExternalImageResourceReference, whose basePath stays required nullable through external URI resolution',
+      presentMeaning: 'base path',
+    };
+  } else if (
+    isFlightTypesSource(node, 'Scene2DResources.ts') &&
+    owner === 'Scene2DDocumentLoadOptions' &&
+    field === 'mimeType'
+  ) {
+    guidance = {
+      destination: 'Scene2DDocumentImportContext.mimeType',
+      normalization:
+        'loadScene2DDocumentFromUrl writes mimeType: options?.mimeType ?? null into the required nullable Scene2DDocumentImportContext',
+      presentMeaning: 'MIME hint',
+    };
+  } else if (
+    isFlightTypesSource(node, 'TextInputEditingOptions.ts') &&
+    owner === 'ReplaceTextInputOptions' &&
+    field === 'mergeKind'
+  ) {
+    guidance = {
+      destination: 'recordTextInputEdit mergeKind and TextInputHistoryEntry.mergeKind',
+      normalization:
+        'replaceTextInputRange passes options?.mergeKind ?? null to recordTextInputEdit, whose required nullable parameter is stored in TextInputHistoryEntry and compared with null before coalescing',
+      presentMeaning: 'merge tag',
+    };
+  }
+  if (field === undefined || guidance === undefined) return undefined;
+  return `${subject} gives the normalized string input ${owner}.${field} both omission and explicit null, but ${guidance.normalization}. That ?? null boundary makes the two absence spellings identical while an empty string remains a present ${guidance.presentMeaning}. Keep ${guidance.destination} required nullable, but declare ${owner}.${field} as an optional string so omission is the sole input-side absence. If the input later becomes an update patch where omission means unchanged and null means clear, replace the property with one named closed input state and handle each arm explicitly. The compiler will not choose or collapse an absence sentinel, replace a present empty string with null or a default, synthesize a replacement ${guidance.presentMeaning}, rewrite the caller or downstream storage, reinterpret or cast the value, or add side storage.`;
 }
 
 function getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(
@@ -480,6 +537,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (bitmapTextOptions) return bitmapTextOptions;
   const interactionManagerOptions = getInteractionManagerOptionsMixedAbsencePropertyMessage(node, subject);
   if (interactionManagerOptions) return interactionManagerOptions;
+  const normalizedStringOption = getNormalizedStringOptionMixedAbsencePropertyMessage(node, subject);
+  if (normalizedStringOption) return normalizedStringOption;
   const sceneConstructionOwner = getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(node, subject);
   if (sceneConstructionOwner) return sceneConstructionOwner;
   const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
