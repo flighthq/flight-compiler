@@ -29923,6 +29923,8 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const mapIteratorRemediation = renderMissingMapIteratorBindingRemediationCpp(completeness.missingExternalSymbols);
   const htmlElementRemediation = renderMissingHtmlElementBindingRemediationCpp(completeness.missingExternalSymbols);
   const fontFaceRemediation = renderMissingFontFaceBindingRemediationCpp(completeness.missingExternalSymbols);
+  const performanceRemediation = renderMissingPerformanceBindingRemediationCpp(completeness.missingExternalSymbols);
+  const consoleRemediation = renderMissingConsoleBindingRemediationCpp(completeness.missingExternalSymbols);
   const timerHandleRemediation = renderMissingTimerHandleBindingRemediationCpp(completeness.missingExternalSymbols);
   const webAudioHandleRemediation = renderMissingWebAudioHandleBindingsRemediationCpp(
     completeness.missingExternalSymbols,
@@ -29932,7 +29934,7 @@ function assertRuntimeExternalSymbolBindingsCpp(
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${sharedArrayBufferRemediation}${arrayLikeRemediation}${mapIteratorRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}${proxyHandlerRemediation}${weakSetRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${sharedArrayBufferRemediation}${arrayLikeRemediation}${mapIteratorRemediation}${htmlElementRemediation}${fontFaceRemediation}${performanceRemediation}${consoleRemediation}${timerHandleRemediation}${webAudioHandleRemediation}${proxyHandlerRemediation}${weakSetRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -30112,6 +30114,24 @@ function renderMissingFontFaceBindingRemediationCpp(
   const hasFontFace = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'FontFace');
   if (!hasFontFace) return '';
   return ` FontFace is a host-owned loaded-font identity. Add one externalBindings entry for the exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; preserve the same face owner through the nullable FontResource slot, host registration input, and loadFontFaces array result so loading state and target font registration remain attached to that face. A manifest entry names the represented runtime carrier; it does not permit replacing a face with its family string or a copied descriptor, converting loaded-face results into names, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing a replacement face, or side storage.`;
+}
+
+function renderMissingPerformanceBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasPerformance = missing.some(
+    (identity) => identity.space === 'value' && identity.sourceName === 'performance',
+  );
+  if (!hasPerformance) return '';
+  return ` performance[value] is the host monotonic-time capability used by log._timestamp, not a wall-clock value or cached timestamp. Add one externalBindings entry for the exact value-space source symbol, with its stable target clock capability, an exact now member mapping, required headers, and truthful ownership and nullability; preserve the exact availability selection typeof performance !== 'undefined' ? performance.now() : Date.now(), the single selected call, millisecond numeric result, monotonic ordering when performance is available, and wall-clock fallback only when it is absent. If a portable target does not expose a performance object, inject one zero-argument monotonic-now capability into the logging boundary and perform the availability fallback in the host adapter. A manifest entry names the represented clock; it does not permit evaluating both branches, replacing an available monotonic clock with Date.now(), caching or synthesizing a timestamp, changing units, coercing the result to an integer or string, erasing it into Any, native-pointer casts or reinterpretation, or side storage.`;
+}
+
+function renderMissingConsoleBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasConsole = missing.some((identity) => identity.space === 'value' && identity.sourceName === 'console');
+  if (!hasConsole) return '';
+  return ` console[value] is the host diagnostic-output capability used by the log console sinks, not one interchangeable variadic print function. Add one externalBindings entry for the exact value-space source symbol, with its stable target diagnostic sink, exact debug, info, warn, and error member mappings, required headers, and truthful ownership and nullability; preserve the typeof console === 'undefined' availability guards, the unconditional capture record console.debug(envelopeFormatter(entry)), the closed method routing selected by console[method], argument order and arity, and the distinction between formatted human text and structured data. If a portable target does not expose a console object or computed method access, inject a LogConsole capability with four exact operations and replace console[method] with a closed switch that forwards the same arguments once. A manifest entry names the represented sink; it does not permit collapsing all levels into one method, dropping or duplicating a capture or human line, eagerly formatting suppressed output, stringifying or erasing structured data into Any, reordering arguments, native-pointer casts or reinterpretation, or side storage.`;
 }
 
 function renderMissingTimerHandleBindingRemediationCpp(

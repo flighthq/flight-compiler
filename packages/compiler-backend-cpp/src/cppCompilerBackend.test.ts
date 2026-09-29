@@ -9834,6 +9834,145 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain('FontFace is a host-owned loaded-font identity');
   });
 
+  it('requires exact value-space runtime bindings for the log clock and console globals', () => {
+    const result = lower(
+      'LogGlobals.ts',
+      `type LogConsoleMethod = 'debug' | 'info' | 'warn' | 'error';
+       export function timestamp(): number {
+         return typeof performance !== 'undefined' ? performance.now() : Date.now();
+       }
+       export function writeCapture(message: string): void {
+         if (typeof console === 'undefined') return;
+         console.debug(message);
+       }
+       export function writeHuman(method: LogConsoleMethod, prefix: string, data: string): void {
+         if (typeof console === 'undefined') return;
+         console[method](prefix, data);
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const bound = lower(
+      'BoundLogGlobals.ts',
+      `export function timestamp(): number {
+         return typeof performance !== 'undefined' ? performance.now() : Date.now();
+       }
+       export function writeCapture(message: string): void {
+         if (typeof console === 'undefined') return;
+         console.debug(message);
+       }`,
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/log.hpp'],
+          members: [{ sourceMember: 'debug', targetName: 'host::log_debug' }],
+          nullability: 'non-null' as const,
+          ownership: 'borrowed' as const,
+          sourceName: 'console',
+          space: 'value' as const,
+          targetName: 'host::console',
+        },
+        {
+          headers: ['host/clock.hpp'],
+          members: [{ sourceMember: 'now', targetName: 'host::monotonic_now' }],
+          nullability: 'non-null' as const,
+          ownership: 'borrowed' as const,
+          sourceName: 'performance',
+          space: 'value' as const,
+          targetName: 'host::performance',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(bound.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(bound.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: console[value], performance[value]');
+    expect(failure.message).toContain('performance[value] is the host monotonic-time capability');
+    expect(failure.message).toContain('one externalBindings entry for the exact value-space source symbol');
+    expect(failure.message).toContain('stable target clock capability');
+    expect(failure.message).toContain('exact now member mapping');
+    expect(failure.message).toContain('exact availability selection');
+    expect(failure.message).toContain("typeof performance !== 'undefined' ? performance.now() : Date.now()");
+    expect(failure.message).toContain('single selected call, millisecond numeric result');
+    expect(failure.message).toContain('monotonic ordering when performance is available');
+    expect(failure.message).toContain('wall-clock fallback only when it is absent');
+    expect(failure.message).toContain('zero-argument monotonic-now capability');
+    expect(failure.message).toContain('does not permit evaluating both branches');
+    expect(failure.message).toContain('caching or synthesizing a timestamp');
+    expect(failure.message).toContain('changing units');
+    expect(failure.message).toContain('console[value] is the host diagnostic-output capability');
+    expect(failure.message).toContain('stable target diagnostic sink');
+    expect(failure.message).toContain('exact debug, info, warn, and error member mappings');
+    expect(failure.message).toContain("typeof console === 'undefined' availability guards");
+    expect(failure.message).toContain('console.debug(envelopeFormatter(entry))');
+    expect(failure.message).toContain('closed method routing');
+    expect(failure.message).toContain('selected by console[method]');
+    expect(failure.message).toContain('argument order and arity');
+    expect(failure.message).toContain('formatted human text and structured data');
+    expect(failure.message).toContain('LogConsole capability with four exact operations');
+    expect(failure.message).toContain('replace console[method] with a closed switch');
+    expect(failure.message).toContain('does not permit collapsing all levels into one method');
+    expect(failure.message).toContain('dropping or duplicating a capture or human line');
+    expect(failure.message).toContain('eagerly formatting suppressed output');
+    expect(failure.message).toContain('stringifying or erasing structured data into Any');
+    expect(failure.message).toContain('reordering arguments');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('#include <host/clock.hpp>');
+    expect(contents).toContain('#include <host/log.hpp>');
+    expect(contents).toContain('host::monotonic_now');
+    expect(contents).toContain('host::log_debug');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('keeps log host-global guidance exact to each value-space identity', () => {
+    const performanceResult = lower(
+      'PerformanceOnly.ts',
+      `export function timestamp(): number {
+         return typeof performance !== 'undefined' ? performance.now() : Date.now();
+       }`,
+    );
+    const performanceFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(performanceResult.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const consoleResult = lower(
+      'ConsoleOnly.ts',
+      `export function write(message: string): void {
+         if (typeof console === 'undefined') return;
+         console.debug(message);
+       }`,
+    );
+    const consoleFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(consoleResult.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const typeResult = lower('HostGlobalTypes.ts', 'export interface HostGlobals { clock: Performance; log: Console }');
+    const typeFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(typeResult.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(performanceResult.diagnostics).toEqual([]);
+    expect(performanceFailure.message).toContain('missing: performance[value]');
+    expect(performanceFailure.message).toContain('performance[value] is the host monotonic-time capability');
+    expect(performanceFailure.message).not.toContain('console[value] is the host diagnostic-output capability');
+    expect(consoleResult.diagnostics).toEqual([]);
+    expect(consoleFailure.message).toContain('missing: console[value]');
+    expect(consoleFailure.message).toContain('console[value] is the host diagnostic-output capability');
+    expect(consoleFailure.message).not.toContain('performance[value] is the host monotonic-time capability');
+    expect(typeResult.diagnostics).toEqual([]);
+    expect(typeFailure.message).toContain('missing: Console[type], Performance[type]');
+    expect(typeFailure.message).not.toContain('performance[value] is the host monotonic-time capability');
+    expect(typeFailure.message).not.toContain('console[value] is the host diagnostic-output capability');
+  });
+
   it('requires an exact runtime binding for the Node timer handle identity', () => {
     const result = lower(
       'TimerHandles.ts',
