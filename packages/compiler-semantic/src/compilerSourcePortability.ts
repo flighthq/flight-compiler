@@ -363,6 +363,30 @@ function getBitmapTextOptionsMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'FlightDocumentNode' ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/FlightDocument.ts')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field !== 'interactiveStates' && field !== 'transition') return undefined;
+  const interactiveStates = getInterfaceProperty(node.parent, 'interactiveStates');
+  const transition = getInterfaceProperty(node.parent, 'transition');
+  if (
+    !isOptionalNullableNamedTypeProperty(interactiveStates, 'FlightDocumentInteractiveStates') ||
+    !isOptionalNullableNamedTypeProperty(transition, 'FlightDocumentInteractiveStateTransitionDescriptor')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the persisted FlightDocument node interaction slot ${field} both omission and explicit null, but the represented contract has one inactive state and transition is invalid without interactiveStates. flightDocumentText.readNode returns { children, fields, interactiveStates, kind, transition }, and the 2D and 3D scene writers assign both fields from readInteractiveStateBindingMetadata; format, refusal, and materialization paths collapse undefined and null with == null, != null, or ?? null. By contrast, substituteNode rebuilds { children, fields, kind }, demonstrating how optional storage can silently discard present interaction metadata. Make interactiveStates and transition required nullable fields on FlightDocumentNode, normalize omitted input syntax to null at ingress, and initialize or deliberately preserve both fields in every parser, writer, and reconstruction path. If callers need to distinguish absent syntax from disabled interaction, use a separate input shape or one named closed metadata state before constructing the persisted node. The compiler will not choose or collapse an absence sentinel, infer a transition from interactive states, decide whether a transformation preserves or clears metadata, clone or materialize either metadata owner, route it through Any, reinterpret or cast it, or add side storage.`;
+}
+
 function getTypeLiteralDiscriminant(node: ts.TypeLiteralNode): string | undefined {
   for (const member of node.members) {
     if (!ts.isPropertySignature(member) || member.questionToken || !member.type || !ts.isLiteralTypeNode(member.type)) {
@@ -411,6 +435,11 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (attachmentPointStorage) return attachmentPointStorage;
   const bitmapTextOptions = getBitmapTextOptionsMixedAbsencePropertyMessage(node, subject);
   if (bitmapTextOptions) return bitmapTextOptions;
+  const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
+    node,
+    subject,
+  );
+  if (flightDocumentNodeInteraction) return flightDocumentNodeInteraction;
   const callableOwner = node.type ? getMixedAbsenceGenericCallableOwner(node.type) : undefined;
   if (callableOwner) {
     const ownerType = callableOwner.getText(node.getSourceFile());

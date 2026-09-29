@@ -3866,6 +3866,139 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings.every((finding) => !finding.message.includes('BitmapText construction option'))).toBe(true);
   });
 
+  it('explains the required nullable contract for FlightDocument node interaction metadata', () => {
+    const source = input(
+      'packages/types/src/FlightDocument.ts',
+      `interface FlightDocumentInteractiveStates { readonly hover: object | null }
+       interface FlightDocumentInteractiveStateTransitionDescriptor { readonly kind: string }
+       interface FlightDocumentNode {
+         children: FlightDocumentNode[];
+         fields: Record<string, string>;
+         interactiveStates?: FlightDocumentInteractiveStates | null;
+         kind: string;
+         transition?: FlightDocumentInteractiveStateTransitionDescriptor | null;
+       }
+       function readNode(): FlightDocumentNode {
+         const children: FlightDocumentNode[] = [];
+         const fields: Record<string, string> = {};
+         const interactiveStates: FlightDocumentInteractiveStates | null = null;
+         const kind = 'Node';
+         const transition: FlightDocumentInteractiveStateTransitionDescriptor | null = null;
+         return { children, fields, interactiveStates, kind, transition };
+       }
+       function readInteraction(node: Readonly<FlightDocumentNode>): void {
+         if (node.interactiveStates == null) {
+           if (node.transition != null) throw new TypeError('transition requires states');
+           return;
+         }
+         const transition = node.transition ?? null;
+         void transition;
+       }
+       function substituteNode(node: Readonly<FlightDocumentNode>): FlightDocumentNode {
+         const children = node.children;
+         const fields = node.fields;
+         return { children, fields, kind: node.kind };
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:FlightDocumentNode/property:interactiveStates',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:FlightDocumentNode/property:transition',
+      },
+    ]);
+    for (const [index, finding] of findings.entries()) {
+      const field = ['interactiveStates', 'transition'][index];
+      expect(finding.message).toContain(
+        `gives the persisted FlightDocument node interaction slot ${field} both omission and explicit null`,
+      );
+      expect(finding.message).toContain('the represented contract has one inactive state');
+      expect(finding.message).toContain('transition is invalid without interactiveStates');
+      expect(finding.message).toContain(
+        'flightDocumentText.readNode returns { children, fields, interactiveStates, kind, transition }',
+      );
+      expect(finding.message).toContain(
+        'the 2D and 3D scene writers assign both fields from readInteractiveStateBindingMetadata',
+      );
+      expect(finding.message).toContain('collapse undefined and null with == null, != null, or ?? null');
+      expect(finding.message).toContain('substituteNode rebuilds { children, fields, kind }');
+      expect(finding.message).toContain('optional storage can silently discard present interaction metadata');
+      expect(finding.message).toContain(
+        'Make interactiveStates and transition required nullable fields on FlightDocumentNode',
+      );
+      expect(finding.message).toContain('normalize omitted input syntax to null at ingress');
+      expect(finding.message).toContain(
+        'initialize or deliberately preserve both fields in every parser, writer, and reconstruction path',
+      );
+      expect(finding.message).toContain('a separate input shape or one named closed metadata state');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('infer a transition from interactive states');
+      expect(finding.message).toContain('decide whether a transformation preserves or clears metadata');
+      expect(finding.message).toContain('clone or materialize either metadata owner');
+      expect(finding.message).toContain('route it through Any');
+      expect(finding.message).toContain('reinterpret or cast it');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps unrelated interaction metadata generic and accepts explicit FlightDocument node state', () => {
+    const required = input(
+      'packages/types/src/FlightDocument.ts',
+      `interface FlightDocumentInteractiveStates { readonly hover: object | null }
+       interface FlightDocumentInteractiveStateTransitionDescriptor { readonly kind: string }
+       interface FlightDocumentNode {
+         interactiveStates: FlightDocumentInteractiveStates | null;
+         transition: FlightDocumentInteractiveStateTransitionDescriptor | null;
+       }`,
+    );
+    const explicit = input(
+      'FlightDocumentNodeState.ts',
+      `interface FlightDocumentInteractiveStates { readonly hover: object | null }
+       interface FlightDocumentInteractiveStateTransitionDescriptor { readonly kind: string }
+       type FlightDocumentNodeInteraction =
+         | { readonly state: 'inactive' }
+         | {
+             readonly interactiveStates: FlightDocumentInteractiveStates;
+             readonly state: 'interactive';
+             readonly transition: FlightDocumentInteractiveStateTransitionDescriptor | null;
+           };
+       interface FlightDocumentNode { interaction: FlightDocumentNodeInteraction }`,
+    );
+    const unrelatedOwner = input(
+      'packages/types/src/FlightDocument.ts',
+      `interface FlightDocumentInteractiveStates { readonly hover: object | null }
+       interface FlightDocumentInteractiveStateTransitionDescriptor { readonly kind: string }
+       interface DocumentNodeDraft {
+         interactiveStates?: FlightDocumentInteractiveStates | null;
+         transition?: FlightDocumentInteractiveStateTransitionDescriptor | null;
+       }`,
+    );
+    const unrelatedLocation = input(
+      'packages/example/src/FlightDocument.ts',
+      `interface FlightDocumentInteractiveStates { readonly hover: object | null }
+       interface FlightDocumentInteractiveStateTransitionDescriptor { readonly kind: string }
+       interface FlightDocumentNode {
+         interactiveStates?: FlightDocumentInteractiveStates | null;
+         transition?: FlightDocumentInteractiveStateTransitionDescriptor | null;
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([required, explicit]).findings).toEqual([]);
+    for (const control of [unrelatedOwner, unrelatedLocation]) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(2);
+      expect(findings.every((finding) => finding.message.includes('combines an optional property with null'))).toBe(
+        true,
+      );
+      expect(findings.every((finding) => !finding.message.includes('persisted FlightDocument node'))).toBe(true);
+    }
+  });
+
   it('requires real indexed storage instead of an asserted index-signature view', () => {
     const asserted = input(
       'command.ts',
