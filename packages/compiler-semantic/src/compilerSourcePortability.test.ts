@@ -205,6 +205,185 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('keeps cube texture face clones and writes on an exact six-slot carrier', () => {
+    const declarations = `interface TextureSource { readonly width: number }
+       type TextureSourceCubeFaces = readonly [
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null
+       ];`;
+    const texture = input(
+      'packages/texture/src/texture.ts',
+      `${declarations}
+       interface TextureLike { readonly sources: TextureSourceCubeFaces }
+       interface CreateTextureOptions { readonly sources?: TextureSourceCubeFaces }
+       export function cloneTexture(source: Readonly<TextureLike>): TextureSourceCubeFaces {
+         return source.sources.slice() as unknown as TextureSourceCubeFaces;
+       }
+       export function copyTexture(source: Readonly<TextureLike>): TextureSourceCubeFaces {
+         return source.sources.slice() as unknown as TextureSourceCubeFaces;
+       }
+       export function createTexture(opts: Readonly<CreateTextureOptions>): TextureSourceCubeFaces {
+         return (opts.sources?.slice() ?? [null, null, null, null, null, null]) as unknown as TextureSourceCubeFaces;
+       }`,
+    );
+    const cubeTexture = input(
+      'packages/texture/src/cubeTexture.ts',
+      `${declarations}
+       export function setCubeTextureFace(
+         sources: TextureSourceCubeFaces,
+         faceIndex: number,
+         source: TextureSource | null,
+       ): void {
+         (sources as unknown as (TextureSource | null)[])[faceIndex] = source;
+       }`,
+    );
+    const report = analyzeTypeScriptSourcePortability([texture, cubeTexture]);
+
+    expect(report.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'unchecked-double-assertion', subject: 'function:setCubeTextureFace' },
+      { rule: 'unchecked-double-assertion', subject: 'function:cloneTexture' },
+      { rule: 'unchecked-double-assertion', subject: 'function:copyTexture' },
+      { rule: 'unchecked-double-assertion', subject: 'function:createTexture' },
+    ]);
+    for (const subject of ['function:cloneTexture', 'function:copyTexture']) {
+      const finding = report.findings.find((candidate) => candidate.subject === subject);
+      expect(finding?.message).toContain('source.sources.slice()');
+      expect(finding?.message).toContain('fixed six-slot TextureSourceCubeFaces carrier');
+      expect(finding?.message).toContain('+X, -X, +Y, -Y, +Z, and -Z extent');
+      expect(finding?.message).toContain('explicit six-element tuple');
+      expect(finding?.message).toContain('named cloneTextureSourceCubeFaces helper');
+      expect(finding?.message).toContain('retaining every TextureSource identity and null sentinel');
+      expect(finding?.message).toContain('will not infer tuple length from slice');
+      expect(finding?.message).toContain('copy or materialize a TextureSource owner');
+      expect(finding?.message).toContain('side storage');
+    }
+    const create = report.findings.find(({ subject }) => subject === 'function:createTexture');
+    expect(create?.message).toContain('opts.sources?.slice() ?? [null, null, null, null, null, null]');
+    expect(create?.message).toContain('fallback literal has the required extent');
+    expect(create?.message).toContain('optional chaining plus slice widens the combined expression');
+    expect(create?.message).toContain('Branch once');
+    expect(create?.message).toContain('canonical face order');
+    expect(create?.message).toContain('will not infer tuple length across slice and ??');
+    expect(create?.message).toContain('replace a supplied face list with the fallback');
+    const set = report.findings.find(({ subject }) => subject === 'function:setCubeTextureFace');
+    expect(set?.message).toContain('exact readonly six-slot TextureSourceCubeFaces carrier sources');
+    expect(set?.message).toContain('mutable unbounded (TextureSource | null)[]');
+    expect(set?.message).toContain('grants writability and discards the fixed extent');
+    expect(set?.message).toContain('Give CubeTexture a named mutable six-slot face-storage carrier');
+    expect(set?.message).toContain('0 | 1 | 2 | 3 | 4 | 5');
+    expect(set?.message).toContain('update the selected slot on that same storage owner');
+    expect(set?.message).toContain('will not cast away readonly');
+    expect(set?.message).toContain('accept an out-of-range index');
+  });
+
+  it('keeps cube texture tuple guidance exact to its source expressions', () => {
+    const declarations = `interface TextureSource { readonly width: number }
+       type TextureSourceCubeFaces = readonly [
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null
+       ];`;
+    const portable = input(
+      'packages/texture/src/texture.ts',
+      `${declarations}
+       type MutableTextureSourceCubeFaces = [
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null,
+         TextureSource | null
+       ];
+       function cloneTextureSourceCubeFaces(source: TextureSourceCubeFaces): MutableTextureSourceCubeFaces {
+         return [source[0], source[1], source[2], source[3], source[4], source[5]];
+       }
+       export function cloneTexture(source: { sources: TextureSourceCubeFaces }): TextureSourceCubeFaces {
+         return cloneTextureSourceCubeFaces(source.sources);
+       }
+       export function setCubeTextureFace(
+         sources: MutableTextureSourceCubeFaces,
+         faceIndex: 0 | 1 | 2 | 3 | 4 | 5,
+         source: TextureSource | null,
+       ): void {
+         sources[faceIndex] = source;
+       }`,
+    );
+    const controls = [
+      input(
+        'packages/example/src/texture.ts',
+        `${declarations}
+         function cloneTexture(source: { sources: TextureSourceCubeFaces }): TextureSourceCubeFaces {
+           return source.sources.slice() as unknown as TextureSourceCubeFaces;
+         }`,
+      ),
+      input(
+        'packages/texture/src/texture.ts',
+        `${declarations}
+         function cloneOther(source: { sources: TextureSourceCubeFaces }): TextureSourceCubeFaces {
+           return source.sources.slice() as unknown as TextureSourceCubeFaces;
+         }`,
+      ),
+      input(
+        'packages/texture/src/texture.ts',
+        `${declarations}
+         function cloneTexture(source: { faces: TextureSourceCubeFaces }): TextureSourceCubeFaces {
+           return source.faces.slice() as unknown as TextureSourceCubeFaces;
+         }`,
+      ),
+      input(
+        'packages/texture/src/texture.ts',
+        `${declarations}
+         function copyTexture(source: { sources: TextureSourceCubeFaces }): TextureSourceCubeFaces {
+           return source.sources.slice(0) as unknown as TextureSourceCubeFaces;
+         }`,
+      ),
+      input(
+        'packages/texture/src/texture.ts',
+        `${declarations}
+         function createTexture(opts: { sources?: TextureSourceCubeFaces }): TextureSourceCubeFaces {
+           return (opts.sources?.slice() ?? [null, null, null, null, null]) as unknown as TextureSourceCubeFaces;
+         }`,
+      ),
+      input(
+        'packages/texture/src/cubeTexture.ts',
+        `${declarations}
+         function setCubeTextureFace(
+           faces: TextureSourceCubeFaces,
+           faceIndex: number,
+           source: TextureSource | null,
+         ): void {
+           (faces as unknown as (TextureSource | null)[])[faceIndex] = source;
+         }`,
+      ),
+      input(
+        'packages/texture/src/cubeTexture.ts',
+        `${declarations}
+         function setCubeTextureFace(
+           sources: TextureSourceCubeFaces,
+           slot: number,
+           source: TextureSource | null,
+         ): void {
+           (sources as unknown as (TextureSource | null)[])[slot] = source;
+         }`,
+      ),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability([portable]).findings).toEqual([]);
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('replace it with a checked conversion or a narrower source type');
+      expect(findings[0]?.message).not.toContain('six-slot TextureSourceCubeFaces');
+    }
+  });
+
   it('separates fresh WebGPU mock literals from assertions that may retain an existing carrier', () => {
     const mocks = input(
       'packages/render-wgpu/src/wgpuTestHelper.ts',

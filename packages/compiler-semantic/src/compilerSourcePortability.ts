@@ -997,6 +997,124 @@ function isEntityRuntimeKeyDeleteFromCopy(statement: ts.Statement): boolean {
   );
 }
 
+function getTextureCubeFacesDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  if (bridge !== 'unknown') return undefined;
+  const sourceFile = node.getSourceFile();
+  const source = normalizePathPortable(sourceFile.fileName);
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner) || getTypeAssertionType(inner).kind !== ts.SyntaxKind.UnknownKeyword) return undefined;
+  let retained: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retained)) retained = retained.expression;
+  const target = getTypeAssertionType(node);
+  if (
+    source.endsWith('/packages/texture/src/texture.ts') &&
+    ts.isTypeReferenceNode(target) &&
+    getNodeName(target.typeName) === 'TextureSourceCubeFaces' &&
+    target.typeArguments === undefined
+  ) {
+    if (
+      (subject === 'function:cloneTexture' || subject === 'function:copyTexture') &&
+      isSourceTextureFacesSlice(retained)
+    ) {
+      return `${subject} uses a double assertion through unknown to claim that source.sources.slice() is the fixed six-slot TextureSourceCubeFaces carrier. slice allocates one fresh array and preserves element order, but its array return type does not prove the +X, -X, +Y, -Y, +Z, and -Z extent. Construct the clone as an explicit six-element tuple with one indexed read for each declared face, or route through a named cloneTextureSourceCubeFaces helper that returns that exact tuple, retaining every TextureSource identity and null sentinel. The compiler may allocate one new six-slot carrier, but will not infer tuple length from slice, reinterpret or cast an array, collapse null into a missing face, copy or materialize a TextureSource owner, or add side storage.`;
+    }
+    if (subject === 'function:createTexture' && isOptionalTextureFacesSliceWithSixNullFallback(retained)) {
+      return `${subject} uses a double assertion through unknown to claim that opts.sources?.slice() ?? [null, null, null, null, null, null] is the fixed six-slot TextureSourceCubeFaces carrier. The fallback literal has the required extent, and a present opts.sources already has that declared extent, but optional chaining plus slice widens the combined expression to an ordinary array and the assertion does not restore the proof. Branch once: clone a present value through a named six-face tuple helper, otherwise construct the explicit six-null tuple, preserving every supplied TextureSource identity, canonical face order, and null sentinel. The compiler may allocate one new six-slot carrier, but will not infer tuple length across slice and ??, reinterpret or cast an array, replace a supplied face list with the fallback, copy or materialize a TextureSource owner, or add side storage.`;
+    }
+    return undefined;
+  }
+  if (
+    source.endsWith('/packages/texture/src/cubeTexture.ts') &&
+    subject === 'function:setCubeTextureFace' &&
+    isNullableTextureSourceArrayType(target) &&
+    ts.isIdentifier(retained) &&
+    retained.text === 'sources' &&
+    isTextureFaceIndexedAssignment(node)
+  ) {
+    return `${subject} uses a double assertion through unknown to widen the exact readonly six-slot TextureSourceCubeFaces carrier sources into a mutable unbounded (TextureSource | null)[] for the faceIndex write. That bridge grants writability and discards the fixed extent without proving either capability. Give CubeTexture a named mutable six-slot face-storage carrier while exposing a readonly six-face view at input and read boundaries, narrow faceIndex to the closed 0 | 1 | 2 | 3 | 4 | 5 domain or dispatch those cases, and update the selected slot on that same storage owner. The compiler will preserve the six face slots and each TextureSource identity, but will not cast away readonly, widen bounded tuple storage, accept an out-of-range index, copy or materialize the face array or a TextureSource owner, or add side storage.`;
+  }
+  return undefined;
+}
+
+function isSourceTextureFacesSlice(node: ts.Expression): boolean {
+  if (!ts.isCallExpression(node) || node.arguments.length !== 0 || !ts.isPropertyAccessExpression(node.expression)) {
+    return false;
+  }
+  const slice = node.expression;
+  return (
+    slice.name.text === 'slice' &&
+    ts.isPropertyAccessExpression(slice.expression) &&
+    ts.isIdentifier(slice.expression.expression) &&
+    slice.expression.expression.text === 'source' &&
+    slice.expression.name.text === 'sources'
+  );
+}
+
+function isOptionalTextureFacesSliceWithSixNullFallback(node: ts.Expression): boolean {
+  if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken) return false;
+  const fallback = node.right;
+  if (
+    !ts.isArrayLiteralExpression(fallback) ||
+    fallback.elements.length !== 6 ||
+    fallback.elements.some((element) => element.kind !== ts.SyntaxKind.NullKeyword)
+  ) {
+    return false;
+  }
+  const left = node.left;
+  if (!ts.isCallExpression(left) || left.arguments.length !== 0 || !ts.isPropertyAccessChain(left.expression)) {
+    return false;
+  }
+  const slice = left.expression;
+  if (slice.name.text !== 'slice' || slice.questionDotToken === undefined) return false;
+  const faces = slice.expression;
+  return (
+    ts.isPropertyAccessExpression(faces) &&
+    ts.isIdentifier(faces.expression) &&
+    faces.expression.text === 'opts' &&
+    faces.name.text === 'sources'
+  );
+}
+
+function isNullableTextureSourceArrayType(node: ts.TypeNode): boolean {
+  if (!ts.isArrayTypeNode(node)) return false;
+  let element = node.elementType;
+  while (ts.isParenthesizedTypeNode(element)) element = element.type;
+  if (!ts.isUnionTypeNode(element) || element.types.length !== 2) return false;
+  return (
+    element.types.some(
+      (type) => ts.isTypeReferenceNode(type) && getNodeName(type.typeName) === 'TextureSource' && !type.typeArguments,
+    ) && element.types.some((type) => hasNullType(type))
+  );
+}
+
+function isTextureFaceIndexedAssignment(node: ts.AsExpression | ts.TypeAssertion): boolean {
+  let current: ts.Expression = node;
+  while (ts.isParenthesizedExpression(current.parent) && current.parent.expression === current)
+    current = current.parent;
+  const indexed = current.parent;
+  if (
+    !ts.isElementAccessExpression(indexed) ||
+    indexed.expression !== current ||
+    !ts.isIdentifier(indexed.argumentExpression) ||
+    indexed.argumentExpression.text !== 'faceIndex'
+  ) {
+    return false;
+  }
+  const assignment = indexed.parent;
+  return (
+    ts.isBinaryExpression(assignment) &&
+    assignment.left === indexed &&
+    assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isIdentifier(assignment.right) &&
+    assignment.right.text === 'source'
+  );
+}
+
 function getMaterialDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
@@ -2162,6 +2280,8 @@ function renderUncheckedDoubleAssertionMessage(
 ): string {
   const entityRuntimeStrip = getEntityRuntimeStripDoubleAssertionGuidance(node, subject, bridge);
   if (entityRuntimeStrip) return entityRuntimeStrip;
+  const textureCubeFaces = getTextureCubeFacesDoubleAssertionGuidance(node, subject, bridge);
+  if (textureCubeFaces) return textureCubeFaces;
   const material = getMaterialDoubleAssertionGuidance(node, subject, bridge);
   if (material) return material;
   const gltfMaterialExtension = getGltfMaterialExtensionDoubleAssertionGuidance(node, subject, bridge);
