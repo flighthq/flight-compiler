@@ -29625,10 +29625,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const webGpuHandleRemediation = renderMissingWebGpuHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   const abortHandleRemediation = renderMissingAbortHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   const canvasHandleRemediation = renderMissingCanvasHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
+  const streamHandleRemediation = renderMissingStreamHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -29734,6 +29735,20 @@ function renderMissingCanvasHandleBindingsRemediationCpp(
     .map((identity) => identity.sourceName);
   if (handles.length === 0) return '';
   return ` Canvas object handles ${handles.join(', ')} are host-owned drawing identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; reuse the same canvas and context carriers through surface, state, target, and pass boundaries, and retain each pattern or gradient owner in fill and stroke unions. A manifest entry names the represented runtime carrier; it does not permit collapsing CanvasImageSource or another source union into a handle, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing replacement handles, or side storage.`;
+}
+
+function renderMissingStreamHandleBindingsRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const handles = missing
+    .filter(
+      (identity) =>
+        identity.space === 'type' &&
+        (identity.sourceName === 'ReadableStream' || identity.sourceName === 'WritableStream'),
+    )
+    .map((identity) => identity.sourceName);
+  if (handles.length === 0) return '';
+  return ` Web stream endpoint handles ${handles.join(', ')} are host-owned stateful identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; preserve the readable or writable direction, element contract, ordering and backpressure, and lock and close lifecycle, and reuse the same endpoint carrier through file-system returns, process standard I/O, and transport boundaries. A manifest entry names the represented runtime carrier; it does not permit replacing a stream with an eager buffer or array, collapsing the endpoint direction, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing a replacement stream, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

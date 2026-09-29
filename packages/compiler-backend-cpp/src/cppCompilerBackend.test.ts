@@ -9193,6 +9193,95 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain('Canvas object handles');
   });
 
+  it('requires exact runtime bindings for Web stream endpoint handles', () => {
+    const result = lower(
+      'StreamEndpoints.ts',
+      `export interface ShellProcess {
+         readonly stderr: ReadableStream<Uint8Array>;
+         readonly stdin: WritableStream<Uint8Array>;
+         readonly stdout: ReadableStream<Uint8Array>;
+       }
+       export interface TcpSocketConnection {
+         readonly readable: ReadableStream<Uint8Array>;
+         readonly writable: WritableStream<Uint8Array>;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/streams.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'ReadableStream',
+          space: 'type' as const,
+          targetName: 'host::ReadableByteStream',
+        },
+        {
+          headers: ['host/streams.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'WritableStream',
+          space: 'type' as const,
+          targetName: 'host::WritableByteStream',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: ReadableStream[type], WritableStream[type]');
+    expect(failure.message).toContain(
+      'Web stream endpoint handles ReadableStream, WritableStream are host-owned stateful identities',
+    );
+    expect(failure.message).toContain('one externalBindings entry for each exact type-space source symbol');
+    expect(failure.message).toContain('stable target wrapper');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('preserve the readable or writable direction');
+    expect(failure.message).toContain('element contract, ordering and backpressure, and lock and close lifecycle');
+    expect(failure.message).toContain(
+      'reuse the same endpoint carrier through file-system returns, process standard I/O, and transport boundaries',
+    );
+    expect(failure.message).toContain('does not permit replacing a stream with an eager buffer or array');
+    expect(failure.message).toContain('collapsing the endpoint direction');
+    expect(failure.message).toContain('void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('copying or materializing a replacement stream');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('host::ReadableByteStream<flight::Uint8Array> stderr;');
+    expect(contents).toContain('host::WritableByteStream<flight::Uint8Array> stdin;');
+    expect(contents).toContain('host::ReadableByteStream<flight::Uint8Array> stdout;');
+    expect(contents).toContain('host::ReadableByteStream<flight::Uint8Array> readable;');
+    expect(contents).toContain('host::WritableByteStream<flight::Uint8Array> writable;');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify Web stream value-space constructors as endpoint handle types', () => {
+    const result = lower(
+      'StreamConstructors.ts',
+      `export function readReadableStreamConstructor(): unknown { return ReadableStream; }
+       export function readWritableStreamConstructor(): unknown { return WritableStream; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: ReadableStream[value], WritableStream[value])',
+    );
+    expect(failure.message).not.toContain('Web stream endpoint handles');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
