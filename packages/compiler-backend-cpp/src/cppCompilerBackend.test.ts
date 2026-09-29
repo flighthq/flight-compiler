@@ -36192,6 +36192,147 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted.contents).toContain('count(');
   });
 
+  it('emits a delayed row cell for a nominal object getter', () => {
+    const types = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export interface ShapeCommandArgumentCursor {
+         readonly length: number;
+         getArgument(index: number): number | undefined;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const shape = ts.createSourceFile(
+      '/flight/packages/shape/src/shapeBounds.ts',
+      `import type { ShapeCommandArgumentCursor } from '@flighthq/types/contract';
+       interface ShapeCommandArgumentCursorInternal extends ShapeCommandArgumentCursor {
+         argumentCount: number;
+         argumentOffset: number;
+         readonly commands: readonly number[];
+       }
+       function createCursor(commands: readonly number[]): ShapeCommandArgumentCursorInternal {
+         const cursor: ShapeCommandArgumentCursorInternal = {
+           argumentCount: 0,
+           argumentOffset: 0,
+           commands,
+           get length() { return cursor.argumentCount; },
+           getArgument(index) {
+             if (index < 0 || index >= cursor.argumentCount) return undefined;
+             return cursor.commands[cursor.argumentOffset + index];
+           },
+         };
+         return cursor;
+       }
+       export function readLength(cursor: Readonly<ShapeCommandArgumentCursor>): number {
+         return cursor.length;
+       }
+       export function compute(commands: readonly number[]): number {
+         const cursor = createCursor(commands);
+         return cursor.argumentCount;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/shape', sourceFile: shape, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/shape': { includePrefix: 'test/shape', namespace: 'test_shape' },
+          '@flighthq/types': { includePrefix: 'test/types', namespace: 'test_types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = modules.map((module) => session.emitModule(module)[0]!);
+    const output = emitted[1]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(output).toContain('public flight::TypedRowCell<double>');
+    expect(output).toContain('.shared_owner()->set_named_cell("length"');
+    expect(output).toContain('auto next = getter_()');
+    expect(output).toContain('value_.value() = std::move(next)');
+    expect(output).toContain('flight::row_get<flight::RowKey<"length">>(cursor)');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-nominal-object-getter-'));
+      try {
+        for (const file of emitted) {
+          const outputPath = path.join(directory, file.path);
+          mkdirSync(path.dirname(outputPath), { recursive: true });
+          // The pinned runtime's generated table predates this row key even though its generated
+          // cursor type already declares the field. Supply only that downstream-generated fact so
+          // this check remains about the compiler-owned accessor-cell syntax.
+          const contents =
+            file === emitted[0]
+              ? `${file.contents}\nnamespace flight::detail {\ntemplate <>\nconsteval auto generated_row_member_type_identity<flight::RowKey<"length">, test_types::ShapeCommandArgumentCursor>() { return std::type_identity<double>{}; }\n}\n`
+              : file.contents;
+          writeFileSync(outputPath, contents, 'utf8');
+        }
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, path.join(directory, emitted[1]!.path), [
+          directory,
+          ...cppRuntimeIncludeDirectories,
+        ]);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it('refuses a nominal object getter that is read without a structural view', () => {
+    const result = lower(
+      'direct-object-getter.ts',
+      `interface Cursor { readonly length: number; offset: number }
+       function createCursor(): Cursor {
+         const cursor: Cursor = { offset: 0, get length() { return cursor.offset; } };
+         return cursor;
+       }
+       function readLength(cursor: Cursor): number { return cursor.length; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.message).toContain('object getters require target-specific accessor lowering');
+  });
+
+  it('refuses a nominal object getter whose native carrier reaches an exported declaration', () => {
+    const result = lower(
+      'exported-object-getter.ts',
+      `interface Cursor { readonly length: number; offset: number }
+       export function createCursor(): Cursor {
+         const cursor: Cursor = { offset: 0, get length() { return cursor.offset; } };
+         return cursor;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.message).toContain('object getters require target-specific accessor lowering');
+  });
+
   it('emits getIrExpressionClassDeclarationCpp for new expression', () => {
     const result = lower(
       'new-class.ts',
@@ -42380,6 +42521,58 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // A default may be declared in only one declaration and the consumer is not that module, so the
     // reference cannot rely on `<>` resolving here.
     expect(emitted).toContain('flight::Ref<flighthq_types::Node<flight::ErasedRef, flight::ErasedRef>>');
+  });
+
+  it('spells out a defaulted generic argument reached through a re-export', () => {
+    const shape = ts.createSourceFile(
+      '/flight/packages/types/src/shape.ts',
+      `export interface Command<Key extends string = string> { readonly key: Key; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export type { Command } from '@flighthq/types/shape';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const registry = ts.createSourceFile(
+      '/flight/packages/shape/src/registry.ts',
+      `import type { Command } from '@flighthq/types/contract';
+       export interface Registry { readonly command: Command; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/shape',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/shape.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: shape, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/shape', sourceFile: registry, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('flight::Ref<flighthq_types::Command<flight::String>> command;');
   });
 
   it('carries the module that declares a default argument the consumer only inherits', () => {

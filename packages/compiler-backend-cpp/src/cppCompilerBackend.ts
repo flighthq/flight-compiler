@@ -229,6 +229,13 @@ interface CppStructuralOpenRowConstructionPlan {
   readonly fields: readonly CppStructuralOpenRowConstructionField[];
 }
 
+interface CppNominalObjectAccessorConstructionPlan {
+  readonly fields: readonly Readonly<{
+    member: Readonly<Extract<IrObjectMember, { kind: 'getAccessor' | 'property' }>>;
+    property: Readonly<IrObjectTypeProperty>;
+  }>[];
+}
+
 interface CppDenseArraySequentialAppendPlan {
   readonly directOffsets: ReadonlySet<number>;
   readonly indexCoefficient: number;
@@ -1394,11 +1401,11 @@ function getCppImportedBindingDeclarationCpp(
   return undefined;
 }
 
-// A structural projection may be reached through a helper's signature, where the imported binding
-// was written in that helper's module rather than the module currently being emitted. Resolve that
-// original import owner through the export graph, but keep this fallback local to structural-row
-// conversion so nominal union matching retains its conservative, context-local behavior.
-function getCppStructuralImportedBindingDeclarationCpp(
+// A type may be reached through a helper's signature or a contract barrel, where the imported binding
+// was written in another module rather than the module currently being emitted. Resolve that original
+// import owner through the export graph only for callers that explicitly admit re-exported ownership;
+// nominal union matching keeps its conservative, context-local behavior.
+function getCppReexportedImportedBindingDeclarationCpp(
   type: Readonly<Extract<IrType, { kind: 'named' }>>,
   context: EmitContext,
 ): Readonly<{ declaration: Readonly<IrDeclaration>; module: Readonly<IrModule> }> | undefined {
@@ -5309,9 +5316,6 @@ function emitExpression(
       return `${typeName}${typeArguments}(${args.join(', ')})`;
     }
     case 'object': {
-      if (expression.members.some((member) => member.kind === 'getAccessor')) {
-        emissionError(context, 'object getters require target-specific accessor lowering');
-      }
       const expectedPayload =
         expectedType && hasIrTypeAbsentMember(expectedType)
           ? getCppNonNullableType(expectedType, context, new Set())
@@ -5358,6 +5362,9 @@ function emitExpression(
         context.module,
       );
       if (structuralRow && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+        if (expression.members.some((member) => member.kind === 'getAccessor')) {
+          emissionError(context, 'object getters require target-specific accessor lowering');
+        }
         const spread =
           expression.members.length === 1 && expression.members[0]?.kind === 'spread'
             ? expression.members[0]
@@ -5601,6 +5608,25 @@ function emitExpression(
         constructionType,
         context.module,
       );
+      const accessorConstruction =
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        hasFlightReferenceRepresentationCpp(constructionType, context)
+          ? getCppNominalObjectAccessorConstructionPlanCpp(expression, constructionType, context)
+          : undefined;
+      const loweredAccessorConstruction =
+        accessorConstruction &&
+        !hasCppDirectNominalAccessorReadCpp(
+          constructionType,
+          new Set(
+            accessorConstruction.fields.flatMap(({ member }) => (member.kind === 'getAccessor' ? [member.name] : [])),
+          ),
+          context,
+        )
+          ? accessorConstruction
+          : undefined;
+      if (expression.members.some((member) => member.kind === 'getAccessor') && !loweredAccessorConstruction) {
+        emissionError(context, 'object getters require target-specific accessor lowering');
+      }
       const constructionOwner = getCppTypeReferenceOwnerModuleCpp(constructionType, context);
       const emitPropertyValue = (property: (typeof properties)[number]): string => {
         const propertyType = getIrObjectPropertyTypeCpp(constructionType, property.name, context);
@@ -5642,6 +5668,56 @@ function emitExpression(
           : undefined;
       const inheritedNames = new Set(nominalBase?.properties.map((property) => property.name) ?? []);
       const inheritedProperties = properties.filter((property) => inheritedNames.has(property.name));
+      if (loweredAccessorConstruction) {
+        const values = new Map<Readonly<IrObjectMember>, string>();
+        const evaluations = loweredAccessorConstruction.fields.map(({ member, property }) => {
+          const valueName = getGeneratedTargetName(`objectMember_${member.name}`, context);
+          values.set(member, valueName);
+          const value =
+            member.kind === 'property'
+              ? emitPropertyValue(member)
+              : emitExpression(member.value, context, {
+                  kind: 'function',
+                  parameters: [],
+                  returns: property.type,
+                  typeParameters: [],
+                });
+          return `auto ${valueName} = ${value};`;
+        });
+        const orderedAccessorProperties = orderedProperties.map((property) => {
+          const field = loweredAccessorConstruction.fields.find((candidate) => candidate.member === property);
+          if (!field) throw new TypeError(`expected object accessor property ${property.name}`);
+          return { field, value: values.get(property)! };
+        });
+        const initializer = `{${orderedAccessorProperties
+          .filter(({ field }) => !inheritedNames.has(field.member.name))
+          .map(({ field, value }) => `.${safeCppName(field.member.name)} = ${value}`)
+          .join(', ')}}`;
+        const result = getGeneratedTargetName('objectAccessorResult', context);
+        const assigned = orderedAccessorProperties
+          .filter(({ field }) => inheritedNames.has(field.member.name))
+          .map(({ field, value }) => `${result}->${safeCppName(field.member.name)} = ${value};`);
+        const resultType = emitType(constructionType, context);
+        const row = getGeneratedTargetName('objectAccessorRow', context);
+        const accessors = loweredAccessorConstruction.fields.flatMap(({ member, property }) => {
+          if (member.kind !== 'getAccessor') return [];
+          const valueType = emitType(property.type, context);
+          const cell = getGeneratedTargetName(`objectAccessorCell_${member.name}`, context);
+          const getter = values.get(member);
+          if (!getter) throw new TypeError(`expected object accessor value ${member.name}`);
+          return [
+            `class ${cell} final : public flight::TypedRowCell<${valueType}> { public: explicit ${cell}(std::function<${valueType}()> getter) : getter_(std::move(getter)) {} ${valueType}& get() override { auto next = getter_(); if (value_.has_value()) value_.value() = std::move(next); else value_.emplace(std::move(next)); return value_.value(); } void set(${valueType}) override { throw std::logic_error("object getter is readonly"); } private: std::function<${valueType}()> getter_; std::optional<${valueType}> value_; };`,
+            `${row}.shared_owner()->set_named_cell(${JSON.stringify(member.name)}, std::make_shared<${cell}>(std::function<${valueType}()>{std::move(${getter})}));`,
+          ];
+        });
+        context.includes.add('flight/structural_ref.hpp');
+        context.includes.add('functional');
+        context.includes.add('memory');
+        context.includes.add('optional');
+        context.includes.add('stdexcept');
+        context.includes.add('utility');
+        return `([&]() { ${evaluations.join(' ')} auto ${result} = ${construction(initializer)}; ${assigned.join(' ')} auto ${row} = flight::StructuralRef<flight::RowWritable<flight::RowOf<${resultType}>>>(${result}); ${accessors.join(' ')} return ${result}; }())`;
+      }
       const reordered =
         orderedProperties.length === properties.length &&
         orderedProperties.some((property, index) => property !== properties[index]);
@@ -7080,6 +7156,126 @@ function getCppStructuralOpenRowConstructionPlanCpp(
     return undefined;
   }
   return { fields };
+}
+
+// A structural view routes every declared property read through its RowOwner. That owner can
+// therefore carry a getter as a typed cell whose `get` recomputes the source accessor each time. Keep
+// the accepted object form closed and deliberately small: named data properties plus zero-argument,
+// non-generic getters that do not use dynamic `this`, with every required target field accounted for.
+// A module-private nominal object uses the same cell only when this module never reads that getter
+// through the native object type; those reads would bypass the owner. Keeping the carrier private proves
+// another module cannot do so either. This preserves delayed reads without minting a second object or
+// silently leaving a stale native field visible.
+function getCppNominalObjectAccessorConstructionPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppNominalObjectAccessorConstructionPlan> | undefined {
+  if (
+    !expression.members.some((member) => member.kind === 'getAccessor') ||
+    expression.members.some((member) => member.kind !== 'getAccessor' && member.kind !== 'property')
+  ) {
+    return undefined;
+  }
+  const owner = getCppDirectBindingOwner(type, context);
+  if (
+    !owner ||
+    getCppModuleIdentityKey(owner.module) !== getCppModuleIdentityKey(context.module) ||
+    !('exported' in owner.declaration) ||
+    owner.declaration.exported ||
+    hasCppExportedNominalAccessorCarrierReferenceCpp(type, context)
+  ) {
+    return undefined;
+  }
+  const properties = context.referenceRepresentationPlanner.resolveObjectShape(type, context.module);
+  if (!properties || properties.some((property) => property.computedKey || property.phantom)) return undefined;
+  const propertiesByName = new Map(properties.map((property) => [property.name, property] as const));
+  const supplied = new Set<string>();
+  const fields: CppNominalObjectAccessorConstructionPlan['fields'][number][] = [];
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  for (const member of expression.members) {
+    if ((member.kind !== 'getAccessor' && member.kind !== 'property') || supplied.has(member.name)) return undefined;
+    const property = propertiesByName.get(member.name);
+    if (!property) return undefined;
+    if (member.kind === 'getAccessor') {
+      if (
+        property.optional ||
+        member.value.async ||
+        member.value.parameters.length > 0 ||
+        member.value.typeParameters.length > 0 ||
+        irFunctionExpressionUsesThisCpp(member.value) ||
+        !context.referenceRepresentationPlanner.isStructurallyAssignable(
+          member.value.returns,
+          property.type,
+          context.module,
+        ) ||
+        getCppStructuralClosedRowCellStorageTypeCpp(member.value.returns, isolatedContext) !==
+          getCppStructuralClosedRowCellStorageTypeCpp(property.type, isolatedContext)
+      ) {
+        return undefined;
+      }
+    }
+    supplied.add(member.name);
+    fields.push({ member, property });
+  }
+  if (properties.some((property) => !property.optional && !supplied.has(property.name))) return undefined;
+  return { fields };
+}
+
+function hasCppExportedNominalAccessorCarrierReferenceCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const targetStorage = emitType(type, isolatedContext, 'storage');
+  let exposed = false;
+  analyzeIrModuleTraversal(context.module, {
+    type(candidate, path) {
+      const declarationIndex = path[0] === 'declarations' && typeof path[1] === 'number' ? path[1] : undefined;
+      const declaration = declarationIndex === undefined ? undefined : context.module.declarations[declarationIndex];
+      // A type annotation nested in an exported function or method body is still private to the
+      // implementation. Initializers are likewise not part of a declaration's published C++ type.
+      if (!declaration?.exported || path.includes('body') || path.includes('initializer')) return undefined;
+      if (emitType(candidate, { ...isolatedContext, anonymousStructs: new Map() }, 'storage') === targetStorage) {
+        exposed = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return exposed;
+}
+
+function hasCppDirectNominalAccessorReadCpp(
+  type: Readonly<IrType>,
+  accessorNames: ReadonlySet<string>,
+  context: EmitContext,
+): boolean {
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const targetStorage = emitType(type, isolatedContext, 'storage');
+  let direct = false;
+  analyzeIrModuleTraversal(context.module, {
+    expression(expression) {
+      if (direct) return false;
+      const receiver =
+        expression.kind === 'property' && accessorNames.has(expression.name)
+          ? expression.object
+          : expression.kind === 'element' &&
+              expression.index.kind === 'literal' &&
+              typeof expression.index.value === 'string' &&
+              accessorNames.has(expression.index.value)
+            ? expression.object
+            : undefined;
+      if (!receiver || getCppStructuralRowExpressionPlanCpp(receiver, context)) return undefined;
+      const receiverType = getIrExpressionTypeEvidenceCpp(receiver, context);
+      if (
+        receiverType &&
+        emitType(receiverType, { ...isolatedContext, anonymousStructs: new Map() }, 'storage') === targetStorage
+      ) {
+        direct = true;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  return direct;
 }
 
 // A spread object names runtime copy semantics, but a closed structural row can implement the common
@@ -10543,7 +10739,7 @@ function hasProvenWeakMapValueRepresentationCpp(type: Readonly<IrType>, context:
     getCppDirectBindingOwner(type, context) ??
     (type.kind === 'named'
       ? (getCppImportedBindingDeclarationCpp(type, context) ??
-        getCppStructuralImportedBindingDeclarationCpp(type, context))
+        getCppReexportedImportedBindingDeclarationCpp(type, context))
       : undefined);
   const value = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
   return value.kind === 'represented' && value.identity.identity !== 'indeterminate';
@@ -28524,7 +28720,10 @@ function getCppTypeReferenceDefaultArgumentsCpp(
 ): readonly string[] | undefined {
   // A consumer refers to another module's generic through an import, and the direct-owner index
   // excludes imports, so the import resolves through its own owner first.
-  const owner = getCppDirectBindingOwner(type, context) ?? getCppImportedBindingDeclarationCpp(type, context);
+  const owner =
+    getCppDirectBindingOwner(type, context) ??
+    getCppImportedBindingDeclarationCpp(type, context) ??
+    getCppReexportedImportedBindingDeclarationCpp(type, context);
   const declaration = owner?.declaration;
   if (
     !owner ||
@@ -28561,8 +28760,11 @@ function getCppTypeReferenceUsesDefaultArgumentsCpp(
   context: EmitContext,
 ): boolean {
   if (type.reference.kind !== 'binding') return false;
-  const declaration = (getCppDirectBindingOwner(type, context) ?? getCppImportedBindingDeclarationCpp(type, context))
-    ?.declaration;
+  const declaration = (
+    getCppDirectBindingOwner(type, context) ??
+    getCppImportedBindingDeclarationCpp(type, context) ??
+    getCppReexportedImportedBindingDeclarationCpp(type, context)
+  )?.declaration;
   if (
     !declaration ||
     (declaration.kind !== 'class' && declaration.kind !== 'interface' && declaration.kind !== 'typeAlias') ||
