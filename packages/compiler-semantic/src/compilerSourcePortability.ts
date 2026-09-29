@@ -643,6 +643,35 @@ function getRenderProxyColorMatrixMixedAbsencePropertyMessage(
   return `${subject} gives the reusable RenderProxy colorMatrix slot both omission and explicit null, but the represented 2D render contract has one inactive state: initializeRenderProxy assigns out.colorMatrix = null, and updateRenderProxyColorScaleBias overwrites it with a resolved matrix or null whenever color adjustment accumulation runs. GL and WebGPU 2D consumers use nullish selection or comparison before batching and shader selection. Make RenderProxy.colorMatrix a required readonly number[] | null field alongside required colorScaleBias, preserve the initializer and per-update clear, and narrow resolveInheritedColorMatrix's previous parameter from readonly number[] | null | undefined to readonly number[] | null so its reuse branch no longer carries an unreachable undefined case. If a proxy lifecycle must distinguish not initialized from no matrix, name a closed color-adjustment state and handle every state explicitly. The compiler will not choose or collapse an absence sentinel, synthesize or multiply a color matrix, rewrite batching or shader selection, allocate or copy matrix storage, or add side storage.`;
 }
 
+function getColorAdjustmentFeatureMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (!ts.isInterfaceDeclaration(node.parent) || getNodeName(node.name) !== 'colorAdjustmentFeature') {
+    return undefined;
+  }
+  const owner = node.parent.name.text;
+  const source = normalizePathPortable(node.getSourceFile().fileName);
+  const isGlRegistry = owner === 'GlRenderRegistries' && source.endsWith('/packages/types/src/GlRenderState.ts');
+  const isGlOptions =
+    owner === 'GlRenderStateOptions' && source.endsWith('/packages/types/src/GlRenderStateOptions.ts');
+  const isWgpuRegistry = owner === 'WgpuRenderRegistries' && source.endsWith('/packages/types/src/WgpuRenderState.ts');
+  const isWgpuOptions =
+    owner === 'WgpuRenderStateOptions' && source.endsWith('/packages/types/src/WgpuRenderStateOptions.ts');
+  if (!isGlRegistry && !isGlOptions && !isWgpuRegistry && !isWgpuOptions) return undefined;
+  const isGl = isGlRegistry || isGlOptions;
+  const feature = isGl ? 'GlColorAdjustmentMaterialFeature' : 'WgpuColorAdjustmentMaterialFeature';
+  if (!isOptionalNullableNamedTypeProperty(node, feature)) return undefined;
+  const backend = isGl ? 'GL' : 'WebGPU';
+  const options = isGl ? 'GlRenderStateOptions' : 'WgpuRenderStateOptions';
+  const registries = isGl ? 'GlRenderRegistries' : 'WgpuRenderRegistries';
+  const build = isGl ? 'buildGlRenderRegistries' : 'buildWgpuRenderRegistries';
+  const get = isGl ? 'getGlColorAdjustmentMaterialFeature' : 'getWgpuColorAdjustmentMaterialFeature';
+  const register = isGl ? 'registerGlColorAdjustmentMaterialFeature' : 'registerWgpuColorAdjustmentMaterialFeature';
+  const role = isGlRegistry || isWgpuRegistry ? 'live registry slot' : 'construction option';
+  return `${subject} gives the ${backend} color-adjustment material feature ${role} both omission and explicit null, but the represented opt-in feature contract has one disabled state. ${build} constructs a fresh registry and currently copies options.colorAdjustmentFeature only when it is not undefined, while ${get} returns registries.colorAdjustmentFeature ?? null, so omitted and explicit-null options and either registry absence spelling all resolve to the same unavailable feature. ${register} later overwrites that exact live registry slot with the backend feature singleton, and no path restores undefined. Declare ${options}.colorAdjustmentFeature as optional ${feature} without null, make ${registries}.colorAdjustmentFeature a required ${feature} | null field, and have ${build} assign registries.colorAdjustmentFeature = options.colorAdjustmentFeature ?? null so the construction boundary normalizes once while a present feature owner passes unchanged. Keep colorAdjustmentFeatureGuard separate: it is diagnostic policy and never enables rendering behavior. If disabled, registered, and another lifecycle state must differ, replace the absence spellings with one named closed feature-registration state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or register a color-adjustment feature, enable color adjustments, select or execute shader behavior, copy or materialize the feature owner, change its backend-specific contract or diagnostic guard, reinterpret or cast the feature, or add side storage.`;
+}
+
 function getScene3DDiagnosticGuardMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -782,6 +811,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (sceneConstructionOwner) return sceneConstructionOwner;
   const renderProxyColorMatrix = getRenderProxyColorMatrixMixedAbsencePropertyMessage(node, subject);
   if (renderProxyColorMatrix) return renderProxyColorMatrix;
+  const colorAdjustmentFeature = getColorAdjustmentFeatureMixedAbsencePropertyMessage(node, subject);
+  if (colorAdjustmentFeature) return colorAdjustmentFeature;
   const scene3DDiagnosticGuard = getScene3DDiagnosticGuardMixedAbsencePropertyMessage(node, subject);
   if (scene3DDiagnosticGuard) return scene3DDiagnosticGuard;
   const glRenderPassTracking = getGlRenderPassTrackingMixedAbsencePropertyMessage(node, subject);

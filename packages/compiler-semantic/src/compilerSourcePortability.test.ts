@@ -4964,6 +4964,158 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains one normalized absence state for backend color-adjustment material features', () => {
+    const sources = [
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface GlColorAdjustmentMaterialFeature { readonly fragmentShaderChunk: string }
+         interface GlRenderRegistries {
+           colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/GlRenderStateOptions.ts',
+        `interface GlColorAdjustmentMaterialFeature { readonly fragmentShaderChunk: string }
+         interface GlRenderStateOptions {
+           colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderState.ts',
+        `interface WgpuColorAdjustmentMaterialFeature { readonly fragmentShaderChunk: string }
+         interface WgpuRenderRegistries {
+           colorAdjustmentFeature?: WgpuColorAdjustmentMaterialFeature | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderStateOptions.ts',
+        `interface WgpuColorAdjustmentMaterialFeature { readonly fragmentShaderChunk: string }
+         interface WgpuRenderStateOptions {
+           colorAdjustmentFeature?: WgpuColorAdjustmentMaterialFeature | null;
+         }`,
+      ),
+    ];
+    const findings = analyzeTypeScriptSourcePortability(sources).findings;
+    const expected = [
+      ['GlRenderRegistries', 'GL', 'live registry slot', 'GlColorAdjustmentMaterialFeature'],
+      ['GlRenderStateOptions', 'GL', 'construction option', 'GlColorAdjustmentMaterialFeature'],
+      ['WgpuRenderRegistries', 'WebGPU', 'live registry slot', 'WgpuColorAdjustmentMaterialFeature'],
+      ['WgpuRenderStateOptions', 'WebGPU', 'construction option', 'WgpuColorAdjustmentMaterialFeature'],
+    ] as const;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expected.map(([owner]) => ({
+        rule: 'mixed-absence',
+        subject: `interface:${owner}/property:colorAdjustmentFeature`,
+      })),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const [, backend, role, feature] = expected[index]!;
+      expect(finding.message).toContain(
+        `gives the ${backend} color-adjustment material feature ${role} both omission and explicit null`,
+      );
+      expect(finding.message).toContain('the represented opt-in feature contract has one disabled state');
+      expect(finding.message).toContain('constructs a fresh registry');
+      expect(finding.message).toContain('copies options.colorAdjustmentFeature only when it is not undefined');
+      expect(finding.message).toContain('returns registries.colorAdjustmentFeature ?? null');
+      expect(finding.message).toContain('all resolve to the same unavailable feature');
+      expect(finding.message).toContain('overwrites that exact live registry slot with the backend feature singleton');
+      expect(finding.message).toContain('no path restores undefined');
+      expect(finding.message).toContain(`colorAdjustmentFeature as optional ${feature} without null`);
+      expect(finding.message).toContain(`colorAdjustmentFeature a required ${feature} | null field`);
+      expect(finding.message).toContain(
+        'assign registries.colorAdjustmentFeature = options.colorAdjustmentFeature ?? null',
+      );
+      expect(finding.message).toContain('a present feature owner passes unchanged');
+      expect(finding.message).toContain('Keep colorAdjustmentFeatureGuard separate');
+      expect(finding.message).toContain('never enables rendering behavior');
+      expect(finding.message).toContain('one named closed feature-registration state');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('import or register a color-adjustment feature');
+      expect(finding.message).toContain('enable color adjustments');
+      expect(finding.message).toContain('select or execute shader behavior');
+      expect(finding.message).toContain('copy or materialize the feature owner');
+      expect(finding.message).toContain('change its backend-specific contract or diagnostic guard');
+      expect(finding.message).toContain('reinterpret or cast the feature');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps unrelated feature slots generic and accepts normalized color-adjustment feature contracts', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface GlColorAdjustmentMaterialFeature {}
+         interface OtherGlRenderRegistries {
+           colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
+         }`,
+      ),
+      input(
+        'packages/example/src/GlRenderState.ts',
+        `interface GlColorAdjustmentMaterialFeature {}
+         interface GlRenderRegistries {
+           colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface GlColorAdjustmentMaterialFeature {}
+         interface GlRenderRegistries { colorFeature?: GlColorAdjustmentMaterialFeature | null }`,
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface GlColorAdjustmentMaterialFeatureGuard {}
+         interface GlRenderRegistries {
+           colorAdjustmentFeature?: GlColorAdjustmentMaterialFeatureGuard | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface GlColorAdjustmentMaterialFeatureGuard {}
+         interface GlRenderRegistries {
+           colorAdjustmentFeatureGuard?: GlColorAdjustmentMaterialFeatureGuard | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderStateOptions.ts',
+        `interface GlColorAdjustmentMaterialFeature {}
+         interface WgpuRenderStateOptions {
+           colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
+         }`,
+      ),
+    ];
+    const resolved = [
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface GlColorAdjustmentMaterialFeature {}
+         interface GlRenderRegistries { colorAdjustmentFeature: GlColorAdjustmentMaterialFeature | null }`,
+      ),
+      input(
+        'packages/types/src/GlRenderStateOptions.ts',
+        `interface GlColorAdjustmentMaterialFeature {}
+         interface GlRenderStateOptions { colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderState.ts',
+        `interface WgpuColorAdjustmentMaterialFeature {}
+         interface WgpuRenderRegistries { colorAdjustmentFeature: WgpuColorAdjustmentMaterialFeature | null }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderStateOptions.ts',
+        `interface WgpuColorAdjustmentMaterialFeature {}
+         interface WgpuRenderStateOptions { colorAdjustmentFeature?: WgpuColorAdjustmentMaterialFeature }`,
+      ),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability(resolved).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('color-adjustment material feature');
+    }
+  });
+
   it('explains the required nullable contract for opt-in Scene3D diagnostic guards', () => {
     const gl = input(
       'packages/types/src/GlScene3DRuntime.ts',
