@@ -8,8 +8,10 @@ import ts from 'typescript';
 
 import {
   collectCppRuntimeIncludeDirectories,
+  createCppExecutableArguments,
   createCppSyntaxOnlyArguments,
   findCppCompilerToolchain,
+  getCppExecutableName,
 } from '../../../scripts/cppToolchain.js';
 import { resolveDependency } from '../../../scripts/dependencyLock.js';
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
@@ -16863,6 +16865,71 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).toContain('value.first_runtime_key.has_value()');
     expect(emitted).toContain('value.second_runtime_key.has_value()');
     expect(emitted).not.toContain('Symbol::for_key(flight::String("Runtime"))');
+  });
+
+  it.skipIf(!canCompileCpp)('reads exact unique-symbol members and keeps unrelated dynamic keys attached', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const result = lower(
+      'computed-symbol-read.ts',
+      `export interface Runtime { loaded: boolean }
+       export const FirstRuntimeKey: unique symbol = Symbol('Runtime');
+       export const SecondRuntimeKey: unique symbol = Symbol('Runtime');
+       export interface State {
+         [FirstRuntimeKey]: Runtime;
+         [SecondRuntimeKey]: Runtime;
+       }
+       export function read(state: Readonly<State>): boolean {
+         return state[FirstRuntimeKey].loaded && !state[SecondRuntimeKey].loaded;
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-computed-symbol-read-'));
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted.contents.match(/owner\.bind_symbol\(/gu)).toHaveLength(2);
+    expect(emitted.contents).toContain('flight::row_get<flight::Ref<Runtime>>(state, first_runtime_key)->loaded');
+    expect(emitted.contents).toContain('flight::row_get<flight::Ref<Runtime>>(state, second_runtime_key)->loaded');
+    try {
+      const headerPath = path.join(directory, emitted.path);
+      mkdirSync(path.dirname(headerPath), { recursive: true });
+      writeFileSync(headerPath, emitted.contents, 'utf8');
+      const sourcePath = path.join(directory, 'computed_symbol_read.cpp');
+      writeFileSync(
+        sourcePath,
+        `#include <${emitted.path}>
+
+int main() {
+  auto first = flight::make_ref<flighthq_math::Runtime>(flighthq_math::Runtime{.loaded = true});
+  auto second = flight::make_ref<flighthq_math::Runtime>(flighthq_math::Runtime{.loaded = false});
+  auto state = flight::make_ref<flighthq_math::State>(
+      flighthq_math::State{.first_runtime_key = first, .second_runtime_key = second});
+  auto writable = flight::StructuralRef<
+      flight::RowWritable<flight::RowOf<flight::Ref<flighthq_math::State>>>>(state);
+  auto readonly = flight::StructuralRef<
+      flight::RowReadonly<flight::RowOf<flight::Ref<flighthq_math::State>>>>(state);
+  if (!flighthq_math::read(readonly)) return 1;
+
+  const flight::Symbol same_description(flight::String("Runtime"));
+  if (flight::row_get<flight::Ref<flighthq_math::Runtime>>(readonly, same_description)) return 2;
+
+  const flight::Symbol dynamic_key(flight::String("Dynamic"));
+  flight::row_set(writable, dynamic_key, 7.0);
+  if (flight::row_get<double>(readonly, dynamic_key) != 7.0) return 3;
+  return 0;
+}
+`,
+        'utf8',
+      );
+      const executable = path.join(directory, getCppExecutableName(cppToolchain, 'computed_symbol_read'));
+      const arguments_ = createCppExecutableArguments(cppToolchain, sourcePath, executable, [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' });
+      expect(() => execFileSync(executable, [], { cwd: directory, encoding: 'utf8', stdio: 'pipe' })).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it('emits the exact Scene3D resolver runtime key binding', () => {
