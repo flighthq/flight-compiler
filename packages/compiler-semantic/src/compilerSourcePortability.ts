@@ -380,6 +380,32 @@ function getInteractionManagerOptionsMixedAbsencePropertyMessage(
   return `${subject} gives the InteractionManager construction option ${name} both omission and explicit null, but createInteractionManager passes its options once into initializeInteractionManager for a fresh manager, where out.cursorBackend = options.cursorBackend ?? null and out.spatialIndex = options.spatialIndex ?? null normalize either spelling to the same disabled service. Runtime consumers such as applyInteractionCursor, findInteractionTarget, and refreshInteractionSpatialIndex then test the required nullable fields against null. Keep the InteractionManager cursorBackend and spatialIndex fields required nullable so installed services can be cleared explicitly, but make both fields optional non-null in InteractionManagerOptions so omission is the sole construction-time absence. If the options shape later becomes a mutation patch, define a named closed update state whose unchanged, disabled, and installed cases are explicit. The compiler will not choose or collapse an absence sentinel, construct a cursor backend or spatial index, rewrite the manager, change service-owner identity, or add side storage.`;
 }
 
+function getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (!ts.isInterfaceDeclaration(node.parent)) return undefined;
+  const source = normalizePathPortable(node.getSourceFile().fileName);
+  const name = getNodeName(node.name);
+  if (
+    source.endsWith('/packages/types/src/Camera3DOptions.ts') &&
+    node.parent.name.text === 'Camera3DOptions' &&
+    name === 'nearClipPlane' &&
+    isOptionalNullableNamedTypeProperty(node, 'Plane')
+  ) {
+    return `${subject} gives the Camera3D construction owner nearClipPlane both omission and explicit null, but createCamera3D passes its options once to initializeCamera3D for a fresh camera, where out.nearClipPlane = opts.nearClipPlane ?? null normalizes either spelling to the same disabled clipping state. getCamera3DViewProjectionMatrix4 applies the plane only when present, while reflectCamera3DByPlane copies the live required nullable field directly. Keep Camera3D.nearClipPlane required nullable so runtime code can install or clear a plane, but make Camera3DOptions.nearClipPlane an optional Plane without null so omission is the sole construction-time absence. If the options shape later becomes a mutation patch, define a named closed update state whose unchanged, disabled, and present-plane cases are explicit. The compiler will not choose or collapse an absence sentinel, infer or construct a Plane, rewrite or reflect the camera, copy or materialize the plane owner, or add side storage.`;
+  }
+  if (
+    source.endsWith('/packages/types/src/EnvironmentOptions.ts') &&
+    node.parent.name.text === 'EnvironmentOptions' &&
+    name === 'environment' &&
+    isOptionalNullableNamedTypeProperty(node, 'Texture')
+  ) {
+    return `${subject} gives the Environment construction owner environment both omission and explicit null, but createEnvironment passes its options once to initializeEnvironment for a fresh entity, where out.environment = options?.environment ?? null normalizes either spelling to the same disabled radiance state. GL and WebGPU environment-cube consumers test the required nullable field against null before using the exact Texture owner. Keep Environment.environment required nullable so runtime code can install or clear a texture, but make EnvironmentOptions.environment an optional Texture without null so omission is the sole construction-time absence; cloneEnvironment must omit the option when source.environment is null and pass the existing owner unchanged when present. If the options shape later becomes a mutation patch, define a named closed update state whose unchanged, disabled, and present-texture cases are explicit. The compiler will not choose or collapse an absence sentinel, infer or construct a Texture, rewrite or clone the environment, copy or materialize the texture owner, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -454,6 +480,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (bitmapTextOptions) return bitmapTextOptions;
   const interactionManagerOptions = getInteractionManagerOptionsMixedAbsencePropertyMessage(node, subject);
   if (interactionManagerOptions) return interactionManagerOptions;
+  const sceneConstructionOwner = getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(node, subject);
+  if (sceneConstructionOwner) return sceneConstructionOwner;
   const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
     node,
     subject,

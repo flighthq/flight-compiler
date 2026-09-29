@@ -3966,6 +3966,123 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains construction-only absence for scene owner options', () => {
+    const camera = input(
+      'packages/types/src/Camera3DOptions.ts',
+      `interface Plane { readonly a: number }
+       interface Camera3DOptions {
+         far: number;
+         near: number;
+         nearClipPlane?: Plane | null;
+       }`,
+    );
+    const environment = input(
+      'packages/types/src/EnvironmentOptions.ts',
+      `interface Texture { readonly version: number }
+       interface EnvironmentOptions {
+         enabled?: boolean;
+         environment?: Texture | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([camera, environment]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:Camera3DOptions/property:nearClipPlane',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:EnvironmentOptions/property:environment',
+      },
+    ]);
+    const [cameraFinding, environmentFinding] = findings;
+    expect(cameraFinding?.message).toContain(
+      'gives the Camera3D construction owner nearClipPlane both omission and explicit null',
+    );
+    expect(cameraFinding?.message).toContain('createCamera3D passes its options once to initializeCamera3D');
+    expect(cameraFinding?.message).toContain('out.nearClipPlane = opts.nearClipPlane ?? null');
+    expect(cameraFinding?.message).toContain('getCamera3DViewProjectionMatrix4 applies the plane only when present');
+    expect(cameraFinding?.message).toContain('reflectCamera3DByPlane copies the live required nullable field directly');
+    expect(cameraFinding?.message).toContain('Keep Camera3D.nearClipPlane required nullable');
+    expect(cameraFinding?.message).toContain('make Camera3DOptions.nearClipPlane an optional Plane without null');
+    expect(cameraFinding?.message).toContain('unchanged, disabled, and present-plane cases are explicit');
+    expect(cameraFinding?.message).toContain('infer or construct a Plane');
+    expect(cameraFinding?.message).toContain('copy or materialize the plane owner, or add side storage');
+
+    expect(environmentFinding?.message).toContain(
+      'gives the Environment construction owner environment both omission and explicit null',
+    );
+    expect(environmentFinding?.message).toContain('createEnvironment passes its options once to initializeEnvironment');
+    expect(environmentFinding?.message).toContain('out.environment = options?.environment ?? null');
+    expect(environmentFinding?.message).toContain(
+      'GL and WebGPU environment-cube consumers test the required nullable field against null',
+    );
+    expect(environmentFinding?.message).toContain('Keep Environment.environment required nullable');
+    expect(environmentFinding?.message).toContain(
+      'make EnvironmentOptions.environment an optional Texture without null',
+    );
+    expect(environmentFinding?.message).toContain(
+      'cloneEnvironment must omit the option when source.environment is null and pass the existing owner unchanged when present',
+    );
+    expect(environmentFinding?.message).toContain('unchanged, disabled, and present-texture cases are explicit');
+    expect(environmentFinding?.message).toContain('infer or construct a Texture');
+    expect(environmentFinding?.message).toContain('copy or materialize the texture owner, or add side storage');
+    for (const finding of findings) {
+      expect(finding.message).toContain('normalize');
+      expect(finding.message).toContain('omission is the sole construction-time absence');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+    }
+  });
+
+  it('keeps unrelated scene owner options generic and accepts split construction contracts', () => {
+    const unrelatedOwner = input(
+      'packages/types/src/Camera3DOptions.ts',
+      'interface Plane {} interface ReflectionOptions { nearClipPlane?: Plane | null }',
+    );
+    const unrelatedMember = input(
+      'packages/types/src/Camera3DOptions.ts',
+      'interface Plane {} interface Camera3DOptions { farClipPlane?: Plane | null }',
+    );
+    const unrelatedType = input(
+      'packages/types/src/Camera3DOptions.ts',
+      'interface ClipVolume {} interface Camera3DOptions { nearClipPlane?: ClipVolume | null }',
+    );
+    const unrelatedLocation = input(
+      'packages/example/src/EnvironmentOptions.ts',
+      'interface Texture {} interface EnvironmentOptions { environment?: Texture | null }',
+    );
+    const unrelatedEnvironmentMember = input(
+      'packages/types/src/EnvironmentOptions.ts',
+      'interface Texture {} interface EnvironmentOptions { skybox?: Texture | null }',
+    );
+    const splitContract = input(
+      'SceneOwnerOptionsSplit.ts',
+      `interface Plane {}
+       interface Texture {}
+       interface Camera3D { nearClipPlane: Plane | null }
+       interface Camera3DCreateOptions { nearClipPlane?: Plane }
+       interface Environment { environment: Texture | null }
+       interface EnvironmentCreateOptions { environment?: Texture }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([
+      unrelatedOwner,
+      unrelatedMember,
+      unrelatedType,
+      unrelatedLocation,
+      unrelatedEnvironmentMember,
+      splitContract,
+    ]).findings;
+
+    expect(findings).toHaveLength(5);
+    for (const finding of findings) {
+      expect(finding.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+      expect(finding.message).not.toContain('construction owner');
+    }
+  });
+
   it('explains the required nullable contract for FlightDocument node interaction metadata', () => {
     const source = input(
       'packages/types/src/FlightDocument.ts',
