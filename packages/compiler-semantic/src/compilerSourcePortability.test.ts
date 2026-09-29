@@ -3319,6 +3319,80 @@ describe('analyzeTypeScriptSourcePortability', () => {
     ).toEqual([]);
   });
 
+  it('explains the one-sentinel contract for anchor layout constraints', () => {
+    const source = input(
+      'packages/types/src/Layout.ts',
+      `interface AnchorLayoutItemStyle {
+         align?: 'bottom' | 'topleft';
+         bottom?: number | null;
+         height?: number | null;
+         left?: number | null;
+         right?: number | null;
+         top?: number | null;
+         width?: number | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['bottom', 'height', 'left', 'right', 'top', 'width'].map((name) => ({
+        rule: 'mixed-absence',
+        subject: `interface:AnchorLayoutItemStyle/property:${name}`,
+      })),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const name = ['bottom', 'height', 'left', 'right', 'top', 'width'][index];
+      expect(finding.message).toContain(`gives the anchor constraint ${name} both an omitted state and explicit null`);
+      expect(finding.message).toContain('style construction omits inactive constraints');
+      expect(finding.message).toContain('isOptionalNumber accepts null and undefined');
+      expect(finding.message).toContain('anchorLayoutResolver collapses either');
+      expect(finding.message).toContain('opposing-pin stretch, intrinsic-size fallback, or aligned placement');
+      expect(finding.message).toContain(
+        'Make all six bottom, height, left, right, top, and width constraints optional number fields',
+      );
+      expect(finding.message).toContain('reserve null for the enclosing itemStyle no-style sentinel');
+      expect(finding.message).toContain('name a closed constraint-state union and handle it separately');
+      expect(finding.message).toContain('will not preserve a redundant third sentinel in target storage');
+      expect(finding.message).toContain('zero is a real pin or size');
+      expect(finding.message).toContain('collapse a present value, or add side storage');
+    }
+  });
+
+  it('keeps unrelated optional-nullable layout properties on the generic mixed-absence guidance', () => {
+    const unrelatedOwner = input('OtherLayoutStyle.ts', 'interface OtherLayoutStyle { left?: number | null }');
+    const unrelatedMember = input(
+      'AnchorLayoutItemStyle.ts',
+      'interface AnchorLayoutItemStyle { gap?: number | null }',
+    );
+    const unrelatedLocation = input(
+      'packages/example/src/Layout.ts',
+      'interface AnchorLayoutItemStyle { left?: number | null }',
+    );
+    const findings = analyzeTypeScriptSourcePortability([unrelatedOwner, unrelatedMember, unrelatedLocation]).findings;
+
+    expect(findings).toMatchObject([
+      {
+        message:
+          'interface:AnchorLayoutItemStyle/property:gap combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:AnchorLayoutItemStyle/property:gap',
+      },
+      {
+        message:
+          'interface:OtherLayoutStyle/property:left combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:OtherLayoutStyle/property:left',
+      },
+      {
+        message:
+          'interface:AnchorLayoutItemStyle/property:left combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:AnchorLayoutItemStyle/property:left',
+      },
+    ]);
+    expect(findings.every((finding) => !finding.message.includes('anchorLayoutResolver'))).toBe(true);
+  });
+
   it('requires real indexed storage instead of an asserted index-signature view', () => {
     const asserted = input(
       'command.ts',

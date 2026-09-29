@@ -93,12 +93,7 @@ function analyzeTypeScriptSourcePortabilityInput(
         add(node.type, 'opaque-value-domain', subject, renderOpaquePropertyValueDomainMessage(node, subject, opaque));
       }
       if (hasNullType(node.type) && (node.questionToken !== undefined || hasUndefinedType(node.type))) {
-        add(
-          node,
-          'mixed-absence',
-          subject,
-          `${subject} combines an optional property with null; choose one absence representation or make all three states explicit.`,
-        );
+        add(node, 'mixed-absence', subject, renderMixedAbsencePropertyMessage(node, subject));
       }
     } else if (ts.isMethodSignature(node)) {
       const subject = getSourcePortabilitySubject(node);
@@ -250,6 +245,24 @@ function getSourcePortabilitySubject(node: ts.Node): string {
     }
   }
   return parts.reverse().join('/') || 'module';
+}
+
+function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string {
+  const name = getNodeName(node.name);
+  if (
+    ts.isInterfaceDeclaration(node.parent) &&
+    node.parent.name.text === 'AnchorLayoutItemStyle' &&
+    normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/Layout.ts') &&
+    (name === 'bottom' ||
+      name === 'height' ||
+      name === 'left' ||
+      name === 'right' ||
+      name === 'top' ||
+      name === 'width')
+  ) {
+    return `${subject} gives the anchor constraint ${name} both an omitted state and explicit null, but the represented layout contract uses them identically: style construction omits inactive constraints, isOptionalNumber accepts null and undefined, and anchorLayoutResolver collapses either before opposing-pin stretch, intrinsic-size fallback, or aligned placement. Make all six bottom, height, left, right, top, and width constraints optional number fields and reserve null for the enclosing itemStyle no-style sentinel. If callers need a distinct explicit-clear state, name a closed constraint-state union and handle it separately. The compiler will not preserve a redundant third sentinel in target storage, infer a numeric default because zero is a real pin or size, collapse a present value, or add side storage.`;
+  }
+  return `${subject} combines an optional property with null; choose one absence representation or make all three states explicit.`;
 }
 
 function getTypeLiteralDiscriminant(node: ts.TypeLiteralNode): string | undefined {
