@@ -7111,17 +7111,20 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
 // absent member is the source saying this is not nullish here. A subject that genuinely admits absence is
 // left alone, so an unproven access still refuses or reports rather than reading through `.value()`.
 function emitCppAssertionSubjectCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
-  const emitted = emitExpression(expression, context);
-  if (!hasCppAbsenceStorageCpp(expression, context)) return emitted;
+  if (!hasCppAbsenceStorageCpp(expression, context)) return emitExpression(expression, context);
   const storageType =
     expression.kind === 'identifier' && expression.reference.kind === 'binding'
       ? getCppBindingTypeCpp(expression.reference.binding.id, context)
       : undefined;
   const union = storageType ? getIrUnionTypeCpp(storageType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
-  if (plan?.kind !== 'optionalSingle') return emitted;
+  if (plan?.kind !== 'optionalSingle' || expression.kind !== 'identifier' || expression.reference.kind !== 'binding') {
+    return emitExpression(expression, context);
+  }
   context.includes.add('optional');
-  return `${emitted}.value()`;
+  // Identifier emission also consumes narrowed-present evidence. Spell this read from the raw carrier so
+  // the assertion owns exactly one checked unwrap instead of appending a second `.value()` to that read.
+  return `${emitIdentifierReference(expression.reference, context)}.value()`;
 }
 
 // `Math.hypot` is variadic in JavaScript: the square root of the sum of the squares of every argument, with

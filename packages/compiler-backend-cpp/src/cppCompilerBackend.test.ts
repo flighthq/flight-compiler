@@ -8684,6 +8684,124 @@ describe('createCppCompilerBackend', () => {
     }
   });
 
+  it.skipIf(!canCompileCpp)('runs a guarded optional shared owner through its asserted readonly row', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const provider = ts.createSourceFile(
+      '/flight/packages/types/src/GlExtension.ts',
+      `export interface GlExtension { readonly COMPRESSED_RGBA_S3TC_DXT5_EXT: number }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumer = ts.createSourceFile(
+      '/flight/packages/render-gl/src/readExtension.ts',
+      `import type { GlExtension } from '@flighthq/types/contract';
+       export function readCompressedFormat(extension: GlExtension | null): number {
+         if (extension === null) return -1;
+         return (extension as Readonly<GlExtension>).COMPRESSED_RGBA_S3TC_DXT5_EXT;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/GlExtension.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: provider, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/render-gl', sourceFile: consumer, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/render-gl': { includePrefix: 'flight/render_gl', namespace: 'flight::render_gl' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emittedProvider = session.emitModule(modules[0]!)[0]!;
+    const emittedConsumer = session.emitModule(modules[1]!)[0]!;
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-optional-extension-assertion-'));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    // The null guard proves that the assertion is about the shared owner inside the optional storage.
+    // Casting the optional carrier itself does not match StructuralRef's owner constructor.
+    expect(emittedConsumer.contents).toContain('>(extension.value()))');
+    expect(emittedConsumer.contents).not.toContain('>(extension))');
+    // This proof is deliberately exact-owner only. The base-owner-to-derived-row case remains covered by
+    // "refuses an assertion that would read a derived row through its base type owner": unwrapping absence
+    // does not prove cells the retained owner never declared.
+    try {
+      const providerPath = path.join(directory, emittedProvider.path);
+      mkdirSync(path.dirname(providerPath), { recursive: true });
+      // This isolated source names an SDK row key that the pinned runtime's generated table predates.
+      // Supply the same type and owner-cell entries SDK generation contributes in a real build.
+      writeFileSync(
+        providerPath,
+        `${emittedProvider.contents}
+namespace flight::detail {
+template <>
+consteval auto generated_row_member_type_identity<
+    flight::RowKey<"COMPRESSED_RGBA_S3TC_DXT5_EXT">,
+    flight::types::GlExtension>() {
+  return std::type_identity<double>{};
+}
+
+template <>
+void bind_generated_row_members<flight::types::GlExtension>(
+    RowOwner& owner,
+    const std::shared_ptr<flight::types::GlExtension>& object) {
+  owner.bind_named(
+      "COMPRESSED_RGBA_S3TC_DXT5_EXT",
+      [object]() -> decltype(auto) { return (object->compressed_rgba_s3_tc_dxt5_ext); });
+}
+} // namespace flight::detail
+`,
+        'utf8',
+      );
+      const consumerPath = path.join(directory, emittedConsumer.path);
+      mkdirSync(path.dirname(consumerPath), { recursive: true });
+      writeFileSync(consumerPath, emittedConsumer.contents, 'utf8');
+      const sourcePath = path.join(directory, 'optional_extension_assertion.cpp');
+      writeFileSync(
+        sourcePath,
+        `#include <${emittedConsumer.path}>
+
+int main() {
+  using Extension = flight::types::GlExtension;
+  auto present = flight::make_ref<Extension>(
+      Extension{.compressed_rgba_s3_tc_dxt5_ext = 33779.0});
+  if (flight::render_gl::read_compressed_format(
+          std::optional<flight::Ref<Extension>>{present}) != 33779.0) return 1;
+  if (flight::render_gl::read_compressed_format(std::nullopt) != -1.0) return 2;
+  return 0;
+}
+`,
+        'utf8',
+      );
+      const executable = path.join(directory, getCppExecutableName(cppToolchain, 'optional_extension_assertion'));
+      const arguments_ = createCppExecutableArguments(cppToolchain, sourcePath, executable, [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' });
+      expect(() => execFileSync(executable, [], { cwd: directory, encoding: 'utf8', stdio: 'pipe' })).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it('carries absence across a union carrier narrowing and refuses to invent it where the target has none', () => {
     const result = lower(
       'sub-union-nullable-assertion.ts',
