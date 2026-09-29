@@ -22240,6 +22240,63 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('materialize_row');
   });
 
+  it('requires an exact runtime binding for the ProxyHandler type-space contract', () => {
+    const result = lower(
+      'ProxyHandlerContract.ts',
+      `export interface RuntimeState { binding: object | null }
+       export type RuntimeStateProxyHandler = ProxyHandler<RuntimeState>;`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const contents = emitIrModuleCpp(result.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/proxy.hpp'],
+            nullability: 'non-null',
+            ownership: 'value',
+            sourceName: 'ProxyHandler',
+            space: 'type',
+            targetName: 'host::ProxyHandler',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: ProxyHandler[type]');
+    expect(failure.message).toContain(
+      'ProxyHandler is a target-runtime interception contract rather than an ordinary record value',
+    );
+    expect(failure.message).toContain('one externalBindings entry for the exact type-space source symbol');
+    expect(failure.message).toContain('stable target handler representation');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('Preserve the proxied target owner identity');
+    expect(failure.message).toContain('declared computed or named key domain');
+    expect(failure.message).toContain('trap side effects, the forwarded write on that same owner');
+    expect(failure.message).toContain('boolean success result');
+    expect(failure.message).toContain('exact structural set trap');
+    expect(failure.message).toContain('explicit target proxy-construction contract');
+    expect(failure.message).toContain('does not make arbitrary get, deleteProperty, defineProperty, apply');
+    expect(failure.message).toContain('does not permit ignoring interception');
+    expect(failure.message).toContain('replacing the target with a snapshot Record');
+    expect(failure.message).toContain('void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('copying or materializing a replacement owner');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('#include <host/proxy.hpp>');
+    expect(contents).toContain('using RuntimeStateProxyHandler = host::ProxyHandler<');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
   it('emits exact computed and named structural write proxies and refuses wider handlers', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',
@@ -22364,6 +22421,20 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(() => emitIrModuleCpp(dynamicKey, { externalBindings, runtimeProfile: 'flight-cpp' })).toThrow(
       'Proxy construction requires an exact structural write-forwarding handler',
     );
+  });
+
+  it('does not classify the ProxyConstructor type as the ProxyHandler contract', () => {
+    const result = lower('ProxyConstructor.ts', 'export type RuntimeProxyConstructor = ProxyConstructor;');
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: ProxyConstructor[type])',
+    );
+    expect(failure.message).not.toContain('ProxyHandler is a target-runtime interception contract');
   });
 
   it('uses ambient undefined as contextual evidence when clearing a computed optional slot', () => {

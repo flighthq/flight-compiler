@@ -29839,10 +29839,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const webAudioHandleRemediation = renderMissingWebAudioHandleBindingsRemediationCpp(
     completeness.missingExternalSymbols,
   );
+  const proxyHandlerRemediation = renderMissingProxyHandlerBindingRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}${webAudioHandleRemediation}${proxyHandlerRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -30029,6 +30030,16 @@ function renderMissingWebAudioHandleBindingsRemediationCpp(
     .map((identity) => identity.sourceName);
   if (handles.length === 0) return '';
   return ` Web Audio object handles ${handles.join(', ')} are host-owned stateful identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability. Preserve the AudioBuffer owner, decoded sample storage, channel layout, frame count, sample rate, duration, and lifetime through the nullable AudioResource.buffer slot; reuse the same AudioContext engine owner and lifecycle through the optional nullable LoadScene2DAudioResourcesOptions.context decoder input. A manifest entry names the represented runtime carrier; it does not permit replacing AudioBuffer with its URL, encoded bytes, or a copied sample array, replacing AudioContext with an options or sample-rate record, recreating either owner at a use site, void-pointer or Any erasure, native-pointer casts or reinterpretation, or side storage.`;
+}
+
+function renderMissingProxyHandlerBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasProxyHandler = missing.some(
+    (identity) => identity.space === 'type' && identity.sourceName === 'ProxyHandler',
+  );
+  if (!hasProxyHandler) return '';
+  return ` ProxyHandler is a target-runtime interception contract rather than an ordinary record value. Add one externalBindings entry for the exact type-space source symbol, with its stable target handler representation, required headers, and truthful ownership and nullability. Preserve the proxied target owner identity, the declared computed or named key domain, trap side effects, the forwarded write on that same owner, and the boolean success result; lower an exact structural set trap only through an explicit target proxy-construction contract. A manifest entry names the represented handler contract; it does not make arbitrary get, deleteProperty, defineProperty, apply, or dynamic-key traps portable, and it does not permit ignoring interception, replacing the target with a snapshot Record, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing a replacement owner, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {
