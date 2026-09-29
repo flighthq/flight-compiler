@@ -11988,10 +11988,16 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
   const comparison = getCppTypeofTagComparisonCpp(expression.left, expression.right);
   if (!comparison) return undefined;
   if (comparison.operand.kind === 'element') {
-    const numericProperty = getCppOptionalNumericPropertyLookupPlanCpp(comparison.operand, context);
+    const numericProperty =
+      comparison.tag === 'number'
+        ? getCppOptionalNumericTypeofLookupPlanCpp(comparison.operand, context)
+        : getCppOptionalNumericPropertyLookupPlanCpp(comparison.operand, context);
     if (!numericProperty) return undefined;
     if (comparison.tag === 'number') {
       const present = expression.operator === '==' || expression.operator === '===';
+      if (numericProperty.kind === 'namedReference') {
+        return emitCppOptionalNamedReferenceNumericTypeofTestCpp(comparison.operand, present, context);
+      }
       return emitCppPresenceTestCpp(comparison.operand, 'undefined', present, false, context);
     }
   }
@@ -12071,9 +12077,10 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
 
 // TypeScript uses this idiom to turn a checked optional numeric lookup into a required number:
 // `typeof receiver?.[key] === 'number' ? receiver[key] : fallback`. The branch read is safe only when
-// the tested receiver and key are the same stable bindings and the lookup has the closed numeric proof
-// above. Keep both property reads -- a host getter may observe different state -- while evaluating the
-// nullable receiver guard before the key, as optional chaining requires.
+// the tested receiver and key are the same stable bindings and the lookup either has the closed numeric
+// proof above or returns an owner-preserving Any whose exact numeric kind is checked. Keep both property
+// reads -- a host getter may observe different state -- while evaluating the nullable receiver guard
+// before the key, as optional chaining requires.
 function emitCppNumericPropertyTypeofConditionalCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'conditional' }>>,
   context: EmitContext,
@@ -12085,7 +12092,7 @@ function emitCppNumericPropertyTypeofConditionalCpp(
   const tested = comparison?.operand;
   const narrowed = expression.whenTrue;
   if (comparison?.tag !== 'number' || tested?.kind !== 'element') return undefined;
-  const plan = getCppOptionalNumericPropertyLookupPlanCpp(tested, context);
+  const plan = getCppOptionalNumericTypeofLookupPlanCpp(tested, context);
   if (!plan) return undefined;
   const stableRead =
     tested.object.kind !== 'identifier' ||
@@ -12124,13 +12131,20 @@ function emitCppNumericPropertyTypeofConditionalCpp(
   const key = getGeneratedTargetName('numericPropertyKey', context);
   const lookup = getGeneratedTargetName('numericPropertyLookup', context);
   const keyValue = emitCppOptionalNumericPropertyKeyCpp(plan, tested.index, context);
-  const read = emitCppOptionalNumericPropertyLookupCpp(plan, projection.value, key, context);
   const fallback = emitCppConditionalBranchCpp(
     expression.whenFalse,
     context,
     expectedType ?? { kind: 'primitive', name: 'number' },
   );
   context.includes.add('optional');
+  if (plan.kind === 'namedReference') {
+    const view = getGeneratedTargetName('numericPropertyView', context);
+    const read = `${view}.get(${key})`;
+    context.includes.add('flight/any.hpp');
+    context.includes.add('flight/structural_ref.hpp');
+    return `([&]() -> double { auto optional_chain_receiver = ${receiver}; if (${projection.absent}) return ${fallback}; const auto ${key} = ${keyValue}; const auto ${view} = flight::named_properties(${projection.value}); const flight::Any ${lookup} = ${read}; if (${lookup}.kind() != flight::AnyKind::number) return ${fallback}; return ${read}.as_number(); }())`;
+  }
+  const read = emitCppOptionalNumericPropertyLookupCpp(plan, projection.value, key, context);
   return `([&]() -> double { auto optional_chain_receiver = ${receiver}; if (${projection.absent}) return ${fallback}; const auto ${key} = ${keyValue}; const auto ${lookup} = ${read}; if (!${lookup}.has_value()) return ${fallback}; return ${read}.value(); }())`;
 }
 
@@ -13117,6 +13131,21 @@ function getCppDynamicNamedReferenceElementPlanCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
 ): Readonly<CppDynamicNamedReferenceElementPlan> | undefined {
+  const objectType = getCppClosedKeyElementObjectTypeCpp(expression, context);
+  const representedObjectType =
+    objectType && 'presence' in expression.object && expression.object.presence === 'narrowedPresent'
+      ? (getCppNonNullableType(objectType, context, new Set()) ?? objectType)
+      : objectType;
+  return representedObjectType
+    ? getCppDynamicNamedReferenceElementPlanForObjectTypeCpp(expression, representedObjectType, context)
+    : undefined;
+}
+
+function getCppDynamicNamedReferenceElementPlanForObjectTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  objectType: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<CppDynamicNamedReferenceElementPlan> | undefined {
   if (
     getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
     getCppClosedElementKeyNamesCpp(expression, context) !== undefined ||
@@ -13124,14 +13153,7 @@ function getCppDynamicNamedReferenceElementPlanCpp(
   ) {
     return undefined;
   }
-  const objectType = getCppClosedKeyElementObjectTypeCpp(expression, context);
-  const representedObjectType =
-    objectType && 'presence' in expression.object && expression.object.presence === 'narrowedPresent'
-      ? (getCppNonNullableType(objectType, context, new Set()) ?? objectType)
-      : objectType;
-  const runtime = representedObjectType
-    ? getIrTypeRuntimeDomainCpp(representedObjectType, context, new Set())
-    : undefined;
+  const runtime = getIrTypeRuntimeDomainCpp(objectType, context, new Set());
   const representedSubject = runtime ? (getCppIdentityPreservingUtilityArgument(runtime) ?? runtime) : undefined;
   const owner = representedSubject ? getCppTypeReferenceOwnerModuleCpp(representedSubject, context) : undefined;
   const representation = runtime && owner ? context.referenceRepresentationPlanner.plan(runtime, owner) : undefined;
@@ -13147,6 +13169,23 @@ function getCppDynamicNamedReferenceElementPlanCpp(
   }
   const named = properties.filter((property) => !property.computedKey && !isCppNonEmittingObjectPropertyCpp(property));
   return named.length > 0 ? { properties: named, runtime } : undefined;
+}
+
+function assertCppDynamicNamedReferencePropertiesRepresentableInAnyCpp(
+  plan: Readonly<CppDynamicNamedReferenceElementPlan>,
+  context: EmitContext,
+): void {
+  const unrepresented = plan.properties.find((property) => {
+    const runtimeType = getIrTypeRuntimeDomainCpp(property.type, context, new Set());
+    return !runtimeType || !isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context);
+  });
+  if (!unrepresented) return;
+  emissionError(
+    context,
+    `dynamic string access on ${describeDeclaredIrTypeForDiagnosticCpp(plan.runtime)} can select named member ${unrepresented.name}, whose runtime storage cannot enter flight::Any. Keep the key as a finite union that excludes this member, or add an identity-preserving Any alternative with checked recovery for its storage; the compiler will not cast, copy, or materialize the owner`,
+    'cpp-dynamic-named-reference-member-unrepresented',
+    'target-runtime',
+  );
 }
 
 function isCppDynamicNamedReferenceStringKeyCpp(
@@ -13170,18 +13209,7 @@ function emitCppDynamicNamedReferenceElementReadCpp(
 ): string | undefined {
   const plan = getCppDynamicNamedReferenceElementPlanCpp(expression, context);
   if (!plan) return undefined;
-  const unrepresented = plan.properties.find((property) => {
-    const runtimeType = getIrTypeRuntimeDomainCpp(property.type, context, new Set());
-    return !runtimeType || !isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context);
-  });
-  if (unrepresented) {
-    emissionError(
-      context,
-      `dynamic string access on ${describeDeclaredIrTypeForDiagnosticCpp(plan.runtime)} can select named member ${unrepresented.name}, whose runtime storage cannot enter flight::Any. Keep the key as a finite union that excludes this member, or add an identity-preserving Any alternative with checked recovery for its storage; the compiler will not cast, copy, or materialize the owner`,
-      'cpp-dynamic-named-reference-member-unrepresented',
-      'target-runtime',
-    );
-  }
+  assertCppDynamicNamedReferencePropertiesRepresentableInAnyCpp(plan, context);
   const expressionType = getIrExpressionTypeEvidenceCpp(expression, context);
   const resultTypes = [expressionType, expectedType].filter(
     (type, index, types): type is Readonly<IrType> =>
@@ -21200,6 +21228,10 @@ type CppOptionalNumericPropertyLookupPlan =
     }>
   | Readonly<{ keyType: IrType; kind: 'record' }>;
 
+type CppOptionalNumericTypeofLookupPlan =
+  | CppOptionalNumericPropertyLookupPlan
+  | Readonly<{ kind: 'namedReference'; reference: CppDynamicNamedReferenceElementPlan }>;
+
 function getCppExternalNumericPropertyViewPlanCpp(
   receiver: Readonly<IrExpression>,
   context: EmitContext,
@@ -21264,6 +21296,47 @@ function getCppOptionalNumericPropertyLookupPlanCpp(
     : undefined;
 }
 
+// A dynamic read from one exact reference owner has a smaller proof than a numeric-property view: its
+// result is not known to be numeric, but NamedProperties can retain that owner and return an Any whose
+// exact kind answers `typeof ... === "number"`. Keep this separate from the numeric lookup planner so an
+// ordinary optional element read does not acquire `optional<double>` storage merely because a typeof
+// check could inspect its erased result.
+function getCppOptionalNumericTypeofLookupPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): Readonly<CppOptionalNumericTypeofLookupPlan> | undefined {
+  const numeric = getCppOptionalNumericPropertyLookupPlanCpp(expression, context);
+  if (numeric) return numeric;
+  const semantics = expression.semantics.optionalChain;
+  if (!expression.optional || !semantics || getCppRuntimeProfile(context.options) !== 'flight-cpp') {
+    return undefined;
+  }
+  const present = getCppNonNullableType(semantics.receiverType, context, new Set()) ?? semantics.receiverType;
+  const reference = getCppDynamicNamedReferenceElementPlanForObjectTypeCpp(expression, present, context);
+  if (!reference) return undefined;
+  assertCppDynamicNamedReferencePropertiesRepresentableInAnyCpp(reference, context);
+  return { kind: 'namedReference', reference };
+}
+
+function emitCppOptionalNamedReferenceNumericTypeofTestCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  present: boolean,
+  context: EmitContext,
+): string {
+  const semantics = expression.semantics.optionalChain;
+  if (!semantics) emissionError(context, 'optional named-reference typeof lacks optional-chain evidence');
+  const projection = getCppOptionalChainReceiverProjectionCpp(semantics.receiverType, context);
+  const receiver = emitOptionalChainReceiverCpp(expression.object, context);
+  const key = getGeneratedTargetName('numericPropertyKey', context);
+  const view = getGeneratedTargetName('numericPropertyView', context);
+  const lookup = getGeneratedTargetName('numericPropertyLookup', context);
+  const comparison = `${lookup}.kind() ${present ? '==' : '!='} flight::AnyKind::number`;
+  context.includes.add('optional');
+  context.includes.add('flight/any.hpp');
+  context.includes.add('flight/structural_ref.hpp');
+  return `([&]() -> bool { auto optional_chain_receiver = ${receiver}; if (${projection.absent}) return ${present ? 'false' : 'true'}; const auto ${key} = ${emitExpression(expression.index, context)}; const auto ${view} = flight::named_properties(${projection.value}); const flight::Any ${lookup} = ${view}.get(${key}); return ${comparison}; }())`;
+}
+
 function hasCppNumericPropertyLookupCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
@@ -21271,6 +21344,11 @@ function hasCppNumericPropertyLookupCpp(
   const external = getCppExternalNumericPropertyViewAccessPlanCpp(expression, context);
   if (external) return isCppStringKeyIndexCpp(expression.index, context);
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return false;
+  const namedReference = getCppDynamicNamedReferenceElementPlanCpp(expression, context);
+  if (namedReference) {
+    assertCppDynamicNamedReferencePropertiesRepresentableInAnyCpp(namedReference, context);
+    return true;
+  }
   const receiverType = getIrExpressionTypeEvidenceCpp(expression.object, context);
   const present = receiverType ? (getCppNonNullableType(receiverType, context, new Set()) ?? receiverType) : undefined;
   const record = getCppRecordTypeArgumentsCpp(present, context, new Set());
@@ -21278,12 +21356,16 @@ function hasCppNumericPropertyLookupCpp(
 }
 
 function emitCppOptionalNumericPropertyKeyCpp(
-  plan: Readonly<CppOptionalNumericPropertyLookupPlan>,
+  plan: Readonly<CppOptionalNumericTypeofLookupPlan>,
   index: Readonly<IrExpression>,
   context: EmitContext,
 ): string {
   if (plan.kind === 'external') {
     addCppExternalBindingHeaders(plan.sourceName, 'type', context);
+    context.includes.add('flight/string.hpp');
+    return emitExpression(index, context);
+  }
+  if (plan.kind === 'namedReference') {
     context.includes.add('flight/string.hpp');
     return emitExpression(index, context);
   }

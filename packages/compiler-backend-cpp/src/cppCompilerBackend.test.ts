@@ -4757,6 +4757,133 @@ describe('createCppCompilerBackend', () => {
     expect(writeFailure.message).toContain('will not cast between owners');
   });
 
+  it('tests optional dynamic reference members by their exact erased numeric kind', () => {
+    const result = lower(
+      'optional-dynamic-reference-typeof.ts',
+      `export interface Extension { readonly ZERO: number; readonly LABEL: string }
+       export function available<Name extends keyof Extension>(
+         extension: Extension | null | undefined,
+         name: Name,
+       ): boolean {
+         return typeof extension?.[name] === 'number';
+       }
+       export function unavailable<Name extends keyof Extension>(
+         provider: () => Extension | null,
+         nextName: () => Name,
+       ): boolean {
+         return typeof provider()?.[nextName()] !== 'number';
+       }
+       export function guarded<Name extends keyof Extension>(
+         extension: Extension | null | undefined,
+         name: Name,
+       ): number {
+         return typeof extension?.[name] === 'number' ? extension[name] : -1;
+       }
+       export function closed(extension: Extension, name: 'ZERO'): boolean {
+         return typeof extension[name] === 'number';
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    const available = /bool available[^]*?\n\}/u.exec(contents)?.[0];
+    expect(available).toContain('const auto numeric_property_view = flight::named_properties(');
+    expect(available).toContain(
+      'const flight::Any numeric_property_lookup = numeric_property_view.get(numeric_property_key);',
+    );
+    expect(available).toContain('numeric_property_lookup.kind() == flight::AnyKind::number');
+    expect(available).not.toContain('static_cast');
+    expect(available).not.toContain('materialize');
+
+    const unavailable = /bool unavailable[^]*?\n\}/u.exec(contents)?.[0];
+    expect(unavailable).toContain('if (!optional_chain_receiver.has_value()) return true;');
+    expect(unavailable).toMatch(/numeric_property_lookup(?:_[0-9]+)?\.kind\(\) != flight::AnyKind::number/u);
+    expect(unavailable?.match(/\bprovider\(\)/gu)).toHaveLength(1);
+    expect(unavailable?.match(/\bnext_name\(\)/gu)).toHaveLength(1);
+    expect(unavailable!.indexOf('if (!optional_chain_receiver.has_value())')).toBeLessThan(
+      unavailable!.indexOf('next_name()'),
+    );
+
+    const guarded = /double guarded[^]*?\n\}/u.exec(contents)?.[0];
+    expect(guarded).toMatch(/const auto numeric_property_view(?:_[0-9]+)? = flight::named_properties\(/u);
+    expect(guarded?.match(/numeric_property_view(?:_[0-9]+)?\.get\(numeric_property_key(?:_[0-9]+)?\)/gu)).toHaveLength(
+      2,
+    );
+    expect(guarded).toMatch(/numeric_property_lookup(?:_[0-9]+)?\.kind\(\) != flight::AnyKind::number/u);
+    expect(guarded).toMatch(
+      /return numeric_property_view(?:_[0-9]+)?\.get\(numeric_property_key(?:_[0-9]+)?\)\.as_number\(\);/u,
+    );
+    expect(guarded).not.toContain('static_cast');
+    expect(guarded).not.toContain('materialize');
+
+    const closed = /bool closed[^]*?\n\}/u.exec(contents)?.[0];
+    expect(closed).not.toContain('flight::named_properties');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-optional-dynamic-reference-typeof-'));
+      const header = path.join(directory, 'optional_dynamic_reference_typeof.hpp');
+      try {
+        writeFileSync(header, contents, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+
+    const unrepresented = lower(
+      'optional-dynamic-reference-typeof-unrepresented.ts',
+      `interface Extension { readonly ZERO: number; readonly samples: readonly number[] }
+       export function available<Name extends keyof Extension>(
+         extension: Extension | null,
+         name: Name,
+       ): boolean {
+         return typeof extension?.[name] === 'number';
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(unrepresented.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-dynamic-named-reference-member-unrepresented',
+    });
+
+    const nonNumericTag = lower(
+      'optional-dynamic-reference-typeof-string.ts',
+      `interface Extension { readonly ZERO: number; readonly LABEL: string }
+       export function available<Name extends keyof Extension>(
+         extension: Extension | null,
+         name: Name,
+       ): boolean {
+         return typeof extension?.[name] === 'string';
+       }`,
+    );
+    const nonNumericFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(nonNumericTag.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(nonNumericFailure.message).toContain('typeof requires closed runtime type evidence');
+
+    const unstable = lower(
+      'optional-dynamic-reference-typeof-unstable.ts',
+      `interface Extension { readonly ZERO: number; readonly ONE: number }
+       export function guarded<Name extends keyof Extension, Other extends keyof Extension>(
+         extension: Extension | null,
+         name: Name,
+         other: Other,
+       ): number {
+         return typeof extension?.[name] === 'number' ? extension[other] : -1;
+       }`,
+    );
+    const unstableFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(unstable.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(unstable.diagnostics).toEqual([]);
+    expect(unstableFailure.rule).toBe('cpp-numeric-property-typeof-guard-unstable-read');
+  });
+
   it('uses exact imported storage for flightDocumentText closed keys and refuses a heterogeneous assertion', () => {
     const { moduleResolution, results } = lowerImportedClosedKeyStorageModules();
     const modules = results.map((result) => result.module);
