@@ -347,6 +347,20 @@ function isOptionalNullableNamedTypeProperty(node: ts.PropertySignature | undefi
   return ts.isTypeReferenceNode(type) && getNodeName(type.typeName) === name;
 }
 
+function isOptionalNullableReadonlyNumberArrayProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  return (
+    ts.isTypeOperatorNode(type) &&
+    type.operator === ts.SyntaxKind.ReadonlyKeyword &&
+    ts.isArrayTypeNode(type.type) &&
+    type.type.elementType.kind === ts.SyntaxKind.NumberKeyword
+  );
+}
+
 function isOptionalNullableStringProperty(node: ts.PropertySignature): boolean {
   if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
   const present = getMixedAbsencePresentTypes(node.type);
@@ -463,6 +477,22 @@ function getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getRenderProxyColorMatrixMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'RenderProxy' ||
+    getNodeName(node.name) !== 'colorMatrix' ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/RenderProxy.ts') ||
+    !isOptionalNullableReadonlyNumberArrayProperty(node)
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the reusable RenderProxy colorMatrix slot both omission and explicit null, but the represented 2D render contract has one inactive state: initializeRenderProxy assigns out.colorMatrix = null, and updateRenderProxyColorScaleBias overwrites it with a resolved matrix or null whenever color adjustment accumulation runs. GL and WebGPU 2D consumers use nullish selection or comparison before batching and shader selection. Make RenderProxy.colorMatrix a required readonly number[] | null field alongside required colorScaleBias, preserve the initializer and per-update clear, and narrow resolveInheritedColorMatrix's previous parameter from readonly number[] | null | undefined to readonly number[] | null so its reuse branch no longer carries an unreachable undefined case. If a proxy lifecycle must distinguish not initialized from no matrix, name a closed color-adjustment state and handle every state explicitly. The compiler will not choose or collapse an absence sentinel, synthesize or multiply a color matrix, rewrite batching or shader selection, allocate or copy matrix storage, or add side storage.`;
+}
+
 function getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -541,6 +571,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (normalizedStringOption) return normalizedStringOption;
   const sceneConstructionOwner = getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(node, subject);
   if (sceneConstructionOwner) return sceneConstructionOwner;
+  const renderProxyColorMatrix = getRenderProxyColorMatrixMixedAbsencePropertyMessage(node, subject);
+  if (renderProxyColorMatrix) return renderProxyColorMatrix;
   const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
     node,
     subject,

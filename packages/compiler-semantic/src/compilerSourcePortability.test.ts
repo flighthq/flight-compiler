@@ -4083,6 +4083,92 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the required nullable contract for the reusable RenderProxy color matrix', () => {
+    const source = input(
+      'packages/types/src/RenderProxy.ts',
+      `interface ColorScaleBias { readonly redScale: number }
+       interface RenderProxy {
+         colorMatrix?: readonly number[] | null;
+         colorScaleBias: ColorScaleBias | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toMatchObject([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:RenderProxy/property:colorMatrix',
+      },
+    ]);
+    const message = findings[0]?.message;
+    expect(message).toContain('gives the reusable RenderProxy colorMatrix slot both omission and explicit null');
+    expect(message).toContain('the represented 2D render contract has one inactive state');
+    expect(message).toContain('initializeRenderProxy assigns out.colorMatrix = null');
+    expect(message).toContain(
+      'updateRenderProxyColorScaleBias overwrites it with a resolved matrix or null whenever color adjustment accumulation runs',
+    );
+    expect(message).toContain('GL and WebGPU 2D consumers use nullish selection or comparison');
+    expect(message).toContain('Make RenderProxy.colorMatrix a required readonly number[] | null field');
+    expect(message).toContain('alongside required colorScaleBias');
+    expect(message).toContain('preserve the initializer and per-update clear');
+    expect(message).toContain(
+      "narrow resolveInheritedColorMatrix's previous parameter from readonly number[] | null | undefined to readonly number[] | null",
+    );
+    expect(message).toContain('reuse branch no longer carries an unreachable undefined case');
+    expect(message).toContain('name a closed color-adjustment state and handle every state explicitly');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('synthesize or multiply a color matrix');
+    expect(message).toContain('rewrite batching or shader selection');
+    expect(message).toContain('allocate or copy matrix storage, or add side storage');
+  });
+
+  it('keeps unrelated matrix slots generic and accepts required RenderProxy storage', () => {
+    const unrelatedOwner = input(
+      'packages/types/src/RenderProxy.ts',
+      'interface RenderEntry { colorMatrix?: readonly number[] | null }',
+    );
+    const unrelatedMember = input(
+      'packages/types/src/RenderProxy.ts',
+      'interface RenderProxy { projectionMatrix?: readonly number[] | null }',
+    );
+    const unrelatedLocation = input(
+      'packages/example/src/RenderProxy.ts',
+      'interface RenderProxy { colorMatrix?: readonly number[] | null }',
+    );
+    const unrelatedElement = input(
+      'packages/types/src/RenderProxy.ts',
+      'interface RenderProxy { colorMatrix?: readonly string[] | null }',
+    );
+    const mutableArray = input(
+      'packages/types/src/RenderProxy.ts',
+      'interface RenderProxy { colorMatrix?: number[] | null }',
+    );
+    const required = input(
+      'RenderProxyResolved.ts',
+      `interface ColorScaleBias { readonly redScale: number }
+       interface RenderProxy {
+         colorMatrix: readonly number[] | null;
+         colorScaleBias: ColorScaleBias | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([
+      unrelatedOwner,
+      unrelatedMember,
+      unrelatedLocation,
+      unrelatedElement,
+      mutableArray,
+      required,
+    ]).findings;
+
+    expect(findings).toHaveLength(5);
+    for (const finding of findings) {
+      expect(finding.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+      expect(finding.message).not.toContain('reusable RenderProxy colorMatrix slot');
+    }
+  });
+
   it('explains normalized optional-null string inputs at their required-nullable boundaries', () => {
     const gltf = input(
       'packages/types/src/GltfExtension.ts',
