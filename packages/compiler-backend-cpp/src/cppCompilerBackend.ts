@@ -29632,10 +29632,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
   );
   const arrayLikeRemediation = renderMissingArrayLikeBindingRemediationCpp(completeness.missingExternalSymbols);
   const htmlElementRemediation = renderMissingHtmlElementBindingRemediationCpp(completeness.missingExternalSymbols);
+  const fontFaceRemediation = renderMissingFontFaceBindingRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -29789,6 +29790,14 @@ function renderMissingHtmlElementBindingRemediationCpp(
   const hasHtmlElement = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'HTMLElement');
   if (!hasHtmlElement) return '';
   return ` HTMLElement is a host-owned DOM node identity. Add one externalBindings entry for the exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; preserve the same element owner and lifetime through render-state callbacks, current-element slots, WeakMap values, and nullable HtmlView and NativeText runtime slots so target-side DOM mutation remains attached to that node. A manifest entry names the represented runtime carrier; it does not permit substituting an HTML string or synthetic record, copying or materializing a replacement node, void-pointer or Any erasure, native-pointer casts or reinterpretation, or side storage.`;
+}
+
+function renderMissingFontFaceBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasFontFace = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'FontFace');
+  if (!hasFontFace) return '';
+  return ` FontFace is a host-owned loaded-font identity. Add one externalBindings entry for the exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; preserve the same face owner through the nullable FontResource slot, host registration input, and loadFontFaces array result so loading state and target font registration remain attached to that face. A manifest entry names the represented runtime carrier; it does not permit replacing a face with its family string or a copied descriptor, converting loaded-face results into names, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing a replacement face, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

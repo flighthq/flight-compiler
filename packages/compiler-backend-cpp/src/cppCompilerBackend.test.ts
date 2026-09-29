@@ -9608,6 +9608,79 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain('HTMLElement is a host-owned DOM node identity');
   });
 
+  it('requires an exact runtime binding for the FontFace loaded-font owner identity', () => {
+    const result = lower(
+      'FontFaceHandles.ts',
+      `export interface FontResource {
+         family: string;
+         face: FontFace | null;
+       }
+       export interface HostFontLoadingCapability {
+         addFontFace(face: FontFace): void;
+         checkFontFace(shorthand: string): boolean;
+         loadFontFaces(shorthand: string): Promise<FontFace[]>;
+         whenReady(): Promise<void>;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/font.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'FontFace',
+          space: 'type' as const,
+          targetName: 'host::FontFace',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: FontFace[type]');
+    expect(failure.message).toContain('FontFace is a host-owned loaded-font identity');
+    expect(failure.message).toContain('one externalBindings entry for the exact type-space source symbol');
+    expect(failure.message).toContain('stable target wrapper');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('preserve the same face owner');
+    expect(failure.message).toContain('nullable FontResource slot, host registration input');
+    expect(failure.message).toContain('loadFontFaces array result');
+    expect(failure.message).toContain('loading state and target font registration remain attached to that face');
+    expect(failure.message).toContain('does not permit replacing a face with its family string or a copied descriptor');
+    expect(failure.message).toContain('converting loaded-face results into names');
+    expect(failure.message).toContain('void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('copying or materializing a replacement face');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('std::optional<host::FontFace> face;');
+    expect(contents.match(/host::FontFace/gu)).toHaveLength(3);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify the FontFace value-space constructor as a loaded-font owner type', () => {
+    const result = lower(
+      'FontFaceConstructor.ts',
+      'export function readFontFaceConstructor(): unknown { return FontFace; }',
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain('runtime external symbol binding plan is incomplete (missing: FontFace[value])');
+    expect(failure.message).not.toContain('FontFace is a host-owned loaded-font identity');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
