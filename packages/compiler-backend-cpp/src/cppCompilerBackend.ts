@@ -29631,10 +29631,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
     completeness.missingExternalSymbols,
   );
   const arrayLikeRemediation = renderMissingArrayLikeBindingRemediationCpp(completeness.missingExternalSymbols);
+  const htmlElementRemediation = renderMissingHtmlElementBindingRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -29780,6 +29781,14 @@ function renderMissingArrayLikeBindingRemediationCpp(
   const hasArrayLike = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'ArrayLike');
   if (!hasArrayLike) return '';
   return ` ArrayLike is a read-only indexed collection domain rather than a concrete array owner. Add one externalBindings entry for the exact type-space source symbol, with its stable generic target view, required headers, and truthful ownership and nullability; preserve the element type, length and numeric-index relation, ordering, and caller-owned backing through animation track storage, glTF accessor and external-buffer inputs, and layout intrinsic-size calls. A manifest entry names the represented runtime view; it does not permit materializing a vector or replacement array, adding mutation not present in the source contract, erasing the element type into Any, native-pointer casts or reinterpretation, or side storage.`;
+}
+
+function renderMissingHtmlElementBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasHtmlElement = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'HTMLElement');
+  if (!hasHtmlElement) return '';
+  return ` HTMLElement is a host-owned DOM node identity. Add one externalBindings entry for the exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; preserve the same element owner and lifetime through render-state callbacks, current-element slots, WeakMap values, and nullable HtmlView and NativeText runtime slots so target-side DOM mutation remains attached to that node. A manifest entry names the represented runtime carrier; it does not permit substituting an HTML string or synthetic record, copying or materializing a replacement node, void-pointer or Any erasure, native-pointer casts or reinterpretation, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

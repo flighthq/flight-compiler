@@ -9530,6 +9530,84 @@ describe('createCppCompilerBackend', () => {
     );
   });
 
+  it('requires an exact runtime binding for the HTMLElement DOM owner identity', () => {
+    const result = lower(
+      'HtmlElementHandles.ts',
+      `export type BlendMode = 'normal' | 'multiply';
+       export interface RenderProxy2D { readonly id: number }
+       export interface DomRenderState {
+         applyBlendMode: ((element: HTMLElement, blendMode: BlendMode | null) => void) | null;
+         readonly element: HTMLElement;
+       }
+       export interface DomRenderStateRuntime {
+         domCurrentElement: HTMLElement | null;
+         domElementMap: WeakMap<RenderProxy2D, HTMLElement>;
+       }
+       export interface HtmlViewData { element: HTMLElement | null }
+       export interface NativeTextRuntime { element: HTMLElement | null }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/dom.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'HTMLElement',
+          space: 'type' as const,
+          targetName: 'host::HtmlElement',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: HTMLElement[type]');
+    expect(failure.message).toContain('HTMLElement is a host-owned DOM node identity');
+    expect(failure.message).toContain('one externalBindings entry for the exact type-space source symbol');
+    expect(failure.message).toContain('stable target wrapper');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('preserve the same element owner and lifetime');
+    expect(failure.message).toContain('render-state callbacks, current-element slots, WeakMap values');
+    expect(failure.message).toContain('nullable HtmlView and NativeText runtime slots');
+    expect(failure.message).toContain('target-side DOM mutation remains attached to that node');
+    expect(failure.message).toContain('does not permit substituting an HTML string or synthetic record');
+    expect(failure.message).toContain('copying or materializing a replacement node');
+    expect(failure.message).toContain('void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('host::HtmlElement element;');
+    expect(contents).toContain('std::optional<host::HtmlElement> dom_current_element;');
+    expect(contents.match(/std::optional<host::HtmlElement> element;/gu)).toHaveLength(2);
+    expect(contents.match(/host::HtmlElement/gu)).toHaveLength(6);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify HTMLCanvasElement as the HTMLElement DOM owner identity', () => {
+    const result = lower(
+      'HtmlCanvasElementOnly.ts',
+      'export interface CanvasHost { canvas: HTMLCanvasElement | null }',
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: HTMLCanvasElement[type])',
+    );
+    expect(failure.message).not.toContain('HTMLElement is a host-owned DOM node identity');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
