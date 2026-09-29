@@ -29624,10 +29624,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const webGlHandleRemediation = renderMissingWebGlHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   const webGpuHandleRemediation = renderMissingWebGpuHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   const abortHandleRemediation = renderMissingAbortHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
+  const canvasHandleRemediation = renderMissingCanvasHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -29716,6 +29717,23 @@ function renderMissingAbortHandleBindingsRemediationCpp(
     .map((identity) => identity.sourceName);
   if (handles.length === 0) return '';
   return ` Abort cancellation handles ${handles.join(', ')} are target-runtime lifetime identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; reuse the same AbortSignal carrier through every request, options, and callback boundary, and pair AbortController with its signal view through an explicit target-runtime contract. A manifest entry names the represented runtime carrier; it does not permit replacement with a boolean cancellation flag, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing replacement handles, or side storage.`;
+}
+
+function renderMissingCanvasHandleBindingsRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const handles = missing
+    .filter(
+      (identity) =>
+        identity.space === 'type' &&
+        (identity.sourceName === 'CanvasGradient' ||
+          identity.sourceName === 'CanvasPattern' ||
+          identity.sourceName === 'CanvasRenderingContext2D' ||
+          identity.sourceName === 'HTMLCanvasElement'),
+    )
+    .map((identity) => identity.sourceName);
+  if (handles.length === 0) return '';
+  return ` Canvas object handles ${handles.join(', ')} are host-owned drawing identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; reuse the same canvas and context carriers through surface, state, target, and pass boundaries, and retain each pattern or gradient owner in fill and stroke unions. A manifest entry names the represented runtime carrier; it does not permit collapsing CanvasImageSource or another source union into a handle, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing replacement handles, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

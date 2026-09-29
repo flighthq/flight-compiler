@@ -9083,6 +9083,116 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain('Abort cancellation handles');
   });
 
+  it('requires exact runtime bindings for Canvas object handles', () => {
+    const result = lower(
+      'CanvasHandles.ts',
+      `export interface CanvasRenderPass { context: CanvasRenderingContext2D }
+       export interface CanvasSavedPassState {
+         canvas: HTMLCanvasElement | null;
+         context: CanvasRenderingContext2D | null;
+       }
+       export interface CanvasShapeDrawState {
+         fillStyle: string | CanvasPattern | CanvasGradient;
+         strokeStyle: string | CanvasPattern | CanvasGradient;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/canvas.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'CanvasGradient',
+          space: 'type' as const,
+          targetName: 'host::CanvasGradient',
+        },
+        {
+          headers: ['host/canvas.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'CanvasPattern',
+          space: 'type' as const,
+          targetName: 'host::CanvasPattern',
+        },
+        {
+          headers: ['host/canvas.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'CanvasRenderingContext2D',
+          space: 'type' as const,
+          targetName: 'host::CanvasRenderingContext2D',
+        },
+        {
+          headers: ['host/canvas.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'HTMLCanvasElement',
+          space: 'type' as const,
+          targetName: 'host::HtmlCanvasElement',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain(
+      'missing: CanvasGradient[type], CanvasPattern[type], CanvasRenderingContext2D[type], HTMLCanvasElement[type]',
+    );
+    expect(failure.message).toContain(
+      'Canvas object handles CanvasGradient, CanvasPattern, CanvasRenderingContext2D, HTMLCanvasElement are host-owned drawing identities',
+    );
+    expect(failure.message).toContain('one externalBindings entry for each exact type-space source symbol');
+    expect(failure.message).toContain('stable target wrapper');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain(
+      'reuse the same canvas and context carriers through surface, state, target, and pass boundaries',
+    );
+    expect(failure.message).toContain('retain each pattern or gradient owner in fill and stroke unions');
+    expect(failure.message).toContain('does not permit collapsing CanvasImageSource or another source union');
+    expect(failure.message).toContain('void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('copying or materializing replacement handles');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('host::CanvasRenderingContext2D context;');
+    expect(contents).toContain('std::optional<host::HtmlCanvasElement> canvas;');
+    expect(contents).toContain('std::optional<host::CanvasRenderingContext2D> context;');
+    expect(contents).toContain('host::CanvasGradient');
+    expect(contents).toContain('host::CanvasPattern');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify Canvas source unions, dictionaries, and value aliases as object handles', () => {
+    const result = lower(
+      'CanvasValues.ts',
+      `export interface CanvasShapeDrawState {
+         bitmapSrc: CanvasImageSource | null;
+         windingRule: CanvasFillRule;
+       }
+       export interface CanvasRenderSurfaceOptions {
+         readonly contextAttributes?: CanvasRenderingContext2DSettings;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: CanvasFillRule[type], CanvasImageSource[type], CanvasRenderingContext2DSettings[type])',
+    );
+    expect(failure.message).not.toContain('Canvas object handles');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
