@@ -208,6 +208,126 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the specialized GL color-adjustment absence finding stable through check mode', () => {
+    const source = createMemoryWorkspaceSource(createColorAdjustmentWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const options = {
+      classification: {
+        rules: { 'mixed-absence': 'compiler-defect' as const },
+        schema: 'flight-compiler-check-classification/1' as const,
+      },
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    };
+    const report = createCompilerPackageCheckReport(compilation.report, options);
+    const expectedSourceIdentity =
+      'flight-compiler-source-portability-finding/1:["@flighthq/types","packages/types/src/GlRenderStateOptions.ts","mixed-absence","interface:GlRenderStateOptions/property:colorAdjustmentFeature","sha256:3c9d4fdec43c82aae0973667da88dcdc8f10291078992d37f226cce06fc6fee4"]:0';
+    const expectedCheckIdentity = `flight-compiler-check-finding/1:${JSON.stringify([
+      '@flighthq/types',
+      'packages/types/src/GlRenderStateOptions.ts',
+      'GlRenderStateOptions',
+      'source',
+      'source-portability',
+      'mixed-absence',
+      expectedSourceIdentity,
+    ])}`;
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]).toMatchObject({
+      identity: expectedSourceIdentity,
+      rule: 'mixed-absence',
+      subject: 'interface:GlRenderStateOptions/property:colorAdjustmentFeature',
+    });
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'GL color-adjustment material feature construction option both omission and explicit null',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'the represented opt-in feature contract has one disabled state',
+    );
+    expect(report.directFindings).toMatchObject([
+      {
+        code: 'source-portability',
+        identity: expectedCheckIdentity,
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingIdentity: expectedSourceIdentity,
+        stage: 'source',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    expect(report.packages).toEqual([
+      {
+        dependencyCascades: 0,
+        directFindings: 1,
+        directOccurrences: 1,
+        findingsByPolicy: {
+          'compiler-defect': 0,
+          'compiler-restriction': 0,
+          'source-portability': 1,
+          'target-runtime': 0,
+          unclassified: 0,
+        },
+        modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+        name: '@flighthq/types',
+      },
+    ]);
+
+    const baseline = createCompilerPackageCheckBaseline(report);
+    const revisedMessage = 'revised GL color-adjustment feature guidance';
+    const revisedReport = createCompilerPackageCheckReport(compilation.report, {
+      ...options,
+      sourcePortability: {
+        ...sourcePortability,
+        findings: sourcePortability.findings.map((finding) => ({ ...finding, message: revisedMessage })),
+      },
+    });
+    const comparison = compareCompilerPackageCheckBaseline(revisedReport, baseline);
+
+    expect(baseline.findingIdentities).toEqual([expectedCheckIdentity]);
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.resolvedFindingIdentities).toEqual([]);
+    expect(comparison.unchanged).toMatchObject([
+      {
+        identity: expectedCheckIdentity,
+        occurrences: [{ message: revisedMessage }],
+        policyClass: 'source-portability',
+        sourceFindingIdentity: expectedSourceIdentity,
+      },
+    ]);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('admits an unchanged direct finding and rejects a newly introduced one without writing the workspace', () => {
     const files = createWorkspaceFiles();
     const snapshot = structuredClone(files);
@@ -379,6 +499,19 @@ function createPackageManifest(name: string, dependencies: Readonly<Record<strin
     name,
     version: '1.0.0',
   });
+}
+
+function createColorAdjustmentWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/GlRenderStateOptions.ts': `export interface GlColorAdjustmentMaterialFeature {
+  readonly fragmentShaderChunk: string;
+}
+export interface GlRenderStateOptions {
+  colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { GlColorAdjustmentMaterialFeature, GlRenderStateOptions } from './GlRenderStateOptions.js';`,
+  };
 }
 
 function createRuntimeFactoryWorkspaceFiles(): Record<string, string> {
