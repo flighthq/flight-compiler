@@ -379,6 +379,172 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains why the base node runtime factory cannot promise a caller-selected subtype', () => {
+    const declarations = `interface NodeRuntime<Traits extends object> { readonly traits?: Traits }
+       type NodeRuntimeFactory<Runtime> = (obj?: Readonly<Partial<Runtime>>) => Runtime;
+       declare function createNodeRuntime<Traits extends object>(): NodeRuntime<Traits>;`;
+    const source = input(
+      'packages/node/src/node.ts',
+      `${declarations}
+       function initializeNode<
+         Traits extends object,
+         Runtime extends NodeRuntime<Traits>,
+       >(createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>): void {
+         const runtimeFactory =
+           createNodeRuntimeFactory ?? (createNodeRuntime as unknown as NodeRuntimeFactory<Runtime>);
+         void runtimeFactory();
+       }`,
+    );
+    const resolved = input(
+      'packages/node/src/node.ts',
+      `${declarations}
+       function initializeNode<
+         Traits extends object,
+         Runtime extends NodeRuntime<Traits>,
+       >(createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>): void {
+         const runtime =
+           createNodeRuntimeFactory !== undefined
+             ? createNodeRuntimeFactory()
+             : createNodeRuntime<Traits>();
+         void runtime;
+       }`,
+    );
+    const report = analyzeTypeScriptSourcePortability([source]);
+    const finding = report.findings[0];
+    if (!finding) throw new Error('Expected a node runtime factory assertion finding');
+
+    expect(report.findings).toMatchObject([
+      {
+        rule: 'unchecked-double-assertion',
+        subject: 'function:initializeNode',
+      },
+    ]);
+    expect(finding.message).toContain('generic createNodeRuntime fallback as NodeRuntimeFactory<Runtime>');
+    expect(finding.message).toContain('Runtime is a caller-selected subtype');
+    expect(finding.message).toContain('createNodeRuntime produces the base NodeRuntime<Traits>');
+    expect(finding.message).toContain('cannot promise subtype-only fields or initialization');
+    expect(finding.message).toContain("factories' distinct optional input contracts");
+    expect(finding.message).toContain('initializeNode invokes the selected factory with no argument');
+    expect(finding.message).toContain('Branch before the call');
+    expect(finding.message).toContain('invoke createNodeRuntimeFactory() when it is present');
+    expect(finding.message).toContain('otherwise invoke createNodeRuntime<Traits>()');
+    expect(finding.message).toContain('Node<Traits>[EntityRuntimeKey]');
+    expect(finding.message).toContain('base slot accepts either result');
+    expect(finding.message).toContain('zero-argument NodeRuntimeAllocator<NodeRuntime<Traits>> seam');
+    expect(finding.message).toContain('accepts subtype-producing allocators covariantly');
+    expect(finding.message).toContain('expose that relation in the constructed node result');
+    expect(finding.message).toContain('preserve the exact produced runtime owner');
+    expect(finding.message).toContain('will not infer subtype members');
+    expect(finding.message).toContain('reinterpret or cast a factory');
+    expect(finding.message).toContain('call a factory with a synthetic seed');
+    expect(finding.message).toContain('copy or materialize a runtime');
+    expect(finding.message).toContain('or add side storage');
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+  });
+
+  it('keeps node runtime factory guidance exact to the generic fallback selection', () => {
+    const declarations = `interface NodeRuntime<Traits extends object> { readonly traits?: Traits }
+       interface OtherRuntime<Traits extends object> extends NodeRuntime<Traits> { readonly other: true }
+       type NodeRuntimeFactory<Runtime> = (obj?: Readonly<Partial<Runtime>>) => Runtime;
+       declare function createNodeRuntime<Traits extends object>(): NodeRuntime<Traits>;
+       declare function createOtherRuntime<Traits extends object>(): OtherRuntime<Traits>;`;
+    const controls = [
+      input(
+        'packages/example/src/node.ts',
+        `${declarations}
+         function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+           createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+         ): void {
+           const runtimeFactory =
+             createNodeRuntimeFactory ?? (createNodeRuntime as unknown as NodeRuntimeFactory<Runtime>);
+           void runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeOtherNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+           createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+         ): void {
+           const runtimeFactory =
+             createNodeRuntimeFactory ?? (createNodeRuntime as unknown as NodeRuntimeFactory<Runtime>);
+           void runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+           createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+         ): void {
+           const runtimeFactory =
+             createNodeRuntimeFactory ?? (createNodeRuntime as unknown as NodeRuntimeFactory<OtherRuntime<Traits>>);
+           void runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+           createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+         ): void {
+           const runtimeFactory =
+             createNodeRuntimeFactory ?? (createOtherRuntime as unknown as NodeRuntimeFactory<Runtime>);
+           void runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+           fallbackFactory?: NodeRuntimeFactory<Runtime>,
+         ): void {
+           const runtimeFactory = fallbackFactory ?? (createNodeRuntime as unknown as NodeRuntimeFactory<Runtime>);
+           void runtimeFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+           createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+         ): void {
+           const selectedFactory =
+             createNodeRuntimeFactory ?? (createNodeRuntime as unknown as NodeRuntimeFactory<Runtime>);
+           void selectedFactory();
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+           createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+         ): NodeRuntimeFactory<Runtime> {
+           return createNodeRuntime as unknown as NodeRuntimeFactory<Runtime>;
+         }`,
+      ),
+      input(
+        'packages/node/src/node.ts',
+        `${declarations}
+         function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+           createNodeRuntimeFactory?: NodeRuntimeFactory<Runtime>,
+         ): void {
+           const runtimeFactory =
+             createNodeRuntimeFactory ?? (createNodeRuntime as any as NodeRuntimeFactory<Runtime>);
+           void runtimeFactory();
+         }`,
+      ),
+    ];
+
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('replace it with a checked conversion or a narrower source type');
+      expect(findings[0]?.message).not.toContain('caller-selected subtype');
+      expect(findings[0]?.message).not.toContain('NodeRuntimeAllocator');
+    }
+  });
+
   it('keeps cube texture face clones and writes on an exact six-slot carrier', () => {
     const declarations = `interface TextureSource { readonly width: number }
        type TextureSourceCubeFaces = readonly [
