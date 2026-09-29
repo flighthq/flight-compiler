@@ -3428,6 +3428,110 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('guides paired attachment point storage to required owners or one closed mode', () => {
+    const source = input(
+      'AttachmentPointStorage.ts',
+      `interface Entity { readonly id: number }
+       interface Attachment2D extends Entity { kind: string }
+       interface Skin2D extends Entity { influenceCounts: Uint16Array; influences: Float32Array }
+       interface BoundingBoxAttachment2D extends Attachment2D {
+         kind: 'BoundingBoxAttachment2D';
+         skin?: Skin2D | null;
+         vertices?: Float32Array | null;
+       }
+       interface ClippingAttachment2D extends Attachment2D {
+         kind: 'ClippingAttachment2D';
+         skin?: Skin2D | null;
+         vertices?: Float32Array | null;
+       }
+       interface MeshAttachment2D extends Attachment2D {
+         skin?: Skin2D | null;
+         vertices?: Float32Array | null;
+       }
+       interface PathAttachment2D extends Attachment2D {
+         kind: 'PathAttachment2D';
+         skin?: Skin2D | null;
+         vertices?: Float32Array | null;
+       }
+       function initialize(
+         out: MeshAttachment2D,
+         skin: MeshAttachment2D['skin'],
+         vertices: MeshAttachment2D['vertices'],
+       ): void {
+         out.skin = skin;
+         out.vertices = vertices;
+       }
+       function skinPoints(
+         skin: Readonly<Skin2D> | null | undefined,
+         vertices: Readonly<Float32Array> | null | undefined,
+       ): void {
+         if (skin !== null && skin !== undefined) { void skin.influences; return; }
+         if (vertices === null || vertices === undefined) return;
+         void vertices.length;
+       }`,
+    );
+    const required = input(
+      'RequiredAttachmentPointStorage.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influences: Float32Array }
+       interface MeshAttachment2D extends Attachment2D {
+         skin: Skin2D | null;
+         vertices: Float32Array | null;
+       }`,
+    );
+    const explicit = input(
+      'ExplicitAttachmentPointStorage.ts',
+      `interface Skin2D { influences: Float32Array }
+       type AttachmentPointStorage =
+         | { readonly mode: 'unavailable' }
+         | { readonly mode: 'weighted'; readonly skin: Skin2D }
+         | { readonly mode: 'rigid'; readonly vertices: Float32Array };
+       interface Attachment2D { kind: string; points: AttachmentPointStorage }`,
+    );
+    const unrelated = input(
+      'PointStorage.ts',
+      `interface Skin2D { influences: Float32Array }
+       interface PointStorage { skin?: Skin2D | null; vertices?: Float32Array | null }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toHaveLength(8);
+    expect(findings.map((finding) => finding.subject)).toEqual([
+      'interface:BoundingBoxAttachment2D/property:skin',
+      'interface:BoundingBoxAttachment2D/property:vertices',
+      'interface:ClippingAttachment2D/property:skin',
+      'interface:ClippingAttachment2D/property:vertices',
+      'interface:MeshAttachment2D/property:skin',
+      'interface:MeshAttachment2D/property:vertices',
+      'interface:PathAttachment2D/property:skin',
+      'interface:PathAttachment2D/property:vertices',
+    ]);
+    for (const finding of findings) {
+      expect(finding.rule).toBe('mixed-absence');
+      expect(finding.message).toContain("one optional-null half of the attachment's paired point storage");
+      expect(finding.message).toContain('Skin2D influences in weighted mode');
+      expect(finding.message).toContain('Float32Array of local points in rigid mode');
+      expect(finding.message).toContain('rejected or empty input may carry neither');
+      expect(finding.message).toContain('Import initializers assign both fields');
+      expect(finding.message).toContain('skinSkeleton2DAttachmentPoints treats undefined exactly like null');
+      expect(finding.message).toContain('Make both skin and vertices required nullable fields');
+      expect(finding.message).toContain('initialize both on every construction path');
+      expect(finding.message).toContain('preserving the exact Skin2D and Float32Array owners');
+      expect(finding.message).toContain('named closed state whose arms carry those owners explicitly');
+      expect(finding.message).toContain('will not infer a mode from whichever optional field happened to be written');
+      expect(finding.message).toContain('choose or collapse an absence sentinel');
+      expect(finding.message).toContain('reconstruct points from influences');
+      expect(finding.message).toContain('allocate or copy either owner');
+      expect(finding.message).toContain('route elements through Any');
+      expect(finding.message).toContain('reinterpret or cast storage');
+      expect(finding.message).toContain('or add side storage');
+    }
+    expect(analyzeTypeScriptSourcePortability([required, explicit]).findings).toEqual([]);
+    const unrelatedFindings = analyzeTypeScriptSourcePortability([unrelated]).findings;
+    expect(unrelatedFindings).toHaveLength(2);
+    expect(unrelatedFindings.every((finding) => finding.message.includes('combines an optional property'))).toBe(true);
+  });
+
   it('explains the one-sentinel contract for anchor layout constraints', () => {
     const source = input(
       'packages/types/src/Layout.ts',

@@ -302,6 +302,51 @@ function getMeshDeformationMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getAttachmentPointStorageMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (!ts.isInterfaceDeclaration(node.parent) || !interfaceExtendsType(node.parent, 'Attachment2D')) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field !== 'skin' && field !== 'vertices') return undefined;
+  const skin = getInterfaceProperty(node.parent, 'skin');
+  const vertices = getInterfaceProperty(node.parent, 'vertices');
+  if (
+    !isOptionalNullableNamedTypeProperty(skin, 'Skin2D') ||
+    !isOptionalNullableNamedTypeProperty(vertices, 'Float32Array')
+  ) {
+    return undefined;
+  }
+  return `${subject} makes ${field} one optional-null half of the attachment's paired point storage. The represented contract has two present owners: Skin2D influences in weighted mode or a Float32Array of local points in rigid mode; rejected or empty input may carry neither. Import initializers assign both fields, and skinSkeleton2DAttachmentPoints treats undefined exactly like null before selecting the existing owner. Make both skin and vertices required nullable fields on each concrete Attachment2D and initialize both on every construction path, preserving the exact Skin2D and Float32Array owners. If callers must distinguish not initialized from weighted, rigid, or unavailable storage, replace the independent fields with a named closed state whose arms carry those owners explicitly. The compiler will not infer a mode from whichever optional field happened to be written, choose or collapse an absence sentinel, reconstruct points from influences, allocate or copy either owner, route elements through Any, reinterpret or cast storage, or add side storage.`;
+}
+
+function interfaceExtendsType(node: ts.InterfaceDeclaration, name: string): boolean {
+  return (
+    node.heritageClauses?.some(
+      (clause) =>
+        clause.token === ts.SyntaxKind.ExtendsKeyword &&
+        clause.types.some((type) => getNodeName(type.expression) === name),
+    ) ?? false
+  );
+}
+
+function getInterfaceProperty(node: ts.InterfaceDeclaration, name: string): ts.PropertySignature | undefined {
+  return node.members.find(
+    (member): member is ts.PropertySignature => ts.isPropertySignature(member) && getNodeName(member.name) === name,
+  );
+}
+
+function isOptionalNullableNamedTypeProperty(node: ts.PropertySignature | undefined, name: string): boolean {
+  if (!node?.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  return ts.isTypeReferenceNode(type) && getNodeName(type.typeName) === name;
+}
+
 function getTypeLiteralDiscriminant(node: ts.TypeLiteralNode): string | undefined {
   for (const member of node.members) {
     if (!ts.isPropertySignature(member) || member.questionToken || !member.type || !ts.isLiteralTypeNode(member.type)) {
@@ -346,6 +391,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (scene3DRenderProxy) return scene3DRenderProxy;
   const meshDeformation = getMeshDeformationMixedAbsencePropertyMessage(node, subject);
   if (meshDeformation) return meshDeformation;
+  const attachmentPointStorage = getAttachmentPointStorageMixedAbsencePropertyMessage(node, subject);
+  if (attachmentPointStorage) return attachmentPointStorage;
   const callableOwner = node.type ? getMixedAbsenceGenericCallableOwner(node.type) : undefined;
   if (callableOwner) {
     const ownerType = callableOwner.getText(node.getSourceFile());
