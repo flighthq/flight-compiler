@@ -329,22 +329,21 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   const scene3DRenderProxy = getScene3DRenderProxyMixedAbsencePropertyMessage(node, subject);
   if (scene3DRenderProxy) return scene3DRenderProxy;
   const callableOwner = node.type ? getMixedAbsenceGenericCallableOwner(node.type) : undefined;
-  if (!callableOwner) {
-    return `${subject} combines an optional property with null; choose one absence representation or make all three states explicit.`;
+  if (callableOwner) {
+    const ownerType = callableOwner.getText(node.getSourceFile());
+    const undefinedState = node.questionToken ? 'an implicit undefined state' : 'an explicit undefined state';
+    return `${subject} gives the generic callable owner ${ownerType} both ${undefinedState} and an explicit null state. A present owner retains its exact callable type argument; neither absence state owns a callable. If undefined and null both mean that the callback facility is not enabled, declare the property as a required ${ownerType} | null, initialize it to null in every construction path, and retain the nullish guard at reads. If omission is the sole absence contract, remove null instead; if the two states differ, replace the two absence states with a named discriminated state. The compiler will preserve all authored states, but will not choose or collapse an absence sentinel, allocate or clone a callable owner, re-parameterize its callable argument, route it through Any, reinterpret or cast it, or add side storage.`;
   }
-  const ownerType = callableOwner.getText(node.getSourceFile());
-  const undefinedState = node.questionToken ? 'an implicit undefined state' : 'an explicit undefined state';
-  return `${subject} gives the generic callable owner ${ownerType} both ${undefinedState} and an explicit null state. A present owner retains its exact callable type argument; neither absence state owns a callable. If undefined and null both mean that the callback facility is not enabled, declare the property as a required ${ownerType} | null, initialize it to null in every construction path, and retain the nullish guard at reads. If omission is the sole absence contract, remove null instead; if the two states differ, replace the two absence states with a named discriminated state. The compiler will preserve all authored states, but will not choose or collapse an absence sentinel, allocate or clone a callable owner, re-parameterize its callable argument, route it through Any, reinterpret or cast it, or add side storage.`;
+  const collectionInputs = getMixedAbsenceCollectionOptionTypes(node);
+  if (collectionInputs) {
+    const collectionType = collectionInputs.map((type) => type.getText(node.getSourceFile())).join(' | ');
+    return `${subject} gives the optional collection input ${collectionType} both omission and explicit null, but neither absence state carries elements or a collection owner. If callers and consumers treat both as not supplied, keep the property optional and remove null, retaining each present array or typed-array owner and its element domain; normalize once at the consuming boundary only when downstream storage requires null. If null means an intentional clear distinct from omission, name a closed discriminated input state and handle it explicitly. Do not substitute an empty collection: a present empty collection is still a supplied value. The compiler will preserve all authored states, but will not choose or collapse an absence sentinel, infer an empty collection, merge distinct typed-array owners, allocate or copy backing storage, route elements through Any, reinterpret or cast a collection, or add side storage.`;
+  }
+  return `${subject} combines an optional property with null; choose one absence representation or make all three states explicit.`;
 }
 
 function getMixedAbsenceGenericCallableOwner(node: ts.TypeNode): ts.TypeReferenceNode | undefined {
-  while (ts.isParenthesizedTypeNode(node)) node = node.type;
-  const members = ts.isUnionTypeNode(node) ? node.types : [node];
-  const present = members.filter(
-    (member) =>
-      member.kind !== ts.SyntaxKind.UndefinedKeyword &&
-      !(ts.isLiteralTypeNode(member) && member.literal.kind === ts.SyntaxKind.NullKeyword),
-  );
+  const present = getMixedAbsencePresentTypes(node);
   if (present.length !== 1) return undefined;
   let owner = present[0]!;
   while (ts.isParenthesizedTypeNode(owner)) owner = owner.type;
@@ -355,6 +354,59 @@ function getMixedAbsenceGenericCallableOwner(node: ts.TypeNode): ts.TypeReferenc
   })
     ? owner
     : undefined;
+}
+
+function getMixedAbsenceCollectionOptionTypes(node: ts.PropertySignature): readonly ts.TypeNode[] | undefined {
+  if (
+    node.questionToken === undefined ||
+    !node.type ||
+    !ts.isInterfaceDeclaration(node.parent) ||
+    !node.parent.name.text.endsWith('Options')
+  ) {
+    return undefined;
+  }
+  const present = getMixedAbsencePresentTypes(node.type);
+  return present.length > 0 && present.every(isTypeScriptCollectionType) ? present : undefined;
+}
+
+function getMixedAbsencePresentTypes(node: ts.TypeNode): readonly ts.TypeNode[] {
+  while (ts.isParenthesizedTypeNode(node)) node = node.type;
+  const members = ts.isUnionTypeNode(node) ? node.types : [node];
+  return members.filter((member) => {
+    while (ts.isParenthesizedTypeNode(member)) member = member.type;
+    return (
+      member.kind !== ts.SyntaxKind.UndefinedKeyword &&
+      !(ts.isLiteralTypeNode(member) && member.literal.kind === ts.SyntaxKind.NullKeyword)
+    );
+  });
+}
+
+function isTypeScriptCollectionType(node: ts.TypeNode): boolean {
+  while (ts.isParenthesizedTypeNode(node)) node = node.type;
+  if (ts.isTypeOperatorNode(node) && node.operator === ts.SyntaxKind.ReadonlyKeyword) {
+    return isTypeScriptCollectionType(node.type);
+  }
+  if (ts.isArrayTypeNode(node)) return true;
+  if (!ts.isTypeReferenceNode(node)) return false;
+  const name = getNodeName(node.typeName);
+  if (name === 'Readonly' && node.typeArguments?.length === 1) {
+    return isTypeScriptCollectionType(node.typeArguments[0]!);
+  }
+  return (
+    name === 'Array' ||
+    name === 'ReadonlyArray' ||
+    name === 'BigInt64Array' ||
+    name === 'BigUint64Array' ||
+    name === 'Float32Array' ||
+    name === 'Float64Array' ||
+    name === 'Int8Array' ||
+    name === 'Int16Array' ||
+    name === 'Int32Array' ||
+    name === 'Uint8Array' ||
+    name === 'Uint8ClampedArray' ||
+    name === 'Uint16Array' ||
+    name === 'Uint32Array'
+  );
 }
 
 function isTypeAssertion(node: ts.Node): node is ts.AsExpression | ts.TypeAssertion {

@@ -3340,6 +3340,94 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
   });
 
+  it('guides optional nullable collection inputs to one absence sentinel without replacing owners', () => {
+    const mixed = input(
+      'MeshGeometryOptions.ts',
+      `interface MeshGeometryFromAttributesOptions {
+         indices?: readonly number[] | Uint16Array | Uint32Array | null;
+         normals?: readonly number[] | null;
+         positions: readonly number[];
+         uvs?: readonly number[] | null;
+       }
+       interface MeshGeometryOptions {
+         indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> | null;
+         vertices: Float32Array<ArrayBuffer>;
+       }
+       function fromAttributes(options: Readonly<MeshGeometryFromAttributesOptions>): void {
+         const normals = options.normals ?? null;
+         const uvs = options.uvs ?? null;
+         if (options.indices) { const src = options.indices; void src.length; }
+         void normals;
+         void uvs;
+       }
+       function create(options: Readonly<MeshGeometryOptions>): void {
+         if (options.indices) { const indices = options.indices; void indices.length; }
+       }`,
+    );
+    const optional = input(
+      'OptionalGeometryOptions.ts',
+      'interface GeometryOptions { indices?: readonly number[]; normals?: readonly number[] }',
+    );
+    const nullable = input(
+      'NullableGeometryOptions.ts',
+      'interface GeometryOptions { indices: readonly number[] | null; normals: readonly number[] | null }',
+    );
+    const explicit = input(
+      'ExplicitGeometryOptions.ts',
+      `type CollectionInput<T> =
+         | { readonly state: 'omitted' }
+         | { readonly state: 'cleared' }
+         | { readonly state: 'supplied'; readonly value: readonly T[] };
+       interface GeometryOptions { indices: CollectionInput<number> }`,
+    );
+    const unrelatedOwner = input('GeometryState.ts', 'interface GeometryState { indices?: readonly number[] | null }');
+    const unrelatedValue = input('ScalarOptions.ts', 'interface ScalarOptions { count?: number | null }');
+    const findings = analyzeTypeScriptSourcePortability([mixed]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:MeshGeometryFromAttributesOptions/property:indices',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:MeshGeometryFromAttributesOptions/property:normals',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:MeshGeometryFromAttributesOptions/property:uvs',
+      },
+      { rule: 'mixed-absence', subject: 'interface:MeshGeometryOptions/property:indices' },
+    ]);
+    for (const finding of findings) {
+      expect(finding.message).toContain('optional collection input');
+      expect(finding.message).toContain('both omission and explicit null');
+      expect(finding.message).toContain('neither absence state carries elements or a collection owner');
+      expect(finding.message).toContain('keep the property optional and remove null');
+      expect(finding.message).toContain('retaining each present array or typed-array owner and its element domain');
+      expect(finding.message).toContain('normalize once at the consuming boundary');
+      expect(finding.message).toContain('name a closed discriminated input state');
+      expect(finding.message).toContain('present empty collection is still a supplied value');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('infer an empty collection');
+      expect(finding.message).toContain('merge distinct typed-array owners');
+      expect(finding.message).toContain('allocate or copy backing storage');
+      expect(finding.message).toContain('route elements through Any');
+      expect(finding.message).toContain('reinterpret or cast a collection');
+      expect(finding.message).toContain('or add side storage');
+    }
+    expect(
+      analyzeTypeScriptSourcePortability([optional, nullable, explicit]).findings.filter(
+        (finding) => finding.rule === 'mixed-absence',
+      ),
+    ).toEqual([]);
+    for (const control of [unrelatedOwner, unrelatedValue]) {
+      expect(analyzeTypeScriptSourcePortability([control]).findings[0]?.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+    }
+  });
+
   it('explains the one-sentinel contract for anchor layout constraints', () => {
     const source = input(
       'packages/types/src/Layout.ts',
