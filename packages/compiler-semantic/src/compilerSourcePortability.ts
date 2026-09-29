@@ -480,6 +480,22 @@ function getCreateTextureOptionsResourceMixedAbsencePropertyMessage(
   return `${subject} gives the create-only texture resource association both omission and explicit null, but createTexture and createTexture2D each pass opts?.resource to attachTextureToResource, whose resource != null guard skips both absence spellings and pushes the texture only for a present ImageResourceReference owner. The two-dimensional return path performs that attachment in createTexture2D instead of falling through to the shared createTexture call, so a present resource receives the texture exactly once. Declare CreateTextureOptions.resource as optional ImageResourceReference without null so omission is the sole no-association input, while retaining the exact resource owner when present. If the options shape later becomes an update patch where omission means unchanged and null means detach, replace the property with one named closed association state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, attach or detach a texture, infer a resource from its source, allocate or mutate the resource texture list, copy or materialize either owner, rewrite dimension dispatch, reinterpret or cast the association, or add side storage.`;
 }
 
+function getTreeViewControllerInitialSelectionMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'TreeViewControllerOptions' ||
+    getNodeName(node.name) !== 'selectedItem' ||
+    !isFlightTypesSource(node, 'TreeViewController.ts') ||
+    !isOptionalNullableNamedTypeProperty(node, 'TreeViewControllerItem')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the one-shot TreeViewController initial selection both omission and explicit null, but createTreeViewController writes selectedItem: options.selectedItem ?? null into required Readonly<TreeViewControllerItem> | null runtime storage, so both absence spellings create the same unselected state while a present item owner is retained unchanged. The live setter accepts an item or null, normalizes a foreign item to null, and emits only after a real selection change; disposal clears the runtime field to null and the getter returns that required nullable state. Declare TreeViewControllerOptions.selectedItem as optional TreeViewControllerItem without null so omission is the sole construction-time unselected state, while keeping the runtime field, setter parameter, and getter result required nullable. If the options shape later becomes an update patch where omission means unchanged and null means clear, replace the property with one named closed selection state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, select or validate an item, emit a selection signal, infer an item from the roots, copy or materialize the item owner, rewrite controller disposal or navigation, reinterpret or cast the selection, or add side storage.`;
+}
+
 function getInteractionManagerOptionsMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -725,6 +741,11 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (capacitorPositionCoords) return capacitorPositionCoords;
   const createTextureOptionsResource = getCreateTextureOptionsResourceMixedAbsencePropertyMessage(node, subject);
   if (createTextureOptionsResource) return createTextureOptionsResource;
+  const treeViewControllerInitialSelection = getTreeViewControllerInitialSelectionMixedAbsencePropertyMessage(
+    node,
+    subject,
+  );
+  if (treeViewControllerInitialSelection) return treeViewControllerInitialSelection;
   const interactionManagerOptions = getInteractionManagerOptionsMixedAbsencePropertyMessage(node, subject);
   if (interactionManagerOptions) return interactionManagerOptions;
   const morphShapeGradientEndpoint = getMorphShapeGradientEndpointMixedAbsencePropertyMessage(node, subject);

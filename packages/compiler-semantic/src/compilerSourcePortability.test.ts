@@ -4331,6 +4331,94 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the construction-only absence contract for TreeViewController initial selection', () => {
+    const source = input(
+      'packages/types/src/TreeViewController.ts',
+      `interface GuiControllerOptions { transition?: string }
+       interface TreeViewControllerItem { readonly visual: object }
+       interface TreeViewControllerOptions extends GuiControllerOptions {
+         items: readonly Readonly<TreeViewControllerItem>[];
+         selectedItem?: TreeViewControllerItem | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toMatchObject([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:TreeViewControllerOptions/property:selectedItem',
+      },
+    ]);
+    const message = findings[0]?.message ?? '';
+    expect(message).toContain(
+      'gives the one-shot TreeViewController initial selection both omission and explicit null',
+    );
+    expect(message).toContain('selectedItem: options.selectedItem ?? null');
+    expect(message).toContain('required Readonly<TreeViewControllerItem> | null runtime storage');
+    expect(message).toContain('present item owner is retained unchanged');
+    expect(message).toContain('live setter accepts an item or null');
+    expect(message).toContain('normalizes a foreign item to null');
+    expect(message).toContain('disposal clears the runtime field to null');
+    expect(message).toContain(
+      'Declare TreeViewControllerOptions.selectedItem as optional TreeViewControllerItem without null',
+    );
+    expect(message).toContain('keeping the runtime field, setter parameter, and getter result required nullable');
+    expect(message).toContain('replace the property with one named closed selection state');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('select or validate an item');
+    expect(message).toContain('emit a selection signal');
+    expect(message).toContain('infer an item from the roots');
+    expect(message).toContain('copy or materialize the item owner');
+    expect(message).toContain('rewrite controller disposal or navigation');
+    expect(message).toContain('reinterpret or cast the selection');
+    expect(message).toContain('or add side storage');
+  });
+
+  it('keeps unrelated selection shapes generic and accepts one-sentinel TreeViewController inputs', () => {
+    const controls = [
+      input(
+        'TreeViewController.ts',
+        'interface TreeViewControllerItem {} interface TreeViewControllerOptions { selectedItem?: TreeViewControllerItem | null }',
+      ),
+      input(
+        'packages/types/src/TreeViewController.ts',
+        'interface TreeViewControllerItem {} interface OtherControllerOptions { selectedItem?: TreeViewControllerItem | null }',
+      ),
+      input(
+        'packages/types/src/TreeViewController.ts',
+        'interface TreeViewControllerItem {} interface TreeViewControllerOptions { focusedItem?: TreeViewControllerItem | null }',
+      ),
+      input(
+        'packages/types/src/TreeViewController.ts',
+        'interface OtherItem {} interface TreeViewControllerOptions { selectedItem?: OtherItem | null }',
+      ),
+      input(
+        'packages/types/src/TreeViewController.ts',
+        'interface TreeViewControllerItem {} interface TreeViewControllerOptions { selectedItem?: Readonly<TreeViewControllerItem> | null }',
+      ),
+    ];
+    const resolved = [
+      input(
+        'RequiredTreeViewSelection.ts',
+        'interface TreeViewControllerItem {} interface Runtime { selectedItem: Readonly<TreeViewControllerItem> | null }',
+      ),
+      input(
+        'OptionalTreeViewSelection.ts',
+        'interface TreeViewControllerItem {} interface TreeViewControllerOptions { selectedItem?: TreeViewControllerItem }',
+      ),
+    ];
+
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+      expect(findings[0]?.message).not.toContain('one-shot TreeViewController initial selection');
+    }
+    expect(analyzeTypeScriptSourcePortability(resolved).findings).toEqual([]);
+  });
+
   it('explains construction-only absence for scene owner options', () => {
     const camera = input(
       'packages/types/src/Camera3DOptions.ts',
