@@ -370,6 +370,22 @@ function isOptionalNullableReadonlyNumberArrayProperty(node: ts.PropertySignatur
   );
 }
 
+function isOptionalNullableReadonlyNamedTypeProperty(node: ts.PropertySignature, name: string): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  if (!ts.isTypeReferenceNode(type) || getNodeName(type.typeName) !== 'Readonly') return false;
+  const argument = type.typeArguments?.[0];
+  return (
+    type.typeArguments?.length === 1 &&
+    argument !== undefined &&
+    ts.isTypeReferenceNode(argument) &&
+    getNodeName(argument.typeName) === name
+  );
+}
+
 function isOptionalNullableStringProperty(node: ts.PropertySignature): boolean {
   if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
   const present = getMixedAbsencePresentTypes(node.type);
@@ -437,6 +453,22 @@ function getInteractionManagerOptionsMixedAbsencePropertyMessage(
   const owner = name === 'cursorBackend' ? 'CursorBackend' : name === 'spatialIndex' ? 'SpatialIndex2D' : undefined;
   if (owner === undefined || !isOptionalNullableNamedTypeProperty(node, owner)) return undefined;
   return `${subject} gives the InteractionManager construction option ${name} both omission and explicit null, but createInteractionManager passes its options once into initializeInteractionManager for a fresh manager, where out.cursorBackend = options.cursorBackend ?? null and out.spatialIndex = options.spatialIndex ?? null normalize either spelling to the same disabled service. Runtime consumers such as applyInteractionCursor, findInteractionTarget, and refreshInteractionSpatialIndex then test the required nullable fields against null. Keep the InteractionManager cursorBackend and spatialIndex fields required nullable so installed services can be cleared explicitly, but make both fields optional non-null in InteractionManagerOptions so omission is the sole construction-time absence. If the options shape later becomes a mutation patch, define a named closed update state whose unchanged, disabled, and installed cases are explicit. The compiler will not choose or collapse an absence sentinel, construct a cursor backend or spatial index, rewrite the manager, change service-owner identity, or add side storage.`;
+}
+
+function getMorphShapeGradientEndpointMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'MorphShapeGradientEndpoint' ||
+    getNodeName(node.name) !== 'matrix' ||
+    !isFlightTypesSource(node, 'MorphShape.ts') ||
+    !isOptionalNullableReadonlyNamedTypeProperty(node, 'Matrix')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the paired morph-gradient endpoint matrix both omission and explicit null, but appendMorphShapeGradientPaint evaluates start.matrix ?? null and end.matrix ?? null before creating its binding. When either endpoint supplies a matrix, an absent side uses identityMatrix and both resolved matrices are cloned; when neither supplies one, MorphShapeGradientPaintBinding.startMatrix and endMatrix are both null. The two input absence spellings are therefore identical, while a present identity matrix is still an authored matrix value. Keep the binding's startMatrix and endMatrix fields required Readonly<Matrix> | null as resolved sampling state, but declare MorphShapeGradientEndpoint.matrix as optional Readonly<Matrix> without null so omission is the sole authoring-time absence. If authoring later distinguishes an inherited matrix from an explicitly disabled matrix, replace the property with one named closed endpoint state and resolve every arm before constructing the binding. The compiler will not choose or collapse an absence sentinel, treat a present identity matrix as absent, infer the paired endpoint, select or synthesize identityMatrix, clone or materialize a Matrix, rewrite paint sampling or binding storage, reinterpret or cast the value, or add side storage.`;
 }
 
 function getNormalizedStringOptionMixedAbsencePropertyMessage(
@@ -629,6 +661,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (capacitorPositionCoords) return capacitorPositionCoords;
   const interactionManagerOptions = getInteractionManagerOptionsMixedAbsencePropertyMessage(node, subject);
   if (interactionManagerOptions) return interactionManagerOptions;
+  const morphShapeGradientEndpoint = getMorphShapeGradientEndpointMixedAbsencePropertyMessage(node, subject);
+  if (morphShapeGradientEndpoint) return morphShapeGradientEndpoint;
   const normalizedStringOption = getNormalizedStringOptionMixedAbsencePropertyMessage(node, subject);
   if (normalizedStringOption) return normalizedStringOption;
   const sceneConstructionOwner = getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(node, subject);

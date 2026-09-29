@@ -4057,6 +4057,108 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains paired morph-gradient matrix normalization into resolved binding storage', () => {
+    const source = input(
+      'packages/types/src/MorphShape.ts',
+      `interface Matrix { readonly a: number }
+       interface MorphShapeGradientEndpoint {
+         readonly colors: readonly number[];
+         readonly matrix?: Readonly<Matrix> | null;
+       }
+       interface MorphShapeGradientPaintBinding {
+         readonly endMatrix: Readonly<Matrix> | null;
+         readonly startMatrix: Readonly<Matrix> | null;
+       }
+       declare const identityMatrix: Readonly<Matrix>;
+       declare function cloneMatrix(matrix: Readonly<Matrix>): Readonly<Matrix>;
+       function appendMorphShapeGradientPaint(
+         start: Readonly<MorphShapeGradientEndpoint>,
+         end: Readonly<MorphShapeGradientEndpoint>,
+       ): MorphShapeGradientPaintBinding {
+         const startSource = start.matrix ?? null;
+         const endSource = end.matrix ?? null;
+         const hasMatrix = startSource !== null || endSource !== null;
+         return {
+           startMatrix: hasMatrix ? cloneMatrix(startSource ?? identityMatrix) : null,
+           endMatrix: hasMatrix ? cloneMatrix(endSource ?? identityMatrix) : null,
+         };
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toMatchObject([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:MorphShapeGradientEndpoint/property:matrix',
+      },
+    ]);
+    const message = findings[0]?.message;
+    expect(message).toContain('gives the paired morph-gradient endpoint matrix both omission and explicit null');
+    expect(message).toContain('appendMorphShapeGradientPaint evaluates start.matrix ?? null and end.matrix ?? null');
+    expect(message).toContain('an absent side uses identityMatrix and both resolved matrices are cloned');
+    expect(message).toContain('MorphShapeGradientPaintBinding.startMatrix and endMatrix are both null');
+    expect(message).toContain('a present identity matrix is still an authored matrix value');
+    expect(message).toContain("Keep the binding's startMatrix and endMatrix fields required Readonly<Matrix> | null");
+    expect(message).toContain('declare MorphShapeGradientEndpoint.matrix as optional Readonly<Matrix> without null');
+    expect(message).toContain('omission is the sole authoring-time absence');
+    expect(message).toContain('one named closed endpoint state and resolve every arm');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('treat a present identity matrix as absent');
+    expect(message).toContain('infer the paired endpoint');
+    expect(message).toContain('select or synthesize identityMatrix');
+    expect(message).toContain('clone or materialize a Matrix');
+    expect(message).toContain('rewrite paint sampling or binding storage');
+    expect(message).toContain('reinterpret or cast the value');
+    expect(message).toContain('or add side storage');
+  });
+
+  it('keeps unrelated endpoint matrices generic and accepts split authoring and binding contracts', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/MorphShape.ts',
+        'interface Matrix {} interface OtherGradientEndpoint { matrix?: Readonly<Matrix> | null }',
+      ),
+      input(
+        'packages/types/src/MorphShape.ts',
+        'interface Matrix {} interface MorphShapeGradientEndpoint { transform?: Readonly<Matrix> | null }',
+      ),
+      input(
+        'packages/example/src/MorphShape.ts',
+        'interface Matrix {} interface MorphShapeGradientEndpoint { matrix?: Readonly<Matrix> | null }',
+      ),
+      input(
+        'packages/types/src/MorphShape.ts',
+        'interface Matrix3 {} interface MorphShapeGradientEndpoint { matrix?: Readonly<Matrix3> | null }',
+      ),
+      input(
+        'packages/types/src/MorphShape.ts',
+        'interface Matrix {} interface MorphShapeGradientEndpoint { matrix?: Matrix | null }',
+      ),
+    ];
+    const resolved = input(
+      'ResolvedMorphShapeGradient.ts',
+      `interface Matrix { readonly a: number }
+       interface MorphShapeGradientEndpoint { matrix?: Readonly<Matrix> }
+       interface MorphShapeGradientPaintBinding {
+         endMatrix: Readonly<Matrix> | null;
+         startMatrix: Readonly<Matrix> | null;
+       }
+       type GradientMatrixInput =
+         | { readonly state: 'absent' }
+         | { readonly matrix: Readonly<Matrix>; readonly state: 'present' };`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+      expect(findings[0]?.message).not.toContain('paired morph-gradient endpoint matrix');
+    }
+  });
+
   it('explains construction-only absence for scene owner options', () => {
     const camera = input(
       'packages/types/src/Camera3DOptions.ts',
