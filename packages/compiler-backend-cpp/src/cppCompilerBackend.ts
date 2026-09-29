@@ -9309,11 +9309,9 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     type.typeArguments.length === 2 &&
     type.typeArguments[0]
   ) {
-    const subject = context.referenceRepresentationPlanner.plan(type.typeArguments[0], context.module);
     if (
       getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
-      subject.kind !== 'represented' ||
-      subject.valueRepresentation !== 'flightReference'
+      !hasCppReferencePreservingOmitRepresentationCpp(type.typeArguments[0], context)
     ) {
       emissionError(context, 'Omit<T, K> requires a proven reference-preserving flight-cpp representation');
     }
@@ -9793,6 +9791,31 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       }
       return 'auto';
   }
+}
+
+// Omit changes the visible key set, not the object or union alternative that owns the value. A
+// single Flight reference already uses that rule above. A resolved distributive alias can arrive at
+// a consumer as the union of its concrete object arms, though, and the union plan itself is a variant
+// rather than one Flight reference. Preserve it only when every alternative independently proves
+// reference identity and Flight-reference storage; one value, absent, or indeterminate arm would make
+// erasing Omit change the carrier contract.
+function hasCppReferencePreservingOmitRepresentationCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  const subject = context.referenceRepresentationPlanner.plan(type, context.module);
+  if (subject.kind === 'represented' && subject.valueRepresentation === 'flightReference') return true;
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  return Boolean(
+    union &&
+    union.types.length > 0 &&
+    union.types.every((member) => {
+      const plan = context.referenceRepresentationPlanner.plan(member, context.module);
+      return (
+        plan.kind === 'represented' &&
+        plan.identity.identity === 'reference' &&
+        plan.identityDomain === 'object' &&
+        plan.valueRepresentation === 'flightReference'
+      );
+    }),
+  );
 }
 
 function emitCppUnknownBridgedGenericFactoryAssertionCpp(

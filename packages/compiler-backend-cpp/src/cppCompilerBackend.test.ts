@@ -21387,6 +21387,54 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(() => emitIrModuleCpp(value.module, { runtimeProfile: 'flight-cpp' })).toThrow(
       'Omit<T, K> requires a proven reference-preserving flight-cpp representation',
     );
+
+    const union = structuredClone(
+      lower(
+        'omit-reference-union.ts',
+        `interface First { first: number; runtime: object }
+         interface Second { second: string; runtime: object }
+         export function carriers(first: First, second: Second): void { void first; void second; }
+         export type WithoutRuntime = string;`,
+      ).module,
+    );
+    const carriers = union.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'carriers',
+    );
+    const withoutRuntime = union.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'WithoutRuntime',
+    );
+    if (carriers?.kind !== 'function' || withoutRuntime?.kind !== 'typeAlias') {
+      throw new TypeError('expected union Omit control declarations');
+    }
+    const unionSubject: IrType = {
+      kind: 'union',
+      types: [carriers.parameters[0]!.type, carriers.parameters[1]!.type],
+    };
+    (withoutRuntime as { type: IrType }).type = {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Omit' },
+      typeArguments: [unionSubject, { kind: 'literal', value: 'runtime' }],
+    };
+    const unionEmitted = emitIrModuleCpp(union, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(unionEmitted).toContain('using WithoutRuntime = std::variant<flight::Ref<First>, flight::Ref<Second>>;');
+
+    const mixed = structuredClone(union);
+    const mixedAlias = mixed.declarations.find(
+      (declaration) => declaration.kind === 'typeAlias' && declaration.binding.name === 'WithoutRuntime',
+    );
+    if (mixedAlias?.kind !== 'typeAlias' || mixedAlias.type.kind !== 'named') {
+      throw new TypeError('expected mixed Omit control alias');
+    }
+    (mixedAlias as { type: IrType }).type = {
+      ...mixedAlias.type,
+      typeArguments: [
+        { kind: 'union', types: [carriers.parameters[0]!.type, { kind: 'primitive', name: 'number' }] },
+        { kind: 'literal', value: 'runtime' },
+      ],
+    };
+    expect(() => emitIrModuleCpp(mixed, { runtimeProfile: 'flight-cpp' })).toThrow(
+      'Omit<T, K> requires a proven reference-preserving flight-cpp representation',
+    );
   });
 
   it('constructs through reference-preserving user aliases without nesting references', () => {
@@ -42817,6 +42865,135 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // separate alternatives, which is how a union of object types is emitted everywhere else.
     expect(emitted.contents).toContain('std::variant<');
     expect(emitted.contents).not.toContain('multiple-inheritance');
+  });
+
+  it('retains a distributed partial Omit reached through a contextual call and contract barrel', () => {
+    const entity = ts.createSourceFile(
+      '/flight/packages/types/src/Entity.ts',
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime { binding: object | null }
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export type EntityWithoutRuntime<Type extends Entity> = Omit<Type, typeof EntityRuntimeKey>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const textureTypes = ts.createSourceFile(
+      '/flight/packages/types/src/Texture.ts',
+      `import type { Entity, EntityWithoutRuntime } from './Entity';
+       interface TextureCommon extends Entity { colorSpace: string; version: number }
+       export interface Texture2D extends TextureCommon {
+         readonly dimension: '2d';
+         source: number | null;
+       }
+       export type Texture =
+         | Texture2D
+         | (TextureCommon & { readonly dimension: 'cube'; sources: readonly number[] });
+       type TextureLikeFrom<Type extends Texture> = Type extends Texture ? EntityWithoutRuntime<Type> : never;
+       export type TextureLike = TextureLikeFrom<Texture>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const options = ts.createSourceFile(
+      '/flight/packages/types/src/CreateTextureOptions.ts',
+      `import type { TextureLike } from './Texture';
+       type CreateTextureVariantOptions<Type extends TextureLike> = Type extends TextureLike
+         ? Omit<Partial<Type>, 'dimension'> &
+             (Type['dimension'] extends '2d'
+               ? { readonly dimension?: '2d' }
+               : { readonly dimension: Type['dimension'] })
+         : never;
+       export type CreateTextureOptions = CreateTextureVariantOptions<TextureLike>;`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const cubeOptions = ts.createSourceFile(
+      '/flight/packages/types/src/CreateCubeTextureOptions.ts',
+      `export interface CreateCubeTextureOptions { colorSpace?: string; sources?: readonly number[] }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const contract = ts.createSourceFile(
+      '/flight/packages/types/src/contract.ts',
+      `export * from './CreateCubeTextureOptions';
+       export * from './CreateTextureOptions';`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const texture = ts.createSourceFile(
+      '/flight/packages/texture/src/texture.ts',
+      `import type { CreateTextureOptions } from '@flighthq/types/contract';
+       export function createTexture(opts?: Readonly<CreateTextureOptions>): void { void opts; }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const cube = ts.createSourceFile(
+      '/flight/packages/texture/src/cubeTexture.ts',
+      `import type { CreateCubeTextureOptions } from '@flighthq/types/contract';
+       import { createTexture } from './texture';
+       export function createCubeTexture(opts?: Readonly<CreateCubeTextureOptions>): void {
+         createTexture({
+           colorSpace: opts?.colorSpace ?? 'srgb',
+           dimension: 'cube',
+           sources: opts?.sources ?? [],
+         });
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Entity',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Entity.ts' },
+        },
+        {
+          specifier: './Texture',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/Texture.ts' },
+        },
+        {
+          specifier: './CreateCubeTextureOptions',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/CreateCubeTextureOptions.ts' },
+        },
+        {
+          specifier: './CreateTextureOptions',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/CreateTextureOptions.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './texture',
+          target: { packageName: '@flighthq/texture', source: 'packages/texture/src/texture.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/types', sourceFile: entity, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: textureTypes, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: options, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: cubeOptions, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/types', sourceFile: contract, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/texture', sourceFile: texture, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/texture', sourceFile: cube, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const emitted = session.emitModule(modules[6]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics).map((diagnostic) => diagnostic.message)).toEqual([
+      'unsupported type ConditionalType',
+    ]);
+    expect(emitted).toContain('create_texture(');
+    expect(emitted).not.toContain('Omit<');
   });
 
   it('emits a closed-key conditional payload carrier and retains concrete key selections', () => {
