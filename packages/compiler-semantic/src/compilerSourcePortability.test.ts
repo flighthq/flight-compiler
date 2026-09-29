@@ -3430,6 +3430,169 @@ describe('analyzeTypeScriptSourcePortability', () => {
     });
   });
 
+  it('explains one-sentinel parser codec inputs at the exact AWD2 and SWF normalization boundaries', () => {
+    const capabilityDeclarations = `interface HostDecompressDeflateCapability {
+         decompress(source: Uint8Array): Uint8Array | null;
+       }
+       interface HostDecompressLzmaCapability {
+         decompress(source: Uint8Array): Uint8Array | null;
+       }`;
+    const sources = [
+      input(
+        'packages/types/src/Awd2ParseOptions.ts',
+        `${capabilityDeclarations}
+         interface Awd2ParseOptions {
+           readonly blocks: readonly number[];
+           readonly deflate?: Readonly<HostDecompressDeflateCapability> | null;
+           readonly lzma?: Readonly<HostDecompressLzmaCapability> | null;
+         }
+         declare function rehydrateAwd2Body(
+           input: Uint8Array,
+           deflate: Readonly<HostDecompressDeflateCapability> | null,
+           lzma: Readonly<HostDecompressLzmaCapability> | null,
+           diagnostics: string[] | undefined,
+         ): Uint8Array | null;
+         function parseAwd2(
+           input: Uint8Array,
+           options: Readonly<Awd2ParseOptions>,
+           diagnostics: string[] | undefined,
+         ): Uint8Array | null {
+           return rehydrateAwd2Body(input, options.deflate ?? null, options.lzma ?? null, diagnostics);
+         }`,
+      ),
+      input(
+        'packages/types/src/SwfParseOptions.ts',
+        `${capabilityDeclarations}
+         interface SwfParseOptions {
+           readonly deflate?: Readonly<HostDecompressDeflateCapability> | null;
+           readonly lzma?: Readonly<HostDecompressLzmaCapability> | null;
+           readonly tags: readonly number[];
+         }
+         declare function uncompressSwfSource(
+           source: Uint8Array,
+           deflate: Readonly<HostDecompressDeflateCapability> | null,
+           lzma: Readonly<HostDecompressLzmaCapability> | null,
+           diagnostics: string[] | undefined,
+         ): Uint8Array | null;
+         function readSwfFile(
+           source: Uint8Array,
+           options: Readonly<SwfParseOptions>,
+           diagnostics: string[] | undefined,
+         ): Uint8Array | null {
+           return uncompressSwfSource(source, options.deflate ?? null, options.lzma ?? null, diagnostics);
+         }`,
+      ),
+    ];
+    const findings = analyzeTypeScriptSourcePortability(sources).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'mixed-absence', subject: 'interface:Awd2ParseOptions/property:deflate' },
+      { rule: 'mixed-absence', subject: 'interface:Awd2ParseOptions/property:lzma' },
+      { rule: 'mixed-absence', subject: 'interface:SwfParseOptions/property:deflate' },
+      { rule: 'mixed-absence', subject: 'interface:SwfParseOptions/property:lzma' },
+    ]);
+    for (const finding of findings) {
+      expect(finding.message).toContain('parser codec capability');
+      expect(finding.message).toContain('both omission and explicit null');
+      expect(finding.message).toContain(
+        'rehydrateAwd2Body(input, options.deflate ?? null, options.lzma ?? null, diagnostics)',
+      );
+      expect(finding.message).toContain(
+        'uncompressSwfSource(source, options.deflate ?? null, options.lzma ?? null, diagnostics)',
+      );
+      expect(finding.message).toContain('required Readonly<HostDecompressDeflateCapability> | null');
+      expect(finding.message).toContain('Readonly<HostDecompressLzmaCapability> | null');
+      expect(finding.message).toContain('same unavailable-codec state');
+      expect(finding.message).toContain('present capability owner passes unchanged');
+      expect(finding.message).toContain('invoked only for its matching compression kind');
+      expect(finding.message).toContain('deflate?: Readonly<HostDecompressDeflateCapability>');
+      expect(finding.message).toContain('lzma?: Readonly<HostDecompressLzmaCapability>');
+      expect(finding.message).toContain('retain the ?? null normalization');
+      expect(finding.message).toContain('keep the required-nullable downstream parameters');
+      expect(finding.message).toContain('named closed codec-input state');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('infer a codec from the file header');
+      expect(finding.message).toContain('invoke a decompressor');
+      expect(finding.message).toContain('report or suppress an unread-input diagnostic');
+      expect(finding.message).toContain('replace or copy a capability owner');
+      expect(finding.message).toContain('route decompressed bytes through Any');
+      expect(finding.message).toContain('reinterpret or cast a capability');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps unrelated or structurally different parser codec options on generic guidance', () => {
+    const declarations = `interface HostDecompressDeflateCapability { readonly kind: 'deflate' }
+       interface HostDecompressLzmaCapability { readonly kind: 'lzma' }`;
+    const controls = [
+      input(
+        'packages/types/src/Awd2ParseOptions.ts',
+        `${declarations}
+         interface Awd2ParseOptions { deflate?: Readonly<HostDecompressDeflateCapability> | null }`,
+      ),
+      input(
+        'packages/types/src/SwfParseOptions.ts',
+        `${declarations}
+         interface SwfParseOptions {
+           deflate?: HostDecompressDeflateCapability | null;
+           lzma?: HostDecompressLzmaCapability | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/Awd2ParseOptions.ts',
+        `${declarations}
+         interface OtherParseOptions {
+           deflate?: Readonly<HostDecompressDeflateCapability> | null;
+           lzma?: Readonly<HostDecompressLzmaCapability> | null;
+         }`,
+      ),
+      input(
+        'packages/example/src/SwfParseOptions.ts',
+        `${declarations}
+         interface SwfParseOptions {
+           deflate?: Readonly<HostDecompressDeflateCapability> | null;
+           lzma?: Readonly<HostDecompressLzmaCapability> | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/Awd2ParseOptions.ts',
+        `${declarations}
+         interface Awd2ParseOptions {
+           inflate?: Readonly<HostDecompressDeflateCapability> | null;
+           lzma?: Readonly<HostDecompressLzmaCapability> | null;
+         }`,
+      ),
+    ];
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings.length).toBeGreaterThan(0);
+      expect(findings.every((finding) => finding.message.includes('combines an optional property with null'))).toBe(
+        true,
+      );
+      expect(findings.every((finding) => !finding.message.includes('parser codec capability'))).toBe(true);
+    }
+
+    const resolved = [
+      input(
+        'packages/types/src/Awd2ParseOptions.ts',
+        `${declarations}
+         interface Awd2ParseOptions {
+           deflate?: Readonly<HostDecompressDeflateCapability>;
+           lzma?: Readonly<HostDecompressLzmaCapability>;
+         }`,
+      ),
+      input(
+        'packages/types/src/SwfParseOptions.ts',
+        `${declarations}
+         interface SwfParseOptions {
+           deflate: Readonly<HostDecompressDeflateCapability> | null;
+           lzma: Readonly<HostDecompressLzmaCapability> | null;
+         }`,
+      ),
+    ];
+    expect(analyzeTypeScriptSourcePortability(resolved).findings).toEqual([]);
+  });
+
   it('guides optional nullable generic callable owners to one explicit state model', () => {
     const mixed = input(
       'AnimationPlayer.ts',

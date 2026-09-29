@@ -480,6 +480,30 @@ function getCreateTextureOptionsResourceMixedAbsencePropertyMessage(
   return `${subject} gives the create-only texture resource association both omission and explicit null, but createTexture and createTexture2D each pass opts?.resource to attachTextureToResource, whose resource != null guard skips both absence spellings and pushes the texture only for a present ImageResourceReference owner. The two-dimensional return path performs that attachment in createTexture2D instead of falling through to the shared createTexture call, so a present resource receives the texture exactly once. Declare CreateTextureOptions.resource as optional ImageResourceReference without null so omission is the sole no-association input, while retaining the exact resource owner when present. If the options shape later becomes an update patch where omission means unchanged and null means detach, replace the property with one named closed association state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, attach or detach a texture, infer a resource from its source, allocate or mutate the resource texture list, copy or materialize either owner, rewrite dimension dispatch, reinterpret or cast the association, or add side storage.`;
 }
 
+function getParseCodecOptionMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (!ts.isInterfaceDeclaration(node.parent)) return undefined;
+  const owner = node.parent.name.text;
+  const isAwd2 = owner === 'Awd2ParseOptions' && isFlightTypesSource(node, 'Awd2ParseOptions.ts');
+  const isSwf = owner === 'SwfParseOptions' && isFlightTypesSource(node, 'SwfParseOptions.ts');
+  if (!isAwd2 && !isSwf) return undefined;
+  const field = getNodeName(node.name);
+  if (field !== 'deflate' && field !== 'lzma') return undefined;
+  const deflate = getInterfaceProperty(node.parent, 'deflate');
+  const lzma = getInterfaceProperty(node.parent, 'lzma');
+  if (
+    deflate === undefined ||
+    lzma === undefined ||
+    !isOptionalNullableReadonlyNamedTypeProperty(deflate, 'HostDecompressDeflateCapability') ||
+    !isOptionalNullableReadonlyNamedTypeProperty(lzma, 'HostDecompressLzmaCapability')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the ${isAwd2 ? 'AWD2' : 'SWF'} parser codec capability ${field} both omission and explicit null, but the parser boundaries already normalize both codec inputs exactly once: parseAwd2 calls rehydrateAwd2Body(input, options.deflate ?? null, options.lzma ?? null, diagnostics), while readSwfFile calls uncompressSwfSource(source, options.deflate ?? null, options.lzma ?? null, diagnostics). Each downstream parameter is required Readonly<HostDecompressDeflateCapability> | null or Readonly<HostDecompressLzmaCapability> | null, so either input absence spelling becomes the same unavailable-codec state while a present capability owner passes unchanged and is invoked only for its matching compression kind. Declare deflate?: Readonly<HostDecompressDeflateCapability> and lzma?: Readonly<HostDecompressLzmaCapability> on both Awd2ParseOptions and SwfParseOptions, retain the ?? null normalization at those consuming boundaries, and keep the required-nullable downstream parameters. If omission and an explicit disabled codec must differ, replace the property with one named closed codec-input state and resolve every arm before parsing. The compiler will not choose or collapse an absence sentinel, infer a codec from the file header, invoke a decompressor, report or suppress an unread-input diagnostic, replace or copy a capability owner, route decompressed bytes through Any, reinterpret or cast a capability, or add side storage.`;
+}
+
 function getTreeViewControllerInitialSelectionMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -741,6 +765,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (capacitorPositionCoords) return capacitorPositionCoords;
   const createTextureOptionsResource = getCreateTextureOptionsResourceMixedAbsencePropertyMessage(node, subject);
   if (createTextureOptionsResource) return createTextureOptionsResource;
+  const parseCodecOption = getParseCodecOptionMixedAbsencePropertyMessage(node, subject);
+  if (parseCodecOption) return parseCodecOption;
   const treeViewControllerInitialSelection = getTreeViewControllerInitialSelectionMixedAbsencePropertyMessage(
     node,
     subject,
