@@ -1081,6 +1081,50 @@ function isEntityRuntimeKeyDeleteFromCopy(statement: ts.Statement): boolean {
   );
 }
 
+function getNodeBoundsParentDoubleAssertionGuidance(
+  node: ts.AsExpression | ts.TypeAssertion,
+  subject: string,
+  bridge: 'any' | 'never' | 'unknown',
+): string | undefined {
+  if (
+    bridge !== 'unknown' ||
+    (subject !== 'function:getNodeHeight' && subject !== 'function:getNodeWidth') ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/node/src/boundsRectangle.ts')
+  ) {
+    return undefined;
+  }
+  const target = getTypeAssertionType(node);
+  if (!hasNullType(target) || hasUndefinedType(target)) return undefined;
+  const present = getMixedAbsencePresentTypes(target);
+  if (present.length !== 1 || !isNamedGenericTypeReference(present[0], 'Spatial2DNode', 'Traits')) {
+    return undefined;
+  }
+  let inner: ts.Expression = node.expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (!isTypeAssertion(inner) || getTypeAssertionType(inner).kind !== ts.SyntaxKind.UnknownKeyword) return undefined;
+  let retained: ts.Expression = inner.expression;
+  while (ts.isParenthesizedExpression(retained)) retained = retained.expression;
+  if (
+    !ts.isCallExpression(retained) ||
+    !ts.isIdentifier(retained.expression) ||
+    retained.expression.text !== 'getNodeParent' ||
+    retained.arguments.length !== 1 ||
+    !ts.isIdentifier(retained.arguments[0]!) ||
+    retained.arguments[0]!.text !== 'source'
+  ) {
+    return undefined;
+  }
+  if (
+    !ts.isCallExpression(node.parent) ||
+    !ts.isIdentifier(node.parent.expression) ||
+    node.parent.expression.text !== 'computeNodeBoundsRectangle' ||
+    node.parent.arguments[2] !== node
+  ) {
+    return undefined;
+  }
+  return `${subject} uses a double assertion through unknown to claim that getNodeParent(source), whose declared result is NodeOf<Traits> | null, also carries the Spatial2DNode<Traits> bounds and transform capabilities required as computeNodeBoundsRectangle's target coordinate space. The current Spatial2DNode alias appends HasBoundsRectangle and HasTransform2D outside Traits, while these getters quantify only Traits extends object, so the shared Traits parameter does not prove that a parent returned by the node runtime owns either capability. Put the spatial capabilities inside the family contract: define or constrain Traits to a named HasBoundsRectangle & HasTransform2D base, accept the matching NodeOf<Traits> spatial owner, and pass getNodeParent(source) directly once NodeRuntime<Traits>.parent retains that proof. If the hierarchy genuinely permits a non-spatial parent, use a typed spatial predicate and choose null or another explicit coordinate space when it fails. The compiler will preserve the exact parent owner and null sentinel, but will not infer intersection members that the generic parameter omits, reinterpret or cast the parent, copy or materialize a replacement node, synthesize bounds or transform state, or add side storage.`;
+}
+
 function getTextureCubeFacesDoubleAssertionGuidance(
   node: ts.AsExpression | ts.TypeAssertion,
   subject: string,
@@ -2364,6 +2408,8 @@ function renderUncheckedDoubleAssertionMessage(
 ): string {
   const entityRuntimeStrip = getEntityRuntimeStripDoubleAssertionGuidance(node, subject, bridge);
   if (entityRuntimeStrip) return entityRuntimeStrip;
+  const nodeBoundsParent = getNodeBoundsParentDoubleAssertionGuidance(node, subject, bridge);
+  if (nodeBoundsParent) return nodeBoundsParent;
   const textureCubeFaces = getTextureCubeFacesDoubleAssertionGuidance(node, subject, bridge);
   if (textureCubeFaces) return textureCubeFaces;
   const material = getMaterialDoubleAssertionGuidance(node, subject, bridge);

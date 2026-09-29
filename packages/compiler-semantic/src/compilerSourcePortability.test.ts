@@ -205,6 +205,180 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the missing spatial-family proof on node width and height parent lookups', () => {
+    const source = input(
+      'packages/node/src/boundsRectangle.ts',
+      `interface HasBoundsRectangle { readonly bounds: true }
+       interface HasTransform2D { readonly x: number; readonly y: number }
+       interface Node<Traits extends object> { readonly traits?: Traits }
+       type NodeOf<Traits extends object> = Node<Traits> & Traits;
+       type Spatial2DNode<Traits extends object> = NodeOf<Traits> & HasBoundsRectangle & HasTransform2D;
+       declare const out: object;
+       declare function getNodeParent<Traits extends object>(source: Readonly<Node<Traits>>): NodeOf<Traits> | null;
+       declare function computeNodeBoundsRectangle<Traits extends object>(
+         out: object,
+         source: Spatial2DNode<Traits>,
+         targetCoordinateSpace: Spatial2DNode<Traits> | null | undefined,
+       ): void;
+       function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): number {
+         computeNodeBoundsRectangle(
+           out,
+           source,
+           getNodeParent(source) as unknown as Spatial2DNode<Traits> | null,
+         );
+         return 0;
+       }
+       function getNodeWidth<Traits extends object>(source: Spatial2DNode<Traits>): number {
+         computeNodeBoundsRectangle(
+           out,
+           source,
+           getNodeParent(source) as unknown as Spatial2DNode<Traits> | null,
+         );
+         return 0;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'unchecked-double-assertion', subject: 'function:getNodeHeight' },
+      { rule: 'unchecked-double-assertion', subject: 'function:getNodeWidth' },
+    ]);
+    for (const finding of findings) {
+      expect(finding.message).toContain('getNodeParent(source), whose declared result is NodeOf<Traits> | null');
+      expect(finding.message).toContain('Spatial2DNode<Traits> bounds and transform capabilities');
+      expect(finding.message).toContain("computeNodeBoundsRectangle's target coordinate space");
+      expect(finding.message).toContain(
+        'Spatial2DNode alias appends HasBoundsRectangle and HasTransform2D outside Traits',
+      );
+      expect(finding.message).toContain('Traits extends object');
+      expect(finding.message).toContain(
+        'does not prove that a parent returned by the node runtime owns either capability',
+      );
+      expect(finding.message).toContain('Put the spatial capabilities inside the family contract');
+      expect(finding.message).toContain('constrain Traits to a named HasBoundsRectangle & HasTransform2D base');
+      expect(finding.message).toContain('accept the matching NodeOf<Traits> spatial owner');
+      expect(finding.message).toContain('pass getNodeParent(source) directly');
+      expect(finding.message).toContain('NodeRuntime<Traits>.parent retains that proof');
+      expect(finding.message).toContain('typed spatial predicate');
+      expect(finding.message).toContain('choose null or another explicit coordinate space');
+      expect(finding.message).toContain('preserve the exact parent owner and null sentinel');
+      expect(finding.message).toContain('will not infer intersection members that the generic parameter omits');
+      expect(finding.message).toContain('reinterpret or cast the parent');
+      expect(finding.message).toContain('copy or materialize a replacement node');
+      expect(finding.message).toContain('synthesize bounds or transform state');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps unrelated parent assertions generic and accepts a spatially constrained node family', () => {
+    const declarations = `interface HasBoundsRectangle { readonly bounds: true }
+       interface HasTransform2D { readonly x: number }
+       interface Node<Traits extends object> {}
+       type NodeOf<Traits extends object> = Node<Traits> & Traits;
+       type Spatial2DNode<Traits extends object> = NodeOf<Traits> & HasBoundsRectangle & HasTransform2D;
+       interface OtherTraits { readonly other: true }
+       declare const out: object;
+       declare const target: Spatial2DNode<object>;
+       declare function getNodeParent<Traits extends object>(source: Readonly<Node<Traits>>): NodeOf<Traits> | null;
+       declare function getSpatialParent<Traits extends object>(
+         source: Spatial2DNode<Traits>,
+       ): Spatial2DNode<Traits> | null;
+       declare function computeNodeBoundsRectangle<Traits extends object>(
+         out: object,
+         source: Spatial2DNode<Traits>,
+         targetCoordinateSpace: Spatial2DNode<Traits> | null | undefined,
+       ): void;`;
+    const controls = [
+      input(
+        'packages/example/src/boundsRectangle.ts',
+        `${declarations}
+         function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): void {
+           computeNodeBoundsRectangle(out, source, getNodeParent(source) as unknown as Spatial2DNode<Traits> | null);
+         }`,
+      ),
+      input(
+        'packages/node/src/boundsRectangle.ts',
+        `${declarations}
+         function getNodeDepth<Traits extends object>(source: Spatial2DNode<Traits>): void {
+           computeNodeBoundsRectangle(out, source, getNodeParent(source) as unknown as Spatial2DNode<Traits> | null);
+         }`,
+      ),
+      input(
+        'packages/node/src/boundsRectangle.ts',
+        `${declarations}
+         function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): void {
+           computeNodeBoundsRectangle(out, source, getNodeParent(source) as unknown as Spatial2DNode<OtherTraits> | null);
+         }`,
+      ),
+      input(
+        'packages/node/src/boundsRectangle.ts',
+        `${declarations}
+         function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): void {
+           computeNodeBoundsRectangle(out, source, getNodeParent(source) as unknown as Spatial2DNode<Traits>);
+         }`,
+      ),
+      input(
+        'packages/node/src/boundsRectangle.ts',
+        `${declarations}
+         function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): void {
+           computeNodeBoundsRectangle(out, source, getSpatialParent(source) as unknown as Spatial2DNode<Traits> | null);
+         }`,
+      ),
+      input(
+        'packages/node/src/boundsRectangle.ts',
+        `${declarations}
+         function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): void {
+           computeNodeBoundsRectangle(out, source, getNodeParent(target) as unknown as Spatial2DNode<Traits> | null);
+         }`,
+      ),
+      input(
+        'packages/node/src/boundsRectangle.ts',
+        `${declarations}
+         function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): Spatial2DNode<Traits> | null {
+           return getNodeParent(source) as unknown as Spatial2DNode<Traits> | null;
+         }`,
+      ),
+      input(
+        'packages/node/src/boundsRectangle.ts',
+        `${declarations}
+         function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): void {
+           computeNodeBoundsRectangle(out, source, getNodeParent(source) as any as Spatial2DNode<Traits> | null);
+         }`,
+      ),
+    ];
+    const resolved = input(
+      'packages/node/src/boundsRectangle.ts',
+      `interface HasBoundsRectangle { readonly bounds: true }
+       interface HasTransform2D { readonly x: number }
+       type SpatialTraits = HasBoundsRectangle & HasTransform2D;
+       interface Node<Traits extends object> {}
+       type NodeOf<Traits extends object> = Node<Traits> & Traits;
+       type Spatial2DNode<Traits extends SpatialTraits> = NodeOf<Traits>;
+       declare const out: object;
+       declare function getNodeParent<Traits extends object>(source: Readonly<Node<Traits>>): NodeOf<Traits> | null;
+       declare function computeNodeBoundsRectangle<Traits extends SpatialTraits>(
+         out: object,
+         source: Spatial2DNode<Traits>,
+         targetCoordinateSpace: Spatial2DNode<Traits> | null | undefined,
+       ): void;
+       function getNodeHeight<Traits extends SpatialTraits>(source: Spatial2DNode<Traits>): void {
+         computeNodeBoundsRectangle(out, source, getNodeParent(source));
+       }
+       function getNodeWidth<Traits extends SpatialTraits>(source: Spatial2DNode<Traits>): void {
+         computeNodeBoundsRectangle(out, source, getNodeParent(source));
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('replace it with a checked conversion or a narrower source type');
+      expect(findings[0]?.message).not.toContain('missing spatial-family proof');
+      expect(findings[0]?.message).not.toContain('Spatial2DNode alias appends');
+    }
+  });
+
   it('keeps cube texture face clones and writes on an exact six-slot carrier', () => {
     const declarations = `interface TextureSource { readonly width: number }
        type TextureSourceCubeFaces = readonly [
