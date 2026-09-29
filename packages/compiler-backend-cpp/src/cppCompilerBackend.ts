@@ -29623,10 +29623,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
   ].filter((problem): problem is string => problem !== undefined);
   const webGlHandleRemediation = renderMissingWebGlHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   const webGpuHandleRemediation = renderMissingWebGpuHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
+  const abortHandleRemediation = renderMissingAbortHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -29701,6 +29702,20 @@ function renderMissingWebGpuHandleBindingsRemediationCpp(
     .map((identity) => identity.sourceName);
   if (handles.length === 0) return '';
   return ` WebGPU object handles ${handles.join(', ')} are host-owned opaque identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability, and reuse that mapping in every module that carries the handle. A manifest entry names the represented runtime carrier; it does not permit void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing replacement handles, or side storage.`;
+}
+
+function renderMissingAbortHandleBindingsRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const handles = missing
+    .filter(
+      (identity) =>
+        identity.space === 'type' &&
+        (identity.sourceName === 'AbortController' || identity.sourceName === 'AbortSignal'),
+    )
+    .map((identity) => identity.sourceName);
+  if (handles.length === 0) return '';
+  return ` Abort cancellation handles ${handles.join(', ')} are target-runtime lifetime identities. Add one externalBindings entry for each exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; reuse the same AbortSignal carrier through every request, options, and callback boundary, and pair AbortController with its signal view through an explicit target-runtime contract. A manifest entry names the represented runtime carrier; it does not permit replacement with a boolean cancellation flag, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing replacement handles, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

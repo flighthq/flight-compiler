@@ -8990,6 +8990,99 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain('WebGPU object handles');
   });
 
+  it('requires exact runtime bindings for Abort cancellation handles', () => {
+    const result = lower(
+      'AbortResources.ts',
+      `export interface ExternalAudioResourceReference { readonly uri: string }
+       export interface AudioResource { readonly duration: number }
+       export type AudioResourceFetch = (
+         ref: Readonly<ExternalAudioResourceReference>,
+         signal: AbortSignal,
+       ) => Promise<AudioResource | null>;
+       export type AudioDecoder = (
+         bytes: Uint8Array,
+         mimeType: string,
+         signal: AbortSignal,
+       ) => Promise<AudioResource | null>;
+       export interface Scene3DResourceInFlight {
+         controller: AbortController;
+         promise: Promise<void>;
+       }
+       export interface Scene3DDocumentLoadOptions { signal?: AbortSignal }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/abort.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'AbortController',
+          space: 'type' as const,
+          targetName: 'host::AbortController',
+        },
+        {
+          headers: ['host/abort.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'AbortSignal',
+          space: 'type' as const,
+          targetName: 'host::AbortSignal',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: AbortController[type], AbortSignal[type]');
+    expect(failure.message).toContain(
+      'Abort cancellation handles AbortController, AbortSignal are target-runtime lifetime identities',
+    );
+    expect(failure.message).toContain('one externalBindings entry for each exact type-space source symbol');
+    expect(failure.message).toContain('stable target wrapper');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain(
+      'reuse the same AbortSignal carrier through every request, options, and callback boundary',
+    );
+    expect(failure.message).toContain(
+      'pair AbortController with its signal view through an explicit target-runtime contract',
+    );
+    expect(failure.message).toContain('does not permit replacement with a boolean cancellation flag');
+    expect(failure.message).toContain('void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('copying or materializing replacement handles');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('host::AbortController controller;');
+    expect(contents).toContain('std::optional<host::AbortSignal> signal;');
+    expect(contents.match(/host::AbortSignal/gu)).toHaveLength(3);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify the AbortController value-space constructor as a cancellation handle type', () => {
+    const result = lower(
+      'AbortConstructor.ts',
+      'export function readAbortConstructor(): unknown { return AbortController; }',
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: AbortController[value])',
+    );
+    expect(failure.message).not.toContain('Abort cancellation handles');
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
