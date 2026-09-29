@@ -417,6 +417,23 @@ function isRequiredNullableUndefinedNumberProperty(node: ts.PropertySignature): 
   return type.kind === ts.SyntaxKind.NumberKeyword;
 }
 
+function getAuthoredNameMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    getNodeName(node.name) !== 'name' ||
+    !isOptionalNullableStringProperty(node)
+  ) {
+    return undefined;
+  }
+  const owner = node.parent.name.text;
+  const isAuthoredName =
+    (owner === 'Attachment2D' && isFlightTypesSource(node, 'Attachment2D.ts')) ||
+    (owner === 'Bone2D' && isFlightTypesSource(node, 'Bone2D.ts')) ||
+    (owner === 'Material' && isFlightTypesSource(node, 'Material.ts'));
+  if (!isAuthoredName) return undefined;
+  return `${subject} gives the internal ${owner} authored-name slot both omission and explicit null, but the represented records have one anonymous state: Spine and DragonBones parsers write a string or null for every attachment and bone they construct, initializeMaterial writes null before material importers optionally replace it, and the bone, attachment, and material lookup paths recognize only exact present strings. Make Attachment2D.name, Bone2D.name, and Material.name required string | null fields and initialize every construction path to null when no authored name exists. If structural convenience inputs must allow omission, give those inputs separate shapes and normalize them once before constructing the internal record. If omitted, anonymous, and named are genuinely distinct states, replace the two absence spellings with one named closed state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, infer a name from kind or position, rewrite name lookup, clone or materialize an owner, reinterpret or cast the string, or add side storage.`;
+}
+
 function getBitmapTextOptionsMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -700,6 +717,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (meshDeformation) return meshDeformation;
   const attachmentPointStorage = getAttachmentPointStorageMixedAbsencePropertyMessage(node, subject);
   if (attachmentPointStorage) return attachmentPointStorage;
+  const authoredName = getAuthoredNameMixedAbsencePropertyMessage(node, subject);
+  if (authoredName) return authoredName;
   const bitmapTextOptions = getBitmapTextOptionsMixedAbsencePropertyMessage(node, subject);
   if (bitmapTextOptions) return bitmapTextOptions;
   const capacitorPositionCoords = getCapacitorPositionCoordsMixedAbsencePropertyMessage(node, subject);

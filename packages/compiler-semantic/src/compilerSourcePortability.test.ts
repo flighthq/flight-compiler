@@ -3532,6 +3532,77 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(unrelatedFindings.every((finding) => finding.message.includes('combines an optional property'))).toBe(true);
   });
 
+  it('explains the one-sentinel contract for internal authored-name storage', () => {
+    const sources = [
+      input(
+        'packages/types/src/Attachment2D.ts',
+        `interface Entity { readonly id: number }
+         interface Attachment2D extends Entity { kind: string; name?: string | null }`,
+      ),
+      input('packages/types/src/Bone2D.ts', `interface Bone2D { name?: string | null; parentIndex: number }`),
+      input(
+        'packages/types/src/Material.ts',
+        `interface Entity { readonly id: number }
+         interface Material extends Entity { readonly kind: string; name?: string | null }`,
+      ),
+    ];
+    const findings = analyzeTypeScriptSourcePortability(sources).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['Attachment2D', 'Bone2D', 'Material'].map((owner) => ({
+        rule: 'mixed-absence',
+        subject: `interface:${owner}/property:name`,
+      })),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const owner = ['Attachment2D', 'Bone2D', 'Material'][index];
+      expect(finding.message).toContain(
+        `gives the internal ${owner} authored-name slot both omission and explicit null`,
+      );
+      expect(finding.message).toContain('Spine and DragonBones parsers write a string or null');
+      expect(finding.message).toContain('initializeMaterial writes null');
+      expect(finding.message).toContain('lookup paths recognize only exact present strings');
+      expect(finding.message).toContain(
+        'Make Attachment2D.name, Bone2D.name, and Material.name required string | null fields',
+      );
+      expect(finding.message).toContain('initialize every construction path to null');
+      expect(finding.message).toContain('structural convenience inputs must allow omission');
+      expect(finding.message).toContain('separate shapes and normalize them once');
+      expect(finding.message).toContain('replace the two absence spellings with one named closed state');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('infer a name from kind or position');
+      expect(finding.message).toContain('rewrite name lookup');
+      expect(finding.message).toContain('clone or materialize an owner');
+      expect(finding.message).toContain('reinterpret or cast the string');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps unrelated authored-name shapes generic and accepts one-sentinel internal storage', () => {
+    const controls = [
+      input('Other.ts', 'interface Attachment2D { kind: string; name?: string | null }'),
+      input('packages/types/src/Attachment2D.ts', 'interface OtherAttachment { name?: string | null }'),
+      input('packages/types/src/Bone2D.ts', 'interface Bone2D { label?: string | null }'),
+      input('packages/types/src/Material.ts', 'interface Material { name?: String | null }'),
+    ];
+    const resolved = [
+      input('RequiredName.ts', 'interface Material { name: string | null }'),
+      input('OptionalName.ts', 'interface Bone2D { name?: string }'),
+    ];
+
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+      expect(findings[0]?.message).not.toContain('internal Attachment2D authored-name slot');
+      expect(findings[0]?.message).not.toContain('internal Bone2D authored-name slot');
+      expect(findings[0]?.message).not.toContain('internal Material authored-name slot');
+    }
+    expect(analyzeTypeScriptSourcePortability(resolved).findings).toEqual([]);
+  });
+
   it('explains the one-sentinel contract for anchor layout constraints', () => {
     const source = input(
       'packages/types/src/Layout.ts',
