@@ -438,6 +438,20 @@ function getCapacitorPositionCoordsMixedAbsencePropertyMessage(
   return `${subject} gives the Capacitor geolocation provider coordinate altitudeAccuracy both explicit null and explicit undefined, but host-capacitor's toGeoPosition evaluates coords.altitudeAccuracy ?? 0 into required numeric GeoPosition.altitudeAccuracy. Both absence sentinels therefore become the same zero fallback at provider ingress, while a present zero remains a real reported accuracy. Keep GeoPosition.altitudeAccuracy a required number and retain one explicit nullish normalization at the adapter boundary, but give CapacitorPositionCoords.altitudeAccuracy exactly one provider-side absence representation: use required number | null when the provider guarantees the field with null for unavailable data, or optional number without null when omission is its contract. If null and omission carry different provider meanings, model a named closed provider state and normalize each arm deliberately before constructing GeoPosition. The compiler will not choose or collapse an absence sentinel, infer which provider contract applies, replace a present zero, select or synthesize a numeric fallback, rewrite the host adapter or canonical coordinate storage, reinterpret or cast the value, or add side storage.`;
 }
 
+function getCreateTextureOptionsResourceMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    subject !== 'type:CreateTextureOptions/property:resource' ||
+    !isFlightTypesSource(node, 'CreateTextureOptions.ts') ||
+    !isOptionalNullableNamedTypeProperty(node, 'ImageResourceReference')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the create-only texture resource association both omission and explicit null, but createTexture and createTexture2D each pass opts?.resource to attachTextureToResource, whose resource != null guard skips both absence spellings and pushes the texture only for a present ImageResourceReference owner. The two-dimensional return path performs that attachment in createTexture2D instead of falling through to the shared createTexture call, so a present resource receives the texture exactly once. Declare CreateTextureOptions.resource as optional ImageResourceReference without null so omission is the sole no-association input, while retaining the exact resource owner when present. If the options shape later becomes an update patch where omission means unchanged and null means detach, replace the property with one named closed association state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, attach or detach a texture, infer a resource from its source, allocate or mutate the resource texture list, copy or materialize either owner, rewrite dimension dispatch, reinterpret or cast the association, or add side storage.`;
+}
+
 function getInteractionManagerOptionsMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -659,6 +673,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (bitmapTextOptions) return bitmapTextOptions;
   const capacitorPositionCoords = getCapacitorPositionCoordsMixedAbsencePropertyMessage(node, subject);
   if (capacitorPositionCoords) return capacitorPositionCoords;
+  const createTextureOptionsResource = getCreateTextureOptionsResourceMixedAbsencePropertyMessage(node, subject);
+  if (createTextureOptionsResource) return createTextureOptionsResource;
   const interactionManagerOptions = getInteractionManagerOptionsMixedAbsencePropertyMessage(node, subject);
   if (interactionManagerOptions) return interactionManagerOptions;
   const morphShapeGradientEndpoint = getMorphShapeGradientEndpointMixedAbsencePropertyMessage(node, subject);

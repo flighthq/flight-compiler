@@ -4159,6 +4159,107 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the create-only texture resource association', () => {
+    const source = input(
+      'packages/types/src/CreateTextureOptions.ts',
+      `interface ImageResourceReference { textures?: Texture[] }
+       interface Texture { readonly dimension: string }
+       interface TextureLike extends Texture {}
+       type CreateTextureVariantOptions<Type extends TextureLike> = Partial<Type>;
+       type CreateTextureOptions = CreateTextureVariantOptions<TextureLike> & {
+         readonly resource?: ImageResourceReference | null;
+       };
+       declare function attachTextureToResource(
+         texture: Texture,
+         resource: ImageResourceReference | null | undefined,
+       ): void;
+       function createTexture(opts?: Readonly<CreateTextureOptions>): Texture {
+         const texture = { dimension: 'cube' };
+         attachTextureToResource(texture, opts?.resource);
+         return texture;
+       }
+       function createTexture2D(opts?: Readonly<CreateTextureOptions>): Texture {
+         const texture = { dimension: '2d' };
+         attachTextureToResource(texture, opts?.resource);
+         return texture;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toMatchObject([
+      {
+        rule: 'mixed-absence',
+        subject: 'type:CreateTextureOptions/property:resource',
+      },
+    ]);
+    const message = findings[0]?.message;
+    expect(message).toContain('gives the create-only texture resource association both omission and explicit null');
+    expect(message).toContain('createTexture and createTexture2D each pass opts?.resource to attachTextureToResource');
+    expect(message).toContain('resource != null guard skips both absence spellings');
+    expect(message).toContain('a present ImageResourceReference owner');
+    expect(message).toContain('present resource receives the texture exactly once');
+    expect(message).toContain('Declare CreateTextureOptions.resource as optional ImageResourceReference without null');
+    expect(message).toContain('omission is the sole no-association input');
+    expect(message).toContain('one named closed association state and handle every arm explicitly');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('attach or detach a texture');
+    expect(message).toContain('infer a resource from its source');
+    expect(message).toContain('allocate or mutate the resource texture list');
+    expect(message).toContain('copy or materialize either owner');
+    expect(message).toContain('rewrite dimension dispatch');
+    expect(message).toContain('reinterpret or cast the association');
+    expect(message).toContain('or add side storage');
+  });
+
+  it('keeps unrelated resource options generic and accepts one association absence state', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/CreateTextureOptions.ts',
+        `interface ImageResourceReference {}
+         type OtherTextureOptions = { resource?: ImageResourceReference | null };`,
+      ),
+      input(
+        'packages/types/src/CreateTextureOptions.ts',
+        `interface ImageResourceReference {}
+         type CreateTextureOptions = { imageResource?: ImageResourceReference | null };`,
+      ),
+      input(
+        'packages/example/src/CreateTextureOptions.ts',
+        `interface ImageResourceReference {}
+         type CreateTextureOptions = { resource?: ImageResourceReference | null };`,
+      ),
+      input(
+        'packages/types/src/CreateTextureOptions.ts',
+        `interface ResourceReference {}
+         type CreateTextureOptions = { resource?: ResourceReference | null };`,
+      ),
+      input(
+        'packages/types/src/CreateTextureOptions.ts',
+        `interface ImageResourceReference {}
+         interface CreateTextureOptions { resource?: ImageResourceReference | null }`,
+      ),
+    ];
+    const resolved = input(
+      'ResolvedCreateTextureOptions.ts',
+      `interface ImageResourceReference {}
+       interface TextureCreateInput { resource?: ImageResourceReference }
+       interface TextureAssociation { resource: ImageResourceReference | null }
+       type TextureResourceAssociation =
+         | { readonly state: 'absent' }
+         | { readonly resource: ImageResourceReference; readonly state: 'present' };`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+      expect(findings[0]?.message).not.toContain('create-only texture resource association');
+    }
+  });
+
   it('explains construction-only absence for scene owner options', () => {
     const camera = input(
       'packages/types/src/Camera3DOptions.ts',
