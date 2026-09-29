@@ -328,6 +328,144 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps both specialized entity guard set traps stable through check mode', () => {
+    const source = createMemoryWorkspaceSource(createEntityGuardWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/entity'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const options = {
+      classification: {
+        rules: { 'unchecked-double-assertion': 'compiler-defect' as const },
+        schema: 'flight-compiler-check-classification/1' as const,
+      },
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    };
+    const report = createCompilerPackageCheckReport(compilation.report, options);
+    const expectedSourceIdentities = [
+      'flight-compiler-source-portability-finding/1:["@flighthq/entity","packages/entity/src/guards.ts","unchecked-double-assertion","function:createGuardedEntity/function:set","sha256:870139b4b51bbd01ab624c5d97969207ca6f53e122427ed06476ced04f8b6535"]:0',
+      'flight-compiler-source-portability-finding/1:["@flighthq/entity","packages/entity/src/guards.ts","unchecked-double-assertion","function:createGuardedEntityRuntime/function:set","sha256:870139b4b51bbd01ab624c5d97969207ca6f53e122427ed06476ced04f8b6535"]:0',
+    ];
+    const expectedCheckIdentities = expectedSourceIdentities.map(
+      (sourceIdentity) =>
+        `flight-compiler-check-finding/1:${JSON.stringify([
+          '@flighthq/entity',
+          'packages/entity/src/guards.ts',
+          'Guards',
+          'source',
+          'source-portability',
+          'unchecked-double-assertion',
+          sourceIdentity,
+        ])}`,
+    );
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ identity, rule, subject }) => ({ identity, rule, subject }))).toEqual([
+      {
+        identity: expectedSourceIdentities[0],
+        rule: 'unchecked-double-assertion',
+        subject: 'function:createGuardedEntity/function:set',
+      },
+      {
+        identity: expectedSourceIdentities[1],
+        rule: 'unchecked-double-assertion',
+        subject: 'function:createGuardedEntityRuntime/function:set',
+      },
+    ]);
+    expect(sourcePortability.findings.every(({ message }) => message.includes("Proxy set trap's PropertyKey"))).toBe(
+      true,
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('same generic Type & Entity target');
+    expect(sourcePortability.findings[1]?.message).toContain('same EntityRuntime target');
+    expect(report.directFindings.map(({ identity }) => identity)).toEqual(expectedCheckIdentities);
+    expect(report.directFindings.map(({ sourceFindingIdentity }) => sourceFindingIdentity)).toEqual(
+      expectedSourceIdentities,
+    );
+    expect(
+      report.directFindings.map(({ code, policyClass, rule, stage }) => ({ code, policyClass, rule, stage })),
+    ).toEqual([
+      {
+        code: 'source-portability',
+        policyClass: 'source-portability',
+        rule: 'unchecked-double-assertion',
+        stage: 'source',
+      },
+      {
+        code: 'source-portability',
+        policyClass: 'source-portability',
+        rule: 'unchecked-double-assertion',
+        stage: 'source',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    expect(report.packages).toEqual([
+      {
+        dependencyCascades: 0,
+        directFindings: 2,
+        directOccurrences: 2,
+        findingsByPolicy: {
+          'compiler-defect': 0,
+          'compiler-restriction': 0,
+          'source-portability': 2,
+          'target-runtime': 0,
+          unclassified: 0,
+        },
+        modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+        name: '@flighthq/entity',
+      },
+    ]);
+
+    const baseline = createCompilerPackageCheckBaseline(report);
+    const revisedMessages = ['revised entity target guidance', 'revised runtime target guidance'];
+    const revisedReport = createCompilerPackageCheckReport(compilation.report, {
+      ...options,
+      sourcePortability: {
+        ...sourcePortability,
+        findings: sourcePortability.findings.map((finding, index) => ({
+          ...finding,
+          message: revisedMessages[index] ?? finding.message,
+        })),
+      },
+    });
+    const comparison = compareCompilerPackageCheckBaseline(revisedReport, baseline);
+
+    expect(baseline.findingIdentities).toEqual(expectedCheckIdentities);
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.resolvedFindingIdentities).toEqual([]);
+    expect(comparison.unchanged.map(({ identity }) => identity)).toEqual(expectedCheckIdentities);
+    expect(comparison.unchanged.map(({ occurrences }) => occurrences[0]?.message)).toEqual(revisedMessages);
+    expect(comparison.unchanged.every(({ policyClass }) => policyClass === 'source-portability')).toBe(true);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('admits an unchanged direct finding and rejects a newly introduced one without writing the workspace', () => {
     const files = createWorkspaceFiles();
     const snapshot = structuredClone(files);
@@ -511,6 +649,35 @@ export interface GlRenderStateOptions {
   colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { GlColorAdjustmentMaterialFeature, GlRenderStateOptions } from './GlRenderStateOptions.js';`,
+  };
+}
+
+function createEntityGuardWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/entity/package.json': createPackageManifest('@flighthq/entity'),
+    '/flight/packages/entity/src/guards.ts': `const EntityRuntimeKey = 'runtime';
+interface Entity { runtime: object | undefined }
+interface EntityRuntime { binding: object | null }
+function observe(): void {}
+export function createGuardedEntity<Type extends object>(entity: Type & Entity): Type & Entity {
+  return new Proxy(entity, {
+    set(target, prop, value) {
+      if (prop === EntityRuntimeKey) observe();
+      (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+      return true;
+    },
+  });
+}
+export function createGuardedEntityRuntime(runtime: EntityRuntime): EntityRuntime {
+  return new Proxy(runtime, {
+    set(target, prop, value) {
+      if (prop === 'binding') observe();
+      (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+      return true;
+    },
+  });
+}`,
+    '/flight/packages/entity/src/index.ts': `export { createGuardedEntity, createGuardedEntityRuntime } from './guards.js';`,
   };
 }
 
