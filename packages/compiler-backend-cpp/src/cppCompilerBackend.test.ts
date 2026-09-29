@@ -46,7 +46,7 @@ function captureBackendEmissionFailure(run: () => unknown) {
 
 // A consumer module that returns something read from a provider package, which is the shape of every
 // record whose declared type is not the one the value arrives as.
-function emitRecordShapeConversion(consumerSource: string): string {
+function emitRecordShapeConversionFiles(consumerSource: string) {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
       {
@@ -98,7 +98,7 @@ function emitRecordShapeConversion(consumerSource: string): string {
     ],
     moduleResolution,
   ).map((result) => result.module);
-  return createCppCompilerBackend().createEmissionSession!({
+  const session = createCppCompilerBackend().createEmissionSession!({
     moduleResolution,
     modules: [consumer!, provider!],
     options: {
@@ -108,7 +108,15 @@ function emitRecordShapeConversion(consumerSource: string): string {
       },
       runtimeProfile: 'flight-cpp',
     },
-  }).emitModule(consumer!)[0]!.contents;
+  });
+  return {
+    consumer: session.emitModule(consumer!)[0]!,
+    provider: session.emitModule(provider!)[0]!,
+  };
+}
+
+function emitRecordShapeConversion(consumerSource: string): string {
+  return emitRecordShapeConversionFiles(consumerSource).consumer.contents;
 }
 
 function emitCppModuleCppSession(
@@ -14613,7 +14621,33 @@ describe('createCppCompilerBackend', () => {
   });
 
   it('converts a capability method result to a wider record declaration', () => {
-    const emitted = emitRecordShapeConversion(
+    const source = `import type { BitmapReadbackBlockReason, HostBitmapReadbackCapability } from '@flighthq/types/readback';
+       interface BitmapReadbackResolution {
+         readonly bitmap: string | null;
+         readonly reason: BitmapReadbackBlockReason;
+       }
+       export function resolve(
+         host: Readonly<HostBitmapReadbackCapability>,
+         source: string,
+         width: number,
+         height: number,
+         mode: 'bitmap' | 'probe',
+       ): BitmapReadbackResolution {
+         return host.readBitmap(source, width, height, mode);
+       }`;
+    const emitted = emitRecordShapeConversion(source);
+
+    expect(emitted).toContain(
+      'const auto structural_record_source = flight::row_get<flight::RowKey<"readBitmap">>(host)(source, width, height, mode);',
+    );
+    expect(emitted).toContain(
+      'return flight::make_ref<BitmapReadbackResolution>(BitmapReadbackResolution{.bitmap = structural_record_source->bitmap, .reason = structural_record_source->reason});',
+    );
+  });
+
+  it.skipIf(!canCompileCpp)('compiles a structural-row callable result converted to a wider record', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const { consumer, provider } = emitRecordShapeConversionFiles(
       `import type { BitmapReadbackBlockReason, HostBitmapReadbackCapability } from '@flighthq/types/readback';
        interface BitmapReadbackResolution {
          readonly bitmap: string | null;
@@ -14629,13 +14663,42 @@ describe('createCppCompilerBackend', () => {
          return host.readBitmap(source, width, height, mode);
        }`,
     );
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-structural-callable-record-'));
 
-    expect(emitted).toContain(
-      'const auto structural_record_source = flight::row_get<flight::RowKey<"readBitmap">>(host)(source, width, height, mode);',
-    );
-    expect(emitted).toContain(
-      'return flight::make_ref<BitmapReadbackResolution>(BitmapReadbackResolution{.bitmap = structural_record_source->bitmap, .reason = structural_record_source->reason});',
-    );
+    try {
+      const providerPath = path.join(directory, provider.path);
+      mkdirSync(path.dirname(providerPath), { recursive: true });
+      // The runtime dependency's generated row table contains only keys from its pinned SDK. Give this
+      // isolated fixture the same type evidence SDK generation would contribute for `readBitmap`.
+      writeFileSync(
+        providerPath,
+        `${provider.contents}
+namespace flight::detail {
+template <>
+consteval auto generated_row_member_type_identity<
+    flight::RowKey<"readBitmap">,
+    flight::types::HostBitmapReadbackCapability>() {
+  return std::type_identity<std::remove_cvref_t<
+      decltype(std::declval<flight::types::HostBitmapReadbackCapability&>().read_bitmap)>>{};
+}
+} // namespace flight::detail
+`,
+        'utf8',
+      );
+      const consumerPath = path.join(directory, consumer.path);
+      mkdirSync(path.dirname(consumerPath), { recursive: true });
+      writeFileSync(consumerPath, consumer.contents, 'utf8');
+
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, consumerPath, [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   it('leaves a slot that declares the same interface alone', () => {
