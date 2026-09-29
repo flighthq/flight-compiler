@@ -29835,10 +29835,11 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const arrayLikeRemediation = renderMissingArrayLikeBindingRemediationCpp(completeness.missingExternalSymbols);
   const htmlElementRemediation = renderMissingHtmlElementBindingRemediationCpp(completeness.missingExternalSymbols);
   const fontFaceRemediation = renderMissingFontFaceBindingRemediationCpp(completeness.missingExternalSymbols);
+  const timerHandleRemediation = renderMissingTimerHandleBindingRemediationCpp(completeness.missingExternalSymbols);
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}${arrayLikeRemediation}${htmlElementRemediation}${fontFaceRemediation}${timerHandleRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -30000,6 +30001,18 @@ function renderMissingFontFaceBindingRemediationCpp(
   const hasFontFace = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'FontFace');
   if (!hasFontFace) return '';
   return ` FontFace is a host-owned loaded-font identity. Add one externalBindings entry for the exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; preserve the same face owner through the nullable FontResource slot, host registration input, and loadFontFaces array result so loading state and target font registration remain attached to that face. A manifest entry names the represented runtime carrier; it does not permit replacing a face with its family string or a copied descriptor, converting loaded-face results into names, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing a replacement face, or side storage.`;
+}
+
+function renderMissingTimerHandleBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasTimerHandle = missing.some(
+    (identity) =>
+      identity.space === 'type' &&
+      (identity.sourceName === 'NodeJS.Timeout' || identity.sourceName === 'timers.global.NodeJS.Timeout'),
+  );
+  if (!hasTimerHandle) return '';
+  return ` timers.global.NodeJS.Timeout is a target-runtime scheduled-task handle identity. Add one externalBindings entry for the exact type-space source symbol, with its stable target handle, required headers, and truthful ownership and nullability; preserve the same handle from ReturnType<typeof setInterval> or ReturnType<typeof setTimeout> through nullable stored state to the matching clearInterval or clearTimeout boundary. Bind each missing scheduling and cancellation function as its separate exact value-space identity, and give each scheduling binding a callResultType that names the same handle carrier. A manifest entry names the represented runtime carrier; it does not permit replacing a handle with its delay or a boolean flag, defaulting it to a numeric token without an explicit target contract, void-pointer or Any erasure, native-pointer casts or reinterpretation, copying or materializing a replacement handle, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

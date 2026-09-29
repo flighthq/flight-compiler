@@ -9681,6 +9681,135 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain('FontFace is a host-owned loaded-font identity');
   });
 
+  it('requires an exact runtime binding for the Node timer handle identity', () => {
+    const result = lower(
+      'TimerHandles.ts',
+      `export interface BufferedLogSinkState {
+         intervalTimer: ReturnType<typeof setInterval> | null;
+       }
+       export function scheduleInterval(flush: () => void, intervalMs: number): ReturnType<typeof setInterval> {
+         return setInterval(flush, intervalMs);
+       }
+       export function cancelInterval(timer: ReturnType<typeof setInterval>): void { clearInterval(timer); }
+       export interface ThrottleState {
+         timeoutTimer: ReturnType<typeof setTimeout> | null;
+       }
+       export function scheduleTimeout(flush: () => void, delayMs: number): ReturnType<typeof setTimeout> {
+         return setTimeout(flush, delayMs);
+       }
+       export function cancelTimeout(timer: ReturnType<typeof setTimeout>): void { clearTimeout(timer); }
+       export interface ExactNodeTimerState { timer: NodeJS.Timeout | null }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'clearInterval',
+          space: 'value' as const,
+          targetName: 'host::clear_interval',
+        },
+        {
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'clearTimeout',
+          space: 'value' as const,
+          targetName: 'host::clear_timeout',
+        },
+        {
+          callResultType: 'host::TimerHandle',
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'setInterval',
+          space: 'value' as const,
+          targetName: 'host::set_interval',
+        },
+        {
+          callResultType: 'host::TimerHandle',
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'setTimeout',
+          space: 'value' as const,
+          targetName: 'host::set_timeout',
+        },
+        {
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'NodeJS.Timeout',
+          space: 'type' as const,
+          targetName: 'host::TimerHandle',
+        },
+        {
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'timers.global.NodeJS.Timeout',
+          space: 'type' as const,
+          targetName: 'host::TimerHandle',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain(
+      'missing: NodeJS.Timeout[type], clearInterval[value], clearTimeout[value], setInterval[value], setTimeout[value]',
+    );
+    expect(failure.message).toContain(
+      'timers.global.NodeJS.Timeout is a target-runtime scheduled-task handle identity',
+    );
+    expect(failure.message).toContain('one externalBindings entry for the exact type-space source symbol');
+    expect(failure.message).toContain('stable target handle');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('preserve the same handle from ReturnType<typeof setInterval>');
+    expect(failure.message).toContain('ReturnType<typeof setTimeout> through nullable stored state');
+    expect(failure.message).toContain('matching clearInterval or clearTimeout boundary');
+    expect(failure.message).toContain('separate exact value-space identity');
+    expect(failure.message).toContain('callResultType that names the same handle carrier');
+    expect(failure.message).toContain('does not permit replacing a handle with its delay or a boolean flag');
+    expect(failure.message).toContain('defaulting it to a numeric token without an explicit target contract');
+    expect(failure.message).toContain('void-pointer or Any erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('copying or materializing a replacement handle');
+    expect(failure.message).toContain('or side storage');
+    expect(contents.match(/std::optional<host::TimerHandle>/gu)).toHaveLength(3);
+    expect(contents).toContain('host::set_interval');
+    expect(contents).toContain('host::clear_interval');
+    expect(contents).toContain('host::set_timeout');
+    expect(contents).toContain('host::clear_timeout');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify a timer scheduling value as the Node timer handle type', () => {
+    const result = lower('TimerValue.ts', 'export function readSetTimeout(): unknown { return setTimeout; }');
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: setTimeout[value])',
+    );
+    expect(failure.message).not.toContain(
+      'timers.global.NodeJS.Timeout is a target-runtime scheduled-task handle identity',
+    );
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
