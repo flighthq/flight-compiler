@@ -3414,6 +3414,95 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings.every((finding) => !finding.message.includes('anchorLayoutResolver'))).toBe(true);
   });
 
+  it('explains the one-sentinel contract for reusable Scene3D render-proxy slots', () => {
+    const source = input(
+      'packages/types/src/Scene3DRenderProxy.ts',
+      `interface ColorScaleBias { readonly redScale: number }
+       interface Scene3DRenderProxy {
+         alpha?: number;
+         colorScaleBias?: Readonly<ColorScaleBias> | null;
+         colorMatrix?: readonly number[] | null;
+         instanceCount?: number;
+         instanceMatrices?: Readonly<Float32Array> | null;
+         instanceColors?: Readonly<Float32Array> | null;
+         jointMatrices?: Readonly<Float32Array> | null;
+         normalMatrices?: Readonly<Float32Array> | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['colorMatrix', 'colorScaleBias', 'instanceColors', 'instanceMatrices', 'jointMatrices', 'normalMatrices'].map(
+        (name) => ({
+          rule: 'mixed-absence',
+          subject: `interface:Scene3DRenderProxy/property:${name}`,
+        }),
+      ),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const name = [
+        'colorMatrix',
+        'colorScaleBias',
+        'instanceColors',
+        'instanceMatrices',
+        'jointMatrices',
+        'normalMatrices',
+      ][index];
+      expect(finding.message).toContain(
+        `gives the reused per-draw proxy slot ${name} both an omitted state and explicit null`,
+      );
+      expect(finding.message).toContain('GL and WebGPU producers write null to clear inactive');
+      expect(finding.message).toContain('consumers use nullish checks before binding or uploading');
+      expect(finding.message).toContain(
+        'Make all six colorMatrix, colorScaleBias, instanceColors, instanceMatrices, jointMatrices, and normalMatrices slots required nullable fields',
+      );
+      expect(finding.message).toContain('initialize them to null, and overwrite or clear them for every draw');
+      expect(finding.message).toContain('a reused proxy cannot retain prior-draw state');
+      expect(finding.message).toContain('normalize them once at the boundary into that required internal record');
+      expect(finding.message).toContain('will not choose between two equivalent absence sentinels');
+      expect(finding.message).toContain('infer a palette or color default');
+      expect(finding.message).toContain('retain stale state, copy or materialize a buffer, or add side storage');
+    }
+  });
+
+  it('keeps unrelated optional-nullable render-proxy properties on generic mixed-absence guidance', () => {
+    const unrelatedOwner = input(
+      'OtherRenderProxy.ts',
+      'interface OtherRenderProxy { jointMatrices?: Readonly<Float32Array> | null }',
+    );
+    const unrelatedMember = input(
+      'packages/types/src/Scene3DRenderProxy.ts',
+      'interface Scene3DRenderProxy { bounds?: readonly number[] | null }',
+    );
+    const unrelatedLocation = input(
+      'packages/example/src/Scene3DRenderProxy.ts',
+      'interface Scene3DRenderProxy { colorMatrix?: readonly number[] | null }',
+    );
+    const findings = analyzeTypeScriptSourcePortability([unrelatedOwner, unrelatedMember, unrelatedLocation]).findings;
+
+    expect(findings).toMatchObject([
+      {
+        message:
+          'interface:OtherRenderProxy/property:jointMatrices combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:OtherRenderProxy/property:jointMatrices',
+      },
+      {
+        message:
+          'interface:Scene3DRenderProxy/property:colorMatrix combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:Scene3DRenderProxy/property:colorMatrix',
+      },
+      {
+        message:
+          'interface:Scene3DRenderProxy/property:bounds combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:Scene3DRenderProxy/property:bounds',
+      },
+    ]);
+    expect(findings.every((finding) => !finding.message.includes('reused per-draw proxy slot'))).toBe(true);
+  });
+
   it('requires real indexed storage instead of an asserted index-signature view', () => {
     const asserted = input(
       'command.ts',

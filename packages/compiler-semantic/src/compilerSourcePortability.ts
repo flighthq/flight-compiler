@@ -265,6 +265,27 @@ function getAnchorLayoutMixedAbsencePropertyMessage(node: ts.PropertySignature, 
   return undefined;
 }
 
+function getScene3DRenderProxyMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  const name = getNodeName(node.name);
+  if (
+    ts.isInterfaceDeclaration(node.parent) &&
+    node.parent.name.text === 'Scene3DRenderProxy' &&
+    normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/Scene3DRenderProxy.ts') &&
+    (name === 'colorMatrix' ||
+      name === 'colorScaleBias' ||
+      name === 'instanceColors' ||
+      name === 'instanceMatrices' ||
+      name === 'jointMatrices' ||
+      name === 'normalMatrices')
+  ) {
+    return `${subject} gives the reused per-draw proxy slot ${name} both an omitted state and explicit null, but the represented render contract uses them identically: GL and WebGPU producers write null to clear inactive color-adjustment, instance-palette, or skin-palette state, and consumers use nullish checks before binding or uploading. Make all six colorMatrix, colorScaleBias, instanceColors, instanceMatrices, jointMatrices, and normalMatrices slots required nullable fields on the internal Scene3DRenderProxy scratch record, initialize them to null, and overwrite or clear them for every draw so a reused proxy cannot retain prior-draw state. If compatibility inputs may omit a slot, normalize them once at the boundary into that required internal record. The compiler will not choose between two equivalent absence sentinels, infer a palette or color default, synthesize presence bits, retain stale state, copy or materialize a buffer, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getTypeLiteralDiscriminant(node: ts.TypeLiteralNode): string | undefined {
   for (const member of node.members) {
     if (!ts.isPropertySignature(member) || member.questionToken || !member.type || !ts.isLiteralTypeNode(member.type)) {
@@ -305,6 +326,8 @@ function hasUndefinedType(node: ts.TypeNode): boolean {
 function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string {
   const anchorLayout = getAnchorLayoutMixedAbsencePropertyMessage(node, subject);
   if (anchorLayout) return anchorLayout;
+  const scene3DRenderProxy = getScene3DRenderProxyMixedAbsencePropertyMessage(node, subject);
+  if (scene3DRenderProxy) return scene3DRenderProxy;
   const callableOwner = node.type ? getMixedAbsenceGenericCallableOwner(node.type) : undefined;
   if (!callableOwner) {
     return `${subject} combines an optional property with null; choose one absence representation or make all three states explicit.`;
