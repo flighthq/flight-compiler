@@ -4591,8 +4591,7 @@ describe('createCppCompilerBackend', () => {
 
   // A closed key set is an index whose static type is a finite union of string literals. The value
   // still decides the member at runtime, so this is a dispatch -- but a dispatch over a set the
-  // compiler enumerated, which is what makes it possible at all: a reference has no subscript, and the
-  // row mechanism has no string-keyed form.
+  // compiler enumerated, which keeps the read typed without erasing it through the dynamic view.
   it('selects the member a closed key names and refuses a key the object does not have', () => {
     const emitOnly = (source: string): string =>
       emitIrModuleCpp(lower('closed-keys.ts', source).module, { runtimeProfile: 'flight-cpp' }).contents;
@@ -4621,6 +4620,7 @@ describe('createCppCompilerBackend', () => {
     expect(closed).toContain('throw std::logic_error(');
     // Nothing subscripts the reference, which has no subscript to offer.
     expect(closed).not.toContain('signals.value()[');
+    expect(closed).not.toContain('flight::named_properties');
 
     const effectfulKey = emitOnly(
       `export interface Signals { onLoop: () => void; onStop: () => void }
@@ -4642,16 +4642,117 @@ describe('createCppCompilerBackend', () => {
          }`,
       ),
     ).toBe('cpp-closed-key-absent-member');
-    // A key widened to `string` names no set of members at all, so the access cannot be lowered.
-    expect(
-      refusalOf(
-        `export interface Signals { onLoop: () => void }
-         function use(s: () => void): void { s(); }
-         export function widened(signals: Signals | null, name: string): void {
-           if (signals !== null) use(signals[name]);
-         }`,
-      ),
-    ).toBe('cpp-object-index-without-closed-key-set');
+  });
+
+  it('reads a dynamic string key through the exact reference owner and checked Any recovery', () => {
+    const result = lower(
+      'dynamic-reference-key.ts',
+      `export interface Signal { readonly id: number }
+       export interface Signals { readonly onLoop: Signal; readonly onStop: Signal }
+       export function typed<Name extends keyof Signals>(signals: Signals, name: Name): Signal {
+         return signals[name];
+       }
+       export function erased<Name extends keyof Signals>(signals: Signals, name: Name): unknown {
+         return signals[name];
+       }
+       export function effectful<Name extends keyof Signals>(
+         provider: () => Signals,
+         nextName: () => Name,
+       ): Signal {
+         return provider()[nextName()];
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('flight::named_properties(named_reference_receiver).get(named_reference_key)');
+    expect(contents).toContain('named_reference_value.object_if<Signal>()');
+    expect(contents).toContain(
+      'throw std::logic_error("dynamic named reference member does not hold its declared runtime domain")',
+    );
+    expect(contents).toContain('([&]() -> flight::Any');
+    expect(contents).not.toContain('signals[name]');
+    expect(contents).not.toContain('static_pointer_cast');
+    expect(contents).not.toContain('structural_ref_cast');
+    expect(contents).not.toContain('materialize');
+    expect(contents.match(/\bprovider\(\)/gu)).toHaveLength(1);
+    expect(contents.match(/\bnext_name\(\)/gu)).toHaveLength(1);
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-dynamic-reference-key-'));
+      const header = path.join(directory, 'dynamic_reference_key.hpp');
+      try {
+        writeFileSync(header, contents, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it('keeps dynamic reference reads inside the Any surface and leaves its view read-only', () => {
+    const unrepresented = lower(
+      'dynamic-reference-unrepresented.ts',
+      `interface Mixed { readonly label: string; readonly samples: readonly number[] }
+       export function read<Name extends keyof Mixed>(value: Mixed, name: Name): unknown {
+         return value[name];
+       }`,
+    );
+    const unrepresentedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(unrepresented.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(unrepresented.diagnostics).toEqual([]);
+    expect(unrepresentedFailure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-dynamic-named-reference-member-unrepresented',
+    });
+    expect(unrepresentedFailure.message).toContain('named member samples');
+    expect(unrepresentedFailure.message).toContain('cannot enter flight::Any');
+    expect(unrepresentedFailure.message).toContain('will not cast, copy, or materialize the owner');
+
+    const unrecoverable = lower(
+      'dynamic-reference-result-unrepresented.ts',
+      `interface Callbacks { readonly onLoop: () => void; readonly onStop: () => void }
+       export function read<Name extends keyof Callbacks>(value: Callbacks, name: Name): () => void {
+         return value[name];
+       }`,
+    );
+    const unrecoverableFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(unrecoverable.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(unrecoverable.diagnostics).toEqual([]);
+    expect(unrecoverableFailure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-dynamic-named-reference-result-unrepresented',
+    });
+    expect(unrecoverableFailure.message).toContain('no result domain that flight::Any can recover exactly');
+    expect(unrecoverableFailure.message).toContain('will not use an unchecked cast');
+
+    const write = lower(
+      'dynamic-reference-write.ts',
+      `interface Signal { readonly id: number }
+       interface Signals { onLoop: Signal; onStop: Signal }
+       export function write<Name extends keyof Signals>(signals: Signals, name: Name, value: Signal): void {
+         signals[name] = value;
+       }`,
+    );
+    const writeFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(write.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(write.diagnostics).toEqual([]);
+    expect(writeFailure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-named-properties-write-unsupported',
+    });
+    expect(writeFailure.message).toContain('flight::NamedProperties is deliberately read-only');
+    expect(writeFailure.message).toContain('finite union of declared member names');
+    expect(writeFailure.message).toContain('will not cast between owners');
   });
 
   it('uses exact imported storage for flightDocumentText closed keys and refuses a heterogeneous assertion', () => {

@@ -3413,6 +3413,11 @@ function emitExpression(
     if (structuralConversion) return structuralConversion;
     const recordConversion = emitCppContextualStructuralRecordConversionCpp(expression, expectedType, context);
     if (recordConversion) return recordConversion;
+    const dynamicNamedReferenceRead =
+      expression.kind === 'element'
+        ? emitCppDynamicNamedReferenceElementReadCpp(expression, expectedType, context)
+        : undefined;
+    if (dynamicNamedReferenceRead) return dynamicNamedReferenceRead;
   }
   if (expectedType && constructExpectedUnion) {
     const constructed = emitContextualUnionExpressionCpp(expression, expectedType, context);
@@ -3449,6 +3454,18 @@ function emitExpression(
           context,
           `a dynamic named-property write through the owner-preserving view of ${sourceOwner} requires target-runtime mutation support: ${sourceOwner} remains the concrete object carrier and is not Record storage, flight::NamedProperties is deliberately read-only, and this key has no finite declared member set the compiler can dispatch. For an intentionally open extension domain, declare mutable string-indexed storage on the base/output type and construct every owner in that carrier; a registry of keys or roles cannot recover cells on an owner that lacks them. Otherwise add an owner-preserving checked NamedProperties::set(String, Any) contract, or keep the key as a finite union of declared member names and assign through the typed object. The compiler will not cast between owners, copy into replacement storage, materialize a replacement owner, or add side storage`,
           'cpp-named-properties-write-unsupported',
+        );
+      }
+      const dynamicNamedReferenceWrite =
+        expression.left.kind === 'element'
+          ? getCppDynamicNamedReferenceElementPlanCpp(expression.left, context)
+          : undefined;
+      if (dynamicNamedReferenceWrite) {
+        emissionError(
+          context,
+          `a dynamic named-property write on ${describeDeclaredIrTypeForDiagnosticCpp(dynamicNamedReferenceWrite.runtime)} requires target-runtime mutation support: the exact reference owner is preserved and flight::NamedProperties is deliberately read-only. Keep the key as a finite union of declared member names so the compiler can dispatch a typed write, or add an owner-preserving checked NamedProperties::set(String, Any) contract. The compiler will not cast between owners, copy into replacement storage, materialize a replacement owner, or add side storage`,
+          'cpp-named-properties-write-unsupported',
+          'target-runtime',
         );
       }
       if (
@@ -4869,11 +4886,13 @@ function emitExpression(
       }
       const closedKeys = getCppClosedElementKeyNamesCpp(expression, context);
       if (closedKeys) return emitCppClosedKeyElementSelectionCpp(expression, closedKeys, context);
-      // An object held by reference as a set of named members has no subscript at all, and the row
-      // mechanism has no string-keyed form, so an index the compiler cannot resolve to a member would
-      // reach the target as an operator it does not define. A closed union of string literals is the
-      // only shape that establishes which members the index can name, so anything else here is refused
-      // rather than emitted as a subscript that cannot compile.
+      const dynamicNamedReferenceRead = emitCppDynamicNamedReferenceElementReadCpp(expression, expectedType, context);
+      if (dynamicNamedReferenceRead) return dynamicNamedReferenceRead;
+      // An object held by reference as a set of named members has no subscript at all. A closed union of
+      // string literals dispatches to typed members above, while a dynamic string can read through the
+      // owner-preserving named-property view only when every reachable member enters Any and the result
+      // has a checked recovery. Anything left here is refused rather than emitted as an operator the
+      // reference does not define.
       //
       // The member requirement is what keeps this off an index-signature carrier: `{ [index: number]:
       // number }` is also reference-represented, but it is erased to a generic parameter precisely so
@@ -13083,6 +13102,125 @@ function getCppClosedElementKeyNamesCpp(
     if (!keys.includes(member.value)) keys.push(member.value);
   }
   return keys;
+}
+
+interface CppDynamicNamedReferenceElementPlan {
+  readonly properties: readonly Readonly<IrObjectTypeProperty>[];
+  readonly runtime: Readonly<IrType>;
+}
+
+// The exact represented owner behind a dynamic string-keyed read. This deliberately excludes structural
+// rows, index-signature Records, unions of owners, and finite keys: each already has a carrier or a more
+// precise typed dispatch. A named-property view retains the reference's RowOwner, so no object is cast,
+// copied, or materialised to answer the read.
+function getCppDynamicNamedReferenceElementPlanCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): Readonly<CppDynamicNamedReferenceElementPlan> | undefined {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    getCppClosedElementKeyNamesCpp(expression, context) !== undefined ||
+    !isCppDynamicNamedReferenceStringKeyCpp(expression, context)
+  ) {
+    return undefined;
+  }
+  const objectType = getCppClosedKeyElementObjectTypeCpp(expression, context);
+  const representedObjectType =
+    objectType && 'presence' in expression.object && expression.object.presence === 'narrowedPresent'
+      ? (getCppNonNullableType(objectType, context, new Set()) ?? objectType)
+      : objectType;
+  const runtime = representedObjectType
+    ? getIrTypeRuntimeDomainCpp(representedObjectType, context, new Set())
+    : undefined;
+  const representedSubject = runtime ? (getCppIdentityPreservingUtilityArgument(runtime) ?? runtime) : undefined;
+  const owner = representedSubject ? getCppTypeReferenceOwnerModuleCpp(representedSubject, context) : undefined;
+  const representation = runtime && owner ? context.referenceRepresentationPlanner.plan(runtime, owner) : undefined;
+  const properties =
+    runtime && owner ? context.referenceRepresentationPlanner.resolveObjectShape(runtime, owner) : undefined;
+  if (
+    !runtime ||
+    !properties ||
+    representation?.kind !== 'represented' ||
+    representation.valueRepresentation !== 'flightReference'
+  ) {
+    return undefined;
+  }
+  const named = properties.filter((property) => !property.computedKey && !isCppNonEmittingObjectPropertyCpp(property));
+  return named.length > 0 ? { properties: named, runtime } : undefined;
+}
+
+function isCppDynamicNamedReferenceStringKeyCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): boolean {
+  if (expression.semantics.key === 'string' || isCppStringKeyIndexCpp(expression.index, context)) return true;
+  const type = getIrExpressionTypeEvidenceCpp(expression.index, context);
+  const runtime = type ? getIrTypeRuntimeDomainCpp(type, context, new Set()) : undefined;
+  return Boolean(runtime && isCppStringValueTypeCpp(runtime, context, new Set()));
+}
+
+// Reads one dynamic own string property from an exact reference owner. NamedProperties::get returns Any,
+// so a dynamic result stays Any and a typed result is recovered only through the runtime's exact checked
+// accessors. Requiring every named member to enter Any prevents a key from selecting a valid source member
+// that the runtime view could only reject as UnrepresentedProperty.
+function emitCppDynamicNamedReferenceElementReadCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string | undefined {
+  const plan = getCppDynamicNamedReferenceElementPlanCpp(expression, context);
+  if (!plan) return undefined;
+  const unrepresented = plan.properties.find((property) => {
+    const runtimeType = getIrTypeRuntimeDomainCpp(property.type, context, new Set());
+    return !runtimeType || !isCppRuntimeTypeRepresentableInAnyCpp(runtimeType, context);
+  });
+  if (unrepresented) {
+    emissionError(
+      context,
+      `dynamic string access on ${describeDeclaredIrTypeForDiagnosticCpp(plan.runtime)} can select named member ${unrepresented.name}, whose runtime storage cannot enter flight::Any. Keep the key as a finite union that excludes this member, or add an identity-preserving Any alternative with checked recovery for its storage; the compiler will not cast, copy, or materialize the owner`,
+      'cpp-dynamic-named-reference-member-unrepresented',
+      'target-runtime',
+    );
+  }
+  const expressionType = getIrExpressionTypeEvidenceCpp(expression, context);
+  const resultTypes = [expressionType, expectedType].filter(
+    (type, index, types): type is Readonly<IrType> =>
+      type !== undefined && types.findIndex((candidate) => candidate === type) === index,
+  );
+  const receiver = getGeneratedTargetName('namedReferenceReceiver', context);
+  const key = getGeneratedTargetName('namedReferenceKey', context);
+  const erased = getGeneratedTargetName('namedReferenceValue', context);
+  const source = `const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${key} = ${emitExpression(expression.index, context)}; const flight::Any ${erased} = flight::named_properties(${receiver}).get(${key});`;
+  context.includes.add('flight/structural_ref.hpp');
+  for (const resultType of resultTypes) {
+    if (isCppAliasResolvedErasedDynamicValueTypeCpp(resultType, context)) {
+      context.includes.add('flight/any.hpp');
+      return `([&]() -> flight::Any { ${source} return ${erased}; }())`;
+    }
+    const union = getIrUnionTypeCpp(resultType, context, new Set());
+    const unionPlan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+    const unionRead =
+      union && unionPlan
+        ? emitCppErasedValueUnionConstructionFromSourceCpp(source, erased, union, unionPlan, context)
+        : undefined;
+    if (unionRead) return unionRead;
+    const runtimeType = getIrTypeRuntimeDomainCpp(resultType, context, new Set());
+    const targetType = runtimeType ? emitType(runtimeType, context) : undefined;
+    const extraction = targetType ? getCppErasedValueUnionExtractionCpp(targetType) : undefined;
+    if (!targetType || !extraction) continue;
+    context.includes.add('flight/any.hpp');
+    context.includes.add('stdexcept');
+    return `([&]() -> ${targetType} { ${source} if (${extraction.test(erased)}) return ${extraction.value(erased)}; throw std::logic_error("dynamic named reference member does not hold its declared runtime domain"); }())`;
+  }
+  if (resultTypes.length > 0) {
+    emissionError(
+      context,
+      `dynamic string access on ${describeDeclaredIrTypeForDiagnosticCpp(plan.runtime)} has no result domain that flight::Any can recover exactly. Keep the result erased as unknown, use a finite string-literal key set for typed member dispatch, or add a checked Any recovery for the declared result; the compiler will not use an unchecked cast or materialize a replacement value`,
+      'cpp-dynamic-named-reference-result-unrepresented',
+      'target-runtime',
+    );
+  }
+  return undefined;
 }
 
 function getCppClosedKeyElementObjectTypeCpp(
