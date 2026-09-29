@@ -16192,6 +16192,50 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).toContain('std::optional<double> y');
   });
 
+  it('emits a polymorphic this member as a reference to its declaring type', () => {
+    // `this` inside an interface names the receiver, and flight-cpp's interface carrier is a structural
+    // reference, so the member takes the interface's own reference type -- the same form a member
+    // declared with the interface's name already takes. Before this the emitter had no declaring type in
+    // context while emitting interface members, so the type fell through to the unresolved `auto`
+    // placeholder and the whole module was refused.
+    const required = lower('chain.ts', 'export interface Chain { readonly next: this }');
+    expect(emitIrModuleCpp(required.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'flight::Ref<Chain> next;',
+    );
+
+    const optional = lower('watcher.ts', 'export interface Watcher { readonly parent?: this }');
+    expect(emitIrModuleCpp(optional.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'std::optional<flight::Ref<Watcher>> parent;',
+    );
+
+    // A generic declaration keeps its own parameters in the reference, in the member position and in an
+    // argument position alike.
+    const generic = lower('store.ts', 'export interface Store<T> { readonly self?: this; readonly chain: this[] }');
+    const genericContents = emitIrModuleCpp(generic.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(genericContents).toContain('std::optional<flight::Ref<Store<T>>> self;');
+    expect(genericContents).toContain('flight::Array<flight::Ref<Store<T>>> chain;');
+
+    // The control that keeps this a statement about the declaring type rather than about `this`: a member
+    // declared with another interface's name emits the same reference form.
+    const named = lower(
+      'holder.ts',
+      `export interface Watcher { readonly value: number }
+       export interface Holder { readonly watcher?: Watcher }`,
+    );
+    expect(emitIrModuleCpp(named.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'std::optional<flight::Ref<Watcher>> watcher;',
+    );
+
+    // A class member takes the same reference form, which it did not before: the injected class name
+    // named the class being defined, so `std::optional<Node>` instantiated an optional over an
+    // incomplete type and the emitted header did not compile. A class-typed member is a reference
+    // everywhere else, and g++ accepts this form.
+    const classMember = lower('node.ts', 'export class Node { readonly parent?: this }');
+    expect(emitIrModuleCpp(classMember.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'std::optional<flight::Ref<Node>> parent;',
+    );
+  });
+
   it('emits semantic arrays with contextual empty types and checked indexed access', () => {
     const result = lower(
       'indexes.ts',

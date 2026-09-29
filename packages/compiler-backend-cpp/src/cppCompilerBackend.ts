@@ -315,6 +315,11 @@ interface EmitContext {
   // and the parameter being read belongs to a declaration that may be nowhere near the read.
   typeParameterConstraints: ReadonlyMap<string, Readonly<IrType>>;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
+  // An interface is emitted as a struct of its own, so a `this` type inside one has a declaring type
+  // exactly as a class member does. Kept apart from `currentClass` because the two name that type
+  // differently: a class member uses the injected class name, while an interface member is a reference
+  // to the struct and has to go through the interface's own type to get it.
+  currentInterface?: Readonly<IrInterfaceDeclaration> | undefined;
   // The declaration being emitted, so a refusal can name where in the module it is. A backend emits
   // whole declarations and a refusal names one of them; without this a refused module is a message
   // with no position at all, and 649 of them are otherwise indistinguishable.
@@ -2082,6 +2087,7 @@ function emitInterface(declaration: Readonly<IrInterfaceDeclaration>, outer: Emi
       outer.anonymousStructTypeParameters,
       declaration.typeParameters,
     ),
+    currentInterface: declaration,
   };
   const name = getBindingTargetName(declaration.binding, context);
   const interfaceType = getCppInterfaceDeclarationTypeCpp(declaration);
@@ -9805,7 +9811,25 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
       return emitUnionTypeCpp(type, context);
     case 'unknown':
       if (type.source === 'this' && context.currentClass) {
-        return getBindingTargetName(context.currentClass.binding, context);
+        return emitType(
+          {
+            kind: 'named',
+            reference: { binding: context.currentClass.binding, kind: 'binding', path: [] },
+            typeArguments: context.currentClass.typeParameters.map((parameter) => ({
+              kind: 'named',
+              reference: { binding: parameter.binding, kind: 'binding', path: [] },
+              typeArguments: [],
+            })),
+          },
+          context,
+          representation,
+        );
+      }
+      // `this` inside an interface names the declaring interface, and an interface member is a reference
+      // to that struct rather than a value of it, so it is emitted through the interface's own declaration
+      // type -- the same form a member declared with the interface's name already takes.
+      if (type.source === 'this' && context.currentInterface) {
+        return emitType(getCppInterfaceDeclarationTypeCpp(context.currentInterface), context, representation);
       }
       if (type.source === 'object') {
         if (getCppRuntimeProfile(context.options) === 'flight-cpp') {
