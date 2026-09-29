@@ -347,6 +347,15 @@ function isOptionalNullableNamedTypeProperty(node: ts.PropertySignature | undefi
   return ts.isTypeReferenceNode(type) && getNodeName(type.typeName) === name;
 }
 
+function isOptionalNullableFunctionProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  return ts.isFunctionTypeNode(type);
+}
+
 function isOptionalNullableReadonlyNumberArrayProperty(node: ts.PropertySignature): boolean {
   if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
   const present = getMixedAbsencePresentTypes(node.type);
@@ -520,6 +529,30 @@ function getRenderProxyColorMatrixMixedAbsencePropertyMessage(
   return `${subject} gives the reusable RenderProxy colorMatrix slot both omission and explicit null, but the represented 2D render contract has one inactive state: initializeRenderProxy assigns out.colorMatrix = null, and updateRenderProxyColorScaleBias overwrites it with a resolved matrix or null whenever color adjustment accumulation runs. GL and WebGPU 2D consumers use nullish selection or comparison before batching and shader selection. Make RenderProxy.colorMatrix a required readonly number[] | null field alongside required colorScaleBias, preserve the initializer and per-update clear, and narrow resolveInheritedColorMatrix's previous parameter from readonly number[] | null | undefined to readonly number[] | null so its reuse branch no longer carries an unreachable undefined case. If a proxy lifecycle must distinguish not initialized from no matrix, name a closed color-adjustment state and handle every state explicitly. The compiler will not choose or collapse an absence sentinel, synthesize or multiply a color matrix, rewrite batching or shader selection, allocate or copy matrix storage, or add side storage.`;
 }
 
+function getScene3DDiagnosticGuardMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (!ts.isInterfaceDeclaration(node.parent) || !isOptionalNullableFunctionProperty(node)) return undefined;
+  const owner = node.parent.name.text;
+  const field = getNodeName(node.name);
+  const isGlGuard =
+    isFlightTypesSource(node, 'GlScene3DRuntime.ts') &&
+    owner === 'GlScene3DRuntime' &&
+    (field === 'colorSpaceGuard' ||
+      field === 'customShaderGuard' ||
+      field === 'deformGuard' ||
+      field === 'forwardLightSelectionGuard' ||
+      field === 'pbrExtensionGuard');
+  const isWgpuGuard =
+    isFlightTypesSource(node, 'WgpuScene3DRuntime.ts') &&
+    owner === 'WgpuScene3DRuntime' &&
+    (field === 'customShaderGuard' || field === 'forwardLightSelectionGuard');
+  if (!isGlGuard && !isWgpuGuard) return undefined;
+  const backend = isGlGuard ? 'GL' : 'WebGPU';
+  return `${subject} gives the opt-in ${backend} Scene3D diagnostic guard slot ${field} both omission and explicit null, but the represented per-state runtime has one disabled state. getGlScene3DRuntime currently omits colorSpaceGuard, customShaderGuard, deformGuard, and forwardLightSelectionGuard while assigning pbrExtensionGuard: null; getWgpuScene3DRuntime assigns customShaderGuard: null and forwardLightSelectionGuard: null. Each enable function overwrites its exact slot with the diagnostic closure, while enabled probes and render consumers collapse undefined and null through != null, !== null, optional call, or a nullish local guard. Make all five GL guard slots and both WebGPU guard slots required fields with their exact callable type | null, and initialize every slot to null in the corresponding runtime object literal. Null initialization does not import or install a diagnostic implementation, so the separately imported enable modules and their logging dependencies remain shakeable. If disabled and not-yet-configured must differ, replace the absence sentinels with one named closed guard state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or install a diagnostic guard, invoke or synthesize a callback, widen its callable signature, change the render-state or runtime owner, or add side storage.`;
+}
+
 function getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -602,6 +635,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (sceneConstructionOwner) return sceneConstructionOwner;
   const renderProxyColorMatrix = getRenderProxyColorMatrixMixedAbsencePropertyMessage(node, subject);
   if (renderProxyColorMatrix) return renderProxyColorMatrix;
+  const scene3DDiagnosticGuard = getScene3DDiagnosticGuardMixedAbsencePropertyMessage(node, subject);
+  if (scene3DDiagnosticGuard) return scene3DDiagnosticGuard;
   const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
     node,
     subject,

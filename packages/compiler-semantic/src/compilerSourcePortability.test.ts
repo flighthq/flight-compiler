@@ -4260,6 +4260,137 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the required nullable contract for opt-in Scene3D diagnostic guards', () => {
+    const gl = input(
+      'packages/types/src/GlScene3DRuntime.ts',
+      `interface GlScene3DRuntime {
+         colorSpaceGuard?: (() => void) | null;
+         customShaderGuard?: ((state: object, program: object, shaderKey: string) => void) | null;
+         deformGuard?: ((mesh: object) => void) | null;
+         forwardLightSelectionGuard?: ((lights: Readonly<object>) => void) | null;
+         pbrExtensionGuard?: ((extensions: readonly object[]) => void) | null;
+       }
+       declare const warnColorSpace: () => void;
+       function getGlScene3DRuntime(): GlScene3DRuntime {
+         return { pbrExtensionGuard: null };
+       }
+       function enableGlScene3DColorSpaceGuards(): void {
+         getGlScene3DRuntime().colorSpaceGuard = warnColorSpace;
+       }
+       function renderGlScene3D(runtime: GlScene3DRuntime): void {
+         runtime.colorSpaceGuard?.();
+         const deformGuard = runtime.deformGuard;
+         if (deformGuard != null) deformGuard({});
+       }`,
+    );
+    const wgpu = input(
+      'packages/types/src/WgpuScene3DRuntime.ts',
+      `interface WgpuScene3DRuntime {
+         customShaderGuard?: ((state: object, shaderKey: string, source: object, material: object) => void) | null;
+         forwardLightSelectionGuard?: ((lights: Readonly<object>) => void) | null;
+       }
+       function getWgpuScene3DRuntime(): WgpuScene3DRuntime {
+         return { customShaderGuard: null, forwardLightSelectionGuard: null };
+       }
+       function renderWgpuScene3D(runtime: WgpuScene3DRuntime): void {
+         runtime.forwardLightSelectionGuard?.({});
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([wgpu, gl]).findings;
+    const expected = [
+      ['GlScene3DRuntime', 'colorSpaceGuard', 'GL'],
+      ['GlScene3DRuntime', 'customShaderGuard', 'GL'],
+      ['GlScene3DRuntime', 'deformGuard', 'GL'],
+      ['GlScene3DRuntime', 'forwardLightSelectionGuard', 'GL'],
+      ['GlScene3DRuntime', 'pbrExtensionGuard', 'GL'],
+      ['WgpuScene3DRuntime', 'customShaderGuard', 'WebGPU'],
+      ['WgpuScene3DRuntime', 'forwardLightSelectionGuard', 'WebGPU'],
+    ] as const;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expected.map(([owner, field]) => ({
+        rule: 'mixed-absence',
+        subject: `interface:${owner}/property:${field}`,
+      })),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const [, field, backend] = expected[index]!;
+      expect(finding.message).toContain(
+        `gives the opt-in ${backend} Scene3D diagnostic guard slot ${field} both omission and explicit null`,
+      );
+      expect(finding.message).toContain('the represented per-state runtime has one disabled state');
+      expect(finding.message).toContain(
+        'getGlScene3DRuntime currently omits colorSpaceGuard, customShaderGuard, deformGuard, and forwardLightSelectionGuard while assigning pbrExtensionGuard: null',
+      );
+      expect(finding.message).toContain(
+        'getWgpuScene3DRuntime assigns customShaderGuard: null and forwardLightSelectionGuard: null',
+      );
+      expect(finding.message).toContain('Each enable function overwrites its exact slot with the diagnostic closure');
+      expect(finding.message).toContain('collapse undefined and null through != null, !== null, optional call');
+      expect(finding.message).toContain('Make all five GL guard slots and both WebGPU guard slots required fields');
+      expect(finding.message).toContain('their exact callable type | null');
+      expect(finding.message).toContain('initialize every slot to null in the corresponding runtime object literal');
+      expect(finding.message).toContain('logging dependencies remain shakeable');
+      expect(finding.message).toContain('one named closed guard state and handle every arm explicitly');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('import or install a diagnostic guard');
+      expect(finding.message).toContain('invoke or synthesize a callback');
+      expect(finding.message).toContain('widen its callable signature');
+      expect(finding.message).toContain('change the render-state or runtime owner, or add side storage');
+    }
+  });
+
+  it('keeps unrelated guard slots generic and accepts one explicit runtime absence state', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/GlScene3DRuntime.ts',
+        'interface OtherSceneRuntime { colorSpaceGuard?: (() => void) | null }',
+      ),
+      input(
+        'packages/types/src/GlScene3DRuntime.ts',
+        'interface GlScene3DRuntime { validationGuard?: (() => void) | null }',
+      ),
+      input(
+        'packages/example/src/GlScene3DRuntime.ts',
+        'interface GlScene3DRuntime { colorSpaceGuard?: (() => void) | null }',
+      ),
+      input('packages/types/src/GlScene3DRuntime.ts', 'interface GlScene3DRuntime { colorSpaceGuard?: object | null }'),
+      input(
+        'packages/types/src/WgpuScene3DRuntime.ts',
+        'interface WgpuScene3DRuntime { deformGuard?: ((mesh: object) => void) | null }',
+      ),
+    ];
+    const resolved = [
+      input(
+        'packages/types/src/GlScene3DRuntime.ts',
+        `interface GlScene3DRuntime {
+           colorSpaceGuard: (() => void) | null;
+           customShaderGuard: ((state: object) => void) | null;
+           deformGuard: ((mesh: object) => void) | null;
+           forwardLightSelectionGuard: ((lights: object) => void) | null;
+           pbrExtensionGuard: ((extensions: readonly object[]) => void) | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/WgpuScene3DRuntime.ts',
+        `interface WgpuScene3DRuntime {
+           customShaderGuard: ((state: object) => void) | null;
+           forwardLightSelectionGuard: ((lights: object) => void) | null;
+         }`,
+      ),
+      input('packages/types/src/GlScene3DRuntime.ts', 'interface GlScene3DRuntime { colorSpaceGuard?: () => void }'),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability(resolved).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('opt-in GL Scene3D diagnostic guard slot');
+      expect(findings[0]?.message).not.toContain('opt-in WebGPU Scene3D diagnostic guard slot');
+    }
+  });
+
   it('explains normalized optional-null string inputs at their required-nullable boundaries', () => {
     const gltf = input(
       'packages/types/src/GltfExtension.ts',
