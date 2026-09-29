@@ -29627,10 +29627,13 @@ function assertRuntimeExternalSymbolBindingsCpp(
   const canvasHandleRemediation = renderMissingCanvasHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   const streamHandleRemediation = renderMissingStreamHandleBindingsRemediationCpp(completeness.missingExternalSymbols);
   const blobHandleRemediation = renderMissingBlobHandleBindingRemediationCpp(completeness.missingExternalSymbols);
+  const arrayBufferLikeRemediation = renderMissingArrayBufferLikeBindingRemediationCpp(
+    completeness.missingExternalSymbols,
+  );
   throw createBackendEmissionFailure(
     'cpp',
     module,
-    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}`,
+    `runtime external symbol binding plan is incomplete (${problems.join('; ')})${webGlHandleRemediation}${webGpuHandleRemediation}${abortHandleRemediation}${canvasHandleRemediation}${streamHandleRemediation}${blobHandleRemediation}${arrayBufferLikeRemediation}`,
     'cpp-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
@@ -29758,6 +29761,16 @@ function renderMissingBlobHandleBindingRemediationCpp(
   const hasBlob = missing.some((identity) => identity.space === 'type' && identity.sourceName === 'Blob');
   if (!hasBlob) return '';
   return ` Blob is a host-owned immutable binary object identity. Add one externalBindings entry for the exact type-space source symbol, with its stable target wrapper, required headers, and truthful ownership and nullability; preserve the same Blob owner, byte sequence, media type, and size through file-system results, object-URL creation, and network response unions, including their exact null, string, and unknown alternatives. A manifest entry names the represented runtime carrier; it does not permit replacing Blob with a string or eager byte array, collapsing a response union or erasing its Blob arm into Any, void-pointer erasure, native-pointer casts or reinterpretation, copying or materializing a replacement Blob, or side storage.`;
+}
+
+function renderMissingArrayBufferLikeBindingRemediationCpp(
+  missing: readonly Readonly<{ sourceName: string; space: 'type' | 'value' }>[],
+): string {
+  const hasArrayBufferLike = missing.some(
+    (identity) => identity.space === 'type' && identity.sourceName === 'ArrayBufferLike',
+  );
+  if (!hasArrayBufferLike) return '';
+  return ` ArrayBufferLike is the target-runtime backing-store domain for typed-array and data-view owners. Add one externalBindings entry for the exact type-space source symbol, with its stable target domain carrier, required headers, and truthful ownership and nullability; preserve the full permitted backing-store alternative set and the original buffer owner, byte range, typed-array element kind, and zero-copy sharing through geometry data-view caches and physics ABI command and readback buffers. A manifest entry names the represented runtime domain; it does not permit narrowing every backing to ArrayBuffer, copying into replacement storage, erasing the element or view contract into Any, void-pointer erasure, native-pointer casts or reinterpretation, or side storage.`;
 }
 
 function addCppExternalBindingHeaders(sourceName: string, space: 'type' | 'value', context: EmitContext): void {

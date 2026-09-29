@@ -9342,6 +9342,106 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).not.toContain('Blob is a host-owned immutable binary object identity');
   });
 
+  it('requires an exact runtime binding for the ArrayBufferLike backing-store domain', () => {
+    const result = lower(
+      'ArrayBufferLikeBackings.ts',
+      `export interface MeshGeometryRuntime {
+         attributeDataView: {
+           buffer: ArrayBufferLike;
+           byteOffset: number;
+           byteLength: number;
+           view: DataView;
+         } | null;
+       }
+       export interface Physics2DAbiCommandBuffer {
+         readonly data: Uint8Array<ArrayBufferLike>;
+         byteLength: number;
+         commandCount: number;
+       }
+       export interface Physics2DAbiBodyBuffer {
+         readonly ids: Uint32Array<ArrayBufferLike>;
+         readonly values: Float64Array<ArrayBufferLike>;
+       }
+       export interface Physics3DAbiCommandBuffer {
+         readonly data: Uint8Array<ArrayBufferLike>;
+         byteLength: number;
+         commandCount: number;
+       }
+       export interface Physics3DAbiBodyBuffer {
+         readonly ids: Uint32Array<ArrayBufferLike>;
+         readonly values: Float64Array<ArrayBufferLike>;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['flight/array_buffer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'ArrayBufferLike',
+          space: 'type' as const,
+          targetName: 'flight::ArrayBufferLike',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: ArrayBufferLike[type]');
+    expect(failure.message).toContain(
+      'ArrayBufferLike is the target-runtime backing-store domain for typed-array and data-view owners',
+    );
+    expect(failure.message).toContain('one externalBindings entry for the exact type-space source symbol');
+    expect(failure.message).toContain('stable target domain carrier');
+    expect(failure.message).toContain('truthful ownership and nullability');
+    expect(failure.message).toContain('preserve the full permitted backing-store alternative set');
+    expect(failure.message).toContain(
+      'original buffer owner, byte range, typed-array element kind, and zero-copy sharing',
+    );
+    expect(failure.message).toContain('geometry data-view caches and physics ABI command and readback buffers');
+    expect(failure.message).toContain('does not permit narrowing every backing to ArrayBuffer');
+    expect(failure.message).toContain('copying into replacement storage');
+    expect(failure.message).toContain('erasing the element or view contract into Any');
+    expect(failure.message).toContain('void-pointer erasure');
+    expect(failure.message).toContain('native-pointer casts or reinterpretation');
+    expect(failure.message).toContain('or side storage');
+    expect(contents).toContain('flight::ArrayBufferLike buffer;');
+    expect(contents.match(/flight::Uint8Array data;/gu)).toHaveLength(2);
+    expect(contents.match(/flight::Uint32Array ids;/gu)).toHaveLength(2);
+    expect(contents.match(/flight::Float64Array values;/gu)).toHaveLength(2);
+    expect(contents).toContain('flight::DataView view;');
+    expect(contents).not.toContain('flight::Uint8Array<flight::ArrayBufferLike>');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
+
+  it('does not classify the ArrayBufferView binary domain as ArrayBufferLike backing storage', () => {
+    const result = lower(
+      'ArrayBufferViewBody.ts',
+      'export type NetBody = string | ArrayBuffer | ArrayBufferView | null;',
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.message).toContain(
+      'runtime external symbol binding plan is incomplete (missing: ArrayBufferView[type])',
+    );
+    expect(failure.message).not.toContain(
+      'ArrayBufferLike is the target-runtime backing-store domain for typed-array and data-view owners',
+    );
+  });
+
   it('inlines imported scalar aliases when type and value exports share a source name', () => {
     const vocabulary = lowerPackage(
       '@flighthq/types',
