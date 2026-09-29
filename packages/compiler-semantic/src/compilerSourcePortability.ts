@@ -363,6 +363,23 @@ function getBitmapTextOptionsMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getInteractionManagerOptionsMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'InteractionManagerOptions' ||
+    !normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/InteractionManager.ts')
+  ) {
+    return undefined;
+  }
+  const name = getNodeName(node.name);
+  const owner = name === 'cursorBackend' ? 'CursorBackend' : name === 'spatialIndex' ? 'SpatialIndex2D' : undefined;
+  if (owner === undefined || !isOptionalNullableNamedTypeProperty(node, owner)) return undefined;
+  return `${subject} gives the InteractionManager construction option ${name} both omission and explicit null, but createInteractionManager passes its options once into initializeInteractionManager for a fresh manager, where out.cursorBackend = options.cursorBackend ?? null and out.spatialIndex = options.spatialIndex ?? null normalize either spelling to the same disabled service. Runtime consumers such as applyInteractionCursor, findInteractionTarget, and refreshInteractionSpatialIndex then test the required nullable fields against null. Keep the InteractionManager cursorBackend and spatialIndex fields required nullable so installed services can be cleared explicitly, but make both fields optional non-null in InteractionManagerOptions so omission is the sole construction-time absence. If the options shape later becomes a mutation patch, define a named closed update state whose unchanged, disabled, and installed cases are explicit. The compiler will not choose or collapse an absence sentinel, construct a cursor backend or spatial index, rewrite the manager, change service-owner identity, or add side storage.`;
+}
+
 function getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -435,6 +452,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (attachmentPointStorage) return attachmentPointStorage;
   const bitmapTextOptions = getBitmapTextOptionsMixedAbsencePropertyMessage(node, subject);
   if (bitmapTextOptions) return bitmapTextOptions;
+  const interactionManagerOptions = getInteractionManagerOptionsMixedAbsencePropertyMessage(node, subject);
+  if (interactionManagerOptions) return interactionManagerOptions;
   const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
     node,
     subject,

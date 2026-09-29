@@ -3866,6 +3866,106 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings.every((finding) => !finding.message.includes('BitmapText construction option'))).toBe(true);
   });
 
+  it('explains the construction-only absence contract for InteractionManager services', () => {
+    const source = input(
+      'packages/types/src/InteractionManager.ts',
+      `interface CursorBackend { setCursor(value: string | null): void }
+       interface SpatialIndex2D { readonly capacity: number }
+       interface InteractionManagerOptions {
+         cursorBackend?: CursorBackend | null;
+         enabled?: boolean;
+         spatialIndex?: SpatialIndex2D | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['cursorBackend', 'spatialIndex'].map((name) => ({
+        rule: 'mixed-absence',
+        subject: `interface:InteractionManagerOptions/property:${name}`,
+      })),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const name = ['cursorBackend', 'spatialIndex'][index];
+      expect(finding.message).toContain(
+        `gives the InteractionManager construction option ${name} both omission and explicit null`,
+      );
+      expect(finding.message).toContain(
+        'createInteractionManager passes its options once into initializeInteractionManager for a fresh manager',
+      );
+      expect(finding.message).toContain('out.cursorBackend = options.cursorBackend ?? null');
+      expect(finding.message).toContain('out.spatialIndex = options.spatialIndex ?? null');
+      expect(finding.message).toContain('normalize either spelling to the same disabled service');
+      expect(finding.message).toContain(
+        'applyInteractionCursor, findInteractionTarget, and refreshInteractionSpatialIndex',
+      );
+      expect(finding.message).toContain(
+        'Keep the InteractionManager cursorBackend and spatialIndex fields required nullable',
+      );
+      expect(finding.message).toContain('make both fields optional non-null in InteractionManagerOptions');
+      expect(finding.message).toContain('omission is the sole construction-time absence');
+      expect(finding.message).toContain('unchanged, disabled, and installed cases are explicit');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('construct a cursor backend or spatial index');
+      expect(finding.message).toContain('change service-owner identity, or add side storage');
+    }
+  });
+
+  it('keeps unrelated service options generic and accepts split InteractionManager contracts', () => {
+    const unrelatedOwner = input(
+      'OtherInteractionOptions.ts',
+      'interface CursorBackend {} interface OtherInteractionOptions { cursorBackend?: CursorBackend | null }',
+    );
+    const unrelatedMember = input(
+      'packages/types/src/InteractionManager.ts',
+      'interface CursorBackend {} interface InteractionManagerOptions { fallbackBackend?: CursorBackend | null }',
+    );
+    const unrelatedLocation = input(
+      'packages/example/src/InteractionManager.ts',
+      'interface SpatialIndex2D {} interface InteractionManagerOptions { spatialIndex?: SpatialIndex2D | null }',
+    );
+    const unrelatedType = input(
+      'packages/types/src/InteractionManager.ts',
+      'interface OtherBackend {} interface InteractionManagerOptions { cursorBackend?: OtherBackend | null }',
+    );
+    const splitContract = input(
+      'InteractionManagerSplit.ts',
+      `interface CursorBackend {}
+       interface SpatialIndex2D {}
+       interface InteractionManager {
+         cursorBackend: CursorBackend | null;
+         spatialIndex: SpatialIndex2D | null;
+       }
+       interface InteractionManagerCreateOptions {
+         cursorBackend?: CursorBackend;
+         spatialIndex?: SpatialIndex2D;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([
+      unrelatedOwner,
+      unrelatedMember,
+      unrelatedLocation,
+      unrelatedType,
+      splitContract,
+    ]).findings;
+
+    expect(findings).toHaveLength(4);
+    expect(findings.map(({ subject }) => subject).sort()).toEqual(
+      [
+        'interface:InteractionManagerOptions/property:cursorBackend',
+        'interface:InteractionManagerOptions/property:fallbackBackend',
+        'interface:InteractionManagerOptions/property:spatialIndex',
+        'interface:OtherInteractionOptions/property:cursorBackend',
+      ].sort(),
+    );
+    for (const finding of findings) {
+      expect(finding.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+      expect(finding.message).not.toContain('InteractionManager construction option');
+    }
+  });
+
   it('explains the required nullable contract for FlightDocument node interaction metadata', () => {
     const source = input(
       'packages/types/src/FlightDocument.ts',
