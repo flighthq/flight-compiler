@@ -88,6 +88,12 @@ export function compileCompilerCommandLineRequest(
       sourceFile: parseTypeScriptSource(source.sourcePath, source.contents),
       upstreamDirectory: parsed.sourceDirectory,
     })),
+    ...(parsed.progress
+      ? {
+          observeProgress: (progress) =>
+            (capabilities.writeProgress ?? capabilities.writeError)(`${JSON.stringify(progress)}\n`),
+        }
+      : {}),
   });
   for (const file of result.compilation.files) {
     capabilities.writeOutputFile(parsed.outputDirectory, file.path, file.contents);
@@ -360,12 +366,14 @@ const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp
   --root-package <name>   Root package for Haxe output (default: the target's own)
   --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
   --runtime-header <path> Override the flight-cpp runtime include spelling
+  --progress              Write bounded package-compilation progress as JSON Lines to stderr
   --report                Report refusals without failing the run`;
 
 interface ParsedCompilerCommandLineRequest {
   readonly emissionMode: HaxeCompilerEmissionMode;
   readonly outputDirectory: string;
   readonly packageName: string;
+  readonly progress: boolean;
   readonly reportOnly: boolean;
   readonly rootPackage?: string | undefined;
   readonly runtimeHeader?: string | undefined;
@@ -379,9 +387,14 @@ function parseCompilerCommandLineRequest(
 ): ParsedCompilerCommandLineRequest | Readonly<{ failure: string }> {
   const positional: string[] = [];
   const named = new Map<string, string>();
+  let progress = false;
   let reportOnly = false;
   for (let index = 0; index < request.argv.length; index += 1) {
     const argument = request.argv[index]!;
+    if (argument === '--progress') {
+      progress = true;
+      continue;
+    }
     if (argument === '--report') {
       reportOnly = true;
       continue;
@@ -434,6 +447,7 @@ function parseCompilerCommandLineRequest(
     emissionMode,
     outputDirectory,
     packageName: named.get('package') ?? '@local/source',
+    progress,
     reportOnly,
     ...(rootPackage === undefined ? {} : { rootPackage }),
     ...(runtimeHeader === undefined ? {} : { runtimeHeader }),

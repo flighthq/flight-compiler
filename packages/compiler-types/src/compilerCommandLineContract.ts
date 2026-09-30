@@ -28,6 +28,8 @@ export interface CompilerCommandLineCapabilities {
   readonly write: (text: string) => void;
   readonly writeError: (text: string) => void;
   readonly writeOutputFile: (directory: string, relativePath: string, contents: string) => void;
+  /** The opt-in JSON Lines progress stream; defaults to the error stream when absent. */
+  readonly writeProgress?: ((text: string) => void) | undefined;
 }
 
 export interface CompilerCommandLineRefusal {

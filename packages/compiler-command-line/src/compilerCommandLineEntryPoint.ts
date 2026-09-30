@@ -32,6 +32,7 @@ export function compileCompilerCommandLineDirectory(argv: readonly string[]): nu
             mkdirSync(path.dirname(target), { recursive: true });
             writeFileSync(target, contents);
           },
+          writeProgress: (text) => process.stderr.write(text),
         },
       ).exitCode;
 }

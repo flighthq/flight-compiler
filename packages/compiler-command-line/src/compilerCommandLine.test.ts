@@ -105,6 +105,89 @@ describe('compileCompilerCommandLineRequest', () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it('writes opt-in bounded progress without changing normal output', () => {
+    const inputs = [
+      source('add.ts', 'export function add(left: number, right: number): number { return left + right; }'),
+      source('negate.ts', 'export function negate(value: number): number { return -value; }'),
+    ];
+    const silentOut: string[] = [];
+    const observedOut: string[] = [];
+    const progress: string[] = [];
+    const silent = compileCompilerCommandLineRequest(
+      { argv: ['/src', '--target', 'rust', '--out', '/silent'] },
+      capabilities(inputs, new Map(), silentOut),
+    );
+    const observed = compileCompilerCommandLineRequest(
+      { argv: ['/src', '--target', 'rust', '--out', '/observed', '--progress'] },
+      capabilities(inputs, new Map(), observedOut, progress),
+    );
+
+    expect(observed).toEqual(silent);
+    expect(observedOut).toEqual(silentOut);
+    expect(progress).toHaveLength(8);
+    expect(progress.every((line) => line.endsWith('\n'))).toBe(true);
+    expect(progress.map((line) => JSON.parse(line) as unknown)).toEqual([
+      {
+        moduleCount: 2,
+        phase: 'lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        moduleCount: 2,
+        phase: 'lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+      {
+        moduleCount: 2,
+        phase: 'emission-session',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        moduleCount: 2,
+        phase: 'emission-session',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+      {
+        completedModules: 0,
+        module: { name: 'Add', packageName: '@local/source', source: 'add.ts' },
+        moduleCount: 2,
+        phase: 'module-emission',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        completedModules: 1,
+        module: { name: 'Add', packageName: '@local/source', source: 'add.ts' },
+        moduleCount: 2,
+        outcome: 'emitted',
+        phase: 'module-emission',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+      {
+        completedModules: 1,
+        module: { name: 'Negate', packageName: '@local/source', source: 'negate.ts' },
+        moduleCount: 2,
+        phase: 'module-emission',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        completedModules: 2,
+        module: { name: 'Negate', packageName: '@local/source', source: 'negate.ts' },
+        moduleCount: 2,
+        outcome: 'emitted',
+        phase: 'module-emission',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+    ]);
+  });
+
   it('passes the root-package option through to the Haxe backend', () => {
     const written = new Map<string, string>();
     const result = compileCompilerCommandLineRequest(
@@ -327,12 +410,14 @@ function capabilities(
   sources: readonly CompilerCommandLineSource[],
   written: Map<string, string>,
   out: string[],
+  progress: string[] = [],
 ): CompilerCommandLineCapabilities {
   return {
     listSourceFiles: () => sources,
     write: (text) => out.push(text),
     writeError: () => undefined,
     writeOutputFile: (directory, relativePath, contents) => written.set(`${directory}/${relativePath}`, contents),
+    writeProgress: (text) => progress.push(text),
   };
 }
 
@@ -349,6 +434,7 @@ describe('getCompilerCommandLineUsage', () => {
     expect(usage).toContain('--package');
     expect(usage).toContain('--runtime-header');
     expect(usage).toContain('--runtime-profile');
+    expect(usage).toContain('--progress');
     expect(usage).toContain('--report');
   });
 });
