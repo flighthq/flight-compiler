@@ -12035,17 +12035,26 @@ function emitCppInferredOptionalTypeofTagComparisonCpp(
   // absent where the element's type carries no absence, and an alternative test would ask a cell that
   // need not exist. The explicit numeric-lookup lane above owns its one closed answer; every other
   // element read stays refused here.
-  // A binding whose absence the narrowing lane owns is left to it: it already reads a guarded local as
-  // the value its evidence proves, and answering here would displace that. A binding whose storage is a
-  // variant of value alternatives has no absence for that lane to answer -- refusing it would leave the
+  // A binding whose emitted storage carries absence answers an undefined tag from that storage even when
+  // its source type does not mention the sentinel. This is the array/Record indexed-local case: the
+  // runtime's `get` selected `std::optional`, so folding from the source element type would erase a real
+  // bounds/key miss. Other tags remain with their domain-specific lanes. A binding whose storage is a
+  // variant of value alternatives has no absence for this lane to answer -- refusing it would leave the
   // tag question to the variant guard, which refuses precisely because nobody proved the member test.
-  // This rule is that proof, so it answers those.
   if (
     comparison.operand.kind === 'identifier' &&
     comparison.operand.reference.kind === 'binding' &&
     hasCppAbsenceStorageCpp(comparison.operand, context)
   ) {
-    return undefined;
+    return comparison.tag === 'undefined'
+      ? emitCppPresenceTestCpp(
+          comparison.operand,
+          'undefined',
+          expression.operator === '!=' || expression.operator === '!==',
+          false,
+          context,
+        )
+      : undefined;
   }
   const operandType = getCppNullishComparisonOperandTypeCpp(comparison.operand, context);
   // An erased value answers the tag itself at run time, and it can answer only the words the runtime
@@ -24682,33 +24691,48 @@ function collectIrModuleArrayElementBindingIdsCpp(
   context: EmitContext,
 ): ReadonlySet<string> {
   const candidates = new Set<string>();
-  const nullishUsed = new Set<string>();
+  const absenceObserved = new Set<string>();
   analyzeIrModuleTraversal(module, {
     expression(expression) {
-      if (expression.kind === 'binary' && (expression.operator === '??' || expression.semantics.nullishComparison)) {
-        const operand =
-          expression.left.kind === 'identifier' && expression.left.reference.kind === 'binding'
-            ? expression.left
-            : expression.right.kind === 'identifier' && expression.right.reference.kind === 'binding'
-              ? expression.right
+      if (expression.kind === 'binary') {
+        const nullishOperand =
+          expression.operator === '??' || expression.semantics.nullishComparison
+            ? expression.left.kind === 'identifier' && expression.left.reference.kind === 'binding'
+              ? expression.left
+              : expression.right.kind === 'identifier' && expression.right.reference.kind === 'binding'
+                ? expression.right
+                : undefined
+            : undefined;
+        const typeofComparison = ['==', '===', '!=', '!=='].includes(expression.operator)
+          ? getCppTypeofTagComparisonCpp(expression.left, expression.right)
+          : undefined;
+        const typeofOperand =
+          typeofComparison?.tag === 'undefined' &&
+          typeofComparison.operand.kind === 'identifier' &&
+          typeofComparison.operand.reference.kind === 'binding'
+            ? typeofComparison.operand
+            : undefined;
+        const bindingId =
+          nullishOperand?.reference.kind === 'binding'
+            ? nullishOperand.reference.binding.id
+            : typeofOperand?.reference.kind === 'binding'
+              ? typeofOperand.reference.binding.id
               : undefined;
-        if (operand) {
-          const ref = operand.reference;
-          if (ref.kind === 'binding') nullishUsed.add(ref.binding.id);
-        }
+        if (bindingId) absenceObserved.add(bindingId);
       }
       return undefined;
     },
     variable(variable) {
       if (!('binding' in variable) || variable.initializer?.kind !== 'element') return;
       const initializer = variable.initializer;
-      // An element read holds absence when the read the emitter will spell answers an optional. For an
-      // array that is the runtime's indexed access; for a `Record` it is `get`, which answers
-      // `std::optional`. The receiver the semantic layer records for a `Record` reads `unknown`, and
-      // correctly so -- a mapped `Record` type is not an array -- so the decision is taken here, from
-      // the representation the element emitter will use, rather than from a receiver's name. Absence
-      // storage is the backend's own decision about its own output; the layer above reports what the
-      // source is, not how it is stored.
+      // An element read holds absence when the read the emitter will spell answers an optional. The
+      // pinned flight::Array contract exposes `get(double)` as optional for negative, fractional and
+      // out-of-bounds indices, while `element(double)` is the required-index access. A `Record` get also
+      // answers `std::optional`. The receiver the semantic layer records for a `Record` reads `unknown`,
+      // and correctly so -- a mapped `Record` type is not an array -- so the decision is taken here,
+      // from the representation the element emitter will use, rather than from a receiver's name.
+      // Absence storage is the backend's own decision about its own output; the layer above reports what
+      // the source is, not how it is stored.
       const carriesAbsence =
         initializer.semantics.receivers.includes('array') ||
         Boolean(
@@ -24720,7 +24744,7 @@ function collectIrModuleArrayElementBindingIdsCpp(
   });
   const result = new Set<string>();
   for (const id of candidates) {
-    if (nullishUsed.has(id)) result.add(id);
+    if (absenceObserved.has(id)) result.add(id);
   }
   return result;
 }

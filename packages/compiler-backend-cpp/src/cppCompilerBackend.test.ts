@@ -31379,6 +31379,97 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted.contents).toContain('return value.value()');
   });
 
+  it.skipIf(!canCompileCpp)('preserves bounds absence for typeof-tested readonly array index locals', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const result = lower(
+      'array-index-typeof-presence.ts',
+      `export function present(values: readonly number[], index: number): boolean {
+         const value = values[index];
+         return typeof value !== 'undefined';
+       }
+       export function readOr(values: readonly number[], index: number): number {
+         const value = values[index];
+         if (typeof value === 'undefined') return -1;
+         return value;
+       }
+       export function direct(values: readonly number[], index: number): number {
+         const value = values[index];
+         return value;
+       }`,
+    );
+    const present = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'present',
+    );
+    const local =
+      present?.kind === 'function' && present.body[0]?.kind === 'variable'
+        ? present.body[0].declarations[0]
+        : undefined;
+    const condition =
+      present?.kind === 'function' && present.body[1]?.kind === 'return' ? present.body[1].expression : undefined;
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+    const presentBody = /bool present[^]*?\n\}/u.exec(emitted.contents)?.[0] ?? '';
+    const readBody = /double read_or[^]*?\n\}/u.exec(emitted.contents)?.[0] ?? '';
+    const directBody = /double direct[^]*?\n\}/u.exec(emitted.contents)?.[0] ?? '';
+
+    expect(result.diagnostics).toEqual([]);
+    // TypeScript reports the declared element domain, while the receiver evidence says this is an Array
+    // index. The backend storage decision must therefore retain the runtime lookup's independent miss.
+    expect(local).toMatchObject({
+      initializer: { kind: 'element', semantics: { receivers: ['array'] } },
+      type: { kind: 'primitive', name: 'number' },
+    });
+    expect(condition).toMatchObject({
+      kind: 'binary',
+      left: { kind: 'unary', operand: { reference: { binding: { name: 'value' } } }, operator: 'typeof' },
+      operator: '!==',
+      right: { kind: 'literal', value: 'undefined' },
+    });
+    expect(presentBody).toContain('std::optional<double> value = values.get(index);');
+    expect(presentBody).toContain('return value.has_value();');
+    expect(presentBody).not.toContain('.element(');
+    expect(readBody).toContain('std::optional<double> value = values.get(index);');
+    expect(readBody).toContain('if (!value.has_value())');
+    expect(readBody).toContain('return value.value();');
+    // A read whose source never observes absence keeps the runtime's required-index contract.
+    expect(directBody).toContain('double value = values.element(index);');
+    expect(directBody).toContain('return value;');
+
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-array-index-typeof-presence-'));
+    try {
+      const header = path.join(directory, emitted.path);
+      mkdirSync(path.dirname(header), { recursive: true });
+      writeFileSync(header, emitted.contents, 'utf8');
+      const sourcePath = path.join(directory, 'array_index_typeof_presence.cpp');
+      writeFileSync(
+        sourcePath,
+        `#include <${emitted.path}>
+
+int main() {
+  const flight::Array<double> values{4.0};
+  if (!flighthq_math::present(values, 0.0)) return 1;
+  if (flighthq_math::present(values, 1.0)) return 2;
+  if (flighthq_math::present(values, 0.5)) return 3;
+  if (flighthq_math::read_or(values, 0.0) != 4.0) return 4;
+  if (flighthq_math::read_or(values, 1.0) != -1.0) return 5;
+  if (flighthq_math::read_or(values, 0.5) != -1.0) return 6;
+  if (flighthq_math::direct(values, 0.0) != 4.0) return 7;
+  return 0;
+}
+`,
+        'utf8',
+      );
+      const executable = path.join(directory, getCppExecutableName(cppToolchain, 'array_index_typeof_presence'));
+      const arguments_ = createCppExecutableArguments(cppToolchain, sourcePath, executable, [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' });
+      expect(() => execFileSync(executable, [], { cwd: directory, encoding: 'utf8', stdio: 'pipe' })).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it('projects the pinned XML trim call from its short-circuit-proven String payload', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/contract.ts',
