@@ -4114,6 +4114,24 @@ function emitExpression(
               typeArguments,
             );
             assertCppPresentOptionalCollectionArgumentCpp(expression, argument, index, argumentExpectedType, context);
+            // A receiver passed as an argument cannot become the reference its parameter wants. Where the
+            // parameter's type is known the receiver expression refuses on its own, because that type has a
+            // reference representation; a user method call carries no resolved parameter type, so there is
+            // nothing to thread and the raw pointer would be written into a reference parameter --
+            // `this->add(this)` did not convert ('cannot convert Group* to flight::Ref<Group>'). The same
+            // missing runtime conversion is the reason, so the same refusal answers it.
+            if (
+              getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+              argumentExpectedType === undefined &&
+              argument.kind === 'identifier' &&
+              argument.reference.kind === 'this'
+            ) {
+              emissionError(
+                context,
+                'the receiver cannot become the reference that declares it: flight::Ref is a shared pointer and the pinned flight-cpp runtime exposes no conversion from an object to the reference that owns it, so no representation-preserving lowering can produce this value. Take the receiver as a parameter, or carry the reference it was reached through, instead of passing the receiver itself',
+                'cpp-receiver-reference-unavailable',
+              );
+            }
             return emitExpression(argument, context, argumentExpectedType);
           }),
         context,
@@ -30851,6 +30869,9 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-number-to-fixed-runtime-helper-required',
   'cpp-object-has-own-storage-unrepresented',
   'cpp-object-create-prototype-runtime-required',
+  // The receiver cannot become its declaring reference because the runtime exposes no conversion from an
+  // object to the reference that owns it; that contract is the runtime's to add.
+  'cpp-receiver-reference-unavailable',
   'cpp-runtime-external-symbol-binding-incomplete',
   'cpp-sparse-array-literal-runtime-required',
   'cpp-union-runtime-domains-erased',

@@ -32349,6 +32349,60 @@ int main() {
     expect(emitted.contents).toContain('result');
   });
 
+  it('refuses the receiver as an argument and keeps reference arguments passing', () => {
+    // A user method call carries no resolved parameter type, so nothing threads the parameter's
+    // reference down to the receiver and the raw pointer was written where a reference belongs:
+    // 'cannot convert Group* to flight::Ref<Group>'. The conversion it would need is the same missing
+    // runtime contract the return position needs, so the same rule answers it.
+    const method = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'receiver-argument.ts',
+          `export class Group {
+             private items: Group[] = [];
+             add(other: Group): void { this.items.push(other); }
+             take(): void { this.add(this); }
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(method.rule).toBe('cpp-receiver-reference-unavailable');
+    expect(method.classification).toBe('target-runtime');
+    expect(method.message).toContain('instead of passing the receiver itself');
+
+    // The ambient collection path reaches the receiver with the element type in hand, and refuses there
+    // with the same rule -- so both spellings of the same mistake answer alike.
+    expect(
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            'receiver-push.ts',
+            `export class Pool { private items: Pool[] = []; add(): void { this.items.push(this); } }`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      ).rule,
+    ).toBe('cpp-receiver-reference-unavailable');
+
+    // The controls that keep this about the receiver rather than about arguments: a reference that
+    // arrived as a parameter passes straight through, and the receiver stays readable and mutable.
+    const emitted = emitIrModuleCpp(
+      lower(
+        'receiver-controls.ts',
+        `export class Box {
+           private n: number = 0;
+           pass(other: Box): void { this.consume(other); }
+           consume(other: Box): void { this.n += other.n; }
+           read(): number { return this.n; }
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(emitted).toContain('this->consume(other)');
+    expect(emitted).toContain('return this->n;');
+  });
+
   it('emits this return type as class name in class context', () => {
     // The return type keeps its meaning: `this` names the declaring class, so it emits as a reference
     // to it. The body returns a reference that arrived as a parameter rather than the receiver itself,
