@@ -15872,6 +15872,192 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emittedRender).toContain('return extension.has_value();');
   });
 
+  it.skipIf(!canCompileCpp)('runs present external result locals without rebuilding their shared owner', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/GlContext.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/GlContext.ts',
+            `export interface GlContext extends Pick<WebGL2RenderingContext, 'getExtension'> {}`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/render-gl',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/render-gl/src/anisotropy.ts',
+            `import type { GlContext } from '@flighthq/types/contract';
+             export function guarded(gl: GlContext): number {
+               const extension = gl.getExtension('EXT_texture_filter_anisotropic');
+               if (extension === null) return -1;
+               return extension.MAX_TEXTURE_MAX_ANISOTROPY_EXT;
+             }
+             export function asserted(gl: GlContext): number {
+               const extension = gl.getExtension('EXT_texture_filter_anisotropic');
+               return extension!.MAX_TEXTURE_MAX_ANISOTROPY_EXT;
+             }
+             export function direct(extension: EXT_texture_filter_anisotropic): number {
+               return extension.MAX_TEXTURE_MAX_ANISOTROPY_EXT;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/optional_extension.hpp'],
+          members: [
+            {
+              callResultAbsence: 'null' as const,
+              callResultType: 'std::optional<flight::Ref<host::Extension>>',
+              sourceMember: 'getExtension',
+              targetName: 'get_extension',
+            },
+          ],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'WebGL2RenderingContext',
+          space: 'type' as const,
+          targetName: 'host::Context',
+        },
+        {
+          headers: ['host/optional_extension.hpp'],
+          members: [
+            {
+              propertyNullability: 'non-null' as const,
+              propertyOwnership: 'value' as const,
+              propertyResultType: 'double',
+              sourceMember: 'MAX_TEXTURE_MAX_ANISOTROPY_EXT',
+              targetName: 'max_texture_max_anisotropy_ext',
+            },
+          ],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'EXT_texture_filter_anisotropic',
+          space: 'type' as const,
+          targetName: 'host::Extension',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        externalBindings,
+        packageTargets: {
+          '@flighthq/render-gl': { includePrefix: 'flight/render_gl', namespace: 'flight::render_gl' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emittedTypes = session.emitModule(modules[0]!)[0]!;
+    const emittedRender = session.emitModule(modules[1]!)[0]!;
+    const body = (name: string) => new RegExp(`double ${name}[^]*?\\n\\}`, 'u').exec(emittedRender.contents)?.[0] ?? '';
+    const guarded = body('guarded');
+    const asserted = body('asserted');
+    const direct = body('direct');
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(guarded).toContain('std::optional<flight::Ref<host::Extension>> extension = gl.get_extension(');
+    expect(guarded).toContain('return extension.value()->max_texture_max_anisotropy_ext;');
+    expect(asserted).toContain('return extension.value()->max_texture_max_anisotropy_ext;');
+    expect(direct).toContain('return extension.max_texture_max_anisotropy_ext;');
+    for (const generated of [guarded, asserted, direct]) {
+      expect(generated).not.toContain('pointer_cast');
+      expect(generated).not.toContain('make_ref');
+      expect(generated).not.toContain('materialize');
+    }
+
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-external-optional-local-'));
+    try {
+      const hostHeader = path.join(directory, 'host/optional_extension.hpp');
+      mkdirSync(path.dirname(hostHeader), { recursive: true });
+      writeFileSync(
+        hostHeader,
+        `#pragma once
+#include <flight/string.hpp>
+#include <flight/structural_ref.hpp>
+#include <optional>
+
+namespace host {
+struct Extension : flight::ReferenceEnabled {
+  double max_texture_max_anisotropy_ext = 16.0;
+};
+
+struct Context {
+  bool present = false;
+
+  std::optional<flight::Ref<Extension>> get_extension(const flight::String&) {
+    if (!present) return std::nullopt;
+    return flight::make_ref<Extension>();
+  }
+};
+} // namespace host
+`,
+        'utf8',
+      );
+      for (const generated of [emittedTypes, emittedRender]) {
+        const generatedPath = path.join(directory, generated.path);
+        mkdirSync(path.dirname(generatedPath), { recursive: true });
+        writeFileSync(generatedPath, generated.contents, 'utf8');
+      }
+      const sourcePath = path.join(directory, 'external_optional_local.cpp');
+      writeFileSync(
+        sourcePath,
+        `#include <${emittedRender.path}>
+
+int main() {
+  host::Context present;
+  present.present = true;
+  host::Context absent;
+  if (flight::render_gl::guarded(present) != 16.0) return 1;
+  if (flight::render_gl::guarded(absent) != -1.0) return 2;
+  if (flight::render_gl::asserted(present) != 16.0) return 3;
+  try {
+    static_cast<void>(flight::render_gl::asserted(absent));
+    return 4;
+  } catch (const std::bad_optional_access&) {
+  }
+  host::Extension extension;
+  if (flight::render_gl::direct(extension) != 16.0) return 5;
+  return 0;
+}
+`,
+        'utf8',
+      );
+      const executable = path.join(directory, getCppExecutableName(cppToolchain, 'external_optional_local'));
+      const arguments_ = createCppExecutableArguments(cppToolchain, sourcePath, executable, [
+        directory,
+        ...cppRuntimeIncludeDirectories,
+      ]);
+      execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' });
+      expect(() => execFileSync(executable, [], { cwd: directory, encoding: 'utf8', stdio: 'pipe' })).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it('keeps ordinary external fields and explicit instance mappings outside the numeric-property view', () => {
     const result = lower(
       'native-static-extension.ts',

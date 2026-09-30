@@ -4123,12 +4123,12 @@ function emitExpression(
       const calleeAlreadyUnwrapped =
         expression.callee.kind === 'identifier' &&
         expression.callee.reference.kind === 'binding' &&
-        expression.callee.presence === 'narrowedPresent' &&
-        context.nullableBindingIds.has(expression.callee.reference.binding.id);
+        hasCppPresentBindingStorageProofCpp(expression.callee, context) &&
+        hasCppBindingAbsenceStorageCpp(expression.callee.reference.binding.id, context);
       const calleeHasOptionalStorage =
         (expression.callee.kind === 'identifier' &&
           expression.callee.reference.kind === 'binding' &&
-          context.nullableBindingIds.has(expression.callee.reference.binding.id)) ||
+          hasCppBindingAbsenceStorageCpp(expression.callee.reference.binding.id, context)) ||
         hasIrTypeAbsentMember(calleeStorageType);
       const optionalCallable = Boolean(
         calleeStorageType &&
@@ -5132,63 +5132,9 @@ function emitExpression(
       ) {
         return `${emitIdentifierReference(expression.reference, context)}.value()`;
       }
-      if (
-        expression.reference.kind === 'binding' &&
-        (expression.presence === 'narrowedPresent' ||
-          (context.capturedReferentOnlyBindingIds.has(expression.reference.binding.id) &&
-            context.narrowedBindingTypes.has(expression.reference.binding.id))) &&
-        (context.nullableBindingIds.has(expression.reference.binding.id) ||
-          context.arrayElementBindingIds.has(expression.reference.binding.id))
-      ) {
-        const bindingType = getCppBindingTypeCpp(expression.reference.binding.id, context);
-        const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
-        const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
-        const narrowedType =
-          context.narrowedBindingTypes.get(expression.reference.binding.id) ?? expression.narrowedType;
-        const nestedOptionalMember =
-          plan && narrowedType
-            ? emitCppNarrowedNestedUnionMemberCpp(
-                emitIdentifierReference(expression.reference, context),
-                plan,
-                narrowedType,
-                context,
-              )
-            : undefined;
-        if (nestedOptionalMember) return nestedOptionalMember;
-        if (plan?.kind === 'dualSentinelVariant') {
-          const narrowedSlot = narrowedType ? getCppSingleUnionMemberValueSlotCpp(narrowedType, context) : undefined;
-          const matchingSlots = narrowedSlot
-            ? plan.valueSlots.filter((slot) => slot.representationKey === narrowedSlot.representationKey)
-            : plan.valueSlots;
-          if (matchingSlots.length !== 1) {
-            emissionError(context, 'dual-sentinel presence narrowing requires one remaining C++ value domain');
-          }
-          context.includes.add('variant');
-          return `std::get<${String(plan.valueSlots.indexOf(matchingSlots[0]!))}>(${emitIdentifierReference(expression.reference, context)})`;
-        }
-        if (plan?.kind === 'optionalVariant') {
-          const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
-          const narrowedPresentMembers = (narrowedUnion?.types ?? (narrowedType ? [narrowedType] : [])).filter(
-            (member) => member.kind !== 'null' && member.kind !== 'undefined',
-          );
-          if (narrowedPresentMembers.length === 1) {
-            const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
-            const narrowedTarget = emitType(narrowedPresentMembers[0]!, isolatedContext);
-            const matchingSlots = plan.valueSlots.filter(
-              (slot) =>
-                slot.targetType === narrowedTarget ||
-                slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, narrowedPresentMembers[0]!)) ||
-                areCppUnionMemberDiscriminantsEquivalent(slot.runtimeType, narrowedPresentMembers[0]!, context) ||
-                areCppUnionMemberObjectRepresentationsEquivalent(slot.runtimeType, narrowedPresentMembers[0]!, context),
-            );
-            if (matchingSlots.length === 1) {
-              context.includes.add('variant');
-              return `std::get<${String(plan.valueSlots.indexOf(matchingSlots[0]!))}>(${emitIdentifierReference(expression.reference, context)}.value())`;
-            }
-          }
-        }
-        context.includes.add('optional');
-        return `${emitIdentifierReference(expression.reference, context)}.value()`;
+      if (expression.reference.kind === 'binding' && hasCppPresentBindingStorageProofCpp(expression, context)) {
+        const presentStorage = emitCppPresentBindingStorageValueCpp(expression, context);
+        if (presentStorage) return presentStorage;
       }
       if (
         expression.reference.kind === 'binding' &&
@@ -8977,13 +8923,7 @@ function getCppOptionalStoragePresentGuardNarrowingCpp(
   const operand = leftSentinel ? statement.condition.right : statement.condition.left;
   if (operand.kind !== 'identifier' || operand.reference.kind !== 'binding') return undefined;
   const bindingId = operand.reference.binding.id;
-  if (
-    !context.capturedReferentOnlyBindingIds.has(bindingId) &&
-    !context.nullableBindingIds.has(bindingId) &&
-    !context.arrayElementBindingIds.has(bindingId)
-  ) {
-    return undefined;
-  }
+  if (!hasCppBindingAbsenceStorageCpp(bindingId, context)) return undefined;
   const evidence = statement.condition.semantics.nullishComparison;
   const testsEveryAbsentMember =
     statement.condition.operator === '==' ||
@@ -12465,39 +12405,111 @@ function getCppNullishComparisonOperandTypeCpp(
     : getIrExpressionTypeEvidenceCpp(operand, context);
 }
 
+// Whether one binding's emitted carrier, rather than merely its source type, stores an absent state.
+// Most bindings obtain that carrier from a nullable declaration or an indexed read. A runtime-owned
+// call result is the important third case: its source type may be erased to `any`, while the external
+// profile elects `std::optional<flight::Ref<Owner>>` and records the sentinel separately. Immutable
+// initializer refinement can instead keep a concrete present carrier, so it wins over a stale nullable
+// source mark. This is the shared storage question used by guards, assertions, arguments, and receivers.
+function hasCppBindingAbsenceStorageCpp(bindingId: string, context: EmitContext): boolean {
+  if (context.arrayElementBindingIds.has(bindingId)) return true;
+  if (context.externalCallResultPresenceBindings.has(bindingId)) {
+    const targetType = context.externalBindingStorageTargetTypes.get(bindingId);
+    if (targetType && getCppOptionalTargetPayloadCpp(targetType)) return true;
+  }
+  if (!context.nullableBindingIds.has(bindingId)) return false;
+  const retained = context.preservedInitializerTypes.get(bindingId);
+  const retainedUnion = retained ? getIrUnionTypeCpp(retained, context, new Set()) : undefined;
+  return !(
+    retained &&
+    retained.kind !== 'null' &&
+    retained.kind !== 'undefined' &&
+    !retainedUnion?.types.some((member) => member.kind === 'null' || member.kind === 'undefined')
+  );
+}
+
+function hasCppPresentBindingStorageProofCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): boolean {
+  if (expression.presence === 'narrowedPresent') return true;
+  if (expression.reference.kind !== 'binding') return false;
+  const narrowedType = context.narrowedBindingTypes.get(expression.reference.binding.id);
+  return narrowedType !== undefined && !hasIrTypeAbsentMember(narrowedType);
+}
+
+// Project the value a presence proof names from the binding's existing carrier. This never rebuilds the
+// owner: optional storage yields its `value()`, while a dual-sentinel variant yields its one proven value
+// alternative. Runtime-owned result locals deliberately need no source union -- their external profile
+// chose the optional carrier, and the guard or explicit non-null assertion supplies the missing proof.
+function emitCppPresentBindingStorageValueCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.reference.binding.id;
+  if (!hasCppBindingAbsenceStorageCpp(bindingId, context)) return undefined;
+  const binding = emitIdentifierReference(expression.reference, context);
+  if (context.externalCallResultPresenceBindings.has(bindingId)) {
+    context.includes.add('optional');
+    return `${binding}.value()`;
+  }
+  const bindingType = getCppBindingTypeCpp(bindingId, context);
+  const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  const narrowedType = context.narrowedBindingTypes.get(bindingId) ?? expression.narrowedType;
+  const nestedOptionalMember =
+    plan && narrowedType ? emitCppNarrowedNestedUnionMemberCpp(binding, plan, narrowedType, context) : undefined;
+  if (nestedOptionalMember) return nestedOptionalMember;
+  if (plan?.kind === 'dualSentinelVariant') {
+    const narrowedSlot = narrowedType ? getCppSingleUnionMemberValueSlotCpp(narrowedType, context) : undefined;
+    const matchingSlots = narrowedSlot
+      ? plan.valueSlots.filter((slot) => slot.representationKey === narrowedSlot.representationKey)
+      : plan.valueSlots;
+    if (matchingSlots.length !== 1) {
+      emissionError(context, 'dual-sentinel presence narrowing requires one remaining C++ value domain');
+    }
+    context.includes.add('variant');
+    return `std::get<${String(plan.valueSlots.indexOf(matchingSlots[0]!))}>(${binding})`;
+  }
+  if (plan?.kind === 'optionalVariant') {
+    const narrowedUnion = narrowedType ? getIrUnionTypeCpp(narrowedType, context, new Set()) : undefined;
+    const narrowedPresentMembers = (narrowedUnion?.types ?? (narrowedType ? [narrowedType] : [])).filter(
+      (member) => member.kind !== 'null' && member.kind !== 'undefined',
+    );
+    if (narrowedPresentMembers.length === 1) {
+      const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+      const narrowedTarget = emitType(narrowedPresentMembers[0]!, isolatedContext);
+      const matchingSlots = plan.valueSlots.filter(
+        (slot) =>
+          slot.targetType === narrowedTarget ||
+          slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, narrowedPresentMembers[0]!)) ||
+          areCppUnionMemberDiscriminantsEquivalent(slot.runtimeType, narrowedPresentMembers[0]!, context) ||
+          areCppUnionMemberObjectRepresentationsEquivalent(slot.runtimeType, narrowedPresentMembers[0]!, context),
+      );
+      if (matchingSlots.length === 1) {
+        context.includes.add('variant');
+        return `std::get<${String(plan.valueSlots.indexOf(matchingSlots[0]!))}>(${binding}.value())`;
+      }
+    }
+  }
+  context.includes.add('optional');
+  return `${binding}.value()`;
+}
+
+function getCppOptionalTargetPayloadCpp(targetType: string): string | undefined {
+  const prefix = 'std::optional<';
+  return targetType.startsWith(prefix) && targetType.endsWith('>') ? targetType.slice(prefix.length, -1) : undefined;
+}
+
 // Whether the emitted expression carries absence in its own storage: an `std::optional<...>` from an
 // indexed read, or a read of an optional row member. This is the STORAGE axis and the declared type
 // is a separate question -- a `Readonly<Record<string, V>>` index read shows no union in its type
 // while the lowering elected `std::optional` storage for it, so neither axis can be read off the
 // other.
 function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
-  if (
-    expression.kind === 'identifier' &&
-    expression.reference.kind === 'binding' &&
-    !context.arrayElementBindingIds.has(expression.reference.binding.id) &&
-    !context.externalCallResultPresenceBindings.has(expression.reference.binding.id)
-  ) {
-    const retained = context.preservedInitializerTypes.get(expression.reference.binding.id);
-    const retainedUnion = retained ? getIrUnionTypeCpp(retained, context, new Set()) : undefined;
-    if (
-      retained &&
-      retained.kind !== 'null' &&
-      retained.kind !== 'undefined' &&
-      !retainedUnion?.types.some((member) => member.kind === 'null' || member.kind === 'undefined')
-    ) {
-      // Storage chosen from an immutable initializer can be narrower than the checker's flow type.
-      // Once that retained carrier proves a present value, a stale nullable-binding mark must not make
-      // collection boundaries or later coalesces treat the concrete C++ reference as std::optional.
-      return false;
-    }
-  }
-  if (
-    expression.kind === 'identifier' &&
-    expression.reference.kind === 'binding' &&
-    (context.nullableBindingIds.has(expression.reference.binding.id) ||
-      context.arrayElementBindingIds.has(expression.reference.binding.id))
-  ) {
-    return true;
+  if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+    return hasCppBindingAbsenceStorageCpp(expression.reference.binding.id, context);
   }
   if (
     expression.kind === 'element' &&
@@ -12701,8 +12713,8 @@ function assertCppPresentOptionalStorageMemberReceiverCpp(
   const receiver = expression.object;
   if (receiver.kind !== 'identifier' || receiver.reference.kind !== 'binding') return;
   const bindingId = receiver.reference.binding.id;
-  if (!context.nullableBindingIds.has(bindingId) && !context.arrayElementBindingIds.has(bindingId)) return;
-  if (receiver.presence !== 'narrowedPresent') {
+  if (!hasCppBindingAbsenceStorageCpp(bindingId, context)) return;
+  if (!hasCppPresentBindingStorageProofCpp(receiver, context)) {
     emissionError(
       context,
       `member ${expression.name} on optional C++ storage requires proven present payload: nothing proved the payload present, so the read would unpack storage that may be holding absence. Guard the receiver, read it through an optional chain, or narrow it into a present local first; the compiler will not call value() without that proof`,
@@ -26047,9 +26059,8 @@ function getCppVariantIndexedReceiverCpp(
     expression.object.kind === 'identifier' &&
     expression.object.reference.kind === 'binding' &&
     !context.defaultedParameterIds.has(expression.object.reference.binding.id) &&
-    expression.object.presence === 'narrowedPresent' &&
-    (context.nullableBindingIds.has(expression.object.reference.binding.id) ||
-      context.arrayElementBindingIds.has(expression.object.reference.binding.id));
+    hasCppPresentBindingStorageProofCpp(expression.object, context) &&
+    hasCppBindingAbsenceStorageCpp(expression.object.reference.binding.id, context);
   return storagePlan?.kind === 'optionalVariant' && !underlyingOptionalAutomaticallyUnwrapped
     ? `${receiver}.value()`
     : receiver;
@@ -28955,7 +28966,14 @@ function memberOp(object: Readonly<IrExpression>, context: EmitContext): string 
   // declaration is the only evidence for the operator, and the same one the storage spelling used.
   if (object.kind === 'identifier' && object.reference.kind === 'binding') {
     const declaredStorage = context.externalBindingStorageTargetTypes.get(object.reference.binding.id);
-    if (declaredStorage) return declaredStorage.startsWith('flight::Ref<') ? '->' : '.';
+    if (declaredStorage) {
+      const present = hasCppPresentBindingStorageProofCpp(object, context);
+      const projectedStorage =
+        present && hasCppBindingAbsenceStorageCpp(object.reference.binding.id, context)
+          ? (getCppOptionalTargetPayloadCpp(declaredStorage) ?? declaredStorage)
+          : declaredStorage;
+      return projectedStorage.startsWith('flight::Ref<') ? '->' : '.';
+    }
   }
   const genericCarrier =
     object.kind === 'property' && object.presence === 'narrowedPresent'
@@ -28972,9 +28990,8 @@ function memberOp(object: Readonly<IrExpression>, context: EmitContext): string 
   if (
     object.kind === 'identifier' &&
     object.reference.kind === 'binding' &&
-    object.presence !== 'narrowedPresent' &&
-    (context.arrayElementBindingIds.has(object.reference.binding.id) ||
-      context.nullableBindingIds.has(object.reference.binding.id)) &&
+    !hasCppPresentBindingStorageProofCpp(object, context) &&
+    hasCppBindingAbsenceStorageCpp(object.reference.binding.id, context) &&
     type &&
     (hasFlightReferenceRepresentationCpp(type, context) || hasFlightFacetReferenceRepresentationCpp(type, context))
   ) {
