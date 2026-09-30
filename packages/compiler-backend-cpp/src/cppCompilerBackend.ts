@@ -8660,6 +8660,26 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       ];
     }
     case 'if': {
+      // A branch whose condition is constant is not dead code to the emitter: it is code that must never
+      // be emitted, because the body may read a value the condition just proved absent. `typeof x` where
+      // x is exactly `undefined` is "undefined" at every point in the program, so a comparison against
+      // that tag is a constant, and the branch it excludes cannot be lowered -- `String(x)` inside it
+      // emits a call on storage that holds nothing. Only a proven absence folds: a union beside absence
+      // keeps its runtime presence test, which the tag lanes above already emit.
+      const provenAbsent = getCppProvenAbsentTypeofBranchCpp(statement.condition, context);
+      if (provenAbsent !== undefined) {
+        const taken = provenAbsent ? statement.consequent : statement.otherwise;
+        if (!taken) return [];
+        // The braces stay: the source branch was a scope, and a body that declares a name shadowing an
+        // outer one must keep doing so.
+        return [
+          '{',
+          ...indentSourceLines(
+            emitStatementBody(taken, getCppConditionBranchContextCpp(statement.condition, provenAbsent, context)),
+          ),
+          '}',
+        ];
+      }
       const lines = [
         `if (${emitCppTruthinessExpression(statement.condition, context)}) {`,
         ...indentSourceLines(
@@ -11938,6 +11958,37 @@ function getCppTypeofFunctionComparisonOperandCpp(
   if (isFunctionLiteral(right)) return typeofOperand(left);
   if (isFunctionLiteral(left)) return typeofOperand(right);
   return undefined;
+}
+
+// `typeof X !== 'undefined'` where X holds nothing is a constant, and which constant decides whether a
+// branch exists at all. The operand's type must be exactly absence -- no value domain -- for the answer
+// to be compile-time; a union carrying a value domain beside absence keeps a real runtime question, and
+// the tag lanes below answer that one with the presence machinery. Returns the value of the comparison
+// when it is proven, and undefined when it is not.
+function getCppProvenAbsentTypeofBranchCpp(
+  condition: Readonly<IrExpression>,
+  context: EmitContext,
+): boolean | undefined {
+  if (condition.kind !== 'binary') return undefined;
+  if (
+    condition.operator !== '==' &&
+    condition.operator !== '===' &&
+    condition.operator !== '!=' &&
+    condition.operator !== '!=='
+  ) {
+    return undefined;
+  }
+  const comparison = getCppTypeofTagComparisonCpp(condition.left, condition.right);
+  if (!comparison || comparison.tag !== 'undefined') return undefined;
+  const operandType = getIrExpressionTypeEvidenceCpp(comparison.operand, context);
+  if (!operandType) return undefined;
+  const union = getIrUnionTypeCpp(operandType, context, new Set());
+  // The lowering states even a pure absence as a union, so the members are what decides: every member
+  // undefined means the operand has no value domain at all, and one value member beside absence means it
+  // still has a runtime question to ask.
+  const members = union ? union.types : [operandType];
+  if (members.length === 0 || !members.every((member) => member.kind === 'undefined')) return undefined;
+  return condition.operator === '==' || condition.operator === '===';
 }
 
 // `typeof X === tag` asks what X holds, and a closed union answers it even with several value domains:

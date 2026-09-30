@@ -16872,6 +16872,46 @@ export interface BrowserPermissionMediaTypes {
     expect(emitted.contents).toContain('host::MediaStreamTrack track;');
   });
 
+  it('folds a typeof test on a proven-absent binding and prunes the branch it excludes', () => {
+    // `typeof x` where x is exactly absence reports "undefined" at every point in the program, so the
+    // comparison is a constant, and the branch it excludes must not be emitted at all: a body that reads
+    // the binding as a present value emits a call on storage that holds nothing, which the pinned runtime
+    // rejects -- 'struct flight::Undefined' has no member named 'value'. Pruning is therefore what makes
+    // the module emittable rather than a tidiness pass over dead code.
+    const absent = lower(
+      'absent.ts',
+      `export function f(): number {
+         const x = undefined;
+         if (typeof x !== 'undefined') { return String(x).length; }
+         return 0;
+       }`,
+    );
+    const absentEmitted = emitIrModuleCpp(absent.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(absentEmitted).not.toContain('.value()');
+    expect(absentEmitted).not.toContain('flight::String("undefined") != flight::String("undefined")');
+    expect(absentEmitted).toContain('return 0.0;');
+
+    // Each direction keeps the branch its constant selects.
+    const taken = lower(
+      'taken.ts',
+      `export function f(): number {
+         const x = undefined;
+         if (typeof x === 'undefined') { return 7; } else { return 9; }
+       }`,
+    );
+    const takenEmitted = emitIrModuleCpp(taken.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(takenEmitted).toContain('return 7.0;');
+    expect(takenEmitted).not.toContain('return 9.0;');
+
+    // The control that keeps this to proven absence: a union carrying a value domain beside absence keeps
+    // its runtime presence test, because there the question is genuinely a runtime one.
+    const union = lower(
+      'union.ts',
+      `export function f(x: number | undefined): number { if (typeof x !== 'undefined') { return x; } return 0; }`,
+    );
+    expect(emitIrModuleCpp(union.module, { runtimeProfile: 'flight-cpp' }).contents).toContain('if (x.has_value()) {');
+  });
+
   it('folds a typeof probe on an unbound ambient global to absent without claiming a binding', () => {
     const result = lower(
       'presence.ts',
