@@ -3,6 +3,7 @@ import { createCompilerLoweringFailure } from '../../compiler-lowering/src/index
 import type {
   CompilerBackend,
   CompilerModuleIdentity,
+  CompilerPackageCompilationProgress,
   CompilerPackageGraph,
   TypeScriptPackageGraphSource,
 } from '../../compiler-types/src/index.js';
@@ -227,6 +228,121 @@ describe('compileTypeScriptPackageGraph', () => {
         stage: 'dependency',
       }),
     ]);
+  });
+
+  it('reports bounded lowering and per-module emission progress without changing the compilation', () => {
+    const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
+    const bad = source('@local/source', 'source', 'bad.ts', 'export const bad = 2;');
+    const goodIdentity = identity(good, 'Good');
+    const badIdentity = identity(bad, 'Bad');
+    const progress: CompilerPackageCompilationProgress[] = [];
+    let observing = true;
+    const backend: CompilerBackend = {
+      createEmissionSession: () => {
+        if (observing) {
+          expect(progress.at(-1)).toMatchObject({ phase: 'emission-session', state: 'started' });
+        }
+        return {
+          emitModule(module) {
+            if (observing) {
+              expect(progress.at(-1)).toEqual({
+                completedModules: module.name === 'Bad' ? 0 : 1,
+                module: module.name === 'Bad' ? badIdentity : goodIdentity,
+                moduleCount: 2,
+                phase: 'module-emission',
+                schema: 'flight-compiler-package-compilation-progress/1',
+                state: 'started',
+              });
+            }
+            if (module.name === 'Bad') throw createBackendEmissionFailure('fixture', module, 'unsupported bad value');
+            return [{ contents: module.name, path: `${module.name}.txt` }];
+          },
+        };
+      },
+      emitModule: () => {
+        throw new Error('compatibility entry point must not be used');
+      },
+      name: 'fixture',
+    };
+    const options = {
+      backend,
+      backendOptions: {},
+      graph: graph([], [], [{ dependencies: [], name: '@local/source', root: good.packageRoot }]),
+      sources: [good, bad],
+    };
+
+    const observed = compileTypeScriptPackageGraph({
+      ...options,
+      observeProgress(event) {
+        expect(Object.isFrozen(event)).toBe(true);
+        if ('module' in event) expect(Object.isFrozen(event.module)).toBe(true);
+        progress.push(event);
+      },
+    });
+    observing = false;
+    const silent = compileTypeScriptPackageGraph(options);
+
+    expect(progress).toEqual([
+      {
+        moduleCount: 2,
+        phase: 'lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        moduleCount: 2,
+        phase: 'lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+      {
+        moduleCount: 2,
+        phase: 'emission-session',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        moduleCount: 2,
+        phase: 'emission-session',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+      {
+        completedModules: 0,
+        module: badIdentity,
+        moduleCount: 2,
+        phase: 'module-emission',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        completedModules: 1,
+        module: badIdentity,
+        moduleCount: 2,
+        outcome: 'refused',
+        phase: 'module-emission',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+      {
+        completedModules: 1,
+        module: goodIdentity,
+        moduleCount: 2,
+        phase: 'module-emission',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        completedModules: 2,
+        module: goodIdentity,
+        moduleCount: 2,
+        outcome: 'emitted',
+        phase: 'module-emission',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+    ]);
+    expect(observed).toEqual(silent);
   });
 
   it('carries a backend refusal rule into the report so instances of one decision group together', () => {

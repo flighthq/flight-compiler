@@ -61,11 +61,43 @@ export interface CompileTypeScriptPackageGraphOptions<BackendOptions> {
   readonly backendOptions: Readonly<BackendOptions>;
   readonly graph: Readonly<CompilerPackageGraph>;
   readonly moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined;
+  /** Synchronous, opt-in progress for diagnosing a long-running package-graph compilation. */
+  readonly observeProgress?: ((progress: Readonly<CompilerPackageCompilationProgress>) => void) | undefined;
   readonly patches?: readonly SemanticPatch[] | undefined;
   readonly sourceParser?: Readonly<CompilerEmittedSourceParser> | undefined;
   readonly sources: readonly TypeScriptPackageGraphSource[];
   readonly targetCompilationSmoke?: Readonly<CompilerTargetCompilationSmoke> | undefined;
 }
+
+/**
+ * A bounded synchronous trace: two lowering events, two session events, then two events per module
+ * that reaches emission. A started event is delivered before the named work begins, so the last event
+ * identifies the phase or module in progress without adding clocks or machine state to compiler output.
+ */
+export type CompilerPackageCompilationProgress =
+  | Readonly<{
+      moduleCount: number;
+      phase: 'emission-session' | 'lowering';
+      schema: 'flight-compiler-package-compilation-progress/1';
+      state: 'completed' | 'started';
+    }>
+  | Readonly<{
+      completedModules: number;
+      module: CompilerModuleIdentity;
+      moduleCount: number;
+      phase: 'module-emission';
+      schema: 'flight-compiler-package-compilation-progress/1';
+      state: 'started';
+    }>
+  | Readonly<{
+      completedModules: number;
+      module: CompilerModuleIdentity;
+      moduleCount: number;
+      outcome: 'emitted' | 'refused';
+      phase: 'module-emission';
+      schema: 'flight-compiler-package-compilation-progress/1';
+      state: 'completed';
+    }>;
 
 export type CompilerPackageCompilationRefusalCode =
   | BackendEmissionFailureCode

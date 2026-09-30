@@ -23,6 +23,7 @@ import type {
   CompilerModuleResolutionPlan,
   CompilerPackageCompilationFileReport,
   CompilerPackageCompilationModuleReport,
+  CompilerPackageCompilationProgress,
   CompilerPackageCompilationRefusal,
   CompilerPackageCompilationResult,
   CompilerPackageGraphFailure,
@@ -55,10 +56,22 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     options.graph.moduleDependencies,
     options.moduleResolution,
   );
+  observeCompilerPackageCompilationProgress(options.observeProgress, {
+    moduleCount: options.sources.length,
+    phase: 'lowering',
+    schema: 'flight-compiler-package-compilation-progress/1',
+    state: 'started',
+  });
   const lowered = lowerTypeScriptSources(
     options.sources.map(({ packageRoot: _packageRoot, ...source }) => source),
     semanticResolution,
   );
+  observeCompilerPackageCompilationProgress(options.observeProgress, {
+    moduleCount: lowered.length,
+    phase: 'lowering',
+    schema: 'flight-compiler-package-compilation-progress/1',
+    state: 'completed',
+  });
   validateCompilerPackageGraphModuleIdentities(lowered.map((result) => result.module));
   validateCompilerPackageGraphReferences(options.graph.entries, options.graph.moduleDependencies, lowered, packages);
   const patched = applySemanticPatchSet(
@@ -112,9 +125,31 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     modules: emissionModules,
     options: options.backendOptions,
   };
+  observeCompilerPackageCompilationProgress(options.observeProgress, {
+    moduleCount: emissionModules.length,
+    phase: 'emission-session',
+    schema: 'flight-compiler-package-compilation-progress/1',
+    state: 'started',
+  });
   const emissionSession = options.backend.createEmissionSession?.(emitContext);
+  observeCompilerPackageCompilationProgress(options.observeProgress, {
+    moduleCount: emissionModules.length,
+    phase: 'emission-session',
+    schema: 'flight-compiler-package-compilation-progress/1',
+    state: 'completed',
+  });
+  let completedModules = 0;
   for (const module of emissionModules) {
     const record = records.get(getCompilerPackageGraphModuleKey(module))!;
+    observeCompilerPackageCompilationProgress(options.observeProgress, {
+      completedModules,
+      module: cloneCompilerPackageGraphIdentity(module),
+      moduleCount: emissionModules.length,
+      phase: 'module-emission',
+      schema: 'flight-compiler-package-compilation-progress/1',
+      state: 'started',
+    });
+    let outcome: 'emitted' | 'refused' = 'emitted';
     try {
       record.files.push(
         ...(emissionSession ? emissionSession.emitModule(module) : options.backend.emitModule(module, emitContext)).map(
@@ -122,8 +157,19 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
         ),
       );
     } catch (error) {
+      outcome = 'refused';
       record.refusals.push(createCompilerPackageGraphEmissionRefusal(error));
     }
+    completedModules += 1;
+    observeCompilerPackageCompilationProgress(options.observeProgress, {
+      completedModules,
+      module: cloneCompilerPackageGraphIdentity(module),
+      moduleCount: emissionModules.length,
+      outcome,
+      phase: 'module-emission',
+      schema: 'flight-compiler-package-compilation-progress/1',
+      state: 'completed',
+    });
   }
   refuseCompilerPackageGraphOutputCollisions(records);
   propagateCompilerPackageGraphRefusals(records, moduleDependencies);
@@ -198,6 +244,15 @@ export function isCompilerPackageGraphFailure(value: unknown): value is Compiler
 
 function cloneCompilerPackageGraphIdentity(identity: Readonly<CompilerModuleIdentity>): CompilerModuleIdentity {
   return { name: identity.name, packageName: identity.packageName, source: identity.source };
+}
+
+function observeCompilerPackageCompilationProgress(
+  observer: CompileTypeScriptPackageGraphOptions<unknown>['observeProgress'],
+  progress: CompilerPackageCompilationProgress,
+): void {
+  if (!observer) return;
+  if ('module' in progress) Object.freeze(progress.module);
+  observer(Object.freeze(progress));
 }
 
 function compareCompilerPackageGraphDiagnostics(
