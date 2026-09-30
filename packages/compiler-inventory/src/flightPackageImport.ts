@@ -9,6 +9,7 @@ import type {
   WorkspaceSource,
 } from '../../compiler-types/src/index.js';
 import { createCompilerInventoryFailure } from './compilerInventoryFailure.js';
+import { isFlightWorkspaceProductionSource } from './flightWorkspaceSourceClassification.js';
 
 export function analyzeFlightPackageImports(
   options: Readonly<AnalyzeFlightPackageImportsOptions>,
@@ -113,12 +114,7 @@ function walkProductionTypeScriptFiles(directory: string, workspace: WorkspaceSo
   for (const entry of workspace.listDirectory(directory)) {
     const target = path.join(directory, entry.name);
     if (entry.isDirectory) files.push(...walkProductionTypeScriptFiles(target, workspace));
-    else if (
-      !entry.isDirectory &&
-      /\.tsx?$/u.test(entry.name) &&
-      !/\.(?:test|spec)\.tsx?$/u.test(entry.name) &&
-      !entry.name.endsWith('.d.ts')
-    ) {
+    else if (!entry.isDirectory && isFlightWorkspaceProductionSource(entry.name)) {
       files.push(target);
     }
   }

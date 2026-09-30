@@ -69,6 +69,64 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps conventional test tooling out of checks without dropping similarly named production sources', () => {
+    const source = createMemoryWorkspaceSource({
+      '/flight/packages/app/package.json': createPackageManifest('@flighthq/app'),
+      '/flight/packages/app/src/gl.test.ts': "import { expectReady } from './glTestHelper.js'; expectReady({});",
+      '/flight/packages/app/src/glTestHelper.ts':
+        "import { expect } from 'vitest'; export function expectReady(value: unknown): void { expect(value as unknown as number); }",
+      '/flight/packages/app/src/glTestHelpers.ts':
+        'export function coerce(value: number): number { return value as unknown as number; }',
+      '/flight/packages/app/src/index.ts': "export { coerce } from './glTestHelpers.js';",
+    });
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/app'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+
+    expect(input.sources.map(({ sourceFile }) => sourceFile.fileName)).toEqual([
+      '/flight/packages/app/src/glTestHelpers.ts',
+      '/flight/packages/app/src/index.ts',
+    ]);
+    expect(compilation.report.modules).toMatchObject([
+      { module: { source: 'packages/app/src/glTestHelpers.ts' }, refusals: [], status: 'emitted' },
+      { module: { source: 'packages/app/src/index.ts' }, refusals: [], status: 'emitted' },
+    ]);
+    expect(report.directFindings).toMatchObject([
+      {
+        code: 'source-portability',
+        module: { source: 'packages/app/src/glTestHelpers.ts' },
+        rule: 'unchecked-double-assertion',
+        stage: 'source',
+      },
+    ]);
+    expect(report.totals).toMatchObject({
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+    });
+    expect(JSON.stringify(report)).not.toContain('gl.test.ts');
+    expect(JSON.stringify(report)).not.toContain('glTestHelper.ts');
+  });
+
   it('keeps specialized runtime-factory findings policy-owned and baseline-stable by source identity', () => {
     const source = createMemoryWorkspaceSource(createRuntimeFactoryWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({

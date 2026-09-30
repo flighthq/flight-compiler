@@ -26,6 +26,10 @@ import { readPackageExportManifest } from './flightPackageExportManifest.js';
 import { analyzeFlightPackageHostFacts } from './flightPackageHostFacts.js';
 import { analyzeFlightPackageImports } from './flightPackageImport.js';
 import { readFlightPackageManifests } from './flightPackageManifest.js';
+import {
+  isFlightWorkspaceProductionSource,
+  isFlightWorkspaceTestSource,
+} from './flightWorkspaceSourceClassification.js';
 import { readGitCommit } from './gitCheckoutRevision.js';
 import { createTypeScriptProject } from './typeScriptProject.js';
 import { analyzeTypeScriptSourceRuntimeExports } from './typeScriptRuntimeBinding.js';
@@ -303,11 +307,11 @@ function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
 }
 
 function isSourceFile(file: string): boolean {
-  return /\.tsx?$/u.test(file) && !isTestFile(file) && !file.endsWith('.d.ts');
+  return isFlightWorkspaceProductionSource(file);
 }
 
 function isTestFile(file: string): boolean {
-  return /\.(?:test|spec)\.tsx?$/u.test(file);
+  return isFlightWorkspaceTestSource(file);
 }
 
 function makeRecord(

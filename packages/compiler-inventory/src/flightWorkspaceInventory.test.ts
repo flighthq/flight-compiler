@@ -33,7 +33,7 @@ describe('analyzeFlightWorkspace', () => {
         productionImports: 6,
         rootExports: 10,
         sourceFiles: 7,
-        testFiles: 1,
+        testFiles: 2,
       });
       expect(getPackageInventoryRootExportLane(types)).toBe(root);
       expect(contract.exports).toEqual(root.exports);
@@ -928,9 +928,9 @@ function createUpstreamFixture(): string {
     'packages/types/src/value.ts',
     'export function createValue(value: number): number { return value; }\n',
   );
-  // A declaration file and a colocated test sit beside the sources so the inventory has to exclude
-  // both: a .d.ts would otherwise be analyzed as a second declaration of the same symbols, and a test
-  // file would be read as public API.
+  // A declaration file and colocated test sources sit beside the sources so the inventory has to exclude
+  // them: a .d.ts would otherwise be analyzed as a second declaration of the same symbols, while tests
+  // and their helpers would be read as public API and production imports.
   // other.ts is reachable only through the renamed local re-export in index.ts, so the module graph
   // has to follow the import alias to find it at all.
   write(
@@ -940,6 +940,7 @@ function createUpstreamFixture(): string {
   );
   write(directory, 'packages/types/src/ambient.d.ts', 'export declare const ambient: number;\n');
   write(directory, 'packages/types/src/value.test.ts', 'export const cases: number[] = [];\n');
+  write(directory, 'packages/types/src/valueTestHelper.ts', "import { expect } from 'vitest';\nvoid expect;\n");
   write(
     directory,
     'packages/sdk/package.json',
