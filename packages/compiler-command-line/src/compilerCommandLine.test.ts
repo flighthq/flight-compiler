@@ -531,6 +531,118 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(run.out.join('')).toContain('0 gating');
   });
 
+  it('composes repeated C++ binding profiles and records the exact inputs that changed the measurement', () => {
+    const hostTypes: CheckPackage = {
+      directory: 'host-types',
+      name: '@flighthq/host-types',
+      sources: {
+        'index.ts':
+          'export function keepCanvas(value: CanvasRenderingContext2D): CanvasRenderingContext2D { return value; }\n' +
+          'export function keepAudio(value: AudioContext): AudioContext { return value; }\n',
+      },
+    };
+    const canvas = bindingProfile('test/canvas/1', 'canvas', 'CanvasRenderingContext2D', 'host::Canvas');
+    const audio = bindingProfile('test/audio/1', 'audio', 'AudioContext', 'host::Audio');
+    const withoutProfiles = checkRun([hostTypes]);
+    const withProfiles = checkRun([hostTypes], {
+      bindingProfiles: { '/profiles/audio.json': audio, '/profiles/canvas.json': canvas },
+    });
+
+    const unbound = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'cpp'] },
+      withoutProfiles.capabilities,
+    );
+    const bound = validateCompilerCommandLineCheckRequest(
+      {
+        argv: [
+          '/ws',
+          '--target',
+          'cpp',
+          '--binding-profile=/profiles/canvas.json',
+          '--binding-profile',
+          '/profiles/audio.json',
+          '--format',
+          'json',
+        ],
+      },
+      withProfiles.capabilities,
+    );
+
+    expect(checkOutcome(unbound).report.directFindings).toContainEqual(
+      expect.objectContaining({ code: 'unsupported-ir', policyClass: 'target-runtime' }),
+    );
+    expect(checkOutcome(bound).report.directFindings).toEqual([]);
+    expect(checkOutcome(bound).bindingProfiles).toEqual([
+      {
+        digest: expect.stringMatching(/^sha256:[\da-f]{64}$/u),
+        identity: 'test/canvas/1',
+        profile: 'canvas',
+      },
+      {
+        digest: expect.stringMatching(/^sha256:[\da-f]{64}$/u),
+        identity: 'test/audio/1',
+        profile: 'audio',
+      },
+    ]);
+    expect(JSON.parse(withProfiles.out.join('')) as unknown).toMatchObject({
+      bindingProfiles: [{ identity: 'test/canvas/1' }, { identity: 'test/audio/1' }],
+      exitCode: 0,
+      schema: 'flight-compiler-check-run/1',
+    });
+  });
+
+  it('refuses unreadable, malformed, duplicate, and non-C++ binding profile requests', () => {
+    const malformed = checkRun([quiet], { bindingProfiles: { '/profiles/bad.json': '{' } });
+    const duplicates = checkRun([quiet], {
+      bindingProfiles: {
+        '/profiles/first.json': bindingProfile('test/first/1', 'first', 'NativeHost', 'host::First'),
+        '/profiles/second.json': bindingProfile('test/second/1', 'second', 'NativeHost', 'host::Second'),
+      },
+    });
+    const missing = checkRun([quiet]);
+    const nonCpp = checkRun([quiet]);
+
+    expect(
+      validateCompilerCommandLineCheckRequest(
+        { argv: ['/ws', '--target', 'cpp', '--binding-profile', '/profiles/bad.json'] },
+        malformed.capabilities,
+      ).exitCode,
+    ).toBe(2);
+    expect(
+      validateCompilerCommandLineCheckRequest(
+        {
+          argv: [
+            '/ws',
+            '--target',
+            'cpp',
+            '--binding-profile',
+            '/profiles/first.json',
+            '--binding-profile',
+            '/profiles/second.json',
+          ],
+        },
+        duplicates.capabilities,
+      ).exitCode,
+    ).toBe(2);
+    expect(
+      validateCompilerCommandLineCheckRequest(
+        { argv: ['/ws', '--target', 'cpp', '--binding-profile', '/profiles/missing.json'] },
+        missing.capabilities,
+      ).exitCode,
+    ).toBe(2);
+    expect(
+      validateCompilerCommandLineCheckRequest(
+        { argv: ['/ws', '--target', 'rust', '--binding-profile', '/profiles/unused.json'] },
+        nonCpp.capabilities,
+      ).exitCode,
+    ).toBe(2);
+
+    expect(malformed.err.join('')).toContain('is not valid JSON');
+    expect(duplicates.err.join('')).toContain('NativeHost:type more than once');
+    expect(missing.err.join('')).toContain('could not be read');
+    expect(nonCpp.err.join('')).toContain('--binding-profile requires --target cpp');
+  });
+
   it('reports source portability findings alongside target results in text and JSON', () => {
     const portable: CheckPackage = {
       directory: 'portable',
@@ -851,10 +963,12 @@ describe('validateCompilerCommandLineCheckRequest', () => {
 
     expect(first.out.join('')).toBe(second.out.join(''));
     expect(rendered.exitCode).toBe(1);
-    expect(JSON.parse(first.out.join('')) as unknown).toMatchObject({
+    const json = JSON.parse(first.out.join('')) as Record<string, unknown>;
+    expect(json).toMatchObject({
       exitCode: 1,
       schema: 'flight-compiler-check-run/1',
     });
+    expect(json).not.toHaveProperty('bindingProfiles');
   });
 
   it('records the provenance its caller supplies rather than the run own unversioned default', () => {
@@ -943,6 +1057,24 @@ function goodModule(): string {
   return 'export function doubled(value: number): number { return value * 2; }';
 }
 
+function bindingProfile(identity: string, profile: string, sourceName: string, targetName: string): string {
+  return JSON.stringify({
+    bindings: [
+      {
+        headers: ['host/runtime.hpp'],
+        nullability: 'non-null',
+        ownership: 'shared',
+        sourceName,
+        space: 'type',
+        targetName,
+      },
+    ],
+    identity,
+    profile,
+    schema: 'flight-cpp-external-bindings/1',
+  });
+}
+
 function checkOutcome(result: Readonly<CompilerCommandLineCheckResult>): Readonly<CompilerCommandLineCheckOutcome> {
   if (isCompilerCommandLineCheckRefusal(result)) throw new Error(`Expected an outcome, got ${result.reason}`);
   return result;
@@ -961,6 +1093,7 @@ function checkRun(
   options: Readonly<{
     artifactRevisions?: Readonly<Record<string, string>> | undefined;
     baseline?: string | undefined;
+    bindingProfiles?: Readonly<Record<string, string>> | undefined;
     provenance?: CompilerPackageCheckProvenance | undefined;
     roots?: readonly string[] | undefined;
     upstreamRevision?: string | undefined;
@@ -979,6 +1112,7 @@ function checkRun(
     capabilities: {
       readArtifactRevision: (artifact) => options.artifactRevisions?.[artifact],
       readBaseline: (file) => (file === '/ws/check.baseline' ? options.baseline : undefined),
+      readBindingProfile: (file) => options.bindingProfiles?.[file],
       readUpstreamRevision: () => options.upstreamRevision,
       readWorkspaceRoots: () => options.roots ?? [],
       ...(provenance === undefined ? {} : { readProvenance: () => provenance }),
@@ -1023,6 +1157,7 @@ describe('getCompilerCommandLineCheckUsage', () => {
     expect(usage).toContain('--target');
     expect(usage).toContain('--environment');
     expect(usage).toContain('--baseline');
+    expect(usage).toContain('--binding-profile');
     expect(usage).toContain('--format');
     expect(usage).toContain('--report');
     expect(usage).not.toContain('--out');

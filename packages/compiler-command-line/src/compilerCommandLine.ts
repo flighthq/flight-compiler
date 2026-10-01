@@ -1,4 +1,9 @@
-import { createCppCompilerBackend } from '../../compiler-backend-cpp/src/index.js';
+import { createHash } from 'node:crypto';
+
+import {
+  createCompilerRuntimeExternalSymbolBindingPlanCpp,
+  createCppCompilerBackend,
+} from '../../compiler-backend-cpp/src/index.js';
 import { createHaxeCompilerBackend } from '../../compiler-backend-hx/src/index.js';
 import { createRustCompilerBackend } from '../../compiler-backend-rs/src/index.js';
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
@@ -20,6 +25,7 @@ import { compileTypeScriptPackageGraph, parseTypeScriptSource } from '../../comp
 import { analyzeTypeScriptSourcePortability } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerCommandLineCapabilities,
+  CompilerCommandLineCheckBindingProfile,
   CompilerCommandLineCheckCapabilities,
   CompilerCommandLineCheckFormat,
   CompilerCommandLineCheckOutcome,
@@ -32,6 +38,8 @@ import type {
   CompilerPackageCheckBaseline,
   CompilerPackageCheckProvenance,
   CompilerPackageCheckReport,
+  CppCompilerExternalBinding,
+  CppCompilerExternalBindingManifest,
   FlightPackageEligibilitySubsetExcludedRoot,
   FlightPackageEnvironment,
   FlightPackageManifest,
@@ -143,13 +151,17 @@ function createCompilerCommandLineCheckSummaryLine(result: Readonly<CompilerComm
       : ` Excluded ${String(result.excludedRoots.length)} package root(s): ${result.excludedRoots
           .map((root) => `${root.name} requires ${root.requiredEnvironment}`)
           .join(', ')}.`;
+  const bindingProfiles =
+    result.bindingProfiles === undefined
+      ? ''
+      : ` Binding profiles: ${result.bindingProfiles.map((profile) => profile.identity).join(', ')}.`;
   return (
     `${String(result.eligiblePackageNames.length)} package(s) checked, ` +
     `${String(result.report.totals.directFindings)} direct finding(s), ` +
     `${String(result.comparison.introduced.length)} introduced, ${String(gating)} gating, ` +
     `${String(result.comparison.unchanged.length)} baselined, ` +
     `${String(result.comparison.resolvedFindingIdentities.length)} resolved, ` +
-    `policy ${result.policyResult.policy.id}.${excluded}`
+    `policy ${result.policyResult.policy.id}.${excluded}${bindingProfiles}`
   );
 }
 
@@ -228,6 +240,10 @@ export function validateCompilerCommandLineCheckRequest(
   }
   const baseline = readCompilerCommandLineCheckBaseline(capabilities, parsed);
   if ('failure' in baseline) return refuseCompilerCommandLineCheck(capabilities, `${baseline.failure}\n`);
+  const bindingProfiles = readCompilerCommandLineCheckBindingProfiles(parsed, capabilities);
+  if ('failure' in bindingProfiles) {
+    return refuseCompilerCommandLineCheck(capabilities, `${bindingProfiles.failure}\n`);
+  }
   let report: CompilerPackageCheckReport;
   try {
     // One compilation of the whole selected closure, not one per package: the module graph, the export
@@ -241,7 +257,7 @@ export function validateCompilerCommandLineCheckRequest(
     const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
     const compilation = compileTypeScriptPackageGraph({
       backend: createCompilerCommandLineBackend(parsed),
-      backendOptions: createCompilerCommandLineCheckBackendOptions(parsed),
+      backendOptions: createCompilerCommandLineCheckBackendOptions(parsed, bindingProfiles.externalBindings),
       ...input,
     });
     report = createCompilerPackageCheckReport(compilation.report, {
@@ -254,6 +270,7 @@ export function validateCompilerCommandLineCheckRequest(
   const comparison = compareCompilerPackageCheckBaseline(report, baseline.baseline);
   const policyResult = createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict());
   const outcome: CompilerCommandLineCheckOutcome = {
+    ...(bindingProfiles.provenance.length === 0 ? {} : { bindingProfiles: bindingProfiles.provenance }),
     comparison,
     eligiblePackageNames: selectedPackageNames,
     excludedRoots: selection.excludedRoots,
@@ -335,10 +352,12 @@ function createCompilerCommandLineCheckProvenance(
 
 function createCompilerCommandLineCheckBackendOptions(
   parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
 ): Record<string, unknown> {
   return parsed.target === 'cpp'
     ? {
         runtimeProfile: parsed.runtimeProfile,
+        ...(externalBindings === undefined ? {} : { externalBindings }),
         ...(parsed.runtimeHeader === undefined ? {} : { runtimeHeader: parsed.runtimeHeader }),
       }
     : {};
@@ -493,6 +512,11 @@ const refusalModuleSampleSize = 3;
 function createCompilerCommandLineCheckJson(result: Readonly<CompilerCommandLineCheckOutcome>): unknown {
   return {
     schema: 'flight-compiler-check-run/1',
+    ...(result.bindingProfiles === undefined
+      ? {}
+      : {
+          bindingProfiles: result.bindingProfiles.map((bindingProfile) => ({ ...bindingProfile })),
+        }),
     comparison: result.comparison,
     eligiblePackageNames: [...result.eligiblePackageNames],
     excludedRoots: result.excludedRoots.map((root) => ({
@@ -519,11 +543,13 @@ const commandLineCheckUsage = `Usage: flight-compile check <workspace> --target 
   --baseline <file>       Compare findings against a baseline; the file is never rewritten
   --format <text|json>    Report format (default: text)
   --report <file>         Write the report to a file as well as printing the summary
+  --binding-profile <file> Compose a flight-cpp external binding profile; repeat for several
   --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
   --runtime-header <path> Override the flight-cpp runtime include spelling`;
 
 interface ParsedCompilerCommandLineCheckRequest {
   readonly baselinePath?: string | undefined;
+  readonly bindingProfilePaths: readonly string[];
   readonly environment?: FlightPackageEnvironment | undefined;
   readonly format: CompilerCommandLineCheckFormat;
   readonly selectedPackageNames: readonly string[];
@@ -539,9 +565,23 @@ function parseCompilerCommandLineCheckRequest(
 ): ParsedCompilerCommandLineCheckRequest | Readonly<{ failure: string }> {
   const positional: string[] = [];
   const named = new Map<string, string>();
+  const bindingProfilePaths: string[] = [];
   const selectedPackageNames: string[] = [];
   for (let index = 0; index < request.argv.length; index += 1) {
     const argument = request.argv[index]!;
+    if (argument === '--binding-profile' || argument.startsWith('--binding-profile=')) {
+      const inline = argument.startsWith('--binding-profile=')
+        ? argument.slice('--binding-profile='.length)
+        : undefined;
+      const value = inline ?? request.argv[index + 1];
+      if (value === undefined || value.length === 0 || (inline === undefined && value.startsWith('--'))) {
+        return { failure: '--binding-profile requires a value' };
+      }
+      if (bindingProfilePaths.includes(value)) return { failure: `--binding-profile ${value} is supplied twice` };
+      bindingProfilePaths.push(value);
+      if (inline === undefined) index += 1;
+      continue;
+    }
     if (!argument.startsWith('--')) {
       positional.push(argument);
       continue;
@@ -589,8 +629,12 @@ function parseCompilerCommandLineCheckRequest(
   if ((named.has('runtime-profile') || runtimeHeader !== undefined) && target !== 'cpp') {
     return { failure: '--runtime-profile and --runtime-header require --target cpp' };
   }
+  if (bindingProfilePaths.length > 0 && target !== 'cpp') {
+    return { failure: '--binding-profile requires --target cpp' };
+  }
   return {
     ...(named.get('baseline') === undefined ? {} : { baselinePath: named.get('baseline')! }),
+    bindingProfilePaths,
     ...(environmentName === undefined ? {} : { environment: environmentName as FlightPackageEnvironment }),
     format,
     ...(reportPath === undefined ? {} : { reportPath }),
@@ -690,3 +734,78 @@ const commandLineCheckValueOptions = new Set([
   '--runtime-profile',
   '--target',
 ]);
+
+function readCompilerCommandLineCheckBindingProfiles(
+  parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
+  capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
+):
+  | Readonly<{
+      externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined;
+      provenance: readonly CompilerCommandLineCheckBindingProfile[];
+    }>
+  | Readonly<{ failure: string }> {
+  if (parsed.bindingProfilePaths.length === 0) return { provenance: [] };
+  if (capabilities.readBindingProfile === undefined) {
+    return { failure: 'The caller cannot read --binding-profile files' };
+  }
+  const bindings: CppCompilerExternalBinding[] = [];
+  const identities = new Set<string>();
+  const symbols = new Set<string>();
+  const provenance: CompilerCommandLineCheckBindingProfile[] = [];
+  for (const file of parsed.bindingProfilePaths) {
+    const contents = capabilities.readBindingProfile(file);
+    if (contents === undefined) return { failure: `Binding profile ${file} could not be read` };
+    let value: unknown;
+    try {
+      value = JSON.parse(contents);
+    } catch {
+      return { failure: `Binding profile ${file} is not valid JSON` };
+    }
+    if (
+      value === null ||
+      typeof value !== 'object' ||
+      !('schema' in value) ||
+      value.schema !== 'flight-cpp-external-bindings/1' ||
+      !('identity' in value) ||
+      typeof value.identity !== 'string' ||
+      value.identity.length === 0 ||
+      !('profile' in value) ||
+      typeof value.profile !== 'string' ||
+      value.profile.length === 0 ||
+      !('bindings' in value) ||
+      !Array.isArray(value.bindings)
+    ) {
+      return { failure: `Binding profile ${file} is not an identified flight-cpp-external-bindings/1 profile` };
+    }
+    if (identities.has(value.identity)) return { failure: `Duplicate binding profile ${value.identity}` };
+    identities.add(value.identity);
+    for (const binding of value.bindings as CppCompilerExternalBinding[]) {
+      if (
+        binding !== null &&
+        typeof binding === 'object' &&
+        typeof binding.sourceName === 'string' &&
+        (binding.space === 'type' || binding.space === 'value')
+      ) {
+        const symbol = `${binding.sourceName}:${binding.space}`;
+        if (symbols.has(symbol)) return { failure: `Binding profiles provide ${symbol} more than once` };
+        symbols.add(symbol);
+      }
+      bindings.push(binding);
+    }
+    provenance.push({
+      digest: `sha256:${createHash('sha256').update(contents).digest('hex')}`,
+      identity: value.identity,
+      profile: value.profile,
+    });
+  }
+  const externalBindings: CppCompilerExternalBindingManifest = {
+    bindings,
+    schema: 'flight-cpp-external-bindings/1',
+  };
+  try {
+    createCompilerRuntimeExternalSymbolBindingPlanCpp(parsed.runtimeProfile, externalBindings);
+  } catch (error) {
+    return { failure: `Binding profile composition is invalid: ${describeCompilerCommandLineFailure(error)}` };
+  }
+  return { externalBindings, provenance };
+}

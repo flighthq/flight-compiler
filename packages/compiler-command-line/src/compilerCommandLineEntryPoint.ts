@@ -88,6 +88,7 @@ export function validateCompilerCommandLineCheckDirectory(argv: readonly string[
     {
       readArtifactRevision: (artifact) => readCompilerCommandLineCheckArtifactRevision(artifact),
       readBaseline: (file) => (existsSync(file) ? readFileSync(file, 'utf8') : undefined),
+      readBindingProfile: (file) => (existsSync(file) ? readFileSync(file, 'utf8') : undefined),
       // The revision is the one fact here that needs another process, so it is read where processes are
       // read and nowhere else. A workspace that is not a checkout is an ordinary thing to check -- the
       // consumer smoke makes one -- so the failure is an absent revision rather than a failed run.

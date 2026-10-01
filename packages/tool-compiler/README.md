@@ -54,6 +54,17 @@ What a run checks depends on how it is asked. `--package` asks for exactly those
 flight-compile check <workspace> --target cpp [--environment web] [--baseline check.baseline] [--format json]
 ```
 
+A C++ check can apply the same identified downstream binding profiles as SDK generation, without generating or editing any target files. Repeat `--binding-profile` in the intended composition order; both the SDK-style `--binding-profile=bindings/runtime.json` spelling and `--binding-profile bindings/runtime.json` are accepted:
+
+```sh
+flight-compile check <workspace> --target cpp --format json \
+  --binding-profile=bindings/runtime.json \
+  --binding-profile=bindings/headless.json \
+  --binding-profile=bindings/web-types.json
+```
+
+Each file must be an identified `flight-cpp-external-bindings/1` profile with non-empty `identity` and `profile` fields. Duplicate profile identities or duplicate `sourceName`/`space` bindings make the invocation fail instead of letting argument order choose an ABI. The JSON run records the selected identities, profile names, and SHA-256 digests of the exact file contents, so a measurement remains attributable even when it used an uncommitted downstream profile patch. Unreadable, malformed, or non-C++ profile requests exit 2. Omitting the option preserves the existing profile-free check behavior and output.
+
 Programmatic package and workspace compilation uses `compileTypeScriptPackageGraph`. Its versioned graph names package roots, declared package dependencies, entry modules, and exact importer-to-module edges. The result contains normalized output, a deterministic per-module refusal ledger, source-to-output ownership, required include paths, and the module initialization plan. C++ callers can supply `packageTargets` and `externalBindings` without adding SDL, Dawn, native GL, or another host SDK to the compiler.
 
 See [C++ package compilation](https://github.com/flighthq/flight-compiler/blob/main/docs/cpp-package-compilation.md) for the request and downstream boundary.

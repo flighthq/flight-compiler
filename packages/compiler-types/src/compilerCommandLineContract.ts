@@ -10,6 +10,7 @@ import type {
   CompilerPackageCheckReport,
 } from './compilerPackageCheckContract.js';
 import type { CompilerPackageCompilationRefusalCode } from './compilerPackageCompilationContract.js';
+import type { CompilerSourceFingerprint } from './compilerSourceFingerprint.js';
 import type { WorkspaceSource } from './compilerWorkspaceSourceContract.js';
 
 export interface CompilerCommandLineRequest {
@@ -67,6 +68,8 @@ export interface CompilerCommandLineCheckCapabilities {
   readonly readArtifactRevision?: ((artifact: string) => string | undefined) | undefined;
   /** The baseline file's text, or undefined when the file is not there. Never called to write one. */
   readonly readBaseline: (path: string) => string | undefined;
+  /** A downstream C++ binding profile's JSON text, or undefined when the file cannot be read. */
+  readonly readBindingProfile?: ((path: string) => string | undefined) | undefined;
   /**
    * What produced this run, whole. A caller that knows the compiler, target, and upstream revisions --
    * a corpus run pinning a checkout -- supplies them here, and they are recorded as given.
@@ -89,9 +92,18 @@ export interface CompilerCommandLineCheckCapabilities {
   readonly writeReportFile: (path: string, contents: string) => void;
 }
 
+export interface CompilerCommandLineCheckBindingProfile {
+  /** SHA-256 of the exact profile JSON text supplied to this run. */
+  readonly digest: CompilerSourceFingerprint;
+  readonly identity: string;
+  readonly profile: string;
+}
+
 // A run that happened: the compilation report and the two judgments made over it. Absent baseline means an
 // empty one, so every finding is introduced and nothing is resolved -- which is what "no baseline" means.
 export interface CompilerCommandLineCheckOutcome {
+  /** Present only when the run explicitly composed downstream C++ binding profiles. */
+  readonly bindingProfiles?: readonly CompilerCommandLineCheckBindingProfile[] | undefined;
   readonly comparison: CompilerPackageCheckComparison;
   /** The packages the eligibility plan put in scope, sorted. */
   readonly eligiblePackageNames: readonly string[];

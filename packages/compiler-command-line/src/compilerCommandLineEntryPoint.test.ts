@@ -183,6 +183,40 @@ describe('validateCompilerCommandLineCheckDirectory', () => {
     expect(validateCompilerCommandLineCheckDirectory([workspace, '--target', 'cpp'])).toBe(0);
   });
 
+  it('reads and composes repeated downstream C++ binding profile files', () => {
+    const workspace = createWorkspace({
+      'index.ts':
+        'export function keepCanvas(value: CanvasRenderingContext2D): CanvasRenderingContext2D { return value; }\n' +
+        'export function keepAudio(value: AudioContext): AudioContext { return value; }\n',
+    });
+    const profiles = path.join(workspace, 'bindings');
+    mkdirSync(profiles);
+    const canvas = path.join(profiles, 'canvas.json');
+    const audio = path.join(profiles, 'audio.json');
+    writeFileSync(canvas, bindingProfile('test/canvas/1', 'canvas', 'CanvasRenderingContext2D', 'host::Canvas'));
+    writeFileSync(audio, bindingProfile('test/audio/1', 'audio', 'AudioContext', 'host::Audio'));
+    const report = path.join(workspace, 'check-report.json');
+
+    const exitCode = validateCompilerCommandLineCheckDirectory([
+      workspace,
+      '--target',
+      'cpp',
+      `--binding-profile=${canvas}`,
+      '--binding-profile',
+      audio,
+      '--format',
+      'json',
+      '--report',
+      report,
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(report, 'utf8')) as unknown).toMatchObject({
+      bindingProfiles: [{ identity: 'test/canvas/1' }, { identity: 'test/audio/1' }],
+      report: { directFindings: [] },
+    });
+  });
+
   it('writes the report it was asked for and nothing else', () => {
     const workspace = createWorkspace({
       'bad.ts': 'export const ready = Promise.resolve(1);\nawait ready;\n',
@@ -380,3 +414,21 @@ describe('validateCompilerCommandLineCheckDirectory', () => {
     expect(validateCompilerCommandLineCheckDirectory([path.join(workspace, 'absent'), '--target', 'rust'])).toBe(2);
   });
 });
+
+function bindingProfile(identity: string, profile: string, sourceName: string, targetName: string): string {
+  return JSON.stringify({
+    bindings: [
+      {
+        headers: ['host/runtime.hpp'],
+        nullability: 'non-null',
+        ownership: 'shared',
+        sourceName,
+        space: 'type',
+        targetName,
+      },
+    ],
+    identity,
+    profile,
+    schema: 'flight-cpp-external-bindings/1',
+  });
+}
