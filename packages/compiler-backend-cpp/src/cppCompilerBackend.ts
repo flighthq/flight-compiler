@@ -2344,11 +2344,11 @@ function getCppGeneratedSymbolReferenceCpp(
   if (
     declaration?.kind !== 'variable' ||
     !('binding' in declaration) ||
-    !isCppCanonicalGeneratedSymbolDeclarationCpp(declaration)
+    !isCppStableGeneratedSymbolDeclarationCpp(declaration)
   ) {
     emissionError(
       context,
-      `computed-symbol member ${reference.binding.name} requires a canonical const Symbol declaration`,
+      `computed-symbol member ${reference.binding.name} requires a stable const Symbol declaration`,
       'cpp-generated-symbol-binding-key-unreferencable',
     );
   }
@@ -2365,16 +2365,16 @@ function getCppGeneratedSymbolReferenceIdentityCpp(reference: Readonly<IrValueNa
     : `binding:${reference.binding.id}:${reference.path.join('.')}`;
 }
 
-function isCppCanonicalGeneratedSymbolDeclarationCpp(declaration: Readonly<IrVariableDeclaration>): boolean {
+function isCppStableGeneratedSymbolDeclarationCpp(declaration: Readonly<IrVariableDeclaration>): boolean {
+  // Generated bindings name the emitted const and compare Symbol identity. The description only initializes
+  // that value, so it may be computed without weakening the binding's stability or merging equal descriptions.
   if (
     declaration.declarationKind !== 'const' ||
     declaration.mutable ||
     declaration.type?.kind !== 'primitive' ||
     declaration.type.name !== 'symbol' ||
     declaration.initializer?.kind !== 'call' ||
-    declaration.initializer.arguments.length !== 1 ||
-    declaration.initializer.arguments[0]?.kind !== 'literal' ||
-    typeof declaration.initializer.arguments[0].value !== 'string'
+    declaration.initializer.arguments.length !== 1
   ) {
     return false;
   }

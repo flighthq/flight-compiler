@@ -17587,13 +17587,42 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted).not.toContain('Symbol::for_key(flight::String("Runtime"))');
   });
 
+  it('binds an exact computed symbol whose description is computed', () => {
+    const result = lower(
+      'computed-symbol-description.ts',
+      `const description = 'Runtime';
+       export interface Runtime { loaded: boolean }
+       export const RuntimeKey: unique symbol = Symbol(String(description));
+       export interface State { [RuntimeKey]: Runtime }
+       export function read(state: Readonly<State>): boolean {
+         return state[RuntimeKey].loaded;
+       }`,
+    );
+    const state = result.module.declarations.find(
+      (declaration) => declaration.kind === 'interface' && declaration.binding.name === 'State',
+    );
+    const property = state?.kind === 'interface' ? state.properties[0] : undefined;
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(property?.computedKey).toMatchObject({
+      binding: { name: 'RuntimeKey' },
+      kind: 'binding',
+      path: [],
+    });
+    expect(emitted).toContain('struct GeneratedSymbolBindings<flighthq_math::State>');
+    expect(emitted).toContain('flighthq_math::runtime_key,');
+    expect(emitted).toContain('flight::row_get<flight::Ref<Runtime>>(state, runtime_key)->loaded');
+  });
+
   it.skipIf(!canCompileCpp)('reads exact unique-symbol members and keeps unrelated dynamic keys attached', () => {
     if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
     const result = lower(
       'computed-symbol-read.ts',
       `export interface Runtime { loaded: boolean }
-       export const FirstRuntimeKey: unique symbol = Symbol('Runtime');
-       export const SecondRuntimeKey: unique symbol = Symbol('Runtime');
+       const description = 'Runtime';
+       export const FirstRuntimeKey: unique symbol = Symbol(String(description));
+       export const SecondRuntimeKey: unique symbol = Symbol(String(description));
        export interface State {
          [FirstRuntimeKey]: Runtime;
          [SecondRuntimeKey]: Runtime;
