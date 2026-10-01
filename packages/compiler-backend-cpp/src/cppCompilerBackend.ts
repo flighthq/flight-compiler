@@ -13236,6 +13236,10 @@ function refuseCppPresenceTestCpp(
       ? `a presence test against ${sentinel} has no absence channel in the emitted C++ storage for the type parameter: the constraint admits ${sentinel}, and a C++ template parameter is emitted as the type argument itself, so the test has no channel to ask and folding it would answer for one instantiation of a constraint that allows another. Declare the parameter as the concrete optional type its constraint names, or narrow the value into a non-optional local before testing it`
       : `a presence test against ${sentinel} has no absence channel in the emitted C++ storage for ${operand.kind}`,
     'cpp-presence-test-without-absence-storage',
+    // The constrained clause names a declaration the author writes -- the parameter's own type -- and the
+    // message says so; that is the source's to change, not the compiler's to invent. The clause that names
+    // only the operand kind stays with the compiler, which is the default here.
+    constrained ? 'source-portability' : undefined,
   );
 }
 
@@ -31006,6 +31010,11 @@ const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   'cpp-empty-array-element-type-unproven',
   'cpp-logical-or-present-domain-unproven',
   'cpp-object-create-record-context-required',
+  // An assertion read from optional storage without a presence proof. The message names the guard the
+  // source writes -- "Guard this exact property before the assertion, or bind it to a local and guard that
+  // local" -- so the finding belongs to the declaration rather than to the compiler, which cannot discard
+  // the absence state on the author's behalf.
+  'cpp-optional-cast-subject-unproven',
   'cpp-structural-assertion-writable-capability-unproven',
   'cpp-structural-assertion-owner-unproven',
   'cpp-structural-variant-assertion-without-nominal-storage',

@@ -8869,6 +8869,9 @@ int main() {
       ),
     );
     expect(unprovenAssertion.rule).toBe('cpp-optional-cast-subject-unproven');
+    // The finding is the source's: the message names the guard to write, and the compiler cannot discard
+    // the absence state on the author's behalf.
+    expect(unprovenAssertion.classification).toBe('source-portability');
     expect(unprovenAssertion.message).toContain('optional property source requires proven present payload');
     expect(unprovenAssertion.message).toContain('will not discard the absence state or call value()');
 
@@ -13863,7 +13866,10 @@ int main() {
     // declaration to change. (Before the guard refused, the read behind it was the refusal; the read rule
     // still covers a receiver with no guard at all.)
     expect(failure.rule).toBe('cpp-presence-test-without-absence-storage');
-    expect(failure.classification).toBe('compiler-restriction');
+    // Source-portability, not compiler-owned: the clause names the declaration the author writes -- the
+    // parameter's own type -- and no rewriting of the test can produce an absence channel, so the fix is
+    // in the source. The clause that names only the operand kind stays with the compiler.
+    expect(failure.classification).toBe('source-portability');
     expect(failure.message).toContain('no absence channel in the emitted C++ storage for the type parameter');
     expect(failure.message).toContain('a C++ template parameter is emitted as the type argument itself');
     expect(failure.message).toContain('Declare the parameter as the concrete optional type its constraint names');
@@ -13982,7 +13988,7 @@ int main() {
       ),
     );
     expect(constrained.rule).toBe('cpp-presence-test-without-absence-storage');
-    expect(constrained.classification).toBe('compiler-restriction');
+    expect(constrained.classification).toBe('source-portability');
     expect(constrained.message).toContain('no absence channel in the emitted C++ storage for the type parameter');
     expect(constrained.message).toContain('Declare the parameter as the concrete optional type its constraint names');
   });
