@@ -22841,26 +22841,23 @@ function appendCppOmittedInvocationArguments(
     expression.callee.kind === 'identifier' && expression.callee.reference.kind === 'binding'
       ? getCppFunctionDeclarationForBindingCpp(expression.callee.reference.binding.id, context)
       : undefined;
-  // A function-valued variable has no function declaration whose C++ defaults a call can inherit.
-  // Its storage is std::function, so source defaults are optional ABI parameters and an omitted one
-  // must be supplied explicitly just like an omitted optional callback parameter.
-  const callableVariable =
-    !declaration &&
-    expression.callee.kind === 'identifier' &&
-    expression.callee.reference.kind === 'binding' &&
-    expression.callee.reference.binding.kind === 'variable'
-      ? getCppClosedCallableType(
-          getIrExpressionTypeEvidenceCpp(expression.callee, context) ?? { kind: 'unknown', source: 'unknown' },
-          context,
-          new Set(),
-        )
-      : undefined;
-  if (!declaration && !callableVariable && !optionals) return emitted;
+  // A callable reached as a value has no named free-function declaration whose C++ defaults this call
+  // can inherit. Fields and parameters use std::function storage, so source defaults are optional ABI
+  // parameters and an omitted one must be supplied explicitly. The same absence is equivalent for a
+  // generated member method because its defaulted parameter uses that optional ABI too.
+  const callableValue = !declaration
+    ? getCppClosedCallableType(
+        getIrExpressionTypeEvidenceCpp(expression.callee, context) ?? { kind: 'unknown', source: 'unknown' },
+        context,
+        new Set(),
+      )
+    : undefined;
+  if (!declaration && !callableValue && !optionals) return emitted;
   if (plan.providedArgumentCount === 'dynamic') {
     emissionError(context, 'spread calls into optional or default parameters require ABI expansion lowering');
   }
   const omitted = new Set([
-    ...(declaration || callableVariable ? (defaults?.omitted ?? []) : []),
+    ...(declaration || callableValue ? (defaults?.omitted ?? []) : []),
     ...(optionals?.omitted ?? []),
   ]);
   const result = [...emitted];

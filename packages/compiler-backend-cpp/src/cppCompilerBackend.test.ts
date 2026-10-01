@@ -31942,6 +31942,92 @@ int main() {
     expect(emitted).toContain('}, std::nullopt)');
   });
 
+  it('compiles an omitted optional structural argument to an async callable member', () => {
+    const result = lower(
+      'omitted-async-callable-member-argument.ts',
+      `interface Query { readonly tag?: string }
+       interface Item { readonly tag: string }
+       interface Api {
+         load(query?: Readonly<Query>): Promise<ReadonlyArray<Item>>;
+       }
+       export async function loadAll(api: Api): Promise<ReadonlyArray<Item>> {
+         return await api.load();
+       }
+       export async function loadMatching(
+         api: Api,
+         query: Readonly<Query>,
+       ): Promise<ReadonlyArray<Item>> {
+         return await api.load(query);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain(
+      'std::function<flight::Task<flight::Array<flight::Ref<Item>>>(std::optional<flight::StructuralRef<',
+    );
+    expect(emitted).toContain('api->load(std::nullopt)');
+    expect(emitted).toContain('api->load(query)');
+    expect(emitted).not.toContain('api->load()');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-omitted-async-callable-member-'));
+      const header = path.join(directory, 'omitted_async_callable_member.hpp');
+      try {
+        writeFileSync(header, emitted, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it('compiles an omitted defaulted structural argument to an async callable member', () => {
+    const result = lower(
+      'omitted-defaulted-async-callable-member-argument.ts',
+      `interface Query { readonly tag?: string }
+       interface Item { readonly tag: string }
+       async function load(query: Readonly<Query> = {}): Promise<ReadonlyArray<Item>> {
+         void query;
+         return [];
+       }
+       class Api { readonly load = load }
+       export async function loadAll(api: Api): Promise<ReadonlyArray<Item>> {
+         return await api.load();
+       }
+       export async function loadMatching(
+         api: Api,
+         query: Readonly<Query>,
+       ): Promise<ReadonlyArray<Item>> {
+         return await api.load(query);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain(
+      'std::function<flight::Task<flight::Array<flight::Ref<Item>>>(std::optional<flight::StructuralRef<',
+    );
+    expect(emitted).toContain('api->load(std::nullopt)');
+    expect(emitted).toContain('api->load(query)');
+    expect(emitted).not.toContain('api->load()');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-omitted-defaulted-async-callable-member-'));
+      const header = path.join(directory, 'omitted_defaulted_async_callable_member.hpp');
+      try {
+        writeFileSync(header, emitted, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('materializes omitted optional arguments through optional callable invocations', () => {
     const result = lower(
       'omitted-optional-call-arguments.ts',
