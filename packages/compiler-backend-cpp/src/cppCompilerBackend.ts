@@ -13308,6 +13308,11 @@ function getCppClosedElementKeyNamesCpp(
 }
 
 interface CppDynamicNamedReferenceElementPlan {
+  // The expression whose named properties the read actually visits. It is the element's object itself
+  // unless that is an assertion naming an erased or Record target, in which case it is the reference the
+  // assertion was written over: the view reads that reference's own named properties, so casting or
+  // copying the owner to reach the target spelling would be both unnecessary and unrepresentable.
+  readonly object: Readonly<IrExpression>;
   readonly properties: readonly Readonly<IrObjectTypeProperty>[];
   readonly runtime: Readonly<IrType>;
 }
@@ -13320,18 +13325,42 @@ function getCppDynamicNamedReferenceElementPlanCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
   context: EmitContext,
 ): Readonly<CppDynamicNamedReferenceElementPlan> | undefined {
-  const objectType = getCppClosedKeyElementObjectTypeCpp(expression, context);
+  const object = getCppDynamicNamedReferenceObjectCpp(expression.object, context);
+  const objectType = getCppClosedKeyElementObjectTypeCpp({ ...expression, object }, context);
   const representedObjectType =
-    objectType && 'presence' in expression.object && expression.object.presence === 'narrowedPresent'
+    objectType && 'presence' in object && object.presence === 'narrowedPresent'
       ? (getCppNonNullableType(objectType, context, new Set()) ?? objectType)
       : objectType;
   return representedObjectType
-    ? getCppDynamicNamedReferenceElementPlanForObjectTypeCpp(expression, representedObjectType, context)
+    ? getCppDynamicNamedReferenceElementPlanForObjectTypeCpp(expression, object, representedObjectType, context)
     : undefined;
+}
+
+// The reference a dynamic string read actually visits. `backend[operation]` reaches an open key set
+// through the named-property view, and the assertion the source writes to get there -- `backend as any`,
+// or `backend as Record<string, unknown>` -- names an erased or Record spelling of the same object. The
+// view reads the reference's own named properties, so the assertion adds nothing to visit and its target
+// has no representation to cast to; the read is answered from the reference the assertion was written
+// over. Anything else, or an assertion over anything without a reference representation, is left alone.
+function getCppDynamicNamedReferenceObjectCpp(
+  object: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrExpression> {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || object.kind !== 'cast') return object;
+  const target = getIrExpressionTypeEvidenceCpp(object, context);
+  const namesErasedOrRecordTarget =
+    isCppErasedDynamicValueTypeCpp(object.type) ||
+    (target !== undefined && getCppRecordTypeArgumentsCpp(target, context, new Set()) !== undefined) ||
+    getCppRecordTypeArgumentsCpp(object.type, context, new Set()) !== undefined;
+  if (!namesErasedOrRecordTarget) return object;
+  const sourceType = getIrExpressionTypeEvidenceCpp(object.expression, context);
+  if (!sourceType || !hasFlightReferenceRepresentationCpp(sourceType, context)) return object;
+  return object.expression;
 }
 
 function getCppDynamicNamedReferenceElementPlanForObjectTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  object: Readonly<IrExpression>,
   objectType: Readonly<IrType>,
   context: EmitContext,
 ): Readonly<CppDynamicNamedReferenceElementPlan> | undefined {
@@ -13357,7 +13386,7 @@ function getCppDynamicNamedReferenceElementPlanForObjectTypeCpp(
     return undefined;
   }
   const named = properties.filter((property) => !property.computedKey && !isCppNonEmittingObjectPropertyCpp(property));
-  return named.length > 0 ? { properties: named, runtime } : undefined;
+  return named.length > 0 ? { object, properties: named, runtime } : undefined;
 }
 
 function assertCppDynamicNamedReferencePropertiesRepresentableInAnyCpp(
@@ -13407,7 +13436,7 @@ function emitCppDynamicNamedReferenceElementReadCpp(
   const receiver = getGeneratedTargetName('namedReferenceReceiver', context);
   const key = getGeneratedTargetName('namedReferenceKey', context);
   const erased = getGeneratedTargetName('namedReferenceValue', context);
-  const source = `const auto& ${receiver} = ${emitExpression(expression.object, context)}; const auto ${key} = ${emitExpression(expression.index, context)}; const flight::Any ${erased} = flight::named_properties(${receiver}).get(${key});`;
+  const source = `const auto& ${receiver} = ${emitExpression(plan.object, context)}; const auto ${key} = ${emitExpression(expression.index, context)}; const flight::Any ${erased} = flight::named_properties(${receiver}).get(${key});`;
   context.includes.add('flight/structural_ref.hpp');
   for (const resultType of resultTypes) {
     if (isCppAliasResolvedErasedDynamicValueTypeCpp(resultType, context)) {
@@ -21504,7 +21533,12 @@ function getCppOptionalNumericTypeofLookupPlanCpp(
     return undefined;
   }
   const present = getCppNonNullableType(semantics.receiverType, context, new Set()) ?? semantics.receiverType;
-  const reference = getCppDynamicNamedReferenceElementPlanForObjectTypeCpp(expression, present, context);
+  const reference = getCppDynamicNamedReferenceElementPlanForObjectTypeCpp(
+    expression,
+    getCppDynamicNamedReferenceObjectCpp(expression.object, context),
+    present,
+    context,
+  );
   if (!reference) return undefined;
   assertCppDynamicNamedReferencePropertiesRepresentableInAnyCpp(reference, context);
   return { kind: 'namedReference', reference };

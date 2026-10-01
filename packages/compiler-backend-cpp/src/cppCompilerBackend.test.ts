@@ -11941,6 +11941,52 @@ int main() {
     expect(failure.classification).toBe('source-portability');
   });
 
+  it('reads a dynamic string key on a reference through the named view instead of casting it', () => {
+    // `backend[operation]` reaches an open key set through the named-property view, and the assertion the
+    // source writes to get there names an erased or Record spelling of the same object. The emitter used
+    // to cast the reference into that spelling instead -- `static_cast<flight::Record<...>>(obj)` has no
+    // constructor from a reference, and `flight::Any::object(obj)[...]` indexes a value with a string --
+    // so neither read could compile. The view reads the reference's own named properties, so the read is
+    // answered from the reference the assertion was written over and nothing is cast, copied, or
+    // materialized.
+    const record = lower(
+      'dynamic-read.ts',
+      `export interface Signals { readonly onPlay: string; readonly onStop: string }
+       export function read(obj: Signals, key: string): string | undefined {
+         return (obj as Record<string, string>)[key];
+       }`,
+    );
+    const recordEmitted = emitIrModuleCpp(record.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(recordEmitted).toContain('const auto& named_reference_receiver = obj;');
+    expect(recordEmitted).toContain('flight::named_properties(named_reference_receiver)');
+    expect(recordEmitted).not.toContain('static_cast<flight::Record');
+
+    // The erased assertion over the same reference reads through that view too, keeping the erased result.
+    const erased = lower(
+      'dynamic-erased-read.ts',
+      `export interface Signals { readonly onPlay: string }
+       export function read(obj: Signals, key: string): unknown { return (obj as any)[key]; }`,
+    );
+    const erasedEmitted = emitIrModuleCpp(erased.module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(erasedEmitted).toContain('flight::named_properties(named_reference_receiver)');
+    expect(erasedEmitted).not.toContain('Any::object(obj)[');
+
+    // The controls that keep this to the assertion: storage the source declared as a record reads its own
+    // cells, and a finite key still dispatches to the declared member rather than through the view.
+    const storage = lower(
+      'record-storage.ts',
+      `export function read(record: Record<string, string>, key: string): string | undefined { return record[key]; }`,
+    );
+    expect(emitIrModuleCpp(storage.module, { runtimeProfile: 'flight-cpp' }).contents).toContain('record.get(key)');
+
+    const finite = lower(
+      'finite-key.ts',
+      `export interface Signals { readonly onPlay: string; readonly onStop: string }
+       export function read(obj: Signals, key: 'onPlay' | 'onStop'): string { return obj[key]; }`,
+    );
+    expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
+  });
+
   it('invokes a callable read through a structural row instead of addressing it', () => {
     // A callable member read through a Readonly<> row is reported as a class-1 corpus failure, with the
     // emitter believed to take its address or name operator() rather than invoke it. The emitted form is
