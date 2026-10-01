@@ -4316,8 +4316,21 @@ function emitExpression(
           ? getCppStructuralProjectionRowCpp(representedErasedStructuralSource.type, context)
           : undefined;
       const structuralSourceExpression = preErasureStructuralSource?.expression ?? expression.expression;
+      // Flow narrowing proves which VALUE the assertion describes, but it does not rewrite the owner type
+      // retained by an optional property. Use that carrier's payload for row-owner compatibility: a
+      // `Base | null` field narrowed by a predicate to Derived may be present, yet its Ref<Base> still
+      // cannot bind a RowOf<Ref<Derived>> unless the source boundary retained the derived owner.
+      const propertyStoragePayload =
+        structuralSourceExpression.kind === 'property'
+          ? (() => {
+              const storage = getCppDeclaredPropertyReadTypeCpp(structuralSourceExpression, context);
+              return storage ? getCppNonNullableType(storage, context, new Set()) : undefined;
+            })()
+          : undefined;
       const structuralSourceType =
-        preErasureStructuralSource?.type ?? getIrExpressionTypeEvidenceCpp(expression.expression, context);
+        preErasureStructuralSource?.type ??
+        propertyStoragePayload ??
+        getIrExpressionTypeEvidenceCpp(expression.expression, context);
       const structuralSource =
         preErasureStructuralSource?.row ??
         getCppStructuralRowExpressionPlanCpp(expression.expression, context) ??
@@ -5773,7 +5786,9 @@ function emitExpression(
       if (expression.optional) return emitOptionalPropertyExpressionCpp(expression, context, expectedType);
       const erasedDynamicProperty = emitCppErasedDynamicPropertyReadCpp(expression, context);
       if (erasedDynamicProperty) return erasedDynamicProperty;
-      if (expression.member) assertCppPresentOptionalStorageMemberReceiverCpp(expression, context);
+      if (expression.member || expression.object.kind === 'property') {
+        assertCppPresentOptionalStorageMemberReceiverCpp(expression, context);
+      }
       if (getCppStructuralRowExpressionPlanCpp(expression.object, context)) {
         context.includes.add('flight/structural_ref.hpp');
         return `flight::row_get<flight::RowKey<${JSON.stringify(expression.name)}>>(${emitExpression(expression.object, context)})`;
@@ -7090,6 +7105,19 @@ function emitCppOptionalPropertyDualSentinelConversionCpp(
 // left alone, so an unproven access still refuses or reports rather than reading through `.value()`.
 function emitCppAssertionSubjectCpp(expression: Readonly<IrExpression>, context: EmitContext): string {
   if (!hasCppAbsenceStorageCpp(expression, context)) return emitExpression(expression, context);
+  if (expression.kind === 'property') {
+    if (!hasCppPresentExpressionStorageProofCpp(expression, context)) {
+      emissionError(
+        context,
+        `an assertion subject read from optional property ${expression.name} requires proven present payload: no present-value proof reaches this cast. Guard this exact property before the assertion, or bind it to a local and guard that local; the compiler will not discard the absence state or call value() without that proof`,
+        'cpp-optional-cast-subject-unproven',
+      );
+    }
+    // Property emission owns the projection because it also owns declaration lookup. In particular, a
+    // user-defined predicate records the narrowed target on the read itself; the shared narrowed-present
+    // lane below keeps that flow answer while recovering the declaration-side optional carrier.
+    return emitExpression(expression, context);
+  }
   const storageType =
     expression.kind === 'identifier' && expression.reference.kind === 'binding'
       ? getCppBindingTypeCpp(expression.reference.binding.id, context)
@@ -12516,6 +12544,11 @@ function hasCppPresentBindingStorageProofCpp(
   return narrowedType !== undefined && !hasIrTypeAbsentMember(narrowedType);
 }
 
+function hasCppPresentExpressionStorageProofCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  if (expression.kind === 'identifier') return hasCppPresentBindingStorageProofCpp(expression, context);
+  return (expression.kind === 'property' || expression.kind === 'element') && expression.presence === 'narrowedPresent';
+}
+
 // Project the value a presence proof names from the binding's existing carrier. This never rebuilds the
 // owner: optional storage yields its `value()`, while a dual-sentinel variant yields its one proven value
 // alternative. Runtime-owned result locals deliberately need no source union -- their external profile
@@ -12601,6 +12634,14 @@ function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: Em
   ) {
     return true;
   }
+  if (expression.kind === 'property' && getCppRuntimeProfile(context.options) === 'flight-cpp') {
+    const storageType = getCppDeclaredPropertyReadTypeCpp(expression, context);
+    const union = storageType ? getIrUnionTypeCpp(storageType, context, new Set()) : undefined;
+    const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+    if (plan && (plan.sentinels.null !== 'absent' || plan.sentinels.undefined !== 'absent')) {
+      return true;
+    }
+  }
   return (
     expression.kind === 'property' &&
     expression.optional &&
@@ -12608,6 +12649,22 @@ function hasCppAbsenceStorageCpp(expression: Readonly<IrExpression>, context: Em
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
     hasIndexedRuntimeReceiverCpp(expression.object, context)
   );
+}
+
+// A property's flow type is the value the checker proved at this read, while its emitted field keeps the
+// declaration's storage. Those answers intentionally diverge after a predicate narrows `holder.value`
+// from `Base | null` to `Derived`: the read is Derived, but the carrier is still optional<Ref<Base>>.
+// Recover the declaration through the receiver rather than asking the property expression, whose
+// narrowedType is supposed to win for every value-side question.
+function getCppDeclaredPropertyReadTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const receiverType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  if (!receiverType) return undefined;
+  const row = getCppStructuralRowExpressionPlanCpp(expression.object, context);
+  const objectType = row ? getCppStructuralRowObjectTypeCpp(row) : receiverType;
+  return objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
 }
 
 // An optional property whose declared type is a nullable alias has two independent absence channels
@@ -12789,17 +12846,20 @@ function assertCppPresentOptionalStorageMemberReceiverCpp(
   context: EmitContext,
 ): void {
   const receiver = expression.object;
-  if (receiver.kind !== 'identifier' || receiver.reference.kind !== 'binding') return;
-  const bindingId = receiver.reference.binding.id;
-  if (!hasCppBindingAbsenceStorageCpp(bindingId, context)) return;
-  if (!hasCppPresentBindingStorageProofCpp(receiver, context)) {
+  if (!hasCppAbsenceStorageCpp(receiver, context)) return;
+  if (!hasCppPresentExpressionStorageProofCpp(receiver, context)) {
     emissionError(
       context,
       `member ${expression.name} on optional C++ storage requires proven present payload: nothing proved the payload present, so the read would unpack storage that may be holding absence. Guard the receiver, read it through an optional chain, or narrow it into a present local first; the compiler will not call value() without that proof`,
       'cpp-member-projection-without-present-storage',
     );
   }
-  const storageType = getCppBindingTypeCpp(bindingId, context);
+  const storageType =
+    receiver.kind === 'identifier' && receiver.reference.kind === 'binding'
+      ? getCppBindingTypeCpp(receiver.reference.binding.id, context)
+      : receiver.kind === 'property'
+        ? getCppDeclaredPropertyReadTypeCpp(receiver, context)
+        : getIrExpressionTypeEvidenceCpp(receiver, context);
   const payload = storageType ? getCppNonNullableType(storageType, context, new Set()) : undefined;
   if (!payload) {
     emissionError(
@@ -15737,7 +15797,10 @@ function emitCppNarrowedPropertyUnionValueCpp(
   const declaredType = expression.type?.kind === 'unknown' ? undefined : expression.type;
   const union = declaredType ? getIrUnionTypeCpp(declaredType, context, new Set()) : undefined;
   if (!union) return undefined;
-  const storage = emitExpression({ ...expression, narrowedType: undefined }, context);
+  // This helper owns both union selection and the optional projection. Re-emitting the carrier with the
+  // presence marker intact would send it through the shared narrowed-present lane first and then append
+  // this plan's own `.value()`, producing `optional.value().value()`.
+  const storage = emitExpression({ ...expression, narrowedType: undefined, presence: undefined }, context);
   return emitCppNarrowedUnionValueCpp(storage, union, expression.narrowedType, undefined, context);
 }
 
@@ -27964,7 +28027,13 @@ function emitCppNarrowedPresentAccessCpp(
   expectedType?: Readonly<IrType> | undefined,
 ): string | undefined {
   if (expression.presence !== 'narrowedPresent') return undefined;
-  const unnarrowed = { ...expression, presence: undefined };
+  // Remove value-side narrowing while spelling the raw carrier. A predicate can narrow a repeated
+  // property from `Base | null` to `Derived`; retaining narrowedType here makes the property look like
+  // bare Derived storage and loses the declaration's optional layer before this function can project it.
+  const unnarrowed =
+    expression.kind === 'property'
+      ? { ...expression, narrowedType: undefined, presence: undefined, type: undefined }
+      : { ...expression, presence: undefined };
   const genericCarrier = getCppGenericCarrierPropertyPresencePlanCpp(expression, context);
   if (genericCarrier) {
     const storage = emitExpression(unnarrowed, context);
@@ -27974,7 +28043,10 @@ function emitCppNarrowedPresentAccessCpp(
     const valueName = getGeneratedTargetName('presentOperand', context);
     return `([&]() -> decltype(auto) { const auto& ${valueName} = ${storage}; if constexpr (flight::detail::optional_traits<std::remove_cvref_t<decltype(${valueName})>>::optional) return (${valueName}.value()); else return (${valueName}); }())`;
   }
-  const sourceType = getIrExpressionTypeEvidenceCpp(unnarrowed, context);
+  const sourceType =
+    expression.kind === 'property'
+      ? getCppDeclaredPropertyReadTypeCpp(expression, context)
+      : getIrExpressionTypeEvidenceCpp(unnarrowed, context);
   if (!sourceType || !hasIrTypeAbsentMember(sourceType)) return undefined;
   const presentType = getCppNonNullableType(sourceType, context, new Set());
   if (!presentType) {
@@ -28006,7 +28078,12 @@ function emitCppNarrowedPresentAccessCpp(
   // this expression is the STORAGE, and building a union out of it here is what the outer, narrowed
   // expression already did before this lane was reached. `presentType` is still passed, because every
   // other contextual rule is about the value this read produces and stays right.
-  const unnarrowedExpression = emitExpression(unnarrowed, context, presentType, false);
+  const unnarrowedExpression = emitExpression(
+    unnarrowed,
+    context,
+    expression.kind === 'property' ? undefined : presentType,
+    false,
+  );
   let unwrapped: string;
   if (paysForAbsenceWithOptional) {
     context.includes.add('optional');
@@ -28015,7 +28092,8 @@ function emitCppNarrowedPresentAccessCpp(
     context.includes.add('variant');
     unwrapped = `std::get<${soleValueAlternative!.targetType}>(${unnarrowedExpression})`;
   }
-  const recordedNarrowedType = expression.kind === 'property' ? expression.type : undefined;
+  const recordedNarrowedType =
+    expression.kind === 'property' ? (expression.narrowedType ?? expression.type) : undefined;
   const presentUnion = recordedNarrowedType ? getIrVariantUnionTypeCpp(presentType, context, new Set()) : undefined;
   if (recordedNarrowedType && presentUnion) {
     const representation = getCppVariantRepresentationForInspection(presentUnion, context);

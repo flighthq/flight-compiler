@@ -8802,6 +8802,122 @@ int main() {
     }
   });
 
+  it('unwraps a proven-present optional property before receiver and structural assertion use', () => {
+    const result = lower(
+      'predicate-narrowed-optional-cast.ts',
+      `interface Bitmap { readonly kind: string; readonly id: number; readonly data: number[] }
+       interface Texture { readonly source: Bitmap | null }
+       interface PresentTexture { readonly source: Bitmap }
+       function isBitmap(source: Bitmap): source is Bitmap & { readonly kind: 'bitmap' } {
+         return source.kind === 'bitmap';
+       }
+       export function propertyByteSize(texture: Texture): number {
+         if (texture.source === null || !isBitmap(texture.source)) return 0;
+         return (texture.source as Readonly<Bitmap>).data.length;
+       }
+       export function propertyId(texture: Texture): number {
+         if (texture.source === null) return 0;
+         return texture.source.id;
+       }
+       export function presentPropertyId(texture: PresentTexture): number {
+         return texture.source.id;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain(
+      'flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<Bitmap>>>>(texture->source.value())',
+    );
+    expect(contents).toContain('return texture->source.value()->id;');
+    expect(contents).toContain('return texture->source->id;');
+    expect(contents).not.toContain(
+      'flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<Bitmap>>>>(texture->source)',
+    );
+
+    const incompatibleOwner = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'predicate-narrowed-optional-owner.ts',
+          `interface TextureSource { readonly kind: string; readonly id: number }
+           interface Bitmap extends TextureSource { readonly kind: 'bitmap'; readonly data: number[] }
+           interface Texture { readonly source: TextureSource | null }
+           function isBitmap(source: TextureSource): source is Bitmap { return source.kind === 'bitmap'; }
+           export function byteSize(texture: Texture): number {
+             if (texture.source === null || !isBitmap(texture.source)) return 0;
+             return (texture.source as Readonly<Bitmap>).data.length;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(incompatibleOwner.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(incompatibleOwner.message).toContain('from flight::Ref<TextureSource> to flight::Ref<Bitmap> reads data');
+    expect(incompatibleOwner.message).toContain('changing only the accessor result cannot recover a wider owner');
+
+    const unprovenAssertion = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'unproven-optional-property-cast.ts',
+          `interface Bitmap { readonly kind: string; readonly id: number; readonly data: number[] }
+           interface Texture { readonly source: Bitmap | null }
+           export function byteSize(texture: Texture): number {
+             return (texture.source as Readonly<Bitmap>).data.length;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(unprovenAssertion.rule).toBe('cpp-optional-cast-subject-unproven');
+    expect(unprovenAssertion.message).toContain('optional property source requires proven present payload');
+    expect(unprovenAssertion.message).toContain('will not discard the absence state or call value()');
+
+    const unprovenReceiver = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'unproven-optional-property-receiver.ts',
+          `interface TextureSource { readonly id: number }
+           interface Texture { readonly source: TextureSource | null }
+           export function id(texture: Texture): number { return texture.source.id; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(unprovenReceiver.rule).toBe('cpp-member-projection-without-present-storage');
+    expect(unprovenReceiver.message).toContain('member id on optional C++ storage requires proven present payload');
+  });
+
+  it.skipIf(!canCompileCpp)('compiles a proven-present optional property structural assertion', () => {
+    if (cppToolchain === undefined) throw new Error('the C++ toolchain was not found');
+    const result = lower(
+      'compile-predicate-narrowed-optional-cast.ts',
+      `interface Bitmap { readonly kind: string; readonly id: number; readonly data: number[] }
+       interface Texture { readonly source: Bitmap | null }
+       function isBitmap(source: Bitmap): source is Bitmap & { readonly kind: 'bitmap' } {
+         return source.kind === 'bitmap';
+       }
+       export function byteSize(texture: Texture): number {
+         if (texture.source === null || !isBitmap(texture.source)) return 0;
+         return (texture.source as Readonly<Bitmap>).data.length;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const directory = mkdtempSync(path.join(tmpdir(), 'flight-optional-property-cast-'));
+    const header = path.join(directory, 'optional_property_cast.hpp');
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('texture->source.value()');
+    try {
+      writeFileSync(header, contents, 'utf8');
+      const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+      expect(() =>
+        execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+      ).not.toThrow();
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it('carries absence across a union carrier narrowing and refuses to invent it where the target has none', () => {
     const result = lower(
       'sub-union-nullable-assertion.ts',
