@@ -63,6 +63,8 @@ export interface CompilerCommandLineCheckRequest {
 export type CompilerCommandLineCheckFormat = 'json' | 'text';
 
 export interface CompilerCommandLineCheckCapabilities {
+  /** A package version for one report artifact, or undefined when no matching package metadata is available. */
+  readonly readArtifactRevision?: ((artifact: string) => string | undefined) | undefined;
   /** The baseline file's text, or undefined when the file is not there. Never called to write one. */
   readonly readBaseline: (path: string) => string | undefined;
   /**

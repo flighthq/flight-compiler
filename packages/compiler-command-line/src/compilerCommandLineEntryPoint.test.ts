@@ -9,6 +9,7 @@ import {
   validateCompilerCommandLineCheckDirectory,
   compileCompilerCommandLineDirectory,
   isCompilerCommandLineEntryPoint,
+  readCompilerCommandLineCheckArtifactRevision,
 } from './compilerCommandLineEntryPoint.js';
 
 const workspaces: string[] = [];
@@ -102,6 +103,35 @@ describe('isCompilerCommandLineEntryPoint', () => {
     expect(isCompilerCommandLineEntryPoint(link, moduleFile)).toBe(true);
     expect(isCompilerCommandLineEntryPoint(path.join(directory, 'other.js'), moduleFile)).toBe(false);
     expect(isCompilerCommandLineEntryPoint(undefined, moduleFile)).toBe(false);
+  });
+});
+
+describe('readCompilerCommandLineCheckArtifactRevision', () => {
+  it('reads exact installed compiler and target package versions without attributing an unknown package', () => {
+    const target = mkdtempSync(path.join(tmpdir(), 'flight-command-line-provenance-'));
+    workspaces.push(target);
+    const compiler = path.join(target, 'node_modules', '@flighthq', 'tool-compiler');
+    const moduleFile = path.join(compiler, 'dist', 'packages', 'compiler-command-line', 'src', 'entry.js');
+    mkdirSync(path.dirname(moduleFile), { recursive: true });
+    writeFileSync(
+      path.join(compiler, 'package.json'),
+      JSON.stringify({ name: '@flighthq/tool-compiler', version: '2.3.4' }),
+    );
+    writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name: '@flighthq/flight-rs', version: '5.6.7' }));
+
+    expect(readCompilerCommandLineCheckArtifactRevision('@flighthq/tool-compiler', moduleFile)).toBe('2.3.4');
+    expect(readCompilerCommandLineCheckArtifactRevision('rust', moduleFile)).toBe('5.6.7');
+    expect(readCompilerCommandLineCheckArtifactRevision('flight-cpp', moduleFile)).toBeUndefined();
+    expect(readCompilerCommandLineCheckArtifactRevision('standard-library', moduleFile)).toBeUndefined();
+
+    writeFileSync(
+      path.join(target, 'package.json'),
+      JSON.stringify({ name: 'flight-cpp-repository', version: '0.1.0' }),
+    );
+    expect(readCompilerCommandLineCheckArtifactRevision('flight-cpp', moduleFile)).toBe('0.1.0');
+
+    writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name: '@flighthq/flight-rs', version: ' ' }));
+    expect(readCompilerCommandLineCheckArtifactRevision('rust', moduleFile)).toBeUndefined();
   });
 });
 
@@ -329,7 +359,13 @@ describe('validateCompilerCommandLineCheckDirectory', () => {
     expect(checkoutRun).toBe(0);
     expect(plainRun).toBe(0);
     expect(JSON.parse(readFileSync(report, 'utf8')) as unknown).toMatchObject({
-      report: { provenance: { upstream: { name: 'workspace', revision: commit } } },
+      report: {
+        provenance: {
+          compiler: { name: '@flighthq/tool-compiler', revision: '0.0.0' },
+          target: { name: 'rust', revision: 'unversioned' },
+          upstream: { name: 'workspace', revision: commit },
+        },
+      },
     });
     expect(JSON.parse(readFileSync(plainReport, 'utf8')) as unknown).toMatchObject({
       report: { provenance: { upstream: { name: 'workspace', revision: 'unversioned' } } },

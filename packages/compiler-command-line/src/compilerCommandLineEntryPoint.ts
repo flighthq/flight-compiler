@@ -52,6 +52,33 @@ export function isCompilerCommandLineEntryPoint(invoked: string | undefined, mod
   }
 }
 
+// A packaged command lives below the public compiler manifest and, when installed by a target repository,
+// below that target's own manifest. Exact package names make this discovery evidence rather than an
+// assumption about the current directory. The source-tree sibling keeps development reports attributable
+// to the same public package metadata that release stamping updates.
+export function readCompilerCommandLineCheckArtifactRevision(
+  artifact: string,
+  moduleFile: string = fileURLToPath(import.meta.url),
+): string | undefined {
+  const packageNames = artifactPackageNames.get(artifact);
+  if (!packageNames) return undefined;
+  const moduleDirectory = path.dirname(path.resolve(moduleFile));
+  const manifestPaths: string[] = [];
+  for (let directory = moduleDirectory; ; directory = path.dirname(directory)) {
+    manifestPaths.push(path.join(directory, 'package.json'));
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+  }
+  if (artifact === '@flighthq/tool-compiler') {
+    manifestPaths.unshift(path.resolve(moduleDirectory, '..', '..', 'tool-compiler', 'package.json'));
+  }
+  for (const manifestPath of new Set(manifestPaths)) {
+    const manifest = readPackageIdentity(manifestPath);
+    if (manifest && packageNames.has(manifest.name)) return manifest.version;
+  }
+  return undefined;
+}
+
 // The check edge. It hands the run the workspace to read and writes only what the caller asked for: the
 // report file when `--report` names one. There is no output-directory capability here at all, so a check
 // cannot write generated sources however it is invoked.
@@ -59,6 +86,7 @@ export function validateCompilerCommandLineCheckDirectory(argv: readonly string[
   return validateCompilerCommandLineCheckRequest(
     { argv },
     {
+      readArtifactRevision: (artifact) => readCompilerCommandLineCheckArtifactRevision(artifact),
       readBaseline: (file) => (existsSync(file) ? readFileSync(file, 'utf8') : undefined),
       // The revision is the one fact here that needs another process, so it is read where processes are
       // read and nowhere else. A workspace that is not a checkout is an ordinary thing to check -- the
@@ -126,6 +154,21 @@ function readDeclaredPackageNames(manifest: string): readonly string[] {
   }
 }
 
+function readPackageIdentity(manifestPath: string): Readonly<{ name: string; version: string }> | undefined {
+  if (!existsSync(manifestPath)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    const { name, version } = parsed as Readonly<Record<string, unknown>>;
+    if (typeof name !== 'string' || typeof version !== 'string' || version.length === 0 || version !== version.trim()) {
+      return undefined;
+    }
+    return { name, version };
+  } catch {
+    return undefined;
+  }
+}
+
 // The inventory reads a workspace through a four-operation capability, and its own filesystem
 // implementation is not exported from that package's barrel, so the edge that owns filesystem access in
 // this package supplies the same four operations. It is the reader's shape, not a second reading of the
@@ -144,6 +187,13 @@ function fileSystemWorkspaceSource(): WorkspaceSource {
 }
 
 const commandLineCheckCommand = 'check';
+
+const artifactPackageNames = new Map<string, ReadonlySet<string>>([
+  ['@flighthq/tool-compiler', new Set(['@flighthq/tool-compiler'])],
+  ['flight-cpp', new Set(['@flighthq/flight-cpp', 'flight-cpp-repository'])],
+  ['haxe', new Set(['@flighthq/flight-hx'])],
+  ['rust', new Set(['@flighthq/flight-rs'])],
+]);
 
 if (isCompilerCommandLineEntryPoint(process.argv[1], fileURLToPath(import.meta.url))) {
   process.exitCode = compileCompilerCommandLineDirectory(process.argv.slice(2));

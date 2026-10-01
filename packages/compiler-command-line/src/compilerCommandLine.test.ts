@@ -871,6 +871,33 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(run.out.join('')).toContain('compiler=flight-compiler@abc123');
   });
 
+  it('records available compiler and target package revisions without guessing an unknown target', () => {
+    const versioned = checkRun([quiet], {
+      artifactRevisions: { '@flighthq/tool-compiler': '2.3.4', rust: '5.6.7' },
+    });
+    const unknownTarget = checkRun([quiet], {
+      artifactRevisions: { '@flighthq/tool-compiler': '2.3.4' },
+    });
+
+    const recorded = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust'] },
+      versioned.capabilities,
+    );
+    const fallback = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'cpp', '--runtime-profile', 'standard-library'] },
+      unknownTarget.capabilities,
+    );
+
+    expect(checkOutcome(recorded).report.provenance).toMatchObject({
+      compiler: { name: '@flighthq/tool-compiler', revision: '2.3.4' },
+      target: { name: 'rust', revision: '5.6.7' },
+    });
+    expect(checkOutcome(fallback).report.provenance).toMatchObject({
+      compiler: { name: '@flighthq/tool-compiler', revision: '2.3.4' },
+      target: { name: 'standard-library', revision: 'unversioned' },
+    });
+  });
+
   it('records the workspace revision its caller could read, and says unversioned when it could not', () => {
     const read = checkRun([quiet], { upstreamRevision: 'a'.repeat(40) });
     const absent = checkRun([quiet], { upstreamRevision: undefined });
@@ -932,6 +959,7 @@ interface CheckPackage {
 function checkRun(
   packages: readonly CheckPackage[],
   options: Readonly<{
+    artifactRevisions?: Readonly<Record<string, string>> | undefined;
     baseline?: string | undefined;
     provenance?: CompilerPackageCheckProvenance | undefined;
     roots?: readonly string[] | undefined;
@@ -949,6 +977,7 @@ function checkRun(
   const provenance = options.provenance;
   return {
     capabilities: {
+      readArtifactRevision: (artifact) => options.artifactRevisions?.[artifact],
       readBaseline: (file) => (file === '/ws/check.baseline' ? options.baseline : undefined),
       readUpstreamRevision: () => options.upstreamRevision,
       readWorkspaceRoots: () => options.roots ?? [],

@@ -308,16 +308,24 @@ function isCompilerCommandLineCheckBaseline(value: unknown): value is CompilerPa
   );
 }
 
-// A run reports what produced it. The upstream revision is whatever the caller's workspace reading could
-// establish -- a Git checkout has one and says so; the compiler and the target runtime have no revision the
-// compiler can read about itself, so those say `unversioned` rather than a guess.
+// A run reports what produced it. The machine edge may discover exact compiler and target package versions;
+// the upstream revision is whatever its workspace reading establishes. Every absent fact stays explicitly
+// unversioned rather than borrowing the version of another artifact.
 function createCompilerCommandLineCheckProvenance(
   parsed: Readonly<ParsedCompilerCommandLineCheckRequest>,
   capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
 ): CompilerPackageCheckProvenance {
+  const compilerName = '@flighthq/tool-compiler';
+  const targetName = parsed.target === 'cpp' ? parsed.runtimeProfile : parsed.target;
   return {
-    compiler: { name: '@flighthq/tool-compiler', revision: unversionedRevision },
-    target: { name: parsed.target === 'cpp' ? parsed.runtimeProfile : parsed.target, revision: unversionedRevision },
+    compiler: {
+      name: compilerName,
+      revision: capabilities.readArtifactRevision?.(compilerName) ?? unversionedRevision,
+    },
+    target: {
+      name: targetName,
+      revision: capabilities.readArtifactRevision?.(targetName) ?? unversionedRevision,
+    },
     upstream: {
       name: 'workspace',
       revision: capabilities.readUpstreamRevision?.(parsed.workspaceDirectory) ?? unversionedRevision,
