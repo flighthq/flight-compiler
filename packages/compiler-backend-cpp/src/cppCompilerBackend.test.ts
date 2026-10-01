@@ -11825,6 +11825,50 @@ int main() {
     expect(failure.classification).toBe('source-portability');
   });
 
+  it('invokes a callable read through a structural row instead of addressing it', () => {
+    // A callable member read through a Readonly<> row is reported as a class-1 corpus failure, with the
+    // emitter believed to take its address or name operator() rather than invoke it. The emitted form is
+    // the invoked one, so this pins it and pins the absence of both reported symptoms -- if a later
+    // change reintroduces either, this fails rather than the corpus.
+    const result = lower(
+      'bitmapReadbackResolver.ts',
+      `export interface BitmapReadbackOutcome { readonly bitmap: string | null; readonly reason: string }
+       export interface HostBitmapReadbackCapability {
+         readBitmap(source: string, width: number, height: number, mode: string): BitmapReadbackOutcome;
+       }
+       export function resolveBitmapReadback(
+         hostBitmapReadback: Readonly<HostBitmapReadbackCapability>,
+         source: string,
+         width: number,
+         height: number,
+         mode: string,
+       ): BitmapReadbackOutcome {
+         if (width <= 0 || height <= 0) return { bitmap: null, reason: 'empty-size' };
+         return hostBitmapReadback.readBitmap(source, width, height, mode);
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain(
+      'return flight::row_get<flight::RowKey<"readBitmap">>(host_bitmap_readback)(source, width, height, mode);',
+    );
+    expect(emitted).not.toContain('&flight::row_get');
+    expect(emitted).not.toContain('.operator()');
+
+    // The generic carrier takes the same form, so the invocation does not depend on the carrier being
+    // concrete.
+    const generic = lower(
+      'generic-carrier.ts',
+      `export interface Cap { readBitmap(source: string, width: number): number }
+       export function use<T extends Cap>(cap: Readonly<T>, source: string, width: number): number {
+         return cap.readBitmap(source, width);
+       }`,
+    );
+    expect(emitIrModuleCpp(generic.module, { runtimeProfile: 'flight-cpp' }).contents).toContain(
+      'flight::row_get<flight::RowKey<"readBitmap">>(cap)(source, width)',
+    );
+  });
+
   it('refuses a for-of over a reference operand and keeps every collection iterating', () => {
     // A range-for over an emitted reference has no begin(). The corpus run that surfaced this reported
     // exactly that shape -- "const std::shared_ptr<flight::types::TextFormat> has no begin" -- against a
