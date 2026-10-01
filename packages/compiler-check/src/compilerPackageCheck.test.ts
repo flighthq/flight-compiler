@@ -191,6 +191,7 @@ describe('createCompilerPackageCheckReport', () => {
       policyClass: 'source-portability',
       rule: 'opaque-value-domain',
       sourceFindingIdentity: 'source-site-identity',
+      sourceFindingSubject: 'interface:Value/property:payload',
       stage: 'source',
     });
     expect(report.cascades).toEqual([]);
@@ -198,6 +199,7 @@ describe('createCompilerPackageCheckReport', () => {
     expect(comparison.unchanged[0]?.occurrences).toEqual([
       { column: 2, line: 30, message: 'Value.payload exposes unknown' },
     ]);
+    expect(comparison.unchanged[0]?.sourceFindingSubject).toBe('interface:Value/property:payload');
     expect(policy).toMatchObject({ failingFindingIdentities: [], passed: true });
 
     const introduced = compareCompilerPackageCheckBaseline(
@@ -602,6 +604,26 @@ describe('getCompilerPackageCheckReportJson', () => {
     expect(serialized.endsWith('\n')).toBe(true);
     expect(JSON.parse(serialized)).toEqual(report);
     expect(JSON.parse(serialized).schema).toBe('flight-compiler-check-report/1');
+  });
+
+  it('keeps an actionable source subject in machine-readable output', () => {
+    const compilation = createCompilation([emittedModule('@flight/a', 'src/value.ts', 'Value')]);
+    const report = createCompilerPackageCheckReport(compilation, {
+      ...createOptions(),
+      sourcePortability: sourcePortabilityReport(12, 7),
+    });
+
+    expect(JSON.parse(getCompilerPackageCheckReportJson(report))).toMatchObject({
+      directFindings: [
+        {
+          policyClass: 'source-portability',
+          sourceFindingSubject: 'interface:Value/property:payload',
+        },
+      ],
+      totals: {
+        modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 1, total: 1 },
+      },
+    });
   });
 });
 

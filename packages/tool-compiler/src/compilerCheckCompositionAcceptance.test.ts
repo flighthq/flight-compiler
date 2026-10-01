@@ -331,6 +331,7 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
         policyClass: 'source-portability',
         rule: 'mixed-absence',
         sourceFindingIdentity: expectedSourceIdentity,
+        sourceFindingSubject: 'interface:GlRenderStateOptions/property:colorAdjustmentFeature',
         stage: 'source',
       },
     ]);
@@ -378,6 +379,7 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
         occurrences: [{ message: revisedMessage }],
         policyClass: 'source-portability',
         sourceFindingIdentity: expectedSourceIdentity,
+        sourceFindingSubject: 'interface:GlRenderStateOptions/property:colorAdjustmentFeature',
       },
     ]);
     expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({

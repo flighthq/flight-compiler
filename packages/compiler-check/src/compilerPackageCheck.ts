@@ -184,6 +184,7 @@ export function createCompilerPackageCheckReport(
           policyClass: 'source-portability',
           rule: sourceFinding.rule,
           sourceFindingIdentity: normalizeText(sourceFinding.identity),
+          sourceFindingSubject: normalizeText(sourceFinding.subject),
           stage: 'source',
         },
         occurrences: new Map([[createOccurrenceIdentity(occurrence), occurrence]]),
@@ -338,6 +339,7 @@ function cloneFinding(finding: Readonly<CompilerPackageCheckFinding>): CompilerP
     policyClass: finding.policyClass,
     ...(finding.rule === undefined ? {} : { rule: finding.rule }),
     ...(finding.sourceFindingIdentity === undefined ? {} : { sourceFindingIdentity: finding.sourceFindingIdentity }),
+    ...(finding.sourceFindingSubject === undefined ? {} : { sourceFindingSubject: finding.sourceFindingSubject }),
     stage: finding.stage,
   };
 }

@@ -43,6 +43,8 @@ export interface CompilerPackageCheckFinding {
   readonly rule?: string | undefined;
   /** Source-analysis findings retain the stable site identity that made them baseline-addressable. */
   readonly sourceFindingIdentity?: string | undefined;
+  /** Source-analysis findings retain the declaration/member path that makes remediation actionable. */
+  readonly sourceFindingSubject?: string | undefined;
   readonly stage: 'emission' | 'initialization' | 'lowering' | 'source';
 }
 
