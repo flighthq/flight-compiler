@@ -34,6 +34,16 @@ Compile a directory directly. The C++ command elects the semantic `flight-cpp` r
 flight-compile src --target cpp --out generated
 ```
 
+For a long-running compile, add `--progress` to diagnose which phase or source is active:
+
+```sh
+flight-compile src --target cpp --out generated --progress
+```
+
+The flag writes one `flight-compiler-package-compilation-progress/1` JSON object per line to stderr. It emits `started` and `completed` events for the overall `lowering` phase, for each source's `module-lowering` in input-path order, for the `emission-session`, and for each `module-emission` that reaches the backend. Module events include the module identity, `completedModules`, and `moduleCount`; a completed `module-emission` also reports an `emitted` or `refused` outcome. The last `started` event therefore identifies work that was active if a run stalls or is interrupted.
+
+For fixed input, event order and content are deterministic and contain no clocks or machine state. The stream is bounded to `4 + 2S + 2E` lines, where `S` is the number of input sources and `E` is the number of modules that reach emission. Progress is opt-in: without `--progress`, no progress lines are written, and generated files and the normal final report are unchanged.
+
 Check a workspace without generating anything. `check` reads the workspace through the same inventory the compiler uses everywhere else -- the package manifests, their declared `flight.environment`, and their export lanes -- compiles the selected packages as one module graph, and writes no generated sources at all: the check capability record has no output directory. One graph rather than one run per package is what makes a refused dependency a cascade of the finding behind it instead of a second finding in every importer.
 
 It exits 0 when the run is admitted, 1 when a package introduces a finding that gates, and 2 when the invocation itself could not be carried out. The report itself comes from `compiler-check`: the findings, the policy class each one carries, and the dependency cascades. `--environment` is deliberately one per run: two environments have two profiles behind them, so checking both means two reports and two baselines.
