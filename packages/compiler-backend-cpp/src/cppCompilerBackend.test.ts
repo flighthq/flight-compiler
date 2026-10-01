@@ -13751,7 +13751,11 @@ int main() {
       runtimeProfile: 'flight-cpp',
     }).contents;
 
-    expect(emitted).toContain('auto view = std::get<flight::wgpu::GpuTexture>(texture).create_view();');
+    // A dual-sentinel carrier is projected by the union plan's proven value-slot index. This is the same
+    // stable rule used by other narrowed variant reads and does not require the use site to re-spell an
+    // imported or anonymous arm type; slot zero is the GpuTexture arm rendered in the declaration above.
+    expect(emitted).toContain('auto view = std::get<0>(texture).create_view();');
+    expect(emitted).not.toContain('std::get<flight::wgpu::GpuTexture>(texture)');
   });
 
   // What the unwrap must not do. A read with no guard at all, a guard whose proof a later write withdraws,
