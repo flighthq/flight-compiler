@@ -183,6 +183,28 @@ describe('getTypeScriptSyntacticTypeSubstitution', () => {
     expect(getTypeScriptSyntacticTypeSubstitution(bare, checker, substitutions)).toBe(replacement);
     expect(getTypeScriptSyntacticTypeSubstitution(applied, checker, substitutions)).toBe(applied);
   });
+
+  it('retains the authored binding when bare type-parameter substitutions cycle', () => {
+    const { checker, source } = createProgram('type Swap<Left, Right> = [Left, Right];');
+    const declaration = source.statements[0];
+    if (!declaration || !ts.isTypeAliasDeclaration(declaration) || !ts.isTupleTypeNode(declaration.type)) {
+      throw new Error('Expected tuple alias');
+    }
+    const left = declaration.type.elements[0];
+    const right = declaration.type.elements[1];
+    const leftParameter = declaration.typeParameters?.[0];
+    const rightParameter = declaration.typeParameters?.[1];
+    const leftSymbol = leftParameter && checker.getSymbolAtLocation(leftParameter.name);
+    const rightSymbol = rightParameter && checker.getSymbolAtLocation(rightParameter.name);
+    if (!left || !right || !leftSymbol || !rightSymbol) throw new Error('Expected swapped type parameters');
+    const substitutions = new Map<ts.Symbol, ts.TypeNode>([
+      [leftSymbol, right],
+      [rightSymbol, left],
+    ]);
+
+    expect(getTypeScriptSyntacticTypeSubstitution(left, checker, substitutions)).toBe(left);
+    expect(getTypeScriptSyntacticTypeSubstitution(right, checker, substitutions)).toBe(right);
+  });
 });
 
 function createProgram(text: string): Readonly<{ checker: ts.TypeChecker; source: ts.SourceFile }> {

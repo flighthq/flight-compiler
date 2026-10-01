@@ -104,5 +104,24 @@ export function getTypeScriptSyntacticTypeSubstitution(
 ): ts.TypeNode {
   if (!ts.isTypeReferenceNode(type) || type.typeArguments?.length) return type;
   const symbol = checker.getSymbolAtLocation(type.typeName);
-  return (symbol && substitutions.get(symbol)) ?? type;
+  const replacement = symbol && substitutions.get(symbol);
+  if (!symbol || !replacement) return type;
+
+  // Declaration substitutions can revisit one generic with its parameters swapped. The ordinary
+  // declaration-symbol guard sits above this helper, but substitution happens before that guard and
+  // bare parameters have no interface or alias declaration to trip it. Look through only the bare
+  // parameter chain to prove it is finite. On a cycle, retain the caller's authored binding; returning
+  // either member of the cycle would merely make the next lowering step bounce back to the other.
+  const seen = new Set<ts.Symbol>([symbol]);
+  let current = replacement;
+  while (ts.isTypeReferenceNode(current) && !current.typeArguments?.length) {
+    const currentSymbol = checker.getSymbolAtLocation(current.typeName);
+    if (!currentSymbol) break;
+    if (seen.has(currentSymbol)) return type;
+    seen.add(currentSymbol);
+    const next = substitutions.get(currentSymbol);
+    if (!next) break;
+    current = next;
+  }
+  return replacement;
 }

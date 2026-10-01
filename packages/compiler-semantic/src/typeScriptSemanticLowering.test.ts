@@ -12175,6 +12175,52 @@ it('erases function-local interface and type declarations after using them as ty
   });
 });
 
+it('bounds mutually recursive function-local generic type evidence at a named reference', () => {
+  const result = lower(
+    'local-recursive-types.ts',
+    `export function connect<Left, Right>(value: unknown): void {
+       interface Pair<First, Second> extends PairRuntime<Second, First> { current: First }
+       interface PairRuntime<First, Second> { next: PairLink<First, Second> }
+       type PairLink<First, Second> = Pair<Second, First> | null;
+       const pair: Pair<Left, Right> = value as Pair<Left, Right>;
+       pair;
+     }`,
+  );
+  const connect = result.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'connect',
+  );
+  if (connect?.kind !== 'function') throw new Error('Expected connect function');
+  const statement = connect.body.find((candidate) => candidate.kind === 'variable');
+  const pair = statement?.kind === 'variable' ? statement.declarations[0] : undefined;
+  const [left, right] = connect.typeParameters.map((parameter) => parameter.binding);
+
+  expect(result.diagnostics).toEqual([]);
+  expect(pair?.type).toMatchObject({
+    kind: 'object',
+    properties: [
+      {
+        name: 'next',
+        type: {
+          kind: 'union',
+          types: [
+            {
+              kind: 'named',
+              reference: { binding: { kind: 'interface', name: 'Pair' }, kind: 'binding' },
+              typeArguments: [
+                { kind: 'named', reference: { binding: left, kind: 'binding' } },
+                { kind: 'named', reference: { binding: right, kind: 'binding' } },
+              ],
+            },
+            { kind: 'null' },
+          ],
+        },
+      },
+      { name: 'current', type: { kind: 'named', reference: { binding: left, kind: 'binding' } } },
+    ],
+  });
+  expect(JSON.stringify(pair?.type)).not.toContain('"source":"unknown"');
+});
+
 it('preserves unique symbol initializers while erasing type-level uniqueness', () => {
   const result = lower(
     'unique-symbol.ts',
