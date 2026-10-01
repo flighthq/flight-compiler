@@ -7,6 +7,7 @@ import type {
   IrObjectTypeProperty,
   IrStatement,
   IrType,
+  TypeScriptModuleLoweringProgress,
 } from '../../compiler-types/src/index.js';
 import {
   createCompilerTypeScriptAnalysisIdentity,
@@ -3928,6 +3929,57 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
 
     expect(results.at(-1)!.diagnostics).toEqual([]);
     expect(lowerTypeScriptSources([])).toEqual([]);
+  });
+
+  it('reports frozen source-lowering boundaries in input order without changing results', () => {
+    const input = (file: string) => ({
+      packageName: '@flight/model',
+      sourceFile: ts.createSourceFile(
+        `/flight/packages/model/src/${file}`,
+        'export const value = 1;',
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    });
+    const sources = [input('zeta.ts'), input('alpha.ts')];
+    const progress: TypeScriptModuleLoweringProgress[] = [];
+    const observed = lowerTypeScriptSources(sources, undefined, {
+      observeProgress(event) {
+        expect(Object.isFrozen(event)).toBe(true);
+        expect(Object.isFrozen(event.module)).toBe(true);
+        progress.push(event);
+      },
+    });
+    const silent = lowerTypeScriptSources(sources);
+
+    expect(observed).toEqual(silent);
+    expect(progress).toEqual([
+      {
+        completedModules: 0,
+        module: { name: 'Zeta', packageName: '@flight/model', source: 'packages/model/src/zeta.ts' },
+        moduleCount: 2,
+        state: 'started',
+      },
+      {
+        completedModules: 1,
+        module: { name: 'Zeta', packageName: '@flight/model', source: 'packages/model/src/zeta.ts' },
+        moduleCount: 2,
+        state: 'completed',
+      },
+      {
+        completedModules: 1,
+        module: { name: 'Alpha', packageName: '@flight/model', source: 'packages/model/src/alpha.ts' },
+        moduleCount: 2,
+        state: 'started',
+      },
+      {
+        completedModules: 2,
+        module: { name: 'Alpha', packageName: '@flight/model', source: 'packages/model/src/alpha.ts' },
+        moduleCount: 2,
+        state: 'completed',
+      },
+    ]);
   });
 
   it('keeps unresolved and ambiguous graph imports as deterministic heritage diagnostics', () => {

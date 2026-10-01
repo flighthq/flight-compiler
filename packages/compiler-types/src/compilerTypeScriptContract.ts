@@ -2,10 +2,16 @@ import type ts from 'typescript';
 
 import type { CompilerDiagnostic } from './compilerDiagnosticContract.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
+import type { CompilerModuleIdentity } from './compilerSourceIdentity.js';
 
 export interface LowerTypeScriptSourceOptions {
   readonly packageName: string;
   readonly upstreamDirectory: string;
+}
+
+export interface LowerTypeScriptSourcesOptions {
+  /** Synchronous source boundaries for diagnosing a long-running project lowering. */
+  readonly observeProgress?: ((progress: Readonly<TypeScriptModuleLoweringProgress>) => void) | undefined;
 }
 
 export interface RuntimeExportDecision {
@@ -36,6 +42,13 @@ export interface CompilerTypeScriptAnalysisIdentity {
 export interface TypeScriptLoweringResult {
   readonly diagnostics: readonly CompilerDiagnostic[];
   readonly module: IrModule;
+}
+
+export interface TypeScriptModuleLoweringProgress {
+  readonly completedModules: number;
+  readonly module: CompilerModuleIdentity;
+  readonly moduleCount: number;
+  readonly state: 'completed' | 'started';
 }
 
 export interface TypeScriptInvocationSignatureResolution {

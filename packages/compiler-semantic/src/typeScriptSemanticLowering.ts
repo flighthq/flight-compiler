@@ -25,6 +25,7 @@ import {
 import type {
   CompilerDiagnostic,
   CompilerDiagnosticSeverity,
+  CompilerModuleIdentity,
   CompilerModuleResolutionPlan,
   CompilerSourceOrigin,
   IrAssignmentOperator,
@@ -83,11 +84,13 @@ import type {
   IrValueNameReference,
   IrVariable,
   IrVariableDeclaration,
-  TypeScriptLoweringResult,
   CompilerTypeScriptAnalysisIdentity,
-  TypeScriptModuleInput,
-  TypeScriptInvocationSignatureResolution,
   LowerTypeScriptSourceOptions,
+  LowerTypeScriptSourcesOptions,
+  TypeScriptInvocationSignatureResolution,
+  TypeScriptLoweringResult,
+  TypeScriptModuleInput,
+  TypeScriptModuleLoweringProgress,
 } from '../../compiler-types/src/index.js';
 import { getIrTypeIndexedElementEvidence, getIrTypeMemberEvidence } from './compilerIrTypeMemberEvidence.js';
 import { getIrBinaryOperatorResultDomain, getIrTypeOperatorValueDomain } from './compilerOperatorDomainEvidence.js';
@@ -179,6 +182,7 @@ export function lowerTypeScriptSource(
 export function lowerTypeScriptSources(
   sources: readonly Readonly<TypeScriptModuleInput>[],
   moduleResolution: Readonly<CompilerModuleResolutionPlan> = compilerEmptyModuleResolutionPlan,
+  options: Readonly<LowerTypeScriptSourcesOptions> = {},
 ): readonly TypeScriptLoweringResult[] {
   const analysis = createTypeScriptAnalysis(sources, moduleResolution, 'project');
   const analysisModuleOptions = new Map(
@@ -187,15 +191,52 @@ export function lowerTypeScriptSources(
       { packageName, upstreamDirectory },
     ]),
   );
-  return sources.map((source, index) =>
-    lowerTypeScriptSourceWithAnalysis(
+  return sources.map((source, index) => {
+    const module = options.observeProgress ? createTypeScriptModuleInputIdentity(source) : undefined;
+    if (module) {
+      observeTypeScriptModuleLoweringProgress(options.observeProgress, {
+        completedModules: index,
+        module,
+        moduleCount: sources.length,
+        state: 'started',
+      });
+    }
+    const result = lowerTypeScriptSourceWithAnalysis(
       analysis.sourceFiles[index]!,
       source,
       analysis.checker,
       analysisModuleOptions,
       analysis.symbolReferenceStatements,
-    ),
-  );
+    );
+    if (module) {
+      observeTypeScriptModuleLoweringProgress(options.observeProgress, {
+        completedModules: index + 1,
+        module,
+        moduleCount: sources.length,
+        state: 'completed',
+      });
+    }
+    return result;
+  });
+}
+
+function createTypeScriptModuleInputIdentity(
+  source: Readonly<TypeScriptModuleInput>,
+): Readonly<CompilerModuleIdentity> {
+  return {
+    name: moduleNameFromSource(source.sourceFile.fileName),
+    packageName: source.packageName,
+    source: relativeSource(source.sourceFile.fileName, source.upstreamDirectory),
+  };
+}
+
+function observeTypeScriptModuleLoweringProgress(
+  observer: LowerTypeScriptSourcesOptions['observeProgress'],
+  progress: TypeScriptModuleLoweringProgress,
+): void {
+  if (!observer) return;
+  Object.freeze(progress.module);
+  observer(Object.freeze(progress));
 }
 
 function lowerTypeScriptSourceWithAnalysis(

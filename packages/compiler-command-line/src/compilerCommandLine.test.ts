@@ -124,7 +124,7 @@ describe('compileCompilerCommandLineRequest', () => {
 
     expect(observed).toEqual(silent);
     expect(observedOut).toEqual(silentOut);
-    expect(progress).toHaveLength(8);
+    expect(progress).toHaveLength(12);
     expect(progress.every((line) => line.endsWith('\n'))).toBe(true);
     expect(progress.map((line) => JSON.parse(line) as unknown)).toEqual([
       {
@@ -132,6 +132,38 @@ describe('compileCompilerCommandLineRequest', () => {
         phase: 'lowering',
         schema: 'flight-compiler-package-compilation-progress/1',
         state: 'started',
+      },
+      {
+        completedModules: 0,
+        module: { name: 'Add', packageName: '@local/source', source: 'add.ts' },
+        moduleCount: 2,
+        phase: 'module-lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        completedModules: 1,
+        module: { name: 'Add', packageName: '@local/source', source: 'add.ts' },
+        moduleCount: 2,
+        phase: 'module-lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+      {
+        completedModules: 1,
+        module: { name: 'Negate', packageName: '@local/source', source: 'negate.ts' },
+        moduleCount: 2,
+        phase: 'module-lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        completedModules: 2,
+        module: { name: 'Negate', packageName: '@local/source', source: 'negate.ts' },
+        moduleCount: 2,
+        phase: 'module-lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
       },
       {
         moduleCount: 2,

@@ -290,6 +290,38 @@ describe('compileTypeScriptPackageGraph', () => {
         state: 'started',
       },
       {
+        completedModules: 0,
+        module: goodIdentity,
+        moduleCount: 2,
+        phase: 'module-lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        completedModules: 1,
+        module: goodIdentity,
+        moduleCount: 2,
+        phase: 'module-lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+      {
+        completedModules: 1,
+        module: badIdentity,
+        moduleCount: 2,
+        phase: 'module-lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'started',
+      },
+      {
+        completedModules: 2,
+        module: badIdentity,
+        moduleCount: 2,
+        phase: 'module-lowering',
+        schema: 'flight-compiler-package-compilation-progress/1',
+        state: 'completed',
+      },
+      {
         moduleCount: 2,
         phase: 'lowering',
         schema: 'flight-compiler-package-compilation-progress/1',
@@ -343,6 +375,27 @@ describe('compileTypeScriptPackageGraph', () => {
       },
     ]);
     expect(observed).toEqual(silent);
+
+    const interruptedJsonLines: string[] = [];
+    expect(() =>
+      compileTypeScriptPackageGraph({
+        ...options,
+        observeProgress(event) {
+          interruptedJsonLines.push(JSON.stringify(event));
+          if (event.phase === 'module-lowering' && event.module.name === 'Bad' && event.state === 'started') {
+            throw new Error('simulated stalled source boundary');
+          }
+        },
+      }),
+    ).toThrow('simulated stalled source boundary');
+    expect(JSON.parse(interruptedJsonLines.at(-1)!) as unknown).toEqual({
+      completedModules: 1,
+      module: badIdentity,
+      moduleCount: 2,
+      phase: 'module-lowering',
+      schema: 'flight-compiler-package-compilation-progress/1',
+      state: 'started',
+    });
   });
 
   it('carries a backend refusal rule into the report so instances of one decision group together', () => {

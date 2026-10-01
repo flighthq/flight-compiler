@@ -70,14 +70,23 @@ export interface CompileTypeScriptPackageGraphOptions<BackendOptions> {
 }
 
 /**
- * A bounded synchronous trace: two lowering events, two session events, then two events per module
- * that reaches emission. A started event is delivered before the named work begins, so the last event
- * identifies the phase or module in progress without adding clocks or machine state to compiler output.
+ * A bounded synchronous trace: two lowering-phase events, two events per source lowered, two session
+ * events, then two events per module that reaches emission. A started event is delivered before the
+ * named work begins, so the last event identifies the phase or module in progress without adding clocks
+ * or machine state to compiler output.
  */
 export type CompilerPackageCompilationProgress =
   | Readonly<{
       moduleCount: number;
       phase: 'emission-session' | 'lowering';
+      schema: 'flight-compiler-package-compilation-progress/1';
+      state: 'completed' | 'started';
+    }>
+  | Readonly<{
+      completedModules: number;
+      module: CompilerModuleIdentity;
+      moduleCount: number;
+      phase: 'module-lowering';
       schema: 'flight-compiler-package-compilation-progress/1';
       state: 'completed' | 'started';
     }>
