@@ -4098,13 +4098,10 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
     expect(refused.classification).toBe('source-portability');
-    expect(refused.message).toContain('retained row owner is NodeRuntime<NodeTraits>');
-    expect(refused.message).toContain('asserted writable owner is NodeRuntime<NodeAny>');
-    expect(refused.message).toContain('different generic specializations');
+    expect(refused.message).toContain('a readonly row never becomes writable');
     expect(refused.message).toContain(
-      'Add a mutable-source accessor that returns NodeRuntime<Traits> directly from the typed runtime slot',
+      'a RUNTIME OWNER that the mutating paths must write needs a mutable-source accessor',
     );
-    expect(refused.message).toContain('Keep getNodeRuntime readonly for reads');
     expect(read).toContain('flighthq_node::get_node_runtime');
     expect(read).toContain('RowKey<"interactionState">');
     expect(read).not.toContain('structural_ref_cast');
@@ -4217,20 +4214,10 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
     expect(refused.classification).toBe('source-portability');
-    expect(refused.message).toContain('getNodeCommonAncestor casts a and b only to retain object identity');
-    expect(refused.message).toContain('NodeRuntime<Traits>.parent and NodeRuntime<Traits>.children');
-    expect(refused.message).toContain('one Traits specialization');
-    expect(refused.message).toContain('make readonly traversal accept Readonly<NodeOf<Traits>>');
-    expect(refused.message).toContain('a named readonly hierarchy view with the same Traits parameter');
-    expect(refused.message).toContain('return that readonly view');
-    expect(refused.message).toContain('use a separate mutable parent accessor');
-    expect(refused.message).toContain("allocate, splice, or swap the parent's children array");
-    expect(refused.message).toContain("set or clear the child's parent");
-    expect(refused.message).toContain("reparentNode's no-mutation result for a singular parent transform");
-    expect(refused.message).toContain('traversal, bounds, rendering, interaction, skeleton cloning');
-    expect(refused.message).toContain('Rive ordering, and slot replacement');
-    expect(refused.message).toContain('gizmo removal is the current consumer');
-    expect(refused.message).toContain('Do not whitelist these assertions');
+    expect(refused.message).toContain('a readonly row never becomes writable');
+    expect(refused.message).toContain(
+      'a NODE that the read paths only traverse and never mutate needs the two authorities separated',
+    );
     expect(emitted).toContain('get_readonly_node_parent<Traits>');
     expect(emitted).toContain('get_writable_node_runtime<Traits>');
     expect(emitted).toContain('target_runtime->children');
@@ -4368,20 +4355,10 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
     expect(refused.classification).toBe('source-portability');
-    expect(refused.message).toContain('only to compare its identity');
-    expect(refused.message).toContain('NodeRuntime<Traits>.parent and NodeRuntime<Traits>.children');
-    expect(refused.message).toContain('assertions add authority, not owner evidence');
-    expect(refused.message).toContain('Readonly<NodeRuntime<Traits>> is shallow');
-    expect(refused.message).toContain('snapshot protects only the copied array');
-    expect(refused.message).toContain('Readonly<NodeOf<Traits>>');
-    expect(refused.message).toContain('named readonly traversal-runtime capability');
-    expect(refused.message).toContain('separate mutable traversal overload or helper');
-    expect(refused.message).toContain('advance childrenId');
-    expect(refused.message).toContain('depth-first pre-order');
-    expect(refused.message).toContain('GL/WGPU shadow walks');
-    expect(refused.message).toContain('revealScene3DResourcesOnResolve is the mutation exception');
-    expect(refused.message).toContain('writes alpha and passes those nodes to tweens');
-    expect(refused.message).toContain('Do not whitelist these assertions');
+    expect(refused.message).toContain('a readonly row never becomes writable');
+    expect(refused.message).toContain(
+      'a NODE that the read paths only traverse and never mutate needs the two authorities separated',
+    );
     expect(emitted).toContain('get_readonly_node_parent<Traits>');
     expect(emitted).toContain('get_readonly_node_runtime<Traits>');
     expect(emitted).toContain('get_node_children');
@@ -4624,19 +4601,11 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
     expect(refused.classification).toBe('source-portability');
-    expect(refused.message).toContain('never mutates the runtime or root');
-    expect(refused.message).toContain('callback writes the caller-owned _tempRectangle');
-    expect(refused.message).toContain('Node2DRuntime extends NodeRuntime<Node2DTraits>');
+    expect(refused.message).toContain('a readonly row never becomes writable');
     expect(refused.message).toContain(
-      'Scene2DFitContext<Traits>.root and the inherited Node<Traits>[EntityRuntimeKey]',
+      'a RUNTIME OWNER that the mutating paths must write needs a mutable-source accessor',
     );
-    expect(refused.message).toContain('retain BoundsNode<Traits> | null');
-    expect(refused.message).toContain('readonly bounds-runtime accessor');
-    expect(refused.message).toContain('null or zero-sized content writes identity');
-    expect(refused.message).toContain('has no production caller');
-    expect(refused.message).toContain('Anchor layout independently reuses ViewportAlign');
-    expect(refused.message).toContain('renderViewport independently culls Spatial2DNode world bounds');
-    expect(refused.message).toContain('Do not whitelist either assertion');
+    expect(refused.message).toContain('no cast, copy, or re-view can carry a capability the source withheld');
     expect(emitted).toContain('get_bounds_node_runtime<Traits>(');
     expect(emitted).toContain('RowKey<"computeLocalBoundsRectangle">');
     expect(emitted).toContain('out->width = scratch_');
@@ -4753,23 +4722,10 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
     expect(refused.classification).toBe('source-portability');
-    expect(refused.message).toContain('ensureNodeLocalBoundsRectangle reaches its runtime through getEntityRuntime');
-    expect(refused.message).toContain('returns Readonly<EntityRuntime>');
-    expect(refused.message).toContain('local, parent, and world bounds paths');
-    expect(refused.message).toContain('lazily allocate and update their shared rectangles and revision stamps');
-    expect(refused.message).toContain('createNode2DRuntime is the intended concrete producer');
-    expect(refused.message).toContain('initBoundsRectangleRuntimeTrait initializes the bounds cells');
-    expect(refused.message).toContain("asserting createNodeRuntime's NodeRuntime owner as Node2DRuntime");
-    expect(refused.message).toContain('Node<Traits>[EntityRuntimeKey] slot');
-    expect(refused.message).toContain('Construct one exact Node2DRuntime owner in the family factory');
-    expect(refused.message).toContain('exact-owner allocation and named shared-layer initializers');
-    expect(refused.message).toContain("make BoundsNode<Traits>'s runtime slot carry one named full owner");
-    expect(refused.message).toContain('BoundsNodeRuntime<Traits>');
-    expect(refused.message).toContain('expose a mutable-source bounds accessor returning that same owner');
-    expect(refused.message).toContain('keeping getEntityRuntime readonly for general reads');
-    expect(refused.message).toContain('Node2D may retain its more precise Node2DRuntime');
-    expect(refused.message).toContain('Do not whitelist or recover the cache owner by cast');
-    expect(refused.message).toContain('reinterpret the NodeRuntime owner as Node2DRuntime');
+    expect(refused.message).toContain('a readonly row never becomes writable');
+    expect(refused.message).toContain(
+      'a RUNTIME OWNER that the mutating paths must write needs a mutable-source accessor',
+    );
     // The source fix is the real capability proof: both the stored owner and the accessor carry one named
     // full writable runtime type, so the same writes lower directly without a cast, copied row, or side owner.
     expect(emitted).toContain('get_bounds_runtime<Traits>(target)');
@@ -4896,25 +4852,10 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
     expect(refused.classification).toBe('source-portability');
-    expect(refused.message).toContain('ensureNodeLocalMatrix reaches its runtime through getEntityRuntime');
-    expect(refused.message).toContain('returns Readonly<EntityRuntime>');
-    expect(refused.message).toContain('rotationAngle, rotationSine, rotationCosine');
-    expect(refused.message).toContain('localMatrix coefficients');
-    expect(refused.message).toContain('computeNodeWorldTransformRevision advances');
-    expect(refused.message).toContain('bounds aggregation, preserve-world reparenting');
-    expect(refused.message).toContain('interaction hit tests and coordinate conversion');
-    expect(refused.message).toContain('createNode2DRuntime is the intended concrete producer');
-    expect(refused.message).toContain('initTransform2DRuntimeTrait initializes the transform cells');
-    expect(refused.message).toContain("asserting createNodeRuntime's NodeRuntime owner as Node2DRuntime");
-    expect(refused.message).toContain('Construct one exact Node2DRuntime owner in the family factory');
-    expect(refused.message).toContain("make Transform2DNode<Traits>'s runtime slot carry one named full owner");
-    expect(refused.message).toContain('Transform2DNodeRuntime<Traits>');
-    expect(refused.message).toContain('mutable-source transform accessor');
-    expect(refused.message).toContain('keeping getEntityRuntime readonly for general reads');
-    expect(refused.message).toContain('put HasTransform2D inside the Traits family constraint');
-    expect(refused.message).toContain('NodeRuntime<Traits>.parent retains the transform capability');
-    expect(refused.message).toContain('Do not whitelist or recover the cache owner by cast');
-    expect(refused.message).toContain('alter coordinate spaces');
+    expect(refused.message).toContain('a readonly row never becomes writable');
+    expect(refused.message).toContain(
+      'a RUNTIME OWNER that the mutating paths must write needs a mutable-source accessor',
+    );
     expect(emitted).toContain('get_transform2_druntime<Traits>(target)');
     expect(emitted).toContain('(runtime->rotation_angle = target->rotation)');
     expect(emitted).toContain('(runtime->local_matrix = std::optional<double>{1.0})');
@@ -5033,27 +4974,10 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
     expect(refused.classification).toBe('source-portability');
-    expect(refused.message).toContain('setNodeLocalMatrix4 reaches its runtime through getEntityRuntime');
-    expect(refused.message).toContain('returns Readonly<EntityRuntime>');
-    expect(refused.message).toContain('copied into node-owned localMatrix4');
-    expect(refused.message).toContain('localTransformUsingLocalTransformId is immediately stamped');
-    expect(refused.message).toContain('localMatrix4Detached becomes true');
-    expect(refused.message).toContain('position, rotation, and scale are dormant');
-    expect(refused.message).toContain('syncNodeTransform3DFromMatrix4 decomposes that authoritative matrix');
-    expect(refused.message).toContain('recomputeLocalTransform3D composes the shared matrix');
-    expect(refused.message).toContain('recomputeWorldTransform3D writes worldMatrix4');
-    expect(refused.message).toContain('GL and WebGPU model matrices');
-    expect(refused.message).toContain('clones that preserve detached matrices');
-    expect(refused.message).toContain('createNode3DRuntime is the intended concrete producer');
-    expect(refused.message).toContain('initTransform3DRuntimeTrait initializes the transform cells');
-    expect(refused.message).toContain('createNodeRuntime<Node3DTraits>() as the Node3DRuntime intersection');
-    expect(refused.message).toContain('through an allocateNode3DRuntime boundary');
-    expect(refused.message).toContain("make Transform3DNode<Traits>'s runtime slot carry one named full owner");
-    expect(refused.message).toContain('Transform3DNodeRuntime<Traits>');
-    expect(refused.message).toContain('mutable-source transform accessor');
-    expect(refused.message).toContain('put HasTransform3D inside the Traits family constraint');
-    expect(refused.message).toContain('Do not whitelist or recover the cache owner by cast');
-    expect(refused.message).toContain('collapse detached and attached state');
+    expect(refused.message).toContain('a readonly row never becomes writable');
+    expect(refused.message).toContain(
+      'a RUNTIME OWNER that the mutating paths must write needs a mutable-source accessor',
+    );
     expect(emitted).toContain('get_transform3_druntime<Traits>(target)');
     expect(emitted).toContain('(runtime->local_matrix4 = std::optional<double>{1.0})');
     expect(emitted).toContain('(runtime->local_transform_using_local_transform_id = runtime->local_transform_id)');
@@ -14901,6 +14825,55 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
          }`,
       ).contents,
     ).toContain('inline');
+
+    // IDENTITY-INDEPENDENT, which is the property the six bespoke remediations broke: the same shape at
+    // different packages and source paths must produce byte-identical guidance. This is asserted rather than
+    // assumed, because the recognition it replaced was keyed on exactly those two things.
+    const body = `export function f(runtime: Readonly<NodeRuntime<object>>): NodeRuntime<object> & { readonly bounds: number } {
+      return runtime as NodeRuntime<object> & { readonly bounds: number };
+    }`;
+    const declaration = `export interface NodeRuntime<Traits extends object> {
+      parent: NodeRuntime<Traits> | null;
+      traits: Traits;
+    }`;
+    const at = (packageName: string, file: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lowerPackage(packageName, file, `${declaration}${body}`).module, {
+          runtimeProfile: 'flight-cpp',
+        }),
+      );
+    const first = at('@flighthq/node', 'boundsRectangle.ts');
+    const second = at('@flighthq/node', 'nodeTransform2d.ts');
+    const foreign = at('@flighthq/other', 'unrelated.ts');
+    // The failure names its own module, which is identity the diagnostic should keep, so the comparison is
+    // made on the GUIDANCE rather than on the whole message: drop the leading "cpp emission failed for
+    // <module>: " prefix and the remainder must be byte-identical across packages and files.
+    const guidance = (message: string) => message.slice(message.indexOf(': ') + 2);
+    expect(first.rule).toBe(second.rule);
+    expect(first.classification).toBe(second.classification);
+    expect(guidance(first.message)).toBe(guidance(second.message));
+    expect(guidance(foreign.message)).toBe(guidance(first.message));
+    // And no file identity survives anywhere in the guidance, which is what the recognition this replaced was
+    // built on.
+    for (const name of [
+      'boundsRectangle.ts',
+      'nodeTransform2d.ts',
+      'nodeTransform3d.ts',
+      'stageFit.ts',
+      'hierarchy.ts',
+      'traversal.ts',
+    ]) {
+      expect(guidance(first.message)).not.toContain(name);
+    }
+
+    // And the guidance carries both remedy classes in general terms, so any source that reaches this rule --
+    // not only the six that used to be recognised -- is told what to do about the shape it actually has.
+    expect(first.message).toContain(
+      'a RUNTIME OWNER that the mutating paths must write needs a mutable-source accessor',
+    );
+    expect(first.message).toContain(
+      'a NODE that the read paths only traverse and never mutate needs the two authorities separated',
+    );
   });
 
   // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
