@@ -245,6 +245,11 @@ interface CppDenseArraySequentialAppendPlan {
 }
 
 interface CppStructuralClosedRowSpreadConstructionPlan {
+  readonly computedFields: readonly Readonly<{
+    property: Readonly<IrObjectTypeProperty>;
+    sourceProperty: Readonly<IrObjectTypeProperty>;
+    sourceStorageProperty: Readonly<IrObjectTypeProperty>;
+  }>[];
   readonly fields: readonly Readonly<
     | {
         kind: 'property';
@@ -5538,6 +5543,26 @@ function emitExpression(
               }
               valueNames.set(sourceProperty.name, valueName);
             }
+            const computedValueNames = new Map<Readonly<IrObjectTypeProperty>, string>();
+            for (const { sourceProperty, sourceStorageProperty } of closedSpreadConstruction.computedFields) {
+              if (!sourceProperty.computedKey) throw new TypeError('expected computed structural spread field');
+              const key = getCppGeneratedSymbolReferenceCpp(sourceProperty.computedKey, context).target;
+              const valueName = getGeneratedTargetName(`structuralSpreadField_${sourceProperty.name}`, context);
+              const storageType = emitOptionalTypeCpp(
+                getCppStructuralClosedRowCellStorageTypeCpp(sourceStorageProperty.type, context),
+                sourceStorageProperty.optional,
+                context,
+              );
+              const sourceValue = closedSpreadConstruction.sourceMayBeAbsent ? `${sourceName}.value()` : sourceName;
+              const read = `flight::row_get<${storageType}>(${sourceValue}, ${key})`;
+              const assign = `if (flight::row_has(${sourceValue}, ${key})) ${valueName} = ${read};`;
+              evaluations.push(
+                `std::optional<${storageType}> ${valueName}; ${
+                  closedSpreadConstruction.sourceMayBeAbsent ? `if (${sourceName}.has_value()) { ${assign} }` : assign
+                }`,
+              );
+              computedValueNames.set(sourceProperty, valueName);
+            }
             const fields = closedSpreadConstruction.fields.map((field) => {
               const propertyName = field.kind === 'property' ? field.member.name : field.property.name;
               const valueName = valueNames.get(propertyName);
@@ -5547,6 +5572,18 @@ function emitExpression(
             context.includes.add('flight/structural_ref.hpp');
             context.includes.add('type_traits');
             context.includes.add('utility');
+            if (closedSpreadConstruction.computedFields.length > 0) {
+              const resultName = getGeneratedTargetName('structuralSpreadResult', context);
+              const computedWrites = closedSpreadConstruction.computedFields.map(({ property, sourceProperty }) => {
+                if (!property.computedKey) throw new TypeError('expected computed structural spread field');
+                const key = getCppGeneratedSymbolReferenceCpp(property.computedKey, context).target;
+                const valueName = computedValueNames.get(sourceProperty);
+                if (!valueName) throw new TypeError(`expected computed structural spread field ${sourceProperty.name}`);
+                return `if (${valueName}.has_value()) flight::row_set(${resultName}, ${key}, std::move(${valueName}.value()));`;
+              });
+              context.includes.add('optional');
+              return `([&]() { ${evaluations.join(' ')} auto ${resultName} = flight::make_structural_ref<flight::RowWritable<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>>(${fields.join(', ')}); ${computedWrites.join(' ')} return ${emitType(constructionType, context)}(${resultName}); }())`;
+            }
             return `([&]() { ${evaluations.join(' ')} return flight::make_structural_ref<${emitCppStructuralRowSchemaTypeCpp(structuralRow, context)}>(${fields.join(', ')}); }())`;
           }
           for (const field of closedSpreadConstruction.fields) {
@@ -7359,8 +7396,11 @@ function hasCppDirectNominalAccessorReadCpp(
 // value in the new target row. Keep the accepted form deliberately narrow. One edge spread and distinct
 // named properties have a complete source shape proving that no enumerable field is silently dropped. A
 // leading spread is read before later replacements. A trailing optional spread evaluates defaults first,
-// then replaces only the cells the source carries. Every value is bound in source order because C++
-// function-argument evaluation order cannot carry the source language's ordering guarantee.
+// then replaces only the cells the source carries. An optional computed symbol may follow that path only
+// when both rows resolve to the exact same nominal owner and symbol identity. It is snapshotted before
+// construction, installed through a temporary writable view of that new owner, and returned as the
+// requested row. Every value is bound in source order because C++ function-argument evaluation order
+// cannot carry the source language's ordering guarantee.
 function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'object' }>>,
   type: Readonly<IrType>,
@@ -7424,7 +7464,7 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
     ? context.referenceRepresentationPlanner.resolveObjectShape(sourceObjectType, context.module)
     : undefined;
   if (!targetProperties || !sourceType || !sourceObjectType || !sourceProperties) return undefined;
-  if (sourceProperties.some((property) => property.computedKey || property.phantom)) return undefined;
+  if (sourceProperties.some((property) => property.phantom)) return undefined;
 
   const targetByName = new Map(
     targetProperties
@@ -7452,10 +7492,88 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   if (!sourceKind) return undefined;
   if (spreadPosition === 'trailing' && sourceKind !== 'structuralRow') return undefined;
 
+  const computedFields: CppStructuralClosedRowSpreadConstructionPlan['computedFields'][number][] = [];
+  const sourceComputedProperties = sourceProperties.filter((property) => property.computedKey);
+  if (sourceComputedProperties.length > 0) {
+    const sourceRow = context.referenceRepresentationPlanner.resolveStructuralRow(sourceObjectType, context.module);
+    const sourceObject = sourceRow ? getCppStructuralRowObjectTypeCpp(sourceRow) : undefined;
+    const sourceOwnerIdentity = sourceObject
+      ? getCppNominalTypeIdentityCpp(
+          sourceObject,
+          sourceObject.kind === 'named' ? getCppNamedTypeBindingModuleCpp(sourceObject, context) : context.module,
+          context,
+        )
+      : undefined;
+    const targetOwnerIdentity = getCppNominalTypeIdentityCpp(
+      targetObject,
+      targetObject.kind === 'named' ? getCppNamedTypeBindingModuleCpp(targetObject, context) : context.module,
+      context,
+    );
+    const sourceStorageProperties = sourceObject
+      ? resolveCppObjectShapeInTypeOwnerCpp(sourceObject, context)
+      : undefined;
+    const sourceStorageByIdentity = new Map(
+      sourceStorageProperties
+        ?.filter((property) => !property.phantom)
+        .map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property] as const),
+    );
+    const targetByIdentity = new Map(
+      targetProperties
+        .filter((property) => !property.phantom)
+        .map((property) => [getCppStructuralRowPropertyIdentityCpp(property, context), property] as const),
+    );
+    if (
+      spreadPosition !== 'trailing' ||
+      sourceKind !== 'structuralRow' ||
+      !sourceOwnerIdentity ||
+      sourceOwnerIdentity !== targetOwnerIdentity ||
+      !sourceStorageProperties
+    ) {
+      return undefined;
+    }
+    for (const sourceProperty of sourceComputedProperties) {
+      const identity = getCppStructuralRowPropertyIdentityCpp(sourceProperty, context);
+      const property = targetByIdentity.get(identity);
+      const sourceStorageProperty = sourceStorageByIdentity.get(identity);
+      if (
+        !property?.computedKey ||
+        !sourceStorageProperty?.computedKey ||
+        !sourceProperty.optional ||
+        !property.optional ||
+        sourceProperty.role !== property.role ||
+        !context.referenceRepresentationPlanner.isStructurallyAssignable(
+          sourceProperty.type,
+          property.type,
+          context.module,
+        ) ||
+        getCppStructuralClosedRowCellStorageTypeCpp(sourceProperty.type, isolatedContext) !==
+          getCppStructuralClosedRowCellStorageTypeCpp(property.type, isolatedContext)
+      ) {
+        return undefined;
+      }
+      computedFields.push({ property, sourceProperty, sourceStorageProperty });
+    }
+  }
+
+  const extraProperties = sourceProperties.filter(
+    (property) => !property.computedKey && !targetByName.has(property.name),
+  );
+  if (extraProperties.length > 0) {
+    const sourceDescription = describeDeclaredIrTypeForDiagnosticCpp(sourceObjectType);
+    const targetDescription = describeDeclaredIrTypeForDiagnosticCpp(type);
+    const names = renderCppSubjectNameListCpp(extraProperties.map((property) => property.name));
+    emissionError(
+      context,
+      `a closed structural-row spread from ${sourceDescription} into ${targetDescription} carries ${names}, which the target row does not declare. Object spread preserves every enumerable source property, so omitting ${extraProperties.length === 1 ? 'that property' : 'those properties'} would change the source semantics, while adding ${extraProperties.length === 1 ? 'it' : 'them'} would change the target row's exact schema and owner. Destructure extension-only options before constructing the target and pass only properties that target declares, or add the ${extraProperties.length === 1 ? 'property' : 'properties'} to the target contract if ${extraProperties.length === 1 ? 'it belongs' : 'they belong'} there. The compiler will not drop source properties, widen or merge the target owner, cast it, copy or materialize a replacement, route values through Any, or add side storage.`,
+      'cpp-structural-row-spread-extra-property-unproven',
+    );
+  }
+
   const fields: CppStructuralClosedRowSpreadConstructionPlan['fields'][number][] = [];
   const supplied = new Set<string>();
   const overridden = new Set<string>();
   for (const sourceProperty of sourceProperties) {
+    if (sourceProperty.computedKey) continue;
     const targetProperty = targetByName.get(sourceProperty.name);
     const explicit = explicitByName.get(sourceProperty.name);
     const sourceWins = spreadPosition === 'trailing';
@@ -7506,7 +7624,15 @@ function getCppStructuralClosedRowSpreadConstructionPlanCpp(
   ) {
     return undefined;
   }
-  return { fields, source: spread.expression, sourceKind, sourceMayBeAbsent, sourceType, spreadPosition };
+  return {
+    computedFields,
+    fields,
+    source: spread.expression,
+    sourceKind,
+    sourceMayBeAbsent,
+    sourceType,
+    spreadPosition,
+  };
 }
 
 function getCppStructuralClosedRowCellStorageTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
@@ -31125,6 +31251,10 @@ const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   // local" -- so the finding belongs to the declaration rather than to the compiler, which cannot discard
   // the absence state on the author's behalf.
   'cpp-optional-cast-subject-unproven',
+  // A spread preserves source properties the contextual row does not declare. Only the author can
+  // decide whether those properties belong in the target contract or should be removed before the
+  // construction boundary; the emitter cannot silently drop them or widen the exact target owner.
+  'cpp-structural-row-spread-extra-property-unproven',
   // A weak key the runtime cannot hold weakly and a weak value whose representation the declaration does
   // not prove. Both are the author's to restate; the key's ambient-host clause overrides to the profile
   // policy it needs instead.

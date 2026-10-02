@@ -30792,6 +30792,136 @@ Resolver make_resolver(TextureRef texture) {
     }
   });
 
+  it('copies an exact-owner optional computed cell through a trailing row spread', () => {
+    const result = lower(
+      'trailing-computed-cell-row-spread.ts',
+      `const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       interface EntityRuntime { binding: object | null }
+       interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       interface Data { text: string }
+       interface Material extends Entity { alpha: number; data: Data; name: string | null }
+       function accept(
+         options: Readonly<Partial<Material>>,
+       ): Readonly<Partial<Material>> { return options; }
+       export function create(
+         options?: Readonly<Partial<Material>>,
+       ): Readonly<Partial<Material>> {
+         return accept({ alpha: 0.5, name: null, ...options });
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('auto structural_spread_fallback_alpha = 0.5;');
+    expect(output).toContain('auto&& structural_spread_source = options;');
+    expect(output).toContain('auto structural_spread_result = flight::make_structural_ref<flight::RowWritable<');
+    expect(output).toContain(
+      'if (flight::row_has(structural_spread_source.value(), flighthq_math::entity_runtime_key)) structural_spread_field_entity_runtime_key = flight::row_get<std::optional<flight::Ref<EntityRuntime>>>(structural_spread_source.value(), flighthq_math::entity_runtime_key);',
+    );
+    expect(output).toContain(
+      'flight::row_set(structural_spread_result, flighthq_math::entity_runtime_key, std::move(structural_spread_field_entity_runtime_key.value()))',
+    );
+    expect(output).toContain('return flight::StructuralRef<flight::RowReadonly<');
+    expect(output).not.toContain('flight::Any');
+    expect(output).not.toContain('structural_ref_cast');
+    expect(output).not.toContain('static_pointer_cast');
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-trailing-computed-cell-row-spread-'));
+      const header = path.join(directory, 'trailing_computed_cell_row_spread.hpp');
+      try {
+        writeFileSync(header, output, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it('resolves the computed-cell owner across separate factory and caller imports', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/model',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/model.ts' },
+        },
+        {
+          specifier: './factory',
+          target: { packageName: '@flighthq/materials', source: 'packages/materials/src/factory.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/model.ts',
+            `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+             export interface EntityRuntime { binding: object | null }
+             interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+             export interface Material extends Entity { alpha: number; name: string | null }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/materials',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/materials/src/factory.ts',
+            `import type { Material } from '@flighthq/types/model';
+             export function accept(
+               options: Readonly<Partial<Material>>,
+             ): Readonly<Partial<Material>> { return options; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/materials',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/materials/src/preset.ts',
+            `import type { Material } from '@flighthq/types/model';
+             import { accept } from './factory';
+             export function create(
+               options?: Readonly<Partial<Material>>,
+             ): Readonly<Partial<Material>> {
+               return accept({ alpha: 0.5, name: null, ...options });
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const output = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/materials': { includePrefix: 'flight/materials', namespace: 'flight::materials' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(output).toContain('auto structural_spread_result = flight::make_structural_ref<flight::RowWritable<');
+    expect(output).toContain('flight::types::entity_runtime_key');
+    expect(output).toContain('return flight::StructuralRef<flight::RowReadonly<');
+    expect(output).not.toContain('flight::Any');
+    expect(output).not.toContain('static_pointer_cast');
+  });
+
   it('resolves an imported target against a local spread schema for closed row construction', () => {
     const model = lowerPackage(
       '@flighthq/types',
@@ -30880,6 +31010,25 @@ Resolver make_resolver(TextureRef texture) {
       );
       expect(failure.message).toContain('structural-row construction requires explicit named properties');
     }
+
+    const extra = lower(
+      'extra-property-row-spread.ts',
+      `interface Material { alpha: number; label?: string }
+       interface PresetOptions { alpha?: number; extension?: string }
+       export function create(options?: Readonly<PresetOptions>): Readonly<Partial<Material>> {
+         return { ...options, alpha: 0.5 };
+       }`,
+    );
+    const extraFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(extra.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(extraFailure.rule).toBe('cpp-structural-row-spread-extra-property-unproven');
+    expect(extraFailure.classification).toBe('source-portability');
+    expect(extraFailure.message).toContain('carries extension, which the target row does not declare');
+    expect(extraFailure.message).toContain('Destructure extension-only options');
+    expect(extraFailure.message).toContain('will not drop source properties');
+    expect(extraFailure.message).toContain('widen or merge the target owner');
+    expect(extraFailure.message).toContain('route values through Any');
   });
 
   it('uses a present Partial property as optional return construction evidence', () => {
