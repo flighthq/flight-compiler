@@ -13448,14 +13448,22 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     );
   });
 
-  // Reported to Foreman as a live defect, pinned here so the current behaviour is visible rather than assumed.
-  // A module that declares `type Handle = <host symbol>` refuses when that symbol is unbound, but every module
-  // that IMPORTS the alias still emits: it includes the refused module's header (which was never produced) and
-  // writes the unbound symbol bare, with no declaration and no binding requirement of its own. The alias is
-  // resolved while rendering, after the reachability walk that decides the missing-binding set has run, so the
-  // consumer never learns the symbol exists. The emitted set therefore cannot compile while the run reports
-  // the consumer as emitted. This control pins that behaviour; it does not endorse it.
-  it('pins that a consumer of a refused alias module still emits its unbound symbol', () => {
+  // Where the dependency gate lives, and a guard against moving it.
+  //
+  // Emission is per-module: the session emits each module's own text without consulting that module's
+  // dependencies, so a consumer whose imported alias refused for an unbound host symbol still produces text
+  // naming that symbol. That text is not output. `compileTypeScriptPackageGraph` runs
+  // `propagateCompilerPackageGraphRefusals` before it decides what to emit, marks the importer
+  // `dependency-refused`, clears the files it had already produced, and filters refused records out of the
+  // final file set, so nothing a refused dependency blocked ever reaches a caller. That gate is contracted
+  // (`dependency-refused` in the package-compilation contract) and already pinned by
+  // 'records every refused dependency that blocked a module' in compiler-orchestration and by
+  // 'counts a refused dependency as a cascade rather than as the importing module finding' in
+  // compiler-command-line.
+  //
+  // This control holds that boundary: the per-module emitter must NOT grow its own dependency walk, because
+  // that would duplicate the orchestration gate and leave two places deciding whether a module may be emitted.
+  it('keeps the dependency gate in orchestration rather than in the per-module emitter', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -13494,7 +13502,7 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(aliasFailure.message).toContain('missing: CanvasImageSource[type]');
 
     const contents = session.emitModule(consumer.module)[0]!.contents;
-    // The dependency refused, yet the consumer emits the include for its header and the raw symbol.
+    // The per-module session emits anyway -- which is exactly why the gate belongs one layer up.
     expect(contents).toContain('#include "alias.hpp"');
     // The unbound symbol is written raw into the signature, and the alias name is used with no declaration.
     expect(contents).toContain('std::optional<std::function<std::optional<CanvasImageSource>(flight::Any)>> attach;');
