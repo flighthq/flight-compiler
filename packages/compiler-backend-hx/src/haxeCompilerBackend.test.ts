@@ -2817,6 +2817,49 @@ describe('emitIrModuleHaxe structural record election', () => {
       expect(emitted).not.toContain('cast name');
     }
   });
+
+  it('preserves each WgpuRenderState absence carrier and its distinct remedy', () => {
+    const prelude = `export interface WgpuRenderState { readonly kind: string }
+export interface RenderTexture { readonly id: number }
+export interface WgpuRenderTextureExplanation { readonly status: string }
+export interface ColorScaleBias { readonly scale: number }
+export interface TintMaterialData { readonly tint: number }
+export type WgpuRenderTextureGuard = (
+  state: WgpuRenderState,
+  texture: Readonly<RenderTexture>,
+  explanation: Readonly<WgpuRenderTextureExplanation>,
+) => void;`;
+    const current = emitIrModuleHaxe(
+      lower(
+        'wgpu-render-state-current.ts',
+        `${prelude}
+export interface WgpuRenderStateRuntime {
+  wgpuRenderTextureGuard?: WgpuRenderTextureGuard | null;
+  quadBatchWriterUniformColorScaleBias?: ColorScaleBias | TintMaterialData | readonly number[] | null;
+  sceneMeshUploadCache?: WeakMap<object, object> | null;
+}`,
+      ).module,
+    ).contents;
+    expect(current).toContain('?wgpuRenderTextureGuard:Null<WgpuRenderTextureGuard>');
+    expect(current).toContain('?quadBatchWriterUniformColorScaleBias:Dynamic');
+    expect(current).toContain('?sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>');
+
+    const resolved = emitIrModuleHaxe(
+      lower(
+        'wgpu-render-state-resolved.ts',
+        `${prelude}
+export interface WgpuRenderStateRuntime {
+  wgpuRenderTextureGuard: WgpuRenderTextureGuard | null;
+  quadBatchWriterUniformColorScaleBias: ColorScaleBias | TintMaterialData | readonly number[] | null;
+}`,
+      ).module,
+    ).contents;
+    expect(resolved).toContain('wgpuRenderTextureGuard:Null<WgpuRenderTextureGuard>');
+    expect(resolved).not.toContain('?wgpuRenderTextureGuard');
+    expect(resolved).toContain('quadBatchWriterUniformColorScaleBias:Dynamic');
+    expect(resolved).not.toContain('?quadBatchWriterUniformColorScaleBias');
+    expect(resolved).not.toContain('sceneMeshUploadCache');
+  });
 });
 
 describe('emitIrModuleHaxe expression coverage', () => {

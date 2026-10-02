@@ -15438,6 +15438,62 @@ export function read(h: Holder, key: object): object | undefined {
     expect(lookup.rule).toContain('cpp-contextual-union-missing-expression-type');
   });
 
+  it('preserves each WgpuRenderState absence carrier and its distinct remedy', () => {
+    const prelude = `export interface WgpuRenderState { readonly kind: string }
+export interface RenderTexture { readonly id: number }
+export interface WgpuRenderTextureExplanation { readonly status: string }
+export interface ColorScaleBias { readonly scale: number }
+export interface TintMaterialData { readonly tint: number }
+export type WgpuRenderTextureGuard = (
+  state: WgpuRenderState,
+  texture: Readonly<RenderTexture>,
+  explanation: Readonly<WgpuRenderTextureExplanation>,
+) => void;`;
+    const current = emitIrModuleCpp(
+      lower(
+        'wgpu-render-state-current.ts',
+        `${prelude}
+export interface WgpuRenderStateRuntime {
+  wgpuRenderTextureGuard?: WgpuRenderTextureGuard | null;
+  quadBatchWriterUniformColorScaleBias?: ColorScaleBias | TintMaterialData | readonly number[] | null;
+  sceneMeshUploadCache?: WeakMap<object, object> | null;
+}`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(current).toContain(
+      'using WgpuRenderTextureGuard = std::function<void(flight::Ref<WgpuRenderState>, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<RenderTexture>>>>, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<WgpuRenderTextureExplanation>>>>)>;',
+    );
+    expect(current).toMatch(
+      /std::variant<std::function<void\([^\n]+flight::Null, flight::Undefined> wgpu_render_texture_guard/u,
+    );
+    expect(current).toContain(
+      'std::variant<flight::Array<double>, flight::Ref<ColorScaleBias>, flight::Ref<TintMaterialData>, flight::Null, flight::Undefined> quad_batch_writer_uniform_color_scale_bias',
+    );
+    expect(current).toContain(
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache',
+    );
+
+    const resolved = emitIrModuleCpp(
+      lower(
+        'wgpu-render-state-resolved.ts',
+        `${prelude}
+export interface WgpuRenderStateRuntime {
+  wgpuRenderTextureGuard: WgpuRenderTextureGuard | null;
+  quadBatchWriterUniformColorScaleBias: ColorScaleBias | TintMaterialData | readonly number[] | null;
+}`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(resolved).toMatch(/std::optional<std::function<void\([^\n]+>> wgpu_render_texture_guard;/u);
+    expect(resolved).toContain(
+      'std::optional<std::variant<flight::Array<double>, flight::Ref<ColorScaleBias>, flight::Ref<TintMaterialData>>> quad_batch_writer_uniform_color_scale_bias',
+    );
+    expect(resolved).not.toContain('scene_mesh_upload_cache');
+    expect(resolved).not.toContain('flight::Undefined');
+    expect(resolved).not.toContain('flight::Any');
+  });
+
   it('classifies the GlScene3DRuntime findings as one downstream binding family', () => {
     // The file's mixed-absence findings are not source contracts and not one shape problem: their value types
     // are host handles. Each refuses once, naming its own symbol, with the same downstream requirement -- one

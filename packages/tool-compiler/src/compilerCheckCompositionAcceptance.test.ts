@@ -1850,6 +1850,90 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the three WgpuRenderState runtime findings source-owned through strict check mode', () => {
+    const source = createMemoryWorkspaceSource(createWgpuRenderStateWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'quadBatchWriterUniformColorScaleBias',
+      'sceneMeshUploadCache',
+      'wgpuRenderTextureGuard',
+    ].map((field) => `interface:WgpuRenderStateRuntime/property:${field}`);
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+    const unchanged = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(unchanged).toMatchObject({ introduced: [], resolvedFindingIdentities: [] });
+    expect(unchanged.unchanged).toHaveLength(3);
+    expect(createCompilerPackageCheckPolicyResult(unchanged, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createWgpuRenderStateWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both GlContextRuntime absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createGlContextRuntimeWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -6993,6 +7077,30 @@ export interface GlRenderStateRuntime {
   quadBatchWriterUniformColorScaleBias${optional}: ColorScaleBias | TintMaterialData | readonly number[] | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { GlRenderStateRuntime } from './GlRenderState.js';`,
+  };
+}
+
+function createWgpuRenderStateWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const optional = mixedAbsence ? '?' : '';
+  const cache = mixedAbsence ? 'sceneMeshUploadCache?: WeakMap<object, object> | null;' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/WgpuRenderState.ts': `export interface WgpuRenderState { readonly kind: string }
+export interface RenderTexture { readonly id: number }
+export interface WgpuRenderTextureExplanation { readonly status: string }
+export interface ColorScaleBias { readonly scale: number }
+export interface TintMaterialData { readonly tint: number }
+export type WgpuRenderTextureGuard = (
+  state: WgpuRenderState,
+  texture: Readonly<RenderTexture>,
+  explanation: Readonly<WgpuRenderTextureExplanation>,
+) => void;
+export interface WgpuRenderStateRuntime {
+  wgpuRenderTextureGuard${optional}: WgpuRenderTextureGuard | null;
+  quadBatchWriterUniformColorScaleBias${optional}: ColorScaleBias | TintMaterialData | readonly number[] | null;
+  ${cache}
+}`,
+    '/flight/packages/types/src/index.ts': `export type { WgpuRenderStateRuntime } from './WgpuRenderState.js';`,
   };
 }
 

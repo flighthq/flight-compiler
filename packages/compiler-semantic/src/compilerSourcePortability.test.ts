@@ -10118,10 +10118,17 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const guard = byField.get('wgpuRenderTextureGuard')!;
     expect(guard).toContain('opt-in WebGPU render-texture diagnostic guard both omission and explicit null');
     expect(guard).toContain('one disabled state');
-    expect(guard).toContain('createWgpuRenderStateRuntimeInternal currently omits the slot');
-    expect(guard).toContain("createWgpuOffscreenRenderState copies the source runtime's exact guard value");
-    expect(guard).toContain('setWgpuRenderTextureGuard overwrites it with the exact guard or null');
-    expect(guard).toContain('render-texture notification optional-calls it');
+    expect(guard).toContain('createWgpuRenderStateRuntimeInternal allocates the sole per-state slot owner');
+    expect(guard).toContain("copies the source runtime's exact guard value");
+    expect(guard).toContain('setWgpuRenderTextureGuard overwrites only the selected runtime');
+    expect(guard).toContain('bindWgpuRenderTexture, getWgpuRenderTextureTarget, and isWgpuRenderTextureReady');
+    expect(guard).toContain('runtimes retain that same callback identity independently');
+    expect(guard).toContain("releases only that runtime's reference");
+    expect(guard).toContain('destroyWgpuRenderState runs state teardowns and destroys owned GPU buffers');
+    expect(guard).toContain('but does not clear the slot');
+    expect(guard).toContain('std::variant<std::function');
+    expect(guard).toContain('StructuralRef<RowReadonly<RowOf<flight::Ref<...>>>>');
+    expect(guard).toContain('?wgpuRenderTextureGuard:Null<WgpuRenderTextureGuard>');
     expect(guard).toContain('required WgpuRenderTextureGuard | null field');
     expect(guard).toContain('initialize it to null in createWgpuRenderStateRuntimeInternal');
     expect(guard).toContain('retain the derived-state copy, nullable setter, and optional call');
@@ -10132,14 +10139,24 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const uniform = byField.get('quadBatchWriterUniformColorScaleBias')!;
     expect(uniform).toContain("WebGPU quad batch's uniform color-adjustment scratch slot");
     expect(uniform).toContain('quadBatchWriterColorScaleBiasMode is the authority');
-    expect(uniform).toContain('createWgpuRenderStateRuntimeInternal omits the slot');
-    expect(uniform).toContain('registerWgpuColorAdjustmentMaterialFeature initializes only the mode');
+    expect(uniform).toContain('createWgpuRenderStateRuntimeInternal omits both fold cells');
+    expect(uniform).toContain('copies the feature registry but neither the source mode nor its uniform scratch owner');
+    expect(uniform).toContain("initializes only the selected runtime's mode");
     expect(uniform).toContain('recordWgpuColorAdjustment normalizes an absent mode to NONE');
-    expect(uniform).toContain('writes the exact ColorScaleBias, TintMaterialData, or readonly number[] owner');
-    expect(uniform).toContain('otherwise promotes directly without requiring a stored uniform');
-    expect(uniform).toContain('returns before reading it in NONE mode');
+    expect(uniform).toContain('a first tint after index zero promotes directly without requiring a stored uniform');
+    expect(uniform).toContain('each render-state runtime owns its fold independently');
+    expect(uniform).toContain('retains the exact caller value owner');
+    expect(uniform).toContain('returns before reading the slot in NONE mode');
     expect(uniform).toContain('uses the mode proof before its non-null read in UNIFORM mode');
-    expect(uniform).toContain('clears it to null after every non-empty flush');
+    expect(uniform).toContain('clears the reference to null after every non-empty flush');
+    expect(uniform).toContain('destroyWgpuRenderState does not clear the slot');
+    expect(uniform).toContain(
+      'std::variant<flight::Array<double>, flight::Ref<ColorScaleBias>, flight::Ref<TintMaterialData>, flight::Null, flight::Undefined>',
+    );
+    expect(uniform).toContain(
+      'std::optional<std::variant<flight::Array<double>, flight::Ref<ColorScaleBias>, flight::Ref<TintMaterialData>>>',
+    );
+    expect(uniform).toContain('?quadBatchWriterUniformColorScaleBias:Dynamic');
     expect(uniform).toContain('required ColorScaleBias | TintMaterialData | readonly number[] | null field');
     expect(uniform).toContain('initialize it to null in createWgpuRenderStateRuntimeInternal');
     expect(uniform).toContain('does not register the feature, import its scene2d-wgpu implementation');
@@ -10150,8 +10167,15 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const cache = byField.get('sceneMeshUploadCache')!;
     expect(cache).toContain('optional-null state-local scene mesh upload cache');
     expect(cache).toContain('no producer or consumer reads or writes this WgpuRenderStateRuntime field');
+    expect(cache).toContain('has no runtime owner or lifetime');
     expect(cache).toContain('stateRuntime.context.sceneMeshUploadCache on WgpuDeviceRuntime');
-    expect(cache).toContain('every derived render state shares that same device-tier context');
+    expect(cache).toContain('Every derived render state shares that exact device-tier context and cache');
+    expect(cache).toContain('weakly keys the exact MeshGeometry owner');
+    expect(cache).toContain('replacement destroys the prior GPU buffers');
+    expect(cache).toContain('but neither enumerates nor clears the device-tier cache');
+    expect(cache).toContain('WgpuDeviceState runtime becomes unreachable');
+    expect(cache).toContain('flight::WeakMap<flight::Ref<void>, flight::ErasedRef>');
+    expect(cache).toContain('?sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>');
     expect(cache).toContain('analogous GL accessor likewise uses its context-tier slot');
     expect(cache).toContain('Remove sceneMeshUploadCache from WgpuRenderStateRuntime');
     expect(cache).toContain('Keep the separately declared WgpuDeviceRuntime slot');
