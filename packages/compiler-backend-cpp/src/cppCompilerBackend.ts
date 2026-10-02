@@ -24476,7 +24476,23 @@ function getCppErasedValueAssertionCpp(
     const recovered = getGeneratedTargetName('erasedObject', context);
     context.includes.add('flight/any.hpp');
     context.includes.add('stdexcept');
-    return `([&]() -> ${emitType(target, context)} { const auto& ${erased} = ${emitExpression(expression, context)}; auto ${recovered} = ${erased}.object_if<${referenceElement}>(); if (!${recovered}) throw std::logic_error("erased value does not hold the asserted object type"); return ${recovered}; }())`;
+    // The recovery runs on the ERASED VALUE, and the carrier that holds one is not always the carrier the
+    // source type names. A record or index read answers an optional -- absence is the absent key -- while the
+    // type it reports is the erased element, so `resources[name] as Hero` reached this line with an
+    // `std::optional<flight::Any>` where the value was expected and `object_if` was called on the optional.
+    // Unwrap the carrier when it stores absence, so the checked recovery sees the value the key held. An
+    // absent key never reaches here through the guarded read the source wrote; where a source does reach it
+    // unguarded, `value()` throws rather than inventing a Hero, which is the same answer the source gives
+    // when it reads a property off an undefined.
+    // An index read reaches this line already unwrapped -- its value-position emission carries the
+    // `.value()` that recovers the element -- so unwrapping again would ask an `Any` for a second `.value()`.
+    // What still needs unwrapping is a carrier that holds the absence itself, which is the binding a source
+    // takes the read into before asserting on it.
+    const erasedValue =
+      expression.kind !== 'element' && hasCppAbsenceStorageCpp(expression, context)
+        ? `${emitExpression(expression, context)}.value()`
+        : emitExpression(expression, context);
+    return `([&]() -> ${emitType(target, context)} { const auto& ${erased} = ${erasedValue}; auto ${recovered} = ${erased}.object_if<${referenceElement}>(); if (!${recovered}) throw std::logic_error("erased value does not hold the asserted object type"); return ${recovered}; }())`;
   }
   // A union target is several alternatives, so the assertion is the same checked selection the contextual
   // lane builds: each alternative asks the runtime for the kind it needs. Without this the assertion fell

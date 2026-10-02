@@ -14335,6 +14335,98 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // The checked recovery over an open lookup, and the three JavaScript answers it has to keep.
+  //
+  // `resources[name] as Hero` on `Readonly<Record<string, unknown>>` reached the recovery with the CARRIER of
+  // a record read rather than the erased value: the read answers `std::optional<flight::Any>`, because an
+  // absent key is absence, while the type it reports is the erased element. The recovery then asked the
+  // OPTIONAL for `object_if`, which the target compiler rejects. The recovery now unwraps a carrier that
+  // stores absence before asking, which leaves the source's own three answers intact:
+  //   - ABSENT KEY: the source's guard reads the optional as empty and answers null/undefined before the
+  //     recovery is reached at all; reached unguarded, `value()` throws rather than inventing a Hero, which is
+  //     what the source does when it reads a property off an undefined.
+  //   - PRESENT AND MATCHING: the erased value is asked for the asserted owner and yields the reference.
+  //   - PRESENT AND MISMATCHING: the same ask answers empty and the recovery throws, so a mismatch is a
+  //     reported failure rather than a reinterpretation of storage the value does not have.
+  it('unwraps the carrier before a checked recovery over an open lookup', () => {
+    const emitCase = (body: string) =>
+      emitIrModuleCpp(
+        lower(
+          'documentLookupRecovery.ts',
+          `export interface Hero { readonly hp: number }
+           export type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;
+           ${body}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+
+    // Absent key: the guard answers absence before the recovery, and the recovery is reached only when the
+    // carrier holds a value.
+    const guarded = emitCase(
+      `export function read(resources: FlightDocumentResourceLookup, name: string): Hero | null {
+         const value = resources[name];
+         return value === undefined ? null : (value as Hero);
+       }`,
+    );
+    expect(guarded).toContain('value.has_value()');
+    // The recovery asks the VALUE inside the carrier, never the carrier itself.
+    expect(guarded).toContain('const auto& erased_value = value.value();');
+    expect(guarded).not.toMatch(/erased_value = value;/u);
+    // Present and matching yields the owner; present and mismatching throws rather than reinterpreting.
+    expect(guarded).toContain('object_if<Hero>()');
+    expect(guarded).toContain('erased value does not hold the asserted object type');
+    expect(guarded).not.toContain('reinterpret_cast');
+
+    // An index read passed straight into a parameter is already unwrapped by its own value-position emission,
+    // so the recovery must NOT unwrap a second time -- asking an Any for `.value()` is the same defect
+    // mirrored.
+    const direct = emitCase(
+      `export function take(hero: Hero): number { return hero.hp; }
+       export function read(resources: FlightDocumentResourceLookup, name: string): number {
+         return take(resources[name] as Hero);
+       }`,
+    );
+    expect(direct).toContain('object_if<Hero>()');
+    expect(direct).not.toContain('.value().value()');
+  });
+
+  // Red before the fix, green after, and the only thing that can say so is the compiler: both shapes below
+  // were handed to g++ as failing output and are handed to it as passing output now.
+  it.skipIf(!cppSyntaxGate.available)('compiles the open-lookup recovery through its carrier', () => {
+    const check = (label: string, body: string) => {
+      const contents = emitIrModuleCpp(
+        lower(
+          'documentLookupRecoverySyntax.ts',
+          `export interface Hero { readonly hp: number }
+           export type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;
+           ${body}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+      return cppSyntaxGate.checkCppSourceSyntax(contents, label);
+    };
+
+    const guarded = check(
+      'lookup-guarded-recovery',
+      `export function read(resources: FlightDocumentResourceLookup, name: string): Hero | null {
+         const value = resources[name];
+         return value === undefined ? null : (value as Hero);
+       }`,
+    );
+    expect(guarded.diagnostic).toBe('');
+    expect(guarded.ok).toBe(true);
+
+    const direct = check(
+      'lookup-direct-recovery',
+      `export function take(hero: Hero): number { return hero.hp; }
+       export function read(resources: FlightDocumentResourceLookup, name: string): number {
+         return take(resources[name] as Hero);
+       }`,
+    );
+    expect(direct.diagnostic).toBe('');
+    expect(direct.ok).toBe(true);
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
