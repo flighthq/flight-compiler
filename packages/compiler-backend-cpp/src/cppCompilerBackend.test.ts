@@ -13326,6 +13326,40 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('separates the GlMeshProgram binding gap from the absence contracts it carries', () => {
+    // GlMeshProgram reports 14 findings and they are ONE host symbol carried by 14 fields, not fourteen
+    // absence problems: every field's value type is `WebGLUniformLocation`. What refuses is the missing
+    // binding, and the mixed-absence spelling is secondary -- which this control shows by asking both
+    // questions of the same declarations.
+    const real = `export interface GlMeshProgram {
+  locColorScale?: WebGLUniformLocation | null;
+  locModel: WebGLUniformLocation | null;
+}`;
+    const binding = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(lower('gl-mesh-program.ts', real).module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(binding.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(binding.classification).toBe('target-runtime');
+    expect(binding.message).toContain('WebGLUniformLocation[type]');
+    expect(binding.message).toContain('Add one externalBindings entry');
+
+    // The same two spellings with a REPRESENTABLE value type: nothing about the absence contracts refuses,
+    // and each spelling keeps its own carrier.
+    const contracts = `export interface Location { readonly slot: number }
+export interface Contracts {
+  requiredNullable: Location | null;
+  optionalNullable?: Location | null;
+  optionalNonNull?: Location;
+}`;
+    const emitted = emitIrModuleCpp(lower('gl-program-contracts.ts', contracts).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    // required nullable and optional non-null share the single-optional carrier...
+    expect(emitted.match(/std::optional<flight::Ref<Location>>/gu)).toHaveLength(2);
+    // ...while only the doubly-optional spelling needs both sentinels
+    expect(emitted).toContain('std::variant<flight::Ref<Location>, flight::Null, flight::Undefined> optional_nullable');
+  });
+
   it('pins the material-family factory assertion and the constructor that replaces it', () => {
     // Three material files carry the same five sites: every concrete material constructor opens with
     //     const material = createSurfaceMaterial(Kind, opts) as <ConcreteMaterial>;
