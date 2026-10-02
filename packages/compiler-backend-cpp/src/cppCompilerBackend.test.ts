@@ -14179,6 +14179,39 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(typed).not.toContain('materialize_row');
   });
 
+  // Attachment2D.ts's mixed-absence finding. Every built-in producer finishes an entity with a present
+  // string-or-null name, while runtime mutation swaps attachment owners and never edits this metadata. The
+  // backend can represent both source spellings; the finding asks the source to remove the unused third
+  // state rather than compensating for a missing target carrier.
+  it('classifies attachment names as one required nullable live cell', () => {
+    const mixed = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'Attachment2D.ts',
+        `export interface Entity { readonly id: number }
+         export interface Attachment2D extends Entity { kind: string; name?: string | null }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const resolved = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'Attachment2D.ts',
+        `export interface Entity { readonly id: number }
+         export interface Attachment2D extends Entity { kind: string; name: string | null }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(mixed).toContain('std::variant<flight::String, flight::Null, flight::Undefined> name');
+    expect(resolved).toContain('std::optional<flight::String> name;');
+    for (const emitted of [mixed, resolved]) {
+      expect(emitted).toContain('struct Attachment2D : public flight::ReferenceEnabled');
+      expect(emitted).not.toContain('flight::Any');
+      expect(emitted).not.toContain('materialize_row');
+    }
+  });
+
   // Assets.ts's opaque-value-domain finding. The library is deliberately resource-type-agnostic: it decodes
   // nothing itself and binds each asset *type* to its loader through an open adapter registry, so the payload
   // is erased BY CONSTRUCTION rather than being a domain the compiler failed to close. The September corpus

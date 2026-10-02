@@ -5829,6 +5829,15 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(attachmentFinding?.message).toContain('DragonBones animation uses positional display tables');
     expect(attachmentFinding?.message).toContain('deformation and rendering dispatch on kind and concrete data');
     expect(attachmentFinding?.message).toContain('cloneSkeleton2D shares the exact attachment owners');
+    expect(attachmentFinding?.message).toContain(
+      'No production mutator assigns, clears, or deletes an attachment name after finishEntity',
+    );
+    expect(attachmentFinding?.message).toContain(
+      'setSkeleton2DSkin and attachment animation swap only the Slot2D.attachment reference',
+    );
+    expect(attachmentFinding?.message).toContain(
+      'disposeSkeleton2D clears bones and slots without reading or disposing the shared attachment entities',
+    );
     expect(attachmentFinding?.message).toContain('Make Attachment2D.name a required string | null field');
     expect(attachmentFinding?.message).toContain(
       'initialize null for unnamed built-in and custom concrete attachments',
@@ -5837,6 +5846,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(attachmentFinding?.message).toContain('separate shape and normalize once');
     expect(attachmentFinding?.message).toContain('replace the two absence spellings with one named closed state');
     expect(attachmentFinding?.message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(attachmentFinding?.message).toContain(
+      'current optional-nullable string to std::variant<flight::String, flight::Null, flight::Undefined>',
+    );
+    expect(attachmentFinding?.message).toContain('required-nullable rewrite to std::optional<flight::String>');
     expect(attachmentFinding?.message).toContain('will not choose or collapse an absence sentinel');
     expect(attachmentFinding?.message).toContain(
       'infer a name from the skin-entry key, slot, kind, atlas path, or display position',

@@ -4780,6 +4780,18 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain(
       'Spine setup and animation lookup use the separate SkinAttachment2D.name plus slotIndex',
     );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'No production mutator assigns, clears, or deletes an attachment name after finishEntity',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'disposeSkeleton2D clears bones and slots without reading or disposing the shared attachment entities',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'current optional-nullable string to std::variant<flight::String, flight::Null, flight::Undefined>',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'required-nullable rewrite to std::optional<flight::String>',
+    );
     expect(sourcePortability.findings[0]?.message).toContain('Make Attachment2D.name a required string | null field');
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant live-storage spelling');
     expect(
@@ -4801,6 +4813,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 1,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createAttachment2DWorkspaceFiles(false));
