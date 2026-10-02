@@ -1694,6 +1694,70 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the Net response-body open-domain finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNetResponseBodyWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'type:NetResponseBody';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]).toMatchObject({ rule: 'opaque-value-domain', subject });
+    expect(sourcePortability.findings[0]?.message).toContain('createWebNetBackend is the only production NetBackend');
+    expect(sourcePortability.findings[0]?.message).toContain('recursive closed NetJsonValue and NetJsonObject');
+    expect(sourcePortability.findings[0]?.message).toContain('successful JSON null currently shares');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the public transport domain');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createNetResponseBodyWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the three log transport domains source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createLogWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -3773,6 +3837,36 @@ export interface WebServiceWorkerNotificationInstance {
   WebNotificationOptions,
   WebServiceWorkerNotificationInstance,
 } from './Notification.js';`,
+  };
+}
+
+function createNetResponseBodyWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const body = opaque
+    ? 'string | unknown | ArrayBuffer | Blob | null'
+    : 'string | NetJsonValue | ArrayBuffer | Blob | null';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Net.ts': `export type NetJsonValue =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly NetJsonValue[]
+  | Readonly<NetJsonObject>;
+export interface NetJsonObject {
+  readonly [name: string]: NetJsonValue;
+}
+export type NetResponseBody = ${body};
+export interface NetResponse {
+  body: NetResponseBody;
+  ok: boolean;
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  NetJsonObject,
+  NetJsonValue,
+  NetResponse,
+  NetResponseBody,
+} from './Net.js';`,
   };
 }
 

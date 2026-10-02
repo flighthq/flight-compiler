@@ -2800,11 +2800,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     const closed = input(
       'packages/types/src/Net.ts',
-      `type NetJsonPrimitive = boolean | number | string | null;
-       type NetJsonValue =
-         | NetJsonPrimitive
+      `type NetJsonValue =
+         | boolean
+         | number
+         | string
+         | null
          | readonly NetJsonValue[]
-         | Readonly<Record<string, NetJsonValue>>;
+         | Readonly<NetJsonObject>;
+       interface NetJsonObject { readonly [name: string]: NetJsonValue }
        type NetResponseBody = string | NetJsonValue | ArrayBuffer | Blob | null;`,
     );
     const controls = [
@@ -2819,12 +2822,30 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const report = analyzeTypeScriptSourcePortability([opaque]);
     expect(report.findings).toMatchObject([{ rule: 'opaque-value-domain', subject: 'type:NetResponseBody' }]);
     const message = report.findings[0]?.message;
-    expect(message).toContain('crosses the public NetResponse boundary');
-    expect(message).toContain('not a provider token or an unexamined diagnostic');
-    expect(message).toContain('JSON.parse or Response.json');
-    expect(message).toContain('recursive named closed NetJsonValue domain');
-    expect(message).toContain('normalize every host JSON decoder before NetResponse construction');
-    expect(message).toContain('will not treat unknown as only JSON');
+    expect(message).toContain(
+      'unknown for the JSON arm, which absorbs the sibling string, ArrayBuffer, Blob, and null',
+    );
+    expect(message).toContain('createWebNetBackend is the only production NetBackend');
+    expect(message).toContain('without progress, _readNetResponseBody delegates to Response.text');
+    expect(message).toContain('with progress, it assembles one ArrayBuffer and _decodeNetBuffer');
+    expect(message).toContain('Both JSON paths return null on a thrown decoder');
+    expect(message).toContain('non-2xx HTTP responses still retain their decoded body');
+    expect(message).toContain('including through its optional guard wrapper');
+    expect(message).toContain('no Flight cache or serializer retains or rewrites the body');
+    expect(message).toContain('loadText checks string');
+    expect(message).toContain('scene-document loading composes loadText or loadBytes');
+    expect(message).toContain('No built-in production consumer requests json or blob');
+    expect(message).toContain('recursive closed NetJsonValue and NetJsonObject types');
+    expect(message).toContain('replace only the unknown arm of NetResponseBody with NetJsonValue');
+    expect(message).toContain('Validate both web JSON decoder results through one shared boundary');
+    expect(message).toContain('successful JSON null currently shares the decode-failure sentinel');
+    expect(message).toContain('named closed decoded-versus-unavailable body state');
+    expect(message).toContain('do not silently exclude valid JSON null');
+    expect(message).toContain('Do not whitelist the public transport domain');
+    expect(message).toContain('will preserve each declared body owner and JSON value');
+    expect(message).toContain('will not treat unknown as JSON');
+    expect(message).toContain('infer or enforce responseType correlation');
+    expect(message).toContain('decide the JSON-null sentinel policy');
     expect(message).toContain('target-specific Any carrier');
     expect(message).toContain('insert a cast');
     expect(message).toContain('copy or materialize the response body');
