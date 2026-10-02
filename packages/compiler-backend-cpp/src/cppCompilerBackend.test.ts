@@ -13326,6 +13326,54 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('classifies the GlScene3DRuntime findings as one downstream binding family', () => {
+    // The file's mixed-absence findings are not source contracts and not one shape problem: their value types
+    // are host handles. Each refuses once, naming its own symbol, with the same downstream requirement -- one
+    // externalBindings entry with a stable target wrapper -- and the declared-type members beside them emit,
+    // which is what makes the value type the discriminator rather than the absence spelling.
+    const declared = `export interface Texture { readonly id: number }
+export interface GlMeshProgram { readonly key: string }
+export interface GlScene3DIbl { readonly size: number }`;
+
+    for (const [file, member, symbol] of [
+      ['gl-scene3d-texture.ts', 'readonly environmentSourceCube: WebGLTexture | null;', 'WebGLTexture[type]'],
+      ['gl-scene3d-framebuffer.ts', 'readonly iblBakeFramebuffer: WebGLFramebuffer | null;', 'WebGLFramebuffer[type]'],
+    ] as const) {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            file,
+            `${declared}
+export interface Runtime { ${member} }`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      );
+      expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+      expect(failure.classification).toBe('target-runtime');
+      expect(failure.message).toContain(symbol);
+      expect(failure.message).toContain('Add one externalBindings entry');
+    }
+
+    // The control that makes it about the VALUE type: the same nullable spellings over declared types emit,
+    // including the erased one and the multi-alternative one.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'gl-scene3d-declared.ts',
+          `${declared}
+export interface Runtime {
+  readonly activeMeshProgram: GlMeshProgram | null;
+  readonly environmentSourceTexture: Texture | null;
+  readonly ibl: GlScene3DIbl | null;
+  readonly colorMatrix: object | null;
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('active_mesh_program');
+  });
+
   it('pins the five GlRenderState absence spellings as represented', () => {
     // A report listing five mixed-absence findings in GlRenderState reads as five problems. I reproduced each
     // spelling and every one is REPRESENTED, with the carrier its own spelling deserves -- including the
