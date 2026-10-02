@@ -99,6 +99,56 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(current + portable + history + record).not.toContain('Dynamic');
   });
 
+  it('separates Environment construction omission from nullable live Texture storage', () => {
+    const texture = lower(
+      '@flighthq/types',
+      'Texture.ts',
+      `export interface Entity { readonly id: number }
+       interface TextureCommon extends Entity { version: number }
+       export interface Texture2D extends TextureCommon { readonly dimension: '2d'; source: Entity | null }
+       export type Texture =
+         | Texture2D
+         | (TextureCommon & { readonly dimension: '2d-array'; sources: readonly (Entity | null)[] })
+         | (TextureCommon & { readonly dimension: '3d'; source: Entity | null })
+         | (TextureCommon & { readonly dimension: 'cube'; sources: readonly (Entity | null)[] });`,
+    );
+    const environment = lower(
+      '@flighthq/types',
+      'EnvironmentOptions.ts',
+      `import type { Texture } from './Texture';
+       export interface CurrentEnvironmentOptions { environment?: Texture | null }
+       export interface PortableEnvironmentOptions { environment?: Texture }
+       export interface Environment { environment: Texture | null }`,
+    );
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Texture',
+          target: { packageName: texture.packageName, source: texture.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const files = emitIrModuleHaxeExternWithContext(environment, [texture, environment], moduleResolution, {
+      rootPackage: 'flight',
+    });
+    const textureFiles = emitIrModuleHaxeExternWithContext(texture, [texture, environment], moduleResolution, {
+      rootPackage: 'flight',
+    });
+    const current = findFile(files, 'flight/_js/CurrentEnvironmentOptions.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableEnvironmentOptions.hx').contents;
+    const live = findFile(files, 'flight/_js/Environment.hx').contents;
+    const textureAlias = findFile(textureFiles, 'flight/_js/Texture.hx').contents;
+
+    expect(current).toContain('@:optional var environment:Null<flight.Texture>;');
+    expect(portable).toContain('@:optional var environment:flight.Texture;');
+    expect(portable).not.toContain('@:optional var environment:Null<flight.Texture>;');
+    expect(live).toContain('var environment:Null<flight.Texture>;');
+    expect(live).not.toContain('@:optional var environment');
+    expect(current + portable + live).not.toContain('Dynamic');
+    expect(textureAlias).toContain('typedef Texture = Dynamic;');
+  });
+
   it('separates morph-gradient authoring omission from nullable sampled binding matrices', () => {
     const module = lower(
       '@flighthq/types',

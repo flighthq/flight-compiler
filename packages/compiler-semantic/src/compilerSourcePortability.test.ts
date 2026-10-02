@@ -8624,27 +8624,47 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(environmentFinding?.message).toContain(
       'createEnvironment allocates a fresh Environment and passes its options once to initializeEnvironment',
     );
+    expect(environmentFinding?.message).toContain('without retaining or mutating them');
     expect(environmentFinding?.message).toContain('out.environment = options?.environment ?? null');
     expect(environmentFinding?.message).toContain(
-      'callers that set only enabled or intensity omit environment, while scene providers pass an exact cube Texture',
+      'No repository production caller constructs EnvironmentOptions outside cloneEnvironment',
     );
+    expect(environmentFinding?.message).toContain('currently forwards source.environment even when it is null');
     expect(environmentFinding?.message).toContain(
       'Environment owns the canonical mutable Texture | null storage cell but borrows the Texture identity',
     );
     expect(environmentFinding?.message).toContain(
-      "cloneEnvironment creates a new Environment wrapper while sharing the source's exact GPU-backed Texture",
+      "cloneEnvironment creates a new Environment wrapper while sharing the source's exact Texture and its source entities",
     );
     expect(environmentFinding?.message).toContain(
-      'The only direct readers of the live field are ensureGlEnvironmentSourceCube and ensureWgpuEnvironmentSourceCube',
+      'direct runtime readers of the live field are ensureGlEnvironmentSourceCube and ensureWgpuEnvironmentSourceCube',
     );
     expect(environmentFinding?.message).toContain(
-      'GL provider returns null and destroys a stale cached cube when the field is null, non-cube, or incomplete',
+      'GL provider returns null and destroys a stale cached WebGLTexture when the field is null, non-cube, or incomplete',
     );
+    expect(environmentFinding?.message).toContain(
+      'exact Flight Texture identity, its version, and all six source revisions',
+    );
+    expect(environmentFinding?.message).toContain(
+      'full GL scene-runtime teardown deletes the native cube while only clearing its retained source reference',
+    );
+    expect(environmentFinding?.message).toContain('WebGPU provider first reuses an existing cached view');
+    expect(environmentFinding?.message).toContain(
+      'live replacement or clearing takes effect there only after destroyWgpuScene3DIbl invalidates the cache',
+    );
+    expect(environmentFinding?.message).toContain('separately created GPUTexture and GPUTextureView');
     expect(environmentFinding?.message).toContain(
       "destroyWgpuScene3DIbl is that cache's explicit invalidation and teardown seam",
     );
     expect(environmentFinding?.message).toContain(
-      'skybox draws and IBL bakes compose those providers and no-op on their null result',
+      'Neither backend teardown disposes or mutates the Environment, the borrowed Flight Texture, or its face-source entities',
+    );
+    expect(environmentFinding?.message).toContain(
+      'GL and WebGPU skybox draws and IBL bakes compose those providers and no-op on a null result',
+    );
+    expect(environmentFinding?.message).toContain('There is no disposeEnvironment path');
+    expect(environmentFinding?.message).toContain(
+      'ordinary reachability governs the Environment and Flight Texture lifetimes independently',
     );
     expect(environmentFinding?.message).toContain(
       'Make EnvironmentOptions.environment an optional Texture without null',
@@ -8656,6 +8676,27 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'Adapt cloneEnvironment to omit the option when source.environment is null and pass the existing Texture unchanged when present',
     );
     expect(environmentFinding?.message).toContain('do not make the live field optional or deep-copy the resource');
+    expect(environmentFinding?.message).toContain('Texture is a four-arm Flight union');
+    expect(environmentFinding?.message).toContain(
+      'six-alternative std::variant containing the four exact Texture owner arms plus flight::Null and flight::Undefined',
+    );
+    expect(environmentFinding?.message).toContain(
+      'both the recommended optional-non-null option and required-nullable live field lower to std::optional<flighthq_types::Texture> environment',
+    );
+    expect(environmentFinding?.message).toContain(
+      'Haxe emits @:optional var environment:Null<flight.Texture>; for the current option',
+    );
+    expect(environmentFinding?.message).toContain('@:optional var environment:flight.Texture; for the recommendation');
+    expect(environmentFinding?.message).toContain('required var environment:Null<flight.Texture>; for the live field');
+    expect(environmentFinding?.message).toContain(
+      'separately emitted four-arm alias is currently typedef Texture = Dynamic;',
+    );
+    expect(environmentFinding?.message).toContain('Haxe union erasure is an independent representation issue');
+    expect(environmentFinding?.message).toContain('absence rewrite neither fixes nor worsens');
+    expect(environmentFinding?.message).toContain('redundant absence itself is not a host-binding gap');
+    expect(environmentFinding?.message).toContain('C++ needs no Any, owner materialization, cast, or external binding');
+    expect(environmentFinding?.message).toContain('WebGLTexture, GPUTexture, and GPUTextureView');
+    expect(environmentFinding?.message).toContain('separately derived host resources owned by renderer runtimes');
     expect(environmentFinding?.message).toContain('unchanged, clear, and install');
     expect(environmentFinding?.message).toContain('Do not whitelist the redundant construction spelling');
     expect(environmentFinding?.message).toContain('infer or construct a Texture');

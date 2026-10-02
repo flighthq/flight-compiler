@@ -11756,6 +11756,55 @@ int main() {
     expect(contents).not.toContain('externalBindings');
   });
 
+  it('separates Environment construction omission from nullable live Texture storage', () => {
+    const texture = lowerPackage(
+      '@flighthq/types',
+      'Texture.ts',
+      `export interface Entity { readonly id: number }
+       interface TextureCommon extends Entity { version: number }
+       export interface Texture2D extends TextureCommon { readonly dimension: '2d'; source: Entity | null }
+       export type Texture =
+         | Texture2D
+         | (TextureCommon & { readonly dimension: '2d-array'; sources: readonly (Entity | null)[] })
+         | (TextureCommon & { readonly dimension: '3d'; source: Entity | null })
+         | (TextureCommon & { readonly dimension: 'cube'; sources: readonly (Entity | null)[] });`,
+    ).module;
+    const environment = lowerPackage(
+      '@flighthq/types',
+      'EnvironmentOptions.ts',
+      `import type { Texture } from './Texture';
+       export interface CurrentEnvironmentOptions { environment?: Texture | null }
+       export interface PortableEnvironmentOptions { environment?: Texture }
+       export interface Environment { environment: Texture | null }`,
+    ).module;
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './Texture',
+          target: { packageName: texture.packageName, source: texture.source },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const contents = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [texture, environment],
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(environment)[0]!.contents;
+    const current = contents.match(/(std::variant<[^\n]+>) environment =/u)?.[1];
+
+    expect(current).toBeDefined();
+    expect(current?.match(/flight::Ref</gu)).toHaveLength(4);
+    expect(current).toContain('flight::Ref<Texture2D>');
+    expect(current).toContain('flight::Null, flight::Undefined');
+    expect(contents.match(/std::optional<flighthq_types::Texture> environment;/gu)).toHaveLength(2);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('materialize_row');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
+  });
+
   it('does not classify Web Audio value-space constructors as object handle types', () => {
     const result = lower(
       'WebAudioConstructors.ts',

@@ -6546,10 +6546,13 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       'Environment owns the canonical mutable Texture | null storage cell but borrows the Texture identity',
     );
     expect(sourcePortability.findings[0]?.message).toContain(
-      'The only direct readers of the live field are ensureGlEnvironmentSourceCube and ensureWgpuEnvironmentSourceCube',
+      'direct runtime readers of the live field are ensureGlEnvironmentSourceCube and ensureWgpuEnvironmentSourceCube',
     );
     expect(sourcePortability.findings[0]?.message).toContain(
-      "destroyWgpuScene3DIbl is that cache's explicit invalidation and teardown seam",
+      'live replacement or clearing takes effect there only after destroyWgpuScene3DIbl invalidates the cache',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Neither backend teardown disposes or mutates the Environment, the borrowed Flight Texture, or its face-source entities',
     );
     expect(sourcePortability.findings[0]?.message).toContain(
       'Make EnvironmentOptions.environment an optional Texture without null',
@@ -6560,6 +6563,19 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain(
       'Adapt cloneEnvironment to omit the option when source.environment is null',
     );
+    expect(sourcePortability.findings[0]?.message).toContain('Texture is a four-arm Flight union');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'six-alternative std::variant containing the four exact Texture owner arms plus flight::Null and flight::Undefined',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('std::optional<flighthq_types::Texture> environment');
+    expect(sourcePortability.findings[0]?.message).toContain('@:optional var environment:Null<flight.Texture>;');
+    expect(sourcePortability.findings[0]?.message).toContain('@:optional var environment:flight.Texture;');
+    expect(sourcePortability.findings[0]?.message).toContain('required var environment:Null<flight.Texture>;');
+    expect(sourcePortability.findings[0]?.message).toContain('typedef Texture = Dynamic;');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Haxe union erasure is an independent representation issue',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('redundant absence itself is not a host-binding gap');
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
     expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
     expect(
