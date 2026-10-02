@@ -4657,6 +4657,114 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the one not-supplied state for mesh geometry attribute construction inputs', () => {
+    const source = input(
+      'packages/types/src/MeshGeometryFromAttributesOptions.ts',
+      `export interface MeshGeometryFromAttributesOptions {
+         indices?: readonly number[] | Uint16Array | Uint32Array | null;
+         normals?: readonly number[] | null;
+         positions: readonly number[];
+         uvs?: readonly number[] | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+    const fields = ['indices', 'normals', 'uvs'];
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      fields.map((field) => ({
+        rule: 'mixed-absence',
+        subject: `interface:MeshGeometryFromAttributesOptions/property:${field}`,
+      })),
+    );
+    for (const [index, finding] of findings.entries()) {
+      const field = fields[index];
+      expect(finding.message).toContain(
+        `construction-only mesh attribute input ${field} both omission and explicit null`,
+      );
+      expect(finding.message).toContain('createMeshGeometryFromAttributes has one not-supplied state');
+      expect(finding.message).toContain('It is the sole production consumer');
+      expect(finding.message).toContain('normalizes normals and uvs with ?? null and tests indices by truthiness');
+      expect(finding.message).toContain('null and undefined take the same path');
+      expect(finding.message).toContain(
+        'Repository call sites either omit each optional field or supply its collection',
+      );
+      expect(finding.message).toContain('has no update or clear operation for explicit null to express');
+      expect(finding.message).toContain(
+        'Make indices optional readonly number[] | Uint16Array | Uint32Array and make normals and uvs optional readonly number[]',
+      );
+      expect(finding.message).toContain('removing null from all three input fields');
+      expect(finding.message).toContain('retaining positions as required');
+      expect(finding.message).toContain('keep MeshGeometry.indices required nullable at the stored geometry boundary');
+      expect(finding.message).toContain('empty present collection still enters the supplied-data path');
+      expect(finding.message).toContain('normalize it once into this optional non-null construction shape');
+      expect(finding.message).toContain('Do not whitelist the redundant construction spelling');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('substitute an empty collection');
+      expect(finding.message).toContain('merge the array and typed-array owners');
+      expect(finding.message).toContain('route elements through Any');
+      expect(finding.message).toContain('or add side storage');
+    }
+    expect(findings[0]?.message).toContain(
+      'present readonly array, Uint16Array, or Uint32Array is copied element by element',
+    );
+    expect(findings[0]?.message).toContain('fresh Uint16Array or Uint32Array selected from the vertex count');
+    expect(findings[0]?.message).toContain('absence leaves the local indexArray undefined');
+    expect(findings[0]?.message).toContain('required-null MeshGeometry.indices storage slot');
+    expect(findings[1]?.message).toContain('present readonly array is copied into the canonical normal channels');
+    expect(findings[1]?.message).toContain('computeMeshGeometryNormals to derive from the faces');
+    expect(findings[2]?.message).toContain('present readonly array is copied into the canonical UV channels');
+    expect(findings[2]?.message).toContain('freshly allocated Float32Array cells at zero before tangent computation');
+  });
+
+  it('keeps mesh attribute lookalikes generic and accepts either single absence representation', () => {
+    const optional = input(
+      'packages/types/src/MeshGeometryFromAttributesOptions.ts',
+      `interface MeshGeometryFromAttributesOptions {
+         indices?: readonly number[] | Uint16Array | Uint32Array;
+         normals?: readonly number[];
+         positions: readonly number[];
+         uvs?: readonly number[];
+       }`,
+    );
+    const nullable = input(
+      'packages/types/src/MeshGeometryFromAttributesOptions.ts',
+      `interface MeshGeometryFromAttributesOptions {
+         indices: readonly number[] | Uint16Array | Uint32Array | null;
+         normals: readonly number[] | null;
+         positions: readonly number[];
+         uvs: readonly number[] | null;
+       }`,
+    );
+    const unrelated = [
+      input(
+        'packages/types/src/MeshGeometryFromAttributesOptions.ts',
+        'interface OtherMeshGeometryOptions { normals?: readonly number[] | null }',
+      ),
+      input(
+        'packages/example/src/MeshGeometryFromAttributesOptions.ts',
+        'interface MeshGeometryFromAttributesOptions { uvs?: readonly number[] | null }',
+      ),
+      input(
+        'packages/types/src/MeshGeometryFromAttributesOptions.ts',
+        `interface MeshGeometryFromAttributesOptions {
+           indices?: readonly number[] | Uint16Array | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/MeshGeometryFromAttributesOptions.ts',
+        'interface MeshGeometryFromAttributesOptions { tangents?: readonly number[] | null }',
+      ),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability([optional, nullable]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).not.toContain('construction-only mesh attribute input');
+      expect(findings[0]?.message).toContain('optional collection input');
+    }
+  });
+
   it('guides paired attachment point storage to required owners or one closed mode', () => {
     const source = input(
       'AttachmentPointStorage.ts',

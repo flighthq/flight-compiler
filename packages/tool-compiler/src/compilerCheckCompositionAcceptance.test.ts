@@ -679,6 +679,82 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the three mesh attribute input absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createMeshGeometryFromAttributesWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = ['indices', 'normals', 'uvs'].map(
+      (field) => `interface:MeshGeometryFromAttributesOptions/property:${field}`,
+    );
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('createMeshGeometryFromAttributes has one not-supplied state'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Do not whitelist the redundant construction spelling'),
+      ),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createMeshGeometryFromAttributesWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both specialized entity guard set traps stable through check mode', () => {
     const source = createMemoryWorkspaceSource(createEntityGuardWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -1104,6 +1180,20 @@ export interface MeshDeformRuntime {
   deformedLocalBounds?: Aabb${nullable};
 }`,
     '/flight/packages/types/src/index.ts': `export type { Mesh, MeshDeformRuntime } from './Mesh.js';`,
+  };
+}
+
+function createMeshGeometryFromAttributesWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/MeshGeometryFromAttributesOptions.ts': `export interface MeshGeometryFromAttributesOptions {
+  indices?: readonly number[] | Uint16Array | Uint32Array${nullable};
+  normals?: readonly number[]${nullable};
+  positions: readonly number[];
+  uvs?: readonly number[]${nullable};
+}`,
+    '/flight/packages/types/src/index.ts': `export type { MeshGeometryFromAttributesOptions } from './MeshGeometryFromAttributesOptions.js';`,
   };
 }
 

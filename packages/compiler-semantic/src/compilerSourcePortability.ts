@@ -330,6 +330,31 @@ function getSlot2DMixedAbsencePropertyMessage(node: ts.PropertySignature, subjec
   return undefined;
 }
 
+function getMeshGeometryFromAttributesOptionsMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'MeshGeometryFromAttributesOptions' ||
+    !isFlightTypesSource(node, 'MeshGeometryFromAttributesOptions.ts')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  const isIndices =
+    field === 'indices' &&
+    isOptionalNullableNamedAndReadonlyNumberArrayUnionProperty(node, ['Uint16Array', 'Uint32Array']);
+  const isAttribute = (field === 'normals' || field === 'uvs') && isOptionalNullableReadonlyNumberArrayProperty(node);
+  if (!isIndices && !isAttribute) return undefined;
+  const effect = isIndices
+    ? 'For indices, a present readonly array, Uint16Array, or Uint32Array is copied element by element into a fresh Uint16Array or Uint32Array selected from the vertex count; absence leaves the local indexArray undefined, and createMeshGeometry then normalizes that construction input into the required-null MeshGeometry.indices storage slot for non-indexed geometry.'
+    : field === 'normals'
+      ? 'For normals, a present readonly array is copied into the canonical normal channels, while absence leaves those channels for computeMeshGeometryNormals to derive from the faces.'
+      : 'For uvs, a present readonly array is copied into the canonical UV channels, while absence leaves their freshly allocated Float32Array cells at zero before tangent computation.';
+  return `${subject} gives the construction-only mesh attribute input ${field} both omission and explicit null, but createMeshGeometryFromAttributes has one not-supplied state. It is the sole production consumer: it normalizes normals and uvs with ?? null and tests indices by truthiness, so null and undefined take the same path. ${effect} Repository call sites either omit each optional field or supply its collection; this fresh-geometry factory has no update or clear operation for explicit null to express. Make indices optional readonly number[] | Uint16Array | Uint32Array and make normals and uvs optional readonly number[], removing null from all three input fields while retaining positions as required. Preserve the current owner-specific reads and authored copy or computation paths, and keep MeshGeometry.indices required nullable at the stored geometry boundary. Do not replace an absent field with an empty collection: an empty present collection still enters the supplied-data path and is not the same input. If a compatibility boundary must accept explicit null, normalize it once into this optional non-null construction shape before calling the factory; if omission and an intentional clear later become distinct, introduce a separate named closed update contract. Do not whitelist the redundant construction spelling. The compiler will preserve every authored state and collection owner but will not choose or collapse an absence sentinel, infer generated normals or zero UVs, substitute an empty collection, merge the array and typed-array owners, allocate or copy backing storage beyond the authored factory, route elements through Any, reinterpret or cast a collection, or add side storage.`;
+}
+
 function getAttachmentPointStorageMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -418,10 +443,13 @@ function isOptionalNullableReadonlyNumberArrayProperty(node: ts.PropertySignatur
   );
 }
 
-function isOptionalNullableGlColorAdjustmentDataProperty(node: ts.PropertySignature): boolean {
+function isOptionalNullableNamedAndReadonlyNumberArrayUnionProperty(
+  node: ts.PropertySignature,
+  expectedNames: readonly string[],
+): boolean {
   if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
   const present = getMixedAbsencePresentTypes(node.type);
-  if (present.length !== 3) return false;
+  if (present.length !== expectedNames.length + 1) return false;
   const names = new Set<string>();
   let hasReadonlyNumberArray = false;
   for (let type of present) {
@@ -444,7 +472,9 @@ function isOptionalNullableGlColorAdjustmentDataProperty(node: ts.PropertySignat
     }
     return false;
   }
-  return hasReadonlyNumberArray && names.size === 2 && names.has('ColorScaleBias') && names.has('TintMaterialData');
+  return (
+    hasReadonlyNumberArray && names.size === expectedNames.length && expectedNames.every((name) => names.has(name))
+  );
 }
 
 function isOptionalNullableObjectWeakMapProperty(node: ts.PropertySignature): boolean {
@@ -874,7 +904,10 @@ function getGlRenderRuntimeInactiveSlotMixedAbsencePropertyMessage(
   if (field === 'glRenderTextureGuard' && isOptionalNullableNamedTypeProperty(node, 'GlRenderTextureGuard')) {
     return `${subject} gives the opt-in GL render-texture diagnostic guard both omission and explicit null, but the represented runtime has one disabled state. createGlRenderStateRuntime currently omits the slot; setGlRenderTextureGuard overwrites it with the exact guard or null, enableGlRenderTextureGuards installs the warning guard through that setter, and render-texture notification optional-calls the slot. Make glRenderTextureGuard a required GlRenderTextureGuard | null field and initialize it to null in createGlRenderStateRuntime, retaining the nullable setter and optional call. Null initialization does not import or install the diagnostic module, so its logger and warning implementation remain shakeable. If disabled and not-yet-configured must differ, replace the sentinels with a named closed guard state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or install a diagnostic guard, invoke or synthesize a callback, widen its callable signature, change render-texture publication, or add side storage.`;
   }
-  if (field === 'quadBatchWriterUniformColorScaleBias' && isOptionalNullableGlColorAdjustmentDataProperty(node)) {
+  if (
+    field === 'quadBatchWriterUniformColorScaleBias' &&
+    isOptionalNullableNamedAndReadonlyNumberArrayUnionProperty(node, ['ColorScaleBias', 'TintMaterialData'])
+  ) {
     return `${subject} gives the GL quad batch's uniform color-adjustment scratch slot both omission and explicit null, but its mode field is the authority and the represented scratch value has one empty state. registerGlColorAdjustmentMaterialFeature initializes the mode on opt-in; recordGlColorAdjustment normalizes an absent mode to NONE and the uniform slot with ?? null, writes the exact ColorScaleBias, TintMaterialData, or readonly number[] owner only when the first adjusted instance selects UNIFORM mode, and promotes that owner when later values diverge. flushGlColorAdjustmentMaterialFeature returns before reading the slot in NONE mode, otherwise normalizes it with ?? null and clears it to null after capture. Make quadBatchWriterUniformColorScaleBias a required ColorScaleBias | TintMaterialData | readonly number[] | null field and initialize it to null in createGlRenderStateRuntime; preserve the mode as the state-machine discriminant and the null clear after flush. Initializing a null header-owned scratch slot does not register the color-adjustment feature or retain its shader implementation. If empty, uniform, and promoted storage need a stronger invariant, model the batch fold as one named closed state whose uniform arm owns the exact adjustment value. The compiler will not choose or collapse an absence sentinel, infer a fold mode or identity adjustment, register the feature, compile or bind a shader, copy or materialize adjustment data, reinterpret or cast an owner, or add side storage.`;
   }
   return undefined;
@@ -895,7 +928,10 @@ function getWgpuRenderRuntimeMixedAbsencePropertyMessage(
   if (field === 'wgpuRenderTextureGuard' && isOptionalNullableNamedTypeProperty(node, 'WgpuRenderTextureGuard')) {
     return `${subject} gives the opt-in WebGPU render-texture diagnostic guard both omission and explicit null, but the represented runtime has one disabled state. createWgpuRenderStateRuntimeInternal currently omits the slot; createWgpuOffscreenRenderState copies the source runtime's exact guard value, setWgpuRenderTextureGuard overwrites it with the exact guard or null, and render-texture notification optional-calls it. Make wgpuRenderTextureGuard a required WgpuRenderTextureGuard | null field, initialize it to null in createWgpuRenderStateRuntimeInternal, and retain the derived-state copy, nullable setter, and optional call. Null initialization imports or installs no callback and changes no render-texture publication behavior. If disabled and not-yet-configured must differ, replace the sentinels with one named closed guard state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or install a diagnostic guard, invoke or synthesize a callback, widen its callable signature, change derived-state policy inheritance or render-texture publication, or add side storage.`;
   }
-  if (field === 'quadBatchWriterUniformColorScaleBias' && isOptionalNullableGlColorAdjustmentDataProperty(node)) {
+  if (
+    field === 'quadBatchWriterUniformColorScaleBias' &&
+    isOptionalNullableNamedAndReadonlyNumberArrayUnionProperty(node, ['ColorScaleBias', 'TintMaterialData'])
+  ) {
     return `${subject} gives the WebGPU quad batch's uniform color-adjustment scratch slot both omission and explicit null, but quadBatchWriterColorScaleBiasMode is the authority and the represented scratch value has one empty state. createWgpuRenderStateRuntimeInternal omits the slot, while registerWgpuColorAdjustmentMaterialFeature initializes only the mode. recordWgpuColorAdjustment normalizes an absent mode to NONE, writes the exact ColorScaleBias, TintMaterialData, or readonly number[] owner only when the first adjusted instance selects UNIFORM mode, reads it through ?? null while comparing later instances, and otherwise promotes directly without requiring a stored uniform. resolveWgpuColorAdjustmentFlush returns before reading it in NONE mode, uses the mode proof before its non-null read in UNIFORM mode, and clears it to null after every non-empty flush. Make quadBatchWriterUniformColorScaleBias a required ColorScaleBias | TintMaterialData | readonly number[] | null field and initialize it to null in createWgpuRenderStateRuntimeInternal; preserve the mode as the state-machine discriminant and the null clear after flush. Initializing this header-owned scratch slot does not register the feature, import its scene2d-wgpu implementation, allocate storage, or retain its shader modules. If empty, uniform, and promoted storage need a stronger invariant, model the fold as one named closed state whose uniform arm owns the exact adjustment value. The compiler will not choose or collapse an absence sentinel, infer a fold mode or identity adjustment, register the feature, compile or bind a shader, copy or materialize adjustment data, reinterpret or cast an owner, or add side storage.`;
   }
   if (field === 'sceneMeshUploadCache' && isOptionalNullableObjectWeakMapProperty(node)) {
@@ -1068,6 +1104,11 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (meshDeformation) return meshDeformation;
   const slot2D = getSlot2DMixedAbsencePropertyMessage(node, subject);
   if (slot2D) return slot2D;
+  const meshGeometryFromAttributesOptions = getMeshGeometryFromAttributesOptionsMixedAbsencePropertyMessage(
+    node,
+    subject,
+  );
+  if (meshGeometryFromAttributesOptions) return meshGeometryFromAttributesOptions;
   const attachmentPointStorage = getAttachmentPointStorageMixedAbsencePropertyMessage(node, subject);
   if (attachmentPointStorage) return attachmentPointStorage;
   const authoredName = getAuthoredNameMixedAbsencePropertyMessage(node, subject);
