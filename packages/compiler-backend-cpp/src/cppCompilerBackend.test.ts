@@ -19090,7 +19090,9 @@ int main() {
       `const nullSignalEmit = (): void => {};
        interface Signal<T extends (...args: any[]) => void> { emit: T }
        interface SignalConnection<T extends (...args: any[]) => void> {
+         connected: boolean;
          paused: boolean;
+         signal: Signal<T>;
          slot: T;
        }
        export function initializeSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
@@ -19099,6 +19101,14 @@ int main() {
        export function finishSafeDispatch<T extends (...args: any[]) => void>(signal: Signal<T>): void {
          signal.emit = nullSignalEmit as unknown as T;
        }
+       export function disconnectSignalConnection<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+       ): void {
+         if (!connection.connected) return;
+         connection.connected = false;
+         void connection.signal;
+         void connection.slot;
+       }
        export function createTrackedSlot<T extends (...args: any[]) => void>(
          connection: SignalConnection<T>,
          slot: T,
@@ -19106,7 +19116,7 @@ int main() {
        ): T {
          return ((...args: Parameters<T>): void => {
            if (connection.paused) return;
-           if (once) connection.paused = true;
+           if (once) disconnectSignalConnection(connection);
            slot(...args);
          }) as unknown as T;
        }`,
@@ -19118,6 +19128,8 @@ int main() {
     expect(emitted.match(/flight::bind_callable_v1<T>\(null_signal_emit\)/g)).toHaveLength(2);
     expect(emitted).toContain('return flight::bind_callable_v1<T>([=]<typename... ArgsPack>');
     expect(emitted).toContain('if (connection->paused)');
+    expect(emitted).toContain('disconnect_signal_connection<T>(connection);');
+    expect(emitted).toContain('(connection->connected = false);');
     expect(emitted).toContain('slot(std::forward<ArgsPack>(args)...);');
     expect(emitted).not.toContain('flight::Any::');
     expect(emitted).not.toContain('static_cast');
@@ -19125,6 +19137,44 @@ int main() {
     expect(emitted).not.toContain('structural_ref_cast');
     expect(emitted).not.toContain('make_ref');
     expect(emitted).not.toContain('materialize');
+
+    const assertionFree = lowerPackage(
+      '@flighthq/signals',
+      'assertion-free-connection.ts',
+      `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+       interface SignalConnection<T extends (...args: any[]) => void> {
+         connected: boolean;
+         paused: boolean;
+         slot: SignalDispatch<T>;
+       }
+       function disconnectSignalConnection<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+       ): void {
+         connection.connected = false;
+       }
+       export function createTrackedSignalSlot<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+         slot: SignalDispatch<T>,
+         once: boolean,
+       ): SignalDispatch<T> {
+         return (...args: Parameters<T>): void => {
+           if (connection.paused) return;
+           if (once) disconnectSignalConnection(connection);
+           slot(...args);
+         };
+       }`,
+    );
+    expect(assertionFree.diagnostics).toEqual([]);
+    const assertionFreeFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(assertionFree.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(assertionFreeFailure).toMatchObject({
+      classification: 'compiler-restriction',
+      rule: 'cpp-callable-type-unresolvable',
+    });
+    expect(assertionFreeFailure.message).toContain(
+      'Parameters<T> requires a statically resolvable non-generic callable type',
+    );
   });
 
   it('refuses generic callable-owner re-instantiation and retains exact owners in operation closures', () => {
@@ -19164,33 +19214,50 @@ int main() {
     expect(failure.message).toContain('copy or materialize a replacement');
     expect(failure.message).toContain('or add side storage');
 
-    const portable = lowerPackage(
+    const operation = lowerPackage(
       '@flighthq/signals',
       'generic-owner-operation.ts',
-      `interface SignalConnection<T extends (...args: any[]) => void> { paused: boolean; slot: T }
-       interface SignalScope { disconnectors: (() => void)[] }
-       export function retain<T extends (...args: any[]) => void>(
+      `interface Signal<T extends (...args: any[]) => void> { emit: T }
+       interface SignalConnection<T extends (...args: any[]) => void> {
+         connected: boolean;
+         paused: boolean;
+         signal: Signal<T>;
+         slot: T;
+       }
+       type SignalScopeDisconnect = () => void;
+       interface SignalScope { disconnectors: SignalScopeDisconnect[] }
+       function disconnectSignalConnection<T extends (...args: any[]) => void>(
          connection: SignalConnection<T>,
-       ): SignalConnection<T> {
-         return connection as unknown as SignalConnection<T>;
+       ): void {
+         if (!connection.connected) return;
+         connection.connected = false;
+         void connection.signal;
+         void connection.slot;
        }
        export function retainInScope<T extends (...args: any[]) => void>(
          scope: SignalScope,
          connection: SignalConnection<T>,
        ): void {
-         scope.disconnectors.push((): void => { connection.paused = true; });
+         scope.disconnectors.push((): void => disconnectSignalConnection(connection));
+       }
+       export function disconnectSignalScope(scope: SignalScope): void {
+         const pending = scope.disconnectors.slice();
+         scope.disconnectors.length = 0;
+         for (let i = 0; i < pending.length; i++) pending[i]();
        }`,
     );
-    const emitted = emitIrModuleCpp(portable.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const emitted = emitIrModuleCpp(operation.module, { runtimeProfile: 'flight-cpp' }).contents;
 
-    expect(portable.diagnostics).toEqual([]);
-    expect(emitted).toContain('return connection;');
-    expect(emitted).toContain('(connection->paused = true);');
+    expect(operation.diagnostics).toEqual([]);
+    expect(emitted).toContain('disconnectors');
+    expect(emitted).toContain('disconnect_signal_connection<T>(connection);');
+    expect(emitted).toContain('(connection->connected = false);');
+    expect(emitted).toContain('pending');
     expect(emitted).not.toContain('make_binding_cell');
     expect(emitted).not.toContain('flight::Any::');
-    expect(emitted).not.toContain('static_cast');
     expect(emitted).not.toContain('reinterpret_cast');
     expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('make_ref');
     expect(emitted).not.toContain('materialize');
   });
 

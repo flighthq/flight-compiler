@@ -6771,6 +6771,101 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(JSON.stringify(returned.expression.body)).toContain('"name":"slots"');
   });
 
+  it('retains named tracked-slot and scope-disconnect operations without owner assertions', () => {
+    const result = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/signals/src/connection.ts',
+        `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+       type SignalScopeDisconnect = () => void;
+       interface Signal<T extends (...args: any[]) => void> { readonly marker?: T }
+       interface SignalConnection<T extends (...args: any[]) => void> {
+         connected: boolean;
+         paused: boolean;
+         signal: Signal<T>;
+         slot: SignalDispatch<T>;
+       }
+       interface SignalScope { disconnectors: SignalScopeDisconnect[] }
+       function disconnectSignalConnection<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+       ): void {
+         if (!connection.connected) return;
+         connection.connected = false;
+         void connection.signal;
+         void connection.slot;
+       }
+       function createTrackedSignalSlot<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+         slot: SignalDispatch<T>,
+         once: boolean,
+       ): SignalDispatch<T> {
+         return (...args: Parameters<T>): void => {
+           if (connection.paused) return;
+           if (once) disconnectSignalConnection(connection);
+           slot(...args);
+         };
+       }
+       function createSignalScopeDisconnect<T extends (...args: any[]) => void>(
+         connection: SignalConnection<T>,
+       ): SignalScopeDisconnect {
+         return (): void => disconnectSignalConnection(connection);
+       }
+       export function connectSignalTracked<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         slot: SignalDispatch<T>,
+         scope?: SignalScope,
+       ): SignalConnection<T> {
+         const connection: SignalConnection<T> = { connected: true, paused: false, signal, slot };
+         connection.slot = createTrackedSignalSlot(connection, slot, true);
+         scope?.disconnectors.push(createSignalScopeDisconnect(connection));
+         return connection;
+       }`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/signals', upstreamDirectory: '/flight' },
+    );
+    const tracked = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'createTrackedSignalSlot',
+    );
+    const scoped = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'createSignalScopeDisconnect',
+    );
+    const connect = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'connectSignalTracked',
+    );
+    if (tracked?.kind !== 'function' || scoped?.kind !== 'function' || connect?.kind !== 'function') {
+      throw new Error('Expected normalized signal connection operations');
+    }
+    const returned = tracked.body.find((statement) => statement.kind === 'return');
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'function') {
+      throw new Error('Expected tracked-slot closure');
+    }
+    const assertions: IrExpression[] = [];
+    analyzeIrModuleTraversal(result.module, {
+      expression(expression) {
+        if (expression.kind === 'cast') assertions.push(expression);
+      },
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(assertions).toEqual([]);
+    expect(returned.expression.parameters[0]?.dependentCallablePack).toMatchObject({
+      callable: tracked.typeParameters[0]?.binding,
+      kind: 'parameters',
+      schema: 'flight-compiler-dependent-callable-pack/1',
+    });
+    expect(scoped.returns).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'SignalScopeDisconnect' }, kind: 'binding' },
+      typeArguments: [],
+    });
+    expect(JSON.stringify(returned.expression.body)).toContain('"name":"disconnectSignalConnection"');
+    expect(JSON.stringify(returned.expression.body)).toContain('"name":"paused"');
+    expect(JSON.stringify(connect.body)).toContain('"name":"createTrackedSignalSlot"');
+    expect(JSON.stringify(connect.body)).toContain('"name":"createSignalScopeDisconnect"');
+    expect(JSON.stringify(connect.body)).toContain('"name":"disconnectors"');
+  });
+
   it('diagnoses optional rest tuple elements instead of constructing invalid IR', () => {
     const tuple = lower('tuple.ts', 'export type Invalid = [...values?: number[]];');
 

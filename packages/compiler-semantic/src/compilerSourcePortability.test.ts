@@ -1916,11 +1916,20 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const tracked = bySource.get('packages/signals/src/connection.ts');
     expect(tracked?.message).toContain('trackedSlot closure');
     expect(tracked?.message).toContain('Parameters<T>');
-    expect(tracked?.message).toContain('captured SignalConnection<T> and exact T slot');
-    expect(tracked?.message).toContain('checked callable-signature binding contract');
-    expect(tracked?.message).toContain("T's instantiated parameter list");
-    expect(tracked?.message).toContain('will not route it through Any');
-    expect(tracked?.message).toContain('copy or materialize the connection or slot owners');
+    expect(tracked?.message).toContain('plain closure has every possible callable-subtype member of T');
+    expect(tracked?.message).toContain('allocates one exact SignalConnection<T> owner');
+    expect(tracked?.message).toContain('replaces connection.slot once with this wrapper');
+    expect(tracked?.message).toContain('paused call returns without consuming once');
+    expect(tracked?.message).toContain('disconnects the same connection before invoking the original slot');
+    expect(tracked?.message).toContain('disconnectSignalConnection changes connected to false');
+    expect(tracked?.message).toContain('safe dispatch snapshots only the parallel slot metadata arrays');
+    expect(tracked?.message).toContain('No SignalConnection, signal, original slot, or wrapper is cloned');
+    expect(tracked?.message).toContain('createTrackedSignalSlot<T>(connection, slot, once)');
+    expect(tracked?.message).toContain('current C++ storage emission cannot resolve Parameters<T>');
+    expect(tracked?.message).toContain('no named wrapper operation alone is end-to-end portable');
+    expect(tracked?.message).toContain('Do not whitelist this bridge');
+    expect(tracked?.message).toContain('will not route the wrapper through Any');
+    expect(tracked?.message).toContain('copy or materialize the connection, signal, or slot owners');
     expect(tracked?.message).toContain('or add side storage');
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
@@ -2000,12 +2009,23 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings[0]?.message).toContain(
       'push the represented SignalConnection<T> owner into SignalScope.connections',
     );
-    expect(findings[0]?.message).toContain('current bulk-disconnect scope contract');
-    expect(findings[0]?.message).toContain('named zero-argument disconnect operation');
+    expect(findings[0]?.message).toContain('exact signal, original slot, and tracked-wrapper cells');
+    expect(findings[0]?.message).toContain(
+      'same connection owner is returned to the caller and published to the scope',
+    );
+    expect(findings[0]?.message).toContain('there is no SignalConnection clone');
+    expect(findings[0]?.message).toContain('copies only the connections array');
+    expect(findings[0]?.message).toContain('clears the live array before iteration for re-entrant reuse');
+    expect(findings[0]?.message).toContain('idempotent for a duplicate, manually disconnected');
+    expect(findings[0]?.message).toContain('changes connected to false and removes the exact tracked wrapper');
+    expect(findings[0]?.message).toContain('SignalScopeDisconnect = () => void');
     expect(findings[0]?.message).toContain('calls disconnectSignalConnection(connection)');
-    expect(findings[0]?.message).toContain('have disconnectSignalScope drain and invoke those operations');
-    expect(findings[0]?.message).toContain('preserve connection as SignalConnection<T>');
+    expect(findings[0]?.message).toContain('cpp-generic-owner-argument-assertion-unproven');
+    expect(findings[0]?.message).toContain('does not preserve the current public scope.connections handle identities');
+    expect(findings[0]?.message).toContain('scope contract is deliberately narrowed to bulk teardown');
+    expect(findings[0]?.message).toContain('non-generic closed scope capability implemented by the exact owner');
     expect(findings[0]?.message).toContain('explicit type-erased handle and target-runtime contract');
+    expect(findings[0]?.message).toContain('Do not whitelist the owner widening');
     expect(findings[0]?.message).toContain('will not treat type-parameter variance as representation equivalence');
     expect(findings[0]?.message).toContain('reinterpret or cast the owner');
     expect(findings[0]?.message).toContain('copy or materialize a replacement');

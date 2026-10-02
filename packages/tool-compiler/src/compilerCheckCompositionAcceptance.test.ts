@@ -553,6 +553,114 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps signal-connection callable and owner assertions distinct through check mode', () => {
+    const source = createMemoryWorkspaceSource(createSignalConnectionWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/signals'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule(module) {
+          if (module.source === 'packages/signals/src/connection.ts') {
+            throw createBackendEmissionFailure(
+              'acceptance',
+              module,
+              'the erased scope assertion cannot re-instantiate the represented SignalConnection owner',
+              'cpp-generic-owner-argument-assertion-unproven',
+              { classification: 'source-portability' },
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const sourceIdentities = [
+      'flight-compiler-source-portability-finding/1:["@flighthq/signals","packages/signals/src/connection.ts","unchecked-double-assertion","function:connectSignalTracked","sha256:4e6675baaa52efe01bffd6f48c41215a0e879cb6613007000d916d2225f1f1fa"]:0',
+      'flight-compiler-source-portability-finding/1:["@flighthq/signals","packages/signals/src/connection.ts","unchecked-double-assertion","function:connectSignalTracked","sha256:99811dfabdbf441649ca59d8b7c3672f1a00cf6bb06157855a428d478048d40d"]:0',
+    ];
+    const sourceCheckIdentities = sourceIdentities.map(
+      (identity) =>
+        `flight-compiler-check-finding/1:${JSON.stringify([
+          '@flighthq/signals',
+          'packages/signals/src/connection.ts',
+          'Connection',
+          'source',
+          'source-portability',
+          'unchecked-double-assertion',
+          identity,
+        ])}`,
+    );
+    const emissionIdentity =
+      'flight-compiler-check-finding/1:["@flighthq/signals","packages/signals/src/connection.ts","Connection","emission","unsupported-ir","cpp-generic-owner-argument-assertion-unproven"]';
+
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ identity }) => identity).sort()).toEqual([...sourceIdentities].sort());
+    expect(sourcePortability.findings).toHaveLength(2);
+    const tracked = sourcePortability.findings.find(({ message }) => message.includes('trackedSlot closure'));
+    expect(tracked?.message).toContain('createTrackedSignalSlot<T>(connection, slot, once)');
+    expect(tracked?.message).toContain('current C++ storage emission cannot resolve Parameters<T>');
+    expect(tracked?.message).toContain('no named wrapper operation alone is end-to-end portable');
+    const scoped = sourcePortability.findings.find(({ message }) => message.includes('SignalScope.connections'));
+    expect(scoped?.message).toContain('SignalScopeDisconnect = () => void');
+    expect(scoped?.message).toContain('cpp-generic-owner-argument-assertion-unproven');
+    expect(scoped?.message).toContain('does not preserve the current public scope.connections handle identities');
+    expect(compilation.report.modules.map(({ module, status }) => ({ source: module.source, status }))).toEqual([
+      { source: 'packages/signals/src/connection.ts', status: 'refused' },
+      { source: 'packages/signals/src/index.ts', status: 'refused' },
+    ]);
+    expect(report.directFindings.map(({ identity }) => identity).sort()).toEqual(
+      [emissionIdentity, ...sourceCheckIdentities].sort(),
+    );
+    expect(report.directFindings.map(({ policyClass, rule, stage }) => ({ policyClass, rule, stage }))).toEqual([
+      {
+        policyClass: 'source-portability',
+        rule: 'cpp-generic-owner-argument-assertion-unproven',
+        stage: 'emission',
+      },
+      { policyClass: 'source-portability', rule: 'unchecked-double-assertion', stage: 'source' },
+      { policyClass: 'source-portability', rule: 'unchecked-double-assertion', stage: 'source' },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 1,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 1, directlyRefused: 1, emitted: 0, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    const policy = createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict());
+    expect([...policy.failingFindingIdentities].sort()).toEqual([emissionIdentity, ...sourceCheckIdentities].sort());
+    expect(policy.passed).toBe(false);
+
+    const assertionFreeSource = createMemoryWorkspaceSource(createSignalConnectionWorkspaceFiles(false));
+    const assertionFreeInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/signals'],
+      source: assertionFreeSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(assertionFreeInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the bounds runtime owner and both parent-space assertions source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createNodeBoundsWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -5590,6 +5698,107 @@ export function createGuardedEntityRuntime(runtime: EntityRuntime): EntityRuntim
   });
 }`,
     '/flight/packages/entity/src/index.ts': `export { createGuardedEntity, createGuardedEntityRuntime } from './guards.js';`,
+  };
+}
+
+function createSignalConnectionWorkspaceFiles(asserted: boolean): Record<string, string> {
+  const connection = asserted
+    ? `interface Signal<T extends (...args: any[]) => void> { emit: T }
+interface SignalConnection<T extends (...args: any[]) => void> {
+  connected: boolean;
+  paused: boolean;
+  signal: Signal<T>;
+  slot: T;
+}
+interface SignalScope { connections: SignalConnection<(...args: any[]) => void>[] }
+interface SignalTrackedConnectOptions { once?: boolean; priority?: number; scope?: SignalScope }
+function connectSignal<T extends (...args: any[]) => void>(
+  signal: Signal<T>,
+  slot: T,
+  options?: Readonly<{ priority: number }>,
+): void {
+  void signal;
+  void slot;
+  void options;
+}
+function disconnectSignal<T extends (...args: any[]) => void>(signal: Signal<T>, slot: T): void {
+  void signal;
+  void slot;
+}
+export function connectSignalTracked<T extends (...args: any[]) => void>(
+  signal: Signal<T>,
+  slot: T,
+  options?: Readonly<SignalTrackedConnectOptions>,
+): SignalConnection<T> {
+  const connection: SignalConnection<T> = { connected: true, paused: false, signal, slot };
+  const once = options?.once ?? false;
+  const trackedSlot = ((...args: Parameters<T>): void => {
+    if (connection.paused) return;
+    if (once) disconnectSignalConnection(connection);
+    slot(...args);
+  }) as unknown as T;
+  connection.slot = trackedSlot;
+
+  const priority = options?.priority;
+  connectSignal(signal, trackedSlot, priority === undefined ? undefined : { priority });
+  options?.scope?.connections.push(connection as unknown as SignalConnection<(...args: any[]) => void>);
+  return connection;
+}
+export function disconnectSignalConnection<T extends (...args: any[]) => void>(
+  connection: SignalConnection<T>,
+): void {
+  if (!connection.connected) return;
+  connection.connected = false;
+  disconnectSignal(connection.signal, connection.slot);
+}`
+    : `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+type SignalScopeDisconnect = () => void;
+interface Signal<T extends (...args: any[]) => void> { emit: SignalDispatch<T> }
+interface SignalConnection<T extends (...args: any[]) => void> {
+  connected: boolean;
+  paused: boolean;
+  signal: Signal<T>;
+  slot: SignalDispatch<T>;
+}
+interface SignalScope { disconnectors: SignalScopeDisconnect[] }
+function disconnectSignalConnection<T extends (...args: any[]) => void>(
+  connection: SignalConnection<T>,
+): void {
+  if (!connection.connected) return;
+  connection.connected = false;
+  void connection.signal;
+  void connection.slot;
+}
+function createTrackedSignalSlot<T extends (...args: any[]) => void>(
+  connection: SignalConnection<T>,
+  slot: SignalDispatch<T>,
+  once: boolean,
+): SignalDispatch<T> {
+  return (...args: Parameters<T>): void => {
+    if (connection.paused) return;
+    if (once) disconnectSignalConnection(connection);
+    slot(...args);
+  };
+}
+function createSignalScopeDisconnect<T extends (...args: any[]) => void>(
+  connection: SignalConnection<T>,
+): SignalScopeDisconnect {
+  return (): void => disconnectSignalConnection(connection);
+}
+export function connectSignalTracked<T extends (...args: any[]) => void>(
+  signal: Signal<T>,
+  slot: SignalDispatch<T>,
+  scope?: SignalScope,
+): SignalConnection<T> {
+  const connection: SignalConnection<T> = { connected: true, paused: false, signal, slot };
+  connection.slot = createTrackedSignalSlot(connection, slot, true);
+  scope?.disconnectors.push(createSignalScopeDisconnect(connection));
+  return connection;
+}`;
+  return {
+    '/flight/packages/signals/package.json': createPackageManifest('@flighthq/signals'),
+    '/flight/packages/signals/src/connection.ts': connection,
+    '/flight/packages/signals/src/index.ts': `export { connectSignalTracked, disconnectSignalConnection } from './connection.js';`,
   };
 }
 
