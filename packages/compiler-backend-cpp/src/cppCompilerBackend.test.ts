@@ -13633,14 +13633,12 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
-  // HostVideo.ts's opaque-value-domain finding. Its one opaque value domain is the stream handle the host
-  // adapter accepts -- `attachStream?(stream: unknown)` -- and that parameter is arbitrary by declaration,
-  // so it lowers to flight::Any and needs no guidance. The module's actual blockers are host ownership:
-  // AbortSignal (a lifetime identity) and Blob (a binary object identity), both of which already carry
-  // remediation prose. The control asserts the refusal, then binds exactly those two and shows the arbitrary
-  // parameter surviving as flight::Any rather than being narrowed or copied.
-  it('classifies the host video stream parameter as arbitrary data already carried', () => {
-    const result = lower(
+  // HostVideo.ts declared the exact MediaStream passed by its sole web caller as unknown. The backend can
+  // mechanically carry that erasure as flight::Any, but doing so loses the browser-owned identity contract.
+  // The corrected web entry names MediaStream and therefore requires an exact target binding; native targets
+  // that do not compile the browser entry need no stream carrier or adapter.
+  it('distinguishes the erased host video stream from an exact borrowed MediaStream carrier', () => {
+    const erased = lower(
       'HostVideo.ts',
       `export interface HostVideoCapability {
          attachStream?(stream: unknown): string | null;
@@ -13650,14 +13648,14 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
        }`,
     );
     const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+      emitIrModuleCpp(erased.module, { runtimeProfile: 'flight-cpp' }),
     );
-    expect(result.diagnostics).toEqual([]);
+    expect(erased.diagnostics).toEqual([]);
     expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
     expect(failure.classification).toBe('target-runtime');
     expect(failure.message).toContain('missing: AbortSignal[type], Blob[type]');
 
-    const contents = emitIrModuleCpp(result.module, {
+    const erasedContents = emitIrModuleCpp(erased.module, {
       externalBindings: {
         bindings: [
           {
@@ -13681,11 +13679,40 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
       },
       runtimeProfile: 'flight-cpp',
     }).contents;
-    // The stream handle stays the erased carrier it was declared as, so the host adapter may accept any
-    // stream the platform hands it without the compiler inventing a narrower type or copying it through one.
-    expect(contents).toContain(
+    expect(erasedContents).toContain(
       'std::optional<std::function<std::optional<flight::String>(flight::Any)>> attach_stream;',
     );
+
+    const typed = lower(
+      'videoResourceFrom.ts',
+      'export function createVideoResourceFromMediaStream(stream: MediaStream): void { stream; }',
+    );
+    const typedFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(typed.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(typed.diagnostics).toEqual([]);
+    expect(typedFailure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(typedFailure.classification).toBe('target-runtime');
+    expect(typedFailure.message).toContain('missing: MediaStream[type]');
+
+    const typedContents = emitIrModuleCpp(typed.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/browser.hpp'],
+            nullability: 'non-null' as const,
+            ownership: 'borrowed' as const,
+            sourceName: 'MediaStream',
+            space: 'type' as const,
+            targetName: 'host::MediaStream',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1' as const,
+      },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    expect(typedContents).toContain('host::MediaStream stream');
+    expect(typedContents).not.toContain('flight::Any');
   });
 
   // Where the dependency gate lives, and a guard against moving it.

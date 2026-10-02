@@ -2970,6 +2970,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings[1]?.message).toContain('exactly MediaStream at this web-only entry');
     expect(report.findings[1]?.message).toContain('not an open cross-host token or a request for unknown or Any');
     expect(report.findings[1]?.message).toContain('bind MediaStream as an exact external host type');
+    expect(report.findings[1]?.message).toContain('Haxe emits the erased parameter as Dynamic');
+    expect(report.findings[1]?.message).toContain('C++ emits it as flight::Any');
+    expect(report.findings[1]?.message).toContain('Haxe preserves MediaStream as js.html.MediaStream');
+    expect(report.findings[1]?.message).toContain('C++ requires a MediaStream[type] external binding');
+    expect(report.findings[1]?.message).toContain('exact configured carrier such as host::MediaStream');
     expect(report.findings[1]?.message).toContain('Remove attachStream from HostVideoCapability');
     expect(report.findings[1]?.message).toContain('rather than inventing a HostVideoStreamHandle');
     expect(report.findings[1]?.message).toContain('createVideoResourceFromMediaStream accept');

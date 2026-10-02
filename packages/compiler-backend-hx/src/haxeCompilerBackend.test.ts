@@ -2584,6 +2584,28 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('value:Dynamic');
   });
 
+  it('distinguishes the erased host video stream from the exact browser MediaStream carrier', () => {
+    const erased = emitIrModuleHaxe(
+      lower(
+        'HostVideo.ts',
+        `export interface HostVideoCapability {
+           attachStream?(stream: unknown): string | null;
+           canPlayType(mimeType: string): boolean;
+         }`,
+      ).module,
+    ).contents;
+    expect(erased).toContain('?attachStream:(Dynamic)->Null<String>');
+
+    const typed = emitIrModuleHaxe(
+      lower(
+        'videoResourceFrom.ts',
+        'export function createVideoResourceFromMediaStream(stream: MediaStream): void { stream; }',
+      ).module,
+    ).contents;
+    expect(typed).toContain('stream:js.html.MediaStream');
+    expect(typed).not.toContain('stream:Dynamic');
+  });
+
   it('distinguishes erased log fields from the named recursive transport domain', () => {
     const opaque = emitIrModuleHaxe(
       lower(

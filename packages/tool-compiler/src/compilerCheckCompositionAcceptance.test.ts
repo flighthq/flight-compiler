@@ -4153,6 +4153,10 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain(
       'Electron, Tauri, Capacitor, Node, and other native hosts',
     );
+    expect(sourcePortability.findings[0]?.message).toContain('Haxe emits the erased parameter as Dynamic');
+    expect(sourcePortability.findings[0]?.message).toContain('C++ emits it as flight::Any');
+    expect(sourcePortability.findings[0]?.message).toContain('Haxe preserves MediaStream as js.html.MediaStream');
+    expect(sourcePortability.findings[0]?.message).toContain('C++ requires a MediaStream[type] external binding');
     expect(sourcePortability.findings[0]?.message).toContain('rather than inventing a HostVideoStreamHandle');
     expect(sourcePortability.findings[0]?.message).toContain('HostVideo.ts and attachStream are gone');
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
@@ -4170,6 +4174,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
     });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
 
     const portableSource = createMemoryWorkspaceSource(createHostVideoStreamWorkspaceFiles(false));
     const portableInput = createFlightWorkspaceCompilationInput({
@@ -4177,9 +4189,36 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+    expect(portableSourcePortability).toMatchObject({
       acceptedExceptions: [],
       findings: [],
+    });
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
   });
 
