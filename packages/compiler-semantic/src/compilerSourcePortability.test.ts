@@ -6678,21 +6678,37 @@ describe('analyzeTypeScriptSourcePortability', () => {
       },
     ]);
     const message = findings[0]?.message;
-    expect(message).toContain('gives the paired morph-gradient endpoint matrix both omission and explicit null');
-    expect(message).toContain('appendMorphShapeGradientPaint evaluates start.matrix ?? null and end.matrix ?? null');
-    expect(message).toContain('an absent side uses identityMatrix and both resolved matrices are cloned');
+    expect(message).toContain(
+      'gives the construction-only morph-gradient endpoint matrix both omission and explicit null',
+    );
+    expect(message).toContain('readSwfMorphFillStyle is the only production endpoint builder');
+    expect(message).toContain(
+      'readSwfMorphMatrix, which returns a concrete Matrix even for an encoded identity matrix',
+    );
+    expect(message).toContain('explainMorphShapeGradientEndpoints and getMorphShapeGradientEndpointIssue inspect only');
+    expect(message).toContain('appendMorphShapeBeginGradientFill and appendMorphShapeLineGradientStyle both route');
+    expect(message).toContain(
+      'appendMorphShapeGradientPaint, the sole endpoint-matrix reader, which evaluates start.matrix ?? null and end.matrix ?? null',
+    );
+    expect(message).toContain('the absent side uses identityMatrix');
+    expect(message).toContain('both required binding fields receive independent clones');
+    expect(message).toContain('createSampledMatrix creates the separate mutable command clone');
     expect(message).toContain('MorphShapeGradientPaintBinding.startMatrix and endMatrix are both null');
-    expect(message).toContain('a present identity matrix is still an authored matrix value');
-    expect(message).toContain("Keep the binding's startMatrix and endMatrix fields required Readonly<Matrix> | null");
-    expect(message).toContain('declare MorphShapeGradientEndpoint.matrix as optional Readonly<Matrix> without null');
+    expect(message).toContain('a present identity matrix remains an authored value');
+    expect(message).toContain('sampleMorphShapePaintBinding, which interpolates only when the command matrix');
+    expect(message).toContain('clearShapeCommands and copyShapeCommands discard paint bindings');
+    expect(message).toContain("binding's startMatrix and endMatrix fields required Readonly<Matrix> | null");
+    expect(message).toContain('Declare MorphShapeGradientEndpoint.matrix as optional Readonly<Matrix> without null');
     expect(message).toContain('omission is the sole authoring-time absence');
+    expect(message).toContain('external compatibility input accepts explicit null');
     expect(message).toContain('one named closed endpoint state and resolve every arm');
+    expect(message).toContain('Do not whitelist the redundant authoring spelling');
     expect(message).toContain('will not choose or collapse an absence sentinel');
     expect(message).toContain('treat a present identity matrix as absent');
     expect(message).toContain('infer the paired endpoint');
     expect(message).toContain('select or synthesize identityMatrix');
     expect(message).toContain('clone or materialize a Matrix');
-    expect(message).toContain('rewrite paint sampling or binding storage');
+    expect(message).toContain('rewrite paint sampling, binding storage, command clearing, or renderer input');
     expect(message).toContain('reinterpret or cast the value');
     expect(message).toContain('or add side storage');
   });
