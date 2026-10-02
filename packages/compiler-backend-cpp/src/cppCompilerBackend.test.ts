@@ -14359,6 +14359,54 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     }
   });
 
+  // BoundingBoxAttachment2D.ts's two mixed-absence findings. Import skips never retain an attachment,
+  // the only constructor writes both cells, and clone, slot mutation, and disposal preserve the exact
+  // owner lifetimes. Both source spellings already have exact target carriers; the source fix removes
+  // the unused omitted state rather than asking the backend to choose a sentinel.
+  it('classifies bounding-box point storage as two required nullable owner cells', () => {
+    const mixed = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'BoundingBoxAttachment2D.ts',
+        `export interface Attachment2D { kind: string }
+         export interface Skin2D { influences: Float32Array }
+         export interface BoundingBoxAttachment2D extends Attachment2D {
+           pointCount: number;
+           skin?: Skin2D | null;
+           vertices?: Float32Array | null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const resolved = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'BoundingBoxAttachment2D.ts',
+        `export interface Attachment2D { kind: string }
+         export interface Skin2D { influences: Float32Array }
+         export interface BoundingBoxAttachment2D extends Attachment2D {
+           pointCount: number;
+           skin: Skin2D | null;
+           vertices: Float32Array | null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(mixed).toContain('std::variant<flight::Ref<Skin2D>, flight::Null, flight::Undefined> skin');
+    expect(mixed).toContain('std::variant<flight::Float32Array, flight::Null, flight::Undefined> vertices');
+    expect(resolved).toContain('std::optional<flight::Ref<Skin2D>> skin;');
+    expect(resolved).toContain('std::optional<flight::Float32Array> vertices;');
+    for (const emitted of [mixed, resolved]) {
+      expect(emitted).toContain('struct BoundingBoxAttachment2D : public flight::ReferenceEnabled');
+      expect(emitted).not.toContain('flight::Any');
+      expect(emitted).not.toContain('materialize_row');
+      expect(emitted).not.toContain('static_cast');
+      expect(emitted).not.toContain('reinterpret_cast');
+      expect(emitted).not.toContain('externalBindings');
+    }
+  });
+
   it('separates PathAttachment2D point-owner nullability from redundant undefined states', () => {
     // Both values are compiler-owned carriers: Skin2D is a Flight entity reference and Float32Array is a
     // native typed-array value. The current optional-nullable fields preserve two sentinels, while making
