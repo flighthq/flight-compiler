@@ -1593,9 +1593,9 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       expectedSubjects.map((subject) => ({ rule: 'opaque-value-domain', subject })),
     );
     expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
-      expect.stringContaining('Non-web providers inspect request keys and reject data'),
-      expect.stringContaining('same named closed NotificationData domain'),
-      expect.stringContaining('Remove data from this injected provider facade'),
+      expect.stringContaining('Electron, Tauri, and Capacitor instead enumerate the request'),
+      expect.stringContaining('same recursive closed NotificationData scalar'),
+      expect.stringContaining('Remove data from WebServiceWorkerNotificationInstance'),
     ]);
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
@@ -3570,7 +3570,16 @@ function createNotificationWorkspaceFiles(opaque: boolean): Record<string, strin
   const providerData = opaque ? 'readonly data?: unknown;' : '';
   return {
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
-    '/flight/packages/types/src/Notification.ts': `export type NotificationData = boolean | number | string | null;
+    '/flight/packages/types/src/Notification.ts': `export type NotificationData =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly NotificationData[]
+  | Readonly<NotificationDataFields>;
+export interface NotificationDataFields {
+  readonly [name: string]: NotificationData;
+}
 export interface NotificationRequest { data?: ${dataType} }
 export interface WebNotificationOptions { data?: ${dataType} }
 export interface WebServiceWorkerNotificationInstance {
@@ -3579,6 +3588,7 @@ export interface WebServiceWorkerNotificationInstance {
 }`,
     '/flight/packages/types/src/index.ts': `export type {
   NotificationData,
+  NotificationDataFields,
   NotificationRequest,
   WebNotificationOptions,
   WebServiceWorkerNotificationInstance,

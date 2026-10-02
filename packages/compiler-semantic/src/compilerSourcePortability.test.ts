@@ -2141,7 +2141,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     const closed = input(
       'packages/types/src/Notification.ts',
-      `type NotificationData = boolean | number | string | null;
+      `type NotificationData =
+         | boolean
+         | number
+         | string
+         | null
+         | readonly NotificationData[]
+         | Readonly<NotificationDataFields>;
+       interface NotificationDataFields { readonly [name: string]: NotificationData }
        interface NotificationRequest { data?: NotificationData }
        interface WebNotificationOptions { data?: NotificationData }
        interface WebServiceWorkerNotificationInstance { readonly tag: string }`,
@@ -2162,15 +2169,24 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:WebNotificationOptions/property:data',
       'interface:WebServiceWorkerNotificationInstance/property:data',
     ]);
-    expect(report.findings[0]?.message).toContain('forward the same value through WebNotificationOptions.data');
-    expect(report.findings[0]?.message).toContain('ScheduledNotification can retain and return that request');
-    expect(report.findings[0]?.message).toContain('Non-web providers inspect request keys and reject data');
-    expect(report.findings[1]?.message).toContain('has one Flight producer');
-    expect(report.findings[1]?.message).toContain('same named closed NotificationData domain');
-    expect(report.findings[2]?.message).toContain('no Flight production path reads');
-    expect(report.findings[2]?.message).toContain('Remove data from this injected provider facade');
+    expect(report.findings[0]?.message).toContain('showNotification and scheduleNotification pass the exact request');
+    expect(report.findings[0]?.message).toContain('assign request.data unchanged');
+    expect(report.findings[0]?.message).toContain('Electron, Tauri, and Capacitor instead enumerate the request');
+    expect(report.findings[0]?.message).toContain('Capacitor pending-list reconstruction omits data');
+    expect(report.findings[0]?.message).toContain('initializeScheduledNotificationResource retains the exact');
+    expect(report.findings[0]?.message).toContain('boolean, number, string, null');
+    expect(report.findings[0]?.message).toContain('readonly NotificationData arrays');
+    expect(report.findings[0]?.message).toContain('preserve null as a present scalar');
+    expect(report.findings[1]?.message).toContain('toWebNotificationOptions and toServiceWorkerNotificationOptions');
+    expect(report.findings[1]?.message).toContain('same recursive closed NotificationData scalar');
+    expect(report.findings[1]?.message).toContain('omission as no supplied data');
+    expect(report.findings[2]?.message).toContain('no Flight production path reads, stores, or returns');
+    expect(report.findings[2]?.message).toContain('WebServiceWorkerNotificationEvent with only notificationTag');
+    expect(report.findings[2]?.message).toContain('web-page native-instance facade already omits data');
+    expect(report.findings[2]?.message).toContain('Remove data from WebServiceWorkerNotificationInstance');
+    expect(report.findings[2]?.message).toContain('stop populating it in the fake service-worker provider');
     for (const finding of report.findings) {
-      expect(finding.message).toContain('named closed NotificationData domain');
+      expect(finding.message).toContain('recursive closed NotificationData');
       expect(finding.message).toContain('Do not whitelist');
       expect(finding.message).not.toContain('reviewed source-portability exception');
       expect(finding.message).toContain('target-specific Any carrier');
