@@ -11647,6 +11647,42 @@ int main() {
     expect(contents).not.toContain('externalBindings');
   });
 
+  it('separates morph-gradient authoring omission from nullable sampled binding matrices', () => {
+    const result = lower(
+      'MorphShape.ts',
+      `export interface Matrix { a: number; b: number; c: number; d: number; tx: number; ty: number }
+       export interface CurrentMorphShapeGradientEndpoint {
+         readonly matrix?: Readonly<Matrix> | null;
+       }
+       export interface PortableMorphShapeGradientEndpoint {
+         readonly matrix?: Readonly<Matrix>;
+       }
+       export interface MorphShapeGradientPaintBinding {
+         readonly endMatrix: Readonly<Matrix> | null;
+         readonly startMatrix: Readonly<Matrix> | null;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain(
+      'std::variant<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Matrix>>>>, flight::Null, flight::Undefined> matrix =',
+    );
+    expect(contents).toContain(
+      'std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Matrix>>>>> matrix;',
+    );
+    expect(contents).toContain(
+      'std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Matrix>>>>> end_matrix;',
+    );
+    expect(contents).toContain(
+      'std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Matrix>>>>> start_matrix;',
+    );
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
+  });
+
   it('separates Scene3D document morph omission from the exact morph owner', () => {
     const result = lower(
       'Scene3DDocument.ts',

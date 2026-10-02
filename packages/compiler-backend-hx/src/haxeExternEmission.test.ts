@@ -75,6 +75,36 @@ describe('emitIrModuleHaxeExtern', () => {
     );
   });
 
+  it('separates morph-gradient authoring omission from nullable sampled binding matrices', () => {
+    const module = lower(
+      '@flighthq/types',
+      'MorphShape.ts',
+      `export interface Matrix { a: number; b: number; c: number; d: number; tx: number; ty: number }
+       export interface CurrentMorphShapeGradientEndpoint {
+         readonly matrix?: Readonly<Matrix> | null;
+       }
+       export interface PortableMorphShapeGradientEndpoint {
+         readonly matrix?: Readonly<Matrix>;
+       }
+       export interface MorphShapeGradientPaintBinding {
+         readonly endMatrix: Readonly<Matrix> | null;
+         readonly startMatrix: Readonly<Matrix> | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentMorphShapeGradientEndpoint.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableMorphShapeGradientEndpoint.hx').contents;
+    const binding = findFile(files, 'flight/_js/MorphShapeGradientPaintBinding.hx').contents;
+
+    expect(current).toContain('@:optional var matrix:Null<flight.Matrix>;');
+    expect(portable).toContain('@:optional var matrix:flight.Matrix;');
+    expect(portable).not.toContain('Null<flight.Matrix>');
+    expect(binding).toContain('var endMatrix:Null<flight.Matrix>;');
+    expect(binding).toContain('var startMatrix:Null<flight.Matrix>;');
+    expect(binding).not.toContain('@:optional');
+    expect(current + portable + binding).not.toContain('Dynamic');
+  });
+
   it('separates Scene2D resource input absence in Haxe without erasing the AudioContext owner', () => {
     const module = lower(
       '@flighthq/types',

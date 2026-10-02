@@ -8172,18 +8172,48 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('explainMorphShapeGradientEndpoints and getMorphShapeGradientEndpointIssue inspect only');
     expect(message).toContain('appendMorphShapeBeginGradientFill and appendMorphShapeLineGradientStyle both route');
     expect(message).toContain(
-      'appendMorphShapeGradientPaint, the sole endpoint-matrix reader, which evaluates start.matrix ?? null and end.matrix ?? null',
+      'appendMorphShapeGradientPaint, the sole endpoint-matrix reader, which borrows the two endpoint records only for that call',
     );
+    expect(message).toContain('evaluates start.matrix ?? null and end.matrix ?? null');
     expect(message).toContain('the absent side uses identityMatrix');
-    expect(message).toContain('both required binding fields receive independent clones');
-    expect(message).toContain('createSampledMatrix creates the separate mutable command clone');
+    expect(message).toContain('the two required binding fields independent Matrix owners');
+    expect(message).toContain('even when both endpoints named the same source');
+    expect(message).toContain('createSampledMatrix clones again for the separate mutable command owner');
     expect(message).toContain('MorphShapeGradientPaintBinding.startMatrix and endMatrix are both null');
     expect(message).toContain('a present identity matrix remains an authored value');
-    expect(message).toContain('sampleMorphShapePaintBinding, which interpolates only when the command matrix');
-    expect(message).toContain('clearShapeCommands and copyShapeCommands discard paint bindings');
+    expect(message).toContain('The endpoint records and their source Matrix owners are not retained');
+    expect(message).toContain(
+      'shallow-copies a caller-supplied binding array while preserving its binding and Matrix identities',
+    );
+    expect(message).toContain(
+      'sampleMorphShapePaintBinding, which reads the binding clones and mutates only the command matrix',
+    );
+    expect(message).toContain('createSwfMorphShapeTarget invokes the decoder for every placement');
+    expect(message).toContain('own independent MorphShape data, binding clones, and command matrices');
+    expect(message).toContain('Flight has no MorphShape clone helper');
+    expect(message).toContain('clearShapeCommands truncates commands and bindings together');
+    expect(message).toContain('copyShapeCommands copies the currently sampled token slots');
+    expect(message).toContain('preserves referenced Matrix and array owners');
+    expect(message).toContain("clears the target MorphShape's bindings");
+    expect(message).toContain('There is no MorphShape or Matrix disposal API');
+    expect(message).toContain('GL and WebGPU MorphShape renderer aliases share Shape cache teardown');
+    expect(message).toContain('Canvas, DOM, GL, and WebGPU renderer observes the sampled command stream');
     expect(message).toContain("binding's startMatrix and endMatrix fields required Readonly<Matrix> | null");
     expect(message).toContain('Declare MorphShapeGradientEndpoint.matrix as optional Readonly<Matrix> without null');
     expect(message).toContain('omission is the sole authoring-time absence');
+    expect(message).toContain(
+      'current endpoint is std::variant<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Matrix>>>>, flight::Null, flight::Undefined>',
+    );
+    expect(message).toContain('recommended optional-non-null endpoint');
+    expect(message).toContain(
+      'required-nullable binding fields use std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Matrix>>>>>',
+    );
+    expect(message).toContain('current endpoint is @:optional var matrix:Null<flight.Matrix>');
+    expect(message).toContain('recommended endpoint is @:optional var matrix:flight.Matrix');
+    expect(message).toContain('required var startMatrix:Null<flight.Matrix>');
+    expect(message).toContain('var endMatrix:Null<flight.Matrix>');
+    expect(message).toContain('source contract, not a compiler representation or host-binding gap');
+    expect(message).toContain('Matrix is a Flight-owned entity');
     expect(message).toContain('external compatibility input accepts explicit null');
     expect(message).toContain('one named closed endpoint state and resolve every arm');
     expect(message).toContain('Do not whitelist the redundant authoring spelling');
@@ -8192,7 +8222,9 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('infer the paired endpoint');
     expect(message).toContain('select or synthesize identityMatrix');
     expect(message).toContain('clone or materialize a Matrix');
-    expect(message).toContain('rewrite paint sampling, binding storage, command clearing, or renderer input');
+    expect(message).toContain('decide binding or command sharing');
+    expect(message).toContain('rewrite paint sampling, SWF placement construction, command copying or clearing');
+    expect(message).toContain('renderer input, cache teardown, or entity lifetime');
     expect(message).toContain('reinterpret or cast the value');
     expect(message).toContain('or add side storage');
   });
