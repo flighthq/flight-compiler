@@ -6789,6 +6789,131 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('traces WebGPU runtime inactive scratch and dead cache fields to exact remedies', () => {
+    const source = input(
+      'packages/types/src/WgpuRenderState.ts',
+      `interface WgpuRenderState {}
+       interface ColorScaleBias { readonly scale: number }
+       interface TintMaterialData { readonly tint: number }
+       type WgpuRenderTextureGuard = (state: WgpuRenderState) => void;
+       interface WgpuRenderStateRuntime {
+         wgpuRenderTextureGuard?: WgpuRenderTextureGuard | null;
+         quadBatchWriterUniformColorScaleBias?: ColorScaleBias | TintMaterialData | readonly number[] | null;
+         sceneMeshUploadCache?: WeakMap<object, object> | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['quadBatchWriterUniformColorScaleBias', 'sceneMeshUploadCache', 'wgpuRenderTextureGuard'].map((field) => ({
+        rule: 'mixed-absence',
+        subject: `interface:WgpuRenderStateRuntime/property:${field}`,
+      })),
+    );
+    const byField = new Map(findings.map((finding) => [finding.subject.split(':').at(-1), finding.message]));
+
+    const guard = byField.get('wgpuRenderTextureGuard')!;
+    expect(guard).toContain('opt-in WebGPU render-texture diagnostic guard both omission and explicit null');
+    expect(guard).toContain('one disabled state');
+    expect(guard).toContain('createWgpuRenderStateRuntimeInternal currently omits the slot');
+    expect(guard).toContain("createWgpuOffscreenRenderState copies the source runtime's exact guard value");
+    expect(guard).toContain('setWgpuRenderTextureGuard overwrites it with the exact guard or null');
+    expect(guard).toContain('render-texture notification optional-calls it');
+    expect(guard).toContain('required WgpuRenderTextureGuard | null field');
+    expect(guard).toContain('initialize it to null in createWgpuRenderStateRuntimeInternal');
+    expect(guard).toContain('retain the derived-state copy, nullable setter, and optional call');
+    expect(guard).toContain('changes no render-texture publication behavior');
+    expect(guard).toContain('will not choose or collapse an absence sentinel');
+    expect(guard).toContain('change derived-state policy inheritance');
+
+    const uniform = byField.get('quadBatchWriterUniformColorScaleBias')!;
+    expect(uniform).toContain("WebGPU quad batch's uniform color-adjustment scratch slot");
+    expect(uniform).toContain('quadBatchWriterColorScaleBiasMode is the authority');
+    expect(uniform).toContain('createWgpuRenderStateRuntimeInternal omits the slot');
+    expect(uniform).toContain('registerWgpuColorAdjustmentMaterialFeature initializes only the mode');
+    expect(uniform).toContain('recordWgpuColorAdjustment normalizes an absent mode to NONE');
+    expect(uniform).toContain('writes the exact ColorScaleBias, TintMaterialData, or readonly number[] owner');
+    expect(uniform).toContain('otherwise promotes directly without requiring a stored uniform');
+    expect(uniform).toContain('returns before reading it in NONE mode');
+    expect(uniform).toContain('uses the mode proof before its non-null read in UNIFORM mode');
+    expect(uniform).toContain('clears it to null after every non-empty flush');
+    expect(uniform).toContain('required ColorScaleBias | TintMaterialData | readonly number[] | null field');
+    expect(uniform).toContain('initialize it to null in createWgpuRenderStateRuntimeInternal');
+    expect(uniform).toContain('does not register the feature, import its scene2d-wgpu implementation');
+    expect(uniform).toContain('one named closed state whose uniform arm owns the exact adjustment value');
+    expect(uniform).toContain('will not choose or collapse an absence sentinel');
+    expect(uniform).toContain('copy or materialize adjustment data');
+
+    const cache = byField.get('sceneMeshUploadCache')!;
+    expect(cache).toContain('optional-null state-local scene mesh upload cache');
+    expect(cache).toContain('no producer or consumer reads or writes this WgpuRenderStateRuntime field');
+    expect(cache).toContain('stateRuntime.context.sceneMeshUploadCache on WgpuDeviceRuntime');
+    expect(cache).toContain('every derived render state shares that same device-tier context');
+    expect(cache).toContain('analogous GL accessor likewise uses its context-tier slot');
+    expect(cache).toContain('Remove sceneMeshUploadCache from WgpuRenderStateRuntime');
+    expect(cache).toContain('Keep the separately declared WgpuDeviceRuntime slot');
+    expect(cache).toContain('give it a distinct name, owner, initialization path, teardown policy, and consumers');
+    expect(cache).toContain('does not make an unread duplicate field meaningful');
+    expect(cache).toContain('will not choose or collapse an absence sentinel');
+    expect(cache).toContain('infer which ownership tier was intended');
+    expect(cache).toContain('erase object keys or values through Any');
+  });
+
+  it('keeps unrelated WebGPU runtime slots generic and accepts the exact remedies', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/WgpuRenderState.ts',
+        'interface WgpuRenderTextureGuard {} interface OtherWgpuRuntime { wgpuRenderTextureGuard?: WgpuRenderTextureGuard | null }',
+      ),
+      input(
+        'packages/example/src/WgpuRenderState.ts',
+        'interface WgpuRenderTextureGuard {} interface WgpuRenderStateRuntime { wgpuRenderTextureGuard?: WgpuRenderTextureGuard | null }',
+      ),
+      input(
+        'packages/types/src/WgpuRenderState.ts',
+        `interface ColorScaleBias {}
+         interface WgpuRenderStateRuntime {
+           savedUniformColorScaleBias?: ColorScaleBias | readonly number[] | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/WgpuRenderState.ts',
+        'interface WgpuRenderStateRuntime { sceneMeshUploadCache?: WeakMap<string, object> | null }',
+      ),
+    ];
+    const resolved = input(
+      'packages/types/src/WgpuRenderState.ts',
+      `interface ColorScaleBias {}
+       interface TintMaterialData {}
+       interface WgpuRenderTextureGuard {}
+       interface WgpuRenderStateRuntime {
+         wgpuRenderTextureGuard: WgpuRenderTextureGuard | null;
+         quadBatchWriterUniformColorScaleBias: ColorScaleBias | TintMaterialData | readonly number[] | null;
+       }`,
+    );
+    const omitted = input(
+      'packages/types/src/WgpuRenderState.ts',
+      `interface ColorScaleBias {}
+       interface TintMaterialData {}
+       interface WgpuRenderTextureGuard {}
+       interface WgpuRenderStateRuntime {
+         wgpuRenderTextureGuard?: WgpuRenderTextureGuard;
+         quadBatchWriterUniformColorScaleBias?: ColorScaleBias | TintMaterialData | readonly number[];
+         sceneMeshUploadCache?: WeakMap<object, object>;
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved, omitted]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('WebGPU render-texture diagnostic guard');
+      expect(findings[0]?.message).not.toContain("WebGPU quad batch's uniform color-adjustment scratch slot");
+      expect(findings[0]?.message).not.toContain('state-local scene mesh upload cache');
+    }
+  });
+
   it('explains normalized optional-null string inputs at their required-nullable boundaries', () => {
     const gltf = input(
       'packages/types/src/GltfExtension.ts',

@@ -426,6 +426,20 @@ function isOptionalNullableGlColorAdjustmentDataProperty(node: ts.PropertySignat
   return hasReadonlyNumberArray && names.size === 2 && names.has('ColorScaleBias') && names.has('TintMaterialData');
 }
 
+function isOptionalNullableObjectWeakMapProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  return (
+    ts.isTypeReferenceNode(type) &&
+    getNodeName(type.typeName) === 'WeakMap' &&
+    type.typeArguments?.length === 2 &&
+    type.typeArguments.every((argument) => argument.kind === ts.SyntaxKind.ObjectKeyword)
+  );
+}
+
 function isOptionalNullableReadonlyNamedTypeProperty(node: ts.PropertySignature, name: string): boolean {
   if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
   const present = getMixedAbsencePresentTypes(node.type);
@@ -831,6 +845,30 @@ function getGlRenderRuntimeInactiveSlotMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getWgpuRenderRuntimeMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'WgpuRenderStateRuntime' ||
+    !isFlightTypesSource(node, 'WgpuRenderState.ts')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field === 'wgpuRenderTextureGuard' && isOptionalNullableNamedTypeProperty(node, 'WgpuRenderTextureGuard')) {
+    return `${subject} gives the opt-in WebGPU render-texture diagnostic guard both omission and explicit null, but the represented runtime has one disabled state. createWgpuRenderStateRuntimeInternal currently omits the slot; createWgpuOffscreenRenderState copies the source runtime's exact guard value, setWgpuRenderTextureGuard overwrites it with the exact guard or null, and render-texture notification optional-calls it. Make wgpuRenderTextureGuard a required WgpuRenderTextureGuard | null field, initialize it to null in createWgpuRenderStateRuntimeInternal, and retain the derived-state copy, nullable setter, and optional call. Null initialization imports or installs no callback and changes no render-texture publication behavior. If disabled and not-yet-configured must differ, replace the sentinels with one named closed guard state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or install a diagnostic guard, invoke or synthesize a callback, widen its callable signature, change derived-state policy inheritance or render-texture publication, or add side storage.`;
+  }
+  if (field === 'quadBatchWriterUniformColorScaleBias' && isOptionalNullableGlColorAdjustmentDataProperty(node)) {
+    return `${subject} gives the WebGPU quad batch's uniform color-adjustment scratch slot both omission and explicit null, but quadBatchWriterColorScaleBiasMode is the authority and the represented scratch value has one empty state. createWgpuRenderStateRuntimeInternal omits the slot, while registerWgpuColorAdjustmentMaterialFeature initializes only the mode. recordWgpuColorAdjustment normalizes an absent mode to NONE, writes the exact ColorScaleBias, TintMaterialData, or readonly number[] owner only when the first adjusted instance selects UNIFORM mode, reads it through ?? null while comparing later instances, and otherwise promotes directly without requiring a stored uniform. resolveWgpuColorAdjustmentFlush returns before reading it in NONE mode, uses the mode proof before its non-null read in UNIFORM mode, and clears it to null after every non-empty flush. Make quadBatchWriterUniformColorScaleBias a required ColorScaleBias | TintMaterialData | readonly number[] | null field and initialize it to null in createWgpuRenderStateRuntimeInternal; preserve the mode as the state-machine discriminant and the null clear after flush. Initializing this header-owned scratch slot does not register the feature, import its scene2d-wgpu implementation, allocate storage, or retain its shader modules. If empty, uniform, and promoted storage need a stronger invariant, model the fold as one named closed state whose uniform arm owns the exact adjustment value. The compiler will not choose or collapse an absence sentinel, infer a fold mode or identity adjustment, register the feature, compile or bind a shader, copy or materialize adjustment data, reinterpret or cast an owner, or add side storage.`;
+  }
+  if (field === 'sceneMeshUploadCache' && isOptionalNullableObjectWeakMapProperty(node)) {
+    return `${subject} declares an optional-null state-local scene mesh upload cache, but no producer or consumer reads or writes this WgpuRenderStateRuntime field. getWgpuScene3DRuntime instead reads and lazily initializes stateRuntime.context.sceneMeshUploadCache on WgpuDeviceRuntime with == null, and every derived render state shares that same device-tier context; the analogous GL accessor likewise uses its context-tier slot rather than a render-state-runtime duplicate. Remove sceneMeshUploadCache from WgpuRenderStateRuntime. Keep the separately declared WgpuDeviceRuntime slot and its lazy WeakMap allocation as the single device-tier owner. If a future state-local cache is required, give it a distinct name, owner, initialization path, teardown policy, and consumers rather than shadowing the device cache. A compiler representation for null, undefined, or WeakMap does not make an unread duplicate field meaningful. The compiler will not choose or collapse an absence sentinel, infer which ownership tier was intended, redirect a field access to context, allocate or share a WeakMap, rewrite derived-state lifetime, erase object keys or values through Any, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getGlMeshProgramUniformLocationMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -1032,6 +1070,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (glRenderPassTracking) return glRenderPassTracking;
   const glRenderRuntimeInactiveSlot = getGlRenderRuntimeInactiveSlotMixedAbsencePropertyMessage(node, subject);
   if (glRenderRuntimeInactiveSlot) return glRenderRuntimeInactiveSlot;
+  const wgpuRenderRuntime = getWgpuRenderRuntimeMixedAbsencePropertyMessage(node, subject);
+  if (wgpuRenderRuntime) return wgpuRenderRuntime;
   const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
     node,
     subject,

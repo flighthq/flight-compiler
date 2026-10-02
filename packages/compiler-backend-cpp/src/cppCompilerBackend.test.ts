@@ -20170,7 +20170,11 @@ int main() {
     );
   });
 
-  it('proves WgpuRenderState local named WeakMap values and its opaque object cache', () => {
+  it('represents WgpuRenderState named WeakMap values and its authored opaque cache slot', () => {
+    // Representation is not ownership evidence: the current source never reads or writes the
+    // WgpuRenderStateRuntime sceneMeshUploadCache duplicate. Scene3D uses the separately declared
+    // WgpuDeviceRuntime slot through runtime.context. This control only proves that the backend preserves the
+    // authored carrier until the dead state-local declaration is removed.
     const result = lowerPackage(
       '@flighthq/types',
       'WgpuRenderState.ts',
