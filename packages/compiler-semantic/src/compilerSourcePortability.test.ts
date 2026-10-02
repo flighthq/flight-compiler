@@ -6478,6 +6478,112 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
   });
 
+  it('traces the slot-animation attachment table to one inert no-table sentinel', () => {
+    const mixed = input(
+      'packages/types/src/Skeleton2DSlotAnimationTarget.ts',
+      `interface Attachment2D { readonly kind: string }
+       interface Entity { readonly id: number }
+       interface Skeleton2DSlotAnimationTarget extends Entity {
+         attachments?: readonly (Attachment2D | null)[] | null;
+         kind: string;
+         path: 'Attachment' | 'Color';
+         slotIndex: number;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([mixed]).findings;
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: 'mixed-absence',
+      subject: 'interface:Skeleton2DSlotAnimationTarget/property:attachments',
+    });
+    const message = findings[0]!.message;
+    expect(message).toContain("live slot-animation target's attachment lookup table both omission and explicit null");
+    expect(message).toContain('every library construction path materializes the field and has one no-table state');
+    expect(message).toContain('createSkeleton2DSlotAnimationTarget defaults attachments to null');
+    expect(message).toContain('initializeSkeleton2DSlotAnimationTarget, which always assigns the exact argument');
+    expect(message).toContain('colour targets therefore store null');
+    expect(message).toContain('attachment targets produced by all three format importers receive a present table');
+    expect(message).toContain('Spine JSON and binary importers resolve names once against the setup skin');
+    expect(message).toContain('encode a missing name or unresolved attachment as track index -1');
+    expect(message).toContain('DragonBones preserves its positional display list, including null holes');
+    expect(message).toContain('gives each target a sliced table');
+    expect(message).toContain(
+      'cloneAnimationClip deep-copies each numeric track but reuses the exact opaque targetRef',
+    );
+    expect(message).toContain('no production path later replaces, clears, or mutates attachments');
+    expect(message).toContain('bindSkeleton2DSlotAttachment returns for either undefined or null');
+    expect(message).toContain('without changing the current slot');
+    expect(message).toContain('an empty table, or an in-range null entry writes null to slot.attachment');
+    expect(message).toContain(
+      'Make Skeleton2DSlotAnimationTarget.attachments a required readonly (Attachment2D | null)[] | null field',
+    );
+    expect(message).toContain('retain null as the sole no-table and inert-channel sentinel');
+    expect(message).toContain('present empty table and every positional null entry remain present lookup data');
+    expect(message).toContain('must not be normalized to null, filtered, reindexed, or replaced');
+    expect(message).toContain('structural or compatibility input permits omission');
+    expect(message).toContain('one named closed state');
+    expect(message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(message).toContain('C++ backend can already preserve the current null, undefined, exact readonly-array');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('synthesize or clear a slot value');
+    expect(message).toContain('change Step sampling or setup-skin resolution');
+    expect(message).toContain('allocate, copy, filter, reindex, or mutate the table');
+    expect(message).toContain('clone or materialize an Attachment2D owner');
+    expect(message).toContain('route elements through Any');
+    expect(message).toContain('reinterpret or cast the table');
+    expect(message).toContain('or add side storage');
+  });
+
+  it('requires the exact slot-animation table shape and accepts one live absence state', () => {
+    const controls = [
+      input(
+        'OtherSkeleton2DSlotAnimationTarget.ts',
+        'interface Skeleton2DSlotAnimationTarget { attachments?: readonly (Attachment2D | null)[] | null }',
+      ),
+      input(
+        'packages/types/src/Skeleton2DSlotAnimationTarget.ts',
+        'interface OtherTarget { attachments?: readonly (Attachment2D | null)[] | null }',
+      ),
+      input(
+        'packages/example/src/Skeleton2DSlotAnimationTarget.ts',
+        'interface Skeleton2DSlotAnimationTarget { attachments?: readonly (Attachment2D | null)[] | null }',
+      ),
+      input(
+        'packages/types/src/Skeleton2DSlotAnimationTarget.ts',
+        'interface Skeleton2DSlotAnimationTarget { table?: readonly (Attachment2D | null)[] | null }',
+      ),
+      input(
+        'packages/types/src/Skeleton2DSlotAnimationTarget.ts',
+        'interface Skeleton2DSlotAnimationTarget { attachments?: (Attachment2D | null)[] | null }',
+      ),
+      input(
+        'packages/types/src/Skeleton2DSlotAnimationTarget.ts',
+        'interface Skeleton2DSlotAnimationTarget { attachments?: readonly Attachment2D[] | null }',
+      ),
+      input(
+        'packages/types/src/Skeleton2DSlotAnimationTarget.ts',
+        'interface Skeleton2DSlotAnimationTarget { attachments?: ReadonlyArray<Attachment2D | null> | null }',
+      ),
+    ];
+    const resolved = input(
+      'packages/types/src/Skeleton2DSlotAnimationTarget.ts',
+      'interface Skeleton2DSlotAnimationTarget { attachments: readonly (Attachment2D | null)[] | null }',
+    );
+    const omitted = input(
+      'packages/types/src/Skeleton2DSlotAnimationTarget.ts',
+      'interface Skeleton2DSlotAnimationTarget { attachments?: readonly (Attachment2D | null)[] }',
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved, omitted]).findings).toEqual([]);
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain("slot-animation target's attachment lookup table");
+    }
+  });
+
   it('explains the construction-only absence contract for BitmapText numeric options', () => {
     const source = input(
       'packages/types/src/BitmapText.ts',

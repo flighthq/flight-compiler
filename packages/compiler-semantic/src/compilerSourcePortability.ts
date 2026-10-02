@@ -400,6 +400,22 @@ function getSlot2DMixedAbsencePropertyMessage(node: ts.PropertySignature, subjec
   return undefined;
 }
 
+function getSkeleton2DSlotAnimationTargetMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'Skeleton2DSlotAnimationTarget' ||
+    !isFlightTypesSource(node, 'Skeleton2DSlotAnimationTarget.ts') ||
+    getNodeName(node.name) !== 'attachments' ||
+    !isOptionalNullableReadonlyNullableNamedArrayProperty(node, 'Attachment2D')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the live slot-animation target's attachment lookup table both omission and explicit null, but every library construction path materializes the field and has one no-table state. createSkeleton2DSlotAnimationTarget defaults attachments to null and delegates to initializeSkeleton2DSlotAnimationTarget, which always assigns the exact argument; colour targets therefore store null, while attachment targets produced by all three format importers receive a present table. The Spine JSON and binary importers resolve names once against the setup skin, deduplicate exact Attachment2D owners, and encode a missing name or unresolved attachment as track index -1 rather than as an absent table. DragonBones preserves its positional display list, including null holes for unsupported displays, then gives each target a sliced table and maps a negative, out-of-range, or null display index to -1. cloneAnimationClip deep-copies each numeric track but reuses the exact opaque targetRef, so it also shares the target and table; no production path later replaces, clears, or mutates attachments. bindSkeleton2DSlotAttachment returns for either undefined or null without changing the current slot. With a present table and a nonempty track, however, a sampled -1 or out-of-range index, an empty table, or an in-range null entry writes null to slot.attachment, while an in-range owner installs that exact attachment. Make Skeleton2DSlotAnimationTarget.attachments a required readonly (Attachment2D | null)[] | null field, retain null as the sole no-table and inert-channel sentinel, and preserve the exact supplied table in the initializer and through clip cloning. A present empty table and every positional null entry remain present lookup data that can clear a sampled slot; they must not be normalized to null, filtered, reindexed, or replaced with another table. If a structural or compatibility input permits omission, give it a separate shape and normalize once to null before constructing the live target; if no table and an explicit disabled channel must differ, replace them with one named closed state and handle every arm. Do not whitelist the redundant live-storage spelling. The C++ backend can already preserve the current null, undefined, exact readonly-array, and nullable-element alternatives; that representation support does not choose the source contract's redundant no-table sentinel. The compiler will not choose or collapse an absence sentinel, infer or resolve an attachment, synthesize or clear a slot value, change Step sampling or setup-skin resolution, allocate, copy, filter, reindex, or mutate the table, clone or materialize an Attachment2D owner, route elements through Any, reinterpret or cast the table, or add side storage.`;
+}
+
 function getMeshGeometryOptionsMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -653,6 +669,29 @@ function isOptionalNullableReadonlyStringArrayProperty(node: ts.PropertySignatur
     ts.isArrayTypeNode(type.type) &&
     type.type.elementType.kind === ts.SyntaxKind.StringKeyword
   );
+}
+
+function isOptionalNullableReadonlyNullableNamedArrayProperty(node: ts.PropertySignature, name: string): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  if (
+    !ts.isTypeOperatorNode(type) ||
+    type.operator !== ts.SyntaxKind.ReadonlyKeyword ||
+    !ts.isArrayTypeNode(type.type)
+  ) {
+    return false;
+  }
+  let element = type.type.elementType;
+  while (ts.isParenthesizedTypeNode(element)) element = element.type;
+  if (!ts.isUnionTypeNode(element) || !hasNullType(element)) return false;
+  const elementPresent = getMixedAbsencePresentTypes(element);
+  if (elementPresent.length !== 1) return false;
+  let owner = elementPresent[0]!;
+  while (ts.isParenthesizedTypeNode(owner)) owner = owner.type;
+  return ts.isTypeReferenceNode(owner) && owner.typeArguments === undefined && getNodeName(owner.typeName) === name;
 }
 
 function isOptionalNullableNamedAndReadonlyNumberArrayUnionProperty(
@@ -1431,6 +1470,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (skeleton2D) return skeleton2D;
   const slot2D = getSlot2DMixedAbsencePropertyMessage(node, subject);
   if (slot2D) return slot2D;
+  const skeleton2DSlotAnimationTarget = getSkeleton2DSlotAnimationTargetMixedAbsencePropertyMessage(node, subject);
+  if (skeleton2DSlotAnimationTarget) return skeleton2DSlotAnimationTarget;
   const meshGeometryOptions = getMeshGeometryOptionsMixedAbsencePropertyMessage(node, subject);
   if (meshGeometryOptions) return meshGeometryOptions;
   const meshGeometryFromAttributesOptions = getMeshGeometryFromAttributesOptionsMixedAbsencePropertyMessage(

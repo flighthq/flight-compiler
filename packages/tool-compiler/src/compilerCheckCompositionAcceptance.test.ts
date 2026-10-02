@@ -1810,6 +1810,84 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the slot-animation attachment-table absence finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createSkeleton2DSlotAnimationTargetWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'interface:Skeleton2DSlotAnimationTarget/property:attachments';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(
+      sourcePortability.findings.map(({ rule, subject: findingSubject }) => ({
+        rule,
+        subject: findingSubject,
+      })),
+    ).toEqual([{ rule: 'mixed-absence', subject }]);
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Make Skeleton2DSlotAnimationTarget.attachments a required readonly (Attachment2D | null)[] | null field',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('present empty table and every positional null entry');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
+    expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createSkeleton2DSlotAnimationTargetWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the three mesh attribute input absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createMeshGeometryFromAttributesWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -5768,6 +5846,22 @@ export interface Slot2D {
   name${marker}: string | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { Slot2D } from './Slot2D.js';`,
+  };
+}
+
+function createSkeleton2DSlotAnimationTargetWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Skeleton2DSlotAnimationTarget.ts': `interface Attachment2D { readonly kind: string }
+interface Entity { readonly id: number }
+export interface Skeleton2DSlotAnimationTarget extends Entity {
+  attachments${marker}: readonly (Attachment2D | null)[] | null;
+  kind: string;
+  path: 'Attachment' | 'Color';
+  slotIndex: number;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Skeleton2DSlotAnimationTarget } from './Skeleton2DSlotAnimationTarget.js';`,
   };
 }
 
