@@ -10693,6 +10693,31 @@ describe('emitIrModuleHaxe optional struct property', () => {
     ).contents;
     expect(output).toContain('= null');
   });
+
+  it('separates Canvas registry omission from an explicit-null callback arm', () => {
+    const source = (nullable: boolean): string => `export type BlendMode = 'normal' | 'add';
+export interface CanvasRenderState { readonly kind: string }
+export interface CanvasRenderRegistries {
+  blendModeApplication?: ((state: CanvasRenderState, blendMode: BlendMode | null) => void)${nullable ? ' | null' : ''};
+}`;
+    const current = emitIrModuleHaxe(
+      lowerPackage('@flighthq/types', 'CanvasRenderState.ts', source(true)).module,
+    ).contents;
+    const recommended = emitIrModuleHaxe(
+      lowerPackage('@flighthq/types', 'CanvasRenderState.ts', source(false)).module,
+    ).contents;
+
+    expect(current).toContain(
+      'typedef CanvasRenderRegistries = { ?blendModeApplication:Null<(CanvasRenderState, Null<BlendMode>)->Void> };',
+    );
+    expect(recommended).toContain(
+      'typedef CanvasRenderRegistries = { ?blendModeApplication:(CanvasRenderState, Null<BlendMode>)->Void };',
+    );
+    for (const emitted of [current, recommended]) {
+      expect(emitted).not.toContain('Dynamic');
+      expect(emitted).not.toContain('cast(');
+    }
+  });
 });
 
 describe('emitIrModuleHaxe template expression', () => {

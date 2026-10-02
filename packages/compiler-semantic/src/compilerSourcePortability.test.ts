@@ -8264,29 +8264,66 @@ describe('analyzeTypeScriptSourcePortability', () => {
       subject: 'interface:CanvasRenderRegistries/property:blendModeApplication',
     });
     expect(finding?.message).toContain(
-      "gives the Canvas pipeline's blend-mode application policy both omission and explicit null",
+      "gives the Canvas pipeline's construction-time blend-mode application policy both omission and explicit null",
     );
-    expect(finding?.message).toContain('allocateEmptyCanvasRenderRegistries leaves the property omitted');
     expect(finding?.message).toContain(
-      'defaultScene2DCanvasRenderRegistries supplies the exact applyCanvasBlendMode function',
+      'allocateEmptyCanvasRenderRegistries calls initializeEmptyCanvasRenderRegistries',
     );
-    expect(finding?.message).toContain('no producer writes null');
+    expect(finding?.message).toContain(
+      'initializes the other registry members and leaves blendModeApplication omitted',
+    );
+    expect(finding?.message).toContain(
+      'defaultScene2DCanvasRenderRegistries spreads one such aggregate and is the only production writer',
+    );
+    expect(finding?.message).toContain('installs the exact applyCanvasBlendMode function');
+    expect(finding?.message).toContain('no importer, document materializer, serializer, or other producer writes null');
+    expect(finding?.message).toContain('retains that exact input owner in state.registries');
+    expect(finding?.message).toContain('shallow-copies its members into CanvasRenderStateRuntime.registries');
     expect(finding?.message).toContain('registries.blendModeApplication ?? null');
     expect(finding?.message).toContain('required nullable CanvasRenderState.applyBlendMode hook');
-    expect(finding?.message).toContain('Canvas draw paths optional-call that live hook');
-    expect(finding?.message).toContain('enableCanvasBlendMode may install applyCanvasBlendMode later');
+    expect(finding?.message).toContain('one function identity across both registry owners and the live hook');
+    expect(finding?.message).toContain(
+      'createCanvasOffscreenRenderState and createCanvasCacheState are fresh-state factories',
+    );
+    expect(finding?.message).toContain('There is no cloneCanvasRenderState or cloneCanvasRenderRegistries path');
+    expect(finding?.message).toContain('registry field has no post-construction reader or writer');
+    expect(finding?.message).toContain('Canvas draw paths optional-call the live hook');
+    expect(finding?.message).toContain('applyCanvasBlendMode updates only runtime.currentBlendMode');
+    expect(finding?.message).toContain(
+      'enableCanvasBlendMode may later install the exact applyCanvasBlendMode function',
+    );
+    expect(finding?.message).toContain('does not mutate either registry owner');
+    expect(finding?.message).toContain('destroyCanvasRenderState is idempotent');
+    expect(finding?.message).toContain('does not clear state.applyBlendMode, state.registries');
+    expect(finding?.message).toContain('ordinary function owner with no host or native teardown');
     expect(finding?.message).toContain(
       'Make CanvasRenderRegistries.blendModeApplication an optional non-null function',
     );
+    expect(finding?.message).toContain('keep CanvasRenderState.applyBlendMode required nullable');
     expect(finding?.message).toContain('existing CanvasRenderState and BlendMode | null parameters');
-    expect(finding?.message).toContain('Preserve the exact present function owner');
-    expect(finding?.message).toContain('runtime registry copies');
+    expect(finding?.message).toContain('Preserve the exact function owner');
+    expect(finding?.message).toContain('both construction snapshots');
+    expect(finding?.message).toContain('?blendModeApplication:Null<(CanvasRenderState, Null<BlendMode>)->Void>');
+    expect(finding?.message).toContain('optional non-null source contract removes the outer Null');
+    expect(finding?.message).toContain(
+      'std::variant<std::function<void(flight::Ref<CanvasRenderState>, std::optional<flight::String>)>, flight::Null, flight::Undefined>',
+    );
+    expect(finding?.message).toContain(
+      'std::optional<std::function<void(flight::Ref<CanvasRenderState>, std::optional<flight::String>)>>',
+    );
+    expect(finding?.message).toContain('callback carrier itself needs no Any, cast, or external binding');
+    expect(finding?.message).toContain('canvas and context handles are a separate host-binding concern');
     expect(finding?.message).toContain('normalize it once to omission before constructing the pipeline');
     expect(finding?.message).toContain('unchanged, disabled, and installed policy');
     expect(finding?.message).toContain('Do not whitelist the redundant registry spelling');
     expect(finding?.message).toContain('will not choose or collapse an absence sentinel');
     expect(finding?.message).toContain('call or bind the policy');
     expect(finding?.message).toContain('re-parameterize the callback');
+    expect(finding?.message).toContain('retain or copy a registry');
+    expect(finding?.message).toContain('create an offscreen or cache state');
+    expect(finding?.message).toContain('mutate or clone a live hook');
+    expect(finding?.message).toContain('clear or retain a disposal reference');
+    expect(finding?.message).toContain('fabricate a host binding');
     expect(finding?.message).toContain('route the function through Any');
     expect(finding?.message).toContain('or add side storage');
   });

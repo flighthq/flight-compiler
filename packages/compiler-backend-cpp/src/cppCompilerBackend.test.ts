@@ -13257,6 +13257,30 @@ export function use(r: WithHostHandle, state: GlRenderState): void { r.customSha
     expect(hostHandle.message).toContain('WebGLProgram');
   });
 
+  it('separates Canvas registry omission from an explicit-null callback arm', () => {
+    const source = (nullable: boolean): string => `export type BlendMode = 'normal' | 'add';
+export interface CanvasRenderState { readonly kind: string }
+export interface CanvasRenderRegistries {
+  blendModeApplication?: ((state: CanvasRenderState, blendMode: BlendMode | null) => void)${nullable ? ' | null' : ''};
+}`;
+    const current = emitIrModuleCpp(lowerPackage('@flighthq/types', 'CanvasRenderState.ts', source(true)).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    const recommended = emitIrModuleCpp(lowerPackage('@flighthq/types', 'CanvasRenderState.ts', source(false)).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    const callback = 'std::function<void(flight::Ref<CanvasRenderState>, std::optional<flight::String>)>';
+
+    expect(current).toContain(`std::variant<${callback}, flight::Null, flight::Undefined> blend_mode_application`);
+    expect(recommended).toContain(`std::optional<${callback}> blend_mode_application;`);
+    for (const emitted of [current, recommended]) {
+      expect(emitted).not.toContain('flight::Any');
+      expect(emitted).not.toContain('static_cast');
+      expect(emitted).not.toContain('reinterpret_cast');
+      expect(emitted).not.toContain('externalBindings');
+    }
+  });
+
   it('separates a mixed-absence guard member from an opaque adapter member', () => {
     // WgpuScene3DRuntime carries both families side by side, which is what the lane asked to separate. They
     // render differently and behave differently, so the control pins both rather than describing them: an

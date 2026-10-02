@@ -5654,6 +5654,15 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       { rule: 'mixed-absence', subject: expectedSubject },
     ]);
     expect(sourcePortability.findings[0]?.message).toContain('registries.blendModeApplication ?? null');
+    expect(sourcePortability.findings[0]?.message).toContain('retains that exact input owner in state.registries');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'There is no cloneCanvasRenderState or cloneCanvasRenderRegistries path',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('destroyCanvasRenderState is idempotent');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'optional non-null source contract removes the outer Null',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('recommended contract uses std::optional<std::function');
     expect(sourcePortability.findings[0]?.message).toContain(
       'Make CanvasRenderRegistries.blendModeApplication an optional non-null function',
     );
@@ -5678,6 +5687,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 1,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createCanvasRenderStateWorkspaceFiles(false));
