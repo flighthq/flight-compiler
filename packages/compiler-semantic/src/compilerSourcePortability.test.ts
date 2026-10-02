@@ -6298,24 +6298,40 @@ describe('analyzeTypeScriptSourcePortability', () => {
     for (const [index, finding] of findings.entries()) {
       const name = ['maxLines', 'wrapWidth'][index];
       expect(finding.message).toContain(
-        `gives the BitmapText construction option ${name} both omission and explicit null`,
+        `gives the construction-only BitmapText option ${name} both omission and explicit null`,
       );
-      expect(finding.message).toContain('createBitmapText applies this option only to fresh BitmapTextData');
+      expect(finding.message).toContain('BitmapTextOptions has one production consumer and one not-supplied meaning');
       expect(finding.message).toContain(
-        'initializeBitmapTextData has already defaulted maxLines and wrapWidth to null',
-      );
-      expect(finding.message).toContain('applyBitmapTextOptions writes each field only when it is not undefined');
-      expect(finding.message).toContain('either absence spelling produces the same stored disabled state');
-      expect(finding.message).toContain('Keep BitmapTextData and the dedicated setters required nullable');
-      expect(finding.message).toContain(
-        'make maxLines and wrapWidth optional number fields in BitmapTextOptions so omission is the sole construction-time absence',
+        'createBitmapText allocates fresh BitmapTextData through createBitmapTextData and initializeBitmapTextData',
       );
       expect(finding.message).toContain(
-        'named closed update state whose unchanged, disabled, and numeric cases are explicit',
+        'applyBitmapTextOptions then overwrites each cell only when its option is not undefined',
       );
+      expect(finding.message).toContain('omission retains null and explicit null writes the same disabled value');
+      expect(finding.message).toContain(
+        'setBitmapTextMaxLines and setBitmapTextWrapWidth accept number | null and assign the required nullable live cells directly',
+      );
+      expect(finding.message).toContain(
+        'layoutBitmapTextLines treats null maxLines as unlimited and null wrapWidth as no word wrapping',
+      );
+      expect(finding.message).toContain('appendEllipsis trims the last visible line only against a present wrapWidth');
+      expect(finding.message).toContain(
+        'layoutBitmapTextPages uses a present wrapWidth as the alignment reference and requires it for justification',
+      );
+      expect(finding.message).toContain(
+        'Make maxLines and wrapWidth optional number fields in BitmapTextOptions, using omission as their sole construction-time absence',
+      );
+      expect(finding.message).toContain(
+        'keeping BitmapTextData and both dedicated setters required nullable so callers can disable an installed limit or width',
+      );
+      expect(finding.message).toContain('separate named closed update state and handle every arm');
+      expect(finding.message).toContain('Do not whitelist the redundant construction spelling');
+      expect(finding.message).toContain('will preserve every authored number and live null');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
-      expect(finding.message).toContain('zero is a present limit or width');
-      expect(finding.message).toContain('rewrite existing BitmapTextData, call a setter, or add side storage');
+      expect(finding.message).toContain('Zero remains a present limit or width');
+      expect(finding.message).toContain('rewrite existing BitmapTextData, call a setter, re-layout text');
+      expect(finding.message).toContain('change wrapping, truncation, ellipsis, alignment, or justification');
+      expect(finding.message).toContain('or add side storage');
     }
   });
 
@@ -6328,6 +6344,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const unrelatedLocation = input(
       'packages/example/src/BitmapText.ts',
       'interface BitmapTextOptions { wrapWidth?: number | null }',
+    );
+    const unrelatedType = input(
+      'packages/types/src/BitmapText.ts',
+      'interface BitmapTextOptions { maxLines?: Number | null }',
     );
     const splitContract = input(
       'BitmapTextSplit.ts',
@@ -6344,6 +6364,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       unrelatedOwner,
       unrelatedMember,
       unrelatedLocation,
+      unrelatedType,
       splitContract,
     ]).findings;
 
@@ -6366,8 +6387,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
         rule: 'mixed-absence',
         subject: 'interface:BitmapTextOptions/property:letterSpacing',
       },
+      {
+        message:
+          'interface:BitmapTextOptions/property:maxLines combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:BitmapTextOptions/property:maxLines',
+      },
     ]);
-    expect(findings.every((finding) => !finding.message.includes('BitmapText construction option'))).toBe(true);
+    expect(findings.every((finding) => !finding.message.includes('construction-only BitmapText option'))).toBe(true);
   });
 
   it('explains the construction-only absence contract for InteractionManager services', () => {

@@ -1733,6 +1733,113 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps both BitmapText construction-option findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createBitmapTextOptionsWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'interface:BitmapTextOptions/property:maxLines',
+      'interface:BitmapTextOptions/property:wrapWidth',
+    ];
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes(
+          'createBitmapText allocates fresh BitmapTextData through createBitmapTextData and initializeBitmapTextData',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes(
+          'setBitmapTextMaxLines and setBitmapTextWrapWidth accept number | null and assign the required nullable live cells directly',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes(
+          'layoutBitmapTextLines treats null maxLines as unlimited and null wrapWidth as no word wrapping',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes(
+          'Make maxLines and wrapWidth optional number fields in BitmapTextOptions, using omission as their sole construction-time absence',
+        ),
+      ),
+    ).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createBitmapTextOptionsWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps the Attachment2D authored-name finding source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createAttachment2DWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -3158,6 +3265,19 @@ export interface LoadScene2DAudioResourcesOptions {
   LoadScene2DAudioResourcesOptions,
   Scene2DDocumentLoadOptions,
 } from './Scene2DResources.js';`,
+  };
+}
+
+function createBitmapTextOptionsWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/BitmapText.ts': `export interface BitmapTextOptions {
+  align?: 'center' | 'justify' | 'left' | 'right';
+  maxLines?: number${nullable};
+  wrapWidth?: number${nullable};
+}`,
+    '/flight/packages/types/src/index.ts': `export type { BitmapTextOptions } from './BitmapText.js';`,
   };
 }
 
