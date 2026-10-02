@@ -14093,6 +14093,73 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // The @flighthq/entity guards.ts unchecked-double-assertion finding, at its two sites (lines 23 and 39 of
+  // that file). Both are the SAME shape inside a Proxy `set` trap: the trap reports the write through the
+  // diagnostics seam and then performs it, and the forwarding write reads
+  //   (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+  // -- one assertion to `unknown` and a second to an erased record, because `prop` is `string | symbol` and
+  // `target` is the generic handler target, which TypeScript will not index dynamically without one.
+  //
+  // It is a TRUE COMPILER RESTRICTION, not a missing lowering: the rule is
+  // `cpp-erased-record-assertion-unrepresented`, because the assertion hides the carrier the value actually
+  // has -- here `flight::ErasedRef` -- and then names an erased record the value is not. A cast cannot restore
+  // a carrier the source erased, and the compiler will not guess which one to recover.
+  it('refuses the erased-record assertion that hides the source carrier', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'guarded-entity-write.ts',
+          `export function put(target: object, prop: string, value: unknown): void {
+             (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    expect(failure.rule).toBe('cpp-erased-record-assertion-unrepresented');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('an erased assertion hides the represented source carrier');
+  });
+
+  // The assertion-free operation the lane asked about: a receiver DECLARED as the record it is written as.
+  // Nothing is asserted, the key stays dynamic, and the write lowers to the record's own checked set -- so
+  // the source has a spelling that needs no cast, and the refusal above is about the cast rather than about
+  // a write the target cannot perform. `Reflect.set` is the other named operation, and it does not help
+  // today: it is an unbound runtime symbol rather than an assertion-free lowering.
+  it('emits a declared record receiver where the erased assertion was refused', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'declared-record-write.ts',
+        `export function put(target: Record<string, unknown>, prop: string, value: unknown): void {
+           target[prop] = value;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(contents).toContain('flight::Record<flight::String, flight::Any> target');
+    expect(contents).toContain('target.set(prop, assignment_value)');
+    expect(contents).not.toContain('static_cast');
+
+    // Reflect.set is a named operation, but it is a runtime symbol before it is anything else, so it trades
+    // a source-portability refusal for a target-runtime binding gap rather than removing the boundary.
+    const reflect = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'reflect-set-write.ts',
+          `export function put(target: object, prop: string, value: unknown): void {
+             Reflect.set(target, prop, value);
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(reflect.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(reflect.classification).toBe('target-runtime');
+    expect(reflect.message).toContain('missing: Reflect[value]');
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
