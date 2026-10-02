@@ -2126,6 +2126,88 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the native surface handle finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNativeSurfaceHandleWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'type:NativeSurfaceHandle';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toMatchObject([{ rule: 'opaque-value-domain', subject }]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'public capability returns and surface-adoption parameters',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('required package-private SurfaceRuntime.handle');
+    expect(sourcePortability.findings[0]?.message).toContain('fresh HTMLCanvasElement');
+    expect(sourcePortability.findings[0]?.message).toContain('unknown absorbs null');
+    expect(sourcePortability.findings[0]?.message).toContain('reference-shaped target-token contract');
+    expect(sourcePortability.findings[0]?.message).toContain("Entity & { readonly __brand: 'NativeSurfaceHandle' }");
+    expect(sourcePortability.findings[0]?.message).toContain('provider-private WeakMap');
+    expect(sourcePortability.findings[0]?.message).toContain('null an unambiguous allocation-failure sentinel');
+    expect(sourcePortability.findings[0]?.message).toContain('Unknown or foreign tokens resolve to null');
+    expect(sourcePortability.findings[0]?.message).toContain('token-to-pointer, object, or integer table');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
+    expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createNativeSurfaceHandleWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the three log transport domains source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createLogWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4433,6 +4515,19 @@ ${capability}`,
     '/flight/packages/types/src/index.ts': opaque
       ? `export type { HostImageSource, HostVideoCapability } from './HostVideo.js';`
       : `export type { HostImageSource, VideoCapabilityBackend } from './VideoCapabilityBackend.js';`,
+  };
+}
+
+function createNativeSurfaceHandleWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const handle = opaque ? 'unknown' : "Entity & { readonly __brand: 'NativeSurfaceHandle' }";
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Surface.ts': `export interface Entity { readonly uid: string }
+export type NativeSurfaceHandle = ${handle};
+export interface SurfaceRuntime {
+  readonly handle: NativeSurfaceHandle;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Entity, NativeSurfaceHandle, SurfaceRuntime } from './Surface.js';`,
   };
 }
 

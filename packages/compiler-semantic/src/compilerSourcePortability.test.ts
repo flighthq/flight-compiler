@@ -2681,7 +2681,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(1);
   });
 
-  it('replaces native-window and video erasure while keeping drawable identity provider-local', () => {
+  it('replaces native-window, surface, and video erasure with provider-owned typed boundaries', () => {
     const windowHandle = input('packages/types/src/AppWindow.ts', 'type NativeWindowHandle = unknown;');
     const videoStream = input(
       'packages/types/src/HostVideo.ts',
@@ -2704,7 +2704,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ),
       input(
         'packages/types/src/Surface.ts',
-        "interface NativeSurfaceHandle { readonly __brand: 'NativeSurfaceHandle' }",
+        "type NativeSurfaceHandle = Entity & { readonly __brand: 'NativeSurfaceHandle' };",
       ),
     ];
     const controls = [
@@ -2733,6 +2733,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:HostVideoCapability/method:attachStream.parameter:stream',
       'type:NativeSurfaceHandle',
     ]);
+    expect(report.acceptedExceptions).toEqual([]);
     expect(report.findings[0]?.message).toContain('isWebWindow, isElectronBrowserWindow, and isTauriWindow');
     expect(report.findings[0]?.message).toContain('target-token contract');
     expect(report.findings[0]?.message).toContain("Entity & { readonly __brand: 'NativeWindowHandle' }");
@@ -2760,12 +2761,36 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings[1]?.message).toContain('no native stream adapter or erased compiler carrier is needed');
     expect(report.findings[1]?.message).toContain('Do not whitelist');
     expect(report.findings[1]?.message).not.toContain('reviewed source-portability exception');
-    expect(report.findings[2]?.message).toContain('only in package-private SurfaceRuntime');
-    expect(report.findings[2]?.message).toContain('genuinely provider-opaque');
-    expect(report.findings[2]?.message).toContain('reviewed source-portability exception for this exact');
+    expect(report.findings[2]?.message).toContain('public capability returns and surface-adoption parameters');
+    expect(report.findings[2]?.message).toContain(
+      'HostCanvasCapability.create, HostGlCapability.create, and HostWgpuCapability.create',
+    );
+    expect(report.findings[2]?.message).toContain(
+      'createCanvasSurfaceFromNativeHandle, createGlSurfaceFromNativeHandle, and createWgpuSurfaceFromNativeHandle',
+    );
+    expect(report.findings[2]?.message).toContain('required package-private SurfaceRuntime.handle');
+    expect(report.findings[2]?.message).toContain('getSurfaceHandle returns it unchanged');
+    expect(report.findings[2]?.message).toContain('only concrete production implementation');
+    expect(report.findings[2]?.message).toContain('fresh HTMLCanvasElement');
+    expect(report.findings[2]?.message).toContain('createWebSurfaceFromElement adopts an HTMLElement');
+    expect(report.findings[2]?.message).toContain('erasure admits string, object, integer, and null storage');
+    expect(report.findings[2]?.message).toContain('unknown absorbs null');
+    expect(report.findings[2]?.message).toContain('all three create paths branch on null');
+    expect(report.findings[2]?.message).toContain('reference-shaped target-token contract');
+    expect(report.findings[2]?.message).toContain("Entity & { readonly __brand: 'NativeSurfaceHandle' }");
+    expect(report.findings[2]?.message).toContain('createWebNativeSurfaceHandle');
+    expect(report.findings[2]?.message).toContain('provider-private WeakMap');
+    expect(report.findings[2]?.message).toContain('null an unambiguous allocation-failure sentinel');
+    expect(report.findings[2]?.message).toContain('Unknown or foreign tokens resolve to null');
+    expect(report.findings[2]?.message).toContain('token-to-pointer, object, or integer table');
+    expect(report.findings[2]?.message).toContain('needs no Any alternative or new compiler runtime binding');
+    expect(report.findings[2]?.message).toContain('Do not whitelist the erased alias');
+    expect(report.findings[2]?.message).not.toContain('reviewed source-portability exception');
     expect(report.findings[2]?.message).toContain('target-specific Any carrier');
-    expect(report.findings[2]?.message).toContain('insert a cast');
-    expect(report.findings[2]?.message).toContain('copy or materialize the drawable');
+    expect(report.findings[2]?.message).toContain('retain or insert a cast');
+    expect(report.findings[2]?.message).toContain('allocate or brand a token');
+    expect(report.findings[2]?.message).toContain('change surface ownership, lifetime, acquisition');
+    expect(report.findings[2]?.message).toContain('copy or materialize the native drawable');
     expect(report.findings[0]?.message).toContain('target-specific Any carrier');
     expect(report.findings[0]?.message).toContain('retain or insert a cast');
     expect(report.findings[0]?.message).toContain('copy or materialize the native window');
@@ -2777,31 +2802,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
     for (const control of controls) {
       expect(
         analyzeTypeScriptSourcePortability([control]).findings.every(
-          ({ message }) => !message.includes('createWebNativeWindowHandle'),
+          ({ message }) =>
+            !message.includes('createWebNativeWindowHandle') && !message.includes('createWebNativeSurfaceHandle'),
         ),
       ).toBe(true);
     }
-
-    const reviewed = analyzeTypeScriptSourcePortability([surfaceHandle, videoStream, windowHandle], {
-      exceptionPolicy: {
-        exceptions: report.findings
-          .filter(({ subject }) => subject === 'type:NativeSurfaceHandle')
-          .map((finding) => ({
-            findingIdentity: finding.identity,
-            reason: 'The native identity is confined to its provider and never enters portable state or serialization.',
-            rule: 'opaque-value-domain' as const,
-          })),
-        schema: 'flight-compiler-source-portability-exceptions/1',
-      },
-    });
-    expect(reviewed.findings).toMatchObject([
-      { rule: 'opaque-value-domain', subject: 'type:NativeWindowHandle' },
-      {
-        rule: 'opaque-value-domain',
-        subject: 'interface:HostVideoCapability/method:attachStream.parameter:stream',
-      },
-    ]);
-    expect(reviewed.acceptedExceptions).toHaveLength(1);
   });
 
   it('requires network JSON responses to use a closed recursive value domain', () => {
