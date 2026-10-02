@@ -12010,6 +12010,45 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('names the representation a multi-alternative mixed-absence member needs', () => {
+    // MeshGeometryFromAttributesOptions is the SDK's shape: `indices?: readonly number[] | Uint16Array |
+    // Uint32Array | null`. Its declaration lowers, and every consumer read of it refuses -- and both of
+    // those refusals used to be unruled, so the ledger could not attribute them. The discriminator is the
+    // NUMBER of value alternatives, which the control beside them shows.
+    const options = `export interface Opts {
+  indices?: readonly number[] | Uint16Array | Uint32Array | null;
+  positions: readonly number[];
+}`;
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('mesh-options.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    const narrowed = refusal(`${options}
+export function f(o: Opts): number { const i = o.indices; if (i == null) return 0; return i.length; }`);
+    expect(narrowed.rule).toBe('cpp-dual-sentinel-multi-alternative-narrowing-unrepresented');
+    expect(narrowed.classification).toBe('source-portability');
+    expect(narrowed.message).toContain('one concrete representation');
+
+    const chained = refusal(`${options}
+export function f2(o: Opts): number { return o.indices?.length ?? 0; }`);
+    expect(chained.rule).toBe('cpp-optional-chain-multi-alternative-receiver-unrepresented');
+    expect(chained.classification).toBe('source-portability');
+
+    // The control that makes the guidance true: the same member with ONE representation lowers, read through
+    // a coalesce whose result is declared -- exactly what the messages tell the reader to write.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'mesh-single.ts',
+          `export interface Opts2 { readonly indices?: readonly number[] | null }
+export function f3(o: Opts2): number { const arr: readonly number[] = o.indices ?? []; return arr.length; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('coalesce_left');
+  });
+
   it('pins the shapes a mixed-absence argument conversion accepts and refuses', () => {
     // WgpuRenderState's record() parameter is the SDK's explicit mixed-absence shape:
     // `Bias | Tint | readonly number[] | null | undefined`. The declaration lowers; what a CALLER can write

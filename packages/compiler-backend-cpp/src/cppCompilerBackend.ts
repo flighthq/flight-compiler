@@ -12839,7 +12839,11 @@ function emitCppPresentBindingStorageValueCpp(
       ? plan.valueSlots.filter((slot) => slot.representationKey === narrowedSlot.representationKey)
       : plan.valueSlots;
     if (matchingSlots.length !== 1) {
-      emissionError(context, 'dual-sentinel presence narrowing requires one remaining C++ value domain');
+      emissionError(
+        context,
+        'dual-sentinel presence narrowing requires one remaining C++ value domain: the storage carries both null and undefined beside SEVERAL value alternatives, so a presence test leaves more than one possible value and the emitter has no single read to emit for it. Declare the member with one concrete representation -- `readonly number[]` rather than `readonly number[] | Uint16Array | Uint32Array` -- and read it through a coalesce whose result is declared; that shape lowers, which the control beside this rule shows',
+        'cpp-dual-sentinel-multi-alternative-narrowing-unrepresented',
+      );
     }
     context.includes.add('variant');
     return `std::get<${String(plan.valueSlots.indexOf(matchingSlots[0]!))}>(${binding})`;
@@ -28439,7 +28443,11 @@ function getOptionalPayloadTypeCpp(type: Readonly<IrType>, context: EmitContext)
   if (type.kind !== 'union') emissionError(context, 'optional chain receiver requires a nullable union type');
   const concrete = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
   if (concrete.length !== 1) {
-    emissionError(context, 'optional chain receiver requires one concrete nullable union member');
+    emissionError(
+      context,
+      'optional chain receiver requires one concrete nullable union member: `?.` asks the receiver for one operation, and a dual-sentinel storage holding several value alternatives has no single member for the question to reach. Declare the receiver with one concrete representation, or coalesce it into a declared result first',
+      'cpp-optional-chain-multi-alternative-receiver-unrepresented',
+    );
   }
   return concrete[0]!;
 }
@@ -31273,6 +31281,11 @@ const cppNullTaggedStoragePredicates: ReadonlyMap<string, string> = new Map([['f
 // the value the source wrote discards identity or type evidence the target representation needs, so the
 // fix is an explicit source conversion and the check report says which one.
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
+  // A dual-sentinel storage holding SEVERAL value alternatives has no single read or single receiver for a
+  // presence test to reach. The declaration is where that comes from and where the remedy is: one concrete
+  // representation, read through a coalesce whose result is declared.
+  'cpp-dual-sentinel-multi-alternative-narrowing-unrepresented',
+  'cpp-optional-chain-multi-alternative-receiver-unrepresented',
   // A dependent callable parameter pack the source buffers instead of forwarding. The pack forwards
   // perfectly into its own call, but naming it as storage would need the instantiation to name its
   // element types, and the source's `any[]` buffer would have to be erased or copied to hold it -- both
