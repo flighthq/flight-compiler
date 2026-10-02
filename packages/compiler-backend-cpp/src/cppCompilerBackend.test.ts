@@ -23954,6 +23954,37 @@ int main() {
     expect(resolvedEmission).not.toContain('host::');
   });
 
+  it('classifies the Skin skeleton root as a source sentinel rather than a runtime or host-binding gap', () => {
+    const current = lowerPackage(
+      '@flighthq/types',
+      'Skin.ts',
+      `export interface Node3D { readonly name: string | null }
+       export interface Skeleton3D { readonly joints: Node3D[] }
+       export interface Skin { skeleton: Skeleton3D; skeletonRoot?: Node3D | null }`,
+    );
+    const resolved = lowerPackage(
+      '@flighthq/types',
+      'Skin.ts',
+      `export interface Node3D { readonly name: string | null }
+       export interface Skeleton3D { readonly joints: Node3D[] }
+       export interface Skin { skeleton: Skeleton3D; skeletonRoot: Node3D | null }`,
+    );
+    const currentEmission = emitIrModuleCpp(current.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const resolvedEmission = emitIrModuleCpp(resolved.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect([...current.diagnostics, ...resolved.diagnostics]).toEqual([]);
+    expect(currentEmission).toContain(
+      'std::variant<flight::Ref<Node3D>, flight::Null, flight::Undefined> skeleton_root =',
+    );
+    expect(currentEmission).toContain('std::in_place_type<flight::Undefined>');
+    expect(resolvedEmission).toContain('std::optional<flight::Ref<Node3D>> skeleton_root;');
+    expect(resolvedEmission).not.toContain('flight::Undefined');
+    expect(resolvedEmission).not.toContain('host::');
+    expect(resolvedEmission).not.toContain('flight::Any');
+    expect(resolvedEmission).not.toContain('static_cast');
+    expect(resolvedEmission).not.toContain('reinterpret_cast');
+  });
+
   it('represents WgpuRenderState named WeakMap values and its authored opaque cache slot', () => {
     // Representation is not ownership evidence: the current source never reads or writes the
     // WgpuRenderStateRuntime sceneMeshUploadCache duplicate. Scene3D uses the separately declared

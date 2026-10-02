@@ -2022,6 +2022,79 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the Skin skeleton-root finding source-owned through strict check mode', () => {
+    const source = createMemoryWorkspaceSource(createSkinSkeletonRootWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'interface:Skin/property:skeletonRoot';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability).toMatchObject({ acceptedExceptions: [] });
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]).toMatchObject({ rule: 'mixed-absence', subject });
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'applyDocumentSkins is the sole production Skin materializer',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('Make Skin.skeletonRoot a required Node3D | null field');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createSkinSkeletonRootWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the Skeleton2D import draw-order finding source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createSkeleton2DImportDrawOrderWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -6475,6 +6548,20 @@ function createSkeleton3DNamesWorkspaceFiles(mixedAbsence: boolean): Record<stri
   names${marker}: readonly string[] | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { Skeleton3D } from './Skeleton3D.js';`,
+  };
+}
+
+function createSkinSkeletonRootWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Skin.ts': `export interface Node3D { readonly name: string | null }
+export interface Skeleton3D { readonly joints: Node3D[] }
+export interface Skin {
+  skeleton: Skeleton3D;
+  skeletonRoot${marker}: Node3D | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Node3D, Skeleton3D, Skin } from './Skin.js';`,
   };
 }
 

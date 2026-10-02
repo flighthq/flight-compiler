@@ -313,6 +313,22 @@ function getMeshDeformationMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getSkinSkeletonRootMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'Skin' ||
+    !isFlightTypesSource(node, 'Skin.ts') ||
+    getNodeName(node.name) !== 'skeletonRoot' ||
+    !isOptionalNullableExactNamedTypeProperty(node, 'Node3D')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the live Skin's borrowed skeleton-root reference both omission and explicit null, but current Flight has one no-root state. Skin is a plain structural binding rather than an Entity, importer record, or lifecycle owner. applyDocumentSkins is the sole production Skin materializer: for every Scene3DDocumentSkin it allocates one Skeleton3D, writes skeletonRoot: null, and shares that exact Skin across every live mesh that names the document table entry. Scene3DDocumentSkin carries only joint indices and inverse-bind matrices, so the assembler has no root index to resolve. The glTF skin handler maps joints and inverse-bind matrices but does not retain gltfSkin.skeleton; COLLADA parses an instance-controller skeleton identifier but does not carry it into the document skin; AWD2 and MD5 instead add their skeleton group to the ordinary scene hierarchy, and their assembly tests explicitly confirm that the live Skin root remains null. No production importer constructs a live Skin directly, and there is no Skin serializer or document clone. No production consumer reads skeletonRoot, and no mutator assigns, clears, or deletes it after materialization. Skinning, palette computation, format animation lookup, GL rendering, and WebGPU rendering read only skin.skeleton. cloneMesh shares the exact Skin and therefore any future root reference by identity. cloneSkeleton3D copies skeleton buffers and shares joint nodes, while cloneSkeleton3DJointHierarchy clones only the joint nodes and parent links whose parents are also joints; neither dedicated clone constructs a Skin, carries an external skeleton root, or changes cloneMesh's sharing contract. disposeNode3D recursively disposes a node through its scene-graph ownership without consulting or clearing a Skin reference, there is no Skin disposer, and disposeSkeleton3D clears joints and names without disposing joint nodes or a root; a skeleton root therefore remains scene-owned and must not be disposed implicitly through one of the meshes sharing the Skin. Make Skin.skeletonRoot a required Node3D | null field and retain null as the sole no-root state, matching the existing materializer and comments. If authored roots should survive import, separately extend Scene3DDocumentSkin with an explicit root-node index contract, have every format producer normalize its absent case, and make applyDocumentSkins resolve a valid built node or null before constructing the live Skin; do not infer a root from the joint hierarchy or repurpose the Skeleton3D owner. Haxe currently emits @:optional var skeletonRoot:Null<Node3D>; and the required-nullable rewrite removes only @:optional. C++ currently emits std::variant<flight::Ref<Node3D>, flight::Null, flight::Undefined>, while the rewrite emits std::optional<flight::Ref<Node3D>>; both use native Flight references with no external binding, Any route, or cast. Do not whitelist the redundant live-storage spelling. The compiler will not choose or collapse an absence sentinel, recover a root discarded by an importer, infer one from joints or scene ancestry, extend or resolve a document index, materialize, clone, share, clear, or dispose a Skin, Skeleton3D, joint, or root, change skinning or rendering, fabricate a host binding, reinterpret or cast the Node3D reference, or add side storage.`;
+}
+
 function getInstancedMeshRuntimeMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -1556,6 +1572,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (scene3DRenderProxy) return scene3DRenderProxy;
   const meshDeformation = getMeshDeformationMixedAbsencePropertyMessage(node, subject);
   if (meshDeformation) return meshDeformation;
+  const skinSkeletonRoot = getSkinSkeletonRootMixedAbsencePropertyMessage(node, subject);
+  if (skinSkeletonRoot) return skinSkeletonRoot;
   const instancedMeshRuntime = getInstancedMeshRuntimeMixedAbsencePropertyMessage(node, subject);
   if (instancedMeshRuntime) return instancedMeshRuntime;
   const scene3DDocumentMesh = getScene3DDocumentMeshMixedAbsencePropertyMessage(node, subject);

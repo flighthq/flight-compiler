@@ -6928,6 +6928,84 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the required-nullable contract for the live Skin skeleton root', () => {
+    const source = input(
+      'packages/types/src/Skin.ts',
+      `interface Node3D { readonly name: string | null }
+       interface Skeleton3D { readonly joints: Node3D[] }
+       interface Skin {
+         skeleton: Skeleton3D;
+         skeletonRoot?: Node3D | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: 'mixed-absence',
+      subject: 'interface:Skin/property:skeletonRoot',
+    });
+    const message = findings[0]!.message;
+    expect(message).toContain("live Skin's borrowed skeleton-root reference both omission and explicit null");
+    expect(message).toContain('plain structural binding rather than an Entity, importer record, or lifecycle owner');
+    expect(message).toContain('applyDocumentSkins is the sole production Skin materializer');
+    expect(message).toContain('writes skeletonRoot: null');
+    expect(message).toContain('shares that exact Skin across every live mesh');
+    expect(message).toContain('Scene3DDocumentSkin carries only joint indices and inverse-bind matrices');
+    expect(message).toContain('does not retain gltfSkin.skeleton');
+    expect(message).toContain('COLLADA parses an instance-controller skeleton identifier');
+    expect(message).toContain('AWD2 and MD5 instead add their skeleton group to the ordinary scene hierarchy');
+    expect(message).toContain('assembly tests explicitly confirm that the live Skin root remains null');
+    expect(message).toContain('No production consumer reads skeletonRoot');
+    expect(message).toContain('no mutator assigns, clears, or deletes it after materialization');
+    expect(message).toContain(
+      'Skinning, palette computation, format animation lookup, GL rendering, and WebGPU rendering',
+    );
+    expect(message).toContain('cloneMesh shares the exact Skin and therefore any future root reference by identity');
+    expect(message).toContain('cloneSkeleton3DJointHierarchy clones only the joint nodes');
+    expect(message).toContain('neither dedicated clone constructs a Skin, carries an external skeleton root');
+    expect(message).toContain('disposeNode3D recursively disposes a node through its scene-graph ownership');
+    expect(message).toContain('there is no Skin disposer');
+    expect(message).toContain('disposeSkeleton3D clears joints and names without disposing joint nodes or a root');
+    expect(message).toContain('Make Skin.skeletonRoot a required Node3D | null field');
+    expect(message).toContain('extend Scene3DDocumentSkin with an explicit root-node index contract');
+    expect(message).toContain('Haxe currently emits @:optional var skeletonRoot:Null<Node3D>;');
+    expect(message).toContain('std::variant<flight::Ref<Node3D>, flight::Null, flight::Undefined>');
+    expect(message).toContain('rewrite emits std::optional<flight::Ref<Node3D>>');
+    expect(message).toContain('no external binding, Any route, or cast');
+    expect(message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+  });
+
+  it('requires the exact Skin skeleton-root shape and accepts one sentinel', () => {
+    const unrelated = [
+      input('packages/types/src/Skin.ts', 'interface Node3D {} interface OtherSkin { skeletonRoot?: Node3D | null }'),
+      input('packages/example/src/Skin.ts', 'interface Node3D {} interface Skin { skeletonRoot?: Node3D | null }'),
+      input('packages/types/src/Skin.ts', 'interface Node3D {} interface Skin { root?: Node3D | null }'),
+      input('packages/types/src/Skin.ts', 'interface SceneNode {} interface Skin { skeletonRoot?: SceneNode | null }'),
+      input(
+        'packages/types/src/Skin.ts',
+        'interface Node3D<T> {} interface Skin { skeletonRoot?: Node3D<string> | null }',
+      ),
+    ];
+    const requiredNullable = input(
+      'packages/types/src/Skin.ts',
+      'interface Node3D {} interface Skin { skeletonRoot: Node3D | null }',
+    );
+    const optionalNonNull = input(
+      'packages/types/src/Skin.ts',
+      'interface Node3D {} interface Skin { skeletonRoot?: Node3D }',
+    );
+
+    expect(analyzeTypeScriptSourcePortability([requiredNullable, optionalNonNull]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain("live Skin's borrowed skeleton-root reference");
+    }
+  });
+
   it('explains the required-nullable contract for the live Skeleton3D name table', () => {
     const source = input(
       'packages/types/src/Skeleton3D.ts',

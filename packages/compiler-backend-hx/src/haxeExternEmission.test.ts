@@ -75,6 +75,24 @@ describe('emitIrModuleHaxeExtern', () => {
     );
   });
 
+  it('separates the current Skin root sentinels from required-nullable live storage', () => {
+    const module = lower(
+      '@flighthq/types',
+      'Skin.ts',
+      `export interface Node3D { readonly name: string | null; }
+       export interface Skeleton3D { readonly joints: Node3D[]; }
+       export interface CurrentSkin { skeleton: Skeleton3D; skeletonRoot?: Node3D | null; }
+       export interface PortableSkin { skeleton: Skeleton3D; skeletonRoot: Node3D | null; }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+
+    expect(findFile(files, 'flight/_js/CurrentSkin.hx').contents).toContain(
+      '@:optional var skeletonRoot:Null<flight.Node3D>;',
+    );
+    expect(findFile(files, 'flight/_js/PortableSkin.hx').contents).toContain('var skeletonRoot:Null<flight.Node3D>;');
+    expect(findFile(files, 'flight/_js/PortableSkin.hx').contents).not.toContain('@:optional var skeletonRoot');
+  });
+
   it('groups values from every package module into one deterministically ordered holder', () => {
     const distance = lower(
       '@flighthq/geometry',
