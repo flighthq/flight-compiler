@@ -5007,6 +5007,123 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([required, closed]).findings).toEqual([]);
   });
 
+  it('explains ClippingAttachment2D point storage from its skipped imports and split consumers', () => {
+    const source = input(
+      'packages/types/src/ClippingAttachment2D.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influenceCounts: Uint16Array; influences: Float32Array }
+       interface ClippingAttachment2D extends Attachment2D {
+         endSlotIndex: number;
+         kind: 'ClippingAttachment2D';
+         pointCount: number;
+         skin?: Skin2D | null;
+         vertices?: Float32Array | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['skin', 'vertices'].map((field) => ({
+        rule: 'mixed-absence',
+        subject: `interface:ClippingAttachment2D/property:${field}`,
+      })),
+    );
+    for (const finding of findings) {
+      expect(finding.message).toContain(
+        `ClippingAttachment2D.${finding.subject.endsWith(':skin') ? 'skin' : 'vertices'}`,
+      );
+      expect(finding.message).toContain('Current format parsers do not construct ClippingAttachment2D');
+      expect(finding.message).toContain('Spine JSON reports the attachment unsupported and returns null');
+      expect(finding.message).toContain('Spine binary consumes its end-slot and vertex payload');
+      expect(finding.message).toContain('DragonBones reports any non-image, non-mesh display unsupported');
+      expect(finding.message).toContain('only concrete constructor, a focused test helper');
+      expect(finding.message).toContain('using a Float32Array for a rigid polygon or null for an empty clip');
+      expect(finding.message).toContain('no current producer builds a weighted clip');
+      expect(finding.message).toContain('computeSkeleton2DClippingAttachmentVertices passes the pair unchanged');
+      expect(finding.message).toContain('a present skin would select weighted deformation and ignore vertices');
+      expect(finding.message).toContain('null and undefined vertices both cause no coordinate writes');
+      expect(finding.message).toContain("leave the caller's output unchanged");
+      expect(finding.message).toContain('getSkeleton2DClippingAttachmentSlotRange reads only endSlotIndex');
+      expect(finding.message).toContain('never observes either point-storage absence spelling');
+      expect(finding.message).toContain('explainSkeleton2DDeformLength uses the same weighted-first point dispatch');
+      expect(finding.message).toContain('Make ClippingAttachment2D.skin a required Skin2D | null field');
+      expect(finding.message).toContain('ClippingAttachment2D.vertices a required Float32Array | null field');
+      expect(finding.message).toContain('keep unsupported import paths returning null');
+      expect(finding.message).toContain('give them a separate shape and normalize once');
+      expect(finding.message).toContain('one named closed storage state');
+      expect(finding.message).toContain('Do not whitelist either redundant absence spelling');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('begin importing an unsupported attachment');
+      expect(finding.message).toContain('decode skipped vertices');
+      expect(finding.message).toContain('infer or change the deformation mode');
+      expect(finding.message).toContain('fabricate a Skin2D or vertex buffer');
+      expect(finding.message).toContain('apply a clip or build a ClipRegion');
+      expect(finding.message).toContain('consult or rewrite endSlotIndex');
+      expect(finding.message).toContain('resize or clear the output');
+      expect(finding.message).toContain('rewrite pointCount');
+      expect(finding.message).toContain('allocate or copy either owner');
+      expect(finding.message).toContain('route elements through Any');
+      expect(finding.message).toContain('reinterpret or cast storage');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps ClippingAttachment2D guidance exact and accepts required nullable or closed storage', () => {
+    const controls = [
+      input(
+        'packages/example/src/ClippingAttachment2D.ts',
+        `interface Attachment2D { kind: string }
+         interface Skin2D { influences: Float32Array }
+         interface ClippingAttachment2D extends Attachment2D {
+           skin?: Skin2D | null;
+           vertices?: Float32Array | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/ClippingAttachment2D.ts',
+        `interface Attachment2D { kind: string }
+         interface Skin2D { influences: Float32Array }
+         interface OtherClippingAttachment2D extends Attachment2D {
+           skin?: Skin2D | null;
+           vertices?: Float32Array | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/ClippingAttachment2D.ts',
+        `interface Attachment2D { kind: string }
+         interface Skin2D { influences: Float32Array }
+         interface ClippingAttachment2D extends Attachment2D {
+           skin?: Skin2D | null;
+           vertices?: number[] | null;
+         }`,
+      ),
+    ];
+    const required = input(
+      'packages/types/src/ClippingAttachment2D.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influences: Float32Array }
+       interface ClippingAttachment2D extends Attachment2D {
+         skin: Skin2D | null;
+         vertices: Float32Array | null;
+       }`,
+    );
+    const closed = input(
+      'packages/types/src/ClippingAttachment2D.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influences: Float32Array }
+       type ClippingPointStorage =
+         | { mode: 'empty' }
+         | { mode: 'weighted'; skin: Skin2D }
+         | { mode: 'rigid'; vertices: Float32Array };
+       interface ClippingAttachment2D extends Attachment2D { points: ClippingPointStorage }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability(controls).findings;
+
+    expect(findings).toHaveLength(6);
+    expect(findings.every((finding) => !finding.message.includes('clipping-polygon point contract'))).toBe(true);
+    expect(analyzeTypeScriptSourcePortability([required, closed]).findings).toEqual([]);
+  });
+
   it('explains MeshAttachment2D point storage from its importer and weighted-first contracts', () => {
     const source = input(
       'packages/types/src/MeshAttachment2D.ts',

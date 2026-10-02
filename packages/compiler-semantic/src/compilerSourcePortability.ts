@@ -418,6 +418,31 @@ function getBoundingBoxAttachment2DMixedAbsencePropertyMessage(
   return `${subject} gives BoundingBoxAttachment2D.${field} both omission and explicit null, but the bounding-box point contract gives those spellings one absence meaning. Current format parsers do not construct BoundingBoxAttachment2D: Spine JSON reports the attachment unsupported and returns null, Spine binary consumes and skips its vertex payload before returning null, and DragonBones reports any non-image, non-mesh display unsupported. The repository's only concrete constructor, a focused test helper, assigns both fields: skin null with a Float32Array for rigid points, a Skin2D with vertices null for weighted points, and null for both on an empty box. computeSkeleton2DBoundingBoxAttachmentVertices passes the pair unchanged to skinSkeleton2DAttachmentPoints: a present skin selects weighted deformation and ignores vertices; otherwise present vertices select rigid deformation, while null and undefined vertices both cause no coordinate writes and leave the caller's output unchanged. explainSkeleton2DDeformLength uses the same weighted-first dispatch and treats nullish vertices as zero addressed offsets. Make BoundingBoxAttachment2D.skin a required Skin2D | null field and BoundingBoxAttachment2D.vertices a required Float32Array | null field, initialize both on every future construction path, and keep unsupported import paths returning null rather than synthesizing an attachment. If external structural inputs must allow omission, give them a separate shape and normalize once before constructing the stored box. If weighted, rigid, empty, and not-yet-initialized must become distinct, replace the pair with one named closed storage state and handle every arm explicitly. Do not whitelist either redundant absence spelling. The compiler will not choose or collapse an absence sentinel, begin importing an unsupported attachment, decode skipped vertices, infer or change the deformation mode, fabricate a Skin2D or vertex buffer, resize or clear the output, rewrite pointCount, allocate or copy either owner, route elements through Any, reinterpret or cast storage, or add side storage.`;
 }
 
+function getClippingAttachment2DMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'ClippingAttachment2D' ||
+    !interfaceExtendsType(node.parent, 'Attachment2D') ||
+    !isFlightTypesSource(node, 'ClippingAttachment2D.ts')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field !== 'skin' && field !== 'vertices') return undefined;
+  const skin = getInterfaceProperty(node.parent, 'skin');
+  const vertices = getInterfaceProperty(node.parent, 'vertices');
+  if (
+    !isOptionalNullableNamedTypeProperty(skin, 'Skin2D') ||
+    !isOptionalNullableNamedTypeProperty(vertices, 'Float32Array')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives ClippingAttachment2D.${field} both omission and explicit null, but the clipping-polygon point contract gives those spellings one absence meaning. Current format parsers do not construct ClippingAttachment2D: Spine JSON reports the attachment unsupported and returns null, Spine binary consumes its end-slot and vertex payload before returning null, and DragonBones reports any non-image, non-mesh display unsupported. The repository's only concrete constructor, a focused test helper, assigns skin null and always writes vertices, using a Float32Array for a rigid polygon or null for an empty clip; no current producer builds a weighted clip. computeSkeleton2DClippingAttachmentVertices passes the pair unchanged to skinSkeleton2DAttachmentPoints: a present skin would select weighted deformation and ignore vertices; otherwise present vertices select rigid deformation, while null and undefined vertices both cause no coordinate writes and leave the caller's output unchanged. getSkeleton2DClippingAttachmentSlotRange reads only endSlotIndex and never observes either point-storage absence spelling. explainSkeleton2DDeformLength uses the same weighted-first point dispatch and treats nullish vertices as zero addressed offsets. Make ClippingAttachment2D.skin a required Skin2D | null field and ClippingAttachment2D.vertices a required Float32Array | null field, initialize both on every future construction path, and keep unsupported import paths returning null rather than synthesizing an attachment. If external structural inputs must allow omission, give them a separate shape and normalize once before constructing the stored clip. If weighted, rigid, empty, and not-yet-initialized must become distinct, replace the pair with one named closed storage state and handle every arm explicitly. Do not whitelist either redundant absence spelling. The compiler will not choose or collapse an absence sentinel, begin importing an unsupported attachment, decode skipped vertices, infer or change the deformation mode, fabricate a Skin2D or vertex buffer, apply a clip or build a ClipRegion, consult or rewrite endSlotIndex, resize or clear the output, rewrite pointCount, allocate or copy either owner, route elements through Any, reinterpret or cast storage, or add side storage.`;
+}
+
 function getMeshAttachment2DMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -1236,6 +1261,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (meshGeometryFromAttributesOptions) return meshGeometryFromAttributesOptions;
   const boundingBoxAttachment2D = getBoundingBoxAttachment2DMixedAbsencePropertyMessage(node, subject);
   if (boundingBoxAttachment2D) return boundingBoxAttachment2D;
+  const clippingAttachment2D = getClippingAttachment2DMixedAbsencePropertyMessage(node, subject);
+  if (clippingAttachment2D) return clippingAttachment2D;
   const meshAttachment2D = getMeshAttachment2DMixedAbsencePropertyMessage(node, subject);
   if (meshAttachment2D) return meshAttachment2D;
   const pathAttachment2D = getPathAttachment2DMixedAbsencePropertyMessage(node, subject);
