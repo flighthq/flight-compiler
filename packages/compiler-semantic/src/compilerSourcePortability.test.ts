@@ -3357,25 +3357,45 @@ describe('analyzeTypeScriptSourcePortability', () => {
     ]);
     const message = report.findings[0]?.message;
     expect(message).toContain('erases a contract that is already closed');
-    expect(message).toContain('initializes skinningAdapter to null');
+    expect(message).toContain('rather than preserving an intentional backend-private domain');
+    expect(message).toContain(
+      'stores one WgpuScene3DRuntime in a module-level WeakMap under the exact WgpuRenderState',
+    );
+    expect(message).toContain('initializes skinningAdapter: null');
+    expect(message).toContain('derived or offscreen states distinct adapter slots');
+    expect(message).toContain('share the device-tier mesh upload cache');
+    expect(message).toContain('No production clone, importer, serializer, or compatibility input');
     expect(message).toContain('registerWgpuGpuSkinning is the sole non-null producer');
     expect(message).toContain('module-level WGPU_SKINNING_ADAPTER singleton');
-    expect(message).toContain('No path clears or substitutes another value');
-    expect(message).toContain(
-      'plus four direct mesh-upload, mesh-selection, draw-bind-group, and pipeline-layout reads',
-    );
+    expect(message).toContain('repeated registration writes that same owner');
+    expect(message).toContain('no path clears it or substitutes another value');
+    expect(message).toContain('plus four direct reads in ensureWgpuMeshUpload');
+    expect(message).toContain('isWgpuMeshGpuSkinned, drawWgpuMeshSubset, and initializeWgpuMeshPipeline');
     expect(message).toContain('Classic, PBR, Shaded, Toon, and Unlit shader construction plus both shadow paths');
     expect(message).toContain('Type the runtime property directly as WgpuSkinningAdapter | null');
-    expect(message).toContain('remove all five casts while preserving the null checks and owner identity');
+    expect(message).toContain('remove all five casts while preserving every null check, exact singleton identity');
+    expect(message).toContain('scene3d-wgpu registers no Wgpu render-state teardown');
+    expect(message).toContain('destroyWgpuRenderState does not read or clear the adapter');
+    expect(message).toContain('destroyWgpuSkinPalette destroys and clears palette GPU resources');
+    expect(message).toContain('leaves this stateless module singleton in place');
+    expect(message).toContain('adapter owns no per-state GPU resource');
     expect(message).toContain('adjacent shaded-material cache values are genuinely backend-private unknowns');
     expect(message).toContain('WgpuSkinningAdapter is already a public closed interface in @flighthq/types');
-    expect(message).toContain('nullable interface reference without an Any carrier');
-    expect(message).toContain('A reviewed exception is not justified');
+    expect(message).toContain(
+      'std::optional<flight::Any> skinning_adapter to std::optional<flight::Ref<WgpuSkinningAdapter>> skinning_adapter',
+    );
+    expect(message).toContain(
+      'var skinningAdapter:Null<Dynamic> to var skinningAdapter:Null<flight.WgpuSkinningAdapter>',
+    );
+    expect(message).toContain('source-domain contract and not a representation or host-binding gap');
+    expect(message).toContain('Do not whitelist the erased adapter domain');
+    expect(message).toContain('reviewed exception is not justified');
     expect(message).toContain('target-specific Any carrier');
     expect(message).toContain('retain or insert a cast');
     expect(message).toContain('infer or install a skinning adapter');
     expect(message).toContain('invoke an adapter method');
     expect(message).toContain('copy or materialize the adapter');
+    expect(message).toContain('change registration or teardown');
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     for (const control of controls) {
       expect(
@@ -9310,19 +9330,46 @@ describe('analyzeTypeScriptSourcePortability', () => {
           expect(finding.message).toContain('no matching prepared forward-light list exists');
           expect(finding.message).toContain('the input has excess punctual lights');
         }
-        expect(finding.message).toContain('creates one runtime per WgpuRenderState');
         expect(finding.message).toContain(
-          'already initializes both customShaderGuard and forwardLightSelectionGuard to null',
+          'stores one WgpuScene3DRuntime in a module-level WeakMap under the exact WgpuRenderState',
         );
-        expect(finding.message).toContain('Each enable function overwrites its exact slot with one diagnostic closure');
-        expect(finding.message).toContain('no path clears or replaces either installed guard');
+        expect(finding.message).toContain('derived or offscreen state gets distinct guard slots');
+        expect(finding.message).toContain('shares the device-tier sceneMeshUploadCache');
+        expect(finding.message).toContain('no production clone, importer, serializer, or compatibility input');
+        expect(finding.message).toContain(
+          'eagerly assigns both customShaderGuard: null and forwardLightSelectionGuard: null',
+        );
+        expect(finding.message).toContain('enable function writes the module-level');
+        expect(finding.message).toContain('identity is reused across enabled states');
+        expect(finding.message).toContain('re-enabling overwrites the slot with that same owner');
+        expect(finding.message).toContain('no path clears it or substitutes a different callback');
+        expect(finding.message).toContain('scene3d-wgpu registers no Wgpu render-state teardown');
+        expect(finding.message).toContain('destroyWgpuRenderState therefore does not read or clear either guard');
+        expect(finding.message).toContain('explicit IBL, shadow, and skin-palette cleanup functions');
+        expect(finding.message).toContain('callbacks own no GPU resource');
+        expect(finding.message).toContain('until the state is garbage-collected');
         expect(finding.message).toContain(
           'Make both guard slots required fields with their exact callable type | null',
         );
-        expect(finding.message).toContain('preserving the two existing null initializers');
-        expect(finding.message).toContain('project the sole exact callable alternative');
-        expect(finding.message).toContain('assignments, comparisons, and optional calls');
-        expect(finding.message).toContain("does not choose the source contract's disabled sentinel");
+        expect(finding.message).toContain('preserve the two null initializers');
+        expect(finding.message).toContain('do not rewrite either as optional non-null');
+        const cppCallable =
+          field === 'customShaderGuard'
+            ? 'std::function<void(flight::Ref<WgpuRenderState>, flight::String, flight::Ref<WgpuCustomMaterialShaderSource>, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<CustomShaderMaterial>>>>)>'
+            : 'std::function<void(flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Scene3DLightsLike>>>>)>';
+        const haxeCallable =
+          field === 'customShaderGuard'
+            ? '(flight.WgpuRenderState, String, flight.WgpuCustomMaterialShaderSource, flight.CustomShaderMaterial)->Void'
+            : '(flight.Scene3DLightsLike)->Void';
+        expect(finding.message).toContain(
+          `std::variant<${cppCallable}, flight::Null, flight::Undefined> to std::optional<${cppCallable}>`,
+        );
+        expect(finding.message).toContain(
+          `@:optional var ${field}:Null<${haxeCallable}> to var ${field}:Null<${haxeCallable}>`,
+        );
+        expect(finding.message).toContain('not a representation or host-binding gap');
+        expect(finding.message).toContain('Do not whitelist the redundant live-runtime spelling');
+        expect(finding.message).toContain('alter teardown');
       }
       expect(finding.message).toContain('logging dependencies remain shakeable');
       expect(finding.message).toContain('one named closed guard state and handle every arm explicitly');

@@ -1708,6 +1708,135 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps all three WGPU Scene3D runtime findings source-owned through strict check mode', () => {
+    const source = createMemoryWorkspaceSource(createWgpuScene3DRuntimeWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expected = [
+      ['customShaderGuard', 'mixed-absence'],
+      ['forwardLightSelectionGuard', 'mixed-absence'],
+      ['skinningAdapter', 'opaque-value-domain'],
+    ] as const;
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expected.map(([field, rule]) => ({
+        rule,
+        subject: `interface:WgpuScene3DRuntime/property:${field}`,
+      })),
+    );
+    const messages = new Map(
+      sourcePortability.findings.map(({ message, subject }) => [subject.slice(subject.lastIndexOf(':') + 1), message]),
+    );
+    expect(messages.get('customShaderGuard')).toContain('std::variant<std::function<void(flight::Ref<WgpuRenderState>');
+    expect(messages.get('forwardLightSelectionGuard')).toContain(
+      '@:optional var forwardLightSelectionGuard:Null<(flight.Scene3DLightsLike)->Void>',
+    );
+    expect(messages.get('skinningAdapter')).toContain(
+      'std::optional<flight::Any> skinning_adapter to std::optional<flight::Ref<WgpuSkinningAdapter>> skinning_adapter',
+    );
+    expect(messages.get('skinningAdapter')).toContain(
+      'var skinningAdapter:Null<Dynamic> to var skinningAdapter:Null<flight.WgpuSkinningAdapter>',
+    );
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expected.map(([field, rule]) => ({
+        policyClass: 'source-portability',
+        rule,
+        sourceFindingSubject: `interface:WgpuScene3DRuntime/property:${field}`,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createWgpuScene3DRuntimeWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+    expect(portableSourcePortability).toMatchObject({ acceptedExceptions: [], findings: [] });
+    expect(portableReport.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 0,
+      directOccurrences: 0,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('keeps all five GlRenderState runtime absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createGlRenderStateWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -7056,6 +7185,32 @@ export interface GlScene3DRuntime {
   PbrExtension,
   Scene3DLightsLike,
 } from './GlScene3DRuntime.js';`,
+  };
+}
+
+function createWgpuScene3DRuntimeWorkspaceFiles(currentContracts: boolean): Record<string, string> {
+  const optional = currentContracts ? '?' : '';
+  const adapter = currentContracts ? 'unknown | null' : 'WgpuSkinningAdapter | null';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/WgpuScene3DRuntime.ts': `export interface WgpuRenderState { readonly kind: string }
+export interface WgpuCustomMaterialShaderSource { readonly wgsl: string }
+export interface CustomShaderMaterial { readonly key: string }
+export interface Scene3DLightsLike { readonly count: number }
+export interface WgpuSkinningAdapter { isGpuSkinned(mesh: object): boolean }
+export interface WgpuScene3DRuntime {
+  customShaderGuard${optional}: ((state: WgpuRenderState, shaderKey: string, source: WgpuCustomMaterialShaderSource, material: Readonly<CustomShaderMaterial>) => void) | null;
+  forwardLightSelectionGuard${optional}: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+  skinningAdapter: ${adapter};
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  CustomShaderMaterial,
+  Scene3DLightsLike,
+  WgpuCustomMaterialShaderSource,
+  WgpuRenderState,
+  WgpuScene3DRuntime,
+  WgpuSkinningAdapter,
+} from './WgpuScene3DRuntime.js';`,
   };
 }
 

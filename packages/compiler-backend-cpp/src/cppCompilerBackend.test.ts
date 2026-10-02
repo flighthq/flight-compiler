@@ -15322,18 +15322,20 @@ export interface WebServiceWorkerNotificationInstance { readonly data?: unknown;
     expect(closed).not.toContain('flight::Any');
   });
 
-  it('closes the WgpuScene3DRuntime set with its widest guard member', () => {
-    // The file's three findings are two mixed-absence guards and one opaque adapter. The preceding control
-    // already pins `forwardLightSelectionGuard` and `skinningAdapter`; this closes the set with the member
-    // that control did not carry -- `customShaderGuard`, whose callable takes FOUR parameters, two of them
-    // `Readonly<...>`. All three are represented, so there is nothing to classify as a source contract, a
-    // host binding, or an opaque domain: each spelling has its carrier and its call site lowers.
+  it('separates the WgpuScene3DRuntime guard sentinels from the closed skinning-adapter domain', () => {
+    // Representation proves target capacity, not the source contract. The paired emissions pin the exact
+    // narrower carrier for each source-owned remedy: required-nullable callables for the two one-sentinel
+    // guards, and the already-declared adapter interface instead of an erased value cell.
     const prelude = `export interface WgpuRenderState { readonly kind: string }
 export interface WgpuCustomMaterialShaderSource { readonly wgsl: string }
 export interface CustomShaderMaterial { readonly key: string }
-export interface Scene3DLightsLike { readonly count: number }`;
-    const members = `${prelude}
-export interface Spelled {
+export interface Scene3DLightsLike { readonly count: number }
+export interface WgpuSkinningAdapter { isGpuSkinned(mesh: object): boolean }`;
+    const current = emitIrModuleCpp(
+      lower(
+        'wgpu-scene3d-current.ts',
+        `${prelude}
+export interface CurrentWgpuScene3DRuntime {
   readonly customShaderGuard?:
     | ((
         state: WgpuRenderState,
@@ -15344,23 +15346,60 @@ export interface Spelled {
     | null;
   readonly forwardLightSelectionGuard?: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
   readonly skinningAdapter: unknown | null;
-}`;
-    const emitted = emitIrModuleCpp(lower('wgpu-scene3d-set.ts', members).module, {
-      runtimeProfile: 'flight-cpp',
-    }).contents;
-    // the four-parameter callable keeps every parameter type, including the Readonly material argument
-    expect(emitted).toContain('std::function<void(flight::Ref<WgpuRenderState>, flight::String');
-    // and the opaque adapter member keeps its erased carrier beside null alone
-    expect(emitted).toContain('std::optional<flight::Any> skinning_adapter;');
+}`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const portable = emitIrModuleCpp(
+      lower(
+        'wgpu-scene3d-portable.ts',
+        `${prelude}
+export interface PortableWgpuScene3DRuntime {
+  readonly customShaderGuard:
+    | ((
+        state: WgpuRenderState,
+        shaderKey: string,
+        source: WgpuCustomMaterialShaderSource,
+        material: Readonly<CustomShaderMaterial>,
+      ) => void)
+    | null;
+  readonly forwardLightSelectionGuard: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+  readonly skinningAdapter: WgpuSkinningAdapter | null;
+}`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const customCallable =
+      'std::function<void(flight::Ref<WgpuRenderState>, flight::String, flight::Ref<WgpuCustomMaterialShaderSource>, flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<CustomShaderMaterial>>>>)>';
+    const forwardCallable =
+      'std::function<void(flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Scene3DLightsLike>>>>)>';
 
-    // The widest call site: all four arguments through the optional chain.
+    expect(current).toContain(`std::variant<${customCallable}, flight::Null, flight::Undefined> custom_shader_guard`);
+    expect(current).toContain(
+      `std::variant<${forwardCallable}, flight::Null, flight::Undefined> forward_light_selection_guard`,
+    );
+    expect(current).toContain('std::optional<flight::Any> skinning_adapter;');
+
+    expect(portable).toContain(`std::optional<${customCallable}> custom_shader_guard;`);
+    expect(portable).toContain(`std::optional<${forwardCallable}> forward_light_selection_guard;`);
+    expect(portable).toContain('std::optional<flight::Ref<WgpuSkinningAdapter>> skinning_adapter;');
+    expect(portable).not.toContain('flight::Any');
+    expect(portable).not.toContain('static_cast');
+    expect(portable).not.toContain('reinterpret_cast');
+
+    // Keep the widest call site pinned beside the carrier: every exact argument crosses the optional call.
     expect(
       emitIrModuleCpp(
         lower(
           'wgpu-scene3d-call.ts',
-          `${members}
+          `${prelude}
+export interface PortableWgpuScene3DRuntime {
+  readonly customShaderGuard: ((state: WgpuRenderState, shaderKey: string, source: WgpuCustomMaterialShaderSource, material: Readonly<CustomShaderMaterial>) => void) | null;
+  readonly forwardLightSelectionGuard: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+  readonly skinningAdapter: WgpuSkinningAdapter | null;
+}
 export function use(
-  s: Spelled,
+  s: PortableWgpuScene3DRuntime,
   state: WgpuRenderState,
   key: string,
   source: WgpuCustomMaterialShaderSource,

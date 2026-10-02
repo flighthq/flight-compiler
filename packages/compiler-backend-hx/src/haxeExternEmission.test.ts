@@ -136,6 +136,47 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(portable).not.toContain('Dynamic');
   });
 
+  it('separates the WGPU Scene3D guard sentinels from the closed skinning-adapter domain', () => {
+    const module = lower(
+      '@flighthq/types',
+      'WgpuScene3DRuntime.ts',
+      `export interface WgpuRenderState { readonly kind: string }
+       export interface WgpuCustomMaterialShaderSource { readonly wgsl: string }
+       export interface CustomShaderMaterial { readonly key: string }
+       export interface Scene3DLightsLike { readonly count: number }
+       export interface WgpuSkinningAdapter { isGpuSkinned(mesh: object): boolean }
+       export interface CurrentWgpuScene3DRuntime {
+         customShaderGuard?: ((state: WgpuRenderState, shaderKey: string, source: WgpuCustomMaterialShaderSource, material: Readonly<CustomShaderMaterial>) => void) | null;
+         forwardLightSelectionGuard?: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+         skinningAdapter: unknown | null;
+       }
+       export interface PortableWgpuScene3DRuntime {
+         customShaderGuard: ((state: WgpuRenderState, shaderKey: string, source: WgpuCustomMaterialShaderSource, material: Readonly<CustomShaderMaterial>) => void) | null;
+         forwardLightSelectionGuard: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+         skinningAdapter: WgpuSkinningAdapter | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentWgpuScene3DRuntime.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableWgpuScene3DRuntime.hx').contents;
+    const guardCarriers = new Map([
+      [
+        'customShaderGuard',
+        '(flight.WgpuRenderState, String, flight.WgpuCustomMaterialShaderSource, flight.CustomShaderMaterial)->Void',
+      ],
+      ['forwardLightSelectionGuard', '(flight.Scene3DLightsLike)->Void'],
+    ]);
+
+    for (const [field, callable] of guardCarriers) {
+      expect(current).toContain(`@:optional var ${field}:Null<${callable}>;`);
+      expect(portable).toContain(`var ${field}:Null<${callable}>;`);
+      expect(portable).not.toContain(`@:optional var ${field}`);
+    }
+    expect(current).toContain('var skinningAdapter:Null<Dynamic>;');
+    expect(portable).toContain('var skinningAdapter:Null<flight.WgpuSkinningAdapter>;');
+    expect(portable).not.toContain('Dynamic');
+  });
+
   it('separates all five current GlRenderState absence markers from their required-nullable remedies', () => {
     const module = lower(
       '@flighthq/types',
