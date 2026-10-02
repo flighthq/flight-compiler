@@ -5498,6 +5498,21 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('getSkeleton2DClippingAttachmentSlotRange reads only endSlotIndex');
       expect(finding.message).toContain('never observes either point-storage absence spelling');
       expect(finding.message).toContain('explainSkeleton2DDeformLength uses the same weighted-first point dispatch');
+      expect(finding.message).toContain(
+        'cloneSkeleton2D copies each Slot2D record but shares its attachment reference',
+      );
+      expect(finding.message).toContain('never clones or normalizes either point-storage owner');
+      expect(finding.message).toContain('No production mutator assigns, clears, or deletes either field');
+      expect(finding.message).toContain('setSkeleton2DSkin and attachment animation replace only Slot2D.attachment');
+      expect(finding.message).toContain('deform bookkeeping compares attachment identity');
+      expect(finding.message).toContain(
+        'disposeSkeleton2D clears bones and slots without inspecting the shared attachment',
+      );
+      expect(finding.message).toContain('ordinary garbage collection owns both point-storage lifetimes');
+      expect(finding.message).toContain('std::variant<flight::Ref<Skin2D>, flight::Null, flight::Undefined>');
+      expect(finding.message).toContain('std::variant<flight::Float32Array, flight::Null, flight::Undefined>');
+      expect(finding.message).toContain('std::optional<flight::Ref<Skin2D>>');
+      expect(finding.message).toContain('std::optional<flight::Float32Array>');
       expect(finding.message).toContain('Make ClippingAttachment2D.skin a required Skin2D | null field');
       expect(finding.message).toContain('ClippingAttachment2D.vertices a required Float32Array | null field');
       expect(finding.message).toContain('keep unsupported import paths returning null');

@@ -5233,6 +5233,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
     });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
 
     const portableSource = createMemoryWorkspaceSource(createClippingAttachment2DWorkspaceFiles(false));
     const portableInput = createFlightWorkspaceCompilationInput({

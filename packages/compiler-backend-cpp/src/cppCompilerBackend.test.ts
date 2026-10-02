@@ -14283,6 +14283,53 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(contents).not.toContain('externalBindings');
   });
 
+  // ClippingAttachment2D.ts's two mixed-absence findings. The only current constructor writes both cells,
+  // consumers use one weighted-first dispatch, cloneSkeleton2D preserves their owners by attachment identity,
+  // and disposal leaves their GC lifetime alone. Both source spellings already have exact target carriers;
+  // the source fix removes the unused omitted state rather than asking the backend to choose a sentinel.
+  it('classifies clipping point storage as two required nullable owner cells', () => {
+    const mixed = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'ClippingAttachment2D.ts',
+        `export interface Attachment2D { kind: string }
+         export interface Skin2D { influences: Float32Array }
+         export interface ClippingAttachment2D extends Attachment2D {
+           endSlotIndex: number;
+           pointCount: number;
+           skin?: Skin2D | null;
+           vertices?: Float32Array | null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const resolved = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'ClippingAttachment2D.ts',
+        `export interface Attachment2D { kind: string }
+         export interface Skin2D { influences: Float32Array }
+         export interface ClippingAttachment2D extends Attachment2D {
+           endSlotIndex: number;
+           pointCount: number;
+           skin: Skin2D | null;
+           vertices: Float32Array | null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(mixed).toContain('std::variant<flight::Ref<Skin2D>, flight::Null, flight::Undefined> skin');
+    expect(mixed).toContain('std::variant<flight::Float32Array, flight::Null, flight::Undefined> vertices');
+    expect(resolved).toContain('std::optional<flight::Ref<Skin2D>> skin;');
+    expect(resolved).toContain('std::optional<flight::Float32Array> vertices;');
+    for (const emitted of [mixed, resolved]) {
+      expect(emitted).toContain('struct ClippingAttachment2D : public flight::ReferenceEnabled');
+      expect(emitted).not.toContain('flight::Any');
+      expect(emitted).not.toContain('materialize_row');
+    }
+  });
+
   // Assets.ts's opaque-value-domain finding. The library is deliberately resource-type-agnostic: it decodes
   // nothing itself and binds each asset *type* to its loader through an open adapter registry, so the payload
   // is erased BY CONSTRUCTION rather than being a domain the compiler failed to close. The September corpus
