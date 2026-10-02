@@ -12010,6 +12010,73 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('separates an optional non-null input from required nullable live state', () => {
+    // InteractionManager declares BOTH spellings -- `cursorBackend: CursorBackend | null` as required live
+    // state and `cursorBackend?: CursorBackend | null` as an optional input -- and the task was to tell them
+    // apart. They are three spellings over two C++ storages, and the mapping is worth pinning because it is
+    // not one-to-one: the required-nullable and optional-non-null forms share a single-optional storage while
+    // meaning different absences, and only the doubly-optional form needs the dual-sentinel carrier.
+    const backend = `export interface CursorBackend { readonly kind: string }`;
+
+    const storage = (file: string, declaration: string) =>
+      emitIrModuleCpp(
+        lower(
+          file,
+          `${backend}
+export interface M { ${declaration} }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+
+    // required nullable live state: absence is the null the source assigns
+    expect(storage('im-required.ts', 'cursorBackend: CursorBackend | null;')).toContain(
+      'std::optional<flight::Ref<CursorBackend>> cursor_backend;',
+    );
+    // optional non-null input: absence is not-supplied -- and it lands in the SAME storage
+    expect(storage('im-optional.ts', 'cursorBackend?: CursorBackend;')).toContain(
+      'std::optional<flight::Ref<CursorBackend>> cursor_backend;',
+    );
+    // optional AND nullable: both absences can occur, so the carrier keeps both sentinels
+    const dual = storage('im-optional-nullable.ts', 'cursorBackend?: CursorBackend | null;');
+    expect(dual).toContain('std::variant<flight::Ref<CursorBackend>, flight::Null, flight::Undefined>');
+
+    // And the tests agree with the storage: every spelling that can only be absent ONE way answers
+    // has_value(), including the loose and strict forms of each, because both compile to the same optional.
+    for (const [file, declaration, test] of [
+      ['im-required-null.ts', 'cursorBackend: CursorBackend | null;', 'r.cursorBackend !== null'],
+      ['im-required-loose.ts', 'cursorBackend: CursorBackend | null;', 'r.cursorBackend != null'],
+      ['im-optional-undefined.ts', 'cursorBackend?: CursorBackend;', 'r.cursorBackend !== undefined'],
+      ['im-optional-loose.ts', 'cursorBackend?: CursorBackend;', 'r.cursorBackend != null'],
+    ] as const) {
+      expect(
+        emitIrModuleCpp(
+          lower(
+            file,
+            `${backend}
+export interface M2 { ${declaration} }
+export function test(r: M2): number { if (${test}) return 1; return 0; }`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ).contents,
+      ).toContain('has_value()');
+    }
+
+    // The doubly-optional member is the one that needs the loose test: a strict `!== null` still leaves the
+    // undefined sentinel reachable, so the emitter answers it as a single-sentinel test rather than as
+    // presence.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'im-optional-nullable-test.ts',
+          `${backend}
+export interface M3 { cursorBackend?: CursorBackend | null; }
+export function test(r: M3): number { if (r.cursorBackend !== null) return 1; return 0; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('holds_alternative<flight::Null>');
+  });
+
   it('separates a guard member from the host handle one of its parameters names', () => {
     // GlScene3DRuntime carries five opt-in guards, and ALL FIVE are the same mixed-absence family: an
     // optional callable beside null. Four of them lower on their own; the fifth names a host handle in its
