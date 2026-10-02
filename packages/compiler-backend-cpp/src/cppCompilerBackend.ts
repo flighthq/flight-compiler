@@ -3361,6 +3361,11 @@ function emitCppDualSentinelCoalesceProjectionCpp(
         : undefined;
   const sourceType =
     getIrExpressionBindingTypeCpp(expression.left, context) ?? getIrExpressionTypeEvidenceCpp(expression.left, context);
+  // The carrier this level reads and tests. A nested `??` on the left has no destination of its own, and this
+  // level is the only thing that reads it, so it is the destination: it must produce the mixed-absence storage
+  // this level then tests and projects. A left that is not a coalesce keeps the untyped emission.
+  const coalesceOperandCarrier =
+    expression.left.kind === 'binary' && expression.left.operator === '??' ? sourceType : undefined;
   const nullishProjection =
     sentinelFallback && expectedUnion && expectedPlan && sourceType
       ? emitCppDualSentinelNullishProjectionCpp(
@@ -3381,7 +3386,11 @@ function emitCppDualSentinelCoalesceProjectionCpp(
   ) {
     const sentinels = getCppDualSentinelTargetTypes(context);
     context.includes.add('variant');
-    const left = emitExpression(expression.left, context);
+    // A nested coalesce on the left is the one operand that cannot be emitted destination-less: this level
+    // tests absence ON the left, so the left has to produce the mixed-absence carrier rather than a value
+    // projected into a destination it was never given. Passing the left's own source type is what lets the
+    // inner level take the same-carrier select branch; every other left keeps the untyped emission it had.
+    const left = emitExpression(expression.left, context, coalesceOperandCarrier);
     const fallback = emitExpression(expression.right, context, expectedType);
     const valueName = getGeneratedTargetName('coalesce_left', context);
     const absent = `(std::holds_alternative<${sentinels.null}>(${valueName}) || std::holds_alternative<${sentinels.undefined}>(${valueName}))`;
@@ -3392,7 +3401,9 @@ function emitCppDualSentinelCoalesceProjectionCpp(
   if (slot.targetType !== emitType(expectedType, context)) return undefined;
   const sentinels = getCppDualSentinelTargetTypes(context);
   context.includes.add('variant');
-  const left = emitExpression(expression.left, context);
+  // Same reason as the select branch above: this level projects the left with std::get, so a nested
+  // coalesce on the left must hand it the carrier, and it is given the carrier as its destination.
+  const left = emitExpression(expression.left, context, coalesceOperandCarrier);
   const fallback = emitExpression(expression.right, context, expectedType);
   const valueName = getGeneratedTargetName('coalesce_left', context);
   const absent = `(std::holds_alternative<${sentinels.null}>(${valueName}) || std::holds_alternative<${sentinels.undefined}>(${valueName}))`;

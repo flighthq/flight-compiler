@@ -49404,21 +49404,15 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       'std::holds_alternative<flight::Null>(state->depth_test) || std::holds_alternative<flight::Undefined>(state->depth_test)',
     );
 
-    // One shape still refuses, and it says which rule it is rather than landing unattributed: a coalesce
-    // nested a third level deep needs the projection to recurse through the fallback. The chained comparison
-    // that used to refuse beside it now lowers, carrying the narrowing across the first test.
-    const nested = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(
-        lower(
-          'GlRenderState.ts',
-          `${renderState}export function f(state: GlRenderState, fallback: GlRenderState): boolean {
-             return state.depthTest ?? fallback.depthTest ?? false;
-           }`,
-        ).module,
-        { runtimeProfile: 'flight-cpp' },
-      ),
+    // The chained comparison and the third-level nest both lower now; each refusal this test used to draw is
+    // replaced by the emission that supersedes it, so the boundary it records is the one that still holds.
+    const nested = emit(
+      `export function f(state: GlRenderState, fallback: GlRenderState): boolean {
+         return state.depthTest ?? fallback.depthTest ?? false;
+       }`,
     );
-    expect(nested.rule).toBe('cpp-dual-sentinel-coalesce-projection-unproven');
+    expect(nested).toContain('coalesce_left_2');
+    expect(nested).toContain('std::get<0>(coalesce_left_2)');
     const comparison = emit(
       `export function f(state: GlRenderState): number {
          return state.depthTest === undefined ? 0 : state.depthTest === null ? 1 : 2;
@@ -49746,14 +49740,20 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
         `export function f(s: GlScene3DRuntime): number | null | undefined { return s.count ?? undefined; }`,
         'cpp-contextual-union-missing-expression-type:dualSentinelVariant',
       ],
-      [
-        'three-deep nesting',
-        `export function f(a: GlScene3DRuntime, b: GlScene3DRuntime): number { return a.count ?? b.count ?? 0; }`,
-        'cpp-dual-sentinel-coalesce-projection-unproven',
-      ],
     ] as const) {
       expect(refusal(body).rule, label).toBe(rule);
     }
+    // A coalesce nested a third level deep lowers now: the inner level is handed the carrier as its
+    // destination, because the outer level is the only thing that reads it and it tests absence on it.
+    // The outer then projects through std::get, which is reached only after that absence test.
+    const nested = emit(
+      `export function f(a: GlScene3DRuntime, b: GlScene3DRuntime): number {
+         return a.count ?? b.count ?? 0;
+       }`,
+    );
+    expect(nested).toContain('coalesce_left_2');
+    expect(nested).toContain('std::get<0>(coalesce_left_2)');
+    expect(nested).not.toContain('static_cast');
     // Two strict comparisons of the same member carry the narrowing across the first test instead of
     // refusing. Each comparison inspects the STORAGE carrier, so the second still has a variant to test even
     // though the first narrowed the flow type; the dedicated regression for this sits below.
