@@ -18939,6 +18939,50 @@ int main() {
     expect(emitted).not.toContain('make_ref');
     expect(emitted).not.toContain('materialize');
 
+    const assertionFree = lowerPackage(
+      '@flighthq/signals',
+      'portableSlot.ts',
+      `interface Signal<T extends (...args: any[]) => void> {
+         data: SignalData<T> | null;
+         emit: (...args: Parameters<T>) => void;
+       }
+       interface SignalData<T extends (...args: any[]) => void> {
+         slots: (T | null)[];
+       }
+       function createNullSignalDispatch<T extends (...args: any[]) => void>(): (...args: Parameters<T>) => void {
+         return (..._args: Parameters<T>): void => {};
+       }
+       export function clearSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = createNullSignalDispatch<T>();
+         signal.data = null;
+       }
+       export function makeDispatch<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         data: SignalData<T>,
+       ): (...args: Parameters<T>) => void {
+         return (...args: Parameters<T>): void => {
+           let i = 0;
+           while (i < data.slots.length) {
+             const slot: T | null = data.slots[i];
+             if (slot !== null) slot(...args);
+             i++;
+           }
+           void signal;
+         };
+       }`,
+    );
+    expect(assertionFree.diagnostics).toEqual([]);
+    const assertionFreeFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(assertionFree.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(assertionFreeFailure).toMatchObject({
+      classification: 'compiler-restriction',
+      rule: 'cpp-callable-type-unresolvable',
+    });
+    expect(assertionFreeFailure.message).toContain(
+      'Parameters<T> requires a statically resolvable non-generic callable type',
+    );
+
     const erased = lower(
       'erased-signal-dispatch.ts',
       `export function recover<T extends (...args: any[]) => void>(value: unknown): T {

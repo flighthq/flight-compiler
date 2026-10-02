@@ -1734,25 +1734,35 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     const typed = input(
       'portableSignalSlot.ts',
-      `type SignalDispatch<Args extends readonly unknown[]> = (...args: Args) => void;
-       interface Signal<Args extends readonly unknown[]> {
-         data: SignalData<Args> | null;
-         emit: SignalDispatch<Args>;
+      `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+       interface Signal<T extends (...args: any[]) => void> {
+         data: SignalData<T> | null;
+         emit: SignalDispatch<T>;
        }
-       interface SignalData<Args extends readonly unknown[]> {
-         slots: (SignalDispatch<Args> | null)[];
+       interface SignalData<T extends (...args: any[]) => void> {
+         slots: (SignalDispatch<T> | null)[];
        }
-       function createNullSignalEmit<Args extends readonly unknown[]>(): SignalDispatch<Args> {
-         return (..._args: Args): void => {};
+       function createNullSignalDispatch<T extends (...args: any[]) => void>(): SignalDispatch<T> {
+         return (..._args: Parameters<T>): void => {};
        }
-       function makeDispatch<Args extends readonly unknown[]>(
-         signal: Signal<Args>,
-         data: SignalData<Args>,
-       ): SignalDispatch<Args> {
-         return (...args: Args): void => {
+       function clearSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = createNullSignalDispatch<T>();
+         signal.data = null;
+       }
+       function disconnectSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = createNullSignalDispatch<T>();
+       }
+       function makeDispatch<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         data: SignalData<T>,
+       ): SignalDispatch<T> {
+         return (...args: Parameters<T>): void => {
            for (const slot of data.slots) if (slot !== null) slot(...args);
            void signal;
          };
+       }
+       function compactSignalData<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = createNullSignalDispatch<T>();
        }`,
     );
     const findings = analyzeTypeScriptSourcePortability([asserted]).findings;
@@ -1764,27 +1774,55 @@ describe('analyzeTypeScriptSourcePortability', () => {
     for (const finding of noOps) {
       expect(finding.message).toContain('open callable type parameter T');
       expect(finding.message).toContain('bridge is not representation equivalence');
-      expect(finding.message).toContain('Preserve the Signal<T> owner and every stored T slot');
-      expect(finding.message).toContain('checked callable-signature binding contract');
-      expect(finding.message).toContain("forwards T's exact parameters or deliberately ignores them");
-      expect(finding.message).toContain('named Signal argument-tuple/dispatch type');
-      expect(finding.message).toContain('may bind this represented callable implementation to T');
+      expect(finding.message).toContain('T may be a callable subtype with extra structure');
+      expect(finding.message).toContain('exact Signal<T> owner and SignalData<T> owner remain in place');
+      expect(finding.message).toContain('parallel slots, priorities, and repeat arrays');
+      expect(finding.message).toContain('no signal, data owner, or slot callable is cloned');
+      expect(finding.message).toContain('emitSignalSafe alone snapshots those three arrays');
+      expect(finding.message).toContain('connection, tracked-wrapper, throttle, and scope paths');
+      expect(finding.message).toContain(
+        'SignalDispatch<T> = (...args: Parameters<T>) => void as the stored callable domain',
+      );
+      expect(finding.message).toContain('createNullSignalDispatch<T>()');
+      expect(finding.message).toContain('makeDispatch can return the same SignalDispatch<T>');
+      expect(finding.message).toContain('remove all four slot.ts double assertions');
+      expect(finding.message).toContain('current C++ storage emission cannot resolve Parameters<T>');
+      expect(finding.message).toContain('no named operation alone makes this cluster end-to-end portable');
+      expect(finding.message).toContain('may bind a represented callable implementation to an open signature');
       expect(finding.message).toContain('will not route it through Any');
       expect(finding.message).toContain('cast between callable carriers');
-      expect(finding.message).toContain('copy or materialize the Signal or its slots');
+      expect(finding.message).toContain('copy or materialize the Signal, data, or slots');
+      expect(finding.message).toContain('invent callable-subtype members');
       expect(finding.message).toContain('or add side storage');
       expect(finding.message).toContain('non-callable or genuinely erased source must be refused');
     }
+    const noOpsBySubject = new Map(noOps.map((finding) => [finding.subject, finding.message]));
+    expect(noOpsBySubject.get('function:clearSignal')).toContain('old dispatch is still running');
+    expect(noOpsBySubject.get('function:clearSignal')).toContain('prevents its later compaction from stealing');
+    expect(noOpsBySubject.get('function:disconnectSignal')).toContain('outside dispatch after splicing');
+    expect(noOpsBySubject.get('function:disconnectSignal')).toContain('during dispatch it tombstones slots');
+    expect(noOpsBySubject.get('function:compactSignalData')).toContain('deferred outermost-dispatch path');
+    expect(noOpsBySubject.get('function:compactSignalData')).toContain('signal.data still names this captured data');
     const dispatch = findings.find((finding) => finding.message.includes('newly created dispatch implementation'));
     expect(dispatch?.message).toContain('rest arguments were declared as any[]');
-    expect(dispatch?.message).toContain('captured Signal<T>, SignalData<T>, and every stored T slot by reference');
-    expect(dispatch?.message).toContain('checked callable-signature binding contract');
-    expect(dispatch?.message).toContain("T's instantiated parameter list");
-    expect(dispatch?.message).toContain('named Signal argument tuple');
-    expect(dispatch?.message).toContain('may bind this represented function implementation to T');
+    expect(dispatch?.message).toContain('captures the exact Signal<T> and newly installed SignalData<T> owners');
+    expect(dispatch?.message).toContain('increments nested-dispatch depth');
+    expect(dispatch?.message).toContain('walks the live slots in priority order');
+    expect(dispatch?.message).toContain('tombstones once slots without shifting the active cursor');
+    expect(dispatch?.message).toContain('only the outermost exit compact or detach that same data owner');
+    expect(dispatch?.message).toContain('emitSignalSafe is separate and snapshots only the parallel');
+    expect(dispatch?.message).toContain('There is no Signal or SignalData clone');
+    expect(dispatch?.message).toContain('T may be a callable subtype with extra structure');
+    expect(dispatch?.message).toContain('SignalDispatch<T> = (...args: Parameters<T>) => void');
+    expect(dispatch?.message).toContain('Declare this closure as (...args: Parameters<T>) => void');
+    expect(dispatch?.message).toContain('makeDispatch assertion and the three no-op assertions');
+    expect(dispatch?.message).toContain('current C++ storage emission cannot resolve Parameters<T>');
+    expect(dispatch?.message).toContain('no named operation alone makes this cluster end-to-end portable');
+    expect(dispatch?.message).toContain('may bind a represented function implementation to an open signature');
     expect(dispatch?.message).toContain('will not route it through Any');
     expect(dispatch?.message).toContain('reinterpret or cast a callable owner');
-    expect(dispatch?.message).toContain('copy or materialize the signal/data/slot owners');
+    expect(dispatch?.message).toContain('copy or materialize the signal, data, or slot owners');
+    expect(dispatch?.message).toContain('invent callable-subtype members');
     expect(dispatch?.message).toContain('or add side storage');
     expect(dispatch?.message).toContain('non-callable or genuinely erased source must be refused');
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);

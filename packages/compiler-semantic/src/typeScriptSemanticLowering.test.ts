@@ -6695,6 +6695,82 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     });
   });
 
+  it('retains a named normalized signal dispatch without callable assertions', () => {
+    const result = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/signals/src/slot.ts',
+        `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+       interface Signal<T extends (...args: any[]) => void> {
+         data: SignalData<T> | null;
+         emit: SignalDispatch<T>;
+       }
+       interface SignalData<T extends (...args: any[]) => void> {
+         slots: (SignalDispatch<T> | null)[];
+       }
+       function createNullSignalDispatch<T extends (...args: any[]) => void>(): SignalDispatch<T> {
+         return (..._args: Parameters<T>): void => {};
+       }
+       export function clearSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = createNullSignalDispatch<T>();
+         signal.data = null;
+       }
+       export function makeDispatch<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         data: SignalData<T>,
+       ): SignalDispatch<T> {
+         return (...args: Parameters<T>): void => {
+           for (const slot of data.slots) if (slot !== null) slot(...args);
+           void signal;
+         };
+       }`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/signals', upstreamDirectory: '/flight' },
+    );
+    const clear = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'clearSignal',
+    );
+    const dispatch = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'makeDispatch',
+    );
+    if (clear?.kind !== 'function' || dispatch?.kind !== 'function') {
+      throw new Error('Expected normalized signal functions');
+    }
+    const returned = dispatch.body[0];
+    if (returned?.kind !== 'return' || returned.expression?.kind !== 'function') {
+      throw new Error('Expected normalized signal dispatch closure');
+    }
+    const assertions: IrExpression[] = [];
+    analyzeIrModuleTraversal(result.module, {
+      expression(expression) {
+        if (expression.kind === 'cast') assertions.push(expression);
+      },
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(assertions).toEqual([]);
+    expect(dispatch.returns).toMatchObject({
+      kind: 'named',
+      reference: { binding: { name: 'SignalDispatch' }, kind: 'binding' },
+      typeArguments: [
+        {
+          kind: 'named',
+          reference: { binding: dispatch.typeParameters[0]?.binding, kind: 'binding' },
+        },
+      ],
+    });
+    expect(returned.expression.parameters[0]?.dependentCallablePack).toMatchObject({
+      callable: dispatch.typeParameters[0]?.binding,
+      kind: 'parameters',
+      schema: 'flight-compiler-dependent-callable-pack/1',
+    });
+    expect(JSON.stringify(clear.body)).toContain('"name":"createNullSignalDispatch"');
+    expect(JSON.stringify(clear.body)).toContain('"name":"emit"');
+    expect(JSON.stringify(clear.body)).toContain('"name":"data"');
+    expect(JSON.stringify(returned.expression.body)).toContain('"name":"slots"');
+  });
+
   it('diagnoses optional rest tuple elements instead of constructing invalid IR', () => {
     const tuple = lower('tuple.ts', 'export type Invalid = [...values?: number[]];');
 

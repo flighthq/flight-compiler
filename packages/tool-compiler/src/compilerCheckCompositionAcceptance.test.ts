@@ -437,6 +437,122 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps all four signal-slot callable assertions source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createSignalSlotWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/signals'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const sourceIdentity = (subject: string, fingerprint: string) =>
+      `flight-compiler-source-portability-finding/1:${JSON.stringify([
+        '@flighthq/signals',
+        'packages/signals/src/slot.ts',
+        'unchecked-double-assertion',
+        subject,
+        fingerprint,
+      ])}:0`;
+    const expectedSourceIdentities = [
+      sourceIdentity('function:clearSignal', 'sha256:b5bbae897f9e913d563ac4e91c64e4b602a758962e348006f67b9b98160b8d9e'),
+      sourceIdentity(
+        'function:compactSignalData',
+        'sha256:b5bbae897f9e913d563ac4e91c64e4b602a758962e348006f67b9b98160b8d9e',
+      ),
+      sourceIdentity(
+        'function:disconnectSignal',
+        'sha256:b5bbae897f9e913d563ac4e91c64e4b602a758962e348006f67b9b98160b8d9e',
+      ),
+      sourceIdentity(
+        'function:makeDispatch',
+        'sha256:813043ffc2b243328ab71a5d3c31bf0a0baca00e84a304aa64257364746eecd1',
+      ),
+    ];
+    const expectedCheckIdentities = expectedSourceIdentities.map(
+      (identity) =>
+        `flight-compiler-check-finding/1:${JSON.stringify([
+          '@flighthq/signals',
+          'packages/signals/src/slot.ts',
+          'Slot',
+          'source',
+          'source-portability',
+          'unchecked-double-assertion',
+          identity,
+        ])}`,
+    );
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toHaveLength(4);
+    expect(sourcePortability.findings.map(({ identity }) => identity).sort()).toEqual(
+      [...expectedSourceIdentities].sort(),
+    );
+    expect(sourcePortability.findings.every(({ message }) => message.includes('SignalDispatch<T>'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => message.includes('remove all four slot.ts double assertions')),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('no named operation alone makes this cluster end-to-end portable'),
+      ),
+    ).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(report.directFindings.map(({ identity }) => identity).sort()).toEqual([...expectedCheckIdentities].sort());
+    expect(
+      report.directFindings.every(
+        ({ code, policyClass, rule, stage }) =>
+          code === 'source-portability' &&
+          policyClass === 'source-portability' &&
+          rule === 'unchecked-double-assertion' &&
+          stage === 'source',
+      ),
+    ).toBe(true);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 4,
+      directOccurrences: 4,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    const policy = createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict());
+    expect([...policy.failingFindingIdentities].sort()).toEqual([...expectedCheckIdentities].sort());
+    expect(policy.passed).toBe(false);
+
+    const assertionFreeSource = createMemoryWorkspaceSource(createSignalSlotWorkspaceFiles(false));
+    const assertionFreeInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/signals'],
+      source: assertionFreeSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(assertionFreeInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the bounds runtime owner and both parent-space assertions source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createNodeBoundsWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -5420,6 +5536,116 @@ export function createGuardedEntityRuntime(runtime: EntityRuntime): EntityRuntim
   });
 }`,
     '/flight/packages/entity/src/index.ts': `export { createGuardedEntity, createGuardedEntityRuntime } from './guards.js';`,
+  };
+}
+
+function createSignalSlotWorkspaceFiles(asserted: boolean): Record<string, string> {
+  const slot = asserted
+    ? `const nullSignalEmit = (): void => {};
+interface Signal<T extends (...args: any[]) => void> { data: SignalData<T> | null; emit: T }
+interface SignalData<T extends (...args: any[]) => void> {
+  slots: (T | null)[];
+  priorities: number[];
+  repeat: boolean[];
+  cancelled: boolean;
+  depth: number;
+}
+export function clearSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+  signal.emit = nullSignalEmit as unknown as T;
+  signal.data = null;
+}
+export function disconnectSignal<T extends (...args: any[]) => void>(signal: Signal<T>, slot: T): void {
+  const data = signal.data;
+  if (data === null) return;
+  const dispatching = data.depth > 0;
+  let i = data.slots.length;
+  while (--i >= 0) {
+    if (data.slots[i] !== slot) continue;
+    if (dispatching) {
+      data.slots[i] = null;
+      continue;
+    }
+    data.slots.splice(i, 1);
+    data.priorities.splice(i, 1);
+    data.repeat.splice(i, 1);
+  }
+  if (!dispatching && data.slots.length === 0) {
+    signal.emit = nullSignalEmit as unknown as T;
+    signal.data = null;
+  }
+}
+export function makeDispatch<T extends (...args: any[]) => void>(signal: Signal<T>, data: SignalData<T>): T {
+  return ((...args: any[]) => {
+    data.cancelled = false;
+    data.depth++;
+    let i = 0;
+    while (i < data.slots.length) {
+      const slot = data.slots[i];
+      if (slot === null) {
+        i++;
+        continue;
+      }
+      slot(...args);
+      if (data.cancelled) break;
+      if (!data.repeat[i]) data.slots[i] = null;
+      i++;
+    }
+    data.depth--;
+    if (data.depth === 0) compactSignalData(signal, data);
+  }) as unknown as T;
+}
+export function compactSignalData<T extends (...args: any[]) => void>(
+  signal: Signal<T>,
+  data: SignalData<T>,
+): void {
+  let write = 0;
+  for (let read = 0; read < data.slots.length; read++) {
+    if (data.slots[read] === null) continue;
+    if (write !== read) {
+      data.slots[write] = data.slots[read];
+      data.priorities[write] = data.priorities[read];
+      data.repeat[write] = data.repeat[read];
+    }
+    write++;
+  }
+  if (write === data.slots.length) return;
+  data.slots.length = write;
+  data.priorities.length = write;
+  data.repeat.length = write;
+  if (write === 0 && signal.data === data) {
+    signal.emit = nullSignalEmit as unknown as T;
+    signal.data = null;
+  }
+}`
+    : `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+interface Signal<T extends (...args: any[]) => void> { data: SignalData<T> | null; emit: SignalDispatch<T> }
+interface SignalData<T extends (...args: any[]) => void> { slots: (SignalDispatch<T> | null)[] }
+function createNullSignalDispatch<T extends (...args: any[]) => void>(): SignalDispatch<T> {
+  return (..._args: Parameters<T>): void => {};
+}
+export function clearSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+  signal.emit = createNullSignalDispatch<T>();
+  signal.data = null;
+}
+export function disconnectSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+  signal.emit = createNullSignalDispatch<T>();
+}
+export function makeDispatch<T extends (...args: any[]) => void>(
+  signal: Signal<T>,
+  data: SignalData<T>,
+): SignalDispatch<T> {
+  return (...args: Parameters<T>): void => {
+    for (const slot of data.slots) if (slot !== null) slot(...args);
+    void signal;
+  };
+}
+export function compactSignalData<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+  signal.emit = createNullSignalDispatch<T>();
+}`;
+  return {
+    '/flight/packages/signals/package.json': createPackageManifest('@flighthq/signals'),
+    '/flight/packages/signals/src/index.ts': `export { clearSignal, compactSignalData, disconnectSignal, makeDispatch } from './slot.js';`,
+    '/flight/packages/signals/src/slot.ts': slot,
   };
 }
 
