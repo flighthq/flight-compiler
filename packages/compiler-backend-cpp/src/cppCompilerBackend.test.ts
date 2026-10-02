@@ -13326,6 +13326,59 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('closes the WgpuScene3DRuntime set with its widest guard member', () => {
+    // The file's three findings are two mixed-absence guards and one opaque adapter. The preceding control
+    // already pins `forwardLightSelectionGuard` and `skinningAdapter`; this closes the set with the member
+    // that control did not carry -- `customShaderGuard`, whose callable takes FOUR parameters, two of them
+    // `Readonly<...>`. All three are represented, so there is nothing to classify as a source contract, a
+    // host binding, or an opaque domain: each spelling has its carrier and its call site lowers.
+    const prelude = `export interface WgpuRenderState { readonly kind: string }
+export interface WgpuCustomMaterialShaderSource { readonly wgsl: string }
+export interface CustomShaderMaterial { readonly key: string }
+export interface Scene3DLightsLike { readonly count: number }`;
+    const members = `${prelude}
+export interface Spelled {
+  readonly customShaderGuard?:
+    | ((
+        state: WgpuRenderState,
+        shaderKey: string,
+        source: WgpuCustomMaterialShaderSource,
+        material: Readonly<CustomShaderMaterial>,
+      ) => void)
+    | null;
+  readonly forwardLightSelectionGuard?: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+  readonly skinningAdapter: unknown | null;
+}`;
+    const emitted = emitIrModuleCpp(lower('wgpu-scene3d-set.ts', members).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    // the four-parameter callable keeps every parameter type, including the Readonly material argument
+    expect(emitted).toContain('std::function<void(flight::Ref<WgpuRenderState>, flight::String');
+    // and the opaque adapter member keeps its erased carrier beside null alone
+    expect(emitted).toContain('std::optional<flight::Any> skinning_adapter;');
+
+    // The widest call site: all four arguments through the optional chain.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'wgpu-scene3d-call.ts',
+          `${members}
+export function use(
+  s: Spelled,
+  state: WgpuRenderState,
+  key: string,
+  source: WgpuCustomMaterialShaderSource,
+  material: Readonly<CustomShaderMaterial>,
+): void {
+  s.customShaderGuard?.(state, key, source, material);
+  s.forwardLightSelectionGuard?.({ count: 0 });
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('custom_shader_guard');
+  });
+
   it('classifies the WgpuRenderState findings as represented declarations with two known consumers', () => {
     // A report listing three mixed-absence findings in WgpuRenderState reads as three problems in the file.
     // The three DECLARATIONS are all represented, with the carrier each spelling deserves -- so the findings
