@@ -5131,7 +5131,8 @@ function emitExpression(
       ) {
         emissionError(
           context,
-          `dependent callable parameter pack ${expression.reference.binding.name} may only be used as a terminal call spread`,
+          `dependent callable parameter pack ${expression.reference.binding.name} may only be used as a terminal call spread: the pack's element types are the callable's own dependent parameters, so they can be forwarded into the call that owns them (which is what the emitted variadic pack does) but cannot be named as storage -- and the source declares the buffer as an array of \`any\`, which the target refuses to erase into flight::Any and could otherwise only hold by copying every argument. Hold one typed payload instead of the argument list (parameterize the connector over the payload type), or take the shape that forwards a computed value rather than the source arguments`,
+          'cpp-dependent-parameter-pack-nonterminal-use',
         );
       }
       if (expression.reference.kind === 'ambient' && expression.reference.name === 'undefined') {
@@ -31245,6 +31246,11 @@ const cppNullTaggedStoragePredicates: ReadonlyMap<string, string> = new Map([['f
 // the value the source wrote discards identity or type evidence the target representation needs, so the
 // fix is an explicit source conversion and the check report says which one.
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
+  // A dependent callable parameter pack the source buffers instead of forwarding. The pack forwards
+  // perfectly into its own call, but naming it as storage would need the instantiation to name its
+  // element types, and the source's `any[]` buffer would have to be erased or copied to hold it -- both
+  // excluded, and the declaration is where the shape comes from.
+  'cpp-dependent-parameter-pack-nonterminal-use',
   'cpp-closed-key-result-assertion-discards-alternatives',
   'cpp-extract-dependent-discriminant-unrepresented',
   'cpp-generic-owner-argument-assertion-unproven',

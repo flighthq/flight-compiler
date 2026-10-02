@@ -11990,6 +11990,52 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('attributes a buffered dependent parameter pack to the source and forwards a terminal one', () => {
+    // throttle.ts buffers the rest pack (`lastArgs = args`) so a trailing edge can re-fire it. The pack
+    // forwards perfectly into the call that owns it -- the emitted variadic pack is
+    // `slot(std::forward<ArgsPack>(args)...)` -- but it cannot be named as storage: its element types are
+    // the callable's own dependent parameters, and the source's `any[]` buffer would have to be erased
+    // into flight::Any or copied argument by argument. The declaration is where that shape comes from, so
+    // the refusal is attributed to it and names the rewrites.
+    const buffered = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'throttle.ts',
+          `export function connect<T extends (...args: any[]) => void>(slot: T): void {
+             let lastArgs: any[] | null = null;
+             const handler = ((...args: any[]) => {
+               lastArgs = args;
+               slot(...args);
+             }) as T;
+             void handler;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(buffered.rule).toBe('cpp-dependent-parameter-pack-nonterminal-use');
+    expect(buffered.classification).toBe('source-portability');
+    expect(buffered.message).toContain('cannot be named as storage');
+    expect(buffered.message).toContain('parameterize the connector over the payload type');
+
+    // The control that keeps this about the buffering: forwarding the pack into its own call is exactly
+    // what the target can do, and it emits the variadic pack unchanged.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'forward.ts',
+          `export function forward<T extends (...args: any[]) => void>(slot: T): void {
+             const handler = ((...args: any[]) => {
+               slot(...args);
+             }) as T;
+             void handler;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('slot(std::forward<ArgsPack>(args)...);');
+  });
+
   it('attributes a WeakMap key and value the declaration cannot prove', () => {
     // Both refusals used to be raised with no rule at all, so the corpus ledger could group them only by
     // message text and the check report had nothing to attribute them to -- which is why this root read
