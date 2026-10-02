@@ -2693,6 +2693,99 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the three AnimationPlayer signal-absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createAnimationPlayerSignalWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'interface:AnimationPlayer/property:onEvent',
+      'interface:AnimationPlayer/property:onFinished',
+      'interface:AnimationPlayer/property:onLooped',
+    ];
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Optionality belongs to construction inputs, not the live player signal state'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('required fields with their exact callable-bearing Signal type | null'),
+      ),
+    ).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createAnimationPlayerSignalWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps both open command-property slots source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createCommandPropertyWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4893,6 +4986,21 @@ export interface AnimationClipEvent { name: string; payload: AnimationClipEventP
     '/flight/packages/types/src/index.ts': opaque
       ? `export type { AnimationClipEvent } from './AnimationClipEvent.js';`
       : `export type { AnimationClipEvent, AnimationClipEventPayload } from './AnimationClipEvent.js';`,
+  };
+}
+
+function createAnimationPlayerSignalWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const optional = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/AnimationPlayer.ts': `export interface AnimationClipEvent { readonly name: string }
+export interface Signal<T> { readonly id: number }
+export interface AnimationPlayer {
+  onEvent${optional}: Signal<(event: Readonly<AnimationClipEvent>) => void> | null;
+  onFinished${optional}: Signal<() => void> | null;
+  onLooped${optional}: Signal<() => void> | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { AnimationPlayer } from './AnimationPlayer.js';`,
   };
 }
 

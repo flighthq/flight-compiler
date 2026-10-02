@@ -4696,6 +4696,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
         'cloneAnimationPlayer and initializeAnimationPlayer assign onEvent, onFinished, and onLooped to null',
       );
       expect(finding.message).toContain('createAnimationPlayer delegates to that initializer');
+      expect(finding.message).toContain(
+        'optional create and initialize options contain only loop, loopMode, playing, repeatCount, speed, and time',
+      );
+      expect(finding.message).toContain('they never accept signal slots');
+      expect(finding.message).toContain('no production construction bypasses the initializer or clone');
+      expect(finding.message).toContain('Optionality belongs to construction inputs, not the live player signal state');
       expect(finding.message).toContain('enableAnimationPlayerSignals checks each slot with == null');
       expect(finding.message).toContain('is idempotent, and no path clears an enabled slot');
       expect(finding.message).toContain(flow);
@@ -4708,6 +4714,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain("does not choose the source contract's redundant disabled sentinel");
       expect(finding.message).toContain('external compatibility input');
       expect(finding.message).toContain('one named closed signal state');
+      expect(finding.message).toContain('Do not whitelist the redundant live-state spelling');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('allocate or clone a Signal owner');
       expect(finding.message).toContain('connect or emit a listener');
