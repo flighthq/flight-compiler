@@ -13502,6 +13502,203 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(contents).not.toContain('using CanvasImageSource');
   });
 
+  // throttle.ts's first emitted refusal is one target-runtime handle family. Both debounce and throttle store
+  // the exact handle returned by setTimeout in independent nullable local slots; replacement and cleanup pass
+  // that same value to clearTimeout before nulling the slot. Once that profile gap is supplied, the module's
+  // separate source-owned gap becomes visible: both handlers buffer an open dependent argument pack in any[].
+  it('classifies the signal throttle timers as one target-runtime handle family', () => {
+    const result = lower(
+      'throttle.ts',
+      `interface Signal<T extends (...args: any[]) => void> { readonly marker?: T }
+       interface SignalThrottleOptions { leading?: boolean; trailing?: boolean }
+       interface ThrottleTimerIdentity { readonly timer: timers.global.NodeJS.Timeout | null }
+       function connectSignal<T extends (...args: any[]) => void>(source: Signal<T>, slot: T): void {
+         void source;
+         void slot;
+       }
+       function disconnectSignal<T extends (...args: any[]) => void>(source: Signal<T>, slot: T): void {
+         void source;
+         void slot;
+       }
+       export function connectSignalDebounced<T extends (...args: any[]) => void>(
+         source: Signal<T>,
+         delayMs: number,
+         slot: T,
+         options?: Readonly<SignalThrottleOptions>,
+       ): () => void {
+         const leading = options?.leading ?? false;
+         const trailing = options?.trailing ?? true;
+         let timer: ReturnType<typeof setTimeout> | null = null;
+         let lastArgs: any[] | null = null;
+         let leadingFired = false;
+         const clearTimer = () => {
+           if (timer !== null) {
+             clearTimeout(timer);
+             timer = null;
+           }
+         };
+         const handler = ((...args: any[]) => {
+           lastArgs = args;
+           if (leading && timer === null && !leadingFired) {
+             leadingFired = true;
+             slot(...args);
+           }
+           clearTimer();
+           timer = setTimeout(() => {
+             timer = null;
+             leadingFired = false;
+             if (trailing && lastArgs !== null) {
+               slot(...lastArgs);
+               lastArgs = null;
+             }
+           }, delayMs);
+         }) as T;
+         connectSignal(source, handler);
+         return () => {
+           disconnectSignal(source, handler);
+           clearTimer();
+         };
+       }
+       export function connectSignalThrottled<T extends (...args: any[]) => void>(
+         source: Signal<T>,
+         intervalMs: number,
+         slot: T,
+         options?: Readonly<SignalThrottleOptions>,
+       ): () => void {
+         const leading = options?.leading ?? true;
+         const trailing = options?.trailing ?? true;
+         let lastFiredAt = -Infinity;
+         let trailingTimer: ReturnType<typeof setTimeout> | null = null;
+         let lastArgs: any[] | null = null;
+         const clearTrailing = () => {
+           if (trailingTimer !== null) {
+             clearTimeout(trailingTimer);
+             trailingTimer = null;
+           }
+         };
+         const scheduleTrailing = (delay: number) => {
+           trailingTimer = setTimeout(() => {
+             lastFiredAt = Date.now();
+             trailingTimer = null;
+             slot(...lastArgs!);
+             lastArgs = null;
+           }, delay);
+         };
+         const handler = ((...args: any[]) => {
+           const now = Date.now();
+           const remaining = intervalMs - (now - lastFiredAt);
+           if (remaining <= 0 || remaining > intervalMs) {
+             clearTrailing();
+             lastFiredAt = now;
+             if (leading) {
+               slot(...args);
+             } else if (trailing) {
+               lastArgs = args;
+               scheduleTrailing(intervalMs);
+             }
+           } else if (trailing) {
+             clearTrailing();
+             lastArgs = args;
+             scheduleTrailing(remaining);
+           }
+         }) as T;
+         connectSignal(source, handler);
+         return () => {
+           disconnectSignal(source, handler);
+           clearTrailing();
+         };
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain(
+      'missing: clearTimeout[value], setTimeout[value], timers.global.NodeJS.Timeout[type]',
+    );
+    expect(failure.message).toContain(
+      'timers.global.NodeJS.Timeout is a target-runtime scheduled-task handle identity',
+    );
+    expect(failure.message).toContain(
+      'preserve the same handle from ReturnType<typeof setInterval> or ReturnType<typeof setTimeout>',
+    );
+    expect(failure.message).toContain('through nullable stored state to the matching clearInterval or clearTimeout');
+    expect(failure.message).toContain(
+      'give each scheduling binding a callResultType that names the same handle carrier',
+    );
+
+    // These are exactly the three missing runtime identities. The scheduled-task owner is one value carrier:
+    // setTimeout produces it, each nullable slot retains it, and clearTimeout consumes that same value.
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'clearTimeout',
+          space: 'value' as const,
+          targetName: 'host::clear_timeout',
+        },
+        {
+          callResultType: 'host::TimerHandle',
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'setTimeout',
+          space: 'value' as const,
+          targetName: 'host::set_timeout',
+        },
+        {
+          headers: ['host/timer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'value' as const,
+          sourceName: 'timers.global.NodeJS.Timeout',
+          space: 'type' as const,
+          targetName: 'host::TimerHandle',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const sourceFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }),
+    );
+    expect(sourceFailure.rule).toBe('cpp-dependent-parameter-pack-nonterminal-use');
+    expect(sourceFailure.classification).toBe('source-portability');
+    expect(sourceFailure.message).toContain('cannot be named as storage');
+    expect(sourceFailure.message).toContain('source declares the buffer as an array of `any`');
+    expect(sourceFailure.message).toContain('parameterize the connector over the payload type');
+    expect(sourceFailure.message).toContain('forwards a computed value rather than the source arguments');
+
+    // A single typed payload needs no erased argument buffer: each scheduled closure retains that exact value.
+    // With the same timer profile this source emits, proving the runtime and source classifications are distinct.
+    const portable = lower(
+      'throttle-payload.ts',
+      `export function createDebouncedPayload<Payload>(
+         delayMs: number,
+         slot: (payload: Payload) => void,
+       ): (payload: Payload) => void {
+         let timer: ReturnType<typeof setTimeout> | null = null;
+         return (payload: Payload): void => {
+           if (timer !== null) clearTimeout(timer);
+           timer = setTimeout(() => {
+             timer = null;
+             slot(payload);
+           }, delayMs);
+         };
+       }`,
+    );
+    const contents = emitIrModuleCpp(portable.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+    expect(portable.diagnostics).toEqual([]);
+    expect(contents).toContain('flight::make_binding_cell(std::optional<host::TimerHandle>');
+    expect(contents).toContain('host::set_timeout');
+    expect(contents).toContain('host::clear_timeout');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('materialize');
+  });
   // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
   // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
   // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
