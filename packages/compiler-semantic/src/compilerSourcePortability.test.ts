@@ -3333,7 +3333,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
          readonly message: string;
          readonly operation: string;
        }
-       ${opaqueText.replaceAll('unknown', 'TrayErrorPayload')}`,
+       ${opaqueText.replaceAll('error?: unknown', 'error: TrayErrorPayload | null')}`,
     );
     const renamed = input(
       'packages/types/src/Other.ts',
@@ -3403,12 +3403,21 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(messages.filter((message) => message.includes('native Tray surface operation'))).toHaveLength(3);
     expect(messages.filter((message) => message.includes('Signal subscription or release'))).toHaveLength(2);
     for (const message of messages) {
+      expect(message).toContain('construct an own error property even when JavaScript throws null or undefined');
+      expect(message).toContain('only permits a host-authored failure to omit a diagnostic');
+      expect(message).toContain("createTrayIcon checks that distinction with 'error' in result");
+      expect(message).toContain('none observes own-property presence');
+      expect(message).toContain('do not form distinct public states');
       expect(message).toContain('crosses the public Tray result boundary unchanged');
       expect(message).toContain('neither a detection-only probe nor a normalized value: it is genuinely opaque');
       expect(message).toContain('named closed TrayErrorPayload');
+      expect(message).toContain('required TrayErrorPayload | null');
+      expect(message).toContain('make error required unknown');
       expect(message).toContain('reviewed source-portability exception for this exact property');
+      expect(message).toContain('can lower the current guarded presence test and exact value forwarding');
       expect(message).toContain('target-specific Any carrier');
       expect(message).toContain('insert a cast');
+      expect(message).toContain('collapse or invent an absence sentinel');
       expect(message).toContain('copy or materialize the payload');
     }
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
@@ -3423,6 +3432,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       const findings = analyzeTypeScriptSourcePortability([control]).findings;
       expect(findings).toHaveLength(count);
       expect(findings.every((finding) => !finding.message.includes('public Tray result boundary'))).toBe(true);
+      expect(findings.every((finding) => !finding.message.includes('none observes own-property presence'))).toBe(true);
     }
 
     const reviewed = analyzeTypeScriptSourcePortability([opaque], {

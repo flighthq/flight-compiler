@@ -42529,6 +42529,47 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(emitted.contents).not.toContain('Exclude<');
   });
 
+  it('lowers the guarded Tray provider error forwarding used by current consumers', () => {
+    // Concrete catches author `error`, while a host result may omit it. createTrayIcon observes that
+    // distinction only to forward undefined for omission; no current consumer observes own-property
+    // presence on the public wrapper, so lowering needs no source-independent sentinel choice.
+    const result = lower(
+      'tray-error-forwarding.ts',
+      `type TrayCreateCapabilityResult =
+         | { readonly outcome: 'cancelled' }
+         | { readonly error?: unknown; readonly outcome: 'runtime-api-unavailable' }
+         | { readonly error?: unknown; readonly outcome: 'tray-create-failed' };
+       interface TrayCreateFailureResult { error?: unknown; outcome: string }
+       export function fromCatch(error: unknown): TrayCreateFailureResult {
+         return { error, outcome: 'tray-create-failed' };
+       }
+       export function fromProvider(result: TrayCreateCapabilityResult): TrayCreateFailureResult {
+         return { error: 'error' in result ? result.error : undefined, outcome: result.outcome };
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('flight::Any error');
+    expect(output).toContain('std::optional<flight::Any> error');
+    expect(output).not.toContain('static_cast<flight::Any>');
+    expect(output).not.toContain('reinterpret_cast');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-tray-error-forwarding-'));
+      const header = path.join(directory, 'tray_error_forwarding.hpp');
+      try {
+        writeFileSync(header, output, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('emits the closed object union that survives a direct exclusion', () => {
     const result = lower(
       'tray-result.ts',
