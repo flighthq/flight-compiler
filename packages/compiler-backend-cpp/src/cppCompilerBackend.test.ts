@@ -13346,6 +13346,115 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // HostVideo.ts's opaque-value-domain finding. Its one opaque value domain is the stream handle the host
+  // adapter accepts -- `attachStream?(stream: unknown)` -- and that parameter is arbitrary by declaration,
+  // so it lowers to flight::Any and needs no guidance. The module's actual blockers are host ownership:
+  // AbortSignal (a lifetime identity) and Blob (a binary object identity), both of which already carry
+  // remediation prose. The control asserts the refusal, then binds exactly those two and shows the arbitrary
+  // parameter surviving as flight::Any rather than being narrowed or copied.
+  it('classifies the host video stream parameter as arbitrary data already carried', () => {
+    const result = lower(
+      'HostVideo.ts',
+      `export interface HostVideoCapability {
+         attachStream?(stream: unknown): string | null;
+         canPlayType(mimeType: string): boolean;
+         createObjectUrl?(data: Blob): string;
+         loadUrl?(url: string, signal?: AbortSignal): Promise<string>;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('missing: AbortSignal[type], Blob[type]');
+
+    const contents = emitIrModuleCpp(result.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/abort.hpp'],
+            nullability: 'non-null' as const,
+            ownership: 'shared' as const,
+            sourceName: 'AbortSignal',
+            space: 'type' as const,
+            targetName: 'host::AbortSignal',
+          },
+          {
+            headers: ['host/blob.hpp'],
+            nullability: 'non-null' as const,
+            ownership: 'shared' as const,
+            sourceName: 'Blob',
+            space: 'type' as const,
+            targetName: 'host::Blob',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1' as const,
+      },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    // The stream handle stays the erased carrier it was declared as, so the host adapter may accept any
+    // stream the platform hands it without the compiler inventing a narrower type or copying it through one.
+    expect(contents).toContain(
+      'std::optional<std::function<std::optional<flight::String>(flight::Any)>> attach_stream;',
+    );
+  });
+
+  // Reported to Foreman as a live defect, pinned here so the current behaviour is visible rather than assumed.
+  // A module that declares `type Handle = <host symbol>` refuses when that symbol is unbound, but every module
+  // that IMPORTS the alias still emits: it includes the refused module's header (which was never produced) and
+  // writes the unbound symbol bare, with no declaration and no binding requirement of its own. The alias is
+  // resolved while rendering, after the reachability walk that decides the missing-binding set has run, so the
+  // consumer never learns the symbol exists. The emitted set therefore cannot compile while the run reports
+  // the consumer as emitted. This control pins that behaviour; it does not endorse it.
+  it('pins that a consumer of a refused alias module still emits its unbound symbol', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './alias',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/alias.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, body: string) => ({
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(`/flight/packages/types/src/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source('alias.ts', 'export type Handle = CanvasImageSource;'),
+        source(
+          'consumer.ts',
+          `import type { Handle } from './alias';
+           export interface C { attach?(stream: unknown): Handle | null; play?(element: Handle): void; }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const alias = results.find((result) => result.module.source.endsWith('alias.ts'))!;
+    const consumer = results.find((result) => result.module.source.endsWith('consumer.ts'))!;
+
+    const aliasFailure = captureBackendEmissionFailure(() => session.emitModule(alias.module));
+    expect(aliasFailure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(aliasFailure.message).toContain('missing: CanvasImageSource[type]');
+
+    const contents = session.emitModule(consumer.module)[0]!.contents;
+    // The dependency refused, yet the consumer emits the include for its header and the raw symbol.
+    expect(contents).toContain('#include "alias.hpp"');
+    // The unbound symbol is written raw into the signature, and the alias name is used with no declaration.
+    expect(contents).toContain('std::optional<std::function<std::optional<CanvasImageSource>(flight::Any)>> attach;');
+    expect(contents).toContain('std::optional<std::function<void(flight::Ref<flighthq_types::Handle>)>> play;');
+    expect(contents).not.toContain('using CanvasImageSource');
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
