@@ -14936,15 +14936,12 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     );
   });
 
-  // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
-  // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
-  // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
-  // TypeScript, and this compiler keeps a union's alternatives rather than collapsing them, which the Blob
-  // and typeof-erasure controls already pin. What blocks the module is ownership, not shape: three host-owned
-  // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
-  // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
-  // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
-  it('classifies the net transport host bindings as one target-runtime family', () => {
+  // Net.ts has two independent concerns. Its request body is already a closed union, while unknown absorbs
+  // the declared response alternatives and loses the exact JSON domain; successful C++ emission through
+  // flight::Any exposes that source-portability defect rather than endorsing intentional erasure. Separately,
+  // the module names three host-owned ambient types that need external bindings. Two carry remediation prose;
+  // ArrayBufferView reports bare because it has no renderMissing* sibling and is absent from the ambient surface.
+  it('classifies net host bindings independently from the erased response domain', () => {
     const result = lower(
       'Net.ts',
       `export type NetMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | (string & {});
@@ -14974,14 +14971,14 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
     expect(failure.classification).toBe('target-runtime');
     // One family, three symbols: the abort lifetime identity and the two binary value carriers the body
-    // unions name. Nothing here is a source-shape problem, so no source change is warranted.
+    // unions name. Resolving this target-runtime gap does not resolve the independent source-domain finding.
     expect(failure.message).toContain('missing: AbortSignal[type], ArrayBufferView[type], Blob[type]');
     expect(failure.message).toContain('Abort cancellation handles AbortSignal are target-runtime lifetime identities');
     expect(failure.message).toContain('Blob is a host-owned immutable binary object identity');
     expect(failure.message).not.toContain('ArrayBufferView is');
 
-    // Supplying exactly those three entries proves the finding is the binding gap and nothing else: the
-    // module then emits, and every transport domain above survives as the representation it was declared as.
+    // Supplying exactly those three entries resolves the target-runtime gap; every transport domain then
+    // survives as declared, including the response erasure that source portability rejects separately.
     const externalBindings = {
       bindings: [
         {
@@ -15018,7 +15015,8 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     // A closed record keyed by the header name, and the request body kept as its own union.
     expect(contents).toContain('flight::Record<flight::String, flight::String> headers;');
     expect(contents).toContain('std::optional<NetBody> body;');
-    // The erased response body keeps its alternatives rather than collapsing to a bare Any.
+    // The erased response body keeps its alternatives, including flight::Any; representability is not proof
+    // that JSON is intentionally arbitrary or that the public source contract is portable.
     expect(contents).toContain('using NetResponseBody =');
     expect(contents).toContain('flight::Any');
   });
@@ -26224,6 +26222,9 @@ int main() {
     expect(output).toContain('flight::Array<NetJsonValue>');
     expect(output).toContain('flight::Record<flight::String, NetJsonValue>');
     expect(output).not.toContain('using NetJsonValue =');
+    expect(output).toContain('flight::ArrayBuffer');
+    expect(output).toContain('host::Blob');
+    expect(output).not.toContain('flight::Any');
     expect(output.indexOf('struct NetJsonValue : public')).toBeLessThan(output.indexOf('struct NetResponse : public'));
 
     if (canCompileCpp && cppToolchain) {

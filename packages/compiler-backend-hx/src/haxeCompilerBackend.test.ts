@@ -2606,6 +2606,42 @@ describe('emitIrModuleHaxe', () => {
     expect(typed).not.toContain('stream:Dynamic');
   });
 
+  it('preserves named network JSON contracts across Haxe runtime union erasure', () => {
+    const source = (body: string, jsonDomain = '') => `${jsonDomain}
+export type NetResponseBody = ${body};
+export interface NetResponse { readonly body: NetResponseBody }
+export interface NetBinaryCarriers { readonly arrayBuffer: ArrayBuffer; readonly blob: Blob }`;
+    const erased = emitIrModuleHaxe(
+      lower('Net.ts', source('string | unknown | ArrayBuffer | Blob | null')).module,
+    ).contents;
+    expect(erased).toContain('typedef NetResponseBody = Dynamic;');
+    expect(erased).toContain('body:NetResponseBody');
+
+    const closed = emitIrModuleHaxe(
+      lower(
+        'Net.ts',
+        source(
+          'string | NetJsonValue | ArrayBuffer | Blob | null',
+          `export type NetJsonValue =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly NetJsonValue[]
+  | Readonly<NetJsonObject>;
+export interface NetJsonObject { readonly [name: string]: NetJsonValue }`,
+        ),
+      ).module,
+    ).contents;
+    expect(closed).toContain('typedef NetJsonValue = Dynamic;');
+    expect(closed).toContain('typedef NetResponseBody = Dynamic;');
+    expect(closed).toContain('body:NetResponseBody');
+    for (const output of [erased, closed]) {
+      expect(output).toContain('arrayBuffer:flighthq._internal._ArrayBuffer');
+      expect(output).toContain('blob:js.html.Blob');
+    }
+  });
+
   it('distinguishes erased log fields from the named recursive transport domain', () => {
     const opaque = emitIrModuleHaxe(
       lower(

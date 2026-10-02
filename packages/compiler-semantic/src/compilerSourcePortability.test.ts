@@ -3090,6 +3090,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('with progress, it assembles one ArrayBuffer and _decodeNetBuffer');
     expect(message).toContain('Both JSON paths return null on a thrown decoder');
     expect(message).toContain('non-2xx HTTP responses still retain their decoded body');
+    expect(message).toContain('passes the same readonly NetRequest and request body');
+    expect(message).toContain('copies the headers record into RequestInit');
+    expect(message).toContain('AbortController, timeout, and abort listener live only until');
+    expect(message).toContain('fresh decoded body owner to the caller');
     expect(message).toContain('including through its optional guard wrapper');
     expect(message).toContain('no Flight cache or serializer retains or rewrites the body');
     expect(message).toContain('loadText checks string');
@@ -3101,6 +3105,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('successful JSON null currently shares the decode-failure sentinel');
     expect(message).toContain('named closed decoded-versus-unavailable body state');
     expect(message).toContain('do not silently exclude valid JSON null');
+    expect(message).toContain('Haxe emits the erased NetResponseBody as Dynamic');
+    expect(message).toContain('closed recursive JSON union also uses Dynamic at runtime');
+    expect(message).toContain('keeps NetResponse.body typed as NetResponseBody');
+    expect(message).toContain('C++ emits the erased arm as flight::Any');
+    expect(message).toContain('recursive NetJsonValue struct');
+    expect(message).toContain('without flight::Any');
+    expect(message).toContain('ArrayBuffer remains flight::ArrayBuffer');
+    expect(message).toContain('exact Blob[type] external binding such as host::Blob');
     expect(message).toContain('Do not whitelist the public transport domain');
     expect(message).toContain('will preserve each declared body owner and JSON value');
     expect(message).toContain('will not treat unknown as JSON');

@@ -3754,6 +3754,8 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain('createWebNetBackend is the only production NetBackend');
     expect(sourcePortability.findings[0]?.message).toContain('recursive closed NetJsonValue and NetJsonObject');
     expect(sourcePortability.findings[0]?.message).toContain('successful JSON null currently shares');
+    expect(sourcePortability.findings[0]?.message).toContain('Haxe emits the erased NetResponseBody as Dynamic');
+    expect(sourcePortability.findings[0]?.message).toContain('C++ emits the erased arm as flight::Any');
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the public transport domain');
     expect(report.directFindings).toMatchObject([
       {
@@ -3769,6 +3771,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
     });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
 
     const portableSource = createMemoryWorkspaceSource(createNetResponseBodyWorkspaceFiles(false));
     const portableInput = createFlightWorkspaceCompilationInput({
@@ -3776,9 +3786,36 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+    expect(portableSourcePortability).toMatchObject({
       acceptedExceptions: [],
       findings: [],
+    });
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
   });
 
