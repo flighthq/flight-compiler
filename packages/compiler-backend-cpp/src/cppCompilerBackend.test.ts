@@ -13707,14 +13707,6 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(contents).not.toContain('reinterpret_cast');
     expect(contents).not.toContain('materialize');
   });
-  // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
-  // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
-  // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
-  // TypeScript, and this compiler keeps a union's alternatives rather than collapsing them, which the Blob
-  // and typeof-erasure controls already pin. What blocks the module is ownership, not shape: three host-owned
-  // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
-  // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
-  // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
   // The guiController erased cell, traced and pinned. Its exact shape is a symbol-keyed object literal
   // asserted through `unknown` to a generic owner -- `{ [EntityRuntimeKey]: runtime } as unknown as
   // Controller` in @flighthq/gui/src/guiController.ts:76, and the identical spelling in
@@ -13834,6 +13826,14 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(failure.message).toContain('has no heritage to cast along');
   });
 
+  // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
+  // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
+  // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
+  // TypeScript, and this compiler keeps a union's alternatives rather than collapsing them, which the Blob
+  // and typeof-erasure controls already pin. What blocks the module is ownership, not shape: three host-owned
+  // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
+  // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
+  // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
