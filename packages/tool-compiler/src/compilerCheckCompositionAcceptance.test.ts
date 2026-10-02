@@ -5698,17 +5698,30 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
       expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
     );
-    expect(
-      sourcePortability.findings.every(({ message }) =>
-        message.includes('deformSkeleton2DPathAttachment passes skin and vertices unchanged'),
-      ),
-    ).toBe(true);
-    expect(
-      sourcePortability.findings.every(({ message }) =>
-        message.includes('Make PathAttachment2D.skin a required Skin2D | null field'),
-      ),
-    ).toBe(true);
-    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    for (const { message } of sourcePortability.findings) {
+      expect(message).toContain('No production path currently materializes a PathAttachment2D');
+      expect(message).toContain('Spine JSON recognizes a path attachment as unsupported');
+      expect(message).toContain('DragonBones does the same for every non-image/non-mesh display');
+      expect(message).toContain('Spine binary recognizes the path ordinal');
+      expect(message).toContain('skipSpineBinaryVertices call delegates to readSpineBinaryVertices');
+      expect(message).toContain('returned carrier pair is discarded immediately');
+      expect(message).toContain('Repository constructors are test-only and always assign both fields');
+      expect(message).toContain('deformSkeleton2DPathAttachment passes skin and vertices unchanged');
+      expect(message).toContain('solveSkeleton2DPathConstraint is the only production attachment-kind consumer');
+      expect(message).toContain('cloneSkeleton2D deep-copies bones and transform buffers');
+      expect(message).toContain('preserving each exact attachment reference');
+      expect(message).toContain('setSkeleton2DSkin and the attachment animation binder');
+      expect(message).toContain('none of those operations writes skin, vertices, or their typed arrays');
+      expect(message).toContain('disposeSkeleton2D clears the active slots and bones');
+      expect(message).toContain('does not clear the shared skins array');
+      expect(message).toContain('Make PathAttachment2D.skin a required Skin2D | null field');
+      expect(message).toContain('PathAttachment2D.vertices a required Float32Array | null field');
+      expect(message).toContain('This finding is not a host-binding gap');
+      expect(message).toContain('Ref<Skin2D> | Null | Undefined');
+      expect(message).toContain('one optional Ref<Skin2D> and one optional Float32Array');
+      expect(message).toContain('Do not whitelist either redundant absence spelling');
+      expect(message).not.toContain('reviewed source-portability exception');
+    }
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
         policyClass,
@@ -5728,6 +5741,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 2,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createPathAttachment2DWorkspaceFiles(false));

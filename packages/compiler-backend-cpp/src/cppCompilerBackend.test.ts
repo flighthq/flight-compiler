@@ -14247,6 +14247,42 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     }
   });
 
+  it('separates PathAttachment2D point-owner nullability from redundant undefined states', () => {
+    // Both values are compiler-owned carriers: Skin2D is a Flight entity reference and Float32Array is a
+    // native typed-array value. The current optional-nullable fields preserve two sentinels, while making
+    // the stored fields required nullable removes only Undefined and needs no binding or erased fallback.
+    const result = lowerPackage(
+      '@flighthq/types',
+      'PathAttachment2D.ts',
+      `export interface Entity { readonly id: number }
+       export interface Attachment2D extends Entity { kind: string }
+       export interface Skin2D extends Entity {
+         influenceCounts: Uint16Array;
+         influences: Float32Array;
+       }
+       export interface CurrentPathAttachment2D extends Attachment2D {
+         skin?: Skin2D | null;
+         vertices?: Float32Array | null;
+       }
+       export interface ResolvedPathAttachment2D extends Attachment2D {
+         skin: Skin2D | null;
+         vertices: Float32Array | null;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('std::variant<flight::Ref<Skin2D>, flight::Null, flight::Undefined> skin');
+    expect(contents).toContain('std::variant<flight::Float32Array, flight::Null, flight::Undefined> vertices');
+    expect(contents).toContain('std::optional<flight::Ref<Skin2D>> skin;');
+    expect(contents).toContain('std::optional<flight::Float32Array> vertices;');
+    expect(contents).toContain('struct Skin2D : public flight::ReferenceEnabled');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
+  });
+
   // Assets.ts's opaque-value-domain finding. The library is deliberately resource-type-agnostic: it decodes
   // nothing itself and binds each asset *type* to its loader through an open adapter registry, so the payload
   // is erased BY CONSTRUCTION rather than being a domain the compiler failed to close. The September corpus

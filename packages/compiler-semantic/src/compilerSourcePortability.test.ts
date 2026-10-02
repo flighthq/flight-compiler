@@ -5705,27 +5705,91 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     for (const finding of findings) {
       expect(finding.message).toContain(`PathAttachment2D.${finding.subject.endsWith(':skin') ? 'skin' : 'vertices'}`);
+      expect(finding.message).toContain('stored point-owner pair has only weighted, rigid, and empty runtime meanings');
+      expect(finding.message).toContain('No production path currently materializes a PathAttachment2D');
+      expect(finding.message).toContain('Spine JSON recognizes a path attachment as unsupported');
+      expect(finding.message).toContain('emits its Skip diagnostic, returns null');
+      expect(finding.message).toContain('adds nothing to the skin');
+      expect(finding.message).toContain('DragonBones does the same for every non-image/non-mesh display');
+      expect(finding.message).toContain('retaining only a null display-list position');
+      expect(finding.message).toContain('Spine binary recognizes the path ordinal');
+      expect(finding.message).toContain('closed and constant-speed flags');
+      expect(finding.message).toContain('vertex stream, per-curve lengths, and optional color');
+      expect(finding.message).toContain('later emitting one aggregated Skip diagnostic');
+      expect(finding.message).toContain('skipSpineBinaryVertices call delegates to readSpineBinaryVertices');
+      expect(finding.message).toContain('rigid bytes transiently allocate a Float32Array');
+      expect(finding.message).toContain('weighted bytes transiently create a Skin2D with influence arrays');
+      expect(finding.message).toContain('returned carrier pair is discarded immediately');
+      expect(finding.message).toContain(
+        'never installed in a PathAttachment2D, slot, skin, import result, or module state',
+      );
+      expect(finding.message).toContain('Repository constructors are test-only and always assign both fields');
+      expect(finding.message).toContain('weighted paths store the exact Skin2D with vertices null');
+      expect(finding.message).toContain('rigid paths store skin null with the exact Float32Array');
+      expect(finding.message).toContain('empty-path control stores null for both');
+      expect(finding.message).toContain('copies commands and winding into a distinct output Path');
+      expect(finding.message).toContain('sizes its data from pointCount');
       expect(finding.message).toContain('deformSkeleton2DPathAttachment passes skin and vertices unchanged');
-      expect(finding.message).toContain('a present Skin2D selects weighted deformation and ignores vertices');
+      expect(finding.message).toContain('A present Skin2D selects weighted deformation and ignores vertices');
       expect(finding.message).toContain('a present Float32Array supplies rigid local points');
-      expect(finding.message).toContain('a nullish vertices value causes no coordinate writes');
-      expect(finding.message).toContain('explainSkeleton2DDeformLength makes the same dispatch');
-      expect(finding.message).toContain('no PathAttachment2D constructor or importer');
-      expect(finding.message).toContain('every concrete repository test constructor assigns both fields');
+      expect(finding.message).toContain('null or undefined vertices cause no coordinate writes');
+      expect(finding.message).toContain('optional deform stream is separate slot-owned state');
+      expect(finding.message).toContain('never changes either point owner');
+      expect(finding.message).toContain('explainSkeleton2DDeformLength makes the same weighted-first choice');
+      expect(finding.message).toContain('deriving addressed offsets from skin.influences or vertices without mutation');
+      expect(finding.message).toContain(
+        'solveSkeleton2DPathConstraint is the only production attachment-kind consumer',
+      );
+      expect(finding.message).toContain('resolves the current slot by PathAttachment2DKind');
+      expect(finding.message).toContain('deforms into one module scratch Path');
+      expect(finding.message).toContain('mutates only constrained bone transforms');
+      expect(finding.message).toContain('missing, non-path, or zero-length target returns');
+      expect(finding.message).toContain('cloneSkeleton2D deep-copies bones and transform buffers');
+      expect(finding.message).toContain('shallow-copies slot records, preserving each exact attachment reference');
+      expect(finding.message).toContain('shares the skins array and every wardrobe attachment');
+      expect(finding.message).toContain('there is no clonePathAttachment2D');
+      expect(finding.message).toContain('setSkeleton2DSkin and the attachment animation binder');
+      expect(finding.message).toContain('only replace or clear slot attachment references');
+      expect(finding.message).toContain('Slot deform mutation copies or reuses the offset buffer');
+      expect(finding.message).toContain('recording the authored attachment identity');
+      expect(finding.message).toContain('none of those operations writes skin, vertices, or their typed arrays');
+      expect(finding.message).toContain(
+        'There is no destroyPathAttachment2D, disposePathAttachment2D, or disposeSkin2D',
+      );
+      expect(finding.message).toContain('disposeSkeleton2D clears the active slots and bones');
+      expect(finding.message).toContain('does not clear the shared skins array');
+      expect(finding.message).toContain('wardrobe-held attachments remain referenced until their owners are released');
+      expect(finding.message).toContain('need no host or native teardown and become collectible normally');
       expect(finding.message).toContain('Make PathAttachment2D.skin a required Skin2D | null field');
       expect(finding.message).toContain('PathAttachment2D.vertices a required Float32Array | null field');
+      expect(finding.message).toContain('initialize both on every future materialization path');
+      expect(finding.message).toContain('preserve the exact owners');
       expect(finding.message).toContain('retain the current weighted-first dispatch');
+      expect(finding.message).toContain('This finding is not a host-binding gap');
+      expect(finding.message).toContain('Skin2D is a compiler-owned entity reference');
+      expect(finding.message).toContain('Float32Array is a compiler-native typed-array value');
+      expect(finding.message).toContain('Ref<Skin2D> | Null | Undefined');
+      expect(finding.message).toContain('Float32Array | Null | Undefined');
+      expect(finding.message).toContain('one optional Ref<Skin2D> and one optional Float32Array');
+      expect(finding.message).toContain('without Any, casts, or external bindings');
       expect(finding.message).toContain('one named closed storage state');
       expect(finding.message).toContain('Do not whitelist either redundant absence spelling');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('begin importing an unsupported path');
+      expect(finding.message).toContain('retain or discard a transient importer carrier');
       expect(finding.message).toContain('infer or change the deformation mode');
       expect(finding.message).toContain('fabricate a Skin2D or vertex buffer');
-      expect(finding.message).toContain('rewrite commands or pointCount');
-      expect(finding.message).toContain('allocate or copy either owner');
+      expect(finding.message).toContain('copy commands or winding');
+      expect(finding.message).toContain('size or populate an output Path');
+      expect(finding.message).toContain('select or apply deform offsets');
+      expect(finding.message).toContain('sample a path, mutate constrained bones');
+      expect(finding.message).toContain('clone or swap an attachment');
+      expect(finding.message).toContain('clear or retain a disposal reference');
+      expect(finding.message).toContain('allocate, copy, or destroy either point owner');
       expect(finding.message).toContain('route elements through Any');
+      expect(finding.message).toContain('fabricate a host binding');
       expect(finding.message).toContain('reinterpret or cast storage');
       expect(finding.message).toContain('or add side storage');
-      expect(finding.message).not.toContain('Import initializers assign both fields');
     }
   });
 
