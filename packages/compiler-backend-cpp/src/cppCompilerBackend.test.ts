@@ -12010,6 +12010,78 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('names the test a mixed-absence slot needs and lowers the tests it names', () => {
+    // GlRenderState's remaining slots are `X | null` optional -- storage that carries BOTH sentinels. A
+    // strict test reaches only one of them, so the read behind it has no presence proof; the refusal now
+    // says which test does prove presence. These controls keep that sentence true, because a message that
+    // names a guard which does not lower would be worse than the terse one it replaced.
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('gl-scissor.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+    const scissor = `export interface Rect { readonly x: number }
+export interface S { readonly currentScissorRect?: Rect | null }`;
+
+    for (const guard of ['!== null', '!== undefined']) {
+      const failure = refusal(`${scissor}
+export function use(s: S): number { if (s.currentScissorRect ${guard}) return s.currentScissorRect.x; return 0; }`);
+      expect(failure.rule).toBe('cpp-member-projection-without-present-storage');
+      expect(failure.message).toContain('the guard that proves presence is the loose `x != null`');
+    }
+
+    // The test the message names, on the receiver and on a bound local alike.
+    for (const body of [
+      'if (s.currentScissorRect != null) return s.currentScissorRect.x; return 0;',
+      'const rect = s.currentScissorRect; if (rect != null) return rect.x; return 0;',
+    ]) {
+      expect(
+        emitIrModuleCpp(
+          lower(
+            'gl-scissor-ok.ts',
+            `${scissor}
+export function use(s: S): number { ${body} }`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ).contents,
+      ).toContain('holds_alternative<flight::Null>');
+    }
+
+    // The callable slot: `?.` has two sentinels to test, and the guard the message names lowers.
+    const callable = `export interface S2 { readonly flushPendingDraws?: ((state: S2) => void) | null }`;
+    const optionalCall = refusal(`${callable}
+export function run(s: S2): void { s.flushPendingDraws?.(s); }`);
+    expect(optionalCall.rule).toBe('cpp-dual-sentinel-optional-chain-projection-unproven');
+    expect(optionalCall.message).toContain('Test both at once with `x != null`');
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'gl-flush-ok.ts',
+          `${callable}
+export function run(s: S2): void { if (s.flushPendingDraws != null) s.flushPendingDraws(s); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('holds_alternative<flight::Null>');
+
+    // The coalesce: the projection needs a destination, and declaring the result supplies one.
+    const bias = `export interface Bias { readonly scale: number }
+export interface S3 { readonly b?: Bias | null }`;
+    const undeclared = refusal(`${bias}
+export function pick(s: S3): unknown { return s.b ?? null; }`);
+    expect(undeclared.rule).toBe('cpp-dual-sentinel-coalesce-projection-unproven');
+    expect(undeclared.message).toContain('a local annotation, a parameter type, or a return type');
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'gl-coalesce-ok.ts',
+          `${bias}
+export function pick(s: S3): Bias | null { return s.b ?? null; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('nullish_coalesce_left');
+  });
+
   it('attributes a buffered dependent parameter pack to the source and forwards a terminal one', () => {
     // throttle.ts buffers the rest pack (`lastArgs = args`) so a trailing edge can re-fire it. The pack
     // forwards perfectly into the call that owns it -- the emitted variadic pack is

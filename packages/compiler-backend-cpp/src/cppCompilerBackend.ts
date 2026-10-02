@@ -3727,7 +3727,7 @@ function emitExpression(
           if (dualSentinelProjection) return dualSentinelProjection;
           emissionError(
             context,
-            'dual-sentinel nullish coalescing requires presence projection lowering',
+            'dual-sentinel nullish coalescing requires presence projection lowering: the operand carries both null and undefined, so the coalesce has to be projected into a destination the emitter can name. Declare the expression result -- a local annotation, a parameter type, or a return type -- and the projection lowers; left as the source wrote it there is no destination to project into',
             'cpp-dual-sentinel-coalesce-projection-unproven',
           );
         }
@@ -13097,7 +13097,7 @@ function assertCppPresentOptionalStorageMemberReceiverCpp(
   if (!hasCppPresentExpressionStorageProofCpp(receiver, context)) {
     emissionError(
       context,
-      `member ${expression.name} on optional C++ storage requires proven present payload: nothing proved the payload present, so the read would unpack storage that may be holding absence. Guard the receiver, read it through an optional chain, or narrow it into a present local first; the compiler will not call value() without that proof`,
+      `member ${expression.name} on optional C++ storage requires proven present payload: nothing proved the payload present, so the read would unpack storage that may be holding absence. Guard the receiver, read it through an optional chain, or narrow it into a present local first; the compiler will not call value() without that proof. Where the storage carries BOTH null and undefined, a strict test reaches only one of them -- \`x !== null\` leaves undefined and \`x !== undefined\` leaves null -- so the guard that proves presence is the loose \`x != null\`, or a local bound from the storage and tested the same way`,
       'cpp-member-projection-without-present-storage',
     );
   }
@@ -27518,7 +27518,7 @@ function assertIrOptionalChainReceiverIsSingleSentinelCpp(type: Readonly<IrType>
   if (union && getCppUnionRepresentationPlan(union, context).kind === 'dualSentinelVariant') {
     emissionError(
       context,
-      'dual-sentinel optional chaining requires presence projection lowering',
+      'dual-sentinel optional chaining requires presence projection lowering: the receiver carries both null and undefined, so `?.` has two sentinels to test and no single presence to project. Test both at once with `x != null` and then use the receiver directly -- that emits as one holds_alternative test per sentinel',
       'cpp-dual-sentinel-optional-chain-projection-unproven',
     );
   }
