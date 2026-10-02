@@ -6215,6 +6215,91 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the required-nullable contract for imported Skeleton2D draw order', () => {
+    const source = input(
+      'packages/types/src/Skeleton2DImport.ts',
+      `interface Skeleton2DDrawOrderTimeline { orderings: number[]; times: number[] }
+       interface Skeleton2DImportAnimation {
+         clip: AnimationClip;
+         drawOrder?: Skeleton2DDrawOrderTimeline | null;
+         name: string;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: 'mixed-absence',
+      subject: 'interface:Skeleton2DImportAnimation/property:drawOrder',
+    });
+    const message = findings[0]!.message;
+    expect(message).toContain('deferred draw-order timeline both omission and explicit null');
+    expect(message).toContain('Spine JSON and binary animation importers now always assign drawOrder');
+    expect(message).toContain('at least one resolved whole-ordering frame');
+    expect(message).toContain('DragonBones recognizes zOrder as unsupported');
+    expect(message).toContain('sole production producer that omits drawOrder');
+    expect(message).toContain('source comment saying parsers do not emit the property is therefore stale');
+    expect(message).toContain('No production code reads Skeleton2DImportAnimation.drawOrder directly');
+    expect(message).toContain('there is no import-record clone or serializer');
+    expect(message).toContain('cloneSkeleton2D copies only the setup rig');
+    expect(message).toContain('cloneAnimationClip copies only channels, tracks, and events');
+    expect(message).toContain('createSkeleton2DDrawOrderChannel is the explicit later boundary');
+    expect(message).toContain('retains the exact times and orderings arrays as its track buffers');
+    expect(message).toContain("binder rebuilds the caller's NodeOrderList without mutating the timeline");
+    expect(message).toContain('cloning that augmented clip later deep-copies both track buffers');
+    expect(message).toContain(
+      'Make Skeleton2DImportAnimation.drawOrder a required Skeleton2DDrawOrderTimeline | null field',
+    );
+    expect(message).toContain('make DragonBones plus every future producer write null');
+    expect(message).toContain('do not introduce an empty timeline as a third no-draw-order sentinel');
+    expect(message).toContain('setup-pose-only import');
+    expect(message).toContain('@:optional Null<Skeleton2DDrawOrderTimeline>');
+    expect(message).toContain('without a second presence bit or Any carrier');
+    expect(message).toContain('Do not whitelist the redundant import-result spelling');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+  });
+
+  it('requires the exact Skeleton2D import draw-order shape and accepts one sentinel', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/Skeleton2DImport.ts',
+        'interface OtherImportAnimation { drawOrder?: Skeleton2DDrawOrderTimeline | null }',
+      ),
+      input(
+        'packages/example/src/Skeleton2DImport.ts',
+        'interface Skeleton2DImportAnimation { drawOrder?: Skeleton2DDrawOrderTimeline | null }',
+      ),
+      input(
+        'packages/types/src/Skeleton2DImport.ts',
+        'interface Skeleton2DImportAnimation { order?: Skeleton2DDrawOrderTimeline | null }',
+      ),
+      input(
+        'packages/types/src/Skeleton2DImport.ts',
+        'interface Skeleton2DImportAnimation { drawOrder?: OtherTimeline | null }',
+      ),
+      input(
+        'packages/types/src/Skeleton2DImport.ts',
+        'interface Skeleton2DImportAnimation { drawOrder?: Skeleton2DDrawOrderTimeline<number> | null }',
+      ),
+    ];
+    const resolved = input(
+      'packages/types/src/Skeleton2DImport.ts',
+      'interface Skeleton2DImportAnimation { drawOrder: Skeleton2DDrawOrderTimeline | null }',
+    );
+    const omitted = input(
+      'packages/types/src/Skeleton2DImport.ts',
+      'interface Skeleton2DImportAnimation { drawOrder?: Skeleton2DDrawOrderTimeline }',
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved, omitted]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('deferred draw-order timeline');
+    }
+  });
+
   it('explains the required-nullable contract for Skeleton2D wardrobe and slot collections', () => {
     const source = input(
       'packages/types/src/Skeleton2D.ts',

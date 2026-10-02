@@ -1350,6 +1350,85 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the Skeleton2D import draw-order finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createSkeleton2DImportDrawOrderWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'interface:Skeleton2DImportAnimation/property:drawOrder';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]).toMatchObject({ rule: 'mixed-absence', subject });
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Spine JSON and binary animation importers now always assign drawOrder',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('DragonBones recognizes zOrder as unsupported');
+    expect(sourcePortability.findings[0]?.message).toContain('createSkeleton2DDrawOrderChannel');
+    expect(sourcePortability.findings[0]?.message).toContain('retains the exact times and orderings arrays');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Make Skeleton2DImportAnimation.drawOrder a required Skeleton2DDrawOrderTimeline | null field',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('empty timeline as a third no-draw-order sentinel');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant import-result spelling');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createSkeleton2DImportDrawOrderWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the MorphShape gradient endpoint matrix finding source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createMorphShapeGradientEndpointWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4673,6 +4752,24 @@ function createSkeleton3DNamesWorkspaceFiles(mixedAbsence: boolean): Record<stri
   names${marker}: readonly string[] | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { Skeleton3D } from './Skeleton3D.js';`,
+  };
+}
+
+function createSkeleton2DImportDrawOrderWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Skeleton2DImport.ts': `export interface Skeleton2DDrawOrderTimeline {
+  orderings: number[];
+  times: number[];
+}
+export interface Skeleton2DImportAnimation {
+  drawOrder${marker}: Skeleton2DDrawOrderTimeline | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  Skeleton2DDrawOrderTimeline,
+  Skeleton2DImportAnimation,
+} from './Skeleton2DImport.js';`,
   };
 }
 
