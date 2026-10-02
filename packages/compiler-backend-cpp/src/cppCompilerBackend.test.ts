@@ -13860,6 +13860,74 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // The renderCache intersection-carrier site, bounded audit. @flighthq/render/src/renderCache.ts refuses in the
+  // family "contextual C++ union conversion requires equivalent source union evidence", and the shape is exact:
+  //   RenderProxyAdapter        = { adapt: (...) => boolean | null }            a bare behavioural contract
+  //   RenderCacheAdapter        = Entity & RenderProxyAdapter & { cache; signals }   an INTERSECTION
+  //   getRenderProxyAdapter(...): RenderProxyAdapter | null                     the declared arm
+  //   setRenderProxyAdapter(..., adapter: RenderProxyAdapter | null)
+  // `useRenderCache` narrows the declared arm to the intersection through its type guard and hands it back to
+  // `setRenderProxyAdapter`, so a value whose C++ owner is the generated intersection struct converts into a
+  // destination arm that is the bare struct -- sibling types with no base relation. The two carriers below are
+  // that pair, and they are what the refusal reports.
+  //
+  // The rule is `cpp-contextual-union-inequivalent` and it has a SECONDARY classification, `intersectionOwnerGap`,
+  // consulted only after `hasUniqueCppSemanticUnionSlotMappingCpp` succeeds; it fires when every source slot is an
+  // intersection that is NOT structural-row resolvable and no target slot shares its carrier. I reproduced the
+  // refusal and its carriers, but I did NOT manage to construct a case that takes that secondary branch -- the
+  // intersections I built resolve as structural rows, which makes the predicate return false. Recorded plainly
+  // rather than claimed: the parked name describes the branch, and what is pinned here is the refusal it belongs to.
+  it('refuses an intersection owner converting into a bare declared union arm', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'render-cache-adapter.ts',
+          `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           export interface EntityRuntime { binding: object | null }
+           export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+           export type RenderProxyAdapter = { adapt(state: number): boolean | null };
+           export type RenderCacheAdapter = Entity & RenderProxyAdapter & { cache: string | null };
+           export function setAdapter(adapter: RenderProxyAdapter | null): void { void adapter; }
+           export function use(adapter: RenderCacheAdapter | null): void { setAdapter(adapter); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    expect(failure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.message).toContain('contextual C++ union conversion requires equivalent source union evidence');
+    // The destination names the bare contract's generated owner; the source names the intersection's.
+    expect(failure.message).toContain('carriers [flight::Ref<adapt_');
+    expect(failure.message).toContain('carriers [flight::Ref<entity_runtime_key_adapt_cache_');
+  });
+
+  // The rule names its own remedies, and the first one is PROVEN here rather than quoted: when both APIs name
+  // the same declared owner the conversion does not exist, so the module emits. This is the only one of the
+  // three the SDK could take without a runtime addition -- "keep both APIs on the same declared arm owner" --
+  // and it is a source change, not a compiler change.
+  it('emits once both APIs name the same declared owner', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'render-cache-shared-owner.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export type RenderProxyAdapter = { adapt(state: number): boolean | null };
+         export type RenderCacheAdapter = Entity & RenderProxyAdapter & { cache: string | null };
+         export function setAdapter(adapter: RenderCacheAdapter | null): void { void adapter; }
+         export function use(adapter: RenderCacheAdapter | null): void { setAdapter(adapter); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // One carrier on both sides: there is no conversion left to represent.
+    const carriers = contents.match(/flight::Ref<entity_runtime_key_adapt_cache_[0-9a-f]+>/gu) ?? [];
+    expect(carriers.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(carriers).size).toBe(1);
+    expect(contents).toContain('set_adapter(adapter);');
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
