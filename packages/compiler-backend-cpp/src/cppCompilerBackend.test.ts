@@ -4379,6 +4379,145 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('make_ref');
   });
 
+  it('requires the 3D transform runtime slot and accessor to preserve detached matrix state', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/runtime.ts' },
+        },
+        {
+          specifier: '@flighthq/entity/contract',
+          target: { packageName: '@flighthq/entity', source: 'packages/entity/src/runtime.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'types/src/runtime.ts',
+          `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           export interface EntityRuntime { binding: object | null }
+           export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+           export interface NodeRuntime<Traits extends object> extends EntityRuntime {
+             localTransformId: number;
+             localTransformUsingLocalTransformId: number;
+             worldTransformId: number;
+             worldTransformUsingLocalTransformId: number;
+             worldTransformUsingParentTransformId: number;
+           }
+           export interface Node<Traits extends object> extends Entity {
+             [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+           }
+           export interface HasTransform3D { position: number }
+           export type Transform3DNode<Traits extends object> = Node<Traits> & HasTransform3D;
+           export interface HasTransform3DRuntime extends EntityRuntime {
+             localMatrix4: number | null;
+             localMatrix4Detached: boolean;
+             worldMatrix4: number | null;
+           }`,
+        ),
+        source(
+          '@flighthq/entity',
+          'entity/src/runtime.ts',
+          `import type { Entity, EntityRuntime } from '@flighthq/types/contract';
+           import { EntityRuntimeKey } from '@flighthq/types/contract';
+           export function getEntityRuntime(source: Readonly<Entity>): Readonly<EntityRuntime> {
+             return source[EntityRuntimeKey]!;
+           }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/nodeTransform3d.ts',
+          `import { getEntityRuntime } from '@flighthq/entity/contract';
+           import type {
+             HasTransform3DRuntime,
+             NodeRuntime,
+             Transform3DNode,
+           } from '@flighthq/types/contract';
+           export function setNodeLocalMatrix4<Traits extends object>(target: Transform3DNode<Traits>): void {
+             const runtime = getEntityRuntime(target) as NodeRuntime<Traits> & HasTransform3DRuntime;
+             runtime.localMatrix4 = 1;
+             runtime.localTransformUsingLocalTransformId = runtime.localTransformId;
+             runtime.localMatrix4Detached = true;
+           }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/typedNodeTransform3d.ts',
+          `import { EntityRuntimeKey } from '@flighthq/types/contract';
+           import type { HasTransform3DRuntime, NodeRuntime } from '@flighthq/types/contract';
+           interface Transform3DNodeRuntime<Traits extends object>
+             extends NodeRuntime<Traits>, HasTransform3DRuntime {}
+           interface Transform3DRuntimeHolder<Traits extends object> {
+             [EntityRuntimeKey]: Transform3DNodeRuntime<Traits> | undefined;
+           }
+           function getTransform3DRuntime<Traits extends object>(
+             source: Transform3DRuntimeHolder<Traits>,
+           ): Transform3DNodeRuntime<Traits> {
+             return source[EntityRuntimeKey]!;
+           }
+           export function setNodeLocalMatrix4<Traits extends object>(
+             target: Transform3DRuntimeHolder<Traits>,
+           ): void {
+             const runtime = getTransform3DRuntime(target);
+             runtime.localMatrix4 = 1;
+             runtime.localTransformUsingLocalTransformId = runtime.localTransformId;
+             runtime.localMatrix4Detached = true;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const emitted = session.emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(refused.classification).toBe('source-portability');
+    expect(refused.message).toContain('setNodeLocalMatrix4 reaches its runtime through getEntityRuntime');
+    expect(refused.message).toContain('returns Readonly<EntityRuntime>');
+    expect(refused.message).toContain('copied into node-owned localMatrix4');
+    expect(refused.message).toContain('localTransformUsingLocalTransformId is immediately stamped');
+    expect(refused.message).toContain('localMatrix4Detached becomes true');
+    expect(refused.message).toContain('position, rotation, and scale are dormant');
+    expect(refused.message).toContain('syncNodeTransform3DFromMatrix4 decomposes that authoritative matrix');
+    expect(refused.message).toContain('recomputeLocalTransform3D composes the shared matrix');
+    expect(refused.message).toContain('recomputeWorldTransform3D writes worldMatrix4');
+    expect(refused.message).toContain('GL and WebGPU model matrices');
+    expect(refused.message).toContain('clones that preserve detached matrices');
+    expect(refused.message).toContain('createNode3DRuntime is the intended concrete producer');
+    expect(refused.message).toContain('initTransform3DRuntimeTrait initializes the transform cells');
+    expect(refused.message).toContain('createNodeRuntime<Node3DTraits>() as the Node3DRuntime intersection');
+    expect(refused.message).toContain('through an allocateNode3DRuntime boundary');
+    expect(refused.message).toContain("make Transform3DNode<Traits>'s runtime slot carry one named full owner");
+    expect(refused.message).toContain('Transform3DNodeRuntime<Traits>');
+    expect(refused.message).toContain('mutable-source transform accessor');
+    expect(refused.message).toContain('put HasTransform3D inside the Traits family constraint');
+    expect(refused.message).toContain('Do not whitelist or recover the cache owner by cast');
+    expect(refused.message).toContain('collapse detached and attached state');
+    expect(emitted).toContain('get_transform3_druntime<Traits>(target)');
+    expect(emitted).toContain('(runtime->local_matrix4 = std::optional<double>{1.0})');
+    expect(emitted).toContain('(runtime->local_transform_using_local_transform_id = runtime->local_transform_id)');
+    expect(emitted).toContain('(runtime->local_matrix4_detached = true)');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize_row');
+    expect(emitted).not.toContain('make_ref');
+  });
+
   it('reuses the pre-erasure row owner for the transform velocity child assertion', () => {
     const { moduleResolution, results } = lowerImportedTransformVelocityModules();
     const modules = results.map((result) => result.module);

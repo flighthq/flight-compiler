@@ -436,6 +436,69 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the 3D detached-matrix runtime owner refusal source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNodeTransform3dWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule(module) {
+          if (module.source === 'packages/node/src/nodeTransform3d.ts') {
+            throw createBackendEmissionFailure(
+              'acceptance',
+              module,
+              'the readonly entity runtime boundary does not prove the writable 3D detached-matrix owner',
+              'cpp-structural-assertion-writable-capability-unproven',
+              { classification: 'source-portability' },
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toEqual([]);
+    expect(report.directFindings).toMatchObject([
+      {
+        module: { source: 'packages/node/src/nodeTransform3d.ts' },
+        policyClass: 'source-portability',
+        rule: 'cpp-structural-assertion-writable-capability-unproven',
+        stage: 'emission',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 1,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 1, directlyRefused: 1, emitted: 0, total: 2 },
+      packages: 1,
+    });
+    const comparison = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.resolvedFindingIdentities).toEqual([]);
+    expect(comparison.unchanged).toHaveLength(1);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('keeps the specialized GL color-adjustment absence finding stable through check mode', () => {
     const source = createMemoryWorkspaceSource(createColorAdjustmentWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -3476,6 +3539,34 @@ export function ensureNodeLocalMatrix<Traits extends object>(target: Transform2D
   const runtime = getEntityRuntime(target) as NodeRuntime<Traits> & HasTransform2DRuntime;
   runtime.rotationAngle = target.rotation;
   runtime.localMatrix = 1;
+}`,
+  };
+}
+
+function createNodeTransform3dWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/node/package.json': createPackageManifest('@flighthq/node'),
+    '/flight/packages/node/src/index.ts': `export { setNodeLocalMatrix4 } from './nodeTransform3d.js';`,
+    '/flight/packages/node/src/nodeTransform3d.ts': `interface EntityRuntime { binding: object | null }
+interface HasTransform3DRuntime extends EntityRuntime {
+  localMatrix4: number | null;
+  localMatrix4Detached: boolean;
+}
+interface NodeRuntime<Traits extends object> extends EntityRuntime {
+  localTransformId: number;
+  localTransformUsingLocalTransformId: number;
+  traits?: Traits;
+}
+interface Node<Traits extends object> { readonly traits?: Traits }
+interface HasTransform3D { position: number }
+type Transform3DNode<Traits extends object> = Node<Traits> & HasTransform3D;
+const entityRuntime: EntityRuntime = { binding: null };
+function getEntityRuntime(_source: object): Readonly<EntityRuntime> { return entityRuntime; }
+export function setNodeLocalMatrix4<Traits extends object>(target: Transform3DNode<Traits>): void {
+  const runtime = getEntityRuntime(target) as NodeRuntime<Traits> & HasTransform3DRuntime;
+  runtime.localMatrix4 = target.position;
+  runtime.localTransformUsingLocalTransformId = runtime.localTransformId;
+  runtime.localMatrix4Detached = true;
 }`,
   };
 }

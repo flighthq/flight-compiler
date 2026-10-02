@@ -18494,3 +18494,115 @@ it('retains the exact readonly entity-runtime source and writable 2D transform t
     expect(writes).toContain(`"name":"${field}"`);
   }
 });
+
+it('retains the exact readonly entity-runtime source and writable 3D detached-matrix target', () => {
+  const moduleResolution = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/runtime.ts' },
+      },
+      {
+        specifier: '@flighthq/entity/contract',
+        target: { packageName: '@flighthq/entity', source: 'packages/entity/src/runtime.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  } as const;
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/runtime.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface NodeRuntime<Traits extends object> extends EntityRuntime {
+           localTransformId: number;
+           localTransformUsingLocalTransformId: number;
+         }
+         export interface Node<Traits extends object> extends Entity {
+           [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+         }
+         export interface HasTransform3D { position: number }
+         export type Transform3DNode<Traits extends object> = Node<Traits> & HasTransform3D;
+         export interface HasTransform3DRuntime extends EntityRuntime {
+           localMatrix4: number | null;
+           localMatrix4Detached: boolean;
+           worldMatrix4: number | null;
+         }`,
+      ),
+      source(
+        '@flighthq/entity',
+        'entity/src/runtime.ts',
+        `import type { Entity, EntityRuntime } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function getEntityRuntime(source: Readonly<Entity>): Readonly<EntityRuntime> {
+           return source[EntityRuntimeKey]!;
+         }`,
+      ),
+      source(
+        '@flighthq/node',
+        'node/src/nodeTransform3d.ts',
+        `import { getEntityRuntime } from '@flighthq/entity/contract';
+         import type { HasTransform3DRuntime, NodeRuntime, Transform3DNode } from '@flighthq/types/contract';
+         export function setNodeLocalMatrix4<Traits extends object>(target: Transform3DNode<Traits>): void {
+           const runtime = getEntityRuntime(target) as NodeRuntime<Traits> & HasTransform3DRuntime;
+           runtime.localMatrix4 = 1;
+           runtime.localTransformUsingLocalTransformId = runtime.localTransformId;
+           runtime.localMatrix4Detached = true;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  const setLocal = results[2]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'setNodeLocalMatrix4',
+  );
+  if (setLocal?.kind !== 'function') throw new Error('Expected setNodeLocalMatrix4');
+  const runtime = setLocal.body[0];
+  const writes = JSON.stringify(setLocal.body.slice(1));
+
+  expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+  expect(runtime).toMatchObject({
+    declarations: [
+      {
+        initializer: {
+          expression: {
+            callee: { reference: { binding: { name: 'getEntityRuntime' }, kind: 'binding' } },
+            kind: 'call',
+            semantics: {
+              resultType: {
+                kind: 'named',
+                reference: { kind: 'ambient', name: 'Readonly' },
+                typeArguments: [{ kind: 'named', reference: { binding: { name: 'EntityRuntime' } } }],
+              },
+            },
+          },
+          kind: 'cast',
+          type: {
+            kind: 'intersection',
+            types: [
+              { kind: 'named', reference: { binding: { name: 'NodeRuntime' } } },
+              { kind: 'named', reference: { binding: { name: 'HasTransform3DRuntime' } } },
+            ],
+          },
+        },
+      },
+    ],
+    kind: 'variable',
+  });
+  for (const field of [
+    'localMatrix4',
+    'localTransformUsingLocalTransformId',
+    'localTransformId',
+    'localMatrix4Detached',
+  ]) {
+    expect(writes).toContain(`"name":"${field}"`);
+  }
+});
