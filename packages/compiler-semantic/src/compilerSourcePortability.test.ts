@@ -7643,15 +7643,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
   it('explains the required nullable contract for GL render-pass tracking slots', () => {
     const source = input(
       'packages/types/src/GlRenderState.ts',
-      `interface GlCubeRenderTarget { readonly cube: true }
-       interface GlRenderTarget { readonly width: number }
+      `interface GlRenderTarget { readonly width: number }
        interface GlScissorRect { readonly height: number; readonly width: number; readonly x: number; readonly y: number }
        interface GlRenderStateRuntime {
          currentScissorRect?: GlScissorRect | null;
-         currentRenderTarget?: GlCubeRenderTarget | GlRenderTarget | null;
+         currentRenderTarget?: GlRenderTarget | null;
        }
        interface SavedGlPassState {
-         renderTarget: GlCubeRenderTarget | GlRenderTarget | null;
+         renderTarget: GlRenderTarget | null;
          scissorRect: GlScissorRect | null;
        }
        function createGlRenderStateRuntime(): GlRenderStateRuntime {
@@ -7691,24 +7690,27 @@ describe('analyzeTypeScriptSourcePortability', () => {
         `gives the active GL render-pass tracking slot ${field} both omission and explicit null`,
       );
       expect(finding.message).toContain('the represented runtime has one outside-pass or inactive state');
+      expect(finding.message).toContain('createGlRenderStateRuntime already assigns currentRenderTarget = null');
       expect(finding.message).toContain(
-        'createGlRenderStateRuntime already assigns runtime.currentRenderTarget = null',
+        'createGlRenderState, invalidateGlRenderStateCache, and the GL test helper assign currentScissorRect = null',
       );
       expect(finding.message).toContain(
-        '_createGlRenderStateFromContext and test helpers assign runtime.currentScissorRect = null',
+        'beginGlRenderPass writes the exact GlRenderTarget and computed active scissor',
       );
-      expect(finding.message).toContain('saveGlPassState normalizes both slots with ?? null');
-      expect(finding.message).toContain('restoreGlPassState, GL state brackets, and cube-face passes save and restore');
-      expect(finding.message).toContain('beginGlRenderPass writes the current target and active scissor together');
-      expect(finding.message).toContain('invalidateGlRenderStateCache clears the tracked scissor to null');
-      expect(finding.message).toContain('consumers use == null or ?? null before target and scissor work');
-      expect(finding.message).toContain(
-        'Make currentRenderTarget a required GlCubeRenderTarget | GlRenderTarget | null field',
-      );
+      expect(finding.message).toContain('captureGlPassState normalizes both slots with ?? null');
+      expect(finding.message).toContain('restoreGlPassState assigns the saved values directly');
+      expect(finding.message).toContain('foreign-renderer push and pop bracket preserves the exact slot values');
+      expect(finding.message).toContain('Target consumers use optional access, == null, or ?? null');
+      expect(finding.message).toContain('clip and resolve paths normalize or directly replace currentScissorRect');
+      expect(finding.message).toContain('Make currentRenderTarget a required GlRenderTarget | null field');
       expect(finding.message).toContain('currentScissorRect a required GlScissorRect | null field');
       expect(finding.message).toContain('initialize both in createGlRenderStateRuntime');
-      expect(finding.message).toContain('preserve the direct pass save and restore assignments');
-      expect(finding.message).toContain('analogous Canvas and WebGPU pass-state slots are already required nullable');
+      expect(finding.message).toContain('preserve the direct pass and foreign-renderer bracket assignments');
+      expect(finding.message).toContain('analogous WebGPU pass-state slots are already required nullable');
+      expect(finding.message).toContain('Do not whitelist the redundant pass-slot spelling');
+      expect(finding.message).toContain(
+        "representation support does not replace the source's single constructed inactive state",
+      );
       expect(finding.message).toContain('model that as a closed runtime or pass state');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('infer a render target or scissor rectangle');
@@ -7722,9 +7724,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const unrelated = [
       input(
         'packages/types/src/GlRenderState.ts',
-        `interface GlCubeRenderTarget {}
-         interface GlRenderTarget {}
-         interface OtherGlRuntime { currentRenderTarget?: GlCubeRenderTarget | GlRenderTarget | null }`,
+        `interface GlRenderTarget {}
+         interface OtherGlRuntime { currentRenderTarget?: GlRenderTarget | null }`,
       ),
       input(
         'packages/types/src/GlRenderState.ts',
@@ -7736,7 +7737,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ),
       input(
         'packages/types/src/GlRenderState.ts',
-        'interface GlRenderTarget {} interface GlRenderStateRuntime { currentRenderTarget?: GlRenderTarget | null }',
+        'interface GlCubeRenderTarget {} interface GlRenderStateRuntime { currentRenderTarget?: GlCubeRenderTarget | null }',
       ),
       input(
         'packages/types/src/GlRenderState.ts',
@@ -7744,31 +7745,28 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ),
       input(
         'packages/types/src/GlRenderState.ts',
-        `interface GlCubeRenderTarget {}
-         interface GlRenderTarget {}
+        `interface GlRenderTarget {}
          interface OtherTarget {}
          interface GlRenderStateRuntime {
-           currentRenderTarget?: GlCubeRenderTarget | GlRenderTarget | OtherTarget | null;
+           currentRenderTarget?: GlRenderTarget | OtherTarget | null;
          }`,
       ),
     ];
     const resolved = input(
       'packages/types/src/GlRenderState.ts',
-      `interface GlCubeRenderTarget {}
-       interface GlRenderTarget {}
+      `interface GlRenderTarget {}
        interface GlScissorRect {}
        interface GlRenderStateRuntime {
-         currentRenderTarget: GlCubeRenderTarget | GlRenderTarget | null;
+         currentRenderTarget: GlRenderTarget | null;
          currentScissorRect: GlScissorRect | null;
        }`,
     );
     const omitted = input(
       'packages/types/src/GlRenderState.ts',
-      `interface GlCubeRenderTarget {}
-       interface GlRenderTarget {}
+      `interface GlRenderTarget {}
        interface GlScissorRect {}
        interface GlRenderStateRuntime {
-         currentRenderTarget?: GlCubeRenderTarget | GlRenderTarget;
+         currentRenderTarget?: GlRenderTarget;
          currentScissorRect?: GlScissorRect;
        }`,
     );
@@ -7808,13 +7806,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const flush = byField.get('flushPendingDraws')!;
     expect(flush).toContain('lazily installed GL pending-draw seam both omission and explicit null');
     expect(flush).toContain('one uninstalled state');
-    expect(flush).toContain('_createGlRenderStateFromContext and the GL test helpers initialize');
+    expect(flush).toContain('createGlRenderState and the GL test helper initialize');
     expect(flush).toContain('createGlRenderStateRuntime is the exported construction path that still omits it');
     expect(flush).toContain('prepareGlQuadBatchWrite installs the exact flushGlQuadBatchWriter callback');
-    expect(flush).toContain('beginGlCubeRenderFace and pushGlRenderState optional-call the slot');
+    expect(flush).toContain('pushGlRenderState optional-calls the slot before capturing context-wide state');
     expect(flush).toContain('required ((state: GlRenderState) => void) | null field');
     expect(flush).toContain('initialize it to null in createGlRenderStateRuntime');
     expect(flush).toContain('does not import or install scene2d-gl');
+    expect(flush).toContain('Do not whitelist the redundant uninstalled spelling');
     expect(flush).toContain('will not choose or collapse an absence sentinel');
     expect(flush).toContain('reorder a flush around GL state capture');
 
@@ -7828,6 +7827,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(guard).toContain('required GlRenderTextureGuard | null field');
     expect(guard).toContain('initialize it to null in createGlRenderStateRuntime');
     expect(guard).toContain('logger and warning implementation remain shakeable');
+    expect(guard).toContain('Do not whitelist the redundant disabled spelling');
     expect(guard).toContain('will not choose or collapse an absence sentinel');
     expect(guard).toContain('change render-texture publication');
 
@@ -7843,6 +7843,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(uniform).toContain('initialize it to null in createGlRenderStateRuntime');
     expect(uniform).toContain('preserve the mode as the state-machine discriminant');
     expect(uniform).toContain('does not register the color-adjustment feature');
+    expect(uniform).toContain('Do not whitelist the redundant empty spelling');
     expect(uniform).toContain('will not choose or collapse an absence sentinel');
     expect(uniform).toContain('copy or materialize adjustment data');
   });

@@ -495,6 +495,99 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps all five GlRenderState runtime absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createGlRenderStateWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedFields = [
+      'currentRenderTarget',
+      'currentScissorRect',
+      'flushPendingDraws',
+      'glRenderTextureGuard',
+      'quadBatchWriterUniformColorScaleBias',
+    ];
+    const expectedSubjects = expectedFields.map((field) => `interface:GlRenderStateRuntime/property:${field}`);
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    const messages = new Map(
+      sourcePortability.findings.map(({ message, subject }) => [subject.slice(subject.lastIndexOf(':') + 1), message]),
+    );
+    expect(messages.get('currentRenderTarget')).toContain('active GL render-pass tracking slot');
+    expect(messages.get('currentScissorRect')).toContain('active GL render-pass tracking slot');
+    expect(messages.get('flushPendingDraws')).toContain('lazily installed GL pending-draw seam');
+    expect(messages.get('glRenderTextureGuard')).toContain('opt-in GL render-texture diagnostic guard');
+    expect(messages.get('quadBatchWriterUniformColorScaleBias')).toContain(
+      "GL quad batch's uniform color-adjustment scratch slot",
+    );
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 5,
+      directOccurrences: 5,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createGlRenderStateWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps the six anchor-layout absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createAnchorLayoutWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -2162,6 +2255,27 @@ export interface GlMeshProgram {
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
     '/flight/packages/types/src/GlMeshProgram.ts': declaration,
     '/flight/packages/types/src/index.ts': `export type { GlMeshProgram } from './GlMeshProgram.js';`,
+  };
+}
+
+function createGlRenderStateWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const optional = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/GlRenderState.ts': `export interface GlRenderState {}
+export interface GlRenderTarget {}
+export interface GlScissorRect {}
+export interface ColorScaleBias {}
+export interface TintMaterialData {}
+export type GlRenderTextureGuard = (state: GlRenderState) => void;
+export interface GlRenderStateRuntime {
+  currentRenderTarget${optional}: GlRenderTarget | null;
+  currentScissorRect${optional}: GlScissorRect | null;
+  flushPendingDraws${optional}: ((state: GlRenderState) => void) | null;
+  glRenderTextureGuard${optional}: GlRenderTextureGuard | null;
+  quadBatchWriterUniformColorScaleBias${optional}: ColorScaleBias | TintMaterialData | readonly number[] | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { GlRenderStateRuntime } from './GlRenderState.js';`,
   };
 }
 
