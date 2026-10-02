@@ -10931,7 +10931,17 @@ function assertWeakMapTypeArgumentsCpp(
   }
   const key = getWeakMapKeyRepresentationCpp(typeArguments[0], context, new Set());
   if (!key) {
-    emissionError(context, 'flight-cpp WeakMap key requires a proven Flight reference or external weak-key policy');
+    // A weak key has to be an object the runtime can hold weakly. A key type the source wrote that can
+    // never be one -- a primitive, say -- is the declaration's to fix, which is the default. An ambient
+    // host type reaches the other remedy in the message: the binding profile declares its weak-key
+    // policy, and until it does no compiler-side change can prove the key. The clause reads the direct
+    // spelling; an alias or union of host types still reports the source default rather than guessing.
+    emissionError(
+      context,
+      'flight-cpp WeakMap key requires a proven Flight reference or external weak-key policy',
+      'cpp-weak-map-key-representation-unproven',
+      typeArguments[0].kind === 'named' && typeArguments[0].reference.kind === 'ambient' ? 'target-runtime' : undefined,
+    );
   }
   if (typeArguments[1].kind === 'unknown' && typeArguments[1].source === 'unknown') {
     if (typeArguments[0].kind !== 'unknown' || typeArguments[0].source !== 'object') {
@@ -10940,7 +10950,13 @@ function assertWeakMapTypeArgumentsCpp(
     return { valueRepresentation: 'erased' };
   }
   if (!hasProvenWeakMapValueRepresentationCpp(typeArguments[1], context)) {
-    emissionError(context, 'flight-cpp WeakMap value requires a proven C++ representation');
+    // The value's representation has to be provable from the declaration -- a bare type parameter cannot
+    // prove one -- and the declaration is the source's to write, so this is attributed to it.
+    emissionError(
+      context,
+      'flight-cpp WeakMap value requires a proven C++ representation',
+      'cpp-weak-map-value-representation-unproven',
+    );
   }
   return {
     valueRepresentation: 'direct',
@@ -31109,6 +31125,11 @@ const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
   // local" -- so the finding belongs to the declaration rather than to the compiler, which cannot discard
   // the absence state on the author's behalf.
   'cpp-optional-cast-subject-unproven',
+  // A weak key the runtime cannot hold weakly and a weak value whose representation the declaration does
+  // not prove. Both are the author's to restate; the key's ambient-host clause overrides to the profile
+  // policy it needs instead.
+  'cpp-weak-map-key-representation-unproven',
+  'cpp-weak-map-value-representation-unproven',
   'cpp-structural-assertion-writable-capability-unproven',
   'cpp-structural-assertion-owner-unproven',
   'cpp-structural-variant-assertion-without-nominal-storage',

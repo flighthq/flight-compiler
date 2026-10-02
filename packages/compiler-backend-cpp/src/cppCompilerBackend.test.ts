@@ -11990,6 +11990,46 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('attributes a WeakMap key and value the declaration cannot prove', () => {
+    // Both refusals used to be raised with no rule at all, so the corpus ledger could group them only by
+    // message text and the check report had nothing to attribute them to -- which is why this root read
+    // as unnameable. They carry rules now.
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('weak-map.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    // A key the source wrote that can never be held weakly: the declaration's to restate.
+    const primitive = refusal(`export interface C1 { readonly m: WeakMap<string, number> }`);
+    expect(primitive.rule).toBe('cpp-weak-map-key-representation-unproven');
+    expect(primitive.classification).toBe('source-portability');
+
+    // An ambient host key reaches the other remedy the message names -- a weak-key policy the binding
+    // profile declares -- which is the runtime contract and the corpus's dominant shape for this root.
+    for (const key of ['Promise<number>', 'Map<string, number>']) {
+      const ambient = refusal(`export interface C2 { readonly m: WeakMap<${key}, number> }`);
+      expect(ambient.rule).toBe('cpp-weak-map-key-representation-unproven');
+      expect(ambient.classification).toBe('target-runtime');
+    }
+
+    // A value whose representation the declaration does not prove -- a bare type parameter here.
+    const generic = refusal(`export interface C3<T> { readonly m: WeakMap<object, T> }`);
+    expect(generic.rule).toBe('cpp-weak-map-value-representation-unproven');
+    expect(generic.classification).toBe('source-portability');
+
+    // The control that keeps this about the unprovable key and value: a reference key and value emit.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'weak-map-ok.ts',
+          `export interface E { readonly v: number }
+           export interface C4 { readonly m: WeakMap<E, E> }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('flight::WeakMap<flight::Ref<E>, flight::Ref<E>>');
+  });
+
   it('invokes a callable read through a structural row instead of addressing it', () => {
     // A callable member read through a Readonly<> row is reported as a class-1 corpus failure, with the
     // emitter believed to take its address or name operator() rather than invoke it. The emitted form is
