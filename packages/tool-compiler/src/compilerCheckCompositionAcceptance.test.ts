@@ -1792,11 +1792,19 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     );
     expect(
       sourcePortability.findings.every(({ message }) =>
-        message.includes('FlightDocument read, write, and clone paths may preserve an explicit null'),
+        message.includes('generic document transport preserves explicit-null keys'),
       ),
     ).toBe(true);
     expect(
-      sourcePortability.findings.every(({ message }) => message.includes('will not whitelist a redundant spelling')),
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('keep the enclosing LayoutNode.itemStyle required nullable'),
+      ),
+    ).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('optional number inputs'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Do not whitelist the redundant input spelling'),
+      ),
     ).toBe(true);
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
@@ -5132,8 +5140,11 @@ function createAnchorLayoutWorkspaceFiles(mixedAbsence: boolean): Record<string,
   right?: number${nullable};
   top?: number${nullable};
   width?: number${nullable};
+}
+export interface LayoutNode<ItemStyle extends object = object> {
+  itemStyle: ItemStyle | null;
 }`,
-    '/flight/packages/types/src/index.ts': `export type { AnchorLayoutItemStyle } from './Layout.js';`,
+    '/flight/packages/types/src/index.ts': `export type { AnchorLayoutItemStyle, LayoutNode } from './Layout.js';`,
   };
 }
 

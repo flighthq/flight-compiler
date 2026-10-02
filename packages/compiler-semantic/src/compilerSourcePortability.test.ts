@@ -5804,29 +5804,46 @@ describe('analyzeTypeScriptSourcePortability', () => {
       const name = ['bottom', 'height', 'left', 'right', 'top', 'width'][index];
       expect(finding.message).toContain(`gives the anchor constraint ${name} both an omitted state and explicit null`);
       expect(finding.message).toContain('current Flight gives them one inactive meaning');
-      expect(finding.message).toContain('In-memory construction sites omit inactive constraints');
+      expect(finding.message).toContain('sparse caller- or document-authored input shape');
+      expect(finding.message).toContain('not a reusable internal state cell');
+      expect(finding.message).toContain('Flight has no production AnchorLayout tree builder');
+      expect(finding.message).toContain('Rive importer emits only FlexLayoutKind or GridLayoutKind');
+      expect(finding.message).toContain('anchor tests construct sparse object literals that omit inactive constraints');
       expect(finding.message).toContain(
-        'the generic FlightDocument read, write, and clone paths may preserve an explicit null inside itemStyle',
+        'createFlightDocumentLayoutBindings carries a document tree by identity into the inert live binding',
       );
-      expect(finding.message).toContain('without attaching anchor-specific meaning');
-      expect(finding.message).toContain('isOptionalNumber accepts both null and undefined');
+      expect(finding.message).toContain(
+        'text reader maps a missing or null whole style to the required-nullable LayoutNode.itemStyle slot',
+      );
+      expect(finding.message).toContain('copies every own field of a present mapping');
+      expect(finding.message).toContain('writer omits only a null whole style');
+      expect(finding.message).toContain('recursively clones a present mapping');
+      expect(finding.message).toContain('generic document transport preserves explicit-null keys');
+      expect(finding.message).toContain('without giving them anchor semantics');
+      expect(finding.message).toContain('layout core has no style clone, mutator, reset, or disposer');
+      expect(finding.message).toContain('reads the caller-owned tree');
+      expect(finding.message).toContain('changes only the output buffer and LayoutState failure fields');
+      expect(finding.message).toContain('validator accepts null and undefined through isOptionalNumber');
       expect(finding.message).toContain('anchorLayoutResolver normalizes left, right, top, and bottom with ?? null');
       expect(finding.message).toContain('When opposing pins do not determine an axis');
       expect(finding.message).toContain('width and height expressions each use ?? intrinsicSizes');
       expect(finding.message).toContain('either absence spelling selects the same natural-size fallback');
       expect(finding.message).toContain('placement uses a pin or alignment');
       expect(finding.message).toContain(
-        'Make all six bottom, height, left, right, top, and width constraints optional number fields',
+        'Make all six bottom, height, left, right, top, and width members optional number inputs',
       );
-      expect(finding.message).toContain('reserve null for the enclosing LayoutNode.itemStyle no-style sentinel');
+      expect(finding.message).toContain('keep the enclosing LayoutNode.itemStyle required nullable');
+      expect(finding.message).toContain('null as its no-style sentinel');
       expect(finding.message).toContain('keep that boundary shape separate');
       expect(finding.message).toContain('normalize it once into the optional-number layout style');
       expect(finding.message).toContain('name a closed constraint-state union and handle it separately');
-      expect(finding.message).toContain('will not whitelist a redundant spelling');
-      expect(finding.message).toContain('will not preserve a redundant third sentinel in target storage');
+      expect(finding.message).toContain('Do not whitelist the redundant input spelling');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('zero is a real pin or size');
       expect(finding.message).toContain('collapse a present value');
-      expect(finding.message).toContain('rewrite an input boundary, or add side storage');
+      expect(finding.message).toContain('mutate or clone a layout tree');
+      expect(finding.message).toContain('rewrite document transport or an input boundary');
+      expect(finding.message).toContain('add disposal work, or add side storage');
     }
   });
 
@@ -5848,6 +5865,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const requiredNullable = input(
       'packages/types/src/Layout.ts',
       'interface AnchorLayoutItemStyle { left: number | null }',
+    );
+    const enclosingRequiredNullable = input(
+      'packages/types/src/Layout.ts',
+      'interface LayoutNode<ItemStyle extends object = object> { itemStyle: ItemStyle | null }',
     );
     const explicit = input(
       'packages/types/src/Layout.ts',
@@ -5891,7 +5912,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
       },
     ]);
     expect(findings.every((finding) => !finding.message.includes('anchorLayoutResolver'))).toBe(true);
-    expect(analyzeTypeScriptSourcePortability([optionalNumber, requiredNullable, explicit]).findings).toEqual([]);
+    expect(
+      analyzeTypeScriptSourcePortability([optionalNumber, requiredNullable, enclosingRequiredNullable, explicit])
+        .findings,
+    ).toEqual([]);
   });
 
   it('explains the one-sentinel contract for reusable Scene3D render-proxy slots', () => {
