@@ -4344,6 +4344,139 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('materialize_row');
   });
 
+  it('reads scene2d fit bounds through the retained readonly runtime capability', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/node/contract',
+          target: { packageName: '@flighthq/node', source: 'packages/node/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'types/src/contract.ts',
+          `export interface Rectangle { height: number; width: number; x: number; y: number }
+           export interface NodeRuntime<Traits extends object> { localBoundsId: number; traits?: Traits }
+           export interface Node<Traits extends object> { readonly runtime: NodeRuntime<Traits> }
+           export type BoundsNodeAny = Node<any> & { readonly bounds: true };
+           export interface HasBoundsRectangleRuntime {
+             computeLocalBoundsRectangle: (out: Rectangle, source: Readonly<BoundsNodeAny>) => void;
+           }
+           export interface Scene2DFitContext<Traits extends object> { root: Node<Traits> | null }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/contract.ts',
+          `import type { Node, NodeRuntime } from '@flighthq/types/contract';
+           export function getNodeRuntime<Traits extends object>(
+             source: Readonly<Node<Traits>>,
+           ): Readonly<NodeRuntime<Traits>> {
+             return source.runtime;
+           }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/stageFit.ts',
+          `import { getNodeRuntime } from '@flighthq/node/contract';
+           import type {
+             BoundsNodeAny,
+             HasBoundsRectangleRuntime,
+             Rectangle,
+             Scene2DFitContext,
+           } from '@flighthq/types/contract';
+           const scratch: Rectangle = { height: 0, width: 0, x: 0, y: 0 };
+           export function computeScene2DFitTransform<Traits extends object>(
+             out: Rectangle,
+             scene2d: Readonly<Scene2DFitContext<Traits>>,
+           ): void {
+             if (scene2d.root === null) return;
+             const runtime = getNodeRuntime(scene2d.root) as Partial<HasBoundsRectangleRuntime>;
+             if (runtime.computeLocalBoundsRectangle === undefined) return;
+             runtime.computeLocalBoundsRectangle(scratch, scene2d.root as BoundsNodeAny);
+             out.width = scratch.width;
+           }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/typedStageFit.ts',
+          `interface Rectangle { height: number; width: number; x: number; y: number }
+           interface NodeRuntime<Traits extends object> { localBoundsId: number; traits?: Traits }
+           interface BoundsNode<Traits extends object> {
+             readonly bounds: true;
+             readonly runtime: BoundsNodeRuntime<Traits>;
+           }
+           interface BoundsNodeRuntime<Traits extends object> extends NodeRuntime<Traits> {
+             computeLocalBoundsRectangle: (out: Rectangle, source: Readonly<BoundsNode<Traits>>) => void;
+           }
+           interface Scene2DFitContext<Traits extends object> {
+             root: BoundsNode<Traits> | null;
+           }
+           function getBoundsNodeRuntime<Traits extends object>(
+             source: Readonly<BoundsNode<Traits>>,
+           ): Readonly<BoundsNodeRuntime<Traits>> {
+             return source.runtime;
+           }
+           const scratch: Rectangle = { height: 0, width: 0, x: 0, y: 0 };
+           export function computeScene2DFitTransform<Traits extends object>(
+             out: Rectangle,
+             scene2d: Readonly<Scene2DFitContext<Traits>>,
+           ): void {
+             const root = scene2d.root;
+             if (root === null) return;
+             const runtime = getBoundsNodeRuntime(root);
+             runtime.computeLocalBoundsRectangle(scratch, root);
+             out.width = scratch.width;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const emitted = session.emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(refused.classification).toBe('source-portability');
+    expect(refused.message).toContain('never mutates the runtime or root');
+    expect(refused.message).toContain('callback writes the caller-owned _tempRectangle');
+    expect(refused.message).toContain('Node2DRuntime extends NodeRuntime<Node2DTraits>');
+    expect(refused.message).toContain(
+      'Scene2DFitContext<Traits>.root and the inherited Node<Traits>[EntityRuntimeKey]',
+    );
+    expect(refused.message).toContain('retain BoundsNode<Traits> | null');
+    expect(refused.message).toContain('readonly bounds-runtime accessor');
+    expect(refused.message).toContain('null or zero-sized content writes identity');
+    expect(refused.message).toContain('has no production caller');
+    expect(refused.message).toContain('Anchor layout independently reuses ViewportAlign');
+    expect(refused.message).toContain('renderViewport independently culls Spatial2DNode world bounds');
+    expect(refused.message).toContain('Do not whitelist either assertion');
+    expect(emitted).toContain('get_bounds_node_runtime<Traits>(');
+    expect(emitted).toContain('RowKey<"computeLocalBoundsRectangle">');
+    expect(emitted).toContain('out->width = scratch_');
+    expect(emitted).toContain('RowReadonly');
+    expect(emitted).not.toContain('RowPartial');
+    expect(emitted).not.toContain('materialize_row');
+  });
+
   it('requires the bounds runtime slot and accessor to carry their writable cells', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [

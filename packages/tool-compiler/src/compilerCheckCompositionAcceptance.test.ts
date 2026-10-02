@@ -629,6 +629,71 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the scene2d stage-fit bounds-capability refusal source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNodeStageFitWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule(module) {
+          if (module.source === 'packages/node/src/stageFit.ts') {
+            throw createBackendEmissionFailure(
+              'acceptance',
+              module,
+              'the readonly base node runtime does not retain the scene2d root bounds capability',
+              'cpp-structural-assertion-writable-capability-unproven',
+              { classification: 'source-portability' },
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toEqual([]);
+    expect(report.directFindings).toMatchObject([
+      {
+        identity:
+          'flight-compiler-check-finding/1:["@flighthq/node","packages/node/src/stageFit.ts","StageFit","emission","unsupported-ir","cpp-structural-assertion-writable-capability-unproven"]',
+        module: { source: 'packages/node/src/stageFit.ts' },
+        policyClass: 'source-portability',
+        rule: 'cpp-structural-assertion-writable-capability-unproven',
+        stage: 'emission',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 1,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 1, directlyRefused: 1, emitted: 0, total: 2 },
+      packages: 1,
+    });
+    const comparison = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.resolvedFindingIdentities).toEqual([]);
+    expect(comparison.unchanged).toHaveLength(1);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('keeps the specialized GL color-adjustment absence finding stable through check mode', () => {
     const source = createMemoryWorkspaceSource(createColorAdjustmentWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -4535,6 +4600,37 @@ const members: NodeAny[] = [];
 export function applyNodeOrderList<Traits extends object>(children: NodeOf<Traits>[]): void {
   if (members.length === 0) return;
   children[0] = members[0] as NodeOf<Traits>;
+}`,
+  };
+}
+
+function createNodeStageFitWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/node/package.json': createPackageManifest('@flighthq/node'),
+    '/flight/packages/node/src/index.ts': `export { computeScene2DFitTransform } from './stageFit.js';`,
+    '/flight/packages/node/src/stageFit.ts': `interface Rectangle { height: number; width: number; x: number; y: number }
+interface NodeRuntime<Traits extends object> { localBoundsId: number; traits?: Traits }
+interface Node<Traits extends object> { readonly runtime: NodeRuntime<Traits> }
+interface BoundsNodeAny extends Node<object> { readonly bounds: true }
+interface HasBoundsRectangleRuntime {
+  computeLocalBoundsRectangle: (out: Rectangle, source: Readonly<BoundsNodeAny>) => void;
+}
+interface Scene2DFitContext<Traits extends object> { root: Node<Traits> | null }
+const scratch: Rectangle = { height: 0, width: 0, x: 0, y: 0 };
+function getNodeRuntime<Traits extends object>(
+  source: Readonly<Node<Traits>>,
+): Readonly<NodeRuntime<Traits>> {
+  return source.runtime;
+}
+export function computeScene2DFitTransform<Traits extends object>(
+  out: Rectangle,
+  scene2d: Readonly<Scene2DFitContext<Traits>>,
+): void {
+  if (scene2d.root === null) return;
+  const runtime = getNodeRuntime(scene2d.root) as Partial<HasBoundsRectangleRuntime>;
+  if (runtime.computeLocalBoundsRectangle === undefined) return;
+  runtime.computeLocalBoundsRectangle(scratch, scene2d.root as BoundsNodeAny);
+  out.width = scratch.width;
 }`,
   };
 }

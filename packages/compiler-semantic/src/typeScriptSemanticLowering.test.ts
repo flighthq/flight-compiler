@@ -12990,6 +12990,123 @@ it('retains the NodeAny scratch erasure before a node-order owner assertion', ()
   expect(JSON.stringify(apply.body)).toContain('"operator":"="');
 });
 
+it('retains the erased readonly runtime and writable bounds probe in scene2d stage fit', () => {
+  const moduleResolution = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  } as const;
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/contract.ts',
+        `export interface Rectangle { height: number; width: number; x: number; y: number }
+         export interface NodeRuntime<Traits extends object> { localBoundsId: number; traits?: Traits }
+         export interface Node<Traits extends object> { readonly runtime: NodeRuntime<Traits> }
+         export type BoundsNodeAny = Node<any> & { readonly bounds: true };
+         export interface HasBoundsRectangleRuntime {
+           computeLocalBoundsRectangle: (out: Rectangle, source: Readonly<BoundsNodeAny>) => void;
+         }
+         export interface Scene2DFitContext<Traits extends object> { root: Node<Traits> | null }`,
+      ),
+      source(
+        '@flighthq/node',
+        'node/src/node.ts',
+        `import type { Node, NodeRuntime } from '@flighthq/types/contract';
+         export function getNodeRuntime<Traits extends object>(
+           source: Readonly<Node<Traits>>,
+         ): Readonly<NodeRuntime<Traits>> {
+           return source.runtime;
+         }`,
+      ),
+      source(
+        '@flighthq/node',
+        'node/src/stageFit.ts',
+        `import type {
+           BoundsNodeAny,
+           HasBoundsRectangleRuntime,
+           Rectangle,
+           Scene2DFitContext,
+         } from '@flighthq/types/contract';
+         import { getNodeRuntime } from './node';
+         const scratch: Rectangle = { height: 0, width: 0, x: 0, y: 0 };
+         export function computeScene2DFitTransform<Traits extends object>(
+           out: Rectangle,
+           scene2d: Readonly<Scene2DFitContext<Traits>>,
+         ): void {
+           if (scene2d.root === null) return;
+           const runtime = getNodeRuntime(scene2d.root) as Partial<HasBoundsRectangleRuntime>;
+           if (runtime.computeLocalBoundsRectangle === undefined) return;
+           runtime.computeLocalBoundsRectangle(scratch, scene2d.root as BoundsNodeAny);
+           out.width = scratch.width;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  const stageFit = results[2]!;
+  const compute = stageFit.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'computeScene2DFitTransform',
+  );
+  if (compute?.kind !== 'function') throw new Error('Expected scene2d stage-fit function');
+  const assertions: IrExpression[] = [];
+  analyzeIrModuleTraversal(stageFit.module, {
+    expression(expression) {
+      if (expression.kind === 'cast') assertions.push(expression);
+    },
+  });
+
+  expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+  expect(compute.parameters[1]?.type).toMatchObject({
+    kind: 'named',
+    reference: { kind: 'ambient', name: 'Readonly' },
+    typeArguments: [
+      {
+        kind: 'named',
+        reference: { binding: { kind: 'import', name: 'Scene2DFitContext' }, kind: 'binding' },
+      },
+    ],
+  });
+  expect(assertions).toMatchObject([
+    {
+      expression: {
+        callee: { reference: { binding: { kind: 'import', name: 'getNodeRuntime' }, kind: 'binding' } },
+        kind: 'call',
+      },
+      kind: 'cast',
+      type: {
+        kind: 'named',
+        reference: { kind: 'ambient', name: 'Partial' },
+        typeArguments: [
+          {
+            kind: 'named',
+            reference: { binding: { kind: 'import', name: 'HasBoundsRectangleRuntime' }, kind: 'binding' },
+          },
+        ],
+      },
+    },
+    {
+      kind: 'cast',
+      type: {
+        kind: 'named',
+        reference: { binding: { kind: 'import', name: 'BoundsNodeAny' }, kind: 'binding' },
+      },
+    },
+  ]);
+  expect(JSON.stringify(compute.body)).toContain('"name":"computeLocalBoundsRectangle"');
+  expect(JSON.stringify(compute.body)).toContain('"name":"width"');
+});
+
 it('keeps caller-owned NodeOf evidence across an imported generic and a recursive overload', () => {
   const moduleResolution = {
     edges: [
