@@ -27847,6 +27847,12 @@ Resolver make_resolver(TextureRef texture) {
         { runtimeProfile: 'flight-cpp' },
       ),
     );
+    const typedName = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower('typed-error-name.ts', 'export function name(error: Error): string { return error.name; }').module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
     const message = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(
         lower(
@@ -27862,7 +27868,13 @@ Resolver make_resolver(TextureRef texture) {
 
     expect(name.rule).toBe('cpp-error-name-runtime-required');
     expect(name.classification).toBe('target-runtime');
-    expect(name.message).toContain('dynamic runtime accessor');
+    expect(name.message).toContain('instance flight::Error::name() const accessor');
+    expect(name.message).toContain('checked flight::Any Error projection');
+    expect(name.message).toContain('external binding profile cannot replace this built-in runtime capability');
+    expect(typedName.rule).toBe('cpp-error-name-runtime-required');
+    expect(typedName.classification).toBe('target-runtime');
+    expect(typedName.message).toContain('instance flight::Error::name() const accessor');
+    expect(typedName.message).not.toContain('checked flight::Any Error projection');
     expect(message.rule).toBe('cpp-erased-error-view-runtime-required');
     expect(message.classification).toBe('target-runtime');
     expect(message.message).toContain('checked Error view that accepts Error subclasses');

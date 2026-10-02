@@ -24491,19 +24491,19 @@ function refuseCppUnsupportedErrorPropertyReadCpp(
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || expression.member?.receiver !== 'error') {
     return;
   }
+  const requiresErasedView =
+    expression.structuralAccess === 'narrowed' &&
+    isCppErasedDynamicValueTypeCpp(getIrExpressionTypeEvidenceCpp(expression.object, context));
   if (expression.name === 'name') {
     emissionError(
       context,
-      'reading Error.name requires a dynamic runtime accessor that preserves RangeError and TypeError names; flight::Error currently exposes only a static name()',
+      requiresErasedView
+        ? 'reading Error.name from an erased value requires both an instance flight::Error::name() const accessor that preserves RangeError and TypeError names through Error-typed value storage, and a checked flight::Any Error projection that accepts those subclasses; the current static class names and exact-type Any projections provide neither contract, and an external binding profile cannot replace this built-in runtime capability'
+        : 'reading Error.name requires an instance flight::Error::name() const accessor that preserves RangeError and TypeError names through Error-typed value storage; flight::Error currently exposes only a static name(), and an external binding profile cannot replace this built-in runtime capability',
       'cpp-error-name-runtime-required',
     );
   }
-  if (
-    expression.structuralAccess !== 'narrowed' ||
-    !isCppErasedDynamicValueTypeCpp(getIrExpressionTypeEvidenceCpp(expression.object, context))
-  ) {
-    return;
-  }
+  if (!requiresErasedView) return;
   emissionError(
     context,
     `reading Error.${expression.name} after narrowing an erased value requires flight::Any to expose a checked Error view that accepts Error subclasses; keep the value typed as Error before erasure or add that runtime contract`,
