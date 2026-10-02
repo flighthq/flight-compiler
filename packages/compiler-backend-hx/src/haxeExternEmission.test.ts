@@ -75,6 +75,30 @@ describe('emitIrModuleHaxeExtern', () => {
     );
   });
 
+  it('separates TextInput merge-tag omission from required nullable history storage', () => {
+    const module = lower(
+      '@flighthq/types',
+      'TextInputEditingOptions.ts',
+      `export interface CurrentReplaceTextInputOptions { mergeKind?: string | null; }
+       export interface PortableReplaceTextInputOptions { mergeKind?: string; }
+       export interface TextInputHistoryEntry { mergeKind: string | null; }
+       export interface TextInputEditRecord { mergeKind: string | null; }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentReplaceTextInputOptions.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableReplaceTextInputOptions.hx').contents;
+    const history = findFile(files, 'flight/_js/TextInputHistoryEntry.hx').contents;
+    const record = findFile(files, 'flight/_js/TextInputEditRecord.hx').contents;
+
+    expect(current).toContain('@:optional var mergeKind:Null<String>;');
+    expect(portable).toContain('@:optional var mergeKind:String;');
+    expect(portable).not.toContain('@:optional var mergeKind:Null<String>;');
+    expect(history).toContain('var mergeKind:Null<String>;');
+    expect(record).toContain('var mergeKind:Null<String>;');
+    expect(history + record).not.toContain('@:optional var mergeKind');
+    expect(current + portable + history + record).not.toContain('Dynamic');
+  });
+
   it('separates morph-gradient authoring omission from nullable sampled binding matrices', () => {
     const module = lower(
       '@flighthq/types',

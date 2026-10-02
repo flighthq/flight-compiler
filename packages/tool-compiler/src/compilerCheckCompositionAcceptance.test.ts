@@ -5199,6 +5199,8 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       { rule: 'mixed-absence', subject: expectedSubject },
     ]);
     const message = sourcePortability.findings[0]!.message;
+    expect(message).toContain('initializes a fresh TextInputState with history: [] and historyIndex: -1');
+    expect(message).toContain('attaches that exact mutable state to RichTextRuntime.input');
     expect(message).toContain('replaceSelectedTextInput only forwards the exact readonly options');
     expect(message).toContain('replaceTextInput, which is their sole reader and never mutates or retains them');
     expect(message).toContain('no production caller supplies either explicit null or a present merge tag');
@@ -5209,15 +5211,20 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(message).toContain('empty string remains a present tag and coalesces only with another empty string');
     expect(message).toContain('Undo and redo ignore mergeKind');
     expect(message).toContain('history-limit trimming releases the oldest entries');
-    expect(message).toContain('clearTextInputHistory releases the complete array');
-    expect(message).toContain('disableTextInput detaches the entire TextInputState');
+    expect(message).toContain('clearTextInputHistory replaces the complete array');
+    expect(message).toContain('disableTextInput only detaches TextInputState from the RichText');
+    expect(message).toContain('preserving a pre-existing attached state');
     expect(message).toContain("No path mutates an entry's mergeKind after insertion");
     expect(message).toContain('declare ReplaceTextInputOptions.mergeKind as an optional string');
     expect(message).toContain('Do not whitelist the redundant explicit-null edit option');
     expect(message).toContain('This finding is not a host-binding gap');
     expect(message).toContain('String is a compiler-native value');
-    expect(message).toContain('String | Null | Undefined');
-    expect(message).toContain('one optional String carrier without an external binding');
+    expect(message).toContain('std::variant<flight::String, flight::Null, flight::Undefined> merge_kind');
+    expect(message).toContain('std::optional<flight::String> merge_kind');
+    expect(message).toContain('@:optional var mergeKind:Null<String>;');
+    expect(message).toContain('@:optional var mergeKind:String;');
+    expect(message).toContain('var mergeKind:Null<String>;');
+    expect(message).toContain('Neither target needs an external binding');
     expect(message).toContain('Carrier support does not authorize the compiler to compare tags');
     expect(message).toContain('trim, clear, detach, or copy history');
     expect(message).not.toContain('reviewed source-portability exception');

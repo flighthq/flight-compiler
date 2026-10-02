@@ -11746,7 +11746,9 @@ int main() {
     const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
-    expect(contents).toContain('std::variant<flight::String, flight::Null, flight::Undefined> merge_kind =');
+    expect(contents).toContain(
+      'std::variant<flight::String, flight::Null, flight::Undefined> merge_kind = std::variant<flight::String, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined};',
+    );
     expect(contents.match(/std::optional<flight::String> merge_kind;/gu)).toHaveLength(3);
     expect(contents).not.toContain('flight::Any');
     expect(contents).not.toContain('static_cast');

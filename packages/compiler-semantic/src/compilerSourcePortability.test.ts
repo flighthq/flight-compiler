@@ -10698,6 +10698,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
       "representation support does not replace the source's single normalized input state",
     );
     const textInputMessage = findings[1]!.message;
+    expect(textInputMessage).toContain('initializes a fresh TextInputState with history: [] and historyIndex: -1');
+    expect(textInputMessage).toContain('attaches that exact mutable state to RichTextRuntime.input');
+    expect(textInputMessage).toContain('reuses it on later enable calls');
+    expect(textInputMessage).toContain('live text remains on the RichText');
+    expect(textInputMessage).toContain('state owns its history array and plain entry records');
+    expect(textInputMessage).toContain('ReplaceTextInputOptions is a separate per-call input');
     expect(textInputMessage).toContain('replaceSelectedTextInput only forwards the exact readonly options');
     expect(textInputMessage).toContain('replaceTextInput, which is their sole reader');
     expect(textInputMessage).toContain('never mutates or retains them');
@@ -10708,6 +10714,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(textInputMessage).toContain('no production caller supplies either explicit null or a present merge tag');
     expect(textInputMessage).toContain('no-op empty insertion returns before history handling');
     expect(textInputMessage).toContain('skipHistory or historyLimit === 0 bypasses mergeKind entirely');
+    expect(textInputMessage).toContain('mutates the same RichText text, caret, selection, and formatting');
+    expect(textInputMessage).toContain('then invalidates local content');
     expect(textInputMessage).toContain('passes options?.mergeKind ?? null to recordTextInputEdit');
     expect(textInputMessage).toContain('first discards any redo tail');
     expect(textInputMessage).toContain('compares a non-null tag with the current TextInputHistoryEntry');
@@ -10718,27 +10726,43 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(textInputMessage).toContain(
       'empty string remains a present tag and coalesces only with another empty string',
     );
+    expect(textInputMessage).toContain('string-value text snapshots and numeric caret and selection snapshots');
     expect(textInputMessage).toContain(
       'TextInputEditRecord exposes the same required-nullable data contract but has no production consumer',
     );
     expect(textInputMessage).toContain('Undo and redo ignore mergeKind and restore only the recorded snapshots');
+    expect(textInputMessage).toContain('TextInputManager retains only the focused RichText owner');
+    expect(textInputMessage).toContain('TextInputController retains its exact RichText and manager');
+    expect(textInputMessage).toContain('Canvas, DOM, GL, and WebGPU text-input renderers');
+    expect(textInputMessage).toContain('without reading history or mergeKind');
     expect(textInputMessage).toContain('New edits after undo release the redo tail');
     expect(textInputMessage).toContain('history-limit trimming releases the oldest entries');
-    expect(textInputMessage).toContain('clearTextInputHistory releases the complete array without changing text');
-    expect(textInputMessage).toContain('disableTextInput detaches the entire TextInputState');
+    expect(textInputMessage).toContain('clearTextInputHistory replaces the complete array without changing live text');
+    expect(textInputMessage).toContain('disableTextInput only detaches TextInputState from the RichText');
+    expect(textInputMessage).toContain('leaving text and rich content intact');
+    expect(textInputMessage).toContain('retained the state returned by enableTextInput can keep it alive');
     expect(textInputMessage).toContain(
-      'disposeTextInputController invokes that detach only when the controller owns the input capability',
+      'disposeTextInputController blurs the manager only when its exact textField is focused and invokes that detach only when the controller created the input capability',
     );
+    expect(textInputMessage).toContain('preserving a pre-existing attached state');
+    expect(textInputMessage).toContain('No TextInputState disposal or clone path exists');
     expect(textInputMessage).toContain("No path mutates an entry's mergeKind after insertion");
     expect(textInputMessage).toContain('copies history into another RichText');
     expect(textInputMessage).toContain('requires disposal of a string scalar');
     expect(textInputMessage).toContain('Do not whitelist the redundant explicit-null edit option');
     expect(textInputMessage).toContain('This finding is not a host-binding gap');
     expect(textInputMessage).toContain('String is a compiler-native value');
-    expect(textInputMessage).toContain('current optional-nullable input lowers as String | Null | Undefined');
-    expect(textInputMessage).toContain('recommended optional string');
-    expect(textInputMessage).toContain('required string | null history boundary');
-    expect(textInputMessage).toContain('one optional String carrier without an external binding');
+    expect(textInputMessage).toContain(
+      'current C++ input is std::variant<flight::String, flight::Null, flight::Undefined> merge_kind',
+    );
+    expect(textInputMessage).toContain(
+      'recommended optional string and each required string | null history field are std::optional<flight::String> merge_kind',
+    );
+    expect(textInputMessage).toContain('current Haxe input is @:optional var mergeKind:Null<String>;');
+    expect(textInputMessage).toContain('recommended input is @:optional var mergeKind:String;');
+    expect(textInputMessage).toContain('required-nullable history field remains var mergeKind:Null<String>;');
+    expect(textInputMessage).toContain('Neither target needs an external binding');
+    expect(textInputMessage).toContain('Any or Dynamic erasure, a cast, or owner materialization');
     expect(textInputMessage).toContain('Carrier support does not authorize the compiler to compare tags');
     expect(textInputMessage).toContain('coalesce history entries, select or copy snapshots');
     expect(textInputMessage).toContain('mutate text, caret, or selection state');
