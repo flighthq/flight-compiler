@@ -2044,7 +2044,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
-  it('preserves heterogeneous command property slots as reviewed identity transport', () => {
+  it('removes the unused open command-property builtin in favor of typed command kinds', () => {
     const opaque = input(
       'packages/types/src/Command.ts',
       `interface CommandPropertyEntry {
@@ -2053,13 +2053,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
          readonly property: string;
        }`,
     );
-    const closed = input(
+    const typed = input(
       'packages/types/src/Command.ts',
-      `type CommandPropertyValue = boolean | number | string | null;
-       interface CommandPropertyEntry {
-         readonly after: CommandPropertyValue;
-         readonly before: CommandPropertyValue;
-         readonly property: string;
+      `interface SetNodePositionCommand {
+         readonly afterX: number;
+         readonly afterY: number;
+         readonly beforeX: number;
+         readonly beforeY: number;
+         readonly target: Node2D;
        }`,
     );
     const controls = [
@@ -2080,34 +2081,25 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings[1]?.message).toContain('read the current node property');
     expect(report.findings[1]?.message).toContain('on undo');
     for (const finding of report.findings) {
-      expect(finding.message).toContain('genuinely opaque');
-      expect(finding.message).toContain('named closed CommandPropertyValue domain');
-      expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+      expect(finding.message).toContain('no non-test construction site');
+      expect(finding.message).toContain('Remove CommandPropertyEntry, SetNodePropertyCommand');
+      expect(finding.message).toContain('command-kind-specific data interface');
+      expect(finding.message).toContain('Compose heterogeneous batches');
+      expect(finding.message).toContain('Do not replace unknown with a guessed scalar or recursive value union');
+      expect(finding.message).toContain('do not whitelist');
+      expect(finding.message).not.toContain('reviewed source-portability exception');
       expect(finding.message).toContain('target-specific Any carrier');
       expect(finding.message).toContain('insert a cast');
       expect(finding.message).toContain('copy or materialize the value');
     }
-    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
     for (const control of controls) {
       expect(
         analyzeTypeScriptSourcePortability([control]).findings.every(
-          ({ message }) => !message.includes('CommandPropertyValue'),
+          ({ message }) => !message.includes('command-kind-specific data interface'),
         ),
       ).toBe(true);
     }
-
-    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
-      exceptionPolicy: {
-        exceptions: report.findings.map((finding) => ({
-          findingIdentity: finding.identity,
-          reason: 'The command binding returns each heterogeneous property value only to its originating slot.',
-          rule: 'opaque-value-domain' as const,
-        })),
-        schema: 'flight-compiler-source-portability-exceptions/1',
-      },
-    });
-    expect(reviewed.findings).toEqual([]);
-    expect(reviewed.acceptedExceptions).toHaveLength(2);
   });
 
   it('traces notification data to one closed request domain and removes the unused provider member', () => {
