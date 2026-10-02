@@ -3142,6 +3142,21 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
     });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+    const unchanged = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(unchanged).toMatchObject({ introduced: [], resolvedFindingIdentities: [] });
+    expect(unchanged.unchanged).toHaveLength(3);
+    expect(createCompilerPackageCheckPolicyResult(unchanged, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
 
     const portableSource = createMemoryWorkspaceSource(createNotificationWorkspaceFiles(false));
     const portableInput = createFlightWorkspaceCompilationInput({
@@ -7575,10 +7590,7 @@ function createNotificationWorkspaceFiles(opaque: boolean): Record<string, strin
   | string
   | null
   | readonly NotificationData[]
-  | Readonly<NotificationDataFields>;
-export interface NotificationDataFields {
-  readonly [name: string]: NotificationData;
-}
+  | Readonly<Record<string, NotificationData>>;
 export interface NotificationRequest { data?: ${dataType} }
 export interface WebNotificationOptions { data?: ${dataType} }
 export interface WebServiceWorkerNotificationInstance {
@@ -7587,7 +7599,6 @@ export interface WebServiceWorkerNotificationInstance {
 }`,
     '/flight/packages/types/src/index.ts': `export type {
   NotificationData,
-  NotificationDataFields,
   NotificationRequest,
   WebNotificationOptions,
   WebServiceWorkerNotificationInstance,

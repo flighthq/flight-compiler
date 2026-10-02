@@ -14983,48 +14983,39 @@ export function add(frame: Frame2, value: unknown): void { frame.slices.push(val
     ).toContain('slices');
   });
 
-  it('classifies the notification payload members as arbitrary data already carried', () => {
-    // Notification.ts reports three opaque-value-domain findings, and the trace answers the lane's question:
-    // they are ARBITRARY PAYLOADS -- the spec's `data` field, which may hold any structured-cloneable value --
-    // not errors and not closed domains. The runtime's erased dynamic value is exactly that carrier, so all
-    // three are represented and both consumer shapes lower. Nothing here needs guidance; the control records
-    // the classification so the counts do not re-open it.
+  it('distinguishes erased notification payload cells from the closed portable domain', () => {
+    // C++ can represent the current declarations, but an Any carrier does not make the source domain portable.
+    // Pin both sides of the prescribed rewrite so backend support cannot be mistaken for an intentional open API.
     const payloads = `export interface NotificationRequest { readonly title: string; readonly data?: unknown }
 export interface WebNotificationOptions { readonly data?: unknown }
 export interface WebServiceWorkerNotificationInstance { readonly data?: unknown; readonly tag: string }`;
     const emitted = emitIrModuleCpp(lower('notification-payloads.ts', payloads).module, {
       runtimeProfile: 'flight-cpp',
     }).contents;
-    // three arbitrary payloads, each an optional erased value -- and only one, because the member is optional
+    // Each current optional unknown becomes one optional erased cell.
     expect(emitted.match(/std::optional<flight::Any> data;/gu)).toHaveLength(3);
 
-    // Reading the payload and passing it on, and carrying it into an object literal, both emit.
-    for (const [file, body] of [
-      [
-        'notification-read.ts',
-        `export function sink(value: unknown): number { return 0; }
-export function use(request: Readonly<NotificationRequest>): number {
-  const data = request.data;
-  if (data === undefined) return 0;
-  return sink(data);
-}`,
-      ],
-      [
-        'notification-forward.ts',
-        'export function forward(request: Readonly<NotificationRequest>): { readonly data?: unknown } { return { data: request.data }; }',
-      ],
-    ] as const) {
-      expect(
-        emitIrModuleCpp(
-          lower(
-            file,
-            `${payloads}
-${body}`,
-          ).module,
-          { runtimeProfile: 'flight-cpp' },
-        ).contents,
-      ).toContain('data');
-    }
+    const closed = emitIrModuleCpp(
+      lower(
+        'notification-data.ts',
+        `export type NotificationData =
+           | boolean
+           | number
+           | string
+           | null
+           | readonly NotificationData[]
+           | Readonly<Record<string, NotificationData>>;
+         export interface NotificationRequest { readonly title: string; readonly data?: NotificationData }
+         export interface WebNotificationOptions { readonly data?: NotificationData }
+         export interface WebServiceWorkerNotificationInstance { readonly tag: string }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(closed).toContain('struct NotificationData : public');
+    expect(closed).toContain('flight::Array<NotificationData>');
+    expect(closed).toContain('flight::Record<flight::String, NotificationData>');
+    expect(closed.match(/std::optional<NotificationData> data;/gu)).toHaveLength(2);
+    expect(closed).not.toContain('flight::Any');
   });
 
   it('closes the WgpuScene3DRuntime set with its widest guard member', () => {

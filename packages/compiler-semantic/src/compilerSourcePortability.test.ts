@@ -2272,8 +2272,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
          | string
          | null
          | readonly NotificationData[]
-         | Readonly<NotificationDataFields>;
-       interface NotificationDataFields { readonly [name: string]: NotificationData }
+         | Readonly<Record<string, NotificationData>>;
        interface NotificationRequest { data?: NotificationData }
        interface WebNotificationOptions { data?: NotificationData }
        interface WebServiceWorkerNotificationInstance { readonly tag: string }`,
@@ -2295,21 +2294,33 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:WebServiceWorkerNotificationInstance/property:data',
     ]);
     expect(report.findings[0]?.message).toContain('showNotification and scheduleNotification pass the exact request');
+    expect(report.findings[0]?.message).toContain('not an intentionally unbounded cross-target payload');
     expect(report.findings[0]?.message).toContain('assign request.data unchanged');
+    expect(report.findings[0]?.message).toContain('Flight retains neither options record after the native invocation');
+    expect(report.findings[0]?.message).toContain('await only gates acceptance');
     expect(report.findings[0]?.message).toContain('Electron, Tauri, and Capacitor instead enumerate the request');
     expect(report.findings[0]?.message).toContain('Capacitor pending-list reconstruction omits data');
     expect(report.findings[0]?.message).toContain('initializeScheduledNotificationResource retains the exact');
+    expect(report.findings[0]?.message).toContain('cancellation and successful lifecycle destruction remove');
+    expect(report.findings[0]?.message).toContain('do not clear a caller-retained ScheduledNotification.request');
     expect(report.findings[0]?.message).toContain('boolean, number, string, null');
     expect(report.findings[0]?.message).toContain('readonly NotificationData arrays');
     expect(report.findings[0]?.message).toContain('preserve null as a present scalar');
+    expect(report.findings[0]?.message).toContain('@:optional var data:Dynamic');
+    expect(report.findings[0]?.message).toContain('std::optional<flight::Any>');
     expect(report.findings[1]?.message).toContain('toWebNotificationOptions and toServiceWorkerNotificationOptions');
+    expect(report.findings[1]?.message).toContain('borrows the request payload owner');
+    expect(report.findings[1]?.message).toContain('does not become an independent Flight owner');
     expect(report.findings[1]?.message).toContain('same recursive closed NotificationData scalar');
     expect(report.findings[1]?.message).toContain('omission as no supplied data');
     expect(report.findings[2]?.message).toContain('no Flight production path reads, stores, or returns');
+    expect(report.findings[2]?.message).toContain('registration.getNotifications is the sole production producer');
+    expect(report.findings[2]?.message).toContain('browser owns any cloned native payload and its lifetime');
     expect(report.findings[2]?.message).toContain('WebServiceWorkerNotificationEvent with only notificationTag');
     expect(report.findings[2]?.message).toContain('web-page native-instance facade already omits data');
     expect(report.findings[2]?.message).toContain('Remove data from WebServiceWorkerNotificationInstance');
     expect(report.findings[2]?.message).toContain('stop populating it in the fake service-worker provider');
+    expect(report.findings[2]?.message).toContain('removes the unused Dynamic and flight::Any cells');
     for (const finding of report.findings) {
       expect(finding.message).toContain('recursive closed NotificationData');
       expect(finding.message).toContain('Do not whitelist');

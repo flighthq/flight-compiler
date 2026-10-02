@@ -2584,6 +2584,39 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('value:Dynamic');
   });
 
+  it('distinguishes erased notification payload cells from the named portable domain', () => {
+    // Haxe represents both open unknown and this heterogeneous recursive union with Dynamic at runtime.
+    // The named field still preserves the closed source contract instead of making target erasure the API.
+    const opaque = emitIrModuleHaxe(
+      lower(
+        'notification-payloads.ts',
+        `export interface NotificationRequest { readonly title: string; readonly data?: unknown }
+         export interface WebNotificationOptions { readonly data?: unknown }
+         export interface WebServiceWorkerNotificationInstance { readonly data?: unknown; readonly tag: string }`,
+      ).module,
+    ).contents;
+    expect(opaque.match(/\?data:Dynamic/gu)).toHaveLength(3);
+
+    const closed = emitIrModuleHaxe(
+      lower(
+        'notification-data.ts',
+        `export type NotificationData =
+           | boolean
+           | number
+           | string
+           | null
+           | readonly NotificationData[]
+           | Readonly<Record<string, NotificationData>>;
+         export interface NotificationRequest { readonly title: string; readonly data?: NotificationData }
+         export interface WebNotificationOptions { readonly data?: NotificationData }
+         export interface WebServiceWorkerNotificationInstance { readonly tag: string }`,
+      ).module,
+    ).contents;
+    expect(closed).toContain('typedef NotificationData = Dynamic;');
+    expect(closed.match(/\?data:NotificationData/gu)).toHaveLength(2);
+    expect(closed.match(/\?data:Dynamic/gu) ?? []).toHaveLength(0);
+  });
+
   it('emits for-of iteration without async or patterns', () => {
     const result = lower(
       'for-of.ts',
