@@ -13326,6 +13326,44 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('classifies the aseprite payload array as arbitrary data already carried', () => {
+    // AsepriteSchema's single opaque-value-domain finding is `slices?: unknown[]` -- an optional array of
+    // ARBITRARY values, not a closed domain. It is a different shape from the erased-Record CAST that refuses
+    // elsewhere: there the source fabricated a view of a concrete owner, while here the declaration honestly
+    // says `unknown`, and the target's erased value inside an optional array is a faithful carrier. Both
+    // consumer shapes lower, so the control records the classification rather than leaving it to be re-derived.
+    const frame = `export interface Frame { readonly slices?: unknown[] }`;
+    expect(
+      emitIrModuleCpp(lower('aseprite-slices.ts', frame).module, { runtimeProfile: 'flight-cpp' }).contents,
+    ).toContain('std::optional<flight::Array<flight::Any>> slices;');
+
+    // reading through the optional, and pushing into the array, both emit
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'aseprite-read.ts',
+          `${frame}
+export function use(frame: Frame): number {
+  const slices = frame.slices;
+  if (slices === undefined) return 0;
+  return slices.length + (slices[0] !== undefined ? 1 : 0);
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('flight::Array<flight::Any>');
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'aseprite-push.ts',
+          `export interface Frame2 { readonly slices: unknown[] }
+export function add(frame: Frame2, value: unknown): void { frame.slices.push(value); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('slices');
+  });
+
   it('classifies the notification payload members as arbitrary data already carried', () => {
     // Notification.ts reports three opaque-value-domain findings, and the trace answers the lane's question:
     // they are ARBITRARY PAYLOADS -- the spec's `data` field, which may hold any structured-cloneable value --
