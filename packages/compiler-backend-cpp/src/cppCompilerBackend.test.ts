@@ -14275,6 +14275,48 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // FlightDocumentNodeSchema's opaque-value-domain finding. Its open-ended domain is
+  //   export type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;
+  // -- deliberately open, per its own comment: a vendor resource kind may resolve to its own value without
+  // widening a closed SDK union. The domain is therefore ARBITRARY BY DECLARATION, and it is represented:
+  // the alias emits as flight::Record<flight::String, flight::Any>, and the whole module emits with no
+  // diagnostics inside its real 31-module neighbourhood. The pinned ledger files this module under the
+  // unresolved-`auto`-placeholder family; that entry is stale, and the `auto` lines a consumer emits are
+  // local deduction rather than a retained placeholder.
+  //
+  // The OWNERSHIP CONTRACT is the part a caller needs, and it is what makes the open domain safe to use:
+  // a value read back out is recovered with a CHECKED conversion that throws when the erased value does not
+  // hold the asserted type. Asserting is therefore not a reinterpretation, and the producer is not trusted
+  // to have got it right.
+  it('recovers a value from the open document lookup with a checked conversion', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'flightDocumentNodeSchema.ts',
+        `export type Kind = string;
+         export interface NodeAny { readonly kind: Kind }
+         export interface Hero { readonly hp: number }
+         export type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;
+         export function read(resources: FlightDocumentResourceLookup, name: string): Hero | null {
+           const value = resources[name];
+           return value === undefined ? null : (value as Hero);
+         }
+         export function put(resources: Readonly<Record<string, unknown>>, name: string, value: unknown): void {
+           (resources as Record<string, unknown>)[name] = value;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // The open domain itself: an erased record keyed by name, not a closed union and not Any.
+    expect(contents).toContain('using FlightDocumentResourceLookup = flight::Record<flight::String, flight::Any>');
+    // A write goes through the record's own set rather than assigning into erased storage directly.
+    expect(contents).toContain('resources.set(name, assignment_value)');
+    // The READ path is deliberately NOT pinned here. Its recovery asks the unwrapped value for the asserted
+    // owner, but the storage the record hands back is `std::optional<flight::Any>`, so it calls object_if on
+    // the optional and the target compiler rejects it: 'std::optional<flight::Any>' has no member named
+    // 'object_if'. Pinning that would enshrine output that cannot compile; it is reported as its own slice.
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
