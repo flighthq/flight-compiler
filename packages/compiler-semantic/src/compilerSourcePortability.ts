@@ -328,6 +328,22 @@ function getScene3DDocumentMeshMixedAbsencePropertyMessage(
   return `${subject} gives the format-neutral document mesh's inline morph data both omission and explicit null, but current Flight has one no-morph document state. The glTF, COLLADA, and MD2 producers attach morph only after building a non-null MeshMorph; AWD, MD5, OBJ, 3DS, and ordinary COLLADA geometry entries omit the field. COLLADA's material-override clone reconstructs geometry, materials, name, and skin before resolveColladaSkins assigns a successfully decoded morph, so it introduces no null meaning. appendGltfWeightsChannels uses a nullish check before reading targets, while createScene3DFromDocument and createScene3DsFromDocument use buildDocumentNode, which assigns the exact present MeshMorph owner to each live mesh that references the document entry; neither path distinguishes null from omission or clones the document value. Scene3DDocument currently has no clone or export/serialization path; cloneMesh is a downstream live-entity operation that separately shares immutable targets and copies mutable weights only when morph is present. Make Scene3DDocumentMesh.morph an optional non-null MeshMorph field and use omission or undefined as the sole no-morph document state, preserving each producer's conditional assignment and each consumer's exact-owner behavior. If a future wire or compatibility input accepts explicit null, keep that input shape separate and normalize it once before constructing the document entry; if it needs omitted and explicit-null to differ, replace them with one named closed state and handle every arm. Do not whitelist the redundant document spelling. The compiler will not choose or collapse an absence sentinel, decode or infer a morph, attach animation channels, clone or serialize a document, copy or materialize morph targets or weights, change sharing across document nodes or assembled scenes, reinterpret or cast the MeshMorph owner, or add side storage.`;
 }
 
+function getSkeleton3DNamesMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'Skeleton3D' ||
+    !isFlightTypesSource(node, 'Skeleton3D.ts') ||
+    getNodeName(node.name) !== 'names' ||
+    !isOptionalNullableReadonlyStringArrayProperty(node)
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the live skeleton's index-aligned joint-name table both omission and explicit null, but current Flight has one unnamed-skeleton state. createSkeleton3D normalizes an omitted or null names argument with ?? null and initializeSkeleton3D stores that result, so its produced Skeleton3D always has null or the exact supplied readonly string array. applyDocumentSkins is the only other production builder: every format importer reaches it through Scene3DDocument assembly, it resolves each skin joint index, records joint.name ?? '' at the same index, preserves the full array with empty-string placeholders when any joint is named, and otherwise stores null. cloneSkeleton3D and cloneSkeleton3DJointHierarchy currently preserve a structurally supplied undefined separately, but for a present table both allocate an independent array while preserving every aligned string; no live producer gives that undefined branch a meaning. disposeSkeleton3D clears names to null. equalsSkeleton3D normalizes both absent spellings with ?? null before comparing present arrays element by element, getSkeleton3DJointIndexByName returns -1 for either spelling before using indexOf, and getSkeleton3DJointWorldMatrixByName delegates through that lookup; palette computation, skinning, and rendering never read names. Make Skeleton3D.names a required readonly string[] | null field, keep createSkeleton3D's construction-boundary normalization and both real builders' null assignments, narrow initializeSkeleton3D and the document-local field initializer to that required-nullable type, and simplify both clones to preserve null or copy the present array. A present empty array and the importer's empty-string placeholders remain present index-aligned tables and must not be replaced with null. If structural or compatibility inputs allow omission, give them a separate shape and normalize once before constructing the live skeleton. Do not whitelist the redundant live-storage spelling. The compiler will not choose or collapse an absence sentinel, infer names from joint nodes or a source format, align, pad, truncate, search, compare, clone, or clear the table, change joint identity or order, route strings through Any, reinterpret or cast them, or add side storage.`;
+}
+
 function getSkeleton2DMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string | undefined {
   if (
     !ts.isInterfaceDeclaration(node.parent) ||
@@ -596,6 +612,20 @@ function isOptionalNullableReadonlyNumberArrayProperty(node: ts.PropertySignatur
     type.operator === ts.SyntaxKind.ReadonlyKeyword &&
     ts.isArrayTypeNode(type.type) &&
     type.type.elementType.kind === ts.SyntaxKind.NumberKeyword
+  );
+}
+
+function isOptionalNullableReadonlyStringArrayProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  return (
+    ts.isTypeOperatorNode(type) &&
+    type.operator === ts.SyntaxKind.ReadonlyKeyword &&
+    ts.isArrayTypeNode(type.type) &&
+    type.type.elementType.kind === ts.SyntaxKind.StringKeyword
   );
 }
 
@@ -1370,6 +1400,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (meshDeformation) return meshDeformation;
   const scene3DDocumentMesh = getScene3DDocumentMeshMixedAbsencePropertyMessage(node, subject);
   if (scene3DDocumentMesh) return scene3DDocumentMesh;
+  const skeleton3DNames = getSkeleton3DNamesMixedAbsencePropertyMessage(node, subject);
+  if (skeleton3DNames) return skeleton3DNames;
   const skeleton2D = getSkeleton2DMixedAbsencePropertyMessage(node, subject);
   if (skeleton2D) return skeleton2D;
   const slot2D = getSlot2DMixedAbsencePropertyMessage(node, subject);

@@ -6036,6 +6036,61 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the required-nullable contract for the live Skeleton3D name table', () => {
+    const source = input(
+      'packages/types/src/Skeleton3D.ts',
+      'interface Skeleton3D { names?: readonly string[] | null }',
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: 'mixed-absence',
+      subject: 'interface:Skeleton3D/property:names',
+    });
+    const message = findings[0]!.message;
+    expect(message).toContain("live skeleton's index-aligned joint-name table both omission and explicit null");
+    expect(message).toContain('createSkeleton3D normalizes an omitted or null names argument with ?? null');
+    expect(message).toContain('applyDocumentSkins is the only other production builder');
+    expect(message).toContain('every format importer reaches it through Scene3DDocument assembly');
+    expect(message).toContain("records joint.name ?? '' at the same index");
+    expect(message).toContain('preserves the full array with empty-string placeholders when any joint is named');
+    expect(message).toContain('cloneSkeleton3D and cloneSkeleton3DJointHierarchy');
+    expect(message).toContain('both allocate an independent array while preserving every aligned string');
+    expect(message).toContain('disposeSkeleton3D clears names to null');
+    expect(message).toContain('equalsSkeleton3D normalizes both absent spellings with ?? null');
+    expect(message).toContain('getSkeleton3DJointIndexByName returns -1 for either spelling');
+    expect(message).toContain('palette computation, skinning, and rendering never read names');
+    expect(message).toContain('Make Skeleton3D.names a required readonly string[] | null field');
+    expect(message).toContain('narrow initializeSkeleton3D and the document-local field initializer');
+    expect(message).toContain('A present empty array');
+    expect(message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+  });
+
+  it('requires the exact Skeleton3D names shape and accepts one sentinel', () => {
+    const unrelated = [
+      input('packages/types/src/Skeleton3D.ts', 'interface OtherSkeleton { names?: readonly string[] | null }'),
+      input('packages/example/src/Skeleton3D.ts', 'interface Skeleton3D { names?: readonly string[] | null }'),
+      input('packages/types/src/Skeleton3D.ts', 'interface Skeleton3D { labels?: readonly string[] | null }'),
+      input('packages/types/src/Skeleton3D.ts', 'interface Skeleton3D { names?: string[] | null }'),
+      input('packages/types/src/Skeleton3D.ts', 'interface Skeleton3D { names?: readonly number[] | null }'),
+    ];
+    const resolved = input(
+      'packages/types/src/Skeleton3D.ts',
+      'interface Skeleton3D { names: readonly string[] | null }',
+    );
+    const omitted = input('packages/types/src/Skeleton3D.ts', 'interface Skeleton3D { names?: readonly string[] }');
+
+    expect(analyzeTypeScriptSourcePortability([resolved, omitted]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain("live skeleton's index-aligned joint-name table");
+    }
+  });
+
   it('explains the required-nullable contract for Skeleton2D wardrobe and slot collections', () => {
     const source = input(
       'packages/types/src/Skeleton2D.ts',

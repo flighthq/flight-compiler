@@ -792,6 +792,71 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the Skeleton3D names finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createSkeleton3DNamesWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'interface:Skeleton3D/property:names';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]).toMatchObject({ rule: 'mixed-absence', subject });
+    expect(sourcePortability.findings[0]?.message).toContain('applyDocumentSkins is the only other production builder');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Make Skeleton3D.names a required readonly string[] | null field',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createSkeleton3DNamesWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the six anchor-layout absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createAnchorLayoutWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -2637,6 +2702,17 @@ export interface Scene3DDocumentMesh {
   MeshMorph,
   Scene3DDocumentMesh,
 } from './Scene3DDocument.js';`,
+  };
+}
+
+function createSkeleton3DNamesWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Skeleton3D.ts': `export interface Skeleton3D {
+  names${marker}: readonly string[] | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Skeleton3D } from './Skeleton3D.js';`,
   };
 }
 
