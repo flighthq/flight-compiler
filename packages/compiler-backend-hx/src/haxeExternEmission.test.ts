@@ -54,6 +54,27 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(module).toEqual(snapshot);
   });
 
+  it('separates the glTF base-path input from required nullable resource storage', () => {
+    const module = lower(
+      '@flighthq/types',
+      'GltfExtension.ts',
+      `export interface GltfImportOptions { basePath?: string | null; }
+       export interface PortableGltfImportOptions { basePath?: string; }
+       export interface ExternalImageResourceReference { basePath: string | null; }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+
+    expect(findFile(files, 'flight/_js/GltfImportOptions.hx').contents).toContain(
+      '@:optional var basePath:Null<String>;',
+    );
+    expect(findFile(files, 'flight/_js/PortableGltfImportOptions.hx').contents).toContain(
+      '@:optional var basePath:String;',
+    );
+    expect(findFile(files, 'flight/_js/ExternalImageResourceReference.hx').contents).toContain(
+      'var basePath:Null<String>;',
+    );
+  });
+
   it('groups values from every package module into one deterministically ordered holder', () => {
     const distance = lower(
       '@flighthq/geometry',

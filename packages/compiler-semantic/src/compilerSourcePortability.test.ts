@@ -9878,6 +9878,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('only the external non-data URI branch reads basePath');
     expect(message).toContain('options?.basePath ?? null goes to createExternalImageResourceReference');
     expect(message).toContain('data URIs and bufferView images never consult it');
+    expect(message).toContain('caller retains the options object');
+    expect(message).toContain('the path is a string scalar with no owner identity or disposal');
     expect(message).toContain(
       'loadScene3DDocumentFromGlbUrl and loadScene3DDocumentFromGltfUrl derive a string or null with getScene3DDocumentBasePathFromUrl',
     );
@@ -9887,9 +9889,20 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('an empty string remains a present authored path');
     expect(message).toContain('Keep ExternalImageResourceReference.basePath a required string | null cell');
     expect(message).toContain('initializeExternalImageResourceReference materializes the exact normalized value');
+    expect(message).toContain('document owns the finished ExternalImageResourceReference entity');
+    expect(message).toContain('copy only the resource array and preserve each reference owner');
+    expect(message).toContain(
+      'setScene3DDocumentResourceBasePathFromUrl is the only basePath mutator and fills only null cells',
+    );
     expect(message).toContain(
       'resolveImageResourceUri later leaves a relative URI unchanged for null, joins it against a present path, and preserves absolute URIs',
     );
+    expect(message).toContain('Resolver disposal clears resolver-owned maps without clearing resource base paths');
+    expect(message).toContain('@:optional var basePath:Null<String>');
+    expect(message).toContain('optional-non-null rewrite keeps @:optional and removes Null');
+    expect(message).toContain('std::variant<flight::String, flight::Null, flight::Undefined>');
+    expect(message).toContain('std::optional<flight::String>');
+    expect(message).toContain('not a host-binding gap');
     expect(message).toContain('normalize it to omission before a glTF parser');
     expect(message).toContain('Do not whitelist the redundant construction spelling');
     expect(message).toContain('will preserve every present path and ExternalImageResourceReference owner');

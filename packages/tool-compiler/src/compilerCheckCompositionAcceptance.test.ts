@@ -4805,6 +4805,10 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain(
       'have the URL loaders omit it when the derived path is null',
     );
+    expect(sourcePortability.findings[0]?.message).toContain('@:optional var basePath:Null<String>');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'std::variant<flight::String, flight::Null, flight::Undefined>',
+    );
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
     expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
     expect(
@@ -4834,6 +4838,13 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
       failingFindingIdentities: [report.directFindings[0]?.identity],
       passed: false,
+    });
+    const unchanged = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(unchanged).toMatchObject({ introduced: [], resolvedFindingIdentities: [] });
+    expect(unchanged.unchanged).toHaveLength(1);
+    expect(createCompilerPackageCheckPolicyResult(unchanged, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
 
     const portableSource = createMemoryWorkspaceSource(createGltfImportOptionsWorkspaceFiles(false));
