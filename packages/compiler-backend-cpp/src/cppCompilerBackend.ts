@@ -13015,6 +13015,12 @@ function getCppDeclaredPropertyReadTypeCpp(
   const objectType = row ? getCppStructuralRowObjectTypeCpp(row) : receiverType;
   const propertyType = objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
   if (!propertyType || !row || !isCppStructuralRowPropertyOptionalCpp(row)) return propertyType;
+  // A property that ALREADY admits absence keeps the representation it has. Unioning a second undefined
+  // into it re-spells an optional read as an explicit union, which changes which presence test the carrier
+  // takes: `row_get` answers `std::optional`, so the optional form is the one that compiles, and the
+  // explicit union would ask `std::holds_alternative` of an optional. Only a property whose declaration is
+  // present-only gains the absence the row's Partial actually contributes.
+  if (hasIrTypeAbsentMember(propertyType)) return propertyType;
   // RowPartial changes the storage even when the underlying nominal declaration marks its member required.
   // Preserve that contributed undefined at reads; otherwise an inline typeof probe sees only the callable
   // declaration underneath Readonly<Partial<T>> and loses the exact presence question its row_get emits.

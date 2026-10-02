@@ -33334,6 +33334,44 @@ Resolver make_resolver(TextureRef texture) {
     expect(emitted).not.toMatch(/read\(flight::Ref<flight::types::/u);
   });
 
+  // The carrier and its presence test must agree, and this pins the pair directly rather than leaving it to
+  // be caught incidentally. A read through a Partial structural row answers `std::optional` from `row_get`,
+  // so its presence test is the optional form. A change that unions an explicit `undefined` into the declared
+  // read type re-spells an optional read as an explicit union, which moves the test to `std::holds_alternative`
+  // and asks an `std::optional` for a variant alternative -- invalid C++ that the corpus would count as
+  // emitted. That is what happened in 85a933de; the read now keeps its own representation when it already
+  // admits absence, and both shapes below were handed to g++ to prove it.
+  it('keeps a Partial row read presence test on the optional carrier it is emitted as', () => {
+    const emitCase = (body: string) =>
+      emitIrModuleCpp(
+        lower(
+          'partialRowTypeof.ts',
+          `export type ColorTransformFunction = (out: readonly number[], r: number) => void;
+           export interface ColorLutAdjustment { readonly kind: 'lut'; readonly transform?: ColorTransformFunction }
+           ${body}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+
+    for (const [label, body] of [
+      [
+        'cast form',
+        `export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<ColorLutAdjustment>>).transform === 'function' ? 1 : 0; }`,
+      ],
+      [
+        'binding form',
+        `export function f(operation: Readonly<Partial<ColorLutAdjustment>>): number { return typeof operation.transform === 'function' ? 1 : 0; }`,
+      ],
+    ] as const) {
+      const emitted = emitCase(body);
+      // The read is a row_get, whose answer is an optional, so the test is the optional one.
+      expect(emitted, label).toContain('flight::row_get<flight::RowKey<"transform">>');
+      expect(emitted, label).toContain('.has_value()');
+      // And never a variant alternative test over that optional.
+      expect(emitted, label).not.toContain('holds_alternative<std::function');
+    }
+  });
+
   it('answers typeof-a-function as presence for a closed callable-or-absent domain', () => {
     // The shape @flighthq/textureatlas and @flighthq/adjustments both write: a callable-or-absent property,
     // read through a cast. The only value the domain can hold is a callable, so `typeof ... === 'function'`
