@@ -13326,6 +13326,63 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('separates the readable erased view from the write it cannot take', () => {
+    // material.ts reports five findings against ONE shape: the `as unknown as Record<string, unknown>` view of
+    // a material. Four of them are READS -- equalsMaterial's key enumeration, its existence test and its
+    // element compares, plus copyMaterialFields' source side -- and the erased view is perfectly readable, so
+    // those four emit and need nothing from the source. The fifth is the WRITE, and that one is the
+    // target-runtime limit: flight::NamedProperties deliberately has no setter. This control states the split,
+    // so a reader of "five findings in material.ts" knows four of them are already lowering.
+    const material = `export interface Material { readonly kind: string; readonly name?: string | null }`;
+
+    const read = emitIrModuleCpp(
+      lower(
+        'material-equals.ts',
+        `${material}
+export function equalsMaterial(a: Readonly<Material>, b: Readonly<Material>): boolean {
+  if (a === b) return true;
+  if (a.kind !== b.kind) return false;
+  const aFields = a as unknown as Record<string, unknown>;
+  const bFields = b as unknown as Record<string, unknown>;
+  const aKeys = Object.keys(aFields);
+  const bKeys = Object.keys(bFields);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.hasOwn(bFields, key)) return false;
+    if (key === 'kind') continue;
+    if (aFields[key] !== bFields[key]) return false;
+  }
+  return true;
+}`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    // the enumeration and the element compares all resolve through the view, and nothing is cast or copied
+    expect(read).toContain('named_properties');
+    expect(read).not.toContain('flight::Any(');
+
+    // The fifth finding, and the only one that needs a decision: the same view cannot be written through.
+    const write = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'material-copy.ts',
+          `${material}
+export function copyMaterialFields(dst: Material, src: Readonly<Material>): void {
+  const dstFields = dst as unknown as Record<string, unknown>;
+  const srcFields = src as unknown as Record<string, unknown>;
+  for (const key of Object.keys(srcFields)) {
+    if (key === 'kind') continue;
+    dstFields[key] = srcFields[key];
+  }
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(write.rule).toBe('cpp-named-properties-write-unsupported');
+    expect(write.classification).toBe('target-runtime');
+  });
+
   it('pins which carrier a dynamic material write can reach and which it cannot', () => {
     // material.ts's copyMaterialFields copies every source member through the erased view
     // (`dst as unknown as Record<string, unknown>`), which the read-only named view cannot answer. The
