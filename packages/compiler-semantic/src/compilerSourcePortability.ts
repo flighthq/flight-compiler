@@ -906,6 +906,9 @@ function getNormalizedStringOptionMixedAbsencePropertyMessage(
   if (!ts.isInterfaceDeclaration(node.parent) || !isOptionalNullableStringProperty(node)) return undefined;
   const field = getNodeName(node.name);
   const owner = node.parent.name.text;
+  if (isFlightTypesSource(node, 'GltfExtension.ts') && owner === 'GltfImportOptions' && field === 'basePath') {
+    return `${subject} gives the construction-only glTF base-path input both omission and explicit null, but current parsing has one no-base input state. createScene3DFromGlb, createScene3DFromGltf, createScene3DsFromGlb, createScene3DsFromGltf, parseGlb, and parseGltf all accept GltfImportOptions and converge on buildGltfDocument without retaining or mutating the options. buildGltfDocument passes them to buildGltfImageResourceReference for every image, and only the external non-data URI branch reads basePath: options?.basePath ?? null goes to createExternalImageResourceReference, while data URIs and bufferView images never consult it. loadScene3DDocumentFromGlbUrl and loadScene3DDocumentFromGltfUrl derive a string or null with getScene3DDocumentBasePathFromUrl and currently include that value in fresh parser options; the JSON loader separately uses the same derived value to fetch external buffers before parsing. Make GltfImportOptions.basePath an optional string, and have the URL loaders omit it when the derived path is null, so omission is the sole parser-input absence while an empty string remains a present authored path. Keep ExternalImageResourceReference.basePath a required string | null cell: initializeExternalImageResourceReference materializes the exact normalized value, and resolveImageResourceUri later leaves a relative URI unchanged for null, joins it against a present path, and preserves absolute URIs. If a compatibility entry point accepts explicit null, keep that raw input separate and normalize it to omission before a glTF parser; if a future update API must distinguish unchanged, cleared, and supplied paths, give it a named closed update state. Do not whitelist the redundant construction spelling. The compiler will preserve every present path and ExternalImageResourceReference owner but will not choose or collapse an absence sentinel, derive or join a path, fetch a buffer or image, rewrite parser or loader options, mutate resource storage, replace an empty string, reinterpret or cast a path, or add side storage.`;
+  }
   let guidance:
     | {
         readonly destination: string;
@@ -914,14 +917,7 @@ function getNormalizedStringOptionMixedAbsencePropertyMessage(
         readonly whitelistGuidance?: string;
       }
     | undefined;
-  if (isFlightTypesSource(node, 'GltfExtension.ts') && owner === 'GltfImportOptions' && field === 'basePath') {
-    guidance = {
-      destination: 'ImageResourceReference.basePath',
-      normalization:
-        'buildGltfImageResourceReference passes options?.basePath ?? null to createExternalImageResourceReference, whose basePath stays required nullable through external URI resolution',
-      presentMeaning: 'base path',
-    };
-  } else if (
+  if (
     isFlightTypesSource(node, 'Scene2DResources.ts') &&
     owner === 'Scene2DDocumentLoadOptions' &&
     field === 'mimeType'

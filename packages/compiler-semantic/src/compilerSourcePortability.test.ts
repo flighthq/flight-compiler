@@ -8486,21 +8486,51 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
-  it('explains normalized optional-null string inputs at their required-nullable boundaries', () => {
-    const gltf = input(
+  it('explains the construction-only glTF base path and required-nullable resource boundary', () => {
+    const source = input(
       'packages/types/src/GltfExtension.ts',
-      `interface GltfImportOptions { basePath?: string | null }
-       interface ImageResourceReference { basePath: string | null; uri: string }
-       function createExternalImageResourceReference(uri: string, basePath: string | null): ImageResourceReference {
-         return { basePath, uri };
-       }
-       function buildGltfImageResourceReference(
-         uri: string,
-         options: Readonly<GltfImportOptions> | undefined,
-       ): ImageResourceReference {
-         return createExternalImageResourceReference(uri, options?.basePath ?? null);
-       }`,
+      'interface GltfImportOptions { basePath?: string | null }',
     );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'mixed-absence', subject: 'interface:GltfImportOptions/property:basePath' },
+    ]);
+    const message = findings[0]?.message;
+    expect(message).toContain('gives the construction-only glTF base-path input both omission and explicit null');
+    expect(message).toContain('current parsing has one no-base input state');
+    expect(message).toContain(
+      'createScene3DFromGlb, createScene3DFromGltf, createScene3DsFromGlb, createScene3DsFromGltf, parseGlb, and parseGltf',
+    );
+    expect(message).toContain('converge on buildGltfDocument without retaining or mutating the options');
+    expect(message).toContain('buildGltfDocument passes them to buildGltfImageResourceReference for every image');
+    expect(message).toContain('only the external non-data URI branch reads basePath');
+    expect(message).toContain('options?.basePath ?? null goes to createExternalImageResourceReference');
+    expect(message).toContain('data URIs and bufferView images never consult it');
+    expect(message).toContain(
+      'loadScene3DDocumentFromGlbUrl and loadScene3DDocumentFromGltfUrl derive a string or null with getScene3DDocumentBasePathFromUrl',
+    );
+    expect(message).toContain('JSON loader separately uses the same derived value to fetch external buffers');
+    expect(message).toContain('Make GltfImportOptions.basePath an optional string');
+    expect(message).toContain('have the URL loaders omit it when the derived path is null');
+    expect(message).toContain('an empty string remains a present authored path');
+    expect(message).toContain('Keep ExternalImageResourceReference.basePath a required string | null cell');
+    expect(message).toContain('initializeExternalImageResourceReference materializes the exact normalized value');
+    expect(message).toContain(
+      'resolveImageResourceUri later leaves a relative URI unchanged for null, joins it against a present path, and preserves absolute URIs',
+    );
+    expect(message).toContain('normalize it to omission before a glTF parser');
+    expect(message).toContain('Do not whitelist the redundant construction spelling');
+    expect(message).toContain('will preserve every present path and ExternalImageResourceReference owner');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('derive or join a path, fetch a buffer or image');
+    expect(message).toContain('rewrite parser or loader options, mutate resource storage');
+    expect(message).toContain('replace an empty string');
+    expect(message).toContain('reinterpret or cast a path');
+    expect(message).toContain('or add side storage');
+  });
+
+  it('explains other normalized optional-null string inputs at their required-nullable boundaries', () => {
     const scene2D = input(
       'packages/types/src/Scene2DResources.ts',
       `interface Scene2DDocumentImportContext { mimeType: string | null; url: string | null }
@@ -8524,17 +8554,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
          return { mergeKind };
        }`,
     );
-    const findings = analyzeTypeScriptSourcePortability([gltf, scene2D, textInput]).findings;
+    const findings = analyzeTypeScriptSourcePortability([scene2D, textInput]).findings;
     const expected = [
-      {
-        boundary:
-          'buildGltfImageResourceReference passes options?.basePath ?? null to createExternalImageResourceReference',
-        destination: 'ImageResourceReference.basePath',
-        field: 'basePath',
-        owner: 'GltfImportOptions',
-        presentMeaning: 'base path',
-        subject: 'interface:GltfImportOptions/property:basePath',
-      },
       {
         boundary:
           'loadScene2DDocumentFromUrl writes mimeType: options?.mimeType ?? null into the required nullable Scene2DDocumentImportContext',
@@ -8577,14 +8598,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('reinterpret or cast the value');
       expect(finding.message).toContain('or add side storage');
     }
-    expect(findings[1]!.message).toContain(
+    expect(findings[0]!.message).toContain(
       'createScene2DDocumentFromBytes then passes that context unchanged to each registry matcher and the selected importer',
     );
-    expect(findings[1]!.message).toContain(
+    expect(findings[0]!.message).toContain(
       'Lottie, SVG, and SWF matchers compare only their exact MIME strings before falling back to byte sniffing',
     );
-    expect(findings[1]!.message).toContain('Do not whitelist the redundant explicit-null MIME hint');
-    expect(findings[1]!.message).toContain(
+    expect(findings[0]!.message).toContain('Do not whitelist the redundant explicit-null MIME hint');
+    expect(findings[0]!.message).toContain(
       "representation support does not replace the source's single normalized input state",
     );
   });
