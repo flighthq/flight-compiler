@@ -5099,6 +5099,92 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings.every((finding) => !finding.message.includes('mesh deformation slot'))).toBe(true);
   });
 
+  it('explains the one-sentinel contract for live Slot2D fields', () => {
+    const source = input(
+      'packages/types/src/Slot2D.ts',
+      `interface Attachment2D { readonly kind: string }
+       interface Skeleton2DSlotDeform { readonly offsets: Float32Array }
+       interface Slot2D {
+         attachment?: Attachment2D | null;
+         deform?: Skeleton2DSlotDeform | null;
+         boneIndex: number;
+         name?: string | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['attachment', 'deform', 'name'].map((name) => ({
+        rule: 'mixed-absence',
+        subject: `interface:Slot2D/property:${name}`,
+      })),
+    );
+
+    const attachment = findings[0]!.message;
+    expect(attachment).toContain('live Slot2D attachment cell both omission and explicit null');
+    expect(attachment).toContain('Spine JSON and binary importers construct every slot with attachment: null');
+    expect(attachment).toContain('DragonBones constructs it with a resolved Attachment2D or null');
+    expect(attachment).toContain('setSkeleton2DSkin, and attachment animation later overwrite that same cell');
+    expect(attachment).toContain('resolveSkeleton2DPathAttachment rejects undefined and null identically');
+    expect(attachment).toContain('getSkeleton2DSlotDeformOffsets compares slot.attachment ?? null');
+    expect(attachment).toContain('Make Slot2D.attachment a required Attachment2D | null field');
+    expect(attachment).toContain('infer or resolve an attachment');
+
+    const deform = findings[1]!.message;
+    expect(deform).toContain('live Slot2D deform cell both a never-written undefined state and an explicit null clear');
+    expect(deform).toContain('format importers construct slots without deform');
+    expect(deform).toContain('setSkeleton2DSlotDeform writes null when clearing');
+    expect(deform).toContain('reuses a present same-sized record');
+    expect(deform).toContain('getSkeleton2DSlotDeformOffsets returns null for both absence spellings');
+    expect(deform).toContain('attachment swaps intentionally leave the record in place');
+    expect(deform).toContain('Make Slot2D.deform a required Skeleton2DSlotDeform | null field');
+    expect(deform).toContain('change buffer reuse');
+
+    const name = findings[2]!.message;
+    expect(name).toContain('Slot2D authored-name cell both omission and explicit null');
+    expect(name).toContain('Spine JSON and DragonBones importers normalize a non-string slot name to null');
+    expect(name).toContain('binary reader returns string | null');
+    expect(name).toContain('skin, animation, and draw-order resolution paths call indexOfSpineSlot');
+    expect(name).toContain('Make Slot2D.name a required string | null field');
+    expect(name).toContain('infer a name from the bone, attachment, kind, or position');
+
+    for (const finding of findings) {
+      expect(finding.message).toContain('cloneSkeleton2D copies');
+      expect(finding.message).toContain('give them a separate shape and normalize once');
+      expect(finding.message).toContain('will not whitelist a redundant absence spelling');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps unrelated optional-nullable slot properties generic and accepts required nullable live storage', () => {
+    const controls = [
+      input('OtherSlot2D.ts', 'interface OtherSlot2D { attachment?: Attachment2D | null }'),
+      input('packages/types/src/Slot2D.ts', 'interface Slot2D { colorAdjustment?: Attachment2D | null }'),
+      input('packages/example/src/Slot2D.ts', 'interface Slot2D { deform?: Skeleton2DSlotDeform | null }'),
+      input('packages/types/src/Slot2D.ts', 'interface Slot2D { name?: String | null }'),
+    ];
+    const resolved = input(
+      'packages/types/src/Slot2D.ts',
+      `interface Attachment2D { readonly kind: string }
+       interface Skeleton2DSlotDeform { readonly offsets: Float32Array }
+       interface Slot2D {
+         attachment: Attachment2D | null;
+         deform: Skeleton2DSlotDeform | null;
+         name: string | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability(controls).findings;
+
+    expect(findings).toHaveLength(4);
+    expect(
+      findings.every((finding) =>
+        finding.message.endsWith('choose one absence representation or make all three states explicit.'),
+      ),
+    ).toBe(true);
+    expect(findings.every((finding) => !finding.message.includes('live Slot2D'))).toBe(true);
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+  });
+
   it('explains the construction-only absence contract for BitmapText numeric options', () => {
     const source = input(
       'packages/types/src/BitmapText.ts',

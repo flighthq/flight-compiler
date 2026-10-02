@@ -309,6 +309,27 @@ function getMeshDeformationMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getSlot2DMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'Slot2D' ||
+    !isFlightTypesSource(node, 'Slot2D.ts')
+  ) {
+    return undefined;
+  }
+  const name = getNodeName(node.name);
+  if (name === 'attachment' && isOptionalNullableNamedTypeProperty(node, 'Attachment2D')) {
+    return `${subject} gives the live Slot2D attachment cell both omission and explicit null, but current Flight has one empty-slot state. The Spine JSON and binary importers construct every slot with attachment: null before setup-skin resolution, while DragonBones constructs it with a resolved Attachment2D or null. Setup-skin resolution, setSkeleton2DSkin, and attachment animation later overwrite that same cell with an attachment or null, and cloneSkeleton2D copies the cell unchanged. resolveSkeleton2DPathAttachment rejects undefined and null identically, while getSkeleton2DSlotDeformOffsets compares slot.attachment ?? null with the deform's authored attachment, so neither consumer observes which empty spelling arrived. Make Slot2D.attachment a required Attachment2D | null field and initialize every construction path to null when nothing is shown. If structural or compatibility inputs allow omission, give them a separate shape and normalize once before constructing the live slot. The compiler will not whitelist a redundant absence spelling, choose or collapse a sentinel, infer or resolve an attachment, apply a skin or animation, clear or retain a deform, copy or materialize an attachment owner, reinterpret or cast it, or add side storage.`;
+  }
+  if (name === 'deform' && isOptionalNullableNamedTypeProperty(node, 'Skeleton2DSlotDeform')) {
+    return `${subject} gives the live Slot2D deform cell both a never-written undefined state and an explicit null clear, but current Flight has one no-deform state. The format importers construct slots without deform and cloneSkeleton2D copies that spelling unchanged. setSkeleton2DSlotDeform writes null when clearing, otherwise reuses a present same-sized record or installs one new Skeleton2DSlotDeform. getSkeleton2DSlotDeformOffsets returns null for both absence spellings and exposes offsets only when the record's attachment is the exact owner the slot currently shows; attachment swaps intentionally leave the record in place for that identity check. Make Slot2D.deform a required Skeleton2DSlotDeform | null field, initialize every slot construction path to null, and retain the explicit-null clear and identity-gated read. If structural or compatibility inputs allow omission, give them a separate shape and normalize once before constructing the live slot. The compiler will not whitelist a redundant absence spelling, choose or collapse a sentinel, infer offsets or their attachment, run or clear a deform, change buffer reuse, copy or materialize deformation storage, reinterpret or cast it, or add side storage.`;
+  }
+  if (name === 'name' && isOptionalNullableStringProperty(node)) {
+    return `${subject} gives the Slot2D authored-name cell both omission and explicit null, but current Flight has one unnamed state. The Spine JSON and DragonBones importers normalize a non-string slot name to null, the binary reader returns string | null, and all three construct every Slot2D with that value. Spine's skin, animation, and draw-order resolution paths call indexOfSpineSlot with a string and match only slots whose name is that exact string, so null and omission are equally unnamed; cloneSkeleton2D copies the stored name unchanged. Make Slot2D.name a required string | null field and initialize every construction path to null when no authored name exists. If structural or compatibility inputs allow omission, give them a separate shape and normalize once before constructing the live slot. If omitted, unnamed, and named must differ, replace the absence spellings with one named closed state and handle every arm explicitly. The compiler will not whitelist a redundant absence spelling, choose or collapse a sentinel, infer a name from the bone, attachment, kind, or position, rewrite name lookup, copy or materialize a slot, reinterpret or cast the string, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getAttachmentPointStorageMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -1031,6 +1052,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (scene3DRenderProxy) return scene3DRenderProxy;
   const meshDeformation = getMeshDeformationMixedAbsencePropertyMessage(node, subject);
   if (meshDeformation) return meshDeformation;
+  const slot2D = getSlot2DMixedAbsencePropertyMessage(node, subject);
+  if (slot2D) return slot2D;
   const attachmentPointStorage = getAttachmentPointStorageMixedAbsencePropertyMessage(node, subject);
   if (attachmentPointStorage) return attachmentPointStorage;
   const authoredName = getAuthoredNameMixedAbsencePropertyMessage(node, subject);

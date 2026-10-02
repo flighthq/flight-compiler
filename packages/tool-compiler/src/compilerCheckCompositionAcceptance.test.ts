@@ -609,6 +609,76 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the three Slot2D absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createSlot2DWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = ['attachment', 'deform', 'name'].map((name) => `interface:Slot2D/property:${name}`);
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
+      expect.stringContaining('Make Slot2D.attachment a required Attachment2D | null field'),
+      expect.stringContaining('Make Slot2D.deform a required Skeleton2DSlotDeform | null field'),
+      expect.stringContaining('Make Slot2D.name a required string | null field'),
+    ]);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('will not whitelist'))).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createSlot2DWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both specialized entity guard set traps stable through check mode', () => {
     const source = createMemoryWorkspaceSource(createEntityGuardWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -1053,6 +1123,22 @@ export interface Scene3DRenderProxy {
   normalMatrices${marker}: Readonly<Float32Array> | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { Scene3DRenderProxy } from './Scene3DRenderProxy.js';`,
+  };
+}
+
+function createSlot2DWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Slot2D.ts': `interface Attachment2D { readonly kind: string }
+interface Skeleton2DSlotDeform { readonly offsets: Float32Array }
+export interface Slot2D {
+  attachment${marker}: Attachment2D | null;
+  deform${marker}: Skeleton2DSlotDeform | null;
+  boneIndex: number;
+  name${marker}: string | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Slot2D } from './Slot2D.js';`,
   };
 }
 
