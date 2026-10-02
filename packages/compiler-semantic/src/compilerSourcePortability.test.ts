@@ -10417,6 +10417,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const scene2DMessage = findings[0]!.message;
     expect(scene2DMessage).toContain('sole production Scene2DDocumentLoadOptions.mimeType reader');
     expect(scene2DMessage).toContain('no repository production caller constructs that exported options input');
+    expect(scene2DMessage).toContain('fetch failure returns before any import context is materialized');
     expect(scene2DMessage).toContain('after a successful fetch the API materializes a fresh required-nullable');
     expect(scene2DMessage).toContain('mimeType: options?.mimeType ?? null and the exact URL');
     expect(scene2DMessage).toContain(
@@ -10425,11 +10426,20 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(scene2DMessage).toContain('passes the exact same readonly context synchronously');
     expect(scene2DMessage).toContain('Lottie and SVG matchers recognize only their exact MIME strings');
     expect(scene2DMessage).toContain('Rive matcher and all three built-in importers ignore the hint');
+    expect(scene2DMessage).toContain('registry retains only importer entries and never an invocation context');
+    expect(scene2DMessage).toContain(
+      'built-in document result owns its root and resource arrays without copying the MIME hint',
+    );
     expect(scene2DMessage).toContain('No Flight registry, document, resource, failure notice, or module state retains');
     expect(scene2DMessage).toContain('Flight neither clones nor mutates either');
     expect(scene2DMessage).toContain('custom registered callback that retains its argument owns that choice');
     expect(scene2DMessage).toContain('There is no context disposal path');
+    expect(scene2DMessage).toContain('no Scene2DDocument clone or disposal helper');
     expect(scene2DMessage).toContain('This MIME finding is not a host-binding gap');
+    expect(scene2DMessage).toContain('Haxe emits @:optional var mimeType:Null<String> for the current input');
+    expect(scene2DMessage).toContain(
+      '@:optional var mimeType:String for the rewrite and var mimeType:Null<String> for the import context',
+    );
     expect(scene2DMessage).toContain('current optional-nullable input as String | Null | Undefined');
     expect(scene2DMessage).toContain('recommended optional-non-null input and required-nullable import-context field');
     expect(scene2DMessage).toContain('without an external binding');
@@ -10561,6 +10571,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('only the fallback in decodeAudioResourceBytes uses the owner');
     expect(message).toContain('copying the encoded byte view before calling decodeAudioData');
     expect(message).toContain('resulting AudioBuffer is installed into the existing AudioResource');
+    expect(message).toContain(
+      'selected and result arrays retain the exact document-owned AudioResourceReference objects',
+    );
+    expect(message).toContain('each reference keeps the exact AudioResource allocated during reference initialization');
+    expect(message).toContain('copies only the decoded AudioBuffer owner into that existing resource cell');
     expect(message).toContain('reference failure and resolution state mutate independently');
     expect(message).toContain(
       'AudioContext is never stored in the document, reference, resource, result, or module state',
@@ -10568,6 +10583,9 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('Scene2D resource path has no AudioContext importer, materializer, or clone');
     expect(message).toContain('never resumes, closes, mutates, or disposes this borrowed host owner');
     expect(message).toContain('operation closures release it after the concurrent load settles');
+    expect(message).toContain('cloneAudioResource creates a new AudioResource identity sharing the same AudioBuffer');
+    expect(message).toContain('disposeAudioResource clears only the passed resource buffer cell');
+    expect(message).toContain('neither operation touches the AudioContext');
     expect(message).toContain('createWebAudioDeviceBackend separately constructs AudioContext owners');
     expect(message).toContain('closes them in destroyDevice');
     expect(message).toContain('exposes no AudioContext owner to this loader');
@@ -10577,6 +10595,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('without an exact AudioContext[type] external binding');
     expect(message).toContain('current optional-nullable input uses AudioContext | Null | Undefined');
     expect(message).toContain('recommended optional-non-null input and required-nullable resolver parameter');
+    expect(message).toContain(
+      'Haxe maps the host type to js.html.audio.AudioContext and emits @:optional var context:Null<js.html.audio.AudioContext>',
+    );
+    expect(message).toContain(
+      '@:optional var context:js.html.audio.AudioContext for the rewrite and var context:Null<js.html.audio.AudioContext> for required resolver storage',
+    );
     expect(message).toContain('Declare LoadScene2DAudioResourcesOptions.context as optional AudioContext without null');
     expect(message).toContain('keep the required nullable resolver and decoder parameters');
     expect(message).toContain('named closed context-input state');

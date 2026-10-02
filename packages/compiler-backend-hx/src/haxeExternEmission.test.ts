@@ -75,6 +75,39 @@ describe('emitIrModuleHaxeExtern', () => {
     );
   });
 
+  it('separates Scene2D resource input absence in Haxe without erasing the AudioContext owner', () => {
+    const module = lower(
+      '@flighthq/types',
+      'Scene2DResources.ts',
+      `export interface Scene2DDocumentImportContext { mimeType: string | null; }
+       export interface Scene2DDocumentLoadOptions { mimeType?: string | null; }
+       export interface PortableScene2DDocumentLoadOptions { mimeType?: string; }
+       export interface Scene2DAudioResolveInput { context: AudioContext | null; }
+       export interface LoadScene2DAudioResourcesOptions { context?: AudioContext | null; }
+       export interface PortableLoadScene2DAudioResourcesOptions { context?: AudioContext; }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+
+    expect(findFile(files, 'flight/_js/Scene2DDocumentLoadOptions.hx').contents).toContain(
+      '@:optional var mimeType:Null<String>;',
+    );
+    expect(findFile(files, 'flight/_js/PortableScene2DDocumentLoadOptions.hx').contents).toContain(
+      '@:optional var mimeType:String;',
+    );
+    expect(findFile(files, 'flight/_js/Scene2DDocumentImportContext.hx').contents).toContain(
+      'var mimeType:Null<String>;',
+    );
+    expect(findFile(files, 'flight/_js/LoadScene2DAudioResourcesOptions.hx').contents).toContain(
+      '@:optional var context:Null<js.html.audio.AudioContext>;',
+    );
+    expect(findFile(files, 'flight/_js/PortableLoadScene2DAudioResourcesOptions.hx').contents).toContain(
+      '@:optional var context:js.html.audio.AudioContext;',
+    );
+    expect(findFile(files, 'flight/_js/Scene2DAudioResolveInput.hx').contents).toContain(
+      'var context:Null<js.html.audio.AudioContext>;',
+    );
+  });
+
   it('separates the current Skin root sentinels from required-nullable live storage', () => {
     const module = lower(
       '@flighthq/types',
