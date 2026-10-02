@@ -853,6 +853,7 @@ function getNormalizedStringOptionMixedAbsencePropertyMessage(
         readonly destination: string;
         readonly normalization: string;
         readonly presentMeaning: string;
+        readonly whitelistGuidance?: string;
       }
     | undefined;
   if (isFlightTypesSource(node, 'GltfExtension.ts') && owner === 'GltfImportOptions' && field === 'basePath') {
@@ -872,6 +873,8 @@ function getNormalizedStringOptionMixedAbsencePropertyMessage(
       normalization:
         'loadScene2DDocumentFromUrl writes mimeType: options?.mimeType ?? null into the required nullable Scene2DDocumentImportContext; createScene2DDocumentFromBytes then passes that context unchanged to each registry matcher and the selected importer, while the Lottie, SVG, and SWF matchers compare only their exact MIME strings before falling back to byte sniffing',
       presentMeaning: 'MIME hint',
+      whitelistGuidance:
+        "Do not whitelist the redundant explicit-null MIME hint: representation support does not replace the source's single normalized input state.",
     };
   } else if (
     isFlightTypesSource(node, 'TextInputEditingOptions.ts') &&
@@ -886,7 +889,8 @@ function getNormalizedStringOptionMixedAbsencePropertyMessage(
     };
   }
   if (field === undefined || guidance === undefined) return undefined;
-  return `${subject} gives the normalized string input ${owner}.${field} both omission and explicit null, but ${guidance.normalization}. That ?? null boundary makes the two absence spellings identical while an empty string remains a present ${guidance.presentMeaning}. Keep ${guidance.destination} required nullable, but declare ${owner}.${field} as an optional string so omission is the sole input-side absence. If the input later becomes an update patch where omission means unchanged and null means clear, replace the property with one named closed input state and handle each arm explicitly. The compiler will not choose or collapse an absence sentinel, replace a present empty string with null or a default, synthesize a replacement ${guidance.presentMeaning}, rewrite the caller or downstream storage, reinterpret or cast the value, or add side storage.`;
+  const whitelistGuidance = guidance.whitelistGuidance === undefined ? '' : ` ${guidance.whitelistGuidance}`;
+  return `${subject} gives the normalized string input ${owner}.${field} both omission and explicit null, but ${guidance.normalization}. That ?? null boundary makes the two absence spellings identical while an empty string remains a present ${guidance.presentMeaning}. Keep ${guidance.destination} required nullable, but declare ${owner}.${field} as an optional string so omission is the sole input-side absence.${whitelistGuidance} If the input later becomes an update patch where omission means unchanged and null means clear, replace the property with one named closed input state and handle each arm explicitly. The compiler will not choose or collapse an absence sentinel, replace a present empty string with null or a default, synthesize a replacement ${guidance.presentMeaning}, rewrite the caller or downstream storage, reinterpret or cast the value, or add side storage.`;
 }
 
 function getScene2DAudioLoadContextMixedAbsencePropertyMessage(
@@ -902,7 +906,7 @@ function getScene2DAudioLoadContextMixedAbsencePropertyMessage(
   ) {
     return undefined;
   }
-  return `${subject} gives the one-shot Scene2D audio load's platform decoder context both omission and explicit null, but loadScene2DAudioResources immediately evaluates options?.context ?? null and passes that required AudioContext | null unchanged to resolveAudioResourceReference for every selected reference. External references resolve only through the fetch seam and never inspect the context. Embedded references first try a registered MIME decoder; decodeAudioResourceBytes calls AudioContext.decodeAudioData only when no registered decoder handled the bytes and returns null when the normalized context is null. Thus omitted and explicit-null options both disable only the platform decode fallback, while a present AudioContext owner is borrowed unchanged for this operation and never retained. Declare LoadScene2DAudioResourcesOptions.context as optional AudioContext without null, and keep the required nullable resolver and decoder parameters plus the ?? null normalization at the load boundary. If omission and an explicit platform-decoder disable must differ, replace the property with one named closed context-input state and resolve every arm before loading. The compiler will not whitelist a redundant absence spelling, choose or collapse a sentinel, construct, resume, or close an AudioContext, select or invoke a decoder or fetcher, copy or materialize the host context owner, rewrite reference state or load results, reinterpret or cast the context, or add side storage.`;
+  return `${subject} gives the one-shot Scene2D audio load's platform decoder context both omission and explicit null, but loadScene2DAudioResources immediately evaluates options?.context ?? null and passes that required AudioContext | null unchanged to resolveAudioResourceReference for every selected reference. External references resolve only through the fetch seam and never inspect the context. Embedded references first try a registered MIME decoder; decodeAudioResourceBytes calls AudioContext.decodeAudioData only when no registered decoder handled the bytes and returns null when the normalized context is null. Thus omitted and explicit-null options both disable only the platform decode fallback, while a present AudioContext owner is borrowed unchanged for this operation and never retained. Declare LoadScene2DAudioResourcesOptions.context as optional AudioContext without null, and keep the required nullable resolver and decoder parameters plus the ?? null normalization at the load boundary. Do not whitelist the redundant explicit-null context spelling: representation support does not replace the source's single normalized decoder input state. If omission and an explicit platform-decoder disable must differ, replace the property with one named closed context-input state and resolve every arm before loading. The compiler will not choose or collapse an absence sentinel, construct, resume, or close an AudioContext, select or invoke a decoder or fetcher, copy or materialize the host context owner, rewrite reference state or load results, reinterpret or cast the context, or add side storage.`;
 }
 
 function getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(

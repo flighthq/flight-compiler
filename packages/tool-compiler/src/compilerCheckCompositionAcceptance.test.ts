@@ -1387,6 +1387,7 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       expect.stringContaining('disable only the platform decode fallback'),
       expect.stringContaining('passes that context unchanged to each registry matcher and the selected importer'),
     ]);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
       sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
     ).toBe(true);
@@ -1409,6 +1410,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 2,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createScene2DResourceWorkspaceFiles(false));

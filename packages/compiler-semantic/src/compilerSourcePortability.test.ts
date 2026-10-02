@@ -8242,6 +8242,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings[1]!.message).toContain(
       'Lottie, SVG, and SWF matchers compare only their exact MIME strings before falling back to byte sniffing',
     );
+    expect(findings[1]!.message).toContain('Do not whitelist the redundant explicit-null MIME hint');
+    expect(findings[1]!.message).toContain(
+      "representation support does not replace the source's single normalized input state",
+    );
   });
 
   it('keeps unrelated string options generic and accepts one input absence state', () => {
@@ -8320,7 +8324,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('Declare LoadScene2DAudioResourcesOptions.context as optional AudioContext without null');
     expect(message).toContain('keep the required nullable resolver and decoder parameters');
     expect(message).toContain('named closed context-input state');
-    expect(message).toContain('will not whitelist a redundant absence spelling');
+    expect(message).toContain('Do not whitelist the redundant explicit-null context spelling');
+    expect(message).toContain(
+      "representation support does not replace the source's single normalized decoder input state",
+    );
     expect(message).toContain('construct, resume, or close an AudioContext');
     expect(message).toContain('select or invoke a decoder or fetcher');
     expect(message).toContain('copy or materialize the host context owner');
