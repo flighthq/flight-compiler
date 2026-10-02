@@ -6024,13 +6024,27 @@ describe('analyzeTypeScriptSourcePortability', () => {
         `gives the reused per-draw proxy slot ${name} both an omitted state and explicit null`,
       );
       expect(finding.message).toContain('current Flight has one inactive state for each of these six slots');
-      expect(finding.message).toContain('Production owns three module-local scratch records and never clones them');
+      expect(finding.message).toContain('No parser, document schema, or scene materializer constructs');
+      expect(finding.message).toContain('createScene3DFromDocument builds live meshes');
+      expect(finding.message).toContain("allocates each Skeleton3D's required jointMatrices and normalMatrices arrays");
+      expect(finding.message).toContain('GL and WebGPU draw modules are the sole proxy materializers');
       expect(finding.message).toContain(
-        'the GL and WebGPU forward proxies are exposed only for one renderer draw call',
+        'NodeRuntime initializes required-nullable resolvedColorMatrix and resolvedColorScaleBias slots',
       );
+      expect(finding.message).toContain('authoritatively writes null or a value');
       expect(finding.message).toContain(
-        'the WebGPU shadow proxy is passed only to writeWgpuDrawUniform once per caster; renderer contracts forbid retaining them',
+        'InstancedMesh owns a required instanceMatrices array and required-nullable instanceColors',
       );
+      expect(finding.message).toContain('cloneMesh shares a present Skin and its Skeleton3D');
+      expect(finding.message).toContain('cloneInstancedMesh independently copies the live matrices');
+      expect(finding.message).toContain('neither clone creates or copies a proxy');
+      expect(finding.message).toContain('Production owns three module-local scratch records');
+      expect(finding.message).toContain(
+        'The GL and WebGPU forward records are passed only to one renderer draw call at a time',
+      );
+      expect(finding.message).toContain('Readonly parameter type forbids consumer mutation');
+      expect(finding.message).toContain('renderer contract forbids retention');
+      expect(finding.message).toContain('WebGPU shadow record is passed only to writeWgpuDrawUniform once per caster');
       expect(finding.message).toContain(
         'Both forward producers assign colorMatrix, colorScaleBias, jointMatrices, and normalMatrices to a value or null on every regular draw',
       );
@@ -6038,7 +6052,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('then clear instanceCount and instanceMatrices afterward');
       expect(finding.message).toContain('GL also assigns and clears its separate instanceColors');
       expect(finding.message).toContain(
-        'WebGPU packs instance colors beside matrices in one buffer and never reads instanceColors',
+        'WebGPU packs instance colors beside matrices in one scratch buffer and never reads instanceColors',
       );
       expect(finding.message).toContain(
         'The WebGPU shadow producer assigns jointMatrices to a palette or null for every caster and currently leaves the other five optional slots omitted',
@@ -6049,16 +6063,26 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain(
         'WebGPU drawWgpuMeshSubset normalizes the two skin palettes with ?? null and explicitly accepts null or undefined instanceMatrices',
       );
+      expect(finding.message).toContain('no consumer mutates or clones a proxy');
+      expect(finding.message).toContain("three records live for their modules' lifetimes");
+      expect(finding.message).toContain('have no whole-record reset or disposer because they own no GPU resource');
+      expect(finding.message).toContain('GL runtime teardown frees its state-owned palette textures');
+      expect(finding.message).toContain('destroyWgpuRenderState frees the state-owned instance-buffer pool');
       expect(finding.message).toContain(
         'Make all six colorMatrix, colorScaleBias, instanceColors, instanceMatrices, jointMatrices, and normalMatrices slots required nullable fields',
       );
       expect(finding.message).toContain('initialize all six to null in all three scratch records');
       expect(finding.message).toContain('preserve the authoritative per-draw writes and post-instancing clears');
-      expect(finding.message).toContain('give that input a separate shape and normalize it once');
+      expect(finding.message).toContain('keep each borrowed array and GPU buffer with its existing owner');
+      expect(finding.message).toContain('Keep alpha and instanceCount optional scalar fields');
+      expect(finding.message).toContain('default omission to one and zero');
+      expect(finding.message).toContain('give that input a separate optional non-null shape');
+      expect(finding.message).toContain('normalize it once before the scratch record reaches a renderer');
       expect(finding.message).toContain('Do not whitelist the redundant live-storage spelling');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('infer a palette or color default');
-      expect(finding.message).toContain('retain stale state, clone a proxy, copy or materialize a buffer');
+      expect(finding.message).toContain('import, materialize, clone, reset, or dispose a proxy');
+      expect(finding.message).toContain('copy or materialize an array or GPU buffer');
     }
   });
 
@@ -6091,6 +6115,37 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ),
     ).toBe(true);
     expect(findings.every(({ message }) => !message.includes('module-local scratch records'))).toBe(true);
+  });
+
+  it('accepts separate required-nullable render storage and optional non-null proxy input', () => {
+    const storage = input(
+      'packages/types/src/Scene3DRenderProxy.ts',
+      `interface ColorScaleBias { readonly redScale: number }
+       interface Scene3DRenderProxy {
+         alpha?: number;
+         colorScaleBias: Readonly<ColorScaleBias> | null;
+         colorMatrix: readonly number[] | null;
+         instanceCount?: number;
+         instanceMatrices: Readonly<Float32Array> | null;
+         instanceColors: Readonly<Float32Array> | null;
+         jointMatrices: Readonly<Float32Array> | null;
+         normalMatrices: Readonly<Float32Array> | null;
+       }`,
+    );
+    const inputShape = input(
+      'Scene3DRenderProxyInput.ts',
+      `interface ColorScaleBias { readonly redScale: number }
+       interface Scene3DRenderProxyInput {
+         colorScaleBias?: Readonly<ColorScaleBias>;
+         colorMatrix?: readonly number[];
+         instanceMatrices?: Readonly<Float32Array>;
+         instanceColors?: Readonly<Float32Array>;
+         jointMatrices?: Readonly<Float32Array>;
+         normalMatrices?: Readonly<Float32Array>;
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([storage, inputShape]).findings).toEqual([]);
   });
 
   it('keeps unrelated optional-nullable render-proxy properties on generic mixed-absence guidance', () => {

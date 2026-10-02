@@ -1995,12 +1995,25 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     );
     expect(
       sourcePortability.findings.every(({ message }) =>
-        message.includes('Production owns three module-local scratch records and never clones them'),
+        message.includes('No parser, document schema, or scene materializer constructs a Scene3DRenderProxy'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => message.includes('neither clone creates or copies a proxy')),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('have no whole-record reset or disposer because they own no GPU resource'),
       ),
     ).toBe(true);
     expect(
       sourcePortability.findings.every(({ message }) =>
-        message.includes('The WebGPU shadow producer assigns jointMatrices to a palette or null for every caster'),
+        message.includes('slots required nullable fields on the internal Scene3DRenderProxy scratch contract'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Keep alpha and instanceCount optional scalar fields'),
       ),
     ).toBe(true);
     expect(
@@ -6380,8 +6393,19 @@ export interface Scene3DRenderProxy {
   instanceMatrices${marker}: Readonly<Float32Array> | null;
   jointMatrices${marker}: Readonly<Float32Array> | null;
   normalMatrices${marker}: Readonly<Float32Array> | null;
+}
+export interface Scene3DRenderProxyInput {
+  colorMatrix?: readonly number[];
+  colorScaleBias?: Readonly<ColorScaleBias>;
+  instanceColors?: Readonly<Float32Array>;
+  instanceMatrices?: Readonly<Float32Array>;
+  jointMatrices?: Readonly<Float32Array>;
+  normalMatrices?: Readonly<Float32Array>;
 }`,
-    '/flight/packages/types/src/index.ts': `export type { Scene3DRenderProxy } from './Scene3DRenderProxy.js';`,
+    '/flight/packages/types/src/index.ts': `export type {
+  Scene3DRenderProxy,
+  Scene3DRenderProxyInput,
+} from './Scene3DRenderProxy.js';`,
   };
 }
 
