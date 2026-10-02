@@ -7055,23 +7055,51 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(cameraFinding?.message).toContain('copy or materialize the plane owner, or add side storage');
 
     expect(environmentFinding?.message).toContain(
-      'gives the Environment construction owner environment both omission and explicit null',
+      'gives the one-shot Environment radiance-cube input both omission and explicit null',
     );
-    expect(environmentFinding?.message).toContain('createEnvironment passes its options once to initializeEnvironment');
+    expect(environmentFinding?.message).toContain(
+      'createEnvironment allocates a fresh Environment and passes its options once to initializeEnvironment',
+    );
     expect(environmentFinding?.message).toContain('out.environment = options?.environment ?? null');
     expect(environmentFinding?.message).toContain(
-      'GL and WebGPU environment-cube consumers test the required nullable field against null',
-    );
-    expect(environmentFinding?.message).toContain('Keep Environment.environment required nullable');
-    expect(environmentFinding?.message).toContain(
-      'make EnvironmentOptions.environment an optional Texture without null',
+      'callers that set only enabled or intensity omit environment, while scene providers pass an exact cube Texture',
     );
     expect(environmentFinding?.message).toContain(
-      'cloneEnvironment must omit the option when source.environment is null and pass the existing owner unchanged when present',
+      'Environment owns the canonical mutable Texture | null storage cell but borrows the Texture identity',
     );
-    expect(environmentFinding?.message).toContain('unchanged, disabled, and present-texture cases are explicit');
+    expect(environmentFinding?.message).toContain(
+      "cloneEnvironment creates a new Environment wrapper while sharing the source's exact GPU-backed Texture",
+    );
+    expect(environmentFinding?.message).toContain(
+      'The only direct readers of the live field are ensureGlEnvironmentSourceCube and ensureWgpuEnvironmentSourceCube',
+    );
+    expect(environmentFinding?.message).toContain(
+      'GL provider returns null and destroys a stale cached cube when the field is null, non-cube, or incomplete',
+    );
+    expect(environmentFinding?.message).toContain(
+      "destroyWgpuScene3DIbl is that cache's explicit invalidation and teardown seam",
+    );
+    expect(environmentFinding?.message).toContain(
+      'skybox draws and IBL bakes compose those providers and no-op on their null result',
+    );
+    expect(environmentFinding?.message).toContain(
+      'Make EnvironmentOptions.environment an optional Texture without null',
+    );
+    expect(environmentFinding?.message).toContain(
+      'keep Environment.environment required nullable for live install/clear state',
+    );
+    expect(environmentFinding?.message).toContain(
+      'Adapt cloneEnvironment to omit the option when source.environment is null and pass the existing Texture unchanged when present',
+    );
+    expect(environmentFinding?.message).toContain('do not make the live field optional or deep-copy the resource');
+    expect(environmentFinding?.message).toContain('unchanged, clear, and install');
+    expect(environmentFinding?.message).toContain('Do not whitelist the redundant construction spelling');
     expect(environmentFinding?.message).toContain('infer or construct a Texture');
-    expect(environmentFinding?.message).toContain('copy or materialize the texture owner, or add side storage');
+    expect(environmentFinding?.message).toContain('allocate, invalidate, or destroy a GPU cache');
+    expect(environmentFinding?.message).toContain('copy or materialize the texture owner');
+    expect(environmentFinding?.message).toContain('alter skybox or IBL dispatch');
+    expect(environmentFinding?.message).toContain('reinterpret or cast the input');
+    expect(environmentFinding?.message).toContain('or add side storage');
     for (const finding of findings) {
       expect(finding.message).toContain('normalize');
       expect(finding.message).toContain('omission is the sole construction-time absence');
@@ -7100,6 +7128,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'packages/types/src/EnvironmentOptions.ts',
       'interface Texture {} interface EnvironmentOptions { skybox?: Texture | null }',
     );
+    const unrelatedEnvironmentOwner = input(
+      'packages/types/src/EnvironmentOptions.ts',
+      'interface Texture {} interface EnvironmentUpdate { environment?: Texture | null }',
+    );
+    const unrelatedEnvironmentType = input(
+      'packages/types/src/EnvironmentOptions.ts',
+      'interface CubeTexture {} interface EnvironmentOptions { environment?: CubeTexture | null }',
+    );
     const splitContract = input(
       'SceneOwnerOptionsSplit.ts',
       `interface Plane {}
@@ -7115,10 +7151,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
       unrelatedType,
       unrelatedLocation,
       unrelatedEnvironmentMember,
+      unrelatedEnvironmentOwner,
+      unrelatedEnvironmentType,
       splitContract,
     ]).findings;
 
-    expect(findings).toHaveLength(5);
+    expect(findings).toHaveLength(7);
     for (const finding of findings) {
       expect(finding.message).toContain(
         'combines an optional property with null; choose one absence representation or make all three states explicit.',

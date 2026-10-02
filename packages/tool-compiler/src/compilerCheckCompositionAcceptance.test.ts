@@ -2784,11 +2784,25 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     ]);
     expect(sourcePortability.findings[0]?.message).toContain('out.environment = options?.environment ?? null');
     expect(sourcePortability.findings[0]?.message).toContain(
-      'make EnvironmentOptions.environment an optional Texture without null',
+      'Environment owns the canonical mutable Texture | null storage cell but borrows the Texture identity',
     );
     expect(sourcePortability.findings[0]?.message).toContain(
-      'cloneEnvironment must omit the option when source.environment is null',
+      'The only direct readers of the live field are ensureGlEnvironmentSourceCube and ensureWgpuEnvironmentSourceCube',
     );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      "destroyWgpuScene3DIbl is that cache's explicit invalidation and teardown seam",
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Make EnvironmentOptions.environment an optional Texture without null',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'keep Environment.environment required nullable for live install/clear state',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Adapt cloneEnvironment to omit the option when source.environment is null',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
+    expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
         policyClass,
@@ -2808,6 +2822,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 1,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createEnvironmentOptionsWorkspaceFiles(false));
