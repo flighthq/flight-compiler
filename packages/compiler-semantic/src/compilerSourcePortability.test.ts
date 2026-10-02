@@ -6937,23 +6937,42 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain(
       'gives the one-shot TreeViewController initial selection both omission and explicit null',
     );
+    expect(message).toContain('createTreeViewController consumes the options only while building one controller');
+    expect(message).toContain('flattens options.items into the runtime items array and parent map');
     expect(message).toContain('selectedItem: options.selectedItem ?? null');
     expect(message).toContain('required Readonly<TreeViewControllerItem> | null runtime storage');
-    expect(message).toContain('present item owner is retained unchanged');
-    expect(message).toContain('live setter accepts an item or null');
-    expect(message).toContain('normalizes a foreign item to null');
-    expect(message).toContain('disposal clears the runtime field to null');
     expect(message).toContain(
-      'Declare TreeViewControllerOptions.selectedItem as optional TreeViewControllerItem without null',
+      'present initial item is retained by identity without a membership check or an onSelect emission',
     );
-    expect(message).toContain('keeping the runtime field, setter parameter, and getter result required nullable');
-    expect(message).toContain('replace the property with one named closed selection state');
+    expect(message).toContain('EntityRuntimeKey-owned runtime');
+    expect(message).toContain('getTreeViewControllerSelectedItem returns the exact required nullable cell');
+    expect(message).toContain('setTreeViewControllerSelectedItem is the distinct live update boundary');
+    expect(message).toContain('maps a foreign item to null through runtime.parents.has');
+    expect(message).toContain('ignores unchanged or disposed controllers');
+    expect(message).toContain('emits onSelect with that same nullable value');
+    expect(message).toContain('Item clicks select through the setter');
+    expect(message).toContain('ArrowUp/ArrowDown select from the visible flattened items');
+    expect(message).toContain('Enter emits onActivate only for a present selection');
+    expect(message).toContain('Selection never drives item visibility or styling');
+    expect(message).toContain('expansion state alone feeds updateTreeViewControllerVisibility');
+    expect(message).toContain('does not emit a final selection change');
+    expect(message).toContain(
+      'Make TreeViewControllerOptions.selectedItem an optional TreeViewControllerItem without null',
+    );
+    expect(message).toContain(
+      'requiring TreeViewControllerItem | null would force every unselected tree to manufacture null',
+    );
+    expect(message).toContain(
+      'Keep the runtime field, live setter parameter, getter result, and TreeViewControllerSignals.onSelect payload required nullable',
+    );
+    expect(message).toContain('unchanged, clear, and select');
+    expect(message).toContain('Do not whitelist the redundant construction spelling');
     expect(message).toContain('will not choose or collapse an absence sentinel');
-    expect(message).toContain('select or validate an item');
-    expect(message).toContain('emit a selection signal');
-    expect(message).toContain('infer an item from the roots');
+    expect(message).toContain('select or validate an initial item');
+    expect(message).toContain('emit a selection or activation signal');
+    expect(message).toContain('infer an item from roots or visibility');
     expect(message).toContain('copy or materialize the item owner');
-    expect(message).toContain('rewrite controller disposal or navigation');
+    expect(message).toContain('rewrite controller disposal, navigation, expansion, or visuals');
     expect(message).toContain('reinterpret or cast the selection');
     expect(message).toContain('or add side storage');
   });
