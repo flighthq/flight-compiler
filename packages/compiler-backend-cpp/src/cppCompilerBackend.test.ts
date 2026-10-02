@@ -11710,6 +11710,35 @@ int main() {
     expect(contents).not.toContain('externalBindings');
   });
 
+  it('removes explicit null from the three optional Mesh deformation owner carriers', () => {
+    const result = lower(
+      'Mesh.ts',
+      `export interface Aabb { readonly minX: number }
+       export interface MeshMorph { readonly weights: Float32Array }
+       export interface Skin { readonly skeleton: object }
+       export interface CurrentMesh { morph?: MeshMorph | null; skin?: Skin | null }
+       export interface PortableMesh { morph?: MeshMorph; skin?: Skin }
+       export interface CurrentMeshDeformRuntime { deformedLocalBounds?: Aabb | null }
+       export interface PortableMeshDeformRuntime { deformedLocalBounds?: Aabb }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const carriers = new Map([
+      ['morph', 'flight::Ref<MeshMorph>'],
+      ['skin', 'flight::Ref<Skin>'],
+      ['deformed_local_bounds', 'flight::Ref<Aabb>'],
+    ]);
+
+    expect(result.diagnostics).toEqual([]);
+    for (const [field, owner] of carriers) {
+      expect(contents).toContain(`std::variant<${owner}, flight::Null, flight::Undefined> ${field} =`);
+      expect(contents).toContain(`std::optional<${owner}> ${field};`);
+    }
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
+  });
+
   it('separates TextInput merge-tag input absence from required nullable history storage', () => {
     // ReplaceTextInputOptions is an ephemeral edit input, while both history interfaces describe the
     // normalized retained record. All are compiler-native strings: required null and optional undefined

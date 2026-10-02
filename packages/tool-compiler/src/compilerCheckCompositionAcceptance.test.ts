@@ -2729,7 +2729,37 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+    const resolved = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+
+    expect(
+      portableCompilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(portableSourcePortability).toMatchObject({ acceptedExceptions: [], findings: [] });
+    expect(portableReport.directFindings).toEqual([]);
+    expect(createCompilerPackageCheckPolicyResult(resolved, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
   });
 
   it('keeps the two InstancedMesh runtime absence findings source-owned through check mode', () => {

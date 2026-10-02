@@ -178,6 +178,36 @@ describe('emitIrModuleHaxeExtern', () => {
     );
   });
 
+  it('removes explicit null from the three optional Mesh deformation owner carriers', () => {
+    const module = lower(
+      '@flighthq/types',
+      'Mesh.ts',
+      `export interface Aabb { readonly minX: number }
+       export interface MeshMorph { readonly weights: Float32Array }
+       export interface Skin { readonly skeleton: object }
+       export interface CurrentMesh { morph?: MeshMorph | null; skin?: Skin | null }
+       export interface PortableMesh { morph?: MeshMorph; skin?: Skin }
+       export interface CurrentMeshDeformRuntime { deformedLocalBounds?: Aabb | null }
+       export interface PortableMeshDeformRuntime { deformedLocalBounds?: Aabb }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const currentMesh = findFile(files, 'flight/_js/CurrentMesh.hx').contents;
+    const portableMesh = findFile(files, 'flight/_js/PortableMesh.hx').contents;
+    const currentRuntime = findFile(files, 'flight/_js/CurrentMeshDeformRuntime.hx').contents;
+    const portableRuntime = findFile(files, 'flight/_js/PortableMeshDeformRuntime.hx').contents;
+
+    expect(currentMesh).toContain('@:optional var morph:Null<flight.MeshMorph>;');
+    expect(currentMesh).toContain('@:optional var skin:Null<flight.Skin>;');
+    expect(currentRuntime).toContain('@:optional var deformedLocalBounds:Null<flight.Aabb>;');
+    expect(portableMesh).toContain('@:optional var morph:flight.MeshMorph;');
+    expect(portableMesh).toContain('@:optional var skin:flight.Skin;');
+    expect(portableRuntime).toContain('@:optional var deformedLocalBounds:flight.Aabb;');
+    for (const portable of [portableMesh, portableRuntime]) {
+      expect(portable).not.toContain('Null<');
+      expect(portable).not.toContain('Dynamic');
+    }
+  });
+
   it('separates ignored Lottie input keys from their four closed format domains', () => {
     const module = lower(
       '@flighthq/types',

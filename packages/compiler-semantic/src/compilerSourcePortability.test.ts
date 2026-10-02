@@ -6722,13 +6722,21 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(morph).toContain('built-in format producers omit it or assign a non-null MeshMorph');
     expect(morph).toContain('buildDocumentNode collapses either nullish input spelling to live omission');
     expect(morph).toContain('shares the exact present document owner across every live node');
+    expect(morph).toContain('builds one node pool for all returned scenes');
     expect(morph).toContain('cloneMesh first detaches geometry whenever either deformer is present');
     expect(morph).toContain('shares its immutable targets, copies its mutable weight array');
+    expect(morph).toContain('Mesh is a writable structural API');
+    expect(morph).toContain('no dedicated or built-in production mutator clears it after construction');
     expect(morph).toContain('prepareScene3DMorph drives updateMeshMorph');
     expect(morph).toContain("updateMeshSkin's composed-deformation refresh");
     expect(morph).toContain('GL and WebGPU draw or upload the geometry');
     expect(morph).toContain('Make Mesh.morph an optional non-null MeshMorph field');
     expect(morph).toContain("preserving the clone's target sharing, weight copy, and detached geometry");
+    expect(morph).toContain('typed callers that clear it should delete the member');
+    expect(morph).toContain('@:optional var morph:Null<flight.MeshMorph>');
+    expect(morph).toContain('@:optional var morph:flight.MeshMorph');
+    expect(morph).toContain('std::variant<flight::Ref<MeshMorph>, flight::Null, flight::Undefined>');
+    expect(morph).toContain('std::optional<flight::Ref<MeshMorph>>');
     expect(morph).toContain('infer or create a morph or bind pose');
 
     const skin = findings[1]!.message;
@@ -6738,12 +6746,21 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(skin).toContain('built-in format paths omit it, copy undefined, or assign a number, never null');
     expect(skin).toContain('an in-range index assigns the exact materialized Skin');
     expect(skin).toContain('an out-of-range structural index currently writes undefined');
+    expect(skin).toContain('use a nullish guard and normalize every unresolved document index');
+    expect(skin).toContain('builds one node pool for all returned scenes');
+    expect(skin).toContain('share the same live Mesh, Skin, Skeleton3D, and joint nodes');
     expect(skin).toContain('cloneMesh detaches geometry whenever either deformer is present');
     expect(skin).toContain('shares the exact present Skin and its Skeleton3D owner');
+    expect(skin).toContain('Mesh is a writable structural API');
     expect(skin).toContain('updateMeshSkin and prepareMeshSkinning return for a nullish slot');
     expect(skin).toContain('GL forward and shadow paths require skin != null');
     expect(skin).toContain('the WebGPU skin adapter returns false for skin == null');
     expect(skin).toContain('Make Mesh.skin an optional non-null Skin field');
+    expect(skin).toContain('typed callers that clear it should delete the member');
+    expect(skin).toContain('@:optional var skin:Null<flight.Skin>');
+    expect(skin).toContain('@:optional var skin:flight.Skin');
+    expect(skin).toContain('std::variant<flight::Ref<Skin>, flight::Null, flight::Undefined>');
+    expect(skin).toContain('std::optional<flight::Ref<Skin>>');
     expect(skin).toContain("A future skin-removal lifecycle must clear this mesh's node-owned deformedLocalBounds");
     expect(skin).toContain('infer or create a skin, skeleton, palette, or bind pose');
 
@@ -6754,14 +6771,20 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     expect(bounds).toContain('createNode3DRuntime omits the slot for every createMesh call');
     expect(bounds).toContain('cloneMesh constructs a fresh node runtime without copying');
-    expect(bounds).toContain('prepareMeshSkinning is the sole writer');
+    expect(bounds).toContain('prepareMeshSkinning is the sole built-in writer');
     expect(bounds).toContain('allocates and stores one Aabb when the slot is nullish');
     expect(bounds).toContain('updateMeshSkin and morph-only preparation');
+    expect(bounds).toContain('getMeshRuntime exposes the exact node runtime to callers');
+    expect(bounds).toContain('no dedicated cache setter or reset operation');
     expect(bounds).toContain('uses deformedLocalBounds ?? ensureMeshGeometryBounds');
     expect(bounds).toContain('Picking uses a nullish presence check');
     expect(bounds).toContain('no teardown or lifecycle path writes null');
     expect(bounds).toContain('Make MeshDeformRuntime.deformedLocalBounds an optional non-null Aabb field');
     expect(bounds).toContain("preserving node ownership, the clone's fresh cache, and the producer's same-box reuse");
+    expect(bounds).toContain('@:optional var deformedLocalBounds:Null<flight.Aabb>');
+    expect(bounds).toContain('@:optional var deformedLocalBounds:flight.Aabb');
+    expect(bounds).toContain('std::variant<flight::Ref<Aabb>, flight::Null, flight::Undefined>');
+    expect(bounds).toContain('std::optional<flight::Ref<Aabb>>');
     expect(bounds).toContain('infer bounds or run skinning');
 
     for (const finding of findings) {
@@ -6769,6 +6792,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('disposeNode3D does not clear these GC-owned values');
       expect(finding.message).toContain('no mesh disposal path calls disposeSkeleton3D');
       expect(finding.message).toContain('normalize');
+      expect(finding.message).toContain('without Any, a cast, or an external binding');
       expect(finding.message).toContain('Do not whitelist the redundant live-storage spelling');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('or add side storage');
