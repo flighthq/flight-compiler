@@ -2377,6 +2377,105 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps both open command-property slots source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createCommandPropertyWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'interface:CommandPropertyEntry/property:after',
+      'interface:CommandPropertyEntry/property:before',
+    ];
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'opaque-value-domain', subject })),
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('capture the caller-supplied value');
+    expect(sourcePortability.findings[0]?.message).toContain('initial execute and redo');
+    expect(sourcePortability.findings[1]?.message).toContain('read the current node property');
+    expect(sourcePortability.findings[1]?.message).toContain('on undo');
+    for (const finding of sourcePortability.findings) {
+      expect(finding.message).toContain('binding before any history retention');
+      expect(finding.message).toContain('absent a merge it pushes the exact live command reference');
+      expect(finding.message).toContain('getCommandHistoryEntries exposes those same references');
+      expect(finding.message).toContain('test over numeric x or y');
+      expect(finding.message).toContain('including live entity or collection values');
+      expect(finding.message).toContain('no command serializer, parser, persistent history store, or command codec');
+      expect(finding.message).toContain(
+        'recursive JSON-shaped value union would neither make this command serializable',
+      );
+      expect(finding.message).toContain('Remove CommandPropertyEntry, SetNodePropertyCommand');
+      expect(finding.message).toContain('command-kind-specific data interface');
+      expect(finding.message).toContain('separate validated serialized form with a stable node key or path');
+      expect(finding.message).toContain('Do not replace unknown with a guessed scalar or recursive value union');
+      expect(finding.message).toContain('do not whitelist');
+      expect(finding.message).not.toContain('reviewed source-portability exception');
+    }
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createCommandPropertyWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps both FlightDocument node interaction absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createFlightDocumentWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4427,6 +4526,32 @@ export interface LogSpan { fields: LogFields }`;
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
     '/flight/packages/types/src/Log.ts': declarations,
     '/flight/packages/types/src/index.ts': `export type { LogContext, LogData, LogSpan } from './Log.js';`,
+  };
+}
+
+function createCommandPropertyWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const declaration = opaque
+    ? `export interface NodeAny { readonly x: number; readonly y: number }
+export interface CommandPropertyEntry {
+  readonly after: unknown;
+  readonly before: unknown;
+  readonly property: string;
+  readonly target: NodeAny;
+}`
+    : `export interface Node2D { readonly x: number; readonly y: number }
+export interface SetNodePositionCommand {
+  readonly afterX: number;
+  readonly afterY: number;
+  readonly beforeX: number;
+  readonly beforeY: number;
+  readonly target: Node2D;
+}`;
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Command.ts': declaration,
+    '/flight/packages/types/src/index.ts': opaque
+      ? `export type { CommandPropertyEntry, NodeAny } from './Command.js';`
+      : `export type { Node2D, SetNodePositionCommand } from './Command.js';`,
   };
 }
 

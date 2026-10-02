@@ -2107,19 +2107,38 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:CommandPropertyEntry/property:before',
     ]);
     expect(report.findings[0]?.message).toContain('capture the caller-supplied value');
-    expect(report.findings[0]?.message).toContain('execute or redo');
+    expect(report.findings[0]?.message).toContain('initial execute and redo');
     expect(report.findings[1]?.message).toContain('read the current node property');
     expect(report.findings[1]?.message).toContain('on undo');
     for (const finding of report.findings) {
-      expect(finding.message).toContain('no non-test construction site');
+      expect(finding.message).toContain('binding before any history retention');
+      expect(finding.message).toContain('absent a merge it pushes the exact live command reference');
+      expect(finding.message).toContain('getCommandHistoryEntries exposes those same references');
+      expect(finding.message).toContain('transactions keep or wrap them in CompositeCommand');
+      expect(finding.message).toContain(
+        "preserving the first command's before owner and the newest command's after owner",
+      );
+      expect(finding.message).toContain('Every repository construction site');
+      expect(finding.message).toContain('test over numeric x or y');
+      expect(finding.message).toContain('no non-test caller');
+      expect(finding.message).toContain('including live entity or collection values');
+      expect(finding.message).toContain('no command serializer, parser, persistent history store, or command codec');
+      expect(finding.message).toContain('live NodeAny target prevents disk persistence');
+      expect(finding.message).toContain(
+        'recursive JSON-shaped value union would neither make this command serializable',
+      );
       expect(finding.message).toContain('Remove CommandPropertyEntry, SetNodePropertyCommand');
       expect(finding.message).toContain('command-kind-specific data interface');
       expect(finding.message).toContain('Compose heterogeneous batches');
+      expect(finding.message).toContain('separate validated serialized form with a stable node key or path');
+      expect(finding.message).toContain('resolve that form into its live typed command at the persistence boundary');
       expect(finding.message).toContain('Do not replace unknown with a guessed scalar or recursive value union');
       expect(finding.message).toContain('do not whitelist');
       expect(finding.message).not.toContain('reviewed source-portability exception');
       expect(finding.message).toContain('target-specific Any carrier');
       expect(finding.message).toContain('insert a cast');
+      expect(finding.message).toContain('invent a stable node identity or command codec');
+      expect(finding.message).toContain('change command ordering or dispatch');
       expect(finding.message).toContain('copy or materialize the value');
     }
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
