@@ -12010,6 +12010,67 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('separates a mixed-absence guard member from an opaque adapter member', () => {
+    // WgpuScene3DRuntime carries both families side by side, which is what the lane asked to separate. They
+    // render differently and behave differently, so the control pins both rather than describing them: an
+    // optional CALLABLE beside null and undefined is a dual-sentinel variant, while `unknown | null` is an
+    // optional erased value -- and every consumer spelling of either lowers.
+    const members = `export interface Scene3DLightsLike { readonly count: number }
+export interface Scene3DMembers {
+  readonly forwardLightSelectionGuard?: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+  readonly skinningAdapter: unknown | null;
+}`;
+
+    const rendered = emitIrModuleCpp(lower('wgpu-scene3d.ts', members).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    // mixed absence: the callable is one alternative beside BOTH sentinels
+    expect(rendered).toContain('std::variant<std::function<void(');
+    expect(rendered).toContain('flight::Null, flight::Undefined>');
+    // opaque domain: one erased alternative beside null alone, because the source spells only `| null`
+    expect(rendered).toContain('std::optional<flight::Any> skinning_adapter;');
+
+    // The callable member's two consumer spellings ask the variant different questions: `?.` tests the
+    // callable alternative it is about to use, while the `!= null` guard tests both sentinels.
+    const optionalCall = emitIrModuleCpp(
+      lower(
+        'wgpu-guard-optional-call.ts',
+        `${members}
+export function use(r: Scene3DMembers, lights: Scene3DLightsLike): void { r.forwardLightSelectionGuard?.(lights); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(optionalCall).toContain('holds_alternative<std::function<void(flight::StructuralRef');
+
+    const guardedCall = emitIrModuleCpp(
+      lower(
+        'wgpu-guard-guarded-call.ts',
+        `${members}
+export function use(r: Scene3DMembers, lights: Scene3DLightsLike): void {
+  if (r.forwardLightSelectionGuard != null) r.forwardLightSelectionGuard(lights);
+}`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(guardedCall).toContain('holds_alternative<flight::Null>');
+    expect(guardedCall).toContain('holds_alternative<flight::Undefined>');
+
+    // The opaque member: reading it, writing it, and passing it on as the erased value it is.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'wgpu-adapter.ts',
+          `${members}
+export function read(r: Scene3DMembers): unknown { return r.skinningAdapter; }
+export function write(r: Scene3DMembers, adapter: unknown): void { r.skinningAdapter = adapter; }
+export function sink(value: unknown): void {}
+export function pass(r: Scene3DMembers): void { if (r.skinningAdapter != null) sink(r.skinningAdapter); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('skinning_adapter');
+  });
+
   it('names the value domain a weak-map member lookup needs', () => {
     // WgpuRenderState's sceneMeshUploadCache is `WeakMap<object, object> | null`, and the discriminator is
     // the VALUE type, not the optional member: a lookup through this member lowers when the value domain is
