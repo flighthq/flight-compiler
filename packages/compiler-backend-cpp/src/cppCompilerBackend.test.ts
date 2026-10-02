@@ -26942,6 +26942,66 @@ Resolver make_resolver(TextureRef texture) {
     expect(contents).not.toContain('static_cast<flight::Ref<');
   });
 
+  it('keeps base node runtime construction on the exact owner allocated at the boundary', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lowerPackage(
+          '@flighthq/node',
+          'node.ts',
+          `interface EntityRuntime { binding: object | null; uid?: string }
+           interface NodeRuntime<Traits extends object> extends EntityRuntime {
+             parent: Traits | null;
+           }
+           function createEntityRuntime(): EntityRuntime { return { binding: null }; }
+           export function createNodeRuntime<Traits extends object>(): NodeRuntime<Traits> {
+             const out = createEntityRuntime() as NodeRuntime<Traits>;
+             out.parent = null;
+             return out;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    expect(failure).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-reference-assertion-without-heritage',
+    });
+    expect(failure.message).toContain('createNodeRuntime asserts the createEntityRuntime factory result');
+    expect(failure.message).toContain('allocated and returned only the EntityRuntime owner');
+    expect(failure.message).toContain('binding and optional uid');
+    expect(failure.message).toContain('later NodeRuntime field assignments do not change that fixed owner identity');
+    expect(failure.message).toContain('initializeNode stores the result in Node<Traits>[EntityRuntimeKey]');
+    expect(failure.message).toContain('derived 2D and 3D runtime paths');
+    expect(failure.message).toContain('Construct the exact NodeRuntime<Traits> owner at this boundary');
+    expect(failure.message).toContain('exact-owner allocation and named EntityRuntime and NodeRuntime initializers');
+    expect(failure.message).toContain('Do not whitelist or recover this by cast');
+    expect(failure.message).toContain('will not reinterpret the EntityRuntime owner');
+    expect(failure.message).toContain('infer or append NodeRuntime cells');
+    expect(failure.message).toContain('copy or materialize a replacement owner');
+    expect(failure.message).toContain('side storage');
+
+    const exact = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/node',
+        'nodeRuntime.ts',
+        `interface EntityRuntime { binding: object | null; uid?: string }
+         interface NodeRuntime<Traits extends object> extends EntityRuntime {
+           parent: Traits | null;
+         }
+         export function createNodeRuntime<Traits extends object>(): NodeRuntime<Traits> {
+           return { binding: null, parent: null };
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(exact).toContain('flight::make_ref<NodeRuntime<Traits>>');
+    expect(exact).not.toContain('static_pointer_cast');
+    expect(exact).not.toContain('flight::Any');
+    expect(exact).not.toContain('materialize');
+  });
+
   it('keeps create-factory results on the exact owner allocated by the factory', () => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(
