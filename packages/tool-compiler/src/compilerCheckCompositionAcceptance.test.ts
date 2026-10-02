@@ -3849,6 +3849,31 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
         message.includes('required fields with their exact callable-bearing Signal type | null'),
       ),
     ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('installs three independent exact Signal owners through separate createSignal calls'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('inner Signal.data nullable listener state are distinct carriers'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('AnimationPlayer has no destroy or dispose path'),
+      ),
+    ).toBe(true);
+    const messages = new Map(
+      sourcePortability.findings.map(({ message, subject }) => [subject.split(':').at(-1), message]),
+    );
+    expect(messages.get('onEvent')).toContain(
+      'retains the exact Signal<(event: Readonly<AnimationClipEvent>) => void> owner',
+    );
+    expect(messages.get('onFinished')).toContain('established zero-argument Signal<() => void> carrier');
+    expect(messages.get('onLooped')).toContain(
+      'same Signal<() => void> callback signature as onFinished but is a separate owner',
+    );
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
       sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),

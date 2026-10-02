@@ -4870,12 +4870,20 @@ describe('analyzeTypeScriptSourcePortability', () => {
       },
     ]);
     const exactFlows = [
-      ['onEvent', 'emits only the clip markers crossed in that segment'],
-      ['onFinished', 'a finite repeat budget is exhausted'],
-      ['onLooped', 'at least one permitted repeat wrap or ping-pong bounce'],
+      [
+        'onEvent',
+        'passes each original read-only clip marker crossed in that segment',
+        'retains the exact Signal<(event: Readonly<AnimationClipEvent>) => void> owner',
+      ],
+      ['onFinished', 'a finite repeat budget is exhausted', 'established zero-argument Signal<() => void> carrier'],
+      [
+        'onLooped',
+        'at least one permitted repeat wrap or ping-pong bounce',
+        'same Signal<() => void> callback signature as onFinished but is a separate owner',
+      ],
     ] as const;
     for (const [index, finding] of findings.entries()) {
-      const [field, flow] = exactFlows[index]!;
+      const [field, flow, carrier] = exactFlows[index]!;
       expect(finding.message).toContain(`opt-in AnimationPlayer signal ${field}`);
       expect(finding.message).toContain('both omission and explicit null');
       expect(finding.message).toContain('one signal-free state');
@@ -4889,9 +4897,20 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('they never accept signal slots');
       expect(finding.message).toContain('no production construction bypasses the initializer or clone');
       expect(finding.message).toContain('Optionality belongs to construction inputs, not the live player signal state');
-      expect(finding.message).toContain('enableAnimationPlayerSignals checks each slot with == null');
-      expect(finding.message).toContain('is idempotent, and no path clears an enabled slot');
+      expect(finding.message).toContain(
+        'installs three independent exact Signal owners through separate createSignal calls',
+      );
+      expect(finding.message).toContain('is idempotent, and no production path clears or aliases an enabled slot');
+      expect(finding.message).toContain("initializes each owner's nested listener data to null");
+      expect(finding.message).toContain('connectSignal allocates SignalData for the first listener');
+      expect(finding.message).toContain("without changing the AnimationPlayer slot's presence");
+      expect(finding.message).toContain('inner Signal.data nullable listener state are distinct carriers');
       expect(finding.message).toContain(flow);
+      expect(finding.message).toContain(carrier);
+      expect(finding.message).toContain('clearSignal and disconnectSignal tear down listeners inside a present Signal');
+      expect(finding.message).toContain('neither rewrites an AnimationPlayer signal field');
+      expect(finding.message).toContain('AnimationPlayer has no destroy or dispose path');
+      expect(finding.message).toContain('neither outer null nor undefined denotes teardown');
       expect(finding.message).toContain(
         'Make all three slots required fields with their exact callable-bearing Signal type | null',
       );
@@ -4903,8 +4922,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('one named closed signal state');
       expect(finding.message).toContain('Do not whitelist the redundant live-state spelling');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
-      expect(finding.message).toContain('allocate or clone a Signal owner');
-      expect(finding.message).toContain('connect or emit a listener');
+      expect(finding.message).toContain('allocate, clone, clear, or dispose a Signal owner');
+      expect(finding.message).toContain('connect, disconnect, or emit a listener');
       expect(finding.message).toContain('re-parameterize the callback');
       expect(finding.message).toContain('route it through Any');
       expect(finding.message).toContain('reinterpret or cast it');
