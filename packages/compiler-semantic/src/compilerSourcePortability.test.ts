@@ -8997,24 +8997,35 @@ describe('analyzeTypeScriptSourcePortability', () => {
     });
     const message = findings[0]!.message;
     expect(message).toContain('device-owned Scene3D mesh upload cache both omission and explicit null');
-    expect(message).toContain('one not-yet-allocated state');
-    expect(message).toContain('createMinimalDeviceRuntime is the sole WgpuDeviceRuntime constructor');
-    expect(message).toContain('createWgpuDeviceState attaches that exact runtime to the device entity');
-    expect(message).toContain('createWgpuRenderStateRuntimeInternal increments its reference count');
+    expect(message).toContain('one not-yet-allocated live state');
+    expect(message).toContain('device-tier runtime storage rather than an input carrier');
+    expect(message).toContain('createMinimalDeviceRuntime is its sole constructor');
+    expect(message).toContain('createWgpuDeviceState attaches that exact owner to the device entity');
+    expect(message).toContain('createWgpuRenderStateRuntimeInternal increments the same runtime');
     expect(message).toContain('presentation, direct offscreen, and source-derived offscreen states');
-    expect(message).toContain('no production clone copies it');
-    expect(message).toContain('getWgpuScene3DRuntime reads stateRuntime.context.sceneMeshUploadCache with == null');
-    expect(message).toContain('gives each per-state scene runtime that exact device-tier owner');
-    expect(message).toContain('ensureWgpuMeshUpload reads and writes the map by MeshGeometry identity');
-    expect(message).toContain('destroys and replaces stale GPU buffers');
-    expect(message).toContain('mirrors the new WgpuMeshUpload on MeshGeometryRuntime');
-    expect(message).toContain('destroyWgpuRenderState frees state-owned resources');
-    expect(message).toContain('the cache retains device-tier lifetime');
+    expect(message).toContain('No importer, document materializer, serializer, structural compatibility input');
+    expect(message).toContain(
+      'intentionally erased cross-subsystem backing store rather than arbitrary data or a host handle',
+    );
+    expect(message).toContain('getWgpuScene3DRuntime is its sole production reader and writer');
+    expect(message).toContain('stores that same map through the explicit unknown bridge');
+    expect(message).toContain('exact MeshGeometry identities as keys and exact WgpuMeshUpload records as values');
+    expect(message).toContain('destroys and replaces stale vertex and index GPUBuffers');
+    expect(message).toContain('Mesh, wireframe, and shadow draw paths consume only that exact scene cache');
+    expect(message).toContain('destroyWgpuRenderState releases state-owned buffers');
+    expect(message).toContain('destroyMeshGeometryWgpuData only nulls the geometry runtime mirror');
+    expect(message).toContain('separate resource-lifetime contract needs source ownership review');
     expect(message).toContain('required WeakMap<object, object> | null field');
     expect(message).toContain('initialize it to null in createMinimalDeviceRuntime');
+    expect(message).toContain('emits this required nullable erased backing as optional<WeakMap<Ref<void>, ErasedRef>>');
+    expect(message).toContain('source contract and not a host-binding gap');
+    expect(message).toContain('cpp-weak-map-erased-ref-view-unsupported');
+    expect(message).toContain('maintained sdl-image, web-types, and sdl-wgpu manifests');
     expect(message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(message).toContain('erase the exact scene cache further');
     expect(message).toContain('will not choose or collapse an absence sentinel');
     expect(message).toContain('redirect the cache to render-state scope');
+    expect(message).toContain('fabricate a host binding');
   });
 
   it('requires the exact WgpuDevice mesh-cache shape and accepts one sentinel', () => {

@@ -22385,6 +22385,79 @@ int main() {
     );
   });
 
+  it('separates WgpuDeviceRuntime cache storage from typed scene recovery and host bindings', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          importedNames: ['MeshGeometry', 'WgpuDeviceRuntime', 'WgpuMeshUpload'],
+          specifier: '@flighthq/types/runtime',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/WgpuDeviceRuntime.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/WgpuDeviceRuntime.ts',
+            `export interface MeshGeometry { readonly id: number }
+             export interface WgpuMeshUpload { readonly version: number }
+             export interface WgpuDeviceRuntime {
+               sceneMeshUploadCache: WeakMap<object, object> | null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/scene3d-wgpu',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/scene3d-wgpu/src/getWgpuScene3DRuntime.ts',
+            `import type { MeshGeometry, WgpuDeviceRuntime, WgpuMeshUpload } from '@flighthq/types/runtime';
+             export function getWgpuScene3DRuntime(
+               context: WgpuDeviceRuntime,
+             ): WeakMap<MeshGeometry, WgpuMeshUpload> {
+               let cache = context.sceneMeshUploadCache as
+                 | WeakMap<MeshGeometry, WgpuMeshUpload>
+                 | null
+                 | undefined;
+               if (cache == null) {
+                 cache = new WeakMap();
+                 context.sceneMeshUploadCache = cache as unknown as WeakMap<object, object>;
+               }
+               return cache;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const storage = session.emitModule(modules[0]!)[0]!.contents;
+    const recoveryFailure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(storage).toContain(
+      'std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>> scene_mesh_upload_cache;',
+    );
+    expect(storage).not.toContain('flight::Undefined');
+    expect(recoveryFailure.message).toContain(
+      'flight::checked_weak_map_view<Key, Value>(flight::WeakMap<flight::Ref<void>, flight::ErasedRef>&) after initializing and retaining the erased backing field',
+    );
+    expect(recoveryFailure.rule).toBe('cpp-weak-map-erased-ref-view-unsupported');
+  });
+
   it('represents WgpuRenderState named WeakMap values and its authored opaque cache slot', () => {
     // Representation is not ownership evidence: the current source never reads or writes the
     // WgpuRenderStateRuntime sceneMeshUploadCache duplicate. Scene3D uses the separately declared

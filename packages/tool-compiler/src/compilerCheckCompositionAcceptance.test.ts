@@ -1695,9 +1695,12 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings).toHaveLength(1);
     expect(sourcePortability.findings[0]).toMatchObject({ rule: 'mixed-absence', subject });
     expect(sourcePortability.findings[0]?.message).toContain(
-      'createMinimalDeviceRuntime is the sole WgpuDeviceRuntime constructor',
+      'device-tier runtime storage rather than an input carrier',
     );
     expect(sourcePortability.findings[0]?.message).toContain('required WeakMap<object, object> | null field');
+    expect(sourcePortability.findings[0]?.message).toContain('source contract and not a host-binding gap');
+    expect(sourcePortability.findings[0]?.message).toContain('cpp-weak-map-erased-ref-view-unsupported');
+    expect(sourcePortability.findings[0]?.message).toContain('maintained sdl-image, web-types, and sdl-wgpu manifests');
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant live-storage spelling');
     expect(report.directFindings).toMatchObject([
       {
@@ -1712,6 +1715,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 1,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createWgpuDeviceRuntimeWorkspaceFiles(false));
