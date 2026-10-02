@@ -13326,6 +13326,56 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('pins the five GlRenderState absence spellings as represented', () => {
+    // A report listing five mixed-absence findings in GlRenderState reads as five problems. I reproduced each
+    // spelling and every one is REPRESENTED, with the carrier its own spelling deserves -- including the
+    // resolver, where the member's optionality and the callable's optional RESULT are two separate layers and
+    // both survive. This control is the evidence for "nothing to change here", and it fails if a later change
+    // starts refusing one of them.
+    const prelude = `export interface GlRenderState { readonly kind: string }
+export interface Bias { readonly scale: number }
+export interface Tint { readonly color: number }
+export interface Shader { readonly key: string }
+export interface Proxy { readonly id: number }`;
+
+    const members = `${prelude}
+export interface Spelled {
+  readonly flushPendingDraws?: ((state: GlRenderState) => void) | null;
+  readonly quadBatchWriterUniformColorScaleBias?: Bias | Tint | readonly number[] | null;
+  readonly webglShaderBindingResolver?: (renderProxy: Proxy) => Shader | undefined;
+}`;
+    const emitted = emitIrModuleCpp(lower('gl-render-state-spellings.ts', members).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    // an optional callable beside null: both sentinels
+    expect(emitted).toContain(
+      'std::variant<std::function<void(flight::Ref<GlRenderState>)>, flight::Null, flight::Undefined>',
+    );
+    // an optional three-alternative value: both sentinels and every value alternative
+    expect(emitted).toContain(
+      'std::variant<flight::Array<double>, flight::Ref<Bias>, flight::Ref<Tint>, flight::Null, flight::Undefined>',
+    );
+    // the member's optional and the callable's optional RESULT are separate layers, and both are kept
+    expect(emitted).toContain('std::optional<std::function<std::optional<flight::Ref<Shader>>(flight::Ref<Proxy>)>>');
+
+    // The call-site spellings a consumer writes, including the resolver's two-level chain.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'gl-render-state-consumers.ts',
+          `${members}
+export function run(s: Spelled, state: GlRenderState, proxy: Proxy): string {
+  s.flushPendingDraws?.(state);
+  const bias = s.quadBatchWriterUniformColorScaleBias;
+  const shader = s.webglShaderBindingResolver?.(proxy);
+  return shader?.key ?? (bias == null ? 'none' : 'set');
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('webgl_shader_binding_resolver');
+  });
+
   it('separates the GlMeshProgram binding gap from the absence contracts it carries', () => {
     // GlMeshProgram reports 14 findings and they are ONE host symbol carried by 14 fields, not fourteen
     // absence problems: every field's value type is `WebGLUniformLocation`. What refuses is the missing
