@@ -136,6 +136,49 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(portable).not.toContain('Dynamic');
   });
 
+  it('separates all five current GlRenderState absence markers from their required-nullable remedies', () => {
+    const module = lower(
+      '@flighthq/types',
+      'GlRenderState.ts',
+      `export interface GlRenderState { readonly kind: string }
+       export interface GlRenderTarget { readonly width: number }
+       export interface GlScissorRect { readonly x: number }
+       export interface ColorScaleBias { readonly scale: number }
+       export interface TintMaterialData { readonly tint: number }
+       export type GlRenderTextureGuard = (state: GlRenderState) => void;
+       export interface CurrentGlRenderStateRuntime {
+         currentRenderTarget?: GlRenderTarget | null;
+         currentScissorRect?: GlScissorRect | null;
+         flushPendingDraws?: ((state: GlRenderState) => void) | null;
+         glRenderTextureGuard?: GlRenderTextureGuard | null;
+         quadBatchWriterUniformColorScaleBias?: ColorScaleBias | TintMaterialData | readonly number[] | null;
+       }
+       export interface PortableGlRenderStateRuntime {
+         currentRenderTarget: GlRenderTarget | null;
+         currentScissorRect: GlScissorRect | null;
+         flushPendingDraws: ((state: GlRenderState) => void) | null;
+         glRenderTextureGuard: GlRenderTextureGuard | null;
+         quadBatchWriterUniformColorScaleBias: ColorScaleBias | TintMaterialData | readonly number[] | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentGlRenderStateRuntime.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableGlRenderStateRuntime.hx').contents;
+
+    expect(current).toContain('@:optional var currentRenderTarget:Null<flight.GlRenderTarget>;');
+    expect(current).toContain('@:optional var currentScissorRect:Null<flight.GlScissorRect>;');
+    expect(current).toContain('@:optional var flushPendingDraws:Null<(flight.GlRenderState)->Void>;');
+    expect(current).toContain('@:optional var glRenderTextureGuard:Null<flight.GlRenderTextureGuard>;');
+    expect(current).toContain('@:optional var quadBatchWriterUniformColorScaleBias:Dynamic;');
+
+    expect(portable).toContain('var currentRenderTarget:Null<flight.GlRenderTarget>;');
+    expect(portable).toContain('var currentScissorRect:Null<flight.GlScissorRect>;');
+    expect(portable).toContain('var flushPendingDraws:Null<(flight.GlRenderState)->Void>;');
+    expect(portable).toContain('var glRenderTextureGuard:Null<flight.GlRenderTextureGuard>;');
+    expect(portable).toContain('var quadBatchWriterUniformColorScaleBias:Dynamic;');
+    expect(portable).not.toContain('@:optional');
+  });
+
   it('removes null from all six optional anchor-layout constraints without changing their number carrier', () => {
     const constraints = ['bottom', 'height', 'left', 'right', 'top', 'width'] as const;
     const fields = constraints.map((name) => `${name}?: number`).join('; ');

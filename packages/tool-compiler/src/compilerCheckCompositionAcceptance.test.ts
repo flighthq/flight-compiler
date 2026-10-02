@@ -1754,10 +1754,25 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     );
     expect(messages.get('currentRenderTarget')).toContain('active GL render-pass tracking slot');
     expect(messages.get('currentScissorRect')).toContain('active GL render-pass tracking slot');
+    expect(messages.get('currentRenderTarget')).toContain(
+      'std::variant<flight::Ref<GlRenderTarget>, flight::Null, flight::Undefined>',
+    );
+    expect(messages.get('currentScissorRect')).toContain(
+      '@:optional var currentScissorRect:Null<flight.GlScissorRect>',
+    );
     expect(messages.get('flushPendingDraws')).toContain('lazily installed GL pending-draw seam');
+    expect(messages.get('flushPendingDraws')).toContain(
+      'std::optional<std::function<void(flight::Ref<GlRenderState>)>>',
+    );
     expect(messages.get('glRenderTextureGuard')).toContain('opt-in GL render-texture diagnostic guard');
+    expect(messages.get('glRenderTextureGuard')).toContain(
+      'std::optional<std::function<void(flight::Ref<GlRenderState>)>>',
+    );
     expect(messages.get('quadBatchWriterUniformColorScaleBias')).toContain(
       "GL quad batch's uniform color-adjustment scratch slot",
+    );
+    expect(messages.get('quadBatchWriterUniformColorScaleBias')).toContain(
+      'std::optional<std::variant<flight::Array<double>, flight::Ref<ColorScaleBias>, flight::Ref<TintMaterialData>>>',
     );
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
@@ -1798,7 +1813,41 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+    expect(portableSourcePortability).toMatchObject({ acceptedExceptions: [], findings: [] });
+    expect(portableReport.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 0,
+      directOccurrences: 0,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
   });
 
   it('keeps both GlContextRuntime absence findings source-owned through check mode', () => {

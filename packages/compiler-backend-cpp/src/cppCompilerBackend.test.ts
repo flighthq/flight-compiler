@@ -15384,54 +15384,56 @@ export interface Runtime {
     ).toContain('active_mesh_program');
   });
 
-  it('pins the five GlRenderState absence spellings as represented', () => {
-    // A report listing five mixed-absence findings in GlRenderState reads as five problems. I reproduced each
-    // spelling and every one is REPRESENTED, with the carrier its own spelling deserves -- including the
-    // resolver, where the member's optionality and the callable's optional RESULT are two separate layers and
-    // both survive. This control is the evidence for "nothing to change here", and it fails if a later change
-    // starts refusing one of them.
-    const prelude = `export interface GlRenderState { readonly kind: string }
-export interface Bias { readonly scale: number }
-export interface Tint { readonly color: number }
-export interface Shader { readonly key: string }
-export interface Proxy { readonly id: number }`;
-
-    const members = `${prelude}
-export interface Spelled {
+  it('separates all five current GlRenderState absence carriers from their required-nullable remedies', () => {
+    // All five current declarations are representable, but that only describes target capacity. The paired
+    // declarations pin the narrower carrier produced by the source-owned one-sentinel remedy.
+    const source = `export interface GlRenderState { readonly kind: string }
+export interface GlRenderTarget { readonly width: number }
+export interface GlScissorRect { readonly x: number }
+export interface ColorScaleBias { readonly scale: number }
+export interface TintMaterialData { readonly color: number }
+export type GlRenderTextureGuard = (state: GlRenderState) => void;
+export interface CurrentGlRenderStateRuntime {
+  readonly currentRenderTarget?: GlRenderTarget | null;
+  readonly currentScissorRect?: GlScissorRect | null;
   readonly flushPendingDraws?: ((state: GlRenderState) => void) | null;
-  readonly quadBatchWriterUniformColorScaleBias?: Bias | Tint | readonly number[] | null;
-  readonly webglShaderBindingResolver?: (renderProxy: Proxy) => Shader | undefined;
+  readonly glRenderTextureGuard?: GlRenderTextureGuard | null;
+  readonly quadBatchWriterUniformColorScaleBias?: ColorScaleBias | TintMaterialData | readonly number[] | null;
+}
+export interface PortableGlRenderStateRuntime {
+  readonly currentRenderTarget: GlRenderTarget | null;
+  readonly currentScissorRect: GlScissorRect | null;
+  readonly flushPendingDraws: ((state: GlRenderState) => void) | null;
+  readonly glRenderTextureGuard: GlRenderTextureGuard | null;
+  readonly quadBatchWriterUniformColorScaleBias: ColorScaleBias | TintMaterialData | readonly number[] | null;
 }`;
-    const emitted = emitIrModuleCpp(lower('gl-render-state-spellings.ts', members).module, {
+    const emitted = emitIrModuleCpp(lower('gl-render-state-absence.ts', source).module, {
       runtimeProfile: 'flight-cpp',
     }).contents;
-    // an optional callable beside null: both sentinels
-    expect(emitted).toContain(
-      'std::variant<std::function<void(flight::Ref<GlRenderState>)>, flight::Null, flight::Undefined>',
-    );
-    // an optional three-alternative value: both sentinels and every value alternative
-    expect(emitted).toContain(
-      'std::variant<flight::Array<double>, flight::Ref<Bias>, flight::Ref<Tint>, flight::Null, flight::Undefined>',
-    );
-    // the member's optional and the callable's optional RESULT are separate layers, and both are kept
-    expect(emitted).toContain('std::optional<std::function<std::optional<flight::Ref<Shader>>(flight::Ref<Proxy>)>>');
 
-    // The call-site spellings a consumer writes, including the resolver's two-level chain.
-    expect(
-      emitIrModuleCpp(
-        lower(
-          'gl-render-state-consumers.ts',
-          `${members}
-export function run(s: Spelled, state: GlRenderState, proxy: Proxy): string {
-  s.flushPendingDraws?.(state);
-  const bias = s.quadBatchWriterUniformColorScaleBias;
-  const shader = s.webglShaderBindingResolver?.(proxy);
-  return shader?.key ?? (bias == null ? 'none' : 'set');
-}`,
-        ).module,
-        { runtimeProfile: 'flight-cpp' },
-      ).contents,
-    ).toContain('webgl_shader_binding_resolver');
+    expect(emitted).toContain(
+      'std::variant<flight::Ref<GlRenderTarget>, flight::Null, flight::Undefined> current_render_target',
+    );
+    expect(emitted).toContain(
+      'std::variant<flight::Ref<GlScissorRect>, flight::Null, flight::Undefined> current_scissor_rect',
+    );
+    expect(emitted).toContain(
+      'std::variant<std::function<void(flight::Ref<GlRenderState>)>, flight::Null, flight::Undefined> flush_pending_draws',
+    );
+    expect(emitted).toContain(
+      'std::variant<std::function<void(flight::Ref<GlRenderState>)>, flight::Null, flight::Undefined> gl_render_texture_guard',
+    );
+    expect(emitted).toContain(
+      'std::variant<flight::Array<double>, flight::Ref<ColorScaleBias>, flight::Ref<TintMaterialData>, flight::Null, flight::Undefined> quad_batch_writer_uniform_color_scale_bias',
+    );
+
+    expect(emitted).toContain('std::optional<flight::Ref<GlRenderTarget>> current_render_target');
+    expect(emitted).toContain('std::optional<flight::Ref<GlScissorRect>> current_scissor_rect');
+    expect(emitted).toContain('std::optional<std::function<void(flight::Ref<GlRenderState>)>> flush_pending_draws');
+    expect(emitted).toContain('std::optional<std::function<void(flight::Ref<GlRenderState>)>> gl_render_texture_guard');
+    expect(emitted).toContain(
+      'std::optional<std::variant<flight::Array<double>, flight::Ref<ColorScaleBias>, flight::Ref<TintMaterialData>>> quad_batch_writer_uniform_color_scale_bias',
+    );
   });
 
   it('separates the GlMeshProgram binding gap from the absence contracts it carries', () => {

@@ -9627,33 +9627,50 @@ describe('analyzeTypeScriptSourcePortability', () => {
         `gives the active GL render-pass tracking slot ${field} both omission and explicit null`,
       );
       expect(finding.message).toContain('the represented runtime has one outside-pass or inactive state');
+      expect(finding.message).toContain('owns one GlRenderStateRuntime through EntityRuntimeKey');
+      expect(finding.message).toContain(
+        'Screen, direct offscreen, and render-cache states each construct a distinct runtime',
+      );
+      expect(finding.message).toContain('share the GlContextRuntime resource tier but not these pass slots');
+      expect(finding.message).toContain('no production clone copies them');
       expect(finding.message).toContain('createGlRenderStateRuntime already assigns currentRenderTarget = null');
       expect(finding.message).toContain(
         'createGlRenderState, invalidateGlRenderStateCache, and the GL test helper assign currentScissorRect = null',
       );
       expect(finding.message).toContain(
-        'beginGlRenderPass writes the exact GlRenderTarget and computed active scissor',
+        'beginGlRenderPass writes the exact borrowed GlRenderTarget and computed active scissor',
       );
       expect(finding.message).toContain('captureGlPassState normalizes both slots with ?? null');
       expect(finding.message).toContain('restoreGlPassState assigns the saved values directly');
-      expect(finding.message).toContain('foreign-renderer push and pop bracket preserves the exact slot values');
+      expect(finding.message).toContain(
+        'nested-pass and foreign-renderer brackets preserve the exact slot values and owners',
+      );
       expect(finding.message).toContain('Target consumers use optional access, == null, or ?? null');
       expect(finding.message).toContain('clip and resolve paths normalize or directly replace currentScissorRect');
+      expect(finding.message).toContain('Neither slot owns GPU resources');
+      expect(finding.message).toContain('without reading or clearing either slot');
+      expect(finding.message).toContain('GlRenderTarget storage has separate explicit teardown');
       expect(finding.message).toContain('Make currentRenderTarget a required GlRenderTarget | null field');
       expect(finding.message).toContain('currentScissorRect a required GlScissorRect | null field');
       expect(finding.message).toContain('initialize both in createGlRenderStateRuntime');
-      expect(finding.message).toContain('preserve the direct pass and foreign-renderer bracket assignments');
+      expect(finding.message).toContain('preserve the direct pass and bracket assignments');
       expect(finding.message).toContain('analogous WebGPU pass-state slots are already required nullable');
-      expect(finding.message).toContain('Do not whitelist the redundant pass-slot spelling');
+      const valueType = field === 'currentRenderTarget' ? 'GlRenderTarget' : 'GlScissorRect';
       expect(finding.message).toContain(
-        "representation support does not replace the source's single constructed inactive state",
+        `std::variant<flight::Ref<${valueType}>, flight::Null, flight::Undefined> to std::optional<flight::Ref<${valueType}>>`,
       );
+      expect(finding.message).toContain(
+        `@:optional var ${field}:Null<flight.${valueType}> to var ${field}:Null<flight.${valueType}>`,
+      );
+      expect(finding.message).toContain('not a representation or host-binding gap');
+      expect(finding.message).toContain('Do not whitelist the redundant pass-slot spelling');
       expect(finding.message).toContain('model that as a closed runtime or pass state');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('infer a render target or scissor rectangle');
       expect(finding.message).toContain('bind or clear a framebuffer');
       expect(finding.message).toContain('alter the pass or clip stack');
-      expect(finding.message).toContain('copy or materialize a target or rectangle, or add side storage');
+      expect(finding.message).toContain('copy or materialize a target or rectangle');
+      expect(finding.message).toContain('change owner identity or teardown');
     }
   });
 
@@ -9943,13 +9960,24 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const flush = byField.get('flushPendingDraws')!;
     expect(flush).toContain('lazily installed GL pending-draw seam both omission and explicit null');
     expect(flush).toContain('one uninstalled state');
+    expect(flush).toContain('owns this callback slot on its own EntityRuntimeKey runtime');
+    expect(flush).toContain('screen, direct offscreen, and render-cache states do not copy it');
     expect(flush).toContain('createGlRenderState and the GL test helper initialize');
     expect(flush).toContain('createGlRenderStateRuntime is the exported construction path that still omits it');
-    expect(flush).toContain('prepareGlQuadBatchWrite installs the exact flushGlQuadBatchWriter callback');
+    expect(flush).toContain('prepareGlQuadBatchWrite installs the exact module-level flushGlQuadBatchWriter callback');
+    expect(flush).toContain('that transition is monotonic for the runtime');
     expect(flush).toContain('pushGlRenderState optional-calls the slot before capturing context-wide state');
+    expect(flush).toContain('destroyGlRenderState does not invoke or clear the callback');
     expect(flush).toContain('required ((state: GlRenderState) => void) | null field');
     expect(flush).toContain('initialize it to null in createGlRenderStateRuntime');
     expect(flush).toContain('does not import or install scene2d-gl');
+    expect(flush).toContain(
+      'std::variant<std::function<void(flight::Ref<GlRenderState>)>, flight::Null, flight::Undefined> to std::optional<std::function<void(flight::Ref<GlRenderState>)>>',
+    );
+    expect(flush).toContain(
+      '@:optional var flushPendingDraws:Null<(flight.GlRenderState)->Void> to var flushPendingDraws:Null<(flight.GlRenderState)->Void>',
+    );
+    expect(flush).toContain('not a representation or host-binding gap');
     expect(flush).toContain('Do not whitelist the redundant uninstalled spelling');
     expect(flush).toContain('will not choose or collapse an absence sentinel');
     expect(flush).toContain('reorder a flush around GL state capture');
@@ -9957,13 +9985,22 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const guard = byField.get('glRenderTextureGuard')!;
     expect(guard).toContain('opt-in GL render-texture diagnostic guard both omission and explicit null');
     expect(guard).toContain('one disabled state');
+    expect(guard).toContain('callback is state-local on the GlRenderStateRuntime owner');
     expect(guard).toContain('createGlRenderStateRuntime currently omits the slot');
-    expect(guard).toContain('setGlRenderTextureGuard overwrites it with the exact guard or null');
+    expect(guard).toContain('setGlRenderTextureGuard can replace it with the exact guard or null');
     expect(guard).toContain('enableGlRenderTextureGuards installs the warning guard');
-    expect(guard).toContain('render-texture notification optional-calls the slot');
+    expect(guard).toContain('separately marks the shared GlContext in a WeakSet');
+    expect(guard).toContain("render-texture notification optional-calls only the current state's slot");
+    expect(guard).toContain('destroyGlRenderState neither invokes nor clears the guard');
     expect(guard).toContain('required GlRenderTextureGuard | null field');
     expect(guard).toContain('initialize it to null in createGlRenderStateRuntime');
     expect(guard).toContain('logger and warning implementation remain shakeable');
+    expect(guard).toContain(
+      'std::variant<std::function<void(flight::Ref<GlRenderState>)>, flight::Null, flight::Undefined> to std::optional<std::function<void(flight::Ref<GlRenderState>)>>',
+    );
+    expect(guard).toContain(
+      '@:optional var glRenderTextureGuard:Null<flight.GlRenderTextureGuard> to var glRenderTextureGuard:Null<flight.GlRenderTextureGuard>',
+    );
     expect(guard).toContain('Do not whitelist the redundant disabled spelling');
     expect(guard).toContain('will not choose or collapse an absence sentinel');
     expect(guard).toContain('change render-texture publication');
@@ -9971,15 +10008,23 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const uniform = byField.get('quadBatchWriterUniformColorScaleBias')!;
     expect(uniform).toContain("GL quad batch's uniform color-adjustment scratch slot both omission and explicit null");
     expect(uniform).toContain('its mode field is the authority');
+    expect(uniform).toContain('scratch is state-local on one GlRenderStateRuntime');
     expect(uniform).toContain('registerGlColorAdjustmentMaterialFeature initializes the mode on opt-in');
     expect(uniform).toContain('recordGlColorAdjustment normalizes an absent mode to NONE');
-    expect(uniform).toContain('writes the exact ColorScaleBias, TintMaterialData, or readonly number[] owner');
+    expect(uniform).toContain('borrows the exact ColorScaleBias, TintMaterialData, or readonly number[] owner');
     expect(uniform).toContain('flushGlColorAdjustmentMaterialFeature returns before reading the slot in NONE mode');
-    expect(uniform).toContain('clears it to null after capture');
+    expect(uniform).toContain(
+      'every non-empty flush captures the value, resets the mode to NONE, and clears the slot to null',
+    );
+    expect(uniform).toContain('destroyGlRenderState neither flushes nor clears this slot');
     expect(uniform).toContain('required ColorScaleBias | TintMaterialData | readonly number[] | null field');
     expect(uniform).toContain('initialize it to null in createGlRenderStateRuntime');
     expect(uniform).toContain('preserve the mode as the state-machine discriminant');
     expect(uniform).toContain('does not register the color-adjustment feature');
+    expect(uniform).toContain(
+      'std::variant<flight::Array<double>, flight::Ref<ColorScaleBias>, flight::Ref<TintMaterialData>, flight::Null, flight::Undefined> to std::optional<std::variant<flight::Array<double>, flight::Ref<ColorScaleBias>, flight::Ref<TintMaterialData>>>',
+    );
+    expect(uniform).toContain('Haxe extern lowering continues to use Dynamic');
     expect(uniform).toContain('Do not whitelist the redundant empty spelling');
     expect(uniform).toContain('will not choose or collapse an absence sentinel');
     expect(uniform).toContain('copy or materialize adjustment data');
