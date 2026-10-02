@@ -12010,6 +12010,66 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('attributes the node assertion family consistently across its two shapes', () => {
+    // Four of the six @flighthq/node findings assert `Node<Traits>` to the alias `NodeOf<Traits>`, which is
+    // an INTERSECTION (`Node<Traits> & NoInfer<Traits>`); the other two assert to an aliased intersection
+    // built on NodeAny. Both are the source's to answer. The aliased form used to take the generic sentence
+    // and the runtime attribution, because the intersection test looked only at the inline spelling.
+    const nodeTypes = `export interface Entity { readonly id: number }
+export interface NodeTraits { readonly x: number }
+export interface Node<Traits extends object = NodeTraits> extends NodeTraits, Entity { readonly runtime: Traits }
+export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+export type NodeAny = Node<any>;
+export type BoundsNodeAny = NodeAny & { readonly b: number };`;
+
+    const ownerUnproven = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'hierarchy.ts',
+          `${nodeTypes}
+export function addNodeChildAt<Traits extends object>(target: Node<Traits>, child: Node<Traits>): NodeOf<Traits> {
+  return target as NodeOf<Traits>;
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(ownerUnproven.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(ownerUnproven.classification).toBe('source-portability');
+    expect(ownerUnproven.message).toContain('Preserve the concrete owner in the source type');
+
+    const intersection = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'stageFit.ts',
+          `${nodeTypes}
+export interface Scene2DFitContext { readonly root: NodeAny }
+export function fit(scene2d: Scene2DFitContext): number { return (scene2d.root as BoundsNodeAny).id; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(intersection.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(intersection.classification).toBe('source-portability');
+    expect(intersection.message).toContain('Declare the value as');
+
+    // The control that keeps this narrow: two unrelated interfaces still report the runtime default, because
+    // there the carrier genuinely retains no recoverable owner for the target.
+    const unrelated = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'unrelated-owners.ts',
+          `export interface M { readonly kind: string }
+export interface S { readonly cut: number }
+export function f(m: M): S { return m as S; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(unrelated.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(unrelated.classification).toBe('target-runtime');
+  });
+
   it('names the test a mixed-absence slot needs and lowers the tests it names', () => {
     // GlRenderState's remaining slots are `X | null` optional -- storage that carries BOTH sentinels. A
     // strict test reaches only one of them, so the read behind it has no presence proof; the refusal now

@@ -4808,7 +4808,15 @@ function emitExpression(
         const heritageTarget = emitType(expression.type, context);
         const hasRepresentedClassOwners =
           isCppClassDeclarationCpp(referenceSource, context) && isCppClassDeclarationCpp(expression.type, context);
-        const isDeclaredIntersectionTarget = expression.type.kind === 'intersection';
+        // An intersection written through an alias is still the same target, and the SDK writes them that
+        // way -- `BoundsNodeAny = NodeAny & { ... }`, `NodeOf<Traits> = Node<Traits> & NoInfer<Traits>` --
+        // so the alias is resolved before the clause is chosen. Testing only the inline spelling gave an
+        // aliased intersection the generic sentence and, with it, the runtime attribution the intersection
+        // clause exists to avoid.
+        const isDeclaredIntersectionTarget =
+          expression.type.kind === 'intersection' ||
+          (expression.type.kind === 'named' &&
+            resolveCppTypeAliasTarget(expression.type, context)?.kind === 'intersection');
         const createFactoryName = getCppCreateFactoryAssertionSourceNameCpp(assertionSourceExpression);
         // An intersection has no name of its own in C++ -- the plan gives it an anonymous owner type --
         // so the generic sentence would leave the reader holding a generated name they cannot act on. The
@@ -4830,7 +4838,13 @@ function emitExpression(
           // which the SDK's sibling constructors already do. The runtime recovery contract is the fallback
           // the message names third, not the primary cause.
           isDeclaredIntersectionTarget || hasRepresentedClassOwners
-            ? undefined
+            ? // An intersection target and two unrelated represented class owners are the compiler's own
+              // refusal, and an intersection's message already names the source's remedy ("declare the value
+              // as that type where the concrete type is known, or construct it explicitly"), so it is
+              // attributed to the source rather than left on the producer default.
+              hasRepresentedClassOwners
+              ? undefined
+              : 'source-portability'
             : createFactoryName !== undefined
               ? 'source-portability'
               : 'target-runtime',
