@@ -5930,6 +5930,75 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings.every((finding) => !finding.message.includes('mesh deformation slot'))).toBe(true);
   });
 
+  it('explains the one-sentinel document contract for inline Scene3D morph data', () => {
+    const source = input(
+      'packages/types/src/Scene3DDocument.ts',
+      `interface MeshMorph { readonly weights: Float32Array }
+       interface Scene3DDocumentMesh {
+         morph?: MeshMorph | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: 'mixed-absence',
+      subject: 'interface:Scene3DDocumentMesh/property:morph',
+    });
+    const message = findings[0]!.message;
+    expect(message).toContain("format-neutral document mesh's inline morph data both omission and explicit null");
+    expect(message).toContain('glTF, COLLADA, and MD2 producers attach morph only after building a non-null MeshMorph');
+    expect(message).toContain('AWD, MD5, OBJ, 3DS, and ordinary COLLADA geometry entries omit the field');
+    expect(message).toContain("COLLADA's material-override clone reconstructs geometry, materials, name, and skin");
+    expect(message).toContain('appendGltfWeightsChannels uses a nullish check before reading targets');
+    expect(message).toContain('createScene3DFromDocument and createScene3DsFromDocument use buildDocumentNode');
+    expect(message).toContain('assigns the exact present MeshMorph owner to each live mesh');
+    expect(message).toContain('has no clone or export/serialization path');
+    expect(message).toContain('cloneMesh is a downstream live-entity operation');
+    expect(message).toContain('shares immutable targets and copies mutable weights only when morph is present');
+    expect(message).toContain('Make Scene3DDocumentMesh.morph an optional non-null MeshMorph field');
+    expect(message).toContain('Do not whitelist the redundant document spelling');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('change sharing across document nodes or assembled scenes');
+  });
+
+  it('requires the exact Scene3D document morph shape and accepts one sentinel', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/Scene3DDocument.ts',
+        'interface MeshMorph {} interface OtherDocumentMesh { morph?: MeshMorph | null }',
+      ),
+      input(
+        'packages/example/src/Scene3DDocument.ts',
+        'interface MeshMorph {} interface Scene3DDocumentMesh { morph?: MeshMorph | null }',
+      ),
+      input(
+        'packages/types/src/Scene3DDocument.ts',
+        'interface MeshMorph {} interface Scene3DDocumentMesh { deformation?: MeshMorph | null }',
+      ),
+      input(
+        'packages/types/src/Scene3DDocument.ts',
+        'interface OtherMorph {} interface Scene3DDocumentMesh { morph?: OtherMorph | null }',
+      ),
+    ];
+    const resolved = input(
+      'packages/types/src/Scene3DDocument.ts',
+      'interface MeshMorph {} interface Scene3DDocumentMesh { morph?: MeshMorph }',
+    );
+    const requiredNullable = input(
+      'packages/types/src/Scene3DDocument.ts',
+      'interface MeshMorph {} interface Scene3DDocumentMesh { morph: MeshMorph | null }',
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved, requiredNullable]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain("format-neutral document mesh's inline morph data");
+    }
+  });
+
   it('explains the required-nullable contract for Skeleton2D wardrobe and slot collections', () => {
     const source = input(
       'packages/types/src/Skeleton2D.ts',

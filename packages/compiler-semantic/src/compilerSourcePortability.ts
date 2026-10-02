@@ -312,6 +312,22 @@ function getMeshDeformationMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getScene3DDocumentMeshMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'Scene3DDocumentMesh' ||
+    !isFlightTypesSource(node, 'Scene3DDocument.ts') ||
+    getNodeName(node.name) !== 'morph' ||
+    !isOptionalNullableNamedTypeProperty(node, 'MeshMorph')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the format-neutral document mesh's inline morph data both omission and explicit null, but current Flight has one no-morph document state. The glTF, COLLADA, and MD2 producers attach morph only after building a non-null MeshMorph; AWD, MD5, OBJ, 3DS, and ordinary COLLADA geometry entries omit the field. COLLADA's material-override clone reconstructs geometry, materials, name, and skin before resolveColladaSkins assigns a successfully decoded morph, so it introduces no null meaning. appendGltfWeightsChannels uses a nullish check before reading targets, while createScene3DFromDocument and createScene3DsFromDocument use buildDocumentNode, which assigns the exact present MeshMorph owner to each live mesh that references the document entry; neither path distinguishes null from omission or clones the document value. Scene3DDocument currently has no clone or export/serialization path; cloneMesh is a downstream live-entity operation that separately shares immutable targets and copies mutable weights only when morph is present. Make Scene3DDocumentMesh.morph an optional non-null MeshMorph field and use omission or undefined as the sole no-morph document state, preserving each producer's conditional assignment and each consumer's exact-owner behavior. If a future wire or compatibility input accepts explicit null, keep that input shape separate and normalize it once before constructing the document entry; if it needs omitted and explicit-null to differ, replace them with one named closed state and handle every arm. Do not whitelist the redundant document spelling. The compiler will not choose or collapse an absence sentinel, decode or infer a morph, attach animation channels, clone or serialize a document, copy or materialize morph targets or weights, change sharing across document nodes or assembled scenes, reinterpret or cast the MeshMorph owner, or add side storage.`;
+}
+
 function getSkeleton2DMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string | undefined {
   if (
     !ts.isInterfaceDeclaration(node.parent) ||
@@ -1351,6 +1367,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (scene3DRenderProxy) return scene3DRenderProxy;
   const meshDeformation = getMeshDeformationMixedAbsencePropertyMessage(node, subject);
   if (meshDeformation) return meshDeformation;
+  const scene3DDocumentMesh = getScene3DDocumentMeshMixedAbsencePropertyMessage(node, subject);
+  if (scene3DDocumentMesh) return scene3DDocumentMesh;
   const skeleton2D = getSkeleton2DMixedAbsencePropertyMessage(node, subject);
   if (skeleton2D) return skeleton2D;
   const slot2D = getSlot2DMixedAbsencePropertyMessage(node, subject);

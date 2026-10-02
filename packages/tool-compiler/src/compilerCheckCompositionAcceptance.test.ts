@@ -725,6 +725,73 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the Scene3DDocument mesh morph finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createScene3DDocumentMeshWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'interface:Scene3DDocumentMesh/property:morph';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]).toMatchObject({ rule: 'mixed-absence', subject });
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'glTF, COLLADA, and MD2 producers attach morph only after building a non-null MeshMorph',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Make Scene3DDocumentMesh.morph an optional non-null MeshMorph field',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant document spelling');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createScene3DDocumentMeshWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the six anchor-layout absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createAnchorLayoutWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -2471,6 +2538,23 @@ function createWgpuDeviceRuntimeWorkspaceFiles(mixedAbsence: boolean): Record<st
   sceneMeshUploadCache${marker}: WeakMap<object, object> | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { WgpuDeviceRuntime } from './WgpuDeviceRuntime.js';`,
+  };
+}
+
+function createScene3DDocumentMeshWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const morph = mixedAbsence ? 'morph?: MeshMorph | null;' : 'morph?: MeshMorph;';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Scene3DDocument.ts': `export interface MeshMorph {
+  readonly weights: Float32Array;
+}
+export interface Scene3DDocumentMesh {
+  ${morph}
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  MeshMorph,
+  Scene3DDocumentMesh,
+} from './Scene3DDocument.js';`,
   };
 }
 
