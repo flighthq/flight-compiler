@@ -3832,6 +3832,7 @@ describe('createCppCompilerBackend', () => {
       modules,
       options: { runtimeProfile: 'flight-cpp' },
     });
+    const types = session.emitModule(modules[0]!)[0]!.contents;
     const command = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
     const picking = captureBackendEmissionFailure(() => session.emitModule(modules[3]!));
     const typedPicking = session.emitModule(modules[4]!)[0]!.contents;
@@ -3842,6 +3843,8 @@ describe('createCppCompilerBackend', () => {
     // source identity and the native type needed for checked recovery. A row copy or unchecked cast would
     // make the emitted program observe a different object or claim evidence the carrier does not hold.
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(types).toContain('flight::Any after;');
+    expect(types).toContain('flight::Any before;');
     for (const failure of [command, picking]) {
       expect(failure.rule).toBe('cpp-erased-structural-row-construction-unrepresented');
       expect(failure.classification).toBe('target-runtime');

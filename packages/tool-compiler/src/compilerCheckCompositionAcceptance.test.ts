@@ -3649,15 +3649,21 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[1]?.message).toContain('read the current node property');
     expect(sourcePortability.findings[1]?.message).toContain('on undo');
     for (const finding of sourcePortability.findings) {
+      expect(finding.message).toContain('arbitrary live node-property payload transport');
+      expect(finding.message).toContain('not an error channel or a closed portable value domain');
       expect(finding.message).toContain('binding before any history retention');
       expect(finding.message).toContain('absent a merge it pushes the exact live command reference');
       expect(finding.message).toContain('getCommandHistoryEntries exposes those same references');
+      expect(finding.message).toContain('new action after undo truncates the redo tail');
+      expect(finding.message).toContain('none performs value-specific disposal');
       expect(finding.message).toContain('test over numeric x or y');
       expect(finding.message).toContain('including live entity or collection values');
       expect(finding.message).toContain('no command serializer, parser, persistent history store, or command codec');
       expect(finding.message).toContain(
         'recursive JSON-shaped value union would neither make this command serializable',
       );
+      expect(finding.message).toContain('C++ backend can store a declared unknown cell as flight::Any');
+      expect(finding.message).toContain('storage representation neither closes the source domain');
       expect(finding.message).toContain('Remove CommandPropertyEntry, SetNodePropertyCommand');
       expect(finding.message).toContain('command-kind-specific data interface');
       expect(finding.message).toContain('separate validated serialized form with a stable node key or path');

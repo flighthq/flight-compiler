@@ -2136,7 +2136,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
-  it('removes the unused open command-property builtin in favor of typed command kinds', () => {
+  it('classifies the open command cells as arbitrary payloads and replaces the unused builtin with typed kinds', () => {
     const opaque = input(
       'packages/types/src/Command.ts',
       `interface CommandPropertyEntry {
@@ -2173,10 +2173,16 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings[1]?.message).toContain('read the current node property');
     expect(report.findings[1]?.message).toContain('on undo');
     for (const finding of report.findings) {
+      expect(finding.message).toContain('arbitrary live node-property payload transport');
+      expect(finding.message).toContain('not an error channel or a closed portable value domain');
+      expect(finding.message).toContain("No consumer branches on the value's runtime kind, reads Error members");
       expect(finding.message).toContain('binding before any history retention');
       expect(finding.message).toContain('absent a merge it pushes the exact live command reference');
       expect(finding.message).toContain('getCommandHistoryEntries exposes those same references');
       expect(finding.message).toContain('transactions keep or wrap them in CompositeCommand');
+      expect(finding.message).toContain('new action after undo truncates the redo tail');
+      expect(finding.message).toContain('transaction abort invokes undo before truncating its entries');
+      expect(finding.message).toContain('none performs value-specific disposal');
       expect(finding.message).toContain(
         "preserving the first command's before owner and the newest command's after owner",
       );
@@ -2189,6 +2195,9 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain(
         'recursive JSON-shaped value union would neither make this command serializable',
       );
+      expect(finding.message).toContain('C++ backend can store a declared unknown cell as flight::Any');
+      expect(finding.message).toContain("soundly refuses readNodeProperty's structurally widened NodeAny-to-Record");
+      expect(finding.message).toContain('storage representation neither closes the source domain');
       expect(finding.message).toContain('Remove CommandPropertyEntry, SetNodePropertyCommand');
       expect(finding.message).toContain('command-kind-specific data interface');
       expect(finding.message).toContain('Compose heterogeneous batches');
@@ -2197,7 +2206,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('Do not replace unknown with a guessed scalar or recursive value union');
       expect(finding.message).toContain('do not whitelist');
       expect(finding.message).not.toContain('reviewed source-portability exception');
-      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('target-specific Any carrier as a portable value domain');
       expect(finding.message).toContain('insert a cast');
       expect(finding.message).toContain('invent a stable node identity or command codec');
       expect(finding.message).toContain('change command ordering or dispatch');
