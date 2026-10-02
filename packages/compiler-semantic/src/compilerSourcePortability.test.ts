@@ -2729,6 +2729,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
       { rule: 'opaque-value-domain', subject: 'interface:AnimationChannel/property:targetRef' },
     ]);
     const message = report.findings[0]?.message;
+    expect(message).toContain('not arbitrary payload');
+    expect(message).toContain('not a finite closed target union');
     expect(message).toContain('createAnimationChannel and initializeAnimationChannel accept any value');
     expect(message).toContain('cloneAnimationClip reuses the exact reference');
     expect(message).toContain('blend trees, crossfades, state machines, and layer stacks');

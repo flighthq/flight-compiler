@@ -13939,6 +13939,48 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(contents).toContain('flight::Any');
   });
 
+  // AnimationChannel.ts's opaque-value-domain finding. Production producers allocate object descriptors or
+  // callback carriers, cloneAnimationClip preserves the exact owner, composition uses that owner as a Map or
+  // Set identity, and domain applicators recover structured binding state from it. That is an extensible
+  // reference-identity protocol, not arbitrary data and not a finite union of today's target families.
+  it('classifies animation targets as open typed identities rather than arbitrary payload', () => {
+    const erased = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'AnimationChannel.ts',
+        `export interface AnimationTrack { readonly times: readonly number[] }
+         export interface AnimationChannel { track: AnimationTrack; targetRef: unknown }
+         export interface AnimationTargetIndex { byTarget: Map<unknown, number> }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const typed = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'AnimationChannel.ts',
+        `export interface Entity { readonly id: number }
+         export interface AnimationTrack { readonly times: readonly number[] }
+         export interface AnimationTargetRef extends Entity { readonly kind: string }
+         export interface AnimationChannel { track: AnimationTrack; targetRef: AnimationTargetRef }
+         export interface AnimationTargetIndex { byTarget: Map<AnimationTargetRef, number> }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // The erased source can represent primitive and null keys that no production target producer creates.
+    expect(erased).toContain('flight::Any target_ref;');
+    expect(erased).toContain('flight::Map<flight::Any, double> by_target;');
+
+    // Closing the core boundary to one named reference keeps the kind namespace open while making the
+    // channel and every identity-keyed composition table exact. No target-family union or value copy appears.
+    expect(typed).toContain('struct AnimationTargetRef : public flight::ReferenceEnabled');
+    expect(typed).toContain('flight::Ref<AnimationTargetRef> target_ref;');
+    expect(typed).toContain('flight::Map<flight::Ref<AnimationTargetRef>, double> by_target;');
+    expect(typed).not.toContain('flight::Any');
+    expect(typed).not.toContain('std::variant');
+    expect(typed).not.toContain('materialize_row');
+  });
+
   // Assets.ts's opaque-value-domain finding. The library is deliberately resource-type-agnostic: it decodes
   // nothing itself and binds each asset *type* to its loader through an open adapter registry, so the payload
   // is erased BY CONSTRUCTION rather than being a domain the compiler failed to close. The September corpus
