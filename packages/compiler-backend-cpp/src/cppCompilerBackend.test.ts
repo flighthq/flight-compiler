@@ -13326,6 +13326,50 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('classifies the notification payload members as arbitrary data already carried', () => {
+    // Notification.ts reports three opaque-value-domain findings, and the trace answers the lane's question:
+    // they are ARBITRARY PAYLOADS -- the spec's `data` field, which may hold any structured-cloneable value --
+    // not errors and not closed domains. The runtime's erased dynamic value is exactly that carrier, so all
+    // three are represented and both consumer shapes lower. Nothing here needs guidance; the control records
+    // the classification so the counts do not re-open it.
+    const payloads = `export interface NotificationRequest { readonly title: string; readonly data?: unknown }
+export interface WebNotificationOptions { readonly data?: unknown }
+export interface WebServiceWorkerNotificationInstance { readonly data?: unknown; readonly tag: string }`;
+    const emitted = emitIrModuleCpp(lower('notification-payloads.ts', payloads).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    // three arbitrary payloads, each an optional erased value -- and only one, because the member is optional
+    expect(emitted.match(/std::optional<flight::Any> data;/gu)).toHaveLength(3);
+
+    // Reading the payload and passing it on, and carrying it into an object literal, both emit.
+    for (const [file, body] of [
+      [
+        'notification-read.ts',
+        `export function sink(value: unknown): number { return 0; }
+export function use(request: Readonly<NotificationRequest>): number {
+  const data = request.data;
+  if (data === undefined) return 0;
+  return sink(data);
+}`,
+      ],
+      [
+        'notification-forward.ts',
+        'export function forward(request: Readonly<NotificationRequest>): { readonly data?: unknown } { return { data: request.data }; }',
+      ],
+    ] as const) {
+      expect(
+        emitIrModuleCpp(
+          lower(
+            file,
+            `${payloads}
+${body}`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ).contents,
+      ).toContain('data');
+    }
+  });
+
   it('closes the WgpuScene3DRuntime set with its widest guard member', () => {
     // The file's three findings are two mixed-absence guards and one opaque adapter. The preceding control
     // already pins `forwardLightSelectionGuard` and `skinningAdapter`; this closes the set with the member
