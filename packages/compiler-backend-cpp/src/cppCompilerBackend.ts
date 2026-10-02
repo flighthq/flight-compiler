@@ -12826,9 +12826,20 @@ function getCppNullishComparisonOperandTypeCpp(
   operand: Readonly<IrExpression>,
   context: EmitContext,
 ): Readonly<IrType> | undefined {
-  return operand.kind === 'identifier' && operand.reference.kind === 'binding'
-    ? getCppBindingTypeCpp(operand.reference.binding.id, context)
-    : getIrExpressionTypeEvidenceCpp(operand, context);
+  if (operand.kind === 'identifier' && operand.reference.kind === 'binding') {
+    return getCppBindingTypeCpp(operand.reference.binding.id, context);
+  }
+  // A property read's carrier keeps the declaration's storage even after a predicate narrows the read,
+  // exactly as a binding's does, so this asks the same question for both: what the emitted storage holds.
+  // The narrowed flow type is the wrong answer here and it refuses a carrier that is still the flat
+  // three-state variant -- a first `x !== undefined` guard leaves `x === null` reading a two-state
+  // optional plan over storage that never changed. Recover the declaration through the receiver, which
+  // is what getCppDeclaredPropertyReadTypeCpp exists to do, and keep the flow type for every other operand.
+  if (operand.kind === 'property') {
+    const declared = getCppDeclaredPropertyReadTypeCpp(operand, context);
+    if (declared) return declared;
+  }
+  return getIrExpressionTypeEvidenceCpp(operand, context);
 }
 
 // Whether one binding's emitted carrier, rather than merely its source type, stores an absent state.
@@ -13331,7 +13342,15 @@ function emitCppPresenceTestCpp(
     const value =
       operand.kind === 'identifier' && operand.reference.kind === 'binding'
         ? emitIdentifierReference(operand.reference, context)
-        : emitExpression(operand, context);
+        : operand.kind === 'property' && operand.narrowedType
+          ? // A property read whose flow type was NARROWED has the same two answers as a binding, and the
+            // same rule applies: the test inspects the carrier, so emit the storage read and let
+            // short-circuit control flow supply the narrowing. Re-emitting without the narrowed type is how
+            // the projection lane above already recovers a property's storage; routing through emitExpression
+            // would instead project the narrowed value and ask an array payload for a sentinel it cannot hold.
+            // An un-narrowed property read keeps the existing path, which is what every passing case uses.
+            emitExpression({ ...operand, narrowedType: undefined, presence: undefined }, context)
+          : emitExpression(operand, context);
     const test = strict
       ? `std::holds_alternative<${selected}>(${value})`
       : `(std::holds_alternative<${sentinels.null}>(${value}) || std::holds_alternative<${sentinels.undefined}>(${value}))`;

@@ -14010,14 +14010,14 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('std::optional<flight::Array<double>> color_matrix;');
   });
 
-  // The consumer boundary for that carrier, which is NARROW: one nullish comparison of the member emits, and
-  // each comparison lowers to exactly the alternative it names. A second comparison of the same member in the
-  // same flow refuses -- the compiler cannot establish dual-sentinel evidence once the member expression has
-  // been narrowed once -- and the refusal is `compiler-restriction`, so the compiler owns it rather than the
-  // target. Truthiness emits. The working source pattern is pinned beside it: rebinding the member to a local
-  // first makes the identical logic emit faithfully, which is the answer to what a source contract can do
-  // about this today.
-  it('refuses a second nullish comparison of a dual-sentinel member and emits the rebound form', () => {
+  // The consumer boundary for that carrier, and the regression this lane changed. One nullish comparison of
+  // the member emits and names exactly the alternative it tests. A SECOND comparison of the same member in one
+  // flow now emits too: the presence test inspects the CARRIER, so a property read asks the same storage
+  // question a binding does, and short-circuit control flow supplies the narrowing. Before this the second
+  // comparison projected the narrowed value, which asked an array payload for a sentinel it cannot hold, and
+  // refused with `cpp-dual-sentinel-comparison-unrepresented`. The read after both guards is still sound
+  // because each sentinel returns first, so the remaining payload projection cannot throw.
+  it('carries dual-sentinel evidence across repeated member narrowing', () => {
     const declaration = `export interface RenderProxy { colorMatrix?: readonly number[] | null; }`;
 
     // One comparison: faithful, and it names exactly the alternative the source tests.
@@ -14033,28 +14033,41 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(single).toContain('std::holds_alternative<flight::Undefined>(proxy->color_matrix)');
     expect(single).toContain('std::holds_alternative<flight::Null>(proxy->color_matrix)');
 
-    // Two comparisons of the member in one flow: refused, as a compiler restriction rather than a target gap.
-    const failure = captureBackendEmissionFailure(() =>
+    // Two comparisons of the member in one flow: emitted, with each guard a tag test on the same storage the
+    // field declares, and the payload read reached only after both sentinels have returned.
+    const contents = emitIrModuleCpp(
+      lower(
+        'render-proxy-two-tests.ts',
+        `${declaration}
+         export function read(proxy: RenderProxy): number {
+           if (proxy.colorMatrix === undefined) return 0;
+           if (proxy.colorMatrix === null) return 1;
+           return proxy.colorMatrix.length;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(contents).toContain('if (std::holds_alternative<flight::Undefined>(proxy->color_matrix))');
+    expect(contents).toContain('if (std::holds_alternative<flight::Null>(proxy->color_matrix))');
+    expect(contents).toContain('std::get<flight::Array<double>>(proxy->color_matrix)');
+    // The narrowed read never projects through `std::get` on a payload typed as the sentinel's alternative.
+    expect(contents).not.toContain('std::get<flight::Null>');
+
+    // The loose test still excludes both sentinels, and still emits.
+    expect(
       emitIrModuleCpp(
         lower(
-          'render-proxy-two-tests.ts',
+          'render-proxy-loose-test.ts',
           `${declaration}
-           export function read(proxy: RenderProxy): number {
-             if (proxy.colorMatrix === undefined) return 0;
-             if (proxy.colorMatrix === null) return 1;
-             return proxy.colorMatrix.length;
-           }`,
+           export function present(proxy: RenderProxy): boolean { return proxy.colorMatrix != null; }`,
         ).module,
         { runtimeProfile: 'flight-cpp' },
-      ),
-    );
-    expect(failure.rule).toBe('cpp-dual-sentinel-comparison-unrepresented');
-    expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.message).toContain(
-      'nullish comparison admitting null and undefined requires dual-sentinel union evidence',
+      ).contents,
+    ).toContain(
+      'std::holds_alternative<flight::Null>(proxy->color_matrix) || std::holds_alternative<flight::Undefined>(proxy->color_matrix)',
     );
 
-    // The same logic through a local: emitted, with each alternative handled in order.
+    // The local-rebinding form emits the same way, so the source pattern that already worked is unchanged.
     const rebound = emitIrModuleCpp(
       lower(
         'render-proxy-rebound.ts',
@@ -49308,9 +49321,9 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       'std::holds_alternative<flight::Null>(state->depth_test) || std::holds_alternative<flight::Undefined>(state->depth_test)',
     );
 
-    // Two shapes still refuse, and now they say which rule they are rather than landing unattributed:
-    // a coalesce nested a third level deep needs the projection to recurse through the fallback, and a
-    // comparison that asks for BOTH sentinels needs evidence naming the carrier it is asking about.
+    // One shape still refuses, and it says which rule it is rather than landing unattributed: a coalesce
+    // nested a third level deep needs the projection to recurse through the fallback. The chained comparison
+    // that used to refuse beside it now lowers, carrying the narrowing across the first test.
     const nested = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(
         lower(
@@ -49323,18 +49336,13 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       ),
     );
     expect(nested.rule).toBe('cpp-dual-sentinel-coalesce-projection-unproven');
-    const comparison = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(
-        lower(
-          'GlRenderState.ts',
-          `${renderState}export function f(state: GlRenderState): number {
-             return state.depthTest === undefined ? 0 : state.depthTest === null ? 1 : 2;
-           }`,
-        ).module,
-        { runtimeProfile: 'flight-cpp' },
-      ),
+    const comparison = emit(
+      `export function f(state: GlRenderState): number {
+         return state.depthTest === undefined ? 0 : state.depthTest === null ? 1 : 2;
+       }`,
     );
-    expect(comparison.rule).toBe('cpp-dual-sentinel-comparison-unrepresented');
+    expect(comparison).toContain('std::holds_alternative<flight::Undefined>(state->depth_test)');
+    expect(comparison).toContain('std::holds_alternative<flight::Null>(state->depth_test)');
   });
 
   it('names the guard a missing present-value proof needs, across three call sites', () => {
@@ -49642,7 +49650,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // A null fallback now uses the same exact-carrier merge as the optional-chain material case: the
     // dual-sentinel source projects through a nullable carrier, then contextual construction places that
     // value back in the declared result carrier. Undefined and deeper nesting retain their separate refusal
-    // boundaries, and a comparison asking for both sentinels refuses on its own rule.
+    // boundaries.
     const nullable = emit(
       `export function f(s: GlScene3DRuntime): number | null | undefined { return s.count ?? null; }`,
     );
@@ -49663,13 +49671,16 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     ] as const) {
       expect(refusal(body).rule, label).toBe(rule);
     }
-    expect(
-      refusal(
-        `export function f(s: GlScene3DRuntime): number {
-           return s.count === undefined ? 0 : s.count === null ? 1 : 2;
-         }`,
-      ).rule,
-    ).toBe('cpp-dual-sentinel-comparison-unrepresented');
+    // Two strict comparisons of the same member carry the narrowing across the first test instead of
+    // refusing. Each comparison inspects the STORAGE carrier, so the second still has a variant to test even
+    // though the first narrowed the flow type; the dedicated regression for this sits below.
+    const chained = emit(
+      `export function f(s: GlScene3DRuntime): number {
+         return s.count === undefined ? 0 : s.count === null ? 1 : 2;
+       }`,
+    );
+    expect(chained).toContain('std::holds_alternative<flight::Undefined>(s->count)');
+    expect(chained).toContain('std::holds_alternative<flight::Null>(s->count)');
   });
 
   it('lowers the current GL Scene3D diagnostic guard sentinel operations', () => {
