@@ -13345,6 +13345,93 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // the erased carriers below are what the source actually declares, so the classification is "arbitrary data
   // already carried" and no guidance is warranted. The open-string key is the other half: `(string & {})` is
   // every string, so the literal seeds collapse into `flight::String` instead of being enumerated.
+  // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
+  // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
+  // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
+  // TypeScript, and this compiler keeps a union's alternatives rather than collapsing them, which the Blob
+  // and typeof-erasure controls already pin. What blocks the module is ownership, not shape: three host-owned
+  // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
+  // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
+  // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  it('classifies the net transport host bindings as one target-runtime family', () => {
+    const result = lower(
+      'Net.ts',
+      `export type NetMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | (string & {});
+       export type NetResponseBody = string | unknown | ArrayBuffer | Blob | null;
+       export type NetBody = string | ArrayBuffer | ArrayBufferView | null;
+       export interface NetRequest {
+         method: NetMethod;
+         url: string;
+         headers?: Readonly<Record<string, string>>;
+         body?: NetBody;
+       }
+       export interface NetResponse {
+         status: number;
+         headers: Readonly<Record<string, string>>;
+         body: NetResponseBody;
+         ok: boolean;
+       }
+       export interface NetRequestOptions {
+         signal?: AbortSignal;
+       }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(failure.classification).toBe('target-runtime');
+    // One family, three symbols: the abort lifetime identity and the two binary value carriers the body
+    // unions name. Nothing here is a source-shape problem, so no source change is warranted.
+    expect(failure.message).toContain('missing: AbortSignal[type], ArrayBufferView[type], Blob[type]');
+    expect(failure.message).toContain('Abort cancellation handles AbortSignal are target-runtime lifetime identities');
+    expect(failure.message).toContain('Blob is a host-owned immutable binary object identity');
+    expect(failure.message).not.toContain('ArrayBufferView is');
+
+    // Supplying exactly those three entries proves the finding is the binding gap and nothing else: the
+    // module then emits, and every transport domain above survives as the representation it was declared as.
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/abort.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'AbortSignal',
+          space: 'type' as const,
+          targetName: 'host::AbortSignal',
+        },
+        {
+          headers: ['host/buffer.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'ArrayBufferView',
+          space: 'type' as const,
+          targetName: 'host::ArrayBufferView',
+        },
+        {
+          headers: ['host/blob.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'Blob',
+          space: 'type' as const,
+          targetName: 'host::Blob',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const contents = emitIrModuleCpp(result.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+
+    // The open method domain is every string, not the seven seeds the source lists.
+    expect(contents).toContain('using NetMethod = flight::String;');
+    // A closed record keyed by the header name, and the request body kept as its own union.
+    expect(contents).toContain('flight::Record<flight::String, flight::String> headers;');
+    expect(contents).toContain('std::optional<NetBody> body;');
+    // The erased response body keeps its alternatives rather than collapsing to a bare Any.
+    expect(contents).toContain('using NetResponseBody =');
+    expect(contents).toContain('flight::Any');
+  });
+
   it('classifies the asset library payload domain as arbitrary data already carried', () => {
     const emitted = emitIrModuleCpp(
       lower(
