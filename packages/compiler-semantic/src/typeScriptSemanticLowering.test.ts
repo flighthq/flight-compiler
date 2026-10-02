@@ -12897,6 +12897,119 @@ it('retains readonly hierarchy inputs beside exact writable parent and child mut
   expect(JSON.stringify(commonAncestor.body)).toContain('"name":"getNodeParent"');
 });
 
+it('retains readonly traversal inputs beside writable node results and graph mutations', () => {
+  const [result] = lowerTypeScriptSources([
+    {
+      packageName: '@flighthq/node',
+      sourceFile: ts.createSourceFile(
+        '/flight/packages/node/src/traversal.ts',
+        `interface NodeRuntime<Traits extends object> {
+           children: NodeOf<Traits>[] | null;
+           childrenId: number;
+           parent: NodeOf<Traits> | null;
+         }
+         interface Node<Traits extends object> {
+           readonly name: string;
+           runtime: NodeRuntime<Traits>;
+         }
+         type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+         function getNodeRuntime<Traits extends object>(
+           source: Readonly<Node<Traits>>,
+         ): Readonly<NodeRuntime<Traits>> {
+           return source.runtime;
+         }
+         function getNodeParent<Traits extends object>(
+           source: Readonly<Node<Traits>>,
+         ): NodeOf<Traits> | null {
+           return getNodeRuntime(source).parent;
+         }
+         export function getNodeNextSibling<Traits extends object>(
+           source: Readonly<Node<Traits>>,
+         ): NodeOf<Traits> | null {
+           const sourceNode = source as NodeOf<Traits>;
+           const parent = getNodeParent(sourceNode);
+           if (parent === null) return null;
+           const siblings = getNodeRuntime(parent).children;
+           if (siblings === null) return null;
+           const index = siblings.indexOf(sourceNode);
+           return index < 0 || index + 1 === siblings.length ? null : siblings[index + 1];
+         }
+         export function getNodePreviousSibling<Traits extends object>(
+           source: Readonly<Node<Traits>>,
+         ): NodeOf<Traits> | null {
+           const sourceNode = source as NodeOf<Traits>;
+           const parent = getNodeParent(sourceNode);
+           if (parent === null) return null;
+           const siblings = getNodeRuntime(parent).children;
+           if (siblings === null) return null;
+           const index = siblings.indexOf(sourceNode);
+           return index <= 0 ? null : siblings[index - 1];
+         }
+         export function removeNodeChild<Traits extends object>(
+           target: NodeOf<Traits>,
+           child: NodeOf<Traits>,
+         ): void {
+           const children = target.runtime.children;
+           if (children === null) return;
+           const index = children.indexOf(child);
+           if (index < 0) return;
+           children.splice(index, 1);
+           target.runtime.childrenId++;
+           child.runtime.parent = null;
+         }`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    },
+  ]);
+  const next = result!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'getNodeNextSibling',
+  );
+  const previous = result!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'getNodePreviousSibling',
+  );
+  const remove = result!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'removeNodeChild',
+  );
+  if (next?.kind !== 'function' || previous?.kind !== 'function' || remove?.kind !== 'function') {
+    throw new Error('Expected traversal and graph-mutation functions');
+  }
+  const assertions: IrExpression[] = [];
+  analyzeIrModuleTraversal(result!.module, {
+    expression(expression) {
+      if (expression.kind === 'cast') assertions.push(expression);
+    },
+  });
+
+  expect(result!.diagnostics).toEqual([]);
+  for (const traversal of [next, previous]) {
+    expect(traversal.parameters[0]?.type).toMatchObject({
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Readonly' },
+      typeArguments: [{ kind: 'named', reference: { binding: { name: 'Node' }, kind: 'binding' } }],
+    });
+    expect(traversal.returns).toMatchObject({
+      kind: 'union',
+      types: [{ kind: 'named', reference: { binding: { name: 'NodeOf' }, kind: 'binding' } }, { kind: 'null' }],
+    });
+  }
+  expect(assertions).toHaveLength(2);
+  for (const assertion of assertions) {
+    expect(assertion).toMatchObject({
+      expression: { kind: 'identifier', reference: { binding: { kind: 'parameter' }, kind: 'binding' } },
+      kind: 'cast',
+      type: { kind: 'named', reference: { binding: { name: 'NodeOf' }, kind: 'binding' } },
+    });
+  }
+  expect(JSON.stringify(next.body)).toContain('"name":"children"');
+  expect(JSON.stringify(previous.body)).toContain('"name":"children"');
+  const writes = JSON.stringify(remove.body);
+  for (const field of ['children', 'childrenId', 'parent']) {
+    expect(writes).toContain(`"name":"${field}"`);
+  }
+});
+
 it('retains the NodeAny scratch erasure before a node-order owner assertion', () => {
   const moduleResolution = {
     edges: [

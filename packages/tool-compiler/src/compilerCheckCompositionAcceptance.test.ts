@@ -564,6 +564,71 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the traversal writable-authority refusal source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNodeTraversalWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule(module) {
+          if (module.source === 'packages/node/src/traversal.ts') {
+            throw createBackendEmissionFailure(
+              'acceptance',
+              module,
+              'the readonly traversal root does not grant writable descendant authority',
+              'cpp-structural-assertion-writable-capability-unproven',
+              { classification: 'source-portability' },
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toEqual([]);
+    expect(report.directFindings).toMatchObject([
+      {
+        identity:
+          'flight-compiler-check-finding/1:["@flighthq/node","packages/node/src/traversal.ts","Traversal","emission","unsupported-ir","cpp-structural-assertion-writable-capability-unproven"]',
+        module: { source: 'packages/node/src/traversal.ts' },
+        policyClass: 'source-portability',
+        rule: 'cpp-structural-assertion-writable-capability-unproven',
+        stage: 'emission',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 1,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 1, directlyRefused: 1, emitted: 0, total: 2 },
+      packages: 1,
+    });
+    const comparison = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.resolvedFindingIdentities).toEqual([]);
+    expect(comparison.unchanged).toHaveLength(1);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('keeps the node-order scratch owner refusal source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createNodeOrderListWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -4846,6 +4911,41 @@ export function getNodeCommonAncestor<Traits extends object>(
   return getNodeParent(b as NodeOf<Traits>);
 }`,
     '/flight/packages/node/src/index.ts': `export { getNodeCommonAncestor } from './hierarchy.js';`,
+  };
+}
+
+function createNodeTraversalWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/node/package.json': createPackageManifest('@flighthq/node'),
+    '/flight/packages/node/src/index.ts': `export { getNodeNextSibling } from './traversal.js';`,
+    '/flight/packages/node/src/traversal.ts': `interface NodeRuntime<Traits extends object> {
+  children: NodeOf<Traits>[] | null;
+  parent: NodeOf<Traits> | null;
+}
+interface Node<Traits extends object> {
+  readonly name: string;
+  runtime: NodeRuntime<Traits>;
+}
+type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+function getNodeRuntime<Traits extends object>(
+  source: Readonly<Node<Traits>>,
+): Readonly<NodeRuntime<Traits>> {
+  return source.runtime;
+}
+function getNodeParent<Traits extends object>(source: Readonly<Node<Traits>>): NodeOf<Traits> | null {
+  return getNodeRuntime(source).parent;
+}
+export function getNodeNextSibling<Traits extends object>(
+  source: Readonly<Node<Traits>>,
+): NodeOf<Traits> | null {
+  const sourceNode = source as NodeOf<Traits>;
+  const parent = getNodeParent(sourceNode);
+  if (parent === null) return null;
+  const siblings = getNodeRuntime(parent).children;
+  if (siblings === null) return null;
+  const index = siblings.indexOf(sourceNode);
+  return index < 0 || index + 1 === siblings.length ? null : siblings[index + 1];
+}`,
   };
 }
 

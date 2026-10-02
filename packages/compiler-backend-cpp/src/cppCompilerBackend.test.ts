@@ -4225,6 +4225,159 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('materialize_row');
   });
 
+  it('keeps readonly node traversal separate from writable graph mutation authority', () => {
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/node',
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources([
+      source(
+        'node/src/traversal.ts',
+        `interface NodeRuntime<Traits extends object> {
+           children: NodeOf<Traits>[] | null;
+           childrenId: number;
+           parent: NodeOf<Traits> | null;
+         }
+         interface Node<Traits extends object> {
+           readonly name: string;
+           runtime: NodeRuntime<Traits>;
+         }
+         type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+         function getNodeRuntime<Traits extends object>(
+           source: Readonly<Node<Traits>>,
+         ): Readonly<NodeRuntime<Traits>> {
+           return source.runtime;
+         }
+         function getNodeParent<Traits extends object>(
+           source: Readonly<Node<Traits>>,
+         ): NodeOf<Traits> | null {
+           return getNodeRuntime(source).parent;
+         }
+         export function getNodeNextSibling<Traits extends object>(
+           source: Readonly<Node<Traits>>,
+         ): NodeOf<Traits> | null {
+           const sourceNode = source as NodeOf<Traits>;
+           const parent = getNodeParent(sourceNode);
+           if (parent === null) return null;
+           const siblings = getNodeRuntime(parent).children;
+           if (siblings === null) return null;
+           const index = siblings.indexOf(sourceNode);
+           return index < 0 || index + 1 === siblings.length ? null : siblings[index + 1];
+         }`,
+      ),
+      source(
+        'node/src/typedTraversal.ts',
+        `interface NodeRuntime<Traits extends object> {
+           children: NodeOf<Traits>[] | null;
+           childrenId: number;
+           parent: NodeOf<Traits> | null;
+         }
+         interface Node<Traits extends object> {
+           readonly name: string;
+           runtime: NodeRuntime<Traits>;
+         }
+         type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+         type ReadonlyNodeOf<Traits extends object> = Readonly<NodeOf<Traits>>;
+         interface ReadonlyNodeRuntime<Traits extends object> {
+           readonly children: readonly ReadonlyNodeOf<Traits>[] | null;
+           readonly parent: ReadonlyNodeOf<Traits> | null;
+         }
+         function getReadonlyNodeRuntime<Traits extends object>(
+           source: ReadonlyNodeOf<Traits>,
+         ): ReadonlyNodeRuntime<Traits> {
+           return source.runtime;
+         }
+         function getReadonlyNodeParent<Traits extends object>(
+           source: ReadonlyNodeOf<Traits>,
+         ): ReadonlyNodeOf<Traits> | null {
+           return getReadonlyNodeRuntime(source).parent;
+         }
+         function getWritableNodeRuntime<Traits extends object>(
+           source: NodeOf<Traits>,
+         ): NodeRuntime<Traits> {
+           return source.runtime;
+         }
+         export function getNodeChildren<Traits extends object>(
+           source: ReadonlyNodeOf<Traits>,
+         ): readonly ReadonlyNodeOf<Traits>[] {
+           const children = getReadonlyNodeRuntime(source).children;
+           return children === null ? [] : children.slice();
+         }
+         export function getNodeNextSibling<Traits extends object>(
+           source: ReadonlyNodeOf<Traits>,
+         ): ReadonlyNodeOf<Traits> | null {
+           const parent = getReadonlyNodeParent(source);
+           if (parent === null) return null;
+           const siblings: readonly ReadonlyNodeOf<Traits>[] | null = getReadonlyNodeRuntime(parent).children;
+           if (siblings === null) return null;
+           const index = siblings.indexOf(source);
+           return index < 0 || index + 1 === siblings.length ? null : siblings[index + 1];
+         }
+         export function forEachNodeDescendant<Traits extends object>(
+           source: ReadonlyNodeOf<Traits>,
+           callback: (node: ReadonlyNodeOf<Traits>) => void,
+         ): void {
+           const children = getReadonlyNodeRuntime(source).children;
+           if (children === null) return;
+           for (let i = 0; i < children.length; i++) {
+             callback(children[i]);
+             forEachNodeDescendant(children[i], callback);
+           }
+         }
+         export function removeNodeChild<Traits extends object>(
+           target: NodeOf<Traits>,
+           child: NodeOf<Traits>,
+         ): void {
+           const targetRuntime = getWritableNodeRuntime(target);
+           const childRuntime = getWritableNodeRuntime(child);
+           const children = targetRuntime.children;
+           if (children === null) return;
+           const index = children.indexOf(child);
+           if (index < 0) return;
+           children.splice(index, 1);
+           targetRuntime.childrenId++;
+           childRuntime.parent = null;
+         }`,
+      ),
+    ]);
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: { edges: [], schema: 'flight-compiler-module-resolution/1' },
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[0]!));
+    const emitted = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(refused.classification).toBe('source-portability');
+    expect(refused.message).toContain('only to compare its identity');
+    expect(refused.message).toContain('NodeRuntime<Traits>.parent and NodeRuntime<Traits>.children');
+    expect(refused.message).toContain('assertions add authority, not owner evidence');
+    expect(refused.message).toContain('Readonly<NodeRuntime<Traits>> is shallow');
+    expect(refused.message).toContain('snapshot protects only the copied array');
+    expect(refused.message).toContain('Readonly<NodeOf<Traits>>');
+    expect(refused.message).toContain('named readonly traversal-runtime capability');
+    expect(refused.message).toContain('separate mutable traversal overload or helper');
+    expect(refused.message).toContain('advance childrenId');
+    expect(refused.message).toContain('depth-first pre-order');
+    expect(refused.message).toContain('GL/WGPU shadow walks');
+    expect(refused.message).toContain('revealScene3DResourcesOnResolve is the mutation exception');
+    expect(refused.message).toContain('writes alpha and passes those nodes to tweens');
+    expect(refused.message).toContain('Do not whitelist these assertions');
+    expect(emitted).toContain('get_readonly_node_parent<Traits>');
+    expect(emitted).toContain('get_readonly_node_runtime<Traits>');
+    expect(emitted).toContain('get_node_children');
+    expect(emitted).toContain('get_node_next_sibling');
+    expect(emitted).toContain('get_writable_node_runtime<Traits>');
+    expect(emitted).toContain('target_runtime->children_id++');
+    expect(emitted).toContain('child_runtime->parent = std::nullopt');
+    expect(emitted).not.toContain('RowPartial');
+    expect(emitted).not.toContain('materialize_row');
+  });
+
   it('retains the exact node-order owner instead of recovering it from shared NodeAny scratch', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
