@@ -27518,7 +27518,7 @@ function assertIrOptionalChainReceiverIsSingleSentinelCpp(type: Readonly<IrType>
   if (union && getCppUnionRepresentationPlan(union, context).kind === 'dualSentinelVariant') {
     emissionError(
       context,
-      'dual-sentinel optional chaining requires presence projection lowering: the receiver carries both null and undefined, so `?.` has two sentinels to test and no single presence to project. Test both at once with `x != null` and then use the receiver directly -- that emits as one holds_alternative test per sentinel',
+      'dual-sentinel optional chaining requires one concrete receiver value domain: a carrier with one value alternative lowers through `?.` or an explicit `x != null` guard while preserving both sentinels, but several value alternatives need separate slots or one closed discriminated state because no nullish guard can choose which domain to project',
       'cpp-dual-sentinel-optional-chain-projection-unproven',
     );
   }
