@@ -2615,6 +2615,84 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the animation clip-event payload finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createAnimationClipEventWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'interface:AnimationClipEvent/property:payload';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toMatchObject([{ rule: 'opaque-value-domain', subject }]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'cloneAnimationClip allocates new markers while reusing the exact payload reference',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'only production non-default producer is the Lottie importer',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('recursive named closed AnimationClipEventPayload domain');
+    expect(sourcePortability.findings[0]?.message).toContain('stable string handle');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
+    expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createAnimationClipEventWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps both open command-property slots source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createCommandPropertyWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4795,6 +4873,26 @@ export interface LogSpan { fields: LogFields }`;
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
     '/flight/packages/types/src/Log.ts': declarations,
     '/flight/packages/types/src/index.ts': `export type { LogContext, LogData, LogSpan } from './Log.js';`,
+  };
+}
+
+function createAnimationClipEventWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const declarations = opaque
+    ? `export interface AnimationClipEvent { name: string; payload: unknown; time: number }`
+    : `export type AnimationClipEventPayload =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly AnimationClipEventPayload[]
+  | Readonly<Record<string, AnimationClipEventPayload>>;
+export interface AnimationClipEvent { name: string; payload: AnimationClipEventPayload; time: number }`;
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/AnimationClipEvent.ts': declarations,
+    '/flight/packages/types/src/index.ts': opaque
+      ? `export type { AnimationClipEvent } from './AnimationClipEvent.js';`
+      : `export type { AnimationClipEvent, AnimationClipEventPayload } from './AnimationClipEvent.js';`,
   };
 }
 
