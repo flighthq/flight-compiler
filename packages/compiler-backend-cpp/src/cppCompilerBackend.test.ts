@@ -34833,6 +34833,11 @@ Resolver make_resolver(TextureRef texture) {
          const transform = (operation as Readonly<Partial<ColorLutAdjustment>>).transform;
          if (typeof transform === 'function') return transform;
          return null;
+       }
+       export function isColorLutAdjustment(
+         operation: Readonly<{ kind: string }>,
+       ): operation is ColorLutAdjustment {
+         return typeof (operation as Readonly<Partial<ColorLutAdjustment>>).transform === 'function';
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -34874,6 +34879,9 @@ Resolver make_resolver(TextureRef texture) {
     expect(output).toContain(
       'return std::optional<std::function<void(flight::Array<double>, double, double, double)>>',
     );
+    expect(output).toContain('bool is_color_lut_adjustment');
+    expect(output).toContain('return flight::row_get<flight::RowKey<"transform">');
+    expect(output).toContain('.has_value();');
   });
 
   it('preserves named optional reference results for structurally inferred locals', () => {

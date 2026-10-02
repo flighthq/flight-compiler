@@ -13013,7 +13013,30 @@ function getCppDeclaredPropertyReadTypeCpp(
   if (!receiverType) return undefined;
   const row = getCppStructuralRowExpressionPlanCpp(expression.object, context);
   const objectType = row ? getCppStructuralRowObjectTypeCpp(row) : receiverType;
-  return objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
+  const propertyType = objectType ? getIrObjectPropertyTypeCpp(objectType, expression.name, context) : undefined;
+  if (!propertyType || !row || !isCppStructuralRowPropertyOptionalCpp(row)) return propertyType;
+  // RowPartial changes the storage even when the underlying nominal declaration marks its member required.
+  // Preserve that contributed undefined at reads; otherwise an inline typeof probe sees only the callable
+  // declaration underneath Readonly<Partial<T>> and loses the exact presence question its row_get emits.
+  return createIrTypeEvidenceUnionCpp([propertyType, { kind: 'undefined' }]);
+}
+
+// Whether the outer structural row modifiers make every selected property optional. Readonly and writable
+// preserve the answer, while the nearest Partial or Required wrapper decides it; a merge has no uniform
+// answer and remains on its existing member-specific evidence path.
+function isCppStructuralRowPropertyOptionalCpp(row: Readonly<CompilerCppStructuralRowPlan>): boolean {
+  switch (row.kind) {
+    case 'partial':
+      return true;
+    case 'required':
+      return false;
+    case 'readonly':
+    case 'writable':
+      return isCppStructuralRowPropertyOptionalCpp(row.row);
+    case 'merge':
+    case 'rowOf':
+      return false;
+  }
 }
 
 // An optional property whose declared type is a nullable alias has two independent absence channels

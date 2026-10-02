@@ -1219,6 +1219,118 @@ describe('lowerTypeScriptSource', () => {
     });
   });
 
+  it('retains an imported Partial callable domain on inline typeof property reads', () => {
+    const sources = [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/ColorTransformFunction.ts',
+          `export type ColorTransformFunction =
+             (out: [number, number, number], r: number, g: number, b: number) => void;`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/ColorLutAdjustment.ts',
+          `import type { ColorTransformFunction } from './ColorTransformFunction';
+           export interface ColorLutAdjustment { transform: ColorTransformFunction; }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          "export * from './ColorLutAdjustment'; export * from './ColorTransformFunction';",
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/adjustments',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/adjustments/src/colorLutAdjustment.ts',
+          `import type { ColorLutAdjustment } from '@flighthq/types/contract';
+           export function isColorLutAdjustment(
+             operation: Readonly<{ kind: string }>,
+           ): operation is ColorLutAdjustment {
+             return typeof (operation as Readonly<Partial<ColorLutAdjustment>>).transform === 'function';
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ];
+    const results = lowerTypeScriptSources(sources, {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: './ColorLutAdjustment',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/ColorLutAdjustment.ts' },
+        },
+        {
+          specifier: './ColorTransformFunction',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/ColorTransformFunction.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    });
+    const result = results[3]!;
+    const predicate = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'isColorLutAdjustment',
+    );
+    const returned = predicate?.kind === 'function' ? predicate.body[0] : undefined;
+    const comparison = returned?.kind === 'return' ? returned.expression : undefined;
+    const typeofExpression = comparison?.kind === 'binary' ? comparison.left : undefined;
+    const property = typeofExpression?.kind === 'unary' ? typeofExpression.operand : undefined;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(property).toMatchObject({
+      kind: 'property',
+      name: 'transform',
+      object: {
+        kind: 'cast',
+        type: {
+          kind: 'named',
+          reference: { kind: 'ambient', name: 'Readonly' },
+          typeArguments: [
+            {
+              kind: 'named',
+              reference: { kind: 'ambient', name: 'Partial' },
+              typeArguments: [
+                {
+                  kind: 'named',
+                  reference: { binding: { kind: 'import', name: 'ColorLutAdjustment' } },
+                },
+              ],
+            },
+          ],
+        },
+      },
+      type: {
+        kind: 'union',
+        types: [
+          {
+            kind: 'named',
+            reference: { binding: { kind: 'import', name: 'ColorTransformFunction' } },
+          },
+          { kind: 'undefined' },
+        ],
+      },
+    });
+  });
+
   it('preserves composite type cardinality, readonly state, and function structure', () => {
     const result = lower(
       'composite-types.ts',

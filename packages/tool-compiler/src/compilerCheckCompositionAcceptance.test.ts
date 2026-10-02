@@ -5,6 +5,7 @@ import {
   compileFlightWorkspace,
   compileTypeScriptPackageGraph,
   createBackendEmissionFailure,
+  createCppCompilerBackend,
   createCompilerPackageCheckBaseline,
   createCompilerPackageCheckPolicyResult,
   createCompilerPackageCheckPolicyStrict,
@@ -1468,6 +1469,45 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
         sourceFindingSubject: 'interface:GlRenderStateOptions/property:colorAdjustmentFeature',
       },
     ]);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
+  it('emits the inline Partial callable typeof guard without a check finding', () => {
+    const source = createMemoryWorkspaceSource(createColorLutAdjustmentWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/adjustments', '@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: createCppCompilerBackend(),
+      backendOptions: { runtimeProfile: 'flight-cpp' },
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'flight-cpp', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const comparison = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    const colorLutAdjustment = compilation.compilation.files.find((file) => file.path === 'color_lut_adjustment.hpp');
+
+    expect(sourcePortability.findings).toEqual([]);
+    expect(compilation.report.modules.every(({ status }) => status === 'emitted')).toBe(true);
+    expect(report.directFindings).toEqual([]);
+    expect(report.cascades).toEqual([]);
+    expect(colorLutAdjustment?.contents).toContain('flight::row_get<flight::RowKey<"transform">');
+    expect(colorLutAdjustment?.contents).toContain('.has_value();');
     expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
       failingFindingIdentities: [],
       passed: true,
@@ -6108,6 +6148,38 @@ export interface GlRenderStateOptions {
   colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { GlColorAdjustmentMaterialFeature, GlRenderStateOptions } from './GlRenderStateOptions.js';`,
+  };
+}
+
+function createColorLutAdjustmentWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/adjustments/package.json': createPackageManifest('@flighthq/adjustments', {
+      '@flighthq/types': '*',
+    }),
+    '/flight/packages/adjustments/src/colorLutAdjustment.ts': `import type { ColorLutAdjustment } from '@flighthq/types/contract';
+export function isColorLutAdjustment(
+  operation: Readonly<{ kind: string }>,
+): operation is ColorLutAdjustment {
+  return typeof (operation as Readonly<Partial<ColorLutAdjustment>>).transform === 'function';
+}`,
+    '/flight/packages/adjustments/src/index.ts': `export { isColorLutAdjustment } from './colorLutAdjustment.js';`,
+    '/flight/packages/types/package.json': JSON.stringify({
+      dependencies: {},
+      exports: {
+        '.': { default: './dist/index.js', types: './dist/index.d.ts' },
+        './contract': { default: './dist/contract.js', types: './dist/contract.d.ts' },
+      },
+      flight: { environment: 'web' },
+      name: '@flighthq/types',
+      version: '1.0.0',
+    }),
+    '/flight/packages/types/src/ColorLutAdjustment.ts': `import type { ColorTransformFunction } from './ColorTransformFunction.js';
+export interface ColorLutAdjustment { transform: ColorTransformFunction; }`,
+    '/flight/packages/types/src/ColorTransformFunction.ts': `export type ColorTransformFunction =
+  (out: [number, number, number], r: number, g: number, b: number) => void;`,
+    '/flight/packages/types/src/contract.ts':
+      "export * from './ColorLutAdjustment.js'; export * from './ColorTransformFunction.js';",
+    '/flight/packages/types/src/index.ts': "export * from './contract.js';",
   };
 }
 
