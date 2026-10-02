@@ -6559,25 +6559,43 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain(
       'gives the Capacitor geolocation provider coordinate altitudeAccuracy both explicit null and explicit undefined',
     );
-    expect(message).toContain("host-capacitor's toGeoPosition evaluates coords.altitudeAccuracy ?? 0");
-    expect(message).toContain('required numeric GeoPosition.altitudeAccuracy');
-    expect(message).toContain('Both absence sentinels therefore become the same zero fallback at provider ingress');
+    expect(message).toContain('this is a result cell rather than a construction option or update patch');
+    expect(message).toContain(
+      'CapacitorApi is the dependency-free structural mirror passed to registerCapacitorBackends',
+    );
+    expect(message).toContain(
+      'CapacitorGeolocationPlugin.getCurrentPosition and the successful CapacitorGeolocationPlugin.watchPosition callback are the only raw coordinate ingress paths',
+    );
+    expect(message).toContain(
+      'initializeCapacitorGeolocationBackend routes getCurrentPosition, getCurrentPositionResult, and every non-null watch result through toGeolocationPosition',
+    );
+    expect(message).toContain('toGeolocationPosition, which evaluates coords.altitudeAccuracy ?? 0');
+    expect(message).toContain('required numeric GeolocationPosition.altitudeAccuracy');
+    expect(message).toContain('no other production code reads the raw Capacitor coordinate');
+    expect(message).toContain('initializeGeolocationPosition materializes the canonical cell as zero');
+    expect(message).toContain("the web provider's mapWebPosition applies the same nullish-to-zero normalization");
+    expect(message).toContain('provider null and undefined already have one unavailable meaning');
     expect(message).toContain('a present zero remains a real reported accuracy');
-    expect(message).toContain('Keep GeoPosition.altitudeAccuracy a required number');
-    expect(message).toContain('retain one explicit nullish normalization at the adapter boundary');
-    expect(message).toContain('give CapacitorPositionCoords.altitudeAccuracy exactly one provider-side absence');
-    expect(message).toContain('required number | null when the provider guarantees the field');
-    expect(message).toContain('optional number without null when omission is its contract');
-    expect(message).toContain('model a named closed provider state');
+    expect(message).toContain('Make CapacitorPositionCoords.altitudeAccuracy a required number | null field');
+    expect(message).toContain('matching the required-nullable altitude, heading, and speed cells');
+    expect(message).toContain('keep GeolocationPosition.altitudeAccuracy required numeric');
+    expect(message).toContain(
+      'aggregate a geolocation wrapper that translates undefined to null in both getCurrentPosition results and watchPosition callbacks',
+    );
+    expect(message).toContain('before passing CapacitorApi to registerCapacitorBackends');
+    expect(message).toContain('do not cast the plugin or make this required result cell optional');
+    expect(message).toContain('keep its shape separate and normalize it once before constructing CapacitorPosition');
+    expect(message).toContain('Do not whitelist the redundant provider spelling');
+    expect(message).toContain('will preserve every reported number, including zero');
     expect(message).toContain('will not choose or collapse an absence sentinel');
-    expect(message).toContain('replace a present zero');
-    expect(message).toContain('select or synthesize a numeric fallback');
-    expect(message).toContain('rewrite the host adapter or canonical coordinate storage');
+    expect(message).toContain('select a numeric fallback, wrap a plugin');
+    expect(message).toContain('rewrite current-position or watch delivery');
+    expect(message).toContain('mutate canonical coordinate storage');
     expect(message).toContain('reinterpret or cast the value');
     expect(message).toContain('or add side storage');
   });
 
-  it('keeps unrelated nullish numbers generic and accepts one provider-side absence', () => {
+  it('keeps unrelated nullish numbers generic and accepts the required-nullable provider result', () => {
     const unrelated = [
       input(
         'packages/types/src/CapacitorApi.ts',
@@ -6601,13 +6619,16 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ),
     ];
     const resolved = input(
-      'ResolvedCapacitorPositionCoords.ts',
-      `interface CapacitorPositionCoordsWithNull { altitudeAccuracy: number | null }
-       interface CapacitorPositionCoordsWithOmission { altitudeAccuracy?: number }
-       type ProviderAltitudeAccuracy =
-         | { readonly state: 'missing' }
-         | { readonly state: 'reported'; readonly value: number };
-       interface GeoPosition { altitudeAccuracy: number }`,
+      'packages/types/src/CapacitorApi.ts',
+      `interface CapacitorPositionCoords {
+         accuracy: number;
+         altitude: number | null;
+         altitudeAccuracy: number | null;
+         heading: number | null;
+         latitude: number;
+         longitude: number;
+         speed: number | null;
+       }`,
     );
 
     expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
