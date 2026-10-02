@@ -3576,7 +3576,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
        type TrayReleaseResult = { readonly error?: unknown; readonly outcome: 'release-failed' };
        type TrayEventAttachResult = { readonly error?: unknown; readonly outcome: 'subscription-failed' };`;
     const opaque = input('packages/types/src/Tray.ts', opaqueText);
-    const closed = input(
+    const closedRequiredNullable = input(
       'packages/types/src/Tray.ts',
       `interface TrayErrorPayload {
          readonly code: string;
@@ -3584,6 +3584,15 @@ describe('analyzeTypeScriptSourcePortability', () => {
          readonly operation: string;
        }
        ${opaqueText.replaceAll('error?: unknown', 'error: TrayErrorPayload | null')}`,
+    );
+    const closedOptional = input(
+      'packages/types/src/Tray.ts',
+      `interface TrayErrorPayload {
+         readonly code: string;
+         readonly message: string;
+         readonly operation: string;
+       }
+       ${opaqueText.replaceAll('error?: unknown', 'error?: TrayErrorPayload')}`,
     );
     const renamed = input(
       'packages/types/src/Other.ts',
@@ -3645,7 +3654,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'type:TrayTooltipUpdateResult/arm:outcome=tooltip-update-failed/property:error',
     ]);
     expect(messages.filter((message) => message.includes('reserved capability outcome'))).toHaveLength(1);
-    expect(messages.filter((message) => message.includes('image decoder failures'))).toHaveLength(3);
+    expect(
+      messages.filter((message) => message.includes('image decoding catches arbitrary thrown payloads')),
+    ).toHaveLength(3);
+    expect(
+      messages.filter((message) => message.includes('one concrete Error path does not narrow the arm')),
+    ).toHaveLength(3);
     expect(messages.filter((message) => message.includes('lifecycle creation or cancellation cleanup'))).toHaveLength(
       1,
     );
@@ -3660,27 +3674,52 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(messages.filter((message) => message.includes('native Tray surface operation'))).toHaveLength(3);
     expect(messages.filter((message) => message.includes('Signal subscription or release'))).toHaveLength(2);
     for (const message of messages) {
+      expect(message).toContain('specialized Tray.ts sites are runtime error payloads');
+      expect(message).toContain('unknown fallback in TrayFacetFor is type-only capability erasure');
       expect(message).toContain('construct an own error property even when JavaScript throws null or undefined');
-      expect(message).toContain('only permits a host-authored failure to omit a diagnostic');
-      expect(message).toContain("createTrayIcon checks that distinction with 'error' in result");
-      expect(message).toContain('none observes own-property presence');
-      expect(message).toContain('do not form distinct public states');
-      expect(message).toContain('crosses the public Tray result boundary unchanged');
-      expect(message).toContain('neither a detection-only probe nor a normalized value: it is genuinely opaque');
-      expect(message).toContain('named closed TrayErrorPayload');
-      expect(message).toContain('required TrayErrorPayload | null');
+      expect(message).toContain('custom Host capability may omit the property');
+      expect(message).toContain('createTrayIcon observes that provider presence');
+      expect(message).toContain('materializes a new failure Entity with its own error cell');
+      expect(message).toContain('invokeUpdate and invokeRead either return a provider result unchanged');
+      expect(message).toContain('No result importer, clone, or serializer exists');
+      expect(message).toContain('not copied into provider records or long-lived TrayRuntime state');
+      expect(message).toContain('only the in-flight destroy result is reachable through destroyPromise');
+      expect(message).toContain('none inspects error to recover portable structure');
+      expect(message).toContain(
+        'Public callers can observe both own-property presence and the exact arbitrary payload',
+      );
+      expect(message).toContain('must not be collapsed');
+      expect(message).toContain('genuinely provider-opaque');
+      expect(message).toContain('do not prove Error or one named closed TrayErrorPayload');
+      expect(message).toContain('keep optional unknown and record a reviewed source-portability exception');
+      expect(message).toContain('first define a closed payload and normalize every catch and Host producer');
+      expect(message).toContain('choosing optionality or a null sentinel explicitly');
+      expect(message).toContain('Do not add a compiler whitelist for the Tray fields');
       expect(message).toContain('representation is not the gap');
       expect(message).toContain(
         'unguarded member access across a Tray result union is a separate source-narrowing issue',
       );
-      expect(message).toContain('Do not whitelist these public result fields');
       expect(message).toContain('can lower the current guarded presence test and exact value forwarding');
-      expect(message).toContain('define the portable payload domain');
+      expect(message).toContain('define a portable payload domain');
       expect(message).toContain('insert a cast');
       expect(message).toContain('collapse or invent an absence sentinel');
+      expect(message).toContain('clone or serialize a result');
       expect(message).toContain('copy or materialize the payload');
     }
-    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability([closedOptional]).findings).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability([closedRequiredNullable]).findings).toEqual([]);
+    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
+      exceptionPolicy: {
+        exceptions: report.findings.map((finding) => ({
+          findingIdentity: finding.identity,
+          reason: 'Tray returns this provider-owned diagnostic unchanged and no production consumer inspects it.',
+          rule: 'opaque-value-domain' as const,
+        })),
+        schema: 'flight-compiler-source-portability-exceptions/1',
+      },
+    });
+    expect(reviewed.findings).toEqual([]);
+    expect(reviewed.acceptedExceptions).toHaveLength(22);
     for (const [control, count] of [
       [renamed, 1],
       [sameBasename, 1],
@@ -3692,8 +3731,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
     ] as const) {
       const findings = analyzeTypeScriptSourcePortability([control]).findings;
       expect(findings).toHaveLength(count);
-      expect(findings.every((finding) => !finding.message.includes('public Tray result boundary'))).toBe(true);
-      expect(findings.every((finding) => !finding.message.includes('none observes own-property presence'))).toBe(true);
+      expect(findings.every((finding) => !finding.message.includes('specialized Tray.ts sites'))).toBe(true);
+      expect(findings.every((finding) => !finding.message.includes('long-lived TrayRuntime state'))).toBe(true);
     }
   });
 

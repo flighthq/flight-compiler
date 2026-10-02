@@ -2517,8 +2517,8 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
-  it('keeps the unresolved Tray creation error domains source-owned through check mode', () => {
-    const source = createMemoryWorkspaceSource(createTrayCreateResultWorkspaceFiles(true));
+  it('keeps all twenty-two Tray error domains source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createTrayResultWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
       eligiblePackageNames: ['@flighthq/types'],
       source,
@@ -2542,9 +2542,28 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       sourcePortability,
     });
     const expectedSubjects = [
+      'interface:TrayDestroyFailure/property:error',
+      'type:TrayBalloonDisplayResult/arm:outcome=balloon-display-failed/property:error',
+      'type:TrayBalloonRemoveResult/arm:outcome=balloon-remove-failed/property:error',
+      'type:TrayBoundsResult/arm:outcome=bounds-read-failed/property:error',
       'type:TrayCreateProviderResult/arm:outcome=invalid-icon/property:error',
       'type:TrayCreateProviderResult/arm:outcome=runtime-api-unavailable/property:error',
       'type:TrayCreateProviderResult/arm:outcome=tray-create-failed/property:error',
+      'type:TrayDoubleClickPolicyUpdateResult/arm:outcome=double-click-policy-update-failed/property:error',
+      'type:TrayEventAttachResult/arm:outcome=subscription-failed/property:error',
+      'type:TrayImageUpdateResult/arm:outcome=image-update-failed/property:error',
+      'type:TrayImageUpdateResult/arm:outcome=invalid-icon/property:error',
+      'type:TrayMenuUpdateResult/arm:outcome=menu-build-failed/property:error',
+      'type:TrayMenuUpdateResult/arm:outcome=menu-install-failed/property:error',
+      'type:TrayPopupMenuResult/arm:outcome=popup-failed/property:error',
+      'type:TrayPressedImageUpdateResult/arm:outcome=invalid-icon/property:error',
+      'type:TrayPressedImageUpdateResult/arm:outcome=pressed-image-update-failed/property:error',
+      'type:TrayReleaseResult/arm:outcome=release-failed/property:error',
+      'type:TrayTemplateImageUpdateResult/arm:outcome=template-image-update-failed/property:error',
+      'type:TrayTitleReadResult/arm:outcome=title-read-failed/property:error',
+      'type:TrayTitleUpdateResult/arm:outcome=title-update-failed/property:error',
+      'type:TrayTooltipReadResult/arm:outcome=tooltip-read-failed/property:error',
+      'type:TrayTooltipUpdateResult/arm:outcome=tooltip-update-failed/property:error',
     ];
 
     expect(compilation.report.modules).toHaveLength(2);
@@ -2555,15 +2574,42 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
       expectedSubjects.map((subject) => ({ rule: 'opaque-value-domain', subject })),
     );
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('The current sources therefore prove these diagnostics are genuinely provider-opaque'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('No result importer, clone, or serializer exists'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Do not add a compiler whitelist for the Tray fields'),
+      ),
+    ).toBe(true);
     expect(sourcePortability.findings.every(({ message }) => message.includes('representation is not the gap'))).toBe(
       true,
     );
     expect(
-      sourcePortability.findings.every(({ message }) =>
-        message.includes('unguarded member access across a Tray result union is a separate source-narrowing issue'),
-      ),
+      sourcePortability.findings.find(
+        ({ subject }) => subject === 'type:TrayCreateProviderResult/arm:outcome=runtime-api-unavailable/property:error',
+      )?.message,
+    ).toContain('no built-in Electron or Tauri producer');
+    expect(
+      sourcePortability.findings.filter(({ subject }) => subject.endsWith('/arm:outcome=invalid-icon/property:error')),
+    ).toHaveLength(3);
+    expect(
+      sourcePortability.findings
+        .filter(({ subject }) => subject.endsWith('/arm:outcome=invalid-icon/property:error'))
+        .every(({ message }) => message.includes('one concrete Error path does not narrow the arm')),
     ).toBe(true);
-    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.find(
+        ({ subject }) => subject === 'type:TrayMenuUpdateResult/arm:outcome=menu-install-failed/property:error',
+      )?.message,
+    ).toContain('deliberately heterogeneous');
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
         policyClass,
@@ -2579,13 +2625,21 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     );
     expect(report.totals).toEqual({
       dependencyCascades: 0,
-      directFindings: 3,
-      directOccurrences: 3,
+      directFindings: 22,
+      directOccurrences: 22,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
     });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
 
-    const portableSource = createMemoryWorkspaceSource(createTrayCreateResultWorkspaceFiles(false));
+    const portableSource = createMemoryWorkspaceSource(createTrayResultWorkspaceFiles(false));
     const portableInput = createFlightWorkspaceCompilationInput({
       eligiblePackageNames: ['@flighthq/types'],
       source: portableSource,
@@ -5947,7 +6001,7 @@ export interface HostWindowAttachCapability {
   };
 }
 
-function createTrayCreateResultWorkspaceFiles(opaque: boolean): Record<string, string> {
+function createTrayResultWorkspaceFiles(opaque: boolean): Record<string, string> {
   const error = opaque ? 'error?: unknown' : 'error: TrayErrorPayload | null';
   return {
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
@@ -5956,15 +6010,62 @@ function createTrayCreateResultWorkspaceFiles(opaque: boolean): Record<string, s
   readonly message: string;
   readonly operation: string;
 }
+export interface TrayDestroyFailure {
+  readonly ${error};
+  readonly step: 'native-resource';
+}
 export type TrayCreateProviderResult =
   | { readonly outcome: 'created' }
   | { readonly outcome: 'cancelled' }
   | { readonly ${error}; readonly outcome: 'runtime-api-unavailable' }
   | { readonly ${error}; readonly outcome: 'invalid-icon' }
-  | { readonly ${error}; readonly outcome: 'tray-create-failed' };`,
+  | { readonly ${error}; readonly outcome: 'tray-create-failed' };
+export type TrayImageUpdateResult =
+  | { readonly ${error}; readonly outcome: 'invalid-icon' }
+  | { readonly ${error}; readonly outcome: 'image-update-failed' };
+export type TrayTitleUpdateResult = { readonly ${error}; readonly outcome: 'title-update-failed' };
+export type TrayTooltipUpdateResult = { readonly ${error}; readonly outcome: 'tooltip-update-failed' };
+export type TrayTemplateImageUpdateResult = {
+  readonly ${error};
+  readonly outcome: 'template-image-update-failed';
+};
+export type TrayPressedImageUpdateResult =
+  | { readonly ${error}; readonly outcome: 'invalid-icon' }
+  | { readonly ${error}; readonly outcome: 'pressed-image-update-failed' };
+export type TrayDoubleClickPolicyUpdateResult = {
+  readonly ${error};
+  readonly outcome: 'double-click-policy-update-failed';
+};
+export type TrayMenuUpdateResult =
+  | { readonly ${error}; readonly outcome: 'menu-build-failed' }
+  | { readonly ${error}; readonly outcome: 'menu-install-failed' };
+export type TrayTitleReadResult = { readonly ${error}; readonly outcome: 'title-read-failed' };
+export type TrayTooltipReadResult = { readonly ${error}; readonly outcome: 'tooltip-read-failed' };
+export type TrayBoundsResult = { readonly ${error}; readonly outcome: 'bounds-read-failed' };
+export type TrayPopupMenuResult = { readonly ${error}; readonly outcome: 'popup-failed' };
+export type TrayBalloonDisplayResult = { readonly ${error}; readonly outcome: 'balloon-display-failed' };
+export type TrayBalloonRemoveResult = { readonly ${error}; readonly outcome: 'balloon-remove-failed' };
+export type TrayReleaseResult = { readonly ${error}; readonly outcome: 'release-failed' };
+export type TrayEventAttachResult = { readonly ${error}; readonly outcome: 'subscription-failed' };`,
     '/flight/packages/types/src/index.ts': `export type {
+  TrayBalloonDisplayResult,
+  TrayBalloonRemoveResult,
+  TrayBoundsResult,
   TrayCreateProviderResult,
+  TrayDestroyFailure,
+  TrayDoubleClickPolicyUpdateResult,
   TrayErrorPayload,
+  TrayEventAttachResult,
+  TrayImageUpdateResult,
+  TrayMenuUpdateResult,
+  TrayPopupMenuResult,
+  TrayPressedImageUpdateResult,
+  TrayReleaseResult,
+  TrayTemplateImageUpdateResult,
+  TrayTitleReadResult,
+  TrayTitleUpdateResult,
+  TrayTooltipReadResult,
+  TrayTooltipUpdateResult,
 } from './Tray.js';`,
   };
 }
