@@ -33,6 +33,11 @@ export interface CompilerRefusalPlaceholderRequest {
   readonly message: string;
   readonly refusedDependencies?: readonly string[] | undefined;
   readonly rule?: string | undefined;
+  /**
+   * The module's original source text, when the caller has it. A backend may quote the span of the declaration
+   * that failed, so the hand edit sees the code it has to replace rather than only a description of it.
+   */
+  readonly sourceText?: string | undefined;
 }
 
 export interface CompilerBackend<Options = Record<string, never>> {

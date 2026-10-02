@@ -14904,6 +14904,14 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
         line: 3,
         message: 'an erased assertion hides the represented source carrier',
         rule: 'cpp-erased-record-assertion-unrepresented',
+        // The caller has the module's text because lowering was handed it, so the marker can quote the code it
+        // is standing in for instead of only describing it.
+        sourceText: `export interface Sample { readonly value: number }
+export function good(a: number, b: number): number { return a + b; }
+export function bad(target: object, prop: string, value: unknown): void {
+  (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+}
+export function alsoGood(flag: boolean): boolean { return !flag; }`,
       },
       { runtimeProfile: 'flight-cpp' },
     )!;
@@ -14924,6 +14932,17 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
         .join(' ')
         .replaceAll(/\s+/gu, ' ');
     expect(asProse(placeholder.contents)).toContain('an erased assertion hides the represented source carrier');
+
+    // The declaration that failed is quoted from the original TypeScript, so the edit is written against the
+    // code that could not be lowered rather than against a restatement of it. The span runs from the failed
+    // declaration to the line before the next one.
+    expect(placeholder.contents).toContain('// The source it stood for:');
+    expect(placeholder.contents).toContain(
+      '//   export function bad(target: object, prop: string, value: unknown): void {',
+    );
+    expect(placeholder.contents).toContain('//     (target as unknown as Record<PropertyKey, unknown>)[prop] = value;');
+    // And it stops there: the next declaration's source is not quoted into this one's marker.
+    expect(placeholder.contents).not.toContain('export function alsoGood');
 
     // Everything else is REAL output, not a description of it.
     expect(placeholder.contents).toContain('struct Sample : public flight::ReferenceEnabled');

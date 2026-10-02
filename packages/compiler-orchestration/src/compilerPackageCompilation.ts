@@ -210,6 +210,18 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     consumers.add(getCompilerPackageGraphModuleSubject(dependency.importer));
     consumersByModule.set(key, consumers);
   }
+  // The original source of each module, matched by package and source path, so a placeholder can quote what it
+  // is standing in for. The text is already here: lowering was handed these source files.
+  const sourceTextByModule = new Map<string, string>();
+  for (const item of options.sources) {
+    const fileName = normalizePathPortable(item.sourceFile.fileName);
+    for (const module_ of modules) {
+      if (module_.packageName !== item.packageName) continue;
+      if (!fileName.endsWith(`/${normalizePathPortable(module_.source)}`)) continue;
+      const key = getCompilerPackageGraphModuleKey(module_);
+      if (!sourceTextByModule.has(key)) sourceTextByModule.set(key, item.sourceFile.getFullText());
+    }
+  }
   const placeholderFiles: EmittedFile[] = [];
   const placeholderPaths = new Map<string, string>();
   if (bestEffort && options.backend.emitRefusalPlaceholder) {
@@ -229,6 +241,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
           message: refusal.message,
           ...(blocked === undefined ? {} : { refusedDependencies: blocked }),
           ...(refusal.rule === undefined ? {} : { rule: refusal.rule }),
+          ...(sourceTextByModule.get(key) === undefined ? {} : { sourceText: sourceTextByModule.get(key)! }),
         },
         options.backendOptions,
       );

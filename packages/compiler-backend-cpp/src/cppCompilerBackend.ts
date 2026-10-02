@@ -486,7 +486,7 @@ function emitIrModuleCppWithContext(
   unionArmIdentities?: Map<string, CppUnionArmIdentity[]> | undefined,
   // Present only when a caller is willing to receive a module with declarations missing. Every declaration
   // that fails is recorded here instead of ending the emission, and the file says so in a banner.
-  salvageFailures?: CppSalvageFailure[] | undefined,
+  salvage?: CppSalvageRequest | undefined,
 ): EmittedFile {
   let module: IrModule;
   try {
@@ -765,7 +765,7 @@ function emitIrModuleCppWithContext(
         } catch (error) {
           // Only a salvaging caller tolerates this. Everywhere else the failure is the answer and travels on,
           // because an ordinary run must not emit a module whose declaration is missing.
-          if (salvageFailures === undefined) throw error;
+          if (salvage === undefined) throw error;
           // The rule is the machine-readable half of the refusal, so the marker names it too: it is what a
           // reader searches for the compiler's own guidance on this shape.
           const refusal = isBackendEmissionFailure(error) ? error : undefined;
@@ -774,8 +774,11 @@ function emitIrModuleCppWithContext(
             declaration,
             message: error instanceof Error ? error.message : String(error),
             ...(refusal?.rule === undefined ? {} : { rule: refusal.rule }),
+            ...(salvage.sourceText === undefined
+              ? {}
+              : { sourceLines: sliceCppSalvagedDeclarationSourceCpp(module, declaration, salvage.sourceText) }),
           };
-          salvageFailures.push(failure);
+          salvage.failures.push(failure);
           return renderCppSalvagedDeclarationCpp(failure);
         }
       })();
@@ -869,13 +872,13 @@ function emitIrModuleCppWithContext(
     }
     lines.push('', ...declaration.lines);
   });
-  if (salvageFailures !== undefined && salvageFailures.length > 0) {
+  if (salvage !== undefined && salvage.failures.length > 0) {
     // The banner goes immediately after the generated header, before everything else, because a salvaged file
     // is INCOMPLETE and the one outcome worse than refusing is a header that compiles while meaning less than
     // the source said. Nothing here breaks a build: a consumer fails later on what is genuinely absent.
     // Placed after `#pragma once` so the banner is the first thing read without displacing the guard.
     const guardIndex = lines.findIndex((line) => line.startsWith('#pragma once'));
-    lines.splice(guardIndex === -1 ? 1 : guardIndex + 1, 0, '', ...renderCppSalvageBannerCpp(salvageFailures));
+    lines.splice(guardIndex === -1 ? 1 : guardIndex + 1, 0, '', ...renderCppSalvageBannerCpp(salvage.failures));
   }
   lines.push('', `} // namespace ${namespaceName}`);
   if (generatedSymbolBindings.length > 0) {
@@ -29080,6 +29083,29 @@ function getCppModuleFilePath(module: Readonly<IrModule>, options: Readonly<CppC
 // here, and where to look. The forward declaration is only emitted for a kind that can be named incompletely
 // without lying about it -- an enum is NOT a struct, and a value declaration has no type to forward-declare, so
 // those keep the comment alone.
+// The source lines of one declaration.
+//
+// The IR records where a declaration STARTS and nothing about where it ends, so the end is the line before the
+// next declaration begins. That is exact for the ordinary case -- declarations are written in order -- and it
+// fails safe when it is not: an over-long span quotes more of the source than the declaration, which is still
+// the code a reader wants to see, and a span that runs past the file simply stops.
+function sliceCppSalvagedDeclarationSourceCpp(
+  module: Readonly<IrModule>,
+  declaration: Readonly<IrDeclaration>,
+  sourceText: string,
+): string[] {
+  const start = declaration.origin.line;
+  if (!Number.isInteger(start) || start < 1) return [];
+  const sourceLines = sourceText.split('\n');
+  if (start > sourceLines.length) return [];
+  const nextLine = module.declarations
+    .map((entry) => entry.origin.line)
+    .filter((line) => line > start)
+    .sort((left, right) => left - right)[0];
+  const end = nextLine === undefined ? sourceLines.length : Math.min(nextLine - 1, sourceLines.length);
+  return sourceLines.slice(start - 1, end).map((line) => line.trimEnd());
+}
+
 function renderCppSalvagedDeclarationCpp(failure: Readonly<CppSalvageFailure>): string[] {
   const { declaration, message } = failure;
   const name = declaration.kind === 'variable' ? '(binding)' : declaration.binding.name;
@@ -29096,6 +29122,11 @@ function renderCppSalvagedDeclarationCpp(failure: Readonly<CppSalvageFailure>): 
     ...(failure.rule === undefined
       ? []
       : [`// refusal: ${failure.rule}${failure.classification === undefined ? '' : ` [${failure.classification}]`}`]),
+    // The source the declaration stood for, so the edit is written against the code that failed rather than
+    // against a description of it.
+    ...(failure.sourceLines === undefined || failure.sourceLines.length === 0
+      ? []
+      : ['//', '// The source it stood for:', ...failure.sourceLines.map((line) => `//   ${line}`)]),
     ...message
       .split('\n')
       .flatMap((line) => wrapCppPlaceholderCommentLineCpp(line))
@@ -29123,6 +29154,14 @@ interface CppSalvageFailure {
   readonly declaration: Readonly<IrDeclaration>;
   readonly message: string;
   readonly rule?: string | undefined;
+  /** The source lines of the declaration that failed, when the caller supplied the module's text. */
+  readonly sourceLines?: readonly string[] | undefined;
+}
+
+/** What a salvaging caller hands the emitter: where to record failures, and what to quote from. */
+interface CppSalvageRequest {
+  readonly failures: CppSalvageFailure[];
+  readonly sourceText?: string | undefined;
 }
 
 // The replaceable stub a best-effort run writes where a refused module would have gone.
@@ -29145,7 +29184,10 @@ function emitCppRefusalPlaceholder(
   // module with that declaration marked missing rather than a file that carries only a description of it. A
   // module that never reached emission at all -- one that failed to lower -- has nothing to salvage, and the
   // catch below falls back to the comment-only stub, which is the honest floor.
-  const salvageFailures: CppSalvageFailure[] = [];
+  const salvage: CppSalvageRequest = {
+    failures: [],
+    ...(refusal.sourceText === undefined ? {} : { sourceText: refusal.sourceText }),
+  };
   try {
     return emitIrModuleCppWithContext(
       module,
@@ -29159,7 +29201,7 @@ function emitCppRefusalPlaceholder(
       undefined,
       undefined,
       undefined,
-      salvageFailures,
+      salvage,
     );
   } catch {
     return emitCppRefusalStubCpp(module, refusal, options);
