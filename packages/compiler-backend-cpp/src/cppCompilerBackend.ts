@@ -16201,6 +16201,18 @@ function emitCppNarrowedUnionValueCpp(
         areCppUnionMemberObjectRepresentationsEquivalent(slot.runtimeType, narrowedType, context),
     );
     if (matches.length === 1) {
+      // The narrowed type still admits absence, so the projection below would read the value out of storage
+      // that may be holding a sentinel the narrowing left reachable. `if (x !== null) return x` on a
+      // `T | null | undefined` slot is exactly that: the strict test excluded null, undefined remains, and
+      // the projection would throw bad_variant_access for a value the source returns as undefined -- and
+      // undefined is the slot's own default. A narrowing that removed every sentinel reaches the read.
+      if (hasIrTypeAbsentMember(narrowedType)) {
+        emissionError(
+          context,
+          'narrowed C++ union projection requires proven present payload: the narrowing still admits absence, so nothing proved the payload present and reading the value alternative here would unpack storage that may still be holding the sentinel the test left reachable. Test both at once with `x != null`, or narrow the value into a present local the same way',
+          'cpp-member-projection-without-present-storage',
+        );
+      }
       if (plan.kind === 'optionalSingle') return `${binding}.value()`;
       context.includes.add('variant');
       const variant = plan.kind === 'optionalVariant' ? `${binding}.value()` : binding;

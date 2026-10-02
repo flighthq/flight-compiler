@@ -12713,28 +12713,35 @@ export function read(s: S): number | undefined { if (s.top != null) return s.top
     expect(loose).toContain('std::holds_alternative<flight::Undefined>(s->top)');
     expect(loose).toContain('std::get<double>(s->top)');
 
-    const strict = emitIrModuleCpp(
-      lower(
-        'layout-strict-read.ts',
-        `${member}
+    // FIXED at the reached site (emitCppNarrowedUnionValueCpp): the projection now requires a narrowing
+    // that removed EVERY sentinel, so the strict form refuses with the presence rule the reference path
+    // already uses, while the loose form above keeps lowering.
+    const strict = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'layout-strict-read.ts',
+          `${member}
 export function read(s: S): number | undefined { if (s.top !== null) return s.top; return 0; }`,
-      ).module,
-      { runtimeProfile: 'flight-cpp' },
-    ).contents;
-    expect(strict).toContain('if (!(std::holds_alternative<flight::Null>(s->top))) {');
-    expect(strict).toContain('return std::get<0>(s->top);');
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(strict.rule).toBe('cpp-member-projection-without-present-storage');
+    expect(strict.message).toContain('still admits absence');
 
     // The same shape through a ternary and a local, to show it is not one statement form.
     expect(
-      emitIrModuleCpp(
-        lower(
-          'layout-strict-local.ts',
-          `${member}
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            'layout-strict-local.ts',
+            `${member}
 export function read(s: S): number { const v: number | undefined = s.top !== null ? s.top : undefined; return v ?? 0; }`,
-        ).module,
-        { runtimeProfile: 'flight-cpp' },
-      ).contents,
-    ).toContain('std::get<0>(s->top)');
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      ).rule,
+    ).toBe('cpp-member-projection-without-present-storage');
   });
 
   it('documents the layout style fields, their live records, and what clearing writes', () => {
@@ -12791,21 +12798,22 @@ export function read(s: S): number { if (s.top != null) return s.top; return 0; 
     expect(loose).toContain('std::holds_alternative<flight::Undefined>(s->top)');
     expect(loose).toContain('return std::get<double>(s->top);');
 
-    // REPORTED, NOT ENDORSED: a STRICT `!== null` test excludes only one sentinel, and for a primitive the
-    // read behind it is emitted as `std::get<0>` over a variant that may still hold Undefined -- which throws.
-    // The reference-member case refuses for the same insufficient proof (cpp-member-projection-without-
-    // present-storage), so this pins the current behaviour deliberately: a fix that refuses here too should
-    // change THIS assertion, and I have reported the divergence rather than widening a guard on my own.
-    const strict = emitIrModuleCpp(
-      lower(
-        'layout-strict-test.ts',
-        `export interface S2 { top?: number | null }
+    // FIXED, as this assertion was written to require: the strict test excludes only one sentinel, so the
+    // projection was unpacking storage that may hold the other -- `std::get<0>` over a variant that could
+    // hold Undefined, which is that field's own default, and which throws. The emitter now refuses it with
+    // the presence rule the reference path already uses.
+    const strict = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'layout-strict-test.ts',
+          `export interface S2 { top?: number | null }
 export function read(s: S2): number { if (s.top !== null) return s.top; return 0; }`,
-      ).module,
-      { runtimeProfile: 'flight-cpp' },
-    ).contents;
-    expect(strict).toContain('if (!(std::holds_alternative<flight::Null>(s->top))) {');
-    expect(strict).toContain('return std::get<0>(s->top);');
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(strict.rule).toBe('cpp-member-projection-without-present-storage');
+    expect(strict.message).toContain('still admits absence');
   });
 
   it('separates an optional non-null input from required nullable live state', () => {
