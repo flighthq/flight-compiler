@@ -4875,6 +4875,112 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(unrelatedFindings.every((finding) => finding.message.includes('combines an optional property'))).toBe(true);
   });
 
+  it('explains MeshAttachment2D point storage from its importer and weighted-first contracts', () => {
+    const source = input(
+      'packages/types/src/MeshAttachment2D.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influenceCounts: Uint16Array; influences: Float32Array }
+       interface MeshAttachment2D extends Attachment2D {
+         skin?: Skin2D | null;
+         triangles: Uint16Array;
+         uvs: Float32Array;
+         vertexCount: number;
+         vertices?: Float32Array | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['skin', 'vertices'].map((field) => ({
+        rule: 'mixed-absence',
+        subject: `interface:MeshAttachment2D/property:${field}`,
+      })),
+    );
+    for (const finding of findings) {
+      expect(finding.message).toContain(`MeshAttachment2D.${finding.subject.endsWith(':skin') ? 'skin' : 'vertices'}`);
+      expect(finding.message).toContain('Spine JSON, Spine binary, and DragonBones mesh paths');
+      expect(finding.message).toContain('all call initializeMeshAttachment2D, which writes both fields');
+      expect(finding.message).toContain('rigid meshes use skin null with a Float32Array of local vertices');
+      expect(finding.message).toContain('weighted meshes use a Skin2D with vertices null');
+      expect(finding.message).toContain('rejected empty Spine binary meshes use null for both');
+      expect(finding.message).toContain('deformSkeleton2DMeshAttachment passes the pair unchanged');
+      expect(finding.message).toContain('a present skin selects weighted deformation and ignores vertices');
+      expect(finding.message).toContain('null and undefined vertices both cause no coordinate writes');
+      expect(finding.message).toContain('explainSkeleton2DDeformLength uses the same weighted-first dispatch');
+      expect(finding.message).toContain('Make MeshAttachment2D.skin a required Skin2D | null field');
+      expect(finding.message).toContain('MeshAttachment2D.vertices a required Float32Array | null field');
+      expect(finding.message).toContain('preserve the rejected-empty null pair');
+      expect(finding.message).toContain('give them a separate shape and normalize once');
+      expect(finding.message).toContain('one named closed storage state');
+      expect(finding.message).toContain('Do not whitelist either redundant absence spelling');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('infer or change the deformation mode');
+      expect(finding.message).toContain('fabricate a Skin2D or vertex buffer');
+      expect(finding.message).toContain('recover rejected mesh data');
+      expect(finding.message).toContain('rewrite triangles, uvs, or vertexCount');
+      expect(finding.message).toContain('allocate or copy either owner');
+      expect(finding.message).toContain('route elements through Any');
+      expect(finding.message).toContain('reinterpret or cast storage');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps MeshAttachment2D guidance exact and accepts required nullable or closed storage', () => {
+    const controls = [
+      input(
+        'packages/example/src/MeshAttachment2D.ts',
+        `interface Attachment2D { kind: string }
+         interface Skin2D { influences: Float32Array }
+         interface MeshAttachment2D extends Attachment2D {
+           skin?: Skin2D | null;
+           vertices?: Float32Array | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/MeshAttachment2D.ts',
+        `interface Attachment2D { kind: string }
+         interface Skin2D { influences: Float32Array }
+         interface OtherMeshAttachment2D extends Attachment2D {
+           skin?: Skin2D | null;
+           vertices?: Float32Array | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/MeshAttachment2D.ts',
+        `interface Attachment2D { kind: string }
+         interface Skin2D { influences: Float32Array }
+         interface MeshAttachment2D extends Attachment2D {
+           skin?: Skin2D | null;
+           vertices?: number[] | null;
+         }`,
+      ),
+    ];
+    const required = input(
+      'packages/types/src/MeshAttachment2D.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influences: Float32Array }
+       interface MeshAttachment2D extends Attachment2D {
+         skin: Skin2D | null;
+         vertices: Float32Array | null;
+       }`,
+    );
+    const closed = input(
+      'packages/types/src/MeshAttachment2D.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influences: Float32Array }
+       type MeshPointStorage =
+         | { mode: 'empty' }
+         | { mode: 'weighted'; skin: Skin2D }
+         | { mode: 'rigid'; vertices: Float32Array };
+       interface MeshAttachment2D extends Attachment2D { points: MeshPointStorage }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability(controls).findings;
+
+    expect(findings).toHaveLength(6);
+    expect(findings.every((finding) => !finding.message.includes('imported mesh records'))).toBe(true);
+    expect(analyzeTypeScriptSourcePortability([required, closed]).findings).toEqual([]);
+  });
+
   it('explains PathAttachment2D point storage from its weighted-first deformation contract', () => {
     const source = input(
       'packages/types/src/PathAttachment2D.ts',
