@@ -2110,7 +2110,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(2);
   });
 
-  it('keeps browser notification data at the exact structured-clone provider boundary', () => {
+  it('traces notification data to one closed request domain and removes the unused provider member', () => {
     const opaque = input(
       'packages/types/src/Notification.ts',
       `interface NotificationRequest { data?: unknown }
@@ -2122,13 +2122,15 @@ describe('analyzeTypeScriptSourcePortability', () => {
       `type NotificationData = boolean | number | string | null;
        interface NotificationRequest { data?: NotificationData }
        interface WebNotificationOptions { data?: NotificationData }
-       interface WebServiceWorkerNotificationInstance { readonly data?: NotificationData }`,
+       interface WebServiceWorkerNotificationInstance { readonly tag: string }`,
     );
     const controls = [
       input('packages/types/src/Other.ts', 'interface NotificationRequest { data?: unknown }'),
       input('packages/other/src/Notification.ts', 'interface WebNotificationOptions { data?: unknown }'),
       input('packages/types/src/Notification.ts', 'interface OtherRequest { data?: unknown }'),
       input('packages/types/src/Notification.ts', 'interface NotificationRequest { data: unknown }'),
+      input('packages/types/src/Notification.ts', 'interface WebNotificationOptions { readonly data?: unknown }'),
+      input('packages/types/src/Notification.ts', 'interface WebServiceWorkerNotificationInstance { data?: unknown }'),
       input('packages/types/src/Notification.ts', 'interface WebNotificationOptions { data?: any }'),
     ];
 
@@ -2139,12 +2141,16 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:WebServiceWorkerNotificationInstance/property:data',
     ]);
     expect(report.findings[0]?.message).toContain('forward the same value through WebNotificationOptions.data');
-    expect(report.findings[0]?.message).toContain('a ScheduledNotification can retain its request');
-    expect(report.findings[1]?.message).toContain('browser-provider leg of NotificationRequest.data');
-    expect(report.findings[2]?.message).toContain('active-list adapter reads only tag identity');
+    expect(report.findings[0]?.message).toContain('ScheduledNotification can retain and return that request');
+    expect(report.findings[0]?.message).toContain('Non-web providers inspect request keys and reject data');
+    expect(report.findings[1]?.message).toContain('has one Flight producer');
+    expect(report.findings[1]?.message).toContain('same named closed NotificationData domain');
+    expect(report.findings[2]?.message).toContain('no Flight production path reads');
+    expect(report.findings[2]?.message).toContain('Remove data from this injected provider facade');
     for (const finding of report.findings) {
       expect(finding.message).toContain('named closed NotificationData domain');
-      expect(finding.message).toContain('reviewed source-portability exception for this exact property');
+      expect(finding.message).toContain('Do not whitelist');
+      expect(finding.message).not.toContain('reviewed source-portability exception');
       expect(finding.message).toContain('target-specific Any carrier');
       expect(finding.message).toContain('insert a cast');
       expect(finding.message).toContain('copy or materialize the payload');

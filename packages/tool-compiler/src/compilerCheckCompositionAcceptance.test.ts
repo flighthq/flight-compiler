@@ -755,6 +755,83 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the three notification open-domain findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNotificationWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'interface:NotificationRequest/property:data',
+      'interface:WebNotificationOptions/property:data',
+      'interface:WebServiceWorkerNotificationInstance/property:data',
+    ];
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'opaque-value-domain', subject })),
+    );
+    expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
+      expect.stringContaining('Non-web providers inspect request keys and reject data'),
+      expect.stringContaining('same named closed NotificationData domain'),
+      expect.stringContaining('Remove data from this injected provider facade'),
+    ]);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createNotificationWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both Scene2D resource input absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createScene2DResourceWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -1343,6 +1420,27 @@ function createMeshGeometryFromAttributesWorkspaceFiles(mixedAbsence: boolean): 
   uvs?: readonly number[]${nullable};
 }`,
     '/flight/packages/types/src/index.ts': `export type { MeshGeometryFromAttributesOptions } from './MeshGeometryFromAttributesOptions.js';`,
+  };
+}
+
+function createNotificationWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const dataType = opaque ? 'unknown' : 'NotificationData';
+  const providerData = opaque ? 'readonly data?: unknown;' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Notification.ts': `export type NotificationData = boolean | number | string | null;
+export interface NotificationRequest { data?: ${dataType} }
+export interface WebNotificationOptions { data?: ${dataType} }
+export interface WebServiceWorkerNotificationInstance {
+  ${providerData}
+  readonly tag: string;
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  NotificationData,
+  NotificationRequest,
+  WebNotificationOptions,
+  WebServiceWorkerNotificationInstance,
+} from './Notification.js';`,
   };
 }
 
