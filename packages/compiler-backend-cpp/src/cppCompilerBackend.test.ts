@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
+import { createCppSyntaxGate } from '../../../scripts/cppSyntaxGate.js';
 import {
   collectCppRuntimeIncludeDirectories,
   createCppExecutableArguments,
@@ -33,6 +34,11 @@ const cppRuntime = resolveDependency(repositoryRoot, 'flight-cpp');
 const cppRuntimeIncludeDirectories = collectCppRuntimeIncludeDirectories(cppRuntime.directory);
 const cppToolchain = findCppCompilerToolchain();
 const canCompileCpp = cppToolchain !== undefined && cppRuntimeIncludeDirectories.length > 0;
+
+// The gate asks the question a passing emission does not: is what the backend wrote C++ at all? It costs
+// about 3.3 seconds per fixture -- the target compiler parsing the runtime headers, not our own work -- so
+// it is spent only on shapes an emitter change has touched, never on the suite's fixtures at large.
+const cppSyntaxGate = createCppSyntaxGate(repositoryRoot);
 
 // Returns the refusal rather than asserting a throw, so a probe that stops refusing leaves the
 // caller comparing against a subject that was never produced instead of passing silently.
@@ -14160,6 +14166,45 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // The syntax gate, spent on the shapes the two recent non-compiling-output regressions went through. Both
+  // were fixed; this is what would have stopped them, and it is cheap enough to keep because it runs on two
+  // fixtures rather than on the suite. A missing toolchain skips rather than fails, which is why the gate
+  // reports availability as a value.
+  it.skipIf(!cppSyntaxGate.available)('emits C++ the target compiler accepts for the recent regression shapes', () => {
+    const syntaxCase = (label: string, body: string) => {
+      const contents = emitIrModuleCpp(
+        lower(
+          'syntax-gate.ts',
+          `export type ColorTransformFunction = (out: readonly number[], r: number) => void;
+           export interface ColorLutAdjustment { readonly kind: 'lut'; readonly transform?: ColorTransformFunction }
+           export interface GlScene3DRuntime { readonly count?: number | null | undefined }
+           ${body}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+      return cppSyntaxGate.checkCppSourceSyntax(contents, label);
+    };
+
+    // A Partial row read answers std::optional, so its presence test must be the optional form; unioning an
+    // explicit undefined into the read re-spelled it as a union and asked std::holds_alternative of that
+    // optional, which is not a call the language has.
+    const partialRow = syntaxCase(
+      'partial-row-typeof',
+      `export function f(operation: Readonly<{ kind: string }>): number { return typeof (operation as Readonly<Partial<ColorLutAdjustment>>).transform === 'function' ? 1 : 0; }`,
+    );
+    expect(partialRow.diagnostic).toBe('');
+    expect(partialRow.ok).toBe(true);
+
+    // A coalesce nested a third level deep hands its inner operand the carrier it tests, and the projection
+    // it then performs has to be one the carrier supports.
+    const nestedCoalesce = syntaxCase(
+      'nested-coalesce',
+      `export function g(a: GlScene3DRuntime, b: GlScene3DRuntime): number { return a.count ?? b.count ?? 0; }`,
+    );
+    expect(nestedCoalesce.diagnostic).toBe('');
+    expect(nestedCoalesce.ok).toBe(true);
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
