@@ -13103,6 +13103,32 @@ export function test(r: M3): number { if (r.cursorBackend !== null) return 1; re
     ).toContain('holds_alternative<flight::Null>');
   });
 
+  it('separates MeshGeometry index input absence from required nullable live storage', () => {
+    // The two typed-array widths are runtime-native value alternatives. Required null and optional
+    // undefined each need one outer absence, while the current optional-nullable construction input needs
+    // both explicit sentinels. None of these carriers needs a host binding or erases the element width.
+    const indexOwner = 'Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>>';
+    const storage = (file: string, declaration: string) =>
+      emitIrModuleCpp(lower(file, `export interface M { ${declaration} }`).module, { runtimeProfile: 'flight-cpp' })
+        .contents;
+
+    const required = storage('mesh-indices-required.ts', `indices: ${indexOwner} | null;`);
+    const portable = storage('mesh-indices-optional.ts', `indices?: ${indexOwner};`);
+    const current = storage('mesh-indices-optional-nullable.ts', `indices?: ${indexOwner} | null;`);
+
+    expect(required).toContain('std::optional<std::variant<flight::Uint16Array, flight::Uint32Array>> indices;');
+    expect(portable).toContain('std::optional<std::variant<flight::Uint16Array, flight::Uint32Array>> indices;');
+    expect(current).toContain(
+      'std::variant<flight::Uint16Array, flight::Uint32Array, flight::Null, flight::Undefined> indices =',
+    );
+    for (const contents of [required, portable, current]) {
+      expect(contents).not.toContain('ArrayBuffer');
+      expect(contents).not.toContain('flight::Any');
+      expect(contents).not.toContain('static_cast');
+      expect(contents).not.toContain('reinterpret_cast');
+    }
+  });
+
   it('separates a guard member from the host handle one of its parameters names', () => {
     // GlScene3DRuntime carries five opt-in guards, and ALL FIVE are the same mixed-absence family: an
     // optional callable beside null. Four of them lower on their own; the fifth names a host handle in its

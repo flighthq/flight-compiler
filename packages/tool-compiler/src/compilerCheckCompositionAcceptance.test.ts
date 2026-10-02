@@ -2745,12 +2745,27 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
       { rule: 'mixed-absence', subject: expectedSubject },
     ]);
-    expect(sourcePortability.findings[0]?.message).toContain('tests options.indices by truthiness');
-    expect(sourcePortability.findings[0]?.message).toContain(
+    const message = sourcePortability.findings[0]!.message;
+    expect(message).toContain('createMeshGeometry is the sole MeshGeometryOptions consumer');
+    expect(message).toContain('tests options.indices by truthiness');
+    expect(message).toContain('present empty array stays an indexed zero-element value');
+    expect(message).toContain('No production caller uses explicit null');
+    expect(message).toContain('cloneMeshGeometry deep-copies a present live index array');
+    expect(message).toContain('cloneMeshGeometryMetadata temporarily retains the exact live array');
+    expect(message).toContain('CPU triangle, validation, compute, and transform paths');
+    expect(message).toContain('GL and WebGPU uploads create no index buffer and issue non-indexed draws for null');
+    expect(message).toContain('There is no destroyMeshGeometry or disposeMeshGeometry path');
+    expect(message).toContain(
+      'destroyMeshGeometryGlData and destroyMeshGeometryWgpuData affect only separate runtime upload slots',
+    );
+    expect(message).toContain(
       'Make MeshGeometryOptions.indices optional Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> without null',
     );
-    expect(sourcePortability.findings[0]?.message).toContain('keeping MeshGeometry.indices required nullable');
-    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant construction spelling');
+    expect(message).toContain('keeping MeshGeometry.indices required nullable');
+    expect(message).toContain('This finding is not a host-binding gap');
+    expect(message).toContain('compiler-native typed-array carriers');
+    expect(message).toContain('one optional variant without an external binding');
+    expect(message).toContain('Do not whitelist the redundant construction spelling');
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
         policyClass,
