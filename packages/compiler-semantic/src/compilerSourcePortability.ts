@@ -792,7 +792,11 @@ function getGlMeshProgramUniformLocationMixedAbsencePropertyMessage(
   }
   const field = getNodeName(node.name);
   if (field === 'locJointTexture' || field === 'locJointNormalTexture') {
-    return `${subject} gives the eager skin-sampler location ${field} both omission and explicit null, but the represented draw contract has one unusable state. Shader-family factories that support skinning assign the result of getUniformLocation, including null, while families that are not wired for skinning omit the property; bindGlMeshSkinPalette collapses both with != null, and the shadow path normalizes locJointTexture with ?? null. Use one absence spelling: either make ${field} optional non-null and omit the assignment when getUniformLocation returns null, or make it required WebGLUniformLocation | null and initialize it in every program factory. If own-property presence is externally observable and semantically distinct, replace the sentinels with a named closed skin-sampler state and handle every arm explicitly; otherwise this redundant pair does not need a reviewed exception. The compiler will not choose or collapse an absence sentinel, query or bind a GL uniform, infer whether a program supports skinning, coordinate the pose and normal samplers, reinterpret or cast a location, or add side storage.`;
+    const consumer =
+      field === 'locJointTexture'
+        ? 'bindGlMeshSkinPalette requires locJointTexture != null together with jointMatrices before it uploads and binds the pose palette; the skinned shadow path likewise passes locJointTexture ?? null to uniform1i'
+        : 'bindGlMeshSkinPalette independently requires locJointNormalTexture != null together with normalMatrices before it uploads and binds the normal palette; the shadow path never consumes this slot';
+    return `${subject} gives the construction-time skin-sampler location ${field} both omission and explicit null, but the represented program has one unusable state. The Classic, Debug, Matcap, PBR, Shaded, Toon, Unlit, and Wireframe factories plus compileShadowDepthSkinnedProgram assign both joint sampler lookups, including null for a variant without the uniform; compileGlCustomShaderProgram, compileShadowDepthProgram, and compileShadowDepthInstancedProgram omit both slots, and no later path resolves either one. ${consumer}. Make locJointTexture and locJointNormalTexture required WebGLUniformLocation | null fields, retain each exact getUniformLocation result, and initialize both to null in the three factories that currently omit them. If factory provenance must differ from a linked program that lacks the sampler, replace the pair with one named closed skin-program capability and handle every arm explicitly. The C++ backend can preserve the current null and undefined tags and the exact WebGLUniformLocation alternative, but that representation support does not make the duplicate unusable sentinel a source contract. The compiler will not choose or collapse an absence sentinel, query or bind a GL uniform, infer whether a program supports skinning, coordinate the pose and normal samplers, reinterpret or cast a location, or add side storage.`;
   }
 
   const colorMatrixFields: readonly string[] = [
@@ -802,32 +806,38 @@ function getGlMeshProgramUniformLocationMixedAbsencePropertyMessage(
     'locColorMatrix3',
     'locColorMatrixOffset',
   ];
-  let cacheContract: string | undefined;
+  let producerAndConsumer: string | undefined;
   let rewrite: string | undefined;
   if (field !== undefined && colorMatrixFields.includes(field)) {
-    cacheContract =
-      'drawGlMeshSubset tests locColorMatrix0 for undefined, queries and caches all five color-matrix locations together, treats a null locColorMatrix0 as the absent group, and reads the other four only for the present group';
+    producerAndConsumer =
+      'Every program factory omits all five color-matrix slots. On the first draw carrying colorMatrix, drawGlMeshSubset tests locColorMatrix0 for undefined and queries all five locations together; null locColorMatrix0 suppresses the group, while a present locColorMatrix0 causes the other four locations to be read under the shader-family all-or-none invariant';
     rewrite =
-      'one named closed color-matrix cache whose unresolved and absent arms carry no locations and whose present arm carries all five locations';
+      'one named GlColorMatrixUniformCache whose unresolved and absent arms carry no locations and whose present arm carries all five locations, constructed as present only when the entire lookup group is present';
   } else if (field === 'locColorScale' || field === 'locColorBias') {
-    cacheContract =
-      'drawGlMeshSubset tests locColorScale for undefined, queries and caches locColorScale and locColorBias together, and uploads only when both cached locations are present';
+    producerAndConsumer =
+      'Every program factory omits both color scale/bias slots. On the first draw carrying colorScaleBias, drawGlMeshSubset tests locColorScale for undefined, queries and caches locColorScale and locColorBias together, and uploads only when both locations are present';
     rewrite =
-      'one named closed color-scale/bias cache whose unresolved and absent arms carry no locations and whose present arm carries both locations';
+      'one named GlColorScaleBiasUniformCache whose unresolved and absent arms carry no locations and whose present arm carries both locations';
   } else if (field === 'locObjectAlpha' || field === 'locAlphaIsCoverage') {
-    cacheContract =
-      'uploadGlMeshDrawAlpha queries this location only while it is undefined, caches null or the returned location, and skips the upload after a null result';
-    rewrite = 'a named closed uniform-location cache with unresolved, absent, and present-location arms';
-  } else if (field === 'locInstancePalette' || field === 'locInstanceColorPalette') {
-    cacheContract = `${field === 'locInstancePalette' ? 'bindGlInstancePalette' : 'bindGlInstanceColorPalette'} queries this location only while it is undefined, caches null or the returned location, and skips the sampler upload after a null result`;
-    rewrite = 'a named closed uniform-location cache with unresolved, absent, and present-location arms';
+    producerAndConsumer = `Every program factory omits ${field}. uploadGlMeshDrawAlpha resolves the object-alpha and alpha-coverage slots independently: it queries ${field} only while undefined, caches the exact null or location result, and skips only this upload after null`;
+    rewrite = `a named GlUniformLocationCache for ${field} with unresolved, absent, and present-location arms`;
+  } else if (field === 'locInstancePalette') {
+    producerAndConsumer =
+      'Forward program factories omit locInstancePalette, while compileShadowDepthInstancedProgram eagerly stores its exact lookup result. bindGlInstancePalette queries only an omitted undefined slot, caches null or the location, and skips the sampler upload after null';
+    rewrite =
+      'a named GlUniformLocationCache for locInstancePalette with unresolved, absent, and present-location arms, allowing the shadow factory to construct either resolved arm directly';
+  } else if (field === 'locInstanceColorPalette') {
+    producerAndConsumer =
+      'Every program factory omits locInstanceColorPalette. bindGlInstanceColorPalette queries it only while undefined, caches null or the location, and skips the sampler upload after null';
+    rewrite =
+      'a named GlUniformLocationCache for locInstanceColorPalette with unresolved, absent, and present-location arms';
   } else if (field === 'locUvTransform') {
-    cacheContract =
-      'bindGlUvTransform queries this location only while it is undefined, caches null or the returned location, and skips the matrix upload after a null result';
-    rewrite = 'a named closed uniform-location cache with unresolved, absent, and present-location arms';
+    producerAndConsumer =
+      'Every program factory omits locUvTransform. bindGlUvTransform queries it only while undefined, caches null or the location, and skips the matrix upload after null; a null texture is a separate per-bind no-op and does not change the cache';
+    rewrite = 'a named GlUniformLocationCache for locUvTransform with unresolved, absent, and present-location arms';
   }
-  if (cacheContract === undefined || rewrite === undefined) return undefined;
-  return `${subject} gives the lazy GL uniform-location cache ${field} three observed states: undefined means unresolved, null means getUniformLocation already proved the linked program omits the uniform, and WebGLUniformLocation means present. ${cacheContract}. Preserve that query-once contract by replacing the optional-null field with ${rewrite} and handling every arm explicitly. If the existing JavaScript tri-state must remain during migration, approve a reviewed source-portability exception for this exact property that records those meanings and the query-once invariant. Do not collapse undefined to null, which would skip the first query, or null to undefined, which would repeat the query on later draws or binds. The compiler will preserve authored states but will not query GL, choose or collapse an absence sentinel, infer or synthesize a location, coordinate related cache fields, reinterpret or cast a location, route it through Any, or add side storage.`;
+  if (producerAndConsumer === undefined || rewrite === undefined) return undefined;
+  return `${subject} gives the lazy GL uniform-location cache ${field} three observed states: undefined means unresolved, null means getUniformLocation already proved the linked program omits the uniform, and WebGLUniformLocation means present. ${producerAndConsumer}. Preserve that query-once contract by replacing the optional-null field with ${rewrite} and handling every arm explicitly. Do not collapse undefined to null, which would skip the first query, or null to undefined, which would repeat the query on later draws or binds. The C++ backend already represents all three tags, exact location assignment, and strict undefined/null probes without Any, casts, or side storage, so no compiler lowering change is warranted; representation support does not replace the source's named cache state. The compiler will preserve authored states but will not query GL, choose or collapse a sentinel, infer or synthesize a location, coordinate related cache fields, reinterpret or cast a location, or add side storage.`;
 }
 
 function getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(

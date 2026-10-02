@@ -9384,11 +9384,14 @@ int main() {
     );
   });
 
-  it('defaults the fourteen GlMeshProgram mixed-absence fields to undefined without row materialization', () => {
-    // These are the authoritative mixed-absence fields in @flighthq/types. `undefined` means that the
-    // location has not been resolved yet, while `null` records a completed lookup for a uniform the
-    // shader does not expose. An omitted object-literal member must therefore select the undefined arm:
-    // default-constructing the variant would instead select its first (location) arm.
+  it('represents the fourteen GlMeshProgram mixed-absence fields without row materialization', () => {
+    // These are the authoritative mixed-absence fields in @flighthq/types. Twelve are query-once caches:
+    // undefined is unresolved, null is a completed missing-uniform lookup, and a location is present. The
+    // two joint sampler slots differ at the source level: supporting factories eagerly write location/null,
+    // non-supporting factories omit them, and no consumer resolves an omission. The backend nevertheless
+    // has to preserve every authored tag until the source replaces each lazy cache with a closed state and
+    // normalizes the redundant joint-slot sentinel. An omitted member must select Undefined rather than the
+    // variant's first (location) alternative.
     const result = lower(
       'GlMeshProgram.ts',
       `export interface GlMeshProgram {
@@ -9484,6 +9487,7 @@ int main() {
     expect(contents.match(/std::optional<host::WebGlUniformLocation> location;/gu)).toHaveLength(2);
     expect(contents).not.toContain('std::optional<host::WebGlUniformLocation> location =');
     expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('reinterpret_cast');
     expect(contents).not.toContain('make_structural_ref');
     expect(contents).not.toContain('materialize_row');
   });

@@ -6394,15 +6394,28 @@ describe('analyzeTypeScriptSourcePortability', () => {
     for (const finding of findings) {
       const field = finding.subject.slice(finding.subject.lastIndexOf(':') + 1);
       if (skinFields.has(field)) {
-        expect(finding.message).toContain(`gives the eager skin-sampler location ${field}`);
-        expect(finding.message).toContain('the represented draw contract has one unusable state');
-        expect(finding.message).toContain('factories that support skinning assign the result of getUniformLocation');
-        expect(finding.message).toContain('families that are not wired for skinning omit the property');
-        expect(finding.message).toContain('bindGlMeshSkinPalette collapses both with != null');
-        expect(finding.message).toContain('the shadow path normalizes locJointTexture with ?? null');
-        expect(finding.message).toContain(`make ${field} optional non-null`);
-        expect(finding.message).toContain(`make it required WebGLUniformLocation | null`);
-        expect(finding.message).toContain('this redundant pair does not need a reviewed exception');
+        expect(finding.message).toContain(`gives the construction-time skin-sampler location ${field}`);
+        expect(finding.message).toContain('the represented program has one unusable state');
+        expect(finding.message).toContain('Classic, Debug, Matcap, PBR, Shaded, Toon, Unlit, and Wireframe factories');
+        expect(finding.message).toContain('compileShadowDepthSkinnedProgram assign both joint sampler lookups');
+        expect(finding.message).toContain(
+          'compileGlCustomShaderProgram, compileShadowDepthProgram, and compileShadowDepthInstancedProgram omit both slots',
+        );
+        expect(finding.message).toContain('no later path resolves either one');
+        if (field === 'locJointTexture') {
+          expect(finding.message).toContain('requires locJointTexture != null together with jointMatrices');
+          expect(finding.message).toContain('passes locJointTexture ?? null to uniform1i');
+        } else {
+          expect(finding.message).toContain('requires locJointNormalTexture != null together with normalMatrices');
+          expect(finding.message).toContain('the shadow path never consumes this slot');
+        }
+        expect(finding.message).toContain(
+          'Make locJointTexture and locJointNormalTexture required WebGLUniformLocation | null fields',
+        );
+        expect(finding.message).toContain('initialize both to null in the three factories that currently omit them');
+        expect(finding.message).toContain('one named closed skin-program capability');
+        expect(finding.message).toContain('C++ backend can preserve the current null and undefined tags');
+        expect(finding.message).toContain('does not make the duplicate unusable sentinel a source contract');
         expect(finding.message).toContain('will not choose or collapse an absence sentinel');
         expect(finding.message).toContain('query or bind a GL uniform');
         expect(finding.message).toContain('infer whether a program supports skinning');
@@ -6418,29 +6431,45 @@ describe('analyzeTypeScriptSourcePortability', () => {
       );
       expect(finding.message).toContain('WebGLUniformLocation means present');
       expect(finding.message).toContain('Preserve that query-once contract');
-      expect(finding.message).toContain('a reviewed source-portability exception for this exact property');
       expect(finding.message).toContain('Do not collapse undefined to null, which would skip the first query');
       expect(finding.message).toContain('null to undefined, which would repeat the query');
+      expect(finding.message).toContain('C++ backend already represents all three tags');
+      expect(finding.message).toContain('strict undefined/null probes without Any, casts, or side storage');
+      expect(finding.message).toContain('no compiler lowering change is warranted');
+      expect(finding.message).toContain("does not replace the source's named cache state");
       expect(finding.message).toContain('will preserve authored states but will not query GL');
-      expect(finding.message).toContain('choose or collapse an absence sentinel');
+      expect(finding.message).toContain('choose or collapse a sentinel');
       expect(finding.message).toContain('coordinate related cache fields');
-      expect(finding.message).toContain('route it through Any, or add side storage');
+      expect(finding.message).toContain('reinterpret or cast a location, or add side storage');
       if (field.startsWith('locColorMatrix')) {
-        expect(finding.message).toContain('queries and caches all five color-matrix locations together');
+        expect(finding.message).toContain('Every program factory omits all five color-matrix slots');
+        expect(finding.message).toContain('queries all five locations together');
+        expect(finding.message).toContain('shader-family all-or-none invariant');
+        expect(finding.message).toContain('named GlColorMatrixUniformCache');
         expect(finding.message).toContain('present arm carries all five locations');
+        expect(finding.message).toContain('only when the entire lookup group is present');
       } else if (field === 'locColorScale' || field === 'locColorBias') {
+        expect(finding.message).toContain('Every program factory omits both color scale/bias slots');
         expect(finding.message).toContain('queries and caches locColorScale and locColorBias together');
+        expect(finding.message).toContain('named GlColorScaleBiasUniformCache');
         expect(finding.message).toContain('present arm carries both locations');
       } else if (field === 'locObjectAlpha' || field === 'locAlphaIsCoverage') {
-        expect(finding.message).toContain('uploadGlMeshDrawAlpha queries this location only while it is undefined');
+        expect(finding.message).toContain(`Every program factory omits ${field}`);
+        expect(finding.message).toContain('resolves the object-alpha and alpha-coverage slots independently');
+        expect(finding.message).toContain(`queries ${field} only while undefined`);
+        expect(finding.message).toContain(`named GlUniformLocationCache for ${field}`);
       } else if (field === 'locInstancePalette') {
-        expect(finding.message).toContain('bindGlInstancePalette queries this location only while it is undefined');
+        expect(finding.message).toContain('Forward program factories omit locInstancePalette');
+        expect(finding.message).toContain('compileShadowDepthInstancedProgram eagerly stores its exact lookup result');
+        expect(finding.message).toContain('bindGlInstancePalette queries only an omitted undefined slot');
+        expect(finding.message).toContain('allowing the shadow factory to construct either resolved arm directly');
       } else if (field === 'locInstanceColorPalette') {
-        expect(finding.message).toContain(
-          'bindGlInstanceColorPalette queries this location only while it is undefined',
-        );
+        expect(finding.message).toContain('Every program factory omits locInstanceColorPalette');
+        expect(finding.message).toContain('bindGlInstanceColorPalette queries it only while undefined');
       } else {
-        expect(finding.message).toContain('bindGlUvTransform queries this location only while it is undefined');
+        expect(finding.message).toContain('Every program factory omits locUvTransform');
+        expect(finding.message).toContain('bindGlUvTransform queries it only while undefined');
+        expect(finding.message).toContain('a null texture is a separate per-bind no-op');
       }
     }
   });
