@@ -2623,7 +2623,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(2);
   });
 
-  it('keeps native window, video-stream, and surface identities inside their exact providers', () => {
+  it('keeps native window and surface identities provider-local and removes video-stream erasure', () => {
     const windowHandle = input('packages/types/src/AppWindow.ts', 'type NativeWindowHandle = unknown;');
     const videoStream = input(
       'packages/types/src/HostVideo.ts',
@@ -2639,8 +2639,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ),
       input(
         'packages/types/src/HostVideo.ts',
-        `interface HostVideoStreamHandle { readonly __brand: 'HostVideoStreamHandle' }
-         interface HostVideoCapability { attachStream?(stream: HostVideoStreamHandle): HostImageSource | null }`,
+        `interface VideoCapabilityBackend {
+           canPlayType(mimeType: string): boolean;
+           createVideoElement?(): HostImageSource | null;
+         }`,
       ),
       input(
         'packages/types/src/Surface.ts',
@@ -2676,16 +2678,24 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings[0]?.message).toContain('retaining the native object only in provider-private maps');
     expect(report.findings[0]?.message).toContain('genuinely provider-opaque identity boundary');
     expect(report.findings[1]?.message).toContain('only production caller');
-    expect(report.findings[1]?.message).toContain("video element's srcObject");
-    expect(report.findings[1]?.message).toContain('named closed HostVideoStreamHandle entity');
+    expect(report.findings[1]?.message).toContain('Remove attachStream from HostVideoCapability');
+    expect(report.findings[1]?.message).toContain('createVideoResourceFromMediaStream accept');
+    expect(report.findings[1]?.message).toContain('element.srcObject = stream');
+    expect(report.findings[1]?.message).toContain('without stopping the caller-owned tracks');
+    expect(report.findings[1]?.message).toContain('Current Flight already applies this rewrite');
+    expect(report.findings[1]?.message).toContain('Do not whitelist');
+    expect(report.findings[1]?.message).not.toContain('reviewed source-portability exception');
     expect(report.findings[2]?.message).toContain('only in package-private SurfaceRuntime');
     expect(report.findings[2]?.message).toContain('genuinely provider-opaque');
-    for (const finding of report.findings) {
+    for (const finding of report.findings.filter((_, index) => index !== 1)) {
       expect(finding.message).toContain('reviewed source-portability exception for this exact');
       expect(finding.message).toContain('target-specific Any carrier');
       expect(finding.message).toContain('insert a cast');
-      expect(finding.message).toMatch(/copy or materialize the (?:native window|live stream|drawable)/u);
+      expect(finding.message).toMatch(/copy or materialize the (?:native window|drawable)/u);
     }
+    expect(report.findings[1]?.message).toContain('target-specific Any carrier');
+    expect(report.findings[1]?.message).toContain('insert a cast for the stream');
+    expect(report.findings[1]?.message).toContain('copy or materialize the live stream');
     expect(analyzeTypeScriptSourcePortability(closed).findings).toEqual([]);
     for (const control of controls) {
       expect(
@@ -2697,16 +2707,23 @@ describe('analyzeTypeScriptSourcePortability', () => {
 
     const reviewed = analyzeTypeScriptSourcePortability([surfaceHandle, videoStream, windowHandle], {
       exceptionPolicy: {
-        exceptions: report.findings.map((finding) => ({
-          findingIdentity: finding.identity,
-          reason: 'The native identity is confined to its provider and never enters portable state or serialization.',
-          rule: 'opaque-value-domain' as const,
-        })),
+        exceptions: report.findings
+          .filter(({ subject }) => subject !== 'interface:HostVideoCapability/method:attachStream.parameter:stream')
+          .map((finding) => ({
+            findingIdentity: finding.identity,
+            reason: 'The native identity is confined to its provider and never enters portable state or serialization.',
+            rule: 'opaque-value-domain' as const,
+          })),
         schema: 'flight-compiler-source-portability-exceptions/1',
       },
     });
-    expect(reviewed.findings).toEqual([]);
-    expect(reviewed.acceptedExceptions).toHaveLength(3);
+    expect(reviewed.findings).toMatchObject([
+      {
+        rule: 'opaque-value-domain',
+        subject: 'interface:HostVideoCapability/method:attachStream.parameter:stream',
+      },
+    ]);
+    expect(reviewed.acceptedExceptions).toHaveLength(2);
   });
 
   it('requires network JSON responses to use a closed recursive value domain', () => {
