@@ -4340,14 +4340,27 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       'public capability returns and surface-adoption parameters',
     );
     expect(sourcePortability.findings[0]?.message).toContain('required package-private SurfaceRuntime.handle');
+    expect(sourcePortability.findings[0]?.message).toContain('declared domain is every JavaScript value');
+    expect(sourcePortability.findings[0]?.message).toContain('concrete production domain');
     expect(sourcePortability.findings[0]?.message).toContain('fresh HTMLCanvasElement');
+    expect(sourcePortability.findings[0]?.message).toContain('retained by exact identity rather than copied');
+    expect(sourcePortability.findings[0]?.message).toContain('no surface importer, serializer, codec, clone');
+    expect(sourcePortability.findings[0]?.message).toContain('None clears SurfaceRuntime.handle');
+    expect(sourcePortability.findings[0]?.message).toContain('Adopted elements remain caller-owned');
     expect(sourcePortability.findings[0]?.message).toContain('unknown absorbs null');
+    expect(sourcePortability.findings[0]?.message).toContain('cross-host abstraction is intentional');
     expect(sourcePortability.findings[0]?.message).toContain('reference-shaped target-token contract');
-    expect(sourcePortability.findings[0]?.message).toContain("Entity & { readonly __brand: 'NativeSurfaceHandle' }");
+    expect(sourcePortability.findings[0]?.message).toContain('interface NativeSurfaceHandle extends Entity');
+    expect(sourcePortability.findings[0]?.message).toContain('multi-member intersection back to Dynamic');
     expect(sourcePortability.findings[0]?.message).toContain('provider-private WeakMap');
     expect(sourcePortability.findings[0]?.message).toContain('null an unambiguous allocation-failure sentinel');
     expect(sourcePortability.findings[0]?.message).toContain('Unknown or foreign tokens resolve to null');
     expect(sourcePortability.findings[0]?.message).toContain('token-to-pointer, object, or integer table');
+    expect(sourcePortability.findings[0]?.message).toContain('typedef NativeSurfaceHandle = Dynamic;');
+    expect(sourcePortability.findings[0]?.message).toContain('var handle:flight.NativeSurfaceHandle;');
+    expect(sourcePortability.findings[0]?.message).toContain('using NativeSurfaceHandle = flight::Any;');
+    expect(sourcePortability.findings[0]?.message).toContain('flight::Ref<NativeSurfaceHandle> handle;');
+    expect(sourcePortability.findings[0]?.message).toContain('neither corrected backend needs an Any carrier');
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
     expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
     expect(report.directFindings).toMatchObject([
@@ -8403,11 +8416,13 @@ ${unsupportedCharacterData}  readonly fr: number;
 }
 
 function createNativeSurfaceHandleWorkspaceFiles(opaque: boolean): Record<string, string> {
-  const handle = opaque ? 'unknown' : "Entity & { readonly __brand: 'NativeSurfaceHandle' }";
+  const handle = opaque
+    ? 'export type NativeSurfaceHandle = unknown;'
+    : "export interface NativeSurfaceHandle extends Entity { readonly __brand: 'NativeSurfaceHandle' }";
   return {
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
     '/flight/packages/types/src/Surface.ts': `export interface Entity { readonly uid: string }
-export type NativeSurfaceHandle = ${handle};
+${handle}
 export interface SurfaceRuntime {
   readonly handle: NativeSurfaceHandle;
 }`,

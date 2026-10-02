@@ -2903,7 +2903,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ),
       input(
         'packages/types/src/Surface.ts',
-        "type NativeSurfaceHandle = Entity & { readonly __brand: 'NativeSurfaceHandle' };",
+        "interface NativeSurfaceHandle extends Entity { readonly __brand: 'NativeSurfaceHandle' }",
       ),
     ];
     const controls = [
@@ -2994,20 +2994,38 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     expect(report.findings[2]?.message).toContain('required package-private SurfaceRuntime.handle');
     expect(report.findings[2]?.message).toContain('getSurfaceHandle returns it unchanged');
-    expect(report.findings[2]?.message).toContain('only concrete production implementation');
+    expect(report.findings[2]?.message).toContain('declared domain is every JavaScript value');
+    expect(report.findings[2]?.message).toContain('concrete production domain');
     expect(report.findings[2]?.message).toContain('fresh HTMLCanvasElement');
     expect(report.findings[2]?.message).toContain('createWebSurfaceFromElement adopts an HTMLElement');
+    expect(report.findings[2]?.message).toContain('retained by exact identity rather than copied');
+    expect(report.findings[2]?.message).toContain(
+      'WGPU acquisition separately returns its typed WgpuPresentationSurface',
+    );
+    expect(report.findings[2]?.message).toContain('no surface importer, serializer, codec, clone');
+    expect(report.findings[2]?.message).toContain('None clears SurfaceRuntime.handle');
+    expect(report.findings[2]?.message).toContain('Web release is deliberately a no-op');
+    expect(report.findings[2]?.message).toContain('Adopted elements remain caller-owned');
+    expect(report.findings[2]?.message).toContain('failed acquire drops the unfinished Surface reference');
     expect(report.findings[2]?.message).toContain('erasure admits string, object, integer, and null storage');
     expect(report.findings[2]?.message).toContain('unknown absorbs null');
     expect(report.findings[2]?.message).toContain('all three create paths branch on null');
+    expect(report.findings[2]?.message).toContain('cross-host abstraction is intentional');
     expect(report.findings[2]?.message).toContain('reference-shaped target-token contract');
-    expect(report.findings[2]?.message).toContain("Entity & { readonly __brand: 'NativeSurfaceHandle' }");
+    expect(report.findings[2]?.message).toContain('interface NativeSurfaceHandle extends Entity');
+    expect(report.findings[2]?.message).toContain('multi-member intersection back to Dynamic');
     expect(report.findings[2]?.message).toContain('createWebNativeSurfaceHandle');
     expect(report.findings[2]?.message).toContain('provider-private WeakMap');
     expect(report.findings[2]?.message).toContain('null an unambiguous allocation-failure sentinel');
     expect(report.findings[2]?.message).toContain('Unknown or foreign tokens resolve to null');
     expect(report.findings[2]?.message).toContain('token-to-pointer, object, or integer table');
-    expect(report.findings[2]?.message).toContain('needs no Any alternative or new compiler runtime binding');
+    expect(report.findings[2]?.message).toContain('typedef NativeSurfaceHandle = Dynamic;');
+    expect(report.findings[2]?.message).toContain('var handle:flight.NativeSurfaceHandle;');
+    expect(report.findings[2]?.message).toContain('using NativeSurfaceHandle = flight::Any;');
+    expect(report.findings[2]?.message).toContain('NativeSurfaceHandle handle;');
+    expect(report.findings[2]?.message).toContain('struct NativeSurfaceHandle : public flight::ReferenceEnabled');
+    expect(report.findings[2]?.message).toContain('flight::Ref<NativeSurfaceHandle> handle;');
+    expect(report.findings[2]?.message).toContain('neither corrected backend needs an Any carrier');
     expect(report.findings[2]?.message).toContain('Do not whitelist the erased alias');
     expect(report.findings[2]?.message).not.toContain('reviewed source-portability exception');
     expect(report.findings[2]?.message).toContain('target-specific Any carrier');

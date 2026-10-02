@@ -383,6 +383,33 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(typed).not.toContain('Dynamic');
   });
 
+  it('replaces the erased native surface owner with an explicit provider token', () => {
+    const module = lower(
+      '@flighthq/types',
+      'Surface.ts',
+      `export interface Entity { readonly uid: string }
+       export type CurrentNativeSurfaceHandle = unknown;
+       export interface NativeSurfaceHandle extends Entity {
+         readonly __brand: 'NativeSurfaceHandle';
+       }
+       export interface CurrentSurfaceRuntime { readonly handle: CurrentNativeSurfaceHandle }
+       export interface SurfaceRuntime { readonly handle: NativeSurfaceHandle }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const currentHandle = findFile(files, 'flight/_js/CurrentNativeSurfaceHandle.hx').contents;
+    const currentRuntime = findFile(files, 'flight/_js/CurrentSurfaceRuntime.hx').contents;
+    const token = findFile(files, 'flight/_js/NativeSurfaceHandle.hx').contents;
+    const runtime = findFile(files, 'flight/_js/SurfaceRuntime.hx').contents;
+
+    expect(currentHandle).toContain('typedef CurrentNativeSurfaceHandle = Dynamic;');
+    expect(currentRuntime).toContain('var handle:flight.CurrentNativeSurfaceHandle;');
+    expect(token).toContain('typedef NativeSurfaceHandle = {');
+    expect(token).toContain('var __brand:String;');
+    expect(token).toContain('var uid:String;');
+    expect(runtime).toContain('var handle:flight.NativeSurfaceHandle;');
+    expect(token + runtime).not.toContain('Dynamic');
+  });
+
   it('separates the GlContext capability state from its one-sentinel scene cache', () => {
     const module = lower(
       '@flighthq/types',

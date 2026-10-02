@@ -15076,6 +15076,45 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(typed).not.toContain('materialize_row');
   });
 
+  // Surface.ts intends one provider-specific native owner domain, not arbitrary application data. A named
+  // Entity token keeps the portable ABI exact while each provider maps that identity to its DOM element,
+  // pointer, object, or integer. The interface spelling is deliberate: unlike an intersection alias, it
+  // also stays typed in the Haxe extern backend.
+  it('replaces the erased native surface owner with an explicit provider token', () => {
+    const current = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'Surface.ts',
+        `export type NativeSurfaceHandle = unknown;
+         export interface SurfaceRuntime { readonly handle: NativeSurfaceHandle }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const portable = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'Surface.ts',
+        `export interface Entity { readonly uid: string }
+         export interface NativeSurfaceHandle extends Entity {
+           readonly __brand: 'NativeSurfaceHandle';
+         }
+         export interface SurfaceRuntime { readonly handle: NativeSurfaceHandle }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(current).toContain('using NativeSurfaceHandle = flight::Any;');
+    expect(current).toContain('NativeSurfaceHandle handle;');
+    expect(portable).toContain('struct NativeSurfaceHandle : public flight::ReferenceEnabled');
+    expect(portable).toContain('flight::String brand;');
+    expect(portable).toContain('flight::String uid;');
+    expect(portable).toContain('flight::Ref<NativeSurfaceHandle> handle;');
+    expect(portable).not.toContain('flight::Any');
+    expect(portable).not.toContain('static_cast');
+    expect(portable).not.toContain('reinterpret_cast');
+    expect(portable).not.toContain('materialize_row');
+  });
+
   // Attachment2D.ts's mixed-absence finding. Every built-in producer finishes an entity with a present
   // string-or-null name, while runtime mutation swaps attachment owners and never edits this metadata. The
   // backend can represent both source spellings; the finding asks the source to remove the unused third
