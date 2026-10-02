@@ -12010,6 +12010,60 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('documents the representation an opaque result payload arm already has', () => {
+    // Tray.ts carries ~22 failed-outcome arms shaped `{ readonly error?: unknown; readonly outcome: '...' }`.
+    // The opaque payload is NOT a gap: `unknown` is represented by the runtime's erased dynamic value, and
+    // the whole union lowers. This pins that so a later "replace the opaque arm" reading of the report has
+    // the representation in front of it, and pins the one refusal these shapes DO produce -- an unguarded
+    // discriminant read on the generic result -- which belongs to a different rule.
+    const arms = `export type TrayCreateCapabilityResult =
+  | { readonly outcome: 'created' }
+  | { readonly error?: unknown; readonly outcome: 'runtime-api-unavailable' }
+  | { readonly error?: unknown; readonly outcome: 'invalid-icon' }
+  | { readonly error?: unknown; readonly outcome: 'tray-create-failed' };`;
+
+    const emitted = emitIrModuleCpp(lower('tray-result.ts', arms).module, { runtimeProfile: 'flight-cpp' }).contents;
+    expect(emitted).toContain('std::optional<flight::Any> error;');
+    expect(emitted).toContain('flight::String outcome;');
+
+    // Both readings a consumer writes lower: narrowed by the discriminant, and the payload passed on as the
+    // erased value it is.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'tray-consumer.ts',
+          `${arms}
+export function read(result: TrayCreateCapabilityResult): unknown {
+  if (result.outcome === 'tray-create-failed') return result.error;
+  return null;
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('return std::get<0>(result)->error;');
+
+    // The file's generic result composes the arms with Entity and Exclude, and reading its discriminant
+    // WITHOUT a guard is the one refusal in these shapes -- a union-member access rule, not an opaque-domain
+    // one.
+    const generic = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'tray-generic.ts',
+          `export interface Entity { readonly id: number }
+export interface TrayIcon { readonly path: string }
+${arms}
+export type TrayCreateResult<Tray extends TrayIcon = TrayIcon> =
+  | (Entity & { readonly outcome: 'created'; readonly tray: Tray })
+  | (Entity & Exclude<TrayCreateCapabilityResult, { readonly outcome: 'created' }>);
+export function label<T extends TrayIcon>(result: TrayCreateResult<T>): string { return result.outcome; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(generic.rule).toBe('cpp-union-member-access-unguarded');
+    expect(generic.classification).toBe('source-portability');
+  });
+
   it('pins the signals connection site and the container shape that replaces it', () => {
     // connection.ts asserts a connection into a scope whose element type is the WIDEST slot signature --
     // "the cast is the variance of that container, not a claim about this connection", as its own comment
