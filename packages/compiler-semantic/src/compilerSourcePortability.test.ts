@@ -6891,6 +6891,13 @@ describe('analyzeTypeScriptSourcePortability', () => {
         'createBitmapText allocates fresh BitmapTextData through createBitmapTextData and initializeBitmapTextData',
       );
       expect(finding.message).toContain(
+        'createBitmapTextData is also an exported, separate Partial<BitmapTextData> construction carrier',
+      );
+      expect(finding.message).toContain('normalizes its missing or null numeric cells with ?? null');
+      expect(finding.message).toContain(
+        'There is no BitmapText importer, scene-document materializer, serializer, or clone',
+      );
+      expect(finding.message).toContain(
         'applyBitmapTextOptions then overwrites each cell only when its option is not undefined',
       );
       expect(finding.message).toContain('omission retains null and explicit null writes the same disabled value');
@@ -6904,13 +6911,22 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain(
         'layoutBitmapTextPages uses a present wrapWidth as the alignment reference and requires it for justification',
       );
+      expect(finding.message).toContain('These live consumers test !== null rather than accepting optional cells');
+      expect(finding.message).toContain('an omitted live wrapWidth can reach justification as undefined and yield NaN');
+      expect(finding.message).toContain('Canvas, GL, and WebGPU renderers consume only the laid-out runtime pages');
+      expect(finding.message).toContain(
+        'disposeNode clears graph and signal references but does not rewrite BitmapTextData or dispose its runtime pages',
+      );
+      expect(finding.message).toContain('no BitmapText-specific disposer clears either numeric cell');
       expect(finding.message).toContain(
         'Make maxLines and wrapWidth optional number fields in BitmapTextOptions, using omission as their sole construction-time absence',
       );
       expect(finding.message).toContain(
-        'keeping BitmapTextData and both dedicated setters required nullable so callers can disable an installed limit or width',
+        'keeping BitmapTextData, the Partial<BitmapTextData> initializer boundary, and both dedicated setters required nullable',
       );
+      expect(finding.message).toContain('materialize or later restore the disabled live state');
       expect(finding.message).toContain('separate named closed update state and handle every arm');
+      expect(finding.message).toContain('BitmapTextOptions is not a patch carrier');
       expect(finding.message).toContain('Do not whitelist the redundant construction spelling');
       expect(finding.message).toContain('will preserve every authored number and live null');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');

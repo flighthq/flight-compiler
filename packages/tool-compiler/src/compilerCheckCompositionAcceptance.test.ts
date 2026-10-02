@@ -3928,6 +3928,18 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(
       sourcePortability.findings.every(({ message }) =>
         message.includes(
+          'createBitmapTextData is also an exported, separate Partial<BitmapTextData> construction carrier',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('There is no BitmapText importer, scene-document materializer, serializer, or clone'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes(
           'setBitmapTextMaxLines and setBitmapTextWrapWidth accept number | null and assign the required nullable live cells directly',
         ),
       ),
@@ -3936,6 +3948,18 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       sourcePortability.findings.every(({ message }) =>
         message.includes(
           'layoutBitmapTextLines treats null maxLines as unlimited and null wrapWidth as no word wrapping',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('an omitted live wrapWidth can reach justification as undefined and yield NaN'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes(
+          'disposeNode clears graph and signal references but does not rewrite BitmapTextData or dispose its runtime pages',
         ),
       ),
     ).toBe(true);
