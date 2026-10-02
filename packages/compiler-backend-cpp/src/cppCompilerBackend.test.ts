@@ -14769,12 +14769,9 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   //     readonly views on the read paths, and a separate mutable entry for the paths that really mutate.
   // Both are pinned below, so the distinction is recorded rather than left to whoever reads the six messages.
   //
-  // FLAGGED RATHER THAN DEEPENED: this one rule already carries SIX file-specific remediations, each keyed on
-  // the module's package, exact source path, accessor name, and exact emitted type text, and each running one
-  // to two thousand characters. The rule also has a general answer, including a general refinement for the
-  // retained-owner mismatch, so the bespoke texts are both redundant and path-coupled. That is the
-  // file-specific-exception pattern at six times the scale seen on nodeOrderList, and it is reported rather
-  // than extended here.
+  // GENERALIZED: this rule formerly carried six remediations keyed on package, source path, accessor name, and
+  // emitted type text. The control now proves that one shape- and role-based message covers both remedy classes
+  // and stays byte-identical across package/path changes, while its retained-owner refinement remains general.
   it('refuses a readonly structural row asserted into a wider writable one', () => {
     const emitCase = (body: string) =>
       emitIrModuleCpp(
