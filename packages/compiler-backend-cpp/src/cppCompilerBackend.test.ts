@@ -25572,6 +25572,15 @@ int main() {
          node.name = obj?.name ?? null;
          node.kind = nodeKind;
          node.enabled = obj?.enabled ?? true;
+       }
+       export function installNodeRuntimeTyped<
+         Traits extends object,
+         Runtime extends NodeRuntime<Traits>
+       >(
+         node: EntityConstruction<Node<Traits>>,
+         runtimeFactory: NodeRuntimeFactory<Runtime>,
+       ): void {
+         node[EntityRuntimeKey] = runtimeFactory();
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -25639,6 +25648,10 @@ int main() {
     expect(emitted).toContain('create_data.value()(');
     expect(emitted).toContain('flight::types::entity_runtime_key, runtime_factory(std::nullopt)');
     expect(emitted).toContain('create_node_runtime<Traits>()');
+    expect(emitted).toContain('install_node_runtime_typed');
+    expect(emitted).toContain(
+      'flight::row_set(node, flight::types::entity_runtime_key, runtime_factory(std::nullopt));',
+    );
     expect(emitted).not.toContain('flight::Any');
     expect(emitted).not.toContain('RowOf<flight::types::PartialNode<');
   });

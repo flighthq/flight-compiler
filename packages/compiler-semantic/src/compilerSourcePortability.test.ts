@@ -2567,19 +2567,30 @@ describe('analyzeTypeScriptSourcePortability', () => {
       },
     ]);
     expect(finding.message).toContain('direct runtimeFactory() write into the existing node owner');
-    expect(finding.message).toContain('Node<Traits>[EntityRuntimeKey]: NodeRuntime<Traits> | undefined');
+    expect(finding.message).toContain('exact writable relation already retained by EntityConstruction<Node<Traits>>');
+    expect(finding.message).toContain('mapped construction type removes readonly without changing');
+    expect(finding.message).toContain(
+      'without changing Node<Traits>[EntityRuntimeKey] from NodeRuntime<Traits> | undefined',
+    );
     expect(finding.message).toContain('Runtime extends NodeRuntime<Traits>');
+    expect(finding.message).toContain('produces a value accepted by that base slot');
     expect(finding.message).toContain('allocateEntity<Node<Traits> & Traits>() created this same owner');
     expect(finding.message).toContain('createNode passes that owner and optional factory into initializeNode');
+    expect(finding.message).toContain('initializeNode fills the runtime and public node cells');
+    expect(finding.message).toContain('finishEntity returns the same owner without copying or replacing its runtime');
     expect(finding.message).toContain('getNodeRuntime reads the same slot');
     expect(finding.message).toContain('hierarchy, signal, disposal, interaction, and scene paths');
     expect(finding.message).toContain('direct typed node[EntityRuntimeKey] = runtimeFactory() assignment');
     expect(finding.message).toContain('repair that relation in semantic lowering');
+    expect(finding.message).toContain('neighboring unchecked default-factory assertion');
+    expect(finding.message).toContain("createNodeRuntime's base-owner assertion");
+    expect(finding.message).toContain('closing this value domain does not prove either claim');
     expect(finding.message).toContain('Do not whitelist the opaque view');
     expect(finding.message).toContain('declared computed slot already supplies the closed value domain');
     expect(finding.message).toContain('target-specific Any carrier');
     expect(finding.message).toContain('retain or insert a cast');
     expect(finding.message).toContain('copy or materialize the node or runtime');
+    expect(finding.message).toContain('validate either separate assertion');
     expect(finding.message).toContain('side storage');
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     for (const control of controls) {

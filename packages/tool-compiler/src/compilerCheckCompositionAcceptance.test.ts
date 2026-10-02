@@ -127,6 +127,103 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(JSON.stringify(report)).not.toContain('glTestHelper.ts');
   });
 
+  it('keeps initializeNode runtime-slot erasure source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNodeRuntimeSlotWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const sourceIdentity =
+      'flight-compiler-source-portability-finding/1:["@flighthq/node","packages/node/src/node.ts","opaque-value-domain","function:initializeNode/property:computed","sha256:794589e3154ffe26647ea1f207580ad7f23b97d2516ec656585965fff272bd85"]:0';
+    const checkIdentity = `flight-compiler-check-finding/1:${JSON.stringify([
+      '@flighthq/node',
+      'packages/node/src/node.ts',
+      'Node',
+      'source',
+      'source-portability',
+      'opaque-value-domain',
+      sourceIdentity,
+    ])}`;
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toMatchObject([
+      {
+        identity: sourceIdentity,
+        rule: 'opaque-value-domain',
+        subject: 'function:initializeNode/property:computed',
+      },
+    ]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'exact writable relation already retained by EntityConstruction<Node<Traits>>',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'finishEntity returns the same owner without copying or replacing its runtime',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('neighboring unchecked default-factory assertion');
+    expect(sourcePortability.findings[0]?.message).toContain("createNodeRuntime's base-owner assertion");
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the opaque view');
+    expect(report.directFindings).toMatchObject([
+      {
+        code: 'source-portability',
+        identity: checkIdentity,
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingIdentity: sourceIdentity,
+        sourceFindingSubject: 'function:initializeNode/property:computed',
+        stage: 'source',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [checkIdentity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createNodeRuntimeSlotWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps specialized runtime-factory findings policy-owned and baseline-stable by source identity', () => {
     const source = createMemoryWorkspaceSource(createRuntimeFactoryWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -4982,6 +5079,29 @@ export function createGuardedEntityRuntime(runtime: EntityRuntime): EntityRuntim
   });
 }`,
     '/flight/packages/entity/src/index.ts': `export { createGuardedEntity, createGuardedEntityRuntime } from './guards.js';`,
+  };
+}
+
+function createNodeRuntimeSlotWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const runtimeWrite = opaque
+    ? '(node as { [EntityRuntimeKey]?: unknown })[EntityRuntimeKey] = runtimeFactory();'
+    : 'node[EntityRuntimeKey] = runtimeFactory();';
+  return {
+    '/flight/packages/node/package.json': createPackageManifest('@flighthq/node'),
+    '/flight/packages/node/src/index.ts': `export { initializeNode } from './node.js';`,
+    '/flight/packages/node/src/node.ts': `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+interface EntityRuntime { binding: object | null }
+interface NodeRuntime<Traits extends object> extends EntityRuntime { parent: Traits | null }
+interface Node<Traits extends object> { [EntityRuntimeKey]: NodeRuntime<Traits> | undefined }
+type EntityConstruction<Value> = { -readonly [Key in keyof Value]: Value[Key] };
+type NodeRuntimeFactory<Runtime extends EntityRuntime> = () => Runtime;
+export function initializeNode<Traits extends object, Runtime extends NodeRuntime<Traits>>(
+  out: EntityConstruction<Node<Traits>>,
+  runtimeFactory: NodeRuntimeFactory<Runtime>,
+): void {
+  const node = out as EntityConstruction<Node<Traits>>;
+  ${runtimeWrite}
+}`,
   };
 }
 
