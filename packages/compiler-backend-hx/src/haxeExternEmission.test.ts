@@ -93,6 +93,27 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(findFile(files, 'flight/_js/PortableSkin.hx').contents).not.toContain('@:optional var skeletonRoot');
   });
 
+  it('removes null from all six optional anchor-layout constraints without changing their number carrier', () => {
+    const constraints = ['bottom', 'height', 'left', 'right', 'top', 'width'] as const;
+    const fields = constraints.map((name) => `${name}?: number`).join('; ');
+    const module = lower(
+      '@flighthq/types',
+      'Layout.ts',
+      `export interface CurrentAnchorLayoutItemStyle { ${fields.replaceAll('number', 'number | null')} }
+       export interface PortableAnchorLayoutItemStyle { ${fields} }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentAnchorLayoutItemStyle.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableAnchorLayoutItemStyle.hx').contents;
+
+    for (const name of constraints) {
+      expect(current).toContain(`@:optional var ${name}:Null<Float>;`);
+      expect(portable).toContain(`@:optional var ${name}:Float;`);
+    }
+    expect(portable).not.toContain('Null<Float>');
+    expect(portable).not.toContain('Dynamic');
+  });
+
   it('separates Scene3D document morph omission from the exact morph owner', () => {
     const module = lower(
       '@flighthq/types',

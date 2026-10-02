@@ -13046,6 +13046,21 @@ export interface LiveLayout { containerStyle: ContainerStyle | null; itemStyle: 
     expect(emitted).toContain('std::optional<flight::Ref<ContainerStyle>> container_style;');
     expect(emitted).toContain('std::optional<flight::Ref<ItemStyle>> item_style;');
 
+    // All six source findings have one recommended carrier even though four fields are pins and two are
+    // size overrides: removing null leaves the optional field's one not-supplied state and exact double.
+    const portable = emitIrModuleCpp(
+      lower('layout-style-portable.ts', layout.replaceAll('?: number | null', '?: number')).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    for (const name of ['bottom', 'height', 'left', 'right', 'top', 'width']) {
+      expect(portable).toContain(`std::optional<double> ${name};`);
+    }
+    expect(portable).not.toContain('flight::Null');
+    expect(portable).not.toContain('flight::Undefined');
+    expect(portable).not.toContain('flight::Any');
+    expect(portable).not.toContain('static_cast');
+    expect(portable).not.toContain('reinterpret_cast');
+
     // Clearing writes a sentinel into the same carrier, and the two clears stay distinguishable.
     const cleared = emitIrModuleCpp(
       lower(

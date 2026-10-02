@@ -2396,6 +2396,24 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.every(({ message }) => message.includes('optional number inputs'))).toBe(true);
     expect(
       sourcePortability.findings.every(({ message }) =>
+        message.includes('four edge constraints bottom, left, right, and top are pins'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('two size constraints height and width instead override intrinsic size'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => message.includes('no layout or materialization disposer')),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('std::variant<double, flight::Null, flight::Undefined>'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
         message.includes('Do not whitelist the redundant input spelling'),
       ),
     ).toBe(true);
@@ -2418,6 +2436,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 6,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createAnchorLayoutWorkspaceFiles(false));

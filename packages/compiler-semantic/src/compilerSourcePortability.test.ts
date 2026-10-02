@@ -6251,34 +6251,67 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('current Flight gives them one inactive meaning');
       expect(finding.message).toContain('sparse caller- or document-authored input shape');
       expect(finding.message).toContain('not a reusable internal state cell');
+      expect(finding.message).toContain('has no constructor or initializer');
       expect(finding.message).toContain('Flight has no production AnchorLayout tree builder');
       expect(finding.message).toContain('Rive importer emits only FlexLayoutKind or GridLayoutKind');
       expect(finding.message).toContain('anchor tests construct sparse object literals that omit inactive constraints');
       expect(finding.message).toContain(
-        'createFlightDocumentLayoutBindings carries a document tree by identity into the inert live binding',
+        'FlightDocument text reader is the only production path that can create one generically',
       );
       expect(finding.message).toContain(
-        'text reader maps a missing or null whole style to the required-nullable LayoutNode.itemStyle slot',
+        'it maps a missing or null whole style to the required-nullable LayoutNode.itemStyle slot',
       );
       expect(finding.message).toContain('copies every own field of a present mapping');
+      expect(finding.message).toContain('including an explicit-null constraint');
+      expect(finding.message).toContain('carrying the exact document tree and style owners by identity');
+      expect(finding.message).toContain('does not normalize or clone a constraint');
       expect(finding.message).toContain('writer omits only a null whole style');
-      expect(finding.message).toContain('recursively clones a present mapping');
+      expect(finding.message).toContain('recursively clones every present mapping and scalar');
       expect(finding.message).toContain('generic document transport preserves explicit-null keys');
       expect(finding.message).toContain('without giving them anchor semantics');
+      expect(finding.message).toContain('No production mutator assigns, clears, or deletes these six fields');
       expect(finding.message).toContain('layout core has no style clone, mutator, reset, or disposer');
-      expect(finding.message).toContain('reads the caller-owned tree');
-      expect(finding.message).toContain('changes only the output buffer and LayoutState failure fields');
+      expect(finding.message).toContain('rereads the caller-owned tree on every call');
+      expect(finding.message).toContain('caller-owned output buffer plus the separate LayoutState failure fields');
       expect(finding.message).toContain('validator accepts null and undefined through isOptionalNumber');
-      expect(finding.message).toContain('anchorLayoutResolver normalizes left, right, top, and bottom with ?? null');
-      expect(finding.message).toContain('When opposing pins do not determine an axis');
-      expect(finding.message).toContain('width and height expressions each use ?? intrinsicSizes');
-      expect(finding.message).toContain('either absence spelling selects the same natural-size fallback');
-      expect(finding.message).toContain('placement uses a pin or alignment');
+      expect(finding.message).toContain('rejects non-finite present numbers');
+      expect(finding.message).toContain('four edge constraints bottom, left, right, and top are pins');
+      expect(finding.message).toContain('one present pin overrides alignment on that axis');
+      expect(finding.message).toContain('opposing pair stretches the child with Math.max');
+      expect(finding.message).toContain('overrides the corresponding width or height');
+      expect(finding.message).toContain('two size constraints height and width instead override intrinsic size');
+      expect(finding.message).toContain('opposing pin pair is incomplete');
+      expect(finding.message).toContain('finiteSize clamps a non-positive or non-finite result to zero');
+      if (name === 'height' || name === 'width') {
+        expect(finding.message).toContain(`For ${name} specifically, style?.${name} ?? intrinsicSizes`);
+        expect(finding.message).toContain(`natural ${name} for either absent spelling`);
+        expect(finding.message).toContain('stretched extent wins');
+        expect(finding.message).toContain(`authored ${name} is deliberately ignored`);
+      } else {
+        expect(finding.message).toContain(`For ${name} specifically, style?.${name} ?? null`);
+        expect(finding.message).toContain('before placement');
+        expect(finding.message).toContain('edge pin, not a size default or a clear command');
+      }
+      expect(finding.message).toContain('plain GC-owned structural data');
+      expect(finding.message).toContain(
+        'no layout-tree or materialization clone API beyond the explicit document writer',
+      );
+      expect(finding.message).toContain('no layout or materialization disposer');
+      expect(finding.message).toContain('node disposal does not traverse a separately retained layout binding');
+      expect(finding.message).toContain(
+        'none of these numeric fields owns a node, buffer, GPU handle, or native resource',
+      );
       expect(finding.message).toContain(
         'Make all six bottom, height, left, right, top, and width members optional number inputs',
       );
+      expect(finding.message).toContain('preserving their distinct pin-versus-size behavior');
       expect(finding.message).toContain('keep the enclosing LayoutNode.itemStyle required nullable');
       expect(finding.message).toContain('null as its no-style sentinel');
+      expect(finding.message).toContain(`@:optional var ${name}:Null<Float>;`);
+      expect(finding.message).toContain(`@:optional var ${name}:Float;`);
+      expect(finding.message).toContain(`std::variant<double, flight::Null, flight::Undefined> ${name}`);
+      expect(finding.message).toContain(`std::optional<double> ${name}`);
+      expect(finding.message).toContain('neither carrier needs a host binding, Any route, or cast');
       expect(finding.message).toContain('keep that boundary shape separate');
       expect(finding.message).toContain('normalize it once into the optional-number layout style');
       expect(finding.message).toContain('name a closed constraint-state union and handle it separately');
@@ -6286,8 +6319,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('zero is a real pin or size');
       expect(finding.message).toContain('collapse a present value');
-      expect(finding.message).toContain('mutate or clone a layout tree');
+      expect(finding.message).toContain('decide whether pins or size win');
+      expect(finding.message).toContain('mutate, retain, clone, resolve, or dispose a layout tree');
       expect(finding.message).toContain('rewrite document transport or an input boundary');
+      expect(finding.message).toContain('fabricate a host binding');
+      expect(finding.message).toContain('reinterpret or cast a constraint');
       expect(finding.message).toContain('add disposal work, or add side storage');
     }
   });
