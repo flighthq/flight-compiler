@@ -988,6 +988,81 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps both BoundingBoxAttachment2D point-storage findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createBoundingBoxAttachment2DWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = ['skin', 'vertices'].map((field) => `interface:BoundingBoxAttachment2D/property:${field}`);
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Current format parsers do not construct BoundingBoxAttachment2D'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Make BoundingBoxAttachment2D.skin a required Skin2D | null field'),
+      ),
+    ).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createBoundingBoxAttachment2DWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both MeshAttachment2D point-storage findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createMeshAttachment2DWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -1660,6 +1735,22 @@ export interface LoadScene2DAudioResourcesOptions {
   LoadScene2DAudioResourcesOptions,
   Scene2DDocumentLoadOptions,
 } from './Scene2DResources.js';`,
+  };
+}
+
+function createBoundingBoxAttachment2DWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/BoundingBoxAttachment2D.ts': `interface Attachment2D { readonly kind: string }
+interface Skin2D { readonly influenceCounts: Uint16Array; readonly influences: Float32Array }
+export interface BoundingBoxAttachment2D extends Attachment2D {
+  kind: 'BoundingBoxAttachment2D';
+  pointCount: number;
+  skin${marker}: Skin2D | null;
+  vertices${marker}: Float32Array | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { BoundingBoxAttachment2D } from './BoundingBoxAttachment2D.js';`,
   };
 }
 
