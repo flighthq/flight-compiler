@@ -28380,15 +28380,22 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.message).toContain('createNodeRuntime asserts the createEntityRuntime factory result');
     expect(failure.message).toContain('allocated and returned only the EntityRuntime owner');
     expect(failure.message).toContain('binding and optional uid');
+    expect(failure.message).toContain('flight-cpp flattens interface heritage into an independent reference owner');
+    expect(failure.message).toContain('extends clause supplies inherited member evidence');
+    expect(failure.message).toContain('not C++ class heritage or a pointer-cast path');
     expect(failure.message).toContain('later NodeRuntime field assignments do not change that fixed owner identity');
     expect(failure.message).toContain('initializeNode stores the result in Node<Traits>[EntityRuntimeKey]');
     expect(failure.message).toContain('derived 2D and 3D runtime paths');
     expect(failure.message).toContain('Construct the exact NodeRuntime<Traits> owner at this boundary');
     expect(failure.message).toContain('exact-owner allocation and named EntityRuntime and NodeRuntime initializers');
+    expect(failure.message).toContain("initializeNode's unchecked default-factory assertion");
+    expect(failure.message).toContain('opaque computed-slot write');
+    expect(failure.message).toContain('neither can repair an EntityRuntime owner');
     expect(failure.message).toContain('Do not whitelist or recover this by cast');
     expect(failure.message).toContain('will not reinterpret the EntityRuntime owner');
     expect(failure.message).toContain('infer or append NodeRuntime cells');
     expect(failure.message).toContain('copy or materialize a replacement owner');
+    expect(failure.message).toContain('validate either adjacent assertion');
     expect(failure.message).toContain('side storage');
 
     const exact = emitIrModuleCpp(

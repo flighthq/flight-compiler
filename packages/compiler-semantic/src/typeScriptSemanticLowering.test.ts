@@ -12799,6 +12799,78 @@ it('keeps a caller type parameter in imported generic NodeOf traversal evidence'
   expect(JSON.stringify(traversal.module)).not.toContain('"source":"unknown"');
 });
 
+it('retains the entity-runtime factory owner beneath the node-runtime assertion', () => {
+  const [result] = lowerTypeScriptSources([
+    {
+      packageName: '@flighthq/node',
+      sourceFile: ts.createSourceFile(
+        '/flight/packages/node/src/node.ts',
+        `interface EntityRuntime { binding: object | null; uid?: string }
+         interface NodeRuntime<Traits extends object> extends EntityRuntime {
+           children: Traits[] | null;
+           parent: Traits | null;
+         }
+         function createEntityRuntime(): EntityRuntime { return { binding: null }; }
+         export function createNodeRuntime<Traits extends object>(): NodeRuntime<Traits> {
+           const out = createEntityRuntime() as NodeRuntime<Traits>;
+           out.children = null;
+           out.parent = null;
+           return out;
+         }`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    },
+  ]);
+  const factory = result!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'createNodeRuntime',
+  );
+  if (factory?.kind !== 'function' || factory.body[0]?.kind !== 'variable') {
+    throw new Error('Expected node runtime factory');
+  }
+  const out = factory.body[0].declarations[0];
+  const returned = factory.body[3];
+  if (!out || !('binding' in out) || returned?.kind !== 'return') {
+    throw new Error('Expected retained node runtime local');
+  }
+  const assertions: IrExpression[] = [];
+  analyzeIrModuleTraversal(result!.module, {
+    expression(expression) {
+      if (expression.kind === 'cast') assertions.push(expression);
+    },
+  });
+
+  expect(result!.diagnostics).toEqual([]);
+  expect(assertions).toHaveLength(1);
+  expect(assertions[0]).toMatchObject({
+    expression: {
+      callee: { kind: 'identifier', reference: { binding: { name: 'createEntityRuntime' }, kind: 'binding' } },
+      kind: 'call',
+      semantics: {
+        resultType: { kind: 'named', reference: { binding: { name: 'EntityRuntime' }, kind: 'binding' } },
+      },
+    },
+    kind: 'cast',
+    type: {
+      kind: 'named',
+      reference: { binding: { name: 'NodeRuntime' }, kind: 'binding' },
+      typeArguments: [
+        {
+          kind: 'named',
+          reference: { binding: factory.typeParameters[0]?.binding, kind: 'binding' },
+        },
+      ],
+    },
+  });
+  expect(JSON.stringify(factory.body)).toContain('"name":"children"');
+  expect(JSON.stringify(factory.body)).toContain('"name":"parent"');
+  expect(returned.expression).toMatchObject({
+    kind: 'identifier',
+    reference: { binding: { id: out.binding.id }, kind: 'binding' },
+  });
+});
+
 it('retains readonly hierarchy inputs beside exact writable parent and child mutations', () => {
   const [result] = lowerTypeScriptSources([
     {

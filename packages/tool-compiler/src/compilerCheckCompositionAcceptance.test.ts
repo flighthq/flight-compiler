@@ -224,6 +224,80 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the base node-runtime owner refusal source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNodeRuntimeOwnerWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule(module) {
+          if (module.source === 'packages/node/src/node.ts') {
+            throw createBackendEmissionFailure(
+              'acceptance',
+              module,
+              'the EntityRuntime factory result does not own the NodeRuntime cells',
+              'cpp-reference-assertion-without-heritage',
+              { classification: 'source-portability' },
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const identity =
+      'flight-compiler-check-finding/1:["@flighthq/node","packages/node/src/node.ts","Node","emission","unsupported-ir","cpp-reference-assertion-without-heritage"]';
+
+    expect(sourcePortability).toMatchObject({ acceptedExceptions: [], findings: [] });
+    expect(compilation.report.modules.map(({ module, status }) => ({ source: module.source, status }))).toEqual([
+      { source: 'packages/node/src/index.ts', status: 'refused' },
+      { source: 'packages/node/src/node.ts', status: 'refused' },
+    ]);
+    expect(report.directFindings).toMatchObject([
+      {
+        code: 'unsupported-ir',
+        identity,
+        module: {
+          name: 'Node',
+          packageName: '@flighthq/node',
+          source: 'packages/node/src/node.ts',
+        },
+        policyClass: 'source-portability',
+        rule: 'cpp-reference-assertion-without-heritage',
+        stage: 'emission',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 1,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 1, directlyRefused: 1, emitted: 0, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [identity],
+      passed: false,
+    });
+  });
+
   it('keeps specialized runtime-factory findings policy-owned and baseline-stable by source identity', () => {
     const source = createMemoryWorkspaceSource(createRuntimeFactoryWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -5283,6 +5357,21 @@ export function initializeNode<Traits extends object, Runtime extends NodeRuntim
 ): void {
   const node = out as EntityConstruction<Node<Traits>>;
   ${runtimeWrite}
+}`,
+  };
+}
+
+function createNodeRuntimeOwnerWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/node/package.json': createPackageManifest('@flighthq/node'),
+    '/flight/packages/node/src/index.ts': `export { createNodeRuntime } from './node.js';`,
+    '/flight/packages/node/src/node.ts': `interface EntityRuntime { binding: object | null; uid?: string }
+interface NodeRuntime<Traits extends object> extends EntityRuntime { parent: Traits | null }
+function createEntityRuntime(): EntityRuntime { return { binding: null }; }
+export function createNodeRuntime<Traits extends object>(): NodeRuntime<Traits> {
+  const out = createEntityRuntime() as NodeRuntime<Traits>;
+  out.parent = null;
+  return out;
 }`,
   };
 }
