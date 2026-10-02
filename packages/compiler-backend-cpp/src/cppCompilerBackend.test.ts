@@ -24976,6 +24976,9 @@ int main() {
     expect(resolvedEmission).toContain('std::optional<flight::Array<flight::String>> names;');
     expect(resolvedEmission).not.toContain('flight::Undefined');
     expect(resolvedEmission).not.toContain('host::');
+    expect(resolvedEmission).not.toContain('flight::Any');
+    expect(resolvedEmission).not.toContain('static_cast');
+    expect(resolvedEmission).not.toContain('reinterpret_cast');
   });
 
   it('classifies the Skin skeleton root as a source sentinel rather than a runtime or host-binding gap', () => {

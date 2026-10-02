@@ -7297,8 +7297,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('palette computation, skinning, and rendering never read names');
     expect(message).toContain('Make Skeleton3D.names a required readonly string[] | null field');
     expect(message).toContain('narrow initializeSkeleton3D and the document-local field initializer');
-    expect(message).toContain('emits the required nullable table as optional<Array<String>>');
-    expect(message).toContain('current optional-nullable spelling adds distinct Null and Undefined arms');
+    expect(message).toContain('Haxe currently emits ?names:Null<Array<String>>');
+    expect(message).toContain('required-nullable rewrite emits names:Null<Array<String>>');
+    expect(message).toContain(
+      'C++ currently emits std::variant<flight::Array<flight::String>, flight::Null, flight::Undefined>',
+    );
+    expect(message).toContain('required-nullable rewrite emits std::optional<flight::Array<flight::String>>');
     expect(message).toContain('source contract, not a compiler-runtime or host-binding gap');
     expect(message).toContain('A present empty array');
     expect(message).toContain('Do not whitelist the redundant live-storage spelling');

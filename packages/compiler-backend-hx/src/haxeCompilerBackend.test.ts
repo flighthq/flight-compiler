@@ -2876,6 +2876,32 @@ describe('emitIrModuleHaxe structural record election', () => {
     }
   });
 
+  it('keeps the Skeleton3D name table exact while removing its redundant omission carrier', () => {
+    const source = (required: boolean): string => {
+      const marker = required ? '' : '?';
+      return `export interface Skeleton3D {
+                names${marker}: readonly string[] | null;
+              }`;
+    };
+    const mixed = lowerPackage('@flighthq/types', 'Skeleton3D.ts', source(false)).module;
+    const resolved = lowerPackage('@flighthq/types', 'Skeleton3D.ts', source(true)).module;
+    const mixedAnonymous = emitIrModuleHaxe(mixed).contents;
+    const resolvedAnonymous = emitIrModuleHaxe(resolved).contents;
+    const mixedStruct = emitIrModuleHaxe(mixed, { structuralRecords: 'structInit' }).contents;
+    const resolvedStruct = emitIrModuleHaxe(resolved, { structuralRecords: 'structInit' }).contents;
+
+    expect(mixedAnonymous).toContain('?names:Null<Array<String>>');
+    expect(resolvedAnonymous).toContain('names:Null<Array<String>>');
+    expect(resolvedAnonymous).not.toContain('?names:Null<Array<String>>');
+    expect(mixedStruct).toContain('public var names:Null<Array<String>> = null;');
+    expect(resolvedStruct).toContain('public var names:Null<Array<String>>;');
+    expect(resolvedStruct).not.toContain('public var names:Null<Array<String>> = null;');
+    for (const emitted of [mixedAnonymous, resolvedAnonymous, mixedStruct, resolvedStruct]) {
+      expect(emitted).not.toContain('names:Dynamic');
+      expect(emitted).not.toContain('cast names');
+    }
+  });
+
   it('preserves each WgpuRenderState absence carrier and its distinct remedy', () => {
     const prelude = `export interface WgpuRenderState { readonly kind: string }
 export interface RenderTexture { readonly id: number }

@@ -2395,6 +2395,10 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain(
       'Make Skeleton3D.names a required readonly string[] | null field',
     );
+    expect(sourcePortability.findings[0]?.message).toContain('Haxe currently emits ?names:Null<Array<String>>');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'std::variant<flight::Array<flight::String>, flight::Null, flight::Undefined>',
+    );
     expect(sourcePortability.findings[0]?.message).toContain(
       'source contract, not a compiler-runtime or host-binding gap',
     );
@@ -2420,6 +2424,13 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
       failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
       passed: false,
+    });
+    const unchanged = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(unchanged).toMatchObject({ introduced: [], resolvedFindingIdentities: [] });
+    expect(unchanged.unchanged).toHaveLength(1);
+    expect(createCompilerPackageCheckPolicyResult(unchanged, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
 
     const portableSource = createMemoryWorkspaceSource(createSkeleton3DNamesWorkspaceFiles(false));
