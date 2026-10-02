@@ -89,7 +89,10 @@ describe('compileCompilerCommandLineDirectory', () => {
     const placeholderPath = files.find((file) => file.includes('bad'));
     expect(placeholderPath).toBeDefined();
     const placeholder = readFileSync(path.join(output, placeholderPath!), 'utf8');
-    expect(placeholder).toContain('BEST-EFFORT PLACEHOLDER');
+    // The module lowered and only this declaration refused, so best-effort salvages the rest and marks the one
+    // it could not render rather than describing the whole file.
+    expect(placeholder).toContain('PARTIAL:');
+    expect(placeholder).toContain('NOT GENERATED: function put');
     expect(placeholder).toContain('cpp-erased-record-assertion-unrepresented');
     expect(placeholder).not.toContain('#error');
 

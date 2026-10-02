@@ -14883,41 +14883,55 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // GENERALIZED: this rule formerly carried six remediations keyed on package, source path, accessor name, and
   // emitted type text. The control now proves that one shape- and role-based message covers both remedy classes
   // and stays byte-identical across package/path changes, while its retained-owner refinement remains general.
-  // The best-effort placeholder: what a run writes where a refused module would have gone. It is the closest
-  // thing to working output that can be produced without inventing semantics -- the declared type NAMES are
-  // forward-declared so a consumer that only needs the name still resolves -- and it deliberately carries no
-  // `#error`, because a build failure should come from the sources' own content rather than from an artifact the
-  // compiler poisoned.
-  it('writes a replaceable placeholder that names the refusal and breaks nothing', () => {
+  // The best-effort placeholder, and the salvage that makes it worth having. A module that lowered fine and
+  // failed on ONE declaration now yields the rest of itself as real C++ with that declaration marked missing,
+  // because writing the whole module by hand when one function refused is exactly the cost this mode exists to
+  // remove. What must never happen is a file that quietly omits something: the banner is first, the omission is
+  // named with its reason and source line, and nothing in the file breaks a build.
+  it('salvages the declarations it can and marks the one it cannot', () => {
     const placeholder = createCppCompilerBackend().emitRefusalPlaceholder!(
       lower(
-        'placeholder-sample.ts',
+        'salvage-sample.ts',
         `export interface Sample { readonly value: number }
-         export class Holder { readonly sample: Sample | null = null; }`,
+         export function good(a: number, b: number): number { return a + b; }
+         export function bad(target: object, prop: string, value: unknown): void {
+           (target as unknown as Record<PropertyKey, unknown>)[prop] = value;
+         }
+         export function alsoGood(flag: boolean): boolean { return !flag; }`,
       ).module,
       {
         classification: 'source-portability',
-        message: 'the asserted row reads value, which the source type does not declare',
-        refusedDependencies: ['@flighthq/types/packages/types/src/Model.ts'],
-        rule: 'cpp-generic-owner-argument-assertion-unproven',
+        line: 3,
+        message: 'an erased assertion hides the represented source carrier',
+        rule: 'cpp-erased-record-assertion-unrepresented',
       },
       { runtimeProfile: 'flight-cpp' },
     )!;
 
-    expect(placeholder.path).toContain('placeholder_sample');
-    // The refusal is carried verbatim, because it is the whole reason a hand edit is needed.
-    expect(placeholder.contents).toContain('BEST-EFFORT PLACEHOLDER');
-    expect(placeholder.contents).toContain('cpp-generic-owner-argument-assertion-unproven');
-    expect(placeholder.contents).toContain('source-portability');
-    expect(placeholder.contents).toContain('the asserted row reads value');
-    expect(placeholder.contents).toContain('blocked by: @flighthq/types/packages/types/src/Model.ts');
-    // Salvage: the declared names exist, claiming nothing about their members.
-    expect(placeholder.contents).toContain('struct Sample;');
-    expect(placeholder.contents).toContain('struct Holder;');
-    // A well-formed header that does not break a build on purpose.
+    // The omissions are announced before anything else, because a file that compiles while meaning less than
+    // the source said is worse than one that refuses.
+    const bannerIndex = placeholder.contents.indexOf('PARTIAL:');
+    expect(bannerIndex).toBeGreaterThan(-1);
+    expect(bannerIndex).toBeLessThan(placeholder.contents.indexOf('struct Sample'));
+    expect(placeholder.contents).toContain('missing: function bad --');
+    expect(placeholder.contents).toContain('NOT GENERATED: function bad --');
+    // The reason is wrapped across comment lines to keep the header readable, so the assertion reads it the way
+    // a person does: drop the comment markers, join the lines, then collapse whitespace.
+    const asProse = (text: string) =>
+      text
+        .split('\n')
+        .map((line) => line.replace(/^\s*\/\/\s?/u, ' '))
+        .join(' ')
+        .replaceAll(/\s+/gu, ' ');
+    expect(asProse(placeholder.contents)).toContain('an erased assertion hides the represented source carrier');
+
+    // Everything else is REAL output, not a description of it.
+    expect(placeholder.contents).toContain('struct Sample : public flight::ReferenceEnabled');
+    expect(placeholder.contents).toContain('double good(double a, double b)');
+    expect(placeholder.contents).toContain('bool also_good(bool flag)');
+    // And it still breaks nothing on purpose.
     expect(placeholder.contents).toContain('#pragma once');
     expect(placeholder.contents).not.toContain('#error');
-    expect(placeholder.contents).not.toContain('static_cast');
   });
 
   it('refuses a readonly structural row asserted into a wider writable one', () => {

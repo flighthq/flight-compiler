@@ -13,6 +13,7 @@ import {
   getIrUnionTypeStringLiteralValues,
   hasIrTypeAbsentMember,
   indentSourceLines,
+  isBackendEmissionFailure,
   isCompilerTargetNameAllocationFailure,
 } from '../../compiler-emission/src/index.js';
 import {
@@ -483,6 +484,9 @@ function emitIrModuleCppWithContext(
   targetNameMaps?: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
   anonymousStructNaming?: AnonymousStructNaming | undefined,
   unionArmIdentities?: Map<string, CppUnionArmIdentity[]> | undefined,
+  // Present only when a caller is willing to receive a module with declarations missing. Every declaration
+  // that fails is recorded here instead of ending the emission, and the file says so in a banner.
+  salvageFailures?: CppSalvageFailure[] | undefined,
 ): EmittedFile {
   let module: IrModule;
   try {
@@ -751,11 +755,30 @@ function emitIrModuleCppWithContext(
     .map((declaration) => {
       const existingAnonymousStructs = new Set(context.anonymousStructs.keys());
       const earlyPublicationMaterializedOwners = new Set<string>();
-      const lines = emitDeclaration(declaration, {
-        ...context,
-        currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
-        earlyPublicationMaterializedOwners,
-      });
+      const lines = (() => {
+        try {
+          return emitDeclaration(declaration, {
+            ...context,
+            currentOrigin: { column: declaration.origin.column, line: declaration.origin.line },
+            earlyPublicationMaterializedOwners,
+          });
+        } catch (error) {
+          // Only a salvaging caller tolerates this. Everywhere else the failure is the answer and travels on,
+          // because an ordinary run must not emit a module whose declaration is missing.
+          if (salvageFailures === undefined) throw error;
+          // The rule is the machine-readable half of the refusal, so the marker names it too: it is what a
+          // reader searches for the compiler's own guidance on this shape.
+          const refusal = isBackendEmissionFailure(error) ? error : undefined;
+          const failure: CppSalvageFailure = {
+            ...(refusal?.classification === undefined ? {} : { classification: refusal.classification }),
+            declaration,
+            message: error instanceof Error ? error.message : String(error),
+            ...(refusal?.rule === undefined ? {} : { rule: refusal.rule }),
+          };
+          salvageFailures.push(failure);
+          return renderCppSalvagedDeclarationCpp(failure);
+        }
+      })();
       const anonymousStructs = [...context.anonymousStructs]
         .filter(([key]) => !existingAnonymousStructs.has(key))
         .map(([, struct]) => struct);
@@ -846,6 +869,14 @@ function emitIrModuleCppWithContext(
     }
     lines.push('', ...declaration.lines);
   });
+  if (salvageFailures !== undefined && salvageFailures.length > 0) {
+    // The banner goes immediately after the generated header, before everything else, because a salvaged file
+    // is INCOMPLETE and the one outcome worse than refusing is a header that compiles while meaning less than
+    // the source said. Nothing here breaks a build: a consumer fails later on what is genuinely absent.
+    // Placed after `#pragma once` so the banner is the first thing read without displacing the guard.
+    const guardIndex = lines.findIndex((line) => line.startsWith('#pragma once'));
+    lines.splice(guardIndex === -1 ? 1 : guardIndex + 1, 0, '', ...renderCppSalvageBannerCpp(salvageFailures));
+  }
   lines.push('', `} // namespace ${namespaceName}`);
   if (generatedSymbolBindings.length > 0) {
     lines.push('', 'namespace flight::detail {', ...generatedSymbolBindings, '} // namespace flight::detail');
@@ -29043,6 +29074,57 @@ function getCppModuleFilePath(module: Readonly<IrModule>, options: Readonly<CppC
   return includePrefix ? `${includePrefix}/${fileName}` : fileName;
 }
 
+// What a salvaged module says in place of a declaration it could not emit.
+//
+// The comment is the contract: a reader has to know that this declaration exists in the source and is absent
+// here, and where to look. The forward declaration is only emitted for a kind that can be named incompletely
+// without lying about it -- an enum is NOT a struct, and a value declaration has no type to forward-declare, so
+// those keep the comment alone.
+function renderCppSalvagedDeclarationCpp(failure: Readonly<CppSalvageFailure>): string[] {
+  const { declaration, message } = failure;
+  const name = declaration.kind === 'variable' ? '(binding)' : declaration.binding.name;
+  const forwardable = declaration.kind === 'class' || declaration.kind === 'interface';
+  const parameters =
+    'typeParameters' in declaration
+      ? declaration.typeParameters.map((parameter) => safeCppTypeName(parameter.binding.name))
+      : [];
+  const template =
+    parameters.length === 0 ? '' : `template <${parameters.map((parameter) => `typename ${parameter}`).join(', ')}> `;
+  return [
+    '',
+    `// NOT GENERATED: ${declaration.kind} ${name} -- source line ${String(declaration.origin.line)}`,
+    ...(failure.rule === undefined
+      ? []
+      : [`// refusal: ${failure.rule}${failure.classification === undefined ? '' : ` [${failure.classification}]`}`]),
+    ...message
+      .split('\n')
+      .flatMap((line) => wrapCppPlaceholderCommentLineCpp(line))
+      .map((line) => `// ${line}`.trimEnd()),
+    ...(forwardable ? [`${template}struct ${safeCppTypeName(name)};`] : []),
+  ];
+}
+
+function renderCppSalvageBannerCpp(failures: readonly CppSalvageFailure[]): string[] {
+  return [
+    '// PARTIAL: the C++ emitter refused declarations in this module. Everything else compiled, and each',
+    '// omission is marked NOT GENERATED below with the reason. This file is NOT complete.',
+    ...failures.map(
+      (failure) =>
+        `//   missing: ${failure.declaration.kind} ${
+          failure.declaration.kind === 'variable' ? '(binding)' : failure.declaration.binding.name
+        } -- source line ${String(failure.declaration.origin.line)}`,
+    ),
+  ];
+}
+
+// One declaration the emitter refused while the rest of its module was being salvaged.
+interface CppSalvageFailure {
+  readonly classification?: string | undefined;
+  readonly declaration: Readonly<IrDeclaration>;
+  readonly message: string;
+  readonly rule?: string | undefined;
+}
+
 // The replaceable stub a best-effort run writes where a refused module would have gone.
 //
 // It exists so the path is present and a hand edit has somewhere to land, and it is the closest thing to working
@@ -29055,6 +29137,36 @@ function getCppModuleFilePath(module: Readonly<IrModule>, options: Readonly<CppC
 // failure downstream of this file is a failure about what is genuinely missing rather than about an artifact the
 // compiler deliberately poisoned. Everything in it is meant to be deleted by the hand edit that replaces it.
 function emitCppRefusalPlaceholder(
+  module: Readonly<IrModule>,
+  refusal: Readonly<CompilerRefusalPlaceholderRequest>,
+  options: Readonly<CppCompilerBackendOptions>,
+): EmittedFile {
+  // SALVAGE FIRST. The module usually lowered fine and failed on one declaration, so the useful answer is the
+  // module with that declaration marked missing rather than a file that carries only a description of it. A
+  // module that never reached emission at all -- one that failed to lower -- has nothing to salvage, and the
+  // catch below falls back to the comment-only stub, which is the honest floor.
+  const salvageFailures: CppSalvageFailure[] = [];
+  try {
+    return emitIrModuleCppWithContext(
+      module,
+      options,
+      [module],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      salvageFailures,
+    );
+  } catch {
+    return emitCppRefusalStubCpp(module, refusal, options);
+  }
+}
+
+function emitCppRefusalStubCpp(
   module: Readonly<IrModule>,
   refusal: Readonly<CompilerRefusalPlaceholderRequest>,
   options: Readonly<CppCompilerBackendOptions>,
