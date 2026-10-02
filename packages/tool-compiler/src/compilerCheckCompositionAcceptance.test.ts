@@ -1759,6 +1759,93 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the dialog close-value domain finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createGuiDialogCloseResultWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubject = 'interface:GuiDialogCloseResult/property:value';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'opaque-value-domain', subject: expectedSubject },
+    ]);
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'built-in backdrop producer closes the active entry as dismissed with no value',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'synchronously emits the exact result object through onClose',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('reason-discriminated arms');
+    expect(sourcePortability.findings[0]?.message).toContain('recursive closed GuiDialogCloseValue');
+    expect(sourcePortability.findings[0]?.message).toContain('cancelled and dismissed arm must have no value property');
+    expect(sourcePortability.findings[0]?.message).toContain('stable string handle');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
+    expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual([
+      {
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject: expectedSubject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createGuiDialogCloseResultWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the Net response-body open-domain finding source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createNetResponseBodyWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4113,6 +4200,37 @@ export interface WebServiceWorkerNotificationInstance {
   WebNotificationOptions,
   WebServiceWorkerNotificationInstance,
 } from './Notification.js';`,
+  };
+}
+
+function createGuiDialogCloseResultWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const declaration = opaque
+    ? `export type GuiDialogCloseReason = 'accepted' | 'cancelled' | 'dismissed';
+export interface GuiDialogCloseResult {
+  readonly entryId: string;
+  readonly reason: GuiDialogCloseReason;
+  readonly value?: unknown;
+}`
+    : `export interface GuiDialogCloseFields {
+  readonly [name: string]: GuiDialogCloseValue;
+}
+export type GuiDialogCloseValue =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly GuiDialogCloseValue[]
+  | Readonly<GuiDialogCloseFields>;
+export type GuiDialogCloseResult =
+  | { readonly entryId: string; readonly reason: 'accepted'; readonly value?: GuiDialogCloseValue }
+  | { readonly entryId: string; readonly reason: 'cancelled' | 'dismissed' };`;
+  const exports = opaque
+    ? 'export type { GuiDialogCloseReason, GuiDialogCloseResult }'
+    : 'export type { GuiDialogCloseFields, GuiDialogCloseResult, GuiDialogCloseValue }';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/GuiDialog.ts': declaration,
+    '/flight/packages/types/src/index.ts': `${exports} from './GuiDialog.js';`,
   };
 }
 

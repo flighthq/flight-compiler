@@ -3030,15 +3030,24 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toMatchObject([{ finding: { identity: finding.identity } }]);
   });
 
-  it('preserves dialog close values as application-owned signal payloads', () => {
+  it('closes the public dialog-result value domain without changing identity transport', () => {
     const opaque = input(
       'packages/types/src/GuiDialog.ts',
       'interface GuiDialogCloseResult { entryId: string; reason: string; value?: unknown }',
     );
     const closed = input(
       'packages/types/src/GuiDialog.ts',
-      `type GuiDialogCloseValue = boolean | number | string | null;
-       interface GuiDialogCloseResult { entryId: string; reason: string; value?: GuiDialogCloseValue }`,
+      `interface GuiDialogCloseFields { readonly [name: string]: GuiDialogCloseValue }
+       type GuiDialogCloseValue =
+         | boolean
+         | number
+         | string
+         | null
+         | readonly GuiDialogCloseValue[]
+         | Readonly<GuiDialogCloseFields>;
+       type GuiDialogCloseResult =
+         | { readonly entryId: string; readonly reason: 'accepted'; readonly value?: GuiDialogCloseValue }
+         | { readonly entryId: string; readonly reason: 'cancelled' | 'dismissed' };`,
     );
     const controls = [
       input('packages/types/src/Other.ts', 'interface GuiDialogCloseResult { value?: unknown }'),
@@ -3056,37 +3065,35 @@ describe('analyzeTypeScriptSourcePortability', () => {
       rule: 'opaque-value-domain',
       subject: 'interface:GuiDialogCloseResult/property:value',
     });
-    expect(finding.message).toContain('application-owned result of accepting or dismissing a dialog entry');
-    expect(finding.message).toContain('emits the same result through onClose');
-    expect(finding.message).toContain('genuinely application-opaque result boundary');
-    expect(finding.message).toContain('reviewed source-portability exception for this exact property');
-    expect(finding.message).toContain('named closed GuiDialogCloseValue domain');
+    expect(report.acceptedExceptions).toEqual([]);
+    expect(finding.message).toContain('public dialog-close signal');
+    expect(finding.message).toContain('built-in backdrop producer closes the active entry as dismissed with no value');
+    expect(finding.message).toContain('accepted with the numeric value 7 plus accepted and cancelled without a value');
+    expect(finding.message).toContain('no cancelled or dismissed producer attaches a payload');
+    expect(finding.message).toContain('validates only that result.entryId names the active entry');
+    expect(finding.message).toContain('synchronously emits the exact result object through onClose');
+    expect(finding.message).toContain('Identity transport does not make unknown a portable public domain');
+    expect(finding.message).toContain('reason-discriminated arms');
+    expect(finding.message).toContain('recursive closed GuiDialogCloseValue');
+    expect(finding.message).toContain('accepted arm may keep value optional');
+    expect(finding.message).toContain('cancelled and dismissed arm must have no value property');
+    expect(finding.message).toContain('null remains an intentional accepted payload rather than a missing property');
+    expect(finding.message).toContain('stable string handle');
+    expect(finding.message).toContain('application-owned typed storage after onClose');
+    expect(finding.message).toContain('Do not whitelist the public signal domain');
     expect(finding.message).toContain('target-specific Any carrier');
-    expect(finding.message).toContain('insert a cast');
+    expect(finding.message).toContain('insert or retain a cast');
+    expect(finding.message).toContain('allocate or consult a handle registry');
+    expect(finding.message).toContain('change close ordering or emission');
     expect(finding.message).toContain('copy or materialize the payload');
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     for (const control of controls) {
       expect(
         analyzeTypeScriptSourcePortability([control]).findings.every(
-          ({ message }) => !message.includes('application-opaque result boundary'),
+          ({ message }) => !message.includes('public dialog-close signal'),
         ),
       ).toBe(true);
     }
-
-    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
-      exceptionPolicy: {
-        exceptions: [
-          {
-            findingIdentity: finding.identity,
-            reason: 'The GUI core emits the application payload unchanged and never retains or interprets it.',
-            rule: 'opaque-value-domain',
-          },
-        ],
-        schema: 'flight-compiler-source-portability-exceptions/1',
-      },
-    });
-    expect(reviewed.findings).toEqual([]);
-    expect(reviewed.acceptedExceptions).toMatchObject([{ finding: { identity: finding.identity } }]);
   });
 
   it('keeps the WGPU scene skinning slot on its existing named adapter contract', () => {
