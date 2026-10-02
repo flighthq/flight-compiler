@@ -4138,6 +4138,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
        }
        export interface LottieDocument { chars?: LottieCharacterData[] }`,
     );
+    const projected = input(
+      'ProjectedLottieDocument.ts',
+      `export interface LottieTextData { d: { readonly k: readonly string[] } }
+       export interface LottieDocument { readonly layers: readonly string[] }`,
+    );
     const unrelated = input(
       'OtherDocument.ts',
       `interface LottieDocument { chars?: unknown[] }
@@ -4153,10 +4158,21 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:LottieTextData/property:p',
     ]);
     expect(report.findings[0]?.message).toContain('character-data array');
+    expect(report.findings[0]?.message).toContain('parseLottieDocument only passes JSON through');
+    expect(report.findings[0]?.message).toContain('current importer never reads document.chars');
+    expect(report.findings[0]?.message).toContain('presence and omission have the same imported result');
+    expect(report.findings[0]?.message).toContain('Remove chars from the portable LottieDocument projection');
     expect(report.findings[0]?.message).toContain('distinct shapes/precomposition arms');
     expect(report.findings[1]?.message).toContain('text-range array');
     expect(report.findings[2]?.message).toContain('text-alignment options');
     expect(report.findings[3]?.message).toContain('text follow-path options');
+    for (const [index, property] of ['a', 'm', 'p'].entries()) {
+      const message = report.findings[index + 1]?.message;
+      expect(message).toContain('appendLottieText reads only LottieTextData.d.k[0].s');
+      expect(message).toContain(`never reads ${property}`);
+      expect(message).toContain('presence and omission have the same imported result');
+      expect(message).toContain(`Remove ${property} from the portable LottieTextData projection`);
+    }
     for (const finding of report.findings) {
       expect(finding.message).toContain('reviewed source-portability exception for this exact property');
       expect(finding.message).toContain('outside portable runtime storage');
@@ -4164,6 +4180,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
     expect(report.findings[1]?.message).toContain('will not merge LottieTextData.a, .m, and .p');
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability([projected]).findings).toEqual([]);
     expect(analyzeTypeScriptSourcePortability([unrelated]).findings).toHaveLength(2);
     expect(
       analyzeTypeScriptSourcePortability([unrelated]).findings.every((finding) =>

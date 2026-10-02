@@ -2652,7 +2652,7 @@ function getLottieOpaquePayloadGuidance(
     return undefined;
   }
   if (subject === 'interface:LottieDocument/property:chars') {
-    return `${subject} exposes unknown elements for the Lottie character-data array; the format gives every entry character and font metrics plus a character-data alternative for shapes or a precomposition, but this declaration names none of those runtime alternatives. Declare a named closed Lottie character payload and distinct shapes/precomposition arms for the supported subset before portable storage or consumption. If raw character JSON is intentionally retained only at an unexamined input boundary, record a reviewed source-portability exception for this exact property and keep the erased payload outside portable runtime storage. The compiler will not reconstruct the schema from JSON or choose a target-specific Any carrier.`;
+    return `${subject} exposes unknown elements for the Lottie character-data array, but parseLottieDocument only passes JSON through and the current importer never reads document.chars, so presence and omission have the same imported result. Remove chars from the portable LottieDocument projection while it is unsupported; raw JSON may still carry an extra key that the projection ignores. If character import is added, normalize the input into a named closed Lottie character payload with distinct shapes/precomposition arms before storing or consuming it. If the API intentionally promises access to raw character JSON, record a reviewed source-portability exception for this exact property and keep the erased payload outside portable runtime storage. The compiler will not reconstruct the schema from JSON or choose a target-specific Any carrier.`;
   }
   const textPayload =
     subject === 'interface:LottieTextData/property:a'
@@ -2663,7 +2663,8 @@ function getLottieOpaquePayloadGuidance(
           ? { domain: 'text follow-path options', exposure: 'an unknown value' }
           : undefined;
   if (!textPayload) return undefined;
-  return `${subject} exposes ${textPayload.exposure} for the Lottie ${textPayload.domain}; that field has its own schema and is not interchangeable with the other text animator payloads. Declare a distinct named closed payload for the supported fields before portable storage or interpretation. If the importer intentionally retains this unsupported data only as unexamined input JSON, record a reviewed source-portability exception for this exact property and keep the erased payload outside portable runtime storage. The compiler will not merge LottieTextData.a, .m, and .p into one opaque carrier or choose a target-specific Any carrier.`;
+  const property = getNodeName(node.name);
+  return `${subject} exposes ${textPayload.exposure} for the Lottie ${textPayload.domain}, but appendLottieText reads only LottieTextData.d.k[0].s and never reads ${property}, so presence and omission have the same imported result. Remove ${property} from the portable LottieTextData projection while it is unsupported; raw JSON may still carry an extra key that the projection ignores. If this animator feature is added, normalize it into its own named closed payload before portable storage or interpretation. If the API intentionally promises access to this raw animator JSON, record a reviewed source-portability exception for this exact property and keep the erased payload outside portable runtime storage. The compiler will not merge LottieTextData.a, .m, and .p into one opaque carrier or choose a target-specific Any carrier.`;
 }
 
 function renderUncheckedDoubleAssertionMessage(
