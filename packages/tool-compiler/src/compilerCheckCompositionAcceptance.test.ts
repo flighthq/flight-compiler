@@ -1526,6 +1526,90 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps both Skeleton2D live-collection findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createSkeleton2DWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = ['skins', 'slots'].map((name) => `interface:Skeleton2D/property:${name}`);
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
+      expect.stringContaining('disposeSkeleton2D clears bones and slots but leaves skins retained'),
+      expect.stringContaining('No built-in renderer enumerates Skeleton2D.slots'),
+    ]);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Do not whitelist the redundant live-storage spelling'),
+      ),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createSkeleton2DWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the MorphShape gradient endpoint matrix finding source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createMorphShapeGradientEndpointWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4945,6 +5029,20 @@ export interface Skeleton2DImportAnimation {
   Skeleton2DDrawOrderTimeline,
   Skeleton2DImportAnimation,
 } from './Skeleton2DImport.js';`,
+  };
+}
+
+function createSkeleton2DWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Skeleton2D.ts': `interface AttachmentSkin2D { readonly name: string }
+interface Slot2D { readonly boneIndex: number }
+export interface Skeleton2D {
+  skins${marker}: AttachmentSkin2D[] | null;
+  slots${marker}: Slot2D[] | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Skeleton2D } from './Skeleton2D.js';`,
   };
 }
 

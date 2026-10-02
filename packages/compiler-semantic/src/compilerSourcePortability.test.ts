@@ -6339,37 +6339,61 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(skins).toContain('createSkeleton2D always initializes skins to null');
     expect(skins).toContain('Spine JSON, Spine binary, and DragonBones importers leave that null intact');
     expect(skins).toContain('overwrite it only with a non-empty AttachmentSkin2D array');
+    expect(skins).toContain('a retained skin may itself have an empty attachments array');
     expect(skins).toContain("Rive's pure-bone skeleton likewise retains null");
-    expect(skins).toContain('cloneSkeleton2D preserves the exact skins array owner rather than copying it');
+    expect(skins).toContain('cloneSkeleton2D shares the exact skins array owner rather than copying it');
+    expect(skins).toContain('including a structurally supplied empty array');
+    expect(skins).toContain('disposeSkeleton2D clears bones and slots but leaves skins retained');
     expect(skins).toContain('getSkeleton2DSkin returns null for either undefined or null');
+    expect(skins).toContain('setSkeleton2DSkin instead consumes its explicit skin argument');
+    expect(skins).toContain('without reading skeleton.skins');
+    expect(skins).toContain('setup reset, animation, deformation, path solving, and built-in rendering do not read');
     expect(skins).toContain('Make Skeleton2D.skins a required AttachmentSkin2D[] | null field');
-    expect(skins).toContain("retain each importer's non-empty assignment plus the clone's shared array identity");
+    expect(skins).toContain(
+      "retain each importer's non-empty assignment, disposal behavior, and the clone's shared array identity",
+    );
+    expect(skins).toContain('present collection whose lookup returns null');
+    expect(skins).toContain('Haxe currently exposes @:optional Null<Array<AttachmentSkin2D>>');
+    expect(skins).toContain('variant<Array<Ref<AttachmentSkin2D>>, Null, Undefined>');
     expect(skins).toContain('infer or parse a wardrobe');
+    expect(skins).toContain('clear retained skins during disposal');
     expect(skins).toContain('copy or materialize the skin collection or its attachment owners');
 
     const slots = findings[1]!.message;
     expect(slots).toContain('live Skeleton2D slot and draw-order list both omission and explicit null');
     expect(slots).toContain('createSkeleton2D defaults slots to null');
     expect(slots).toContain('Spine JSON, Spine binary, and DragonBones importers pass their parsed Slot2D array');
+    expect(slots).toContain('even when it is empty');
     expect(slots).toContain("Rive's pure-bone skeleton keeps the default null");
-    expect(slots).toContain('cloneSkeleton2D allocates new records for a present slot array');
-    expect(slots).toContain('disposeSkeleton2D explicitly clears the cell to null');
+    expect(slots).toContain('a present array becomes a new array of new shallow-copied Slot2D records');
+    expect(slots).toContain('including a fresh empty array');
+    expect(slots).toContain('shares its nested attachment and deform owners');
+    expect(slots).toContain('disposeSkeleton2D clears the whole slots collection to null');
     expect(slots).toContain('setSkeleton2DSkin, slot animation, deform animation, and path-attachment resolution');
+    expect(slots).toContain('setSkeleton2DSkin mutates whichever skeleton argument it receives');
+    expect(slots).toContain('slot and deform animation mutate the pose');
+    expect(slots).toContain('an attachment-animation clear or setSkeleton2DSlotDeform clear writes null');
+    expect(slots).toContain('Equality, validation, and setup reset ignore slots');
+    expect(slots).toContain('No built-in renderer enumerates Skeleton2D.slots');
+    expect(slots).toContain('attachment vertex and deformation helpers receive an explicit attachment and bone index');
     expect(slots).toContain('Make Skeleton2D.slots a required Slot2D[] | null field');
     expect(slots).toContain('preserve null as the pure-rig and disposed sentinel');
+    expect(slots).toContain('Haxe currently exposes @:optional Null<Array<Slot2D>>');
+    expect(slots).toContain('variant<Array<Ref<Slot2D>>, Null, Undefined>');
     expect(slots).toContain('solve a path constraint');
+    expect(slots).toContain("change the clone's shallow owner boundaries");
     expect(slots).toContain('beyond the authored clone');
 
     for (const finding of findings) {
       expect(finding.message).toContain('A present empty array remains');
       expect(finding.message).toContain('must not be');
       expect(finding.message).toContain('give them a separate shape and normalize once');
-      expect(finding.message).toContain('can retain the current null, undefined, and exact array alternatives');
-      expect(finding.message).toContain('represent the required-nullable rewrite without Any');
-      expect(finding.message).toContain('does not give the second absence spelling a source meaning');
-      expect(finding.message).toContain('will not whitelist a redundant absence spelling');
+      expect(finding.message).toContain('required-nullable rewrite removes @:optional and the Undefined alternative');
+      expect(finding.message).toContain('without Any');
+      expect(finding.message).toContain('Do not whitelist the redundant live-storage spelling');
       expect(finding.message).toContain('substitute an empty array');
-      expect(finding.message).toContain('reinterpret or cast');
+      expect(finding.message).toContain('route elements through Any');
+      expect(finding.message).toContain('reinterpret or cast the collection');
       expect(finding.message).toContain('or add side storage');
     }
   });
