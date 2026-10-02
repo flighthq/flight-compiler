@@ -84,6 +84,7 @@ export function compileCompilerCommandLineRequest(
   const result = compileTypeScriptPackageGraph({
     backend,
     backendOptions,
+    ...(parsed.bestEffort ? { bestEffort: true } : {}),
     graph: {
       entries: [],
       moduleDependencies: [],
@@ -105,6 +106,15 @@ export function compileCompilerCommandLineRequest(
   });
   for (const file of result.compilation.files) {
     capabilities.writeOutputFile(parsed.outputDirectory, file.path, file.contents);
+  }
+  // The manifest says what each module became, so a consumer can plan an overlay without reading the whole
+  // report. It is written only when the run asked for best-effort and the caller can accept it.
+  if (result.report.bestEffort !== undefined && capabilities.writeOutputManifest !== undefined) {
+    capabilities.writeOutputManifest(
+      parsed.outputDirectory,
+      'best-effort.json',
+      `${JSON.stringify(result.report.bestEffort, undefined, 2)}\n`,
+    );
   }
   const emitted = result.report.modules.filter((module) => module.status === 'emitted').length;
   const refusals = result.report.modules.flatMap((module): CompilerCommandLineRefusal[] => {
@@ -402,10 +412,12 @@ const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp
   --root-package <name>   Root package for Haxe output (default: the target's own)
   --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
   --runtime-header <path> Override the flight-cpp runtime include spelling
+  --best-effort           Emit every module that lowered, plus a replaceable stub where one refused
   --progress              Write bounded package-compilation progress as JSON Lines to stderr
   --report                Report refusals without failing the run`;
 
 interface ParsedCompilerCommandLineRequest {
+  readonly bestEffort: boolean;
   readonly emissionMode: HaxeCompilerEmissionMode;
   readonly outputDirectory: string;
   readonly packageName: string;
@@ -423,10 +435,15 @@ function parseCompilerCommandLineRequest(
 ): ParsedCompilerCommandLineRequest | Readonly<{ failure: string }> {
   const positional: string[] = [];
   const named = new Map<string, string>();
+  let bestEffort = false;
   let progress = false;
   let reportOnly = false;
   for (let index = 0; index < request.argv.length; index += 1) {
     const argument = request.argv[index]!;
+    if (argument === '--best-effort') {
+      bestEffort = true;
+      continue;
+    }
     if (argument === '--progress') {
       progress = true;
       continue;
@@ -480,6 +497,7 @@ function parseCompilerCommandLineRequest(
     };
   }
   return {
+    bestEffort,
     emissionMode,
     outputDirectory,
     packageName: named.get('package') ?? '@local/source',

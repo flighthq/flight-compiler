@@ -58,6 +58,12 @@ export interface TypeScriptPackageGraphSource {
 
 export interface CompileTypeScriptPackageGraphOptions<BackendOptions> {
   readonly backend: CompilerBackend<BackendOptions>;
+  /**
+   * Emit everything that lowered, including modules whose dependency refused, and write a replaceable
+   * placeholder at the path of every module refused for its own reasons. Off by default: a run without it
+   * produces exactly the dependency-closed output it always has.
+   */
+  readonly bestEffort?: boolean | undefined;
   readonly backendOptions: Readonly<BackendOptions>;
   readonly graph: Readonly<CompilerPackageGraph>;
   readonly moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined;
@@ -160,8 +166,43 @@ export interface CompilerPackageCompilationPackageReport {
   readonly outputFiles: readonly string[];
 }
 
+/**
+ * How one module fared in a best-effort run.
+ *
+ * `dependency-incomplete` means the module emitted its own real output and only an inherited refusal keeps it
+ * out of a dependency-closed set; `refused-placeholder` means the module was refused for its own reasons and
+ * the file at `path` is a replaceable stub rather than output. `path` is present whenever a file exists at
+ * that path, which in best-effort mode is every module the backend could name one for.
+ */
+export interface CompilerPackageCompilationBestEffortModule {
+  readonly classification?: CompilerRefusalClassification | undefined;
+  /**
+   * Every module that imports this one, as `package/source` subjects, sorted. A hand-written replacement has
+   * to satisfy these callers, and they are also what a pin-to-pin report counts when this module is blocked.
+   */
+  readonly consumers: readonly string[];
+  /**
+   * The source fingerprints of this module's declarations, sorted, present only while the module is a
+   * placeholder. A declaration added, removed, or edited between pins changes this list, which is how an
+   * overlay notices that the module it replaces has moved underneath it.
+   */
+  readonly declarationFingerprints?: readonly string[] | undefined;
+  readonly module: CompilerModuleIdentity;
+  readonly path?: string | undefined;
+  readonly refusedDependencies?: readonly string[] | undefined;
+  readonly rule?: string | undefined;
+  readonly status: 'dependency-incomplete' | 'emitted' | 'refused-placeholder';
+}
+
+export interface CompilerPackageCompilationBestEffortManifest {
+  readonly modules: readonly CompilerPackageCompilationBestEffortModule[];
+  readonly schema: 'flight-compiler-best-effort/1';
+}
+
 export interface CompilerPackageCompilationReport {
   readonly backend: string;
+  /** Present only when the run requested best-effort generation. */
+  readonly bestEffort?: CompilerPackageCompilationBestEffortManifest | undefined;
   readonly entries: readonly CompilerModuleIdentity[];
   /** Compiler-resolved public lanes and routes for every successfully emitted entry module. */
   readonly exports: CompilerModuleFacadePlan;

@@ -457,6 +457,39 @@ function source(moduleName: string, contents: string): CompilerCommandLineSource
   return { contents, moduleName, sourcePath: `/src/${moduleName}` };
 }
 
+describe('compileCompilerCommandLineRequest best-effort', () => {
+  it('writes a manifest naming what each module became, and only when asked', () => {
+    const sources = [source('Add.ts', 'export function add(value: number): number { return value + 1; }')];
+    const run = (argv: readonly string[]) => {
+      const written = new Map<string, string>();
+      const manifests = new Map<string, string>();
+      const result = compileCompilerCommandLineRequest(
+        { argv },
+        {
+          ...capabilities(sources, written, []),
+          writeOutputManifest: (directory, relativePath, contents) => {
+            manifests.set(`${directory}/${relativePath}`, contents);
+          },
+        },
+      );
+      return { manifests, result, written };
+    };
+
+    const best = run(['/src', '--target', 'cpp', '--out', '/out', '--best-effort']);
+    const manifest = best.manifests.get('/out/best-effort.json');
+    expect(manifest).toBeDefined();
+    expect(JSON.parse(manifest!)).toMatchObject({
+      modules: [expect.objectContaining({ status: 'emitted' })],
+      schema: 'flight-compiler-best-effort/1',
+    });
+    // Best-effort changes what is written, not whether the run failed.
+    expect(best.result.exitCode).toBe(0);
+
+    const strict = run(['/src', '--target', 'cpp', '--out', '/out']);
+    expect(strict.manifests.size).toBe(0);
+  });
+});
+
 describe('getCompilerCommandLineUsage', () => {
   it('names every option the parser accepts, so the usage cannot drift from the parser', () => {
     const usage = getCompilerCommandLineUsage();
@@ -466,6 +499,7 @@ describe('getCompilerCommandLineUsage', () => {
     expect(usage).toContain('--package');
     expect(usage).toContain('--runtime-header');
     expect(usage).toContain('--runtime-profile');
+    expect(usage).toContain('--best-effort');
     expect(usage).toContain('--progress');
     expect(usage).toContain('--report');
   });

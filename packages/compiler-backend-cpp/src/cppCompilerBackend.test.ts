@@ -14883,6 +14883,43 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // GENERALIZED: this rule formerly carried six remediations keyed on package, source path, accessor name, and
   // emitted type text. The control now proves that one shape- and role-based message covers both remedy classes
   // and stays byte-identical across package/path changes, while its retained-owner refinement remains general.
+  // The best-effort placeholder: what a run writes where a refused module would have gone. It is the closest
+  // thing to working output that can be produced without inventing semantics -- the declared type NAMES are
+  // forward-declared so a consumer that only needs the name still resolves -- and it deliberately carries no
+  // `#error`, because a build failure should come from the sources' own content rather than from an artifact the
+  // compiler poisoned.
+  it('writes a replaceable placeholder that names the refusal and breaks nothing', () => {
+    const placeholder = createCppCompilerBackend().emitRefusalPlaceholder!(
+      lower(
+        'placeholder-sample.ts',
+        `export interface Sample { readonly value: number }
+         export class Holder { readonly sample: Sample | null = null; }`,
+      ).module,
+      {
+        classification: 'source-portability',
+        message: 'the asserted row reads value, which the source type does not declare',
+        refusedDependencies: ['@flighthq/types/packages/types/src/Model.ts'],
+        rule: 'cpp-generic-owner-argument-assertion-unproven',
+      },
+      { runtimeProfile: 'flight-cpp' },
+    )!;
+
+    expect(placeholder.path).toContain('placeholder_sample');
+    // The refusal is carried verbatim, because it is the whole reason a hand edit is needed.
+    expect(placeholder.contents).toContain('BEST-EFFORT PLACEHOLDER');
+    expect(placeholder.contents).toContain('cpp-generic-owner-argument-assertion-unproven');
+    expect(placeholder.contents).toContain('source-portability');
+    expect(placeholder.contents).toContain('the asserted row reads value');
+    expect(placeholder.contents).toContain('blocked by: @flighthq/types/packages/types/src/Model.ts');
+    // Salvage: the declared names exist, claiming nothing about their members.
+    expect(placeholder.contents).toContain('struct Sample;');
+    expect(placeholder.contents).toContain('struct Holder;');
+    // A well-formed header that does not break a build on purpose.
+    expect(placeholder.contents).toContain('#pragma once');
+    expect(placeholder.contents).not.toContain('#error');
+    expect(placeholder.contents).not.toContain('static_cast');
+  });
+
   it('refuses a readonly structural row asserted into a wider writable one', () => {
     const emitCase = (body: string) =>
       emitIrModuleCpp(

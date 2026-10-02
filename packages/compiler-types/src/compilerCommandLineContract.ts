@@ -29,6 +29,8 @@ export interface CompilerCommandLineCapabilities {
   readonly write: (text: string) => void;
   readonly writeError: (text: string) => void;
   readonly writeOutputFile: (directory: string, relativePath: string, contents: string) => void;
+  /** Opt-in writer for a generation manifest beside the emitted sources; absent leaves it unwritten. */
+  readonly writeOutputManifest?: ((directory: string, relativePath: string, contents: string) => void) | undefined;
   /** The opt-in JSON Lines progress stream; defaults to the error stream when absent. */
   readonly writeProgress?: ((text: string) => void) | undefined;
 }

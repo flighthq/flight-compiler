@@ -1,5 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -51,6 +60,69 @@ describe('compileCompilerCommandLineDirectory', () => {
       'twice.rs',
     ]);
     expect(readFileSync(path.join(workspace, 'out', 'add.rs'), 'utf8')).toContain('pub fn add(value: f64) -> f64 {');
+  });
+
+  it('leaves a replaceable file where a module was refused, instead of nothing', () => {
+    const workspace = mkdtempSync(path.join(tmpdir(), 'flight-command-line-refused-'));
+    workspaces.push(workspace);
+    const source = path.join(workspace, 'src');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(path.join(source, 'add.ts'), 'export function add(value: number): number { return value + 1; }');
+    // An erased-record assertion over a bare object is refused by the C++ emitter, so this module produces no
+    // output of its own.
+    writeFileSync(
+      path.join(source, 'bad.ts'),
+      'export function put(target: object, prop: string, value: unknown): void { (target as unknown as Record<PropertyKey, unknown>)[prop] = value; }',
+    );
+
+    const strictOutput = path.join(workspace, 'strict');
+    compileCompilerCommandLineDirectory([source, '--target', 'cpp', '--out', strictOutput, '--report']);
+    const strictFiles = readdirSync(strictOutput, { recursive: true }).map(String);
+    const refusedPath = strictFiles.find((file) => file.includes('bad'));
+    expect(refusedPath).toBeUndefined();
+
+    // Best-effort leaves the refused module's path present, carrying the refusal, and does not break the build
+    // itself.
+    const output = path.join(workspace, 'out');
+    compileCompilerCommandLineDirectory([source, '--target', 'cpp', '--out', output, '--best-effort', '--report']);
+    const files = readdirSync(output, { recursive: true }).map(String);
+    const placeholderPath = files.find((file) => file.includes('bad'));
+    expect(placeholderPath).toBeDefined();
+    const placeholder = readFileSync(path.join(output, placeholderPath!), 'utf8');
+    expect(placeholder).toContain('BEST-EFFORT PLACEHOLDER');
+    expect(placeholder).toContain('cpp-erased-record-assertion-unrepresented');
+    expect(placeholder).not.toContain('#error');
+
+    const manifest = JSON.parse(readFileSync(path.join(output, 'best-effort.json'), 'utf8')) as {
+      modules: readonly { path?: string; status: string }[];
+    };
+    // The refused module is recorded as a placeholder at the path its file actually landed on, and the module
+    // that lowered normally is recorded as emitted -- so the manifest and the tree agree.
+    const refusedEntry = manifest.modules.find((module) => module.status === 'refused-placeholder');
+    expect(refusedEntry?.path).toContain('bad');
+    expect(manifest.modules.some((module) => module.status === 'emitted')).toBe(true);
+  });
+
+  it('writes a best-effort manifest beside the emitted sources, and only when asked', () => {
+    const workspace = mkdtempSync(path.join(tmpdir(), 'flight-command-line-best-effort-'));
+    workspaces.push(workspace);
+    const source = path.join(workspace, 'src');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(path.join(source, 'add.ts'), 'export function add(value: number): number { return value + 1; }');
+
+    const output = path.join(workspace, 'out');
+    expect(compileCompilerCommandLineDirectory([source, '--target', 'cpp', '--out', output, '--best-effort'])).toBe(0);
+    const manifest = JSON.parse(readFileSync(path.join(output, 'best-effort.json'), 'utf8')) as {
+      modules: readonly { status: string }[];
+      schema: string;
+    };
+    expect(manifest.schema).toBe('flight-compiler-best-effort/1');
+    expect(manifest.modules.map((module) => module.status)).toEqual(['emitted']);
+
+    // An ordinary run is untouched: no manifest, exactly as before.
+    const strictOutput = path.join(workspace, 'strict');
+    expect(compileCompilerCommandLineDirectory([source, '--target', 'cpp', '--out', strictOutput])).toBe(0);
+    expect(existsSync(path.join(strictOutput, 'best-effort.json'))).toBe(false);
   });
 
   it('reports a directory it cannot read as a failed run rather than an empty success', () => {

@@ -230,6 +230,84 @@ describe('compileTypeScriptPackageGraph', () => {
     ]);
   });
 
+  // Best-effort is one predicate wide: a module refused only because a DEPENDENCY refused still emits its own
+  // real output, and a module refused for its own reasons gets a replaceable placeholder at its path instead of
+  // nothing. Strict mode is untouched, which is the whole reason the mode is opt-in.
+  it('emits dependency-incomplete output and placeholders when asked for best-effort', () => {
+    const badA = source('@local/source', 'source', 'badA.ts', 'export const badA = 1;');
+    const dependent = source(
+      '@local/source',
+      'source',
+      'dependent.ts',
+      "import { badA } from './badA.js'; export function dependent(): number { return badA; }",
+    );
+    const badAIdentity = identity(badA, 'BadA');
+    const dependentIdentity = identity(dependent, 'Dependent');
+    const backend: CompilerBackend = {
+      emitModule(module) {
+        if (module.name !== 'Dependent') {
+          throw createBackendEmissionFailure('fixture', module, `unsupported ${module.name}`);
+        }
+        return [{ contents: module.name, path: `${module.name}.txt` }];
+      },
+      emitRefusalPlaceholder: (module) => ({
+        contents: `// placeholder for ${module.name}`,
+        path: `placeholder/${module.name}.txt`,
+      }),
+      name: 'fixture',
+    };
+    const compile = (bestEffort: boolean) =>
+      compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        ...(bestEffort ? { bestEffort: true } : {}),
+        graph: graph(
+          [],
+          [{ importer: dependentIdentity, specifier: './badA.js', target: badAIdentity }],
+          [{ dependencies: [], name: '@local/source', root: dependent.packageRoot }],
+        ),
+        sources: [dependent, badA],
+      });
+
+    // Strict: exactly what it always was -- the refusal closes the dependency and nothing is written.
+    const strict = compile(false);
+    expect(strict.compilation.files).toEqual([]);
+    expect(strict.report.bestEffort).toBeUndefined();
+
+    const best = compile(true);
+    // The dependency-incomplete module keeps its real output; the refused one leaves a replaceable path.
+    expect(best.compilation.files.map((file) => file.path)).toEqual(['Dependent.txt', 'placeholder/BadA.txt']);
+    expect(best.report.bestEffort?.schema).toBe('flight-compiler-best-effort/1');
+    expect(best.report.bestEffort?.modules.map((module) => [module.module.name, module.status, module.path])).toEqual([
+      ['BadA', 'refused-placeholder', 'placeholder/BadA.txt'],
+      ['Dependent', 'dependency-incomplete', 'Dependent.txt'],
+    ]);
+
+    // The manifest also says who imports the placeholder and carries the fingerprints an overlay diffs against.
+    // Those two are what make a hand-written replacement maintainable across a pin move rather than a one-shot
+    // dump: the consumers are the callers it must satisfy, and the fingerprints move when the source under it
+    // does.
+    const refusedModule = best.report.bestEffort?.modules.find((module) => module.module.name === 'BadA');
+    expect(refusedModule?.consumers).toEqual(['@local/source/packages/source/src/dependent.ts']);
+    expect(refusedModule?.declarationFingerprints).toHaveLength(1);
+    expect(refusedModule?.declarationFingerprints?.[0]).toMatch(/^sha256:/u);
+    // A module that emitted is not a placeholder, so it carries no fingerprints -- only the ones an overlay
+    // replaces need drift detection.
+    const emittedModule = best.report.bestEffort?.modules.find((module) => module.module.name === 'Dependent');
+    expect(emittedModule?.declarationFingerprints).toBeUndefined();
+    expect(emittedModule?.consumers).toEqual([]);
+
+    // A module that produced output reports as emitted, and the inherited refusal stays visible in its refusals
+    // rather than being quietly dropped.
+    const dependentReport = best.report.modules.find((module) => module.module.name === 'Dependent');
+    expect(dependentReport?.status).toBe('emitted');
+    expect(dependentReport?.outputFiles).toEqual(['Dependent.txt']);
+    expect(dependentReport?.refusals.map((refusal) => refusal.code)).toEqual(['dependency-refused']);
+    const refusedReport = best.report.modules.find((module) => module.module.name === 'BadA');
+    expect(refusedReport?.status).toBe('refused');
+    expect(refusedReport?.outputFiles).toEqual([]);
+  });
+
   it('reports bounded lowering and per-module emission progress without changing the compilation', () => {
     const good = source('@local/source', 'source', 'good.ts', 'export const good = 1;');
     const bad = source('@local/source', 'source', 'bad.ts', 'export const bad = 2;');

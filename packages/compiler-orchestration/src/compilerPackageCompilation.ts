@@ -21,6 +21,8 @@ import type {
   CompilerModuleIdentity,
   CompilerModuleLinkDependency,
   CompilerModuleResolutionPlan,
+  CompilerPackageCompilationBestEffortManifest,
+  CompilerPackageCompilationBestEffortModule,
   CompilerPackageCompilationFileReport,
   CompilerPackageCompilationModuleReport,
   CompilerPackageCompilationProgress,
@@ -126,10 +128,11 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
       stage: 'lowering',
     });
   }
-  propagateCompilerPackageGraphRefusals(records, moduleDependencies);
+  const bestEffort = options.bestEffort === true;
+  propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
 
-  const emissionModules = modules.filter(
-    (module) => records.get(getCompilerPackageGraphModuleKey(module))!.refusals.length === 0,
+  const emissionModules = modules.filter((module) =>
+    isCompilerPackageGraphModuleEmittable(records.get(getCompilerPackageGraphModuleKey(module))!, bestEffort),
   );
   const moduleResolution = createCompilerPackageGraphModuleResolution(moduleDependencies, options.moduleResolution);
   const emitContext = {
@@ -184,25 +187,109 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     });
   }
   refuseCompilerPackageGraphOutputCollisions(records);
-  propagateCompilerPackageGraphRefusals(records, moduleDependencies);
-  const initialization = createCompilerPackageGraphInitialization(records, graphEntries, moduleDependencies);
-  propagateCompilerPackageGraphRefusals(records, moduleDependencies);
+  propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
+  const initialization = createCompilerPackageGraphInitialization(
+    records,
+    graphEntries,
+    moduleDependencies,
+    bestEffort,
+  );
+  propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
   const refusedDependencies = createCompilerPackageGraphRefusedDependencies(records, moduleDependencies);
   const exports = createCompilerPackageGraphExportPlan(modules, initialization);
 
+  // Every module refused for its own reasons gets a replaceable file at its own path, so a best-effort run
+  // leaves somewhere for a hand edit to land instead of nothing. Modules that merely inherited a refusal already
+  // emitted their real output above, so they need no placeholder.
+  // Who imports each module, so a hand-written replacement knows the callers it must satisfy and a pin-to-pin
+  // report can say what a blocked module costs.
+  const consumersByModule = new Map<string, Set<string>>();
+  for (const dependency of moduleDependencies) {
+    const key = getCompilerPackageGraphModuleKey(dependency.target);
+    const consumers = consumersByModule.get(key) ?? new Set<string>();
+    consumers.add(getCompilerPackageGraphModuleSubject(dependency.importer));
+    consumersByModule.set(key, consumers);
+  }
+  const placeholderFiles: EmittedFile[] = [];
+  const placeholderPaths = new Map<string, string>();
+  if (bestEffort && options.backend.emitRefusalPlaceholder) {
+    const emitPlaceholder = options.backend.emitRefusalPlaceholder;
+    for (const key of [...records.keys()].sort(compareTextCodeUnits)) {
+      const record = records.get(key)!;
+      if (isCompilerPackageGraphModuleEmittable(record, bestEffort)) continue;
+      const refusal = [...record.refusals].sort(compareCompilerPackageGraphRefusals)[0];
+      if (!refusal) continue;
+      const blocked = refusedDependencies.get(key);
+      const placeholder = emitPlaceholder(
+        record.module,
+        {
+          ...(refusal.classification === undefined ? {} : { classification: refusal.classification }),
+          ...(refusal.column === undefined ? {} : { column: refusal.column }),
+          ...(refusal.line === undefined ? {} : { line: refusal.line }),
+          message: refusal.message,
+          ...(blocked === undefined ? {} : { refusedDependencies: blocked }),
+          ...(refusal.rule === undefined ? {} : { rule: refusal.rule }),
+        },
+        options.backendOptions,
+      );
+      if (!placeholder) continue;
+      placeholderFiles.push(placeholder);
+      placeholderPaths.set(key, placeholder.path);
+    }
+  }
+
   const files = [...records.values()]
-    .filter((record) => record.refusals.length === 0)
+    .filter((record) => isCompilerPackageGraphModuleEmittable(record, bestEffort))
     .flatMap((record) => record.files)
+    .concat(placeholderFiles)
     .sort(compareCompilerPackageGraphFiles);
   validateCompilerPackageGraphOutput(files, options);
-  const moduleReports = createCompilerPackageGraphModuleReports(records, refusedDependencies);
-  const fileReports = createCompilerPackageGraphFileReports(records);
+  const moduleReports = createCompilerPackageGraphModuleReports(records, refusedDependencies, bestEffort);
+  const fileReports = createCompilerPackageGraphFileReports(records, bestEffort);
+  const bestEffortManifest: CompilerPackageCompilationBestEffortManifest | undefined = bestEffort
+    ? {
+        modules: [...records.values()]
+          .sort((left, right) => compareCompilerPackageGraphModules(left.module, right.module))
+          .map((record): CompilerPackageCompilationBestEffortModule => {
+            const key = getCompilerPackageGraphModuleKey(record.module);
+            const emittable = isCompilerPackageGraphModuleEmittable(record, bestEffort);
+            const refusal = [...record.refusals].sort(compareCompilerPackageGraphRefusals)[0];
+            const blocked = refusedDependencies.get(key);
+            // A module that emitted keeps its own first path; one that did not has only the placeholder's.
+            const filePath = emittable ? record.files[0]?.path : placeholderPaths.get(key);
+            return {
+              ...(refusal?.classification === undefined ? {} : { classification: refusal.classification }),
+              consumers: [...(consumersByModule.get(key) ?? [])].sort(compareTextCodeUnits),
+              // Fingerprints are carried only while the module is a placeholder, because those are the modules
+              // an overlay replaces and therefore the only ones whose drift matters.
+              ...(emittable
+                ? {}
+                : {
+                    declarationFingerprints: record.module.declarations
+                      .map((declaration) => declaration.origin.fingerprint)
+                      .sort(compareTextCodeUnits),
+                  }),
+              module: cloneCompilerPackageGraphIdentity(record.module),
+              ...(filePath === undefined ? {} : { path: filePath }),
+              ...(blocked === undefined ? {} : { refusedDependencies: blocked }),
+              ...(refusal?.rule === undefined ? {} : { rule: refusal.rule }),
+              status: !emittable
+                ? ('refused-placeholder' as const)
+                : record.refusals.length === 0
+                  ? ('emitted' as const)
+                  : ('dependency-incomplete' as const),
+            };
+          }),
+        schema: 'flight-compiler-best-effort/1',
+      }
+    : undefined;
   return {
     compilation: { backend: options.backend.name, files },
     diagnostics,
     patchAudit: patched.audit,
     report: {
       backend: options.backend.name,
+      ...(bestEffortManifest === undefined ? {} : { bestEffort: bestEffortManifest }),
       entries: graphEntries.map(cloneCompilerPackageGraphIdentity).sort(compareCompilerPackageGraphModules),
       exports,
       files: fileReports,
@@ -362,9 +449,10 @@ function createCompilerPackageGraphFailure(
 
 function createCompilerPackageGraphFileReports(
   records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
+  bestEffort: boolean,
 ): CompilerPackageCompilationFileReport[] {
   return [...records.values()]
-    .filter((record) => record.refusals.length === 0)
+    .filter((record) => isCompilerPackageGraphModuleEmittable(record, bestEffort))
     .flatMap((record) =>
       record.files.map((file) => ({
         dependencies: [...(file.dependencies ?? [])],
@@ -379,8 +467,13 @@ function createCompilerPackageGraphInitialization(
   records: Map<string, ModuleEmissionRecord>,
   entries: readonly Readonly<CompilerModuleIdentity>[],
   dependencies: readonly Readonly<CompilerModuleLinkDependency>[],
+  bestEffort: boolean,
 ) {
   for (;;) {
+    // Availability here is deliberately STRICTER than emittability, and the two answer different questions: the
+    // evaluation plan describes what can actually be RUN, and a module whose dependency is unavailable cannot be
+    // evaluated however willing we are to write its file out. Widening this to the best-effort predicate admits a
+    // dependency-incomplete module whose dependency is still refused, and the plan then fails building it.
     const availableKeys = new Set(
       [...records].filter(([, record]) => record.refusals.length === 0).map(([key]) => key),
     );
@@ -414,7 +507,7 @@ function createCompilerPackageGraphInitialization(
         stage: 'initialization',
       });
       record.files.splice(0);
-      propagateCompilerPackageGraphRefusals(records, dependencies);
+      propagateCompilerPackageGraphRefusals(records, dependencies, bestEffort);
     }
   }
 }
@@ -422,12 +515,15 @@ function createCompilerPackageGraphInitialization(
 function createCompilerPackageGraphModuleReports(
   records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
   refusedDependencies: ReadonlyMap<string, readonly string[]>,
+  bestEffort: boolean,
 ): CompilerPackageCompilationModuleReport[] {
   return [...records.values()]
     .sort((left, right) => compareCompilerPackageGraphModules(left.module, right.module))
     .map((record) => ({
       module: cloneCompilerPackageGraphIdentity(record.module),
-      outputFiles: record.refusals.length === 0 ? record.files.map((file) => file.path).sort(compareTextCodeUnits) : [],
+      outputFiles: isCompilerPackageGraphModuleEmittable(record, bestEffort)
+        ? record.files.map((file) => file.path).sort(compareTextCodeUnits)
+        : [],
       refusals: [...record.refusals]
         .sort(compareCompilerPackageGraphRefusals)
         .map((refusal) =>
@@ -436,7 +532,9 @@ function createCompilerPackageGraphModuleReports(
             refusedDependencies.get(getCompilerPackageGraphModuleKey(record.module)),
           ),
         ),
-      status: record.refusals.length === 0 ? ('emitted' as const) : ('refused' as const),
+      // A module that produced output reports as emitted in either mode; an inherited refusal still appears in
+      // its `refusals`, so nothing is lost by saying so.
+      status: isCompilerPackageGraphModuleEmittable(record, bestEffort) ? ('emitted' as const) : ('refused' as const),
     }));
 }
 
@@ -762,9 +860,21 @@ const compilerRestrictionInitializationCodes: ReadonlySet<string> = new Set([
   'unsupported-default-expression-order',
 ]);
 
+// Whether a module contributes its own output. A module emits when nothing refused it. Best-effort widens that
+// by exactly one case: a module refused only because a DEPENDENCY refused still emits, because the module itself
+// lowered and emitted and the refusal it carries is inherited rather than its own. Every other refusal is the
+// module's own and keeps it out of the output set in either mode. This predicate is the whole of the mode's
+// semantic change.
+function isCompilerPackageGraphModuleEmittable(record: Readonly<ModuleEmissionRecord>, bestEffort: boolean): boolean {
+  return bestEffort
+    ? record.refusals.every((refusal) => refusal.code === 'dependency-refused')
+    : record.refusals.length === 0;
+}
+
 function propagateCompilerPackageGraphRefusals(
   records: Map<string, ModuleEmissionRecord>,
   dependencies: readonly Readonly<CompilerModuleLinkDependency>[],
+  bestEffort: boolean,
 ): void {
   const ordered = [...dependencies].sort(
     (left, right) =>
@@ -784,7 +894,9 @@ function propagateCompilerPackageGraphRefusals(
         message: `dependency ${dependency.specifier} was refused for ${getCompilerPackageGraphModuleSubject(dependency.target)}`,
         stage: 'dependency',
       });
-      importer.files.splice(0);
+      // The refusal is still recorded -- it is true and it is reported -- but best-effort keeps the files the
+      // module already produced, because the module itself lowered and emitted successfully.
+      if (!bestEffort) importer.files.splice(0);
       changed = true;
     }
   }

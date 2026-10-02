@@ -20,6 +20,21 @@ export interface BackendEmitContext<Options> {
   readonly options: Readonly<Options>;
 }
 
+/**
+ * What orchestration knows about a refusal when it asks a backend for a replaceable placeholder: the module's
+ * own reason and nothing more. The backend supplies the path and the file shape, because both are target
+ * decisions and orchestration cannot derive either without naming a target.
+ */
+export interface CompilerRefusalPlaceholderRequest {
+  readonly classification?: CompilerRefusalClassification | undefined;
+  /** Where the emitter stopped, when it knew: the first thing a hand edit should look at. */
+  readonly column?: number | undefined;
+  readonly line?: number | undefined;
+  readonly message: string;
+  readonly refusedDependencies?: readonly string[] | undefined;
+  readonly rule?: string | undefined;
+}
+
 export interface CompilerBackend<Options = Record<string, never>> {
   /**
    * Optionally prepares graph-wide analysis once. Orchestration uses this session for every module
@@ -27,6 +42,20 @@ export interface CompilerBackend<Options = Record<string, never>> {
    */
   readonly createEmissionSession?:
     | ((context: BackendEmitContext<Options>) => CompilerBackendEmissionSession)
+    | undefined;
+  /**
+   * Optionally writes a replaceable stub for a module refused for its own reasons, so a best-effort run
+   * leaves a path a hand edit can land on instead of nothing. Returning `undefined` means this target has no
+   * placeholder for that module and the run omits the file. A placeholder never breaks a build on purpose:
+   * it is a well-formed header that declares only what it can justify, so a consumer fails later on the
+   * declarations that are genuinely absent, not on an artifact the compiler poisoned.
+   */
+  readonly emitRefusalPlaceholder?:
+    | ((
+        module: Readonly<IrModule>,
+        failure: Readonly<CompilerRefusalPlaceholderRequest>,
+        options: Readonly<Options>,
+      ) => EmittedFile | undefined)
     | undefined;
   readonly emitModule: (module: Readonly<IrModule>, context: BackendEmitContext<Options>) => readonly EmittedFile[];
   readonly name: string;
