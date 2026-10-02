@@ -21237,6 +21237,65 @@ int main() {
     expect(output).not.toContain('using Value =');
   });
 
+  it('emits the closed recursive JSON domain prescribed for network response bodies', () => {
+    // This is the exact source-portability remedy prescribed for NetResponseBody. Keeping it here makes
+    // a future recursive-lowering failure compiler-owned instead of silently turning that remedy into an
+    // impossible source requirement.
+    const result = lower(
+      'net-json-value.ts',
+      `export type NetJsonPrimitive = boolean | number | string | null;
+       export type NetJsonValue =
+         | NetJsonPrimitive
+         | readonly NetJsonValue[]
+         | Readonly<Record<string, NetJsonValue>>;
+       export type NetResponseBody = string | NetJsonValue | ArrayBuffer | Blob | null;
+       export interface NetResponse { readonly body: NetResponseBody }`,
+    );
+    const output = emitIrModuleCpp(result.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/blob.hpp'],
+            nullability: 'non-null',
+            ownership: 'shared',
+            sourceName: 'Blob',
+            space: 'type',
+            targetName: 'host::Blob',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('struct NetJsonValue : public');
+    expect(output).toContain('flight::Array<NetJsonValue>');
+    expect(output).toContain('flight::Record<flight::String, NetJsonValue>');
+    expect(output).not.toContain('using NetJsonValue =');
+    expect(output.indexOf('struct NetJsonValue : public')).toBeLessThan(output.indexOf('struct NetResponse : public'));
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-net-json-value-'));
+      const header = path.join(directory, 'net_json_value.hpp');
+      const blob = path.join(directory, 'host', 'blob.hpp');
+      try {
+        mkdirSync(path.dirname(blob), { recursive: true });
+        writeFileSync(blob, '#pragma once\nnamespace host { class Blob {}; }\n', 'utf8');
+        writeFileSync(header, output, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, [
+          directory,
+          ...cppRuntimeIncludeDirectories,
+        ]);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('stores a sentinel-narrowed imported recursive alias in its declared field carrier', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
