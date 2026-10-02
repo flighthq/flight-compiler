@@ -660,6 +660,71 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the WgpuDeviceRuntime mesh-cache finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createWgpuDeviceRuntimeWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'interface:WgpuDeviceRuntime/property:sceneMeshUploadCache';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]).toMatchObject({ rule: 'mixed-absence', subject });
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'createMinimalDeviceRuntime is the sole WgpuDeviceRuntime constructor',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('required WeakMap<object, object> | null field');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createWgpuDeviceRuntimeWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the six anchor-layout absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createAnchorLayoutWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -2314,6 +2379,17 @@ export interface GlContextRuntime {
   EXT_texture_filter_anisotropic,
   GlContextRuntime,
 } from './GlContextRuntime.js';`,
+  };
+}
+
+function createWgpuDeviceRuntimeWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/WgpuDeviceRuntime.ts': `export interface WgpuDeviceRuntime {
+  sceneMeshUploadCache${marker}: WeakMap<object, object> | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { WgpuDeviceRuntime } from './WgpuDeviceRuntime.js';`,
   };
 }
 

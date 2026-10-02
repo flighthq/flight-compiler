@@ -7890,6 +7890,73 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the one-sentinel contract for the device-owned WebGPU mesh cache', () => {
+    const source = input(
+      'packages/types/src/WgpuDeviceRuntime.ts',
+      'interface WgpuDeviceRuntime { sceneMeshUploadCache?: WeakMap<object, object> | null }',
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: 'mixed-absence',
+      subject: 'interface:WgpuDeviceRuntime/property:sceneMeshUploadCache',
+    });
+    const message = findings[0]!.message;
+    expect(message).toContain('device-owned Scene3D mesh upload cache both omission and explicit null');
+    expect(message).toContain('one not-yet-allocated state');
+    expect(message).toContain('createMinimalDeviceRuntime is the sole WgpuDeviceRuntime constructor');
+    expect(message).toContain('createWgpuDeviceState attaches that exact runtime to the device entity');
+    expect(message).toContain('createWgpuRenderStateRuntimeInternal increments its reference count');
+    expect(message).toContain('presentation, direct offscreen, and source-derived offscreen states');
+    expect(message).toContain('no production clone copies it');
+    expect(message).toContain('getWgpuScene3DRuntime reads stateRuntime.context.sceneMeshUploadCache with == null');
+    expect(message).toContain('gives each per-state scene runtime that exact device-tier owner');
+    expect(message).toContain('ensureWgpuMeshUpload reads and writes the map by MeshGeometry identity');
+    expect(message).toContain('destroys and replaces stale GPU buffers');
+    expect(message).toContain('mirrors the new WgpuMeshUpload on MeshGeometryRuntime');
+    expect(message).toContain('destroyWgpuRenderState frees state-owned resources');
+    expect(message).toContain('the cache retains device-tier lifetime');
+    expect(message).toContain('required WeakMap<object, object> | null field');
+    expect(message).toContain('initialize it to null in createMinimalDeviceRuntime');
+    expect(message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('redirect the cache to render-state scope');
+  });
+
+  it('requires the exact WgpuDevice mesh-cache shape and accepts one sentinel', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/WgpuDeviceRuntime.ts',
+        'interface OtherRuntime { sceneMeshUploadCache?: WeakMap<object, object> | null }',
+      ),
+      input(
+        'packages/example/src/WgpuDeviceRuntime.ts',
+        'interface WgpuDeviceRuntime { sceneMeshUploadCache?: WeakMap<object, object> | null }',
+      ),
+      input(
+        'packages/types/src/WgpuDeviceRuntime.ts',
+        'interface WgpuDeviceRuntime { sceneMeshUploadCache?: WeakMap<string, object> | null }',
+      ),
+    ];
+    const resolved = input(
+      'packages/types/src/WgpuDeviceRuntime.ts',
+      'interface WgpuDeviceRuntime { sceneMeshUploadCache: WeakMap<object, object> | null }',
+    );
+    const omitted = input(
+      'packages/types/src/WgpuDeviceRuntime.ts',
+      'interface WgpuDeviceRuntime { sceneMeshUploadCache?: WeakMap<object, object> }',
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved, omitted]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('device-owned Scene3D mesh upload cache');
+    }
+  });
+
   it('explains required nullable contracts for GL runtime seams and uniform color scratch', () => {
     const source = input(
       'packages/types/src/GlRenderState.ts',

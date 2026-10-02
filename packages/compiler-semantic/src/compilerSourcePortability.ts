@@ -1101,6 +1101,22 @@ function getGlContextRuntimeMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getWgpuDeviceRuntimeMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'WgpuDeviceRuntime' ||
+    !isFlightTypesSource(node, 'WgpuDeviceRuntime.ts') ||
+    getNodeName(node.name) !== 'sceneMeshUploadCache' ||
+    !isOptionalNullableObjectWeakMapProperty(node)
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the device-owned Scene3D mesh upload cache both omission and explicit null, but current Flight has one not-yet-allocated state. createMinimalDeviceRuntime is the sole WgpuDeviceRuntime constructor and currently omits this slot; createWgpuDeviceState attaches that exact runtime to the device entity. createWgpuRenderStateRuntimeInternal increments its reference count and stores the same owner on each render state's context, so presentation, direct offscreen, and source-derived offscreen states built from one WgpuDeviceState share the cache, and no production clone copies it. getWgpuScene3DRuntime reads stateRuntime.context.sceneMeshUploadCache with == null, allocates and stores one WeakMap when absent, and gives each per-state scene runtime that exact device-tier owner. ensureWgpuMeshUpload reads and writes the map by MeshGeometry identity, reuses a matching version, destroys and replaces stale GPU buffers, and mirrors the new WgpuMeshUpload on MeshGeometryRuntime. destroyWgpuRenderState frees state-owned resources and decrements the shared device reference; it neither clears nor iterates this WeakMap, so the cache retains device-tier lifetime. Make sceneMeshUploadCache a required WeakMap<object, object> | null field, initialize it to null in createMinimalDeviceRuntime, and retain the single lazy allocation plus exact shared map reference. If a public compatibility input may omit the field, keep that input shape separate and normalize it before constructing the device runtime. Do not whitelist the redundant live-storage spelling. The compiler will not choose or collapse an absence sentinel, allocate or clone a WeakMap, create, destroy, copy, or materialize a mesh upload or GPU buffer, change geometry identity or versioning, redirect the cache to render-state scope, erase keys or values through Any, or add side storage.`;
+}
+
 function getGlRenderPassTrackingMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -1395,6 +1411,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (glMeshProgramUniformLocation) return glMeshProgramUniformLocation;
   const glContextRuntime = getGlContextRuntimeMixedAbsencePropertyMessage(node, subject);
   if (glContextRuntime) return glContextRuntime;
+  const wgpuDeviceRuntime = getWgpuDeviceRuntimeMixedAbsencePropertyMessage(node, subject);
+  if (wgpuDeviceRuntime) return wgpuDeviceRuntime;
   const glRenderPassTracking = getGlRenderPassTrackingMixedAbsencePropertyMessage(node, subject);
   if (glRenderPassTracking) return glRenderPassTracking;
   const glRenderRuntimeInactiveSlot = getGlRenderRuntimeInactiveSlotMixedAbsencePropertyMessage(node, subject);
