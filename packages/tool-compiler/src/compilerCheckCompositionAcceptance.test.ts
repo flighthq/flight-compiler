@@ -2566,6 +2566,16 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       expect.stringContaining('Make Slot2D.deform a required Skeleton2DSlotDeform | null field'),
       expect.stringContaining('Make Slot2D.name a required string | null field'),
     ]);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('The TypeScript interface is the source contract'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('generated Haxe and C++ declarations are target bindings'),
+      ),
+    ).toBe(true);
     expect(sourcePortability.findings.every(({ message }) => message.includes('will not whitelist'))).toBe(true);
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
@@ -2586,6 +2596,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 3,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createSlot2DWorkspaceFiles(false));

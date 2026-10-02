@@ -14397,6 +14397,45 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     }
   });
 
+  // Slot2D.ts's three mixed-absence findings are source-contract issues, not runtime-binding gaps. Importers
+  // always write attachment and name, the deform setter owns the only later materialization, and cloning
+  // makes a shallow slot record while preserving nested owners. The backend already carries every declared
+  // state exactly; making these live cells required nullable removes only the unused Undefined alternatives.
+  it('separates Slot2D source absence from its exact generated owner carriers', () => {
+    const source = (required: boolean): string => {
+      const marker = required ? '' : '?';
+      return `export interface Attachment2D { kind: string }
+              export interface Skeleton2DSlotDeform {
+                attachment: Attachment2D | null;
+                offsets: Float32Array;
+              }
+              export interface Slot2D {
+                attachment${marker}: Attachment2D | null;
+                deform${marker}: Skeleton2DSlotDeform | null;
+                boneIndex: number;
+                name${marker}: string | null;
+              }`;
+    };
+    const mixed = emitIrModuleCpp(lowerPackage('@flighthq/types', 'Slot2D.ts', source(false)).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    const resolved = emitIrModuleCpp(lowerPackage('@flighthq/types', 'Slot2D.ts', source(true)).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(mixed).toContain('std::variant<flight::Ref<Attachment2D>, flight::Null, flight::Undefined> attachment');
+    expect(mixed).toContain('std::variant<flight::Ref<Skeleton2DSlotDeform>, flight::Null, flight::Undefined> deform');
+    expect(mixed).toContain('std::variant<flight::String, flight::Null, flight::Undefined> name');
+    expect(resolved).toContain('std::optional<flight::Ref<Attachment2D>> attachment;');
+    expect(resolved).toContain('std::optional<flight::Ref<Skeleton2DSlotDeform>> deform;');
+    expect(resolved).toContain('std::optional<flight::String> name;');
+    for (const emitted of [mixed, resolved]) {
+      expect(emitted).toContain('struct Slot2D : public flight::ReferenceEnabled');
+      expect(emitted).not.toContain('flight::Any');
+      expect(emitted).not.toContain('materialize_row');
+    }
+  });
+
   // Assets.ts's opaque-value-domain finding. The library is deliberately resource-type-agnostic: it decodes
   // nothing itself and binds each asset *type* to its loader through an open adapter registry, so the payload
   // is erased BY CONSTRUCTION rather than being a domain the compiler failed to close. The September corpus

@@ -6913,19 +6913,29 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(attachment).toContain('live Slot2D attachment cell both omission and explicit null');
     expect(attachment).toContain('Spine JSON and binary importers construct every slot with attachment: null');
     expect(attachment).toContain('DragonBones constructs it with a resolved Attachment2D or null');
+    expect(attachment).toContain('plain source records rather than Entity allocation');
     expect(attachment).toContain('setSkeleton2DSkin, and attachment animation later overwrite that same cell');
     expect(attachment).toContain('resolveSkeleton2DPathAttachment rejects undefined and null identically');
     expect(attachment).toContain('getSkeleton2DSlotDeformOffsets compares slot.attachment ?? null');
+    expect(attachment).toContain('std::variant<flight::Ref<Attachment2D>, flight::Null, flight::Undefined>');
+    expect(attachment).toContain('std::optional<flight::Ref<Attachment2D>>');
+    expect(attachment).toContain('@:optional var attachment:Null<flight.Attachment2D>');
+    expect(attachment).toContain('removes @:optional but retains Null<flight.Attachment2D>');
     expect(attachment).toContain('Make Slot2D.attachment a required Attachment2D | null field');
     expect(attachment).toContain('infer or resolve an attachment');
 
     const deform = findings[1]!.message;
     expect(deform).toContain('live Slot2D deform cell both a never-written undefined state and an explicit null clear');
     expect(deform).toContain('format importers construct slots without deform');
+    expect(deform).toContain('no importer materializes a Skeleton2DSlotDeform');
     expect(deform).toContain('setSkeleton2DSlotDeform writes null when clearing');
     expect(deform).toContain('reuses a present same-sized record');
     expect(deform).toContain('getSkeleton2DSlotDeformOffsets returns null for both absence spellings');
     expect(deform).toContain('attachment swaps intentionally leave the record in place');
+    expect(deform).toContain('std::variant<flight::Ref<Skeleton2DSlotDeform>, flight::Null, flight::Undefined>');
+    expect(deform).toContain('std::optional<flight::Ref<Skeleton2DSlotDeform>>');
+    expect(deform).toContain('@:optional var deform:Null<flight.Skeleton2DSlotDeform>');
+    expect(deform).toContain('removes @:optional but retains Null<flight.Skeleton2DSlotDeform>');
     expect(deform).toContain('Make Slot2D.deform a required Skeleton2DSlotDeform | null field');
     expect(deform).toContain('change buffer reuse');
 
@@ -6934,11 +6944,24 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(name).toContain('Spine JSON and DragonBones importers normalize a non-string slot name to null');
     expect(name).toContain('binary reader returns string | null');
     expect(name).toContain('skin, animation, and draw-order resolution paths call indexOfSpineSlot');
+    expect(name).toContain('no production writer changes name after import');
+    expect(name).toContain('std::variant<flight::String, flight::Null, flight::Undefined>');
+    expect(name).toContain('std::optional<flight::String>');
+    expect(name).toContain('@:optional var name:Null<String>');
+    expect(name).toContain('removes @:optional but retains Null<String>');
     expect(name).toContain('Make Slot2D.name a required string | null field');
     expect(name).toContain('infer a name from the bone, attachment, kind, or position');
 
     for (const finding of findings) {
-      expect(finding.message).toContain('cloneSkeleton2D copies');
+      expect(finding.message).toContain('TypeScript interface is the source contract');
+      expect(finding.message).toContain('generated Haxe and C++ declarations are target bindings');
+      expect(finding.message).toContain('rather than evidence that the source needs three states');
+      expect(finding.message).toContain('cloneSkeleton2D materializes a fresh shallow Slot2D record');
+      expect(finding.message).toContain('shares the exact attachment and deform owners');
+      expect(finding.message).toContain('disposeSkeleton2D drops the slots array without traversing');
+      expect(finding.message).toContain('no Slot2D-specific disposal path');
+      expect(finding.message).toContain('ordinary target lifetime management owns the nested references');
+      expect(finding.message).toContain('@:optional var');
       expect(finding.message).toContain('give them a separate shape and normalize once');
       expect(finding.message).toContain('will not whitelist a redundant absence spelling');
       expect(finding.message).toContain('or add side storage');
