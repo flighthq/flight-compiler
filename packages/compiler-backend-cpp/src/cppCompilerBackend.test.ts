@@ -12022,6 +12022,61 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('records the strict-test read on a doubly optional primitive as a defect', () => {
+    // COMPILER DEFECT, pinned rather than fixed because I could not locate the emitting site. The fixture is
+    // valid strict TypeScript -- its return type admits the undefined the branch can produce -- and the
+    // emission reads a variant alternative out of storage that may still hold the other sentinel:
+    //
+    //   interface S { top?: number | null }
+    //   function read(s: S): number | undefined { if (s.top !== null) return s.top; return 0; }
+    //
+    //   if (!(std::holds_alternative<flight::Null>(s->top))) {
+    //     return std::get<0>(s->top);        // throws std::bad_variant_access when top holds Undefined
+    //   }
+    //
+    // The field's own default IS Undefined, so a freshly constructed record takes the throwing path, and the
+    // source returns undefined there. The LOOSE spelling beside it lowers correctly, which is why the two are
+    // pinned together: `!= null` excludes both sentinels and the read names the value alternative, while
+    // `!== null` excludes one and the read indexes the variant. A fix -- refusing here with the presence rule
+    // the reference path already uses, or projecting the optional faithfully -- must change THIS test.
+    const member = `export interface S { top?: number | null }`;
+
+    const loose = emitIrModuleCpp(
+      lower(
+        'layout-loose-read.ts',
+        `${member}
+export function read(s: S): number | undefined { if (s.top != null) return s.top; return 0; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(loose).toContain('std::holds_alternative<flight::Null>(s->top)');
+    expect(loose).toContain('std::holds_alternative<flight::Undefined>(s->top)');
+    expect(loose).toContain('std::get<double>(s->top)');
+
+    const strict = emitIrModuleCpp(
+      lower(
+        'layout-strict-read.ts',
+        `${member}
+export function read(s: S): number | undefined { if (s.top !== null) return s.top; return 0; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(strict).toContain('if (!(std::holds_alternative<flight::Null>(s->top))) {');
+    expect(strict).toContain('return std::get<0>(s->top);');
+
+    // The same shape through a ternary and a local, to show it is not one statement form.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'layout-strict-local.ts',
+          `${member}
+export function read(s: S): number { const v: number | undefined = s.top !== null ? s.top : undefined; return v ?? 0; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('std::get<0>(s->top)');
+  });
+
   it('documents the layout style fields, their live records, and what clearing writes', () => {
     // Layout.ts's six style fields are all `?: number | null` -- doubly optional -- while its live records
     // are `ContainerStyle | null` / `ItemStyle | null`, required and nullable. The two families get different
