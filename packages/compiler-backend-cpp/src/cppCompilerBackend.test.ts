@@ -13715,6 +13715,125 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // The guiController erased cell, traced and pinned. Its exact shape is a symbol-keyed object literal
+  // asserted through `unknown` to a generic owner -- `{ [EntityRuntimeKey]: runtime } as unknown as
+  // Controller` in @flighthq/gui/src/guiController.ts:76, and the identical spelling in
+  // @flighthq/interaction/src/nodeInteractiveStateBinding.ts:82.
+  //
+  // Isolated, the cell DROPS the symbol-keyed member in every spelling: the literal alone emits an empty
+  // braced init, and either cast emits an empty construction of the target. `runtime` never reaches storage,
+  // so a later read of the slot the source installed finds nothing. The read side is emitted faithfully --
+  // it names the member -- which is what makes the pair incoherent rather than merely unlowered.
+  //
+  // LATENT, NOT LIVE, and that is the reason this is pinned rather than escalated as urgent: every module in
+  // the SDK that spells the cell this way already refuses earlier for an independent reason, so no emitted
+  // header carries the drop today. The seven sites and their families at the time of tracing:
+  //   guiController.ts family 2 (contextual union conversion), nodeInteractiveStateBinding.ts and node.ts
+  //   family 30 (Partial<T> shape), clone.ts family 8 (structural-row projection), tray.ts,
+  //   glScene3DRuntime.ts and glVelocity.ts family 0 (binding incomplete), wgpuScene3DRuntime.ts family 6.
+  // If any of those unblocks, this control records what the cell would then emit.
+  it('pins the erased runtime cell as a latent silent drop, with a faithful read beside it', () => {
+    const contract = `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime { binding: object | null }
+       export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+       export interface GuiControllerRuntime extends EntityRuntime { disposed: boolean }`;
+
+    // The literal alone: the member is dropped and the type position falls back to `auto`.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'cell-literal.ts',
+          `${contract}
+           export function make<Runtime extends GuiControllerRuntime>(runtime: Runtime): Entity {
+             const controller = { [EntityRuntimeKey]: runtime };
+             return controller;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('auto controller = {};');
+
+    // The real spelling: an empty construction of the owner, with the runtime argument unused.
+    const doubleCast = emitIrModuleCpp(
+      lower(
+        'cell-double-cast.ts',
+        `${contract}
+         export function make<Controller extends Entity, Runtime extends GuiControllerRuntime>(
+           runtime: Runtime,
+         ): Controller {
+           const controller = { [EntityRuntimeKey]: runtime } as unknown as Controller;
+           return controller;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(doubleCast).toContain('Controller controller = static_cast<Controller>({});');
+    // The cell is constructed empty: no member write ever happens. The symbol CONSTANT is declared as
+    // `entity_runtime_key = flight::Symbol::...`, so the check names the member access form rather than
+    // the bare field name.
+    expect(doubleCast).not.toContain('.entity_runtime_key =');
+
+    // The read side names the member the write never sets.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'cell-read.ts',
+          `${contract}
+           export function get<Runtime extends object = object>(controller: Entity): Runtime & GuiControllerRuntime {
+             return controller[EntityRuntimeKey] as Runtime & GuiControllerRuntime;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('controller->entity_runtime_key');
+
+    // The sibling shape refuses, so the asymmetry is a gap in the cell path rather than a house style of
+    // letting every assertion through.
+    expect(
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            'cell-bare-assertion.ts',
+            `${contract}
+             export function make<Controller extends Entity, Runtime extends GuiControllerRuntime>(
+               runtime: Runtime,
+             ): Controller {
+               return runtime as unknown as Controller;
+             }`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      ).rule,
+    ).toBe('cpp-reference-assertion-without-heritage');
+  });
+
+  // The SDK's own named operations for this slot are the other spelling, and they do not remove the
+  // erasure: @flighthq/entity's allocateEntity/finishEntity cast a construction to its entity type, and
+  // that assertion has no emitted class-heritage path to travel. So neither spelling lowers correctly
+  // today -- the cell emits silently-wrong code and the named operation refuses -- which is the answer to
+  // whether a source contract removes the cell.
+  it('pins the entity named operations as refused for want of an emitted heritage path', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'entity-operations.ts',
+          `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           export interface EntityRuntime { binding: object | null }
+           export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+           export interface EntityConstruction<Type extends Entity> { [EntityRuntimeKey]: EntityRuntime | undefined }
+           export function finishEntity<Type extends Entity>(out: EntityConstruction<Type>): Type {
+             return out as Type;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    expect(failure.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.message).toContain('has no heritage to cast along');
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
