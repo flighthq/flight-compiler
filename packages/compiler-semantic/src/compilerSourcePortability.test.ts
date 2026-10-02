@@ -2693,6 +2693,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
 
   it('replaces native-window, surface, and video erasure with provider-owned typed boundaries', () => {
     const windowHandle = input('packages/types/src/AppWindow.ts', 'type NativeWindowHandle = unknown;');
+    const currentWindowHandle = input('packages/types/src/ApplicationWindow.ts', 'type NativeWindowHandle = unknown;');
     const videoStream = input(
       'packages/types/src/HostVideo.ts',
       `interface HostVideoCapability {
@@ -2703,6 +2704,10 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const closed = [
       input(
         'packages/types/src/AppWindow.ts',
+        "type NativeWindowHandle = Entity & { readonly __brand: 'NativeWindowHandle' };",
+      ),
+      input(
+        'packages/types/src/ApplicationWindow.ts',
         "type NativeWindowHandle = Entity & { readonly __brand: 'NativeWindowHandle' };",
       ),
       input(
@@ -2744,14 +2749,34 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'type:NativeSurfaceHandle',
     ]);
     expect(report.acceptedExceptions).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability([currentWindowHandle]).findings).toMatchObject([
+      { rule: 'opaque-value-domain', subject: 'type:NativeWindowHandle' },
+    ]);
+    expect(report.findings[0]?.message).toContain('public existing-window adoption boundary');
+    expect(report.findings[0]?.message).toContain('No built-in production call site invokes exported attachWindow');
+    expect(report.findings[0]?.message).toContain('external callers are the only raw-handle producers');
+    expect(report.findings[0]?.message).toContain('HostWindowAttachCapability.attach');
+    expect(report.findings[0]?.message).toContain('paired HostWindowLifecycleCapability');
+    expect(report.findings[0]?.message).toContain('HasWindowAttach requires one unified WindowBackend');
+    expect(report.findings[0]?.message).toContain('stores, returns, clones, or serializes');
     expect(report.findings[0]?.message).toContain('isWebWindow, isElectronBrowserWindow, and isTauriWindow');
-    expect(report.findings[0]?.message).toContain('target-token contract');
+    expect(report.findings[0]?.message).toContain('provider-private application-to-owner records');
+    expect(report.findings[0]?.message).toContain('reverse exact-owner or Electron window-id lookup');
+    expect(report.findings[0]?.message).toContain('closes the native owner only for Flight ownership');
+    expect(report.findings[0]?.message).toContain(
+      'native listeners mirror user-driven state into the ApplicationWindow',
+    );
+    expect(report.findings[0]?.message).toContain('no path copies or replaces the owner');
+    expect(report.findings[0]?.message).toContain('reference-shaped target-token contract');
     expect(report.findings[0]?.message).toContain("Entity & { readonly __brand: 'NativeWindowHandle' }");
     expect(report.findings[0]?.message).toContain('createWebNativeWindowHandle');
     expect(report.findings[0]?.message).toContain('return false for an unknown or foreign token');
+    expect(report.findings[0]?.message).toContain('provider-owned token-to-pointer, integer, or object table');
+    expect(report.findings[0]?.message).toContain('flight::Any');
+    expect(report.findings[0]?.message).toContain('ReferenceEnabled structs passed as flight::Ref');
     expect(report.findings[0]?.message).toContain('needs no Any alternative or new compiler runtime binding');
     expect(report.findings[0]?.message).toContain('ApplicationWindow.ts');
-    expect(report.findings[0]?.message).toContain('Do not whitelist');
+    expect(report.findings[0]?.message).toContain('Do not whitelist either exact erased alias');
     expect(report.findings[0]?.message).not.toContain('reviewed source-portability exception');
     expect(report.findings[1]?.message).toContain('only production caller');
     expect(report.findings[1]?.message).toContain('webHostVideo is the only production attachStream implementation');
@@ -2804,6 +2829,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings[0]?.message).toContain('target-specific Any carrier');
     expect(report.findings[0]?.message).toContain('retain or insert a cast');
     expect(report.findings[0]?.message).toContain('copy or materialize the native window');
+    expect(report.findings[0]?.message).toContain('allocate or brand a token');
+    expect(report.findings[0]?.message).toContain('change attachment ownership, lifetime, mutation, lookup');
     expect(report.findings[1]?.message).toContain('target-specific Any carrier');
     expect(report.findings[1]?.message).toContain('synthesize a missing external binding');
     expect(report.findings[1]?.message).toContain('insert or preserve the MediaProvider cast');

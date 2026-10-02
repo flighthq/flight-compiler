@@ -2362,6 +2362,87 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the native window handle finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNativeWindowHandleWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'type:NativeWindowHandle';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toMatchObject([{ rule: 'opaque-value-domain', subject }]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]?.message).toContain('public existing-window adoption boundary');
+    expect(sourcePortability.findings[0]?.message).toContain('external callers are the only raw-handle producers');
+    expect(sourcePortability.findings[0]?.message).toContain('paired HostWindowLifecycleCapability');
+    expect(sourcePortability.findings[0]?.message).toContain('ApplicationWindow.ts');
+    expect(sourcePortability.findings[0]?.message).toContain('no path copies or replaces the owner');
+    expect(sourcePortability.findings[0]?.message).toContain('reference-shaped target-token contract');
+    expect(sourcePortability.findings[0]?.message).toContain("Entity & { readonly __brand: 'NativeWindowHandle' }");
+    expect(sourcePortability.findings[0]?.message).toContain('provider-private WeakMap');
+    expect(sourcePortability.findings[0]?.message).toContain('return false for an unknown or foreign token');
+    expect(sourcePortability.findings[0]?.message).toContain('flight::Any');
+    expect(sourcePortability.findings[0]?.message).toContain('ReferenceEnabled structs passed as flight::Ref');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist either exact erased alias');
+    expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createNativeWindowHandleWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the native surface handle finding source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createNativeSurfaceHandleWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4974,6 +5055,23 @@ export interface SurfaceRuntime {
   readonly handle: NativeSurfaceHandle;
 }`,
     '/flight/packages/types/src/index.ts': `export type { Entity, NativeSurfaceHandle, SurfaceRuntime } from './Surface.js';`,
+  };
+}
+
+function createNativeWindowHandleWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const handle = opaque ? 'unknown' : "Entity & { readonly __brand: 'NativeWindowHandle' }";
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/AppWindow.ts': `export interface Entity { readonly uid: string }
+export type NativeWindowHandle = ${handle};
+export interface HostWindowAttachCapability {
+  attach(handle: NativeWindowHandle): boolean;
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  Entity,
+  HostWindowAttachCapability,
+  NativeWindowHandle,
+} from './AppWindow.js';`,
   };
 }
 
