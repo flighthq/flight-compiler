@@ -383,6 +383,54 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(typed).not.toContain('Dynamic');
   });
 
+  it('separates the GlContext capability state from its one-sentinel scene cache', () => {
+    const module = lower(
+      '@flighthq/types',
+      'GlContextRuntime.ts',
+      `export interface GlAnisotropyUnqueried { readonly state: 'unqueried' }
+       export interface GlAnisotropyUnsupported { readonly state: 'unsupported' }
+       export interface GlAnisotropySupported {
+         readonly extension: EXT_texture_filter_anisotropic;
+         readonly maximum: number;
+         readonly state: 'supported';
+       }
+       export type GlAnisotropyCapability =
+         | GlAnisotropyUnqueried
+         | GlAnisotropyUnsupported
+         | GlAnisotropySupported;
+       export interface CurrentGlContextRuntime {
+         anisotropyExt?: EXT_texture_filter_anisotropic | null;
+         maxAnisotropy?: number;
+         sceneMeshUploadCache?: WeakMap<object, object> | null;
+       }
+       export interface PortableGlContextRuntime {
+         anisotropy: GlAnisotropyCapability;
+         sceneMeshUploadCache: WeakMap<object, object> | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const capability = findFile(files, 'flight/_js/GlAnisotropyCapability.hx').contents;
+    const current = findFile(files, 'flight/_js/CurrentGlContextRuntime.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableGlContextRuntime.hx').contents;
+    const supported = findFile(files, 'flight/_js/GlAnisotropySupported.hx').contents;
+
+    expect(current).toContain(
+      '@:optional var anisotropyExt:Null<js.html.webgl.extension.EXTTextureFilterAnisotropic>;',
+    );
+    expect(current).toContain('@:optional var maxAnisotropy:Float;');
+    expect(current).toContain(
+      '@:optional var sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>;',
+    );
+    expect(capability).toContain('typedef GlAnisotropyCapability = Dynamic;');
+    expect(supported).toContain('var extension:js.html.webgl.extension.EXTTextureFilterAnisotropic;');
+    expect(supported).toContain('var maximum:Float;');
+    expect(portable).toContain('var anisotropy:flight.GlAnisotropyCapability;');
+    expect(portable).toContain('var sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>;');
+    expect(portable).not.toContain('@:optional');
+    expect(portable).not.toContain('anisotropyExt');
+    expect(portable).not.toContain('maxAnisotropy');
+  });
+
   it('separates all five current GlRenderState absence markers from their required-nullable remedies', () => {
     const module = lower(
       '@flighthq/types',

@@ -2095,14 +2095,29 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
       expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
     );
+    const messages = new Map(
+      sourcePortability.findings.map(({ message, subject }) => [subject.split(':').at(-1), message]),
+    );
     expect(sourcePortability.findings[0]?.message).toContain('one required GlAnisotropyCapability closed state');
-    expect(sourcePortability.findings[0]?.message).toContain('live runtime storage, not a construction input');
+    expect(sourcePortability.findings[0]?.message).toContain('live context storage, not a construction input');
     expect(sourcePortability.findings[0]?.message).toContain('downstream host-binding gap');
     expect(sourcePortability.findings[0]?.message).toContain('truthful host adapter and binding manifest');
     expect(sourcePortability.findings[1]?.message).toContain('required WeakMap<object, object> | null field');
-    expect(sourcePortability.findings[1]?.message).toContain('live runtime storage rather than an input carrier');
+    expect(sourcePortability.findings[1]?.message).toContain('live context storage rather than an input carrier');
     expect(sourcePortability.findings[1]?.message).toContain(
       'neither a backend representation gap nor a host-binding gap',
+    );
+    expect(messages.get('anisotropyExt')).toContain(
+      'std::variant<flight::Ref<EXTTextureFilterAnisotropic>, flight::Null, flight::Undefined>',
+    );
+    expect(messages.get('anisotropyExt')).toContain(
+      '@:optional var anisotropyExt:Null<js.html.webgl.extension.EXTTextureFilterAnisotropic>',
+    );
+    expect(messages.get('sceneMeshUploadCache')).toContain(
+      'std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>>',
+    );
+    expect(messages.get('sceneMeshUploadCache')).toContain(
+      'required var sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>',
     );
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
@@ -2140,9 +2155,42 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+
+    expect(portableCompilation.report.modules).toHaveLength(2);
+    expect(
+      portableCompilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(portableSourcePortability).toMatchObject({
       acceptedExceptions: [],
       findings: [],
+    });
+    expect(portableReport.directFindings).toEqual([]);
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
   });
 
@@ -7083,14 +7131,17 @@ export interface GlContextRuntime {
   readonly MAX_TEXTURE_MAX_ANISOTROPY_EXT: number;
   readonly TEXTURE_MAX_ANISOTROPY_EXT: number;
 }
+export interface GlAnisotropyUnqueried { readonly state: 'unqueried' }
+export interface GlAnisotropyUnsupported { readonly state: 'unsupported' }
+export interface GlAnisotropySupported {
+  readonly extension: EXT_texture_filter_anisotropic;
+  readonly maximum: number;
+  readonly state: 'supported';
+}
 export type GlAnisotropyCapability =
-  | { readonly state: 'unqueried' }
-  | { readonly state: 'unsupported' }
-  | {
-      readonly extension: EXT_texture_filter_anisotropic;
-      readonly maximum: number;
-      readonly state: 'supported';
-    };
+  | GlAnisotropyUnqueried
+  | GlAnisotropyUnsupported
+  | GlAnisotropySupported;
 export interface GlContextRuntime {
   anisotropy: GlAnisotropyCapability;
   sceneMeshUploadCache: WeakMap<object, object> | null;

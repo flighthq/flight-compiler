@@ -15791,6 +15791,69 @@ export interface WgpuRenderStateRuntime {
     expect(resolved).not.toContain('flight::Any');
   });
 
+  it('separates the GlContext capability state from its one-sentinel scene cache', () => {
+    const current = emitIrModuleCpp(
+      lower(
+        'gl-context-runtime-current.ts',
+        `export interface EXT_texture_filter_anisotropic {
+           readonly MAX_TEXTURE_MAX_ANISOTROPY_EXT: number;
+           readonly TEXTURE_MAX_ANISOTROPY_EXT: number;
+         }
+         export interface CurrentGlContextRuntime {
+           anisotropyExt?: EXT_texture_filter_anisotropic | null;
+           maxAnisotropy?: number;
+           sceneMeshUploadCache?: WeakMap<object, object> | null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(current).toContain(
+      'std::variant<flight::Ref<EXTTextureFilterAnisotropic>, flight::Null, flight::Undefined> anisotropy_ext',
+    );
+    expect(current).toContain('std::optional<double> max_anisotropy;');
+    expect(current).toContain(
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache',
+    );
+
+    const portable = emitIrModuleCpp(
+      lower(
+        'gl-context-runtime-portable.ts',
+        `export interface EXT_texture_filter_anisotropic {
+           readonly MAX_TEXTURE_MAX_ANISOTROPY_EXT: number;
+           readonly TEXTURE_MAX_ANISOTROPY_EXT: number;
+         }
+         export interface GlAnisotropyUnqueried { readonly state: 'unqueried' }
+         export interface GlAnisotropyUnsupported { readonly state: 'unsupported' }
+         export interface GlAnisotropySupported {
+           readonly extension: EXT_texture_filter_anisotropic;
+           readonly maximum: number;
+           readonly state: 'supported';
+         }
+         export type GlAnisotropyCapability =
+           | GlAnisotropyUnqueried
+           | GlAnisotropyUnsupported
+           | GlAnisotropySupported;
+         export interface PortableGlContextRuntime {
+           anisotropy: GlAnisotropyCapability;
+           sceneMeshUploadCache: WeakMap<object, object> | null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(portable).toContain(
+      'using GlAnisotropyCapability = std::variant<flight::Ref<GlAnisotropyUnqueried>, flight::Ref<GlAnisotropyUnsupported>, flight::Ref<GlAnisotropySupported>>;',
+    );
+    expect(portable).toContain('GlAnisotropyCapability anisotropy;');
+    expect(portable).toContain(
+      'std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>> scene_mesh_upload_cache;',
+    );
+    expect(portable).not.toMatch(/\sanisotropy_ext(?: =|;)/u);
+    expect(portable).not.toMatch(/\smax_anisotropy;/u);
+    expect(portable).not.toContain('flight::Undefined');
+  });
+
   it('classifies the GlScene3DRuntime findings as one downstream binding family', () => {
     // The file's mixed-absence findings are not source contracts and not one shape problem: their value types
     // are host handles. Each refuses once, naming its own symbol, with the same downstream requirement -- one
