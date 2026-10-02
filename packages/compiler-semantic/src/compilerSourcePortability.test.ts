@@ -10691,6 +10691,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
     ]);
     for (const [index, finding] of findings.entries()) {
       const field = ['interactiveStates', 'transition'][index];
+      const typeName = ['FlightDocumentInteractiveStates', 'FlightDocumentInteractiveStateTransitionDescriptor'][index];
+      const cppField = ['interactive_states', 'transition'][index];
       expect(finding.message).toContain(
         `gives the persisted FlightDocument node interaction slot ${field} both omission and explicit null`,
       );
@@ -10699,6 +10701,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('(interactiveStates, null)');
       expect(finding.message).toContain('(interactiveStates, transition)');
       expect(finding.message).toContain('no legal pair uses undefined');
+      expect(finding.message).toContain(
+        index === 0
+          ? 'null is the inactive node state and a present descriptor owner gates whether materialization creates a live binding'
+          : 'null remains meaningful both for an inactive node and for an interactive node with no transition',
+      );
       expect(finding.message).toContain('flightDocumentText.readNode initializes both slots to null');
       expect(finding.message).toContain('normalizes omitted text keys to those values');
       expect(finding.message).toContain('rejects a transition without interactiveStates');
@@ -10725,6 +10732,13 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain(
         'repair token substitution to preserve, substitute, or deliberately clear both fields',
       );
+      expect(finding.message).toContain(`@:optional var ${field}:Null<flight.${typeName}>;`);
+      expect(finding.message).toContain(`var ${field}:Null<flight.${typeName}>;`);
+      expect(finding.message).toContain(
+        `std::variant<flight::Ref<${typeName}>, flight::Null, flight::Undefined> ${cppField}`,
+      );
+      expect(finding.message).toContain(`std::optional<flight::Ref<${typeName}>> ${cppField}`);
+      expect(finding.message).toContain('without Any, a cast, a host binding, or side storage');
       expect(finding.message).toContain('one named closed metadata state with inactive and interactive arms');
       expect(finding.message).toContain('Do not whitelist either redundant absence spelling');
       expect(finding.message).toContain('can preserve the authored tags and exact metadata owners');

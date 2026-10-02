@@ -4761,6 +4761,24 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
         message.includes('one named closed metadata state with inactive and interactive arms'),
       ),
     ).toBe(true);
+    for (const [index, finding] of sourcePortability.findings.entries()) {
+      const field = ['interactiveStates', 'transition'][index]!;
+      const typeName = ['FlightDocumentInteractiveStates', 'FlightDocumentInteractiveStateTransitionDescriptor'][
+        index
+      ]!;
+      const cppField = ['interactive_states', 'transition'][index]!;
+      expect(finding.message).toContain(`@:optional var ${field}:Null<flight.${typeName}>;`);
+      expect(finding.message).toContain(`var ${field}:Null<flight.${typeName}>;`);
+      expect(finding.message).toContain(
+        `std::variant<flight::Ref<${typeName}>, flight::Null, flight::Undefined> ${cppField}`,
+      );
+      expect(finding.message).toContain(`std::optional<flight::Ref<${typeName}>> ${cppField}`);
+      expect(finding.message).toContain(
+        index === 0
+          ? 'a present descriptor owner gates whether materialization creates a live binding'
+          : 'null remains meaningful both for an inactive node and for an interactive node with no transition',
+      );
+    }
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
       sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),

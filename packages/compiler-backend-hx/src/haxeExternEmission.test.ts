@@ -126,6 +126,35 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(findFile(files, 'flight/_js/PortableSkin.hx').contents).not.toContain('@:optional var skeletonRoot');
   });
 
+  it('removes only omission from both persisted FlightDocument interaction owners', () => {
+    const module = lower(
+      '@flighthq/types',
+      'FlightDocument.ts',
+      `export interface FlightDocumentInteractiveStates { readonly hover: boolean }
+       export interface FlightDocumentInteractiveStateTransitionDescriptor { readonly kind: string }
+       export interface CurrentFlightDocumentNode {
+         interactiveStates?: FlightDocumentInteractiveStates | null;
+         transition?: FlightDocumentInteractiveStateTransitionDescriptor | null;
+       }
+       export interface PortableFlightDocumentNode {
+         interactiveStates: FlightDocumentInteractiveStates | null;
+         transition: FlightDocumentInteractiveStateTransitionDescriptor | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentFlightDocumentNode.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableFlightDocumentNode.hx').contents;
+
+    expect(current).toContain('@:optional var interactiveStates:Null<flight.FlightDocumentInteractiveStates>;');
+    expect(current).toContain(
+      '@:optional var transition:Null<flight.FlightDocumentInteractiveStateTransitionDescriptor>;',
+    );
+    expect(portable).toContain('var interactiveStates:Null<flight.FlightDocumentInteractiveStates>;');
+    expect(portable).toContain('var transition:Null<flight.FlightDocumentInteractiveStateTransitionDescriptor>;');
+    expect(portable).not.toContain('@:optional');
+    for (const contents of [current, portable]) expect(contents).not.toContain('Dynamic');
+  });
+
   it('removes only optionality from the five nullable GL Scene3D diagnostic guard carriers', () => {
     const module = lower(
       '@flighthq/types',

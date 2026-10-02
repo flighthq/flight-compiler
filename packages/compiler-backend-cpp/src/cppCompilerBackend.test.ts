@@ -11672,6 +11672,39 @@ int main() {
     expect(contents).not.toContain('reinterpret_cast');
   });
 
+  it('removes only Undefined from both persisted FlightDocument interaction owners', () => {
+    const result = lower(
+      'FlightDocument.ts',
+      `export interface FlightDocumentInteractiveStates { readonly hover: boolean }
+       export interface FlightDocumentInteractiveStateTransitionDescriptor { readonly kind: string }
+       export interface CurrentFlightDocumentNode {
+         interactiveStates?: FlightDocumentInteractiveStates | null;
+         transition?: FlightDocumentInteractiveStateTransitionDescriptor | null;
+       }
+       export interface PortableFlightDocumentNode {
+         interactiveStates: FlightDocumentInteractiveStates | null;
+         transition: FlightDocumentInteractiveStateTransitionDescriptor | null;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain(
+      'std::variant<flight::Ref<FlightDocumentInteractiveStates>, flight::Null, flight::Undefined> interactive_states',
+    );
+    expect(contents).toContain(
+      'std::variant<flight::Ref<FlightDocumentInteractiveStateTransitionDescriptor>, flight::Null, flight::Undefined> transition',
+    );
+    expect(contents).toContain('std::optional<flight::Ref<FlightDocumentInteractiveStates>> interactive_states;');
+    expect(contents).toContain(
+      'std::optional<flight::Ref<FlightDocumentInteractiveStateTransitionDescriptor>> transition;',
+    );
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
+  });
+
   it('separates the glTF base-path input from required nullable resource storage', () => {
     const result = lower(
       'GltfExtension.ts',
