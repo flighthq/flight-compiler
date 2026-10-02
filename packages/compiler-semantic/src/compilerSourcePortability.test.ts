@@ -10157,7 +10157,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
-  it('explains the one-sentinel contract for the device-owned WebGPU mesh cache', () => {
+  it('explains the one-sentinel contract and ownership lifetime for the device-tier WebGPU mesh cache', () => {
     const source = input(
       'packages/types/src/WgpuDeviceRuntime.ts',
       'interface WgpuDeviceRuntime { sceneMeshUploadCache?: WeakMap<object, object> | null }',
@@ -10170,35 +10170,53 @@ describe('analyzeTypeScriptSourcePortability', () => {
       subject: 'interface:WgpuDeviceRuntime/property:sceneMeshUploadCache',
     });
     const message = findings[0]!.message;
-    expect(message).toContain('device-owned Scene3D mesh upload cache both omission and explicit null');
+    expect(message).toContain('device-tier Scene3D mesh upload cache both omission and explicit null');
     expect(message).toContain('one not-yet-allocated live state');
-    expect(message).toContain('device-tier runtime storage rather than an input carrier');
-    expect(message).toContain('createMinimalDeviceRuntime is its sole constructor');
-    expect(message).toContain('createWgpuDeviceState attaches that exact owner to the device entity');
-    expect(message).toContain('createWgpuRenderStateRuntimeInternal increments the same runtime');
-    expect(message).toContain('presentation, direct offscreen, and source-derived offscreen states');
+    expect(message).toContain(
+      'private mutable runtime storage rather than a construction, serialization, or compatibility input',
+    );
+    expect(message).toContain('createMinimalDeviceRuntime is its sole production constructor');
+    expect(message).toContain('createWgpuDeviceState attaches that exact runtime to the device entity');
+    expect(message).toContain('source-derived offscreen states reuse source.deviceState');
+    expect(message).toContain('createWgpuRenderStateRuntimeInternal increments that same runtime');
+    expect(message).toContain('distinct WgpuDeviceState constructions, even over the same GPUDevice handle');
     expect(message).toContain('No importer, document materializer, serializer, structural compatibility input');
     expect(message).toContain(
       'intentionally erased cross-subsystem backing store rather than arbitrary data or a host handle',
     );
-    expect(message).toContain('getWgpuScene3DRuntime is its sole production reader and writer');
-    expect(message).toContain('stores that same map through the explicit unknown bridge');
-    expect(message).toContain('exact MeshGeometry identities as keys and exact WgpuMeshUpload records as values');
-    expect(message).toContain('destroys and replaces stale vertex and index GPUBuffers');
-    expect(message).toContain('Mesh, wireframe, and shadow draw paths consume only that exact scene cache');
-    expect(message).toContain('destroyWgpuRenderState releases state-owned buffers');
+    expect(message).toContain("getWgpuScene3DRuntime is the slot's sole production reader and writer");
+    expect(message).toContain('Each WgpuRenderState gets a distinct WgpuScene3DRuntime');
+    expect(message).toContain('publishes that exact device-tier map as every per-state scene runtime');
+    expect(message).toContain('exact MeshGeometry owner as the weak key');
+    expect(message).toContain('nullable index buffer and format, element count, version, and skin-bind flag');
+    expect(message).toContain('Mesh, wireframe, and shadow draw paths reach it through that exact scene cache');
+    expect(message).toContain('stale entry has its vertex and optional index GPUBuffers destroyed');
+    expect(message).toContain('destroyWgpuRenderState is idempotent and destroys state-owned buffers and textures');
+    expect(message).toContain('releases a Flight-owned acquisition through its originating host backend');
+    expect(message).toContain('caller-owned acquisitions remain caller-owned');
+    expect(message).toContain('shared cache remains reachable with the WgpuDeviceRuntime');
     expect(message).toContain('destroyMeshGeometryWgpuData only nulls the geometry runtime mirror');
-    expect(message).toContain('separate resource-lifetime contract needs source ownership review');
+    expect(message).toContain('weak key does not keep it or its mirrored upload alive');
+    expect(message).toContain('stale-upload replacement is the only per-entry explicit buffer destruction');
+    expect(message).toContain('resource-lifetime contract needs separate source ownership review');
     expect(message).toContain('required WeakMap<object, object> | null field');
     expect(message).toContain('initialize it to null in createMinimalDeviceRuntime');
-    expect(message).toContain('emits this required nullable erased backing as optional<WeakMap<Ref<void>, ErasedRef>>');
-    expect(message).toContain('source contract and not a host-binding gap');
+    expect(message).toContain('add an explicit source-owned device-cache teardown contract');
+    expect(message).toContain(
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined>',
+    );
+    expect(message).toContain('std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>>');
+    expect(message).toContain(
+      '@:optional var sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>',
+    );
+    expect(message).toContain('required var sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>');
+    expect(message).toContain('source contract rather than a representation or host-binding gap');
     expect(message).toContain('cpp-weak-map-erased-ref-view-unsupported');
     expect(message).toContain('maintained sdl-image, web-types, and sdl-wgpu manifests');
     expect(message).toContain('Do not whitelist the redundant live-storage spelling');
     expect(message).toContain('erase the exact scene cache further');
     expect(message).toContain('will not choose or collapse an absence sentinel');
-    expect(message).toContain('redirect the cache to render-state scope');
+    expect(message).toContain('decide device or acquisition ownership');
     expect(message).toContain('fabricate a host binding');
   });
 

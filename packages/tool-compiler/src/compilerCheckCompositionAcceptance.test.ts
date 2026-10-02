@@ -2227,14 +2227,28 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.acceptedExceptions).toEqual([]);
     expect(sourcePortability.findings).toHaveLength(1);
     expect(sourcePortability.findings[0]).toMatchObject({ rule: 'mixed-absence', subject });
-    expect(sourcePortability.findings[0]?.message).toContain(
-      'device-tier runtime storage rather than an input carrier',
+    const message = sourcePortability.findings[0]!.message;
+    expect(message).toContain('private mutable runtime storage rather than a construction');
+    expect(message).toContain('source-derived offscreen states reuse source.deviceState');
+    expect(message).toContain('Each WgpuRenderState gets a distinct WgpuScene3DRuntime');
+    expect(message).toContain('exact MeshGeometry owner as the weak key');
+    expect(message).toContain('destroyWgpuRenderState is idempotent');
+    expect(message).toContain('caller-owned acquisitions remain caller-owned');
+    expect(message).toContain('destroyMeshGeometryWgpuData only nulls the geometry runtime mirror');
+    expect(message).toContain('required WeakMap<object, object> | null field');
+    expect(message).toContain('add an explicit source-owned device-cache teardown contract');
+    expect(message).toContain(
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined>',
     );
-    expect(sourcePortability.findings[0]?.message).toContain('required WeakMap<object, object> | null field');
-    expect(sourcePortability.findings[0]?.message).toContain('source contract and not a host-binding gap');
-    expect(sourcePortability.findings[0]?.message).toContain('cpp-weak-map-erased-ref-view-unsupported');
-    expect(sourcePortability.findings[0]?.message).toContain('maintained sdl-image, web-types, and sdl-wgpu manifests');
-    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(message).toContain('std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>>');
+    expect(message).toContain(
+      '@:optional var sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>',
+    );
+    expect(message).toContain('required var sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>');
+    expect(message).toContain('source contract rather than a representation or host-binding gap');
+    expect(message).toContain('cpp-weak-map-erased-ref-view-unsupported');
+    expect(message).toContain('maintained sdl-image, web-types, and sdl-wgpu manifests');
+    expect(message).toContain('Do not whitelist the redundant live-storage spelling');
     expect(report.directFindings).toMatchObject([
       {
         policyClass: 'source-portability',
@@ -2264,9 +2278,42 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+
+    expect(portableCompilation.report.modules).toHaveLength(2);
+    expect(
+      portableCompilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(portableSourcePortability).toMatchObject({
       acceptedExceptions: [],
       findings: [],
+    });
+    expect(portableReport.directFindings).toEqual([]);
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
   });
 

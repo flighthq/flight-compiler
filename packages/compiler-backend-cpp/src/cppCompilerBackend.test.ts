@@ -24881,7 +24881,7 @@ int main() {
     );
   });
 
-  it('separates WgpuDeviceRuntime cache storage from typed scene recovery and host bindings', () => {
+  it('separates WgpuDeviceRuntime cache absence from typed scene recovery and host bindings', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
@@ -24900,6 +24900,9 @@ int main() {
             '/flight/packages/types/src/WgpuDeviceRuntime.ts',
             `export interface MeshGeometry { readonly id: number }
              export interface WgpuMeshUpload { readonly version: number }
+             export interface CurrentWgpuDeviceRuntime {
+               sceneMeshUploadCache?: WeakMap<object, object> | null;
+             }
              export interface WgpuDeviceRuntime {
                sceneMeshUploadCache: WeakMap<object, object> | null;
              }`,
@@ -24945,9 +24948,13 @@ int main() {
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(storage).toContain(
+      'std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null, flight::Undefined> scene_mesh_upload_cache =',
+    );
+    expect(storage).toContain(
       'std::optional<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>> scene_mesh_upload_cache;',
     );
-    expect(storage).not.toContain('flight::Undefined');
+    expect(storage).toContain('std::in_place_type<flight::Undefined>');
+    expect(storage).not.toContain('host::');
     expect(recoveryFailure.message).toContain(
       'flight::checked_weak_map_view<Key, Value>(flight::WeakMap<flight::Ref<void>, flight::ErasedRef>&) after initializing and retaining the erased backing field',
     );

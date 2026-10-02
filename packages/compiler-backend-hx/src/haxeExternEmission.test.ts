@@ -567,6 +567,28 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(portable).not.toContain('maxAnisotropy');
   });
 
+  it('separates WgpuDeviceRuntime cache omission from required nullable live storage', () => {
+    const module = lower(
+      '@flighthq/types',
+      'WgpuDeviceRuntime.ts',
+      `export interface CurrentWgpuDeviceRuntime {
+         sceneMeshUploadCache?: WeakMap<object, object> | null;
+       }
+       export interface WgpuDeviceRuntime {
+         sceneMeshUploadCache: WeakMap<object, object> | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentWgpuDeviceRuntime.hx').contents;
+    const portable = findFile(files, 'flight/_js/WgpuDeviceRuntime.hx').contents;
+
+    expect(current).toContain(
+      '@:optional var sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>;',
+    );
+    expect(portable).toContain('var sceneMeshUploadCache:Null<flighthq._internal._WeakMap<Dynamic, Dynamic>>;');
+    expect(portable).not.toContain('@:optional');
+  });
+
   it('separates all five current GlRenderState absence markers from their required-nullable remedies', () => {
     const module = lower(
       '@flighthq/types',
