@@ -5627,22 +5627,46 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(attachmentFinding?.message).toContain('or add side storage');
 
     const [boneFinding, materialFinding] = otherFindings;
+    expect(boneFinding?.message).toContain('gives the live Bone2D authored-name cell both omission and explicit null');
+    expect(boneFinding?.message).toContain('no production path gives a missing live cell distinct behavior');
+    expect(boneFinding?.message).toContain('every built-in producer materializes it');
+    expect(boneFinding?.message).toContain('Spine JSON normalizes a non-string raw name to null');
+    expect(boneFinding?.message).toContain('malformed-entry placeholder explicitly stores null');
+    expect(boneFinding?.message).toContain('Spine binary stores the string | null returned by readSpineBinaryString');
+    expect(boneFinding?.message).toContain('DragonBones normalizes a non-string name to null');
+    expect(boneFinding?.message).toContain("Rive instead stores readRiveText's '' fallback, which is a present string");
+    expect(boneFinding?.message).toContain('createSkeleton2D accepts and retains the exact caller-owned Bone2D array');
+    expect(boneFinding?.message).toContain('without cloning or normalizing its records');
     expect(boneFinding?.message).toContain(
-      'gives the internal Bone2D authored-name slot both omission and explicit null',
+      'cloneSkeleton2D allocates a fresh record with object spread for every bone',
     );
-    expect(boneFinding?.message).toContain('Spine and DragonBones parsers write a string or null');
-    expect(boneFinding?.message).toContain('lookup paths recognize only exact present strings');
-    expect(boneFinding?.message).toContain(
-      'Make Attachment2D.name, Bone2D.name, and Material.name required string | null fields',
-    );
-    expect(boneFinding?.message).toContain('initialize every construction path to null');
-    expect(boneFinding?.message).toContain('structural convenience inputs must allow omission');
-    expect(boneFinding?.message).toContain('separate shapes and normalize them once');
-    expect(boneFinding?.message).toContain('replace the two absence spellings with one named closed state');
+    expect(boneFinding?.message).toContain('also preserving a structurally supplied missing cell');
+    expect(boneFinding?.message).toContain('no production mutator later assigns, clears, or deletes name');
+    expect(boneFinding?.message).toContain('resetSkeleton2DToSetup copies only animated transform fields');
+    expect(boneFinding?.message).toContain('disposeSkeleton2D drops the entire bone array');
+    expect(boneFinding?.message).toContain('Spine parent, slot, and animation resolution compare exact strings');
+    expect(boneFinding?.message).toContain('DragonBones inserts only string names');
+    expect(boneFinding?.message).toContain('getSkeleton2DBoneIndexByName returns the first exact string match or -1');
+    expect(boneFinding?.message).toContain("'' remains a queryable present name");
+    expect(boneFinding?.message).toContain("duplicate-name resolution keeps each consumer's existing order");
+    expect(boneFinding?.message).toContain('animation targets, slots, skinning, constraints, pose propagation');
+    expect(boneFinding?.message).toContain('equalsSkeleton2D likewise compares transform and hierarchy data');
+    expect(boneFinding?.message).toContain('Make Bone2D.name a required string | null field');
+    expect(boneFinding?.message).toContain("including Rive's present empty string");
+    expect(boneFinding?.message).toContain('separate optional non-null name?: string shape');
+    expect(boneFinding?.message).toContain('normalize once to name ?? null');
+    expect(boneFinding?.message).toContain('before calling createSkeleton2D');
+    expect(boneFinding?.message).toContain('do not silently mutate or copy the live array');
+    expect(boneFinding?.message).toContain('one named closed state');
+    expect(boneFinding?.message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(boneFinding?.message).toContain('C++ backend can preserve the current null, undefined, and string');
     expect(boneFinding?.message).toContain('will not choose or collapse an absence sentinel');
-    expect(boneFinding?.message).toContain('infer a name from kind or position');
-    expect(boneFinding?.message).toContain('rewrite name lookup');
-    expect(boneFinding?.message).toContain('clone or materialize an owner');
+    expect(boneFinding?.message).toContain('normalize a present empty string');
+    expect(boneFinding?.message).toContain('change duplicate-name or first-match behavior');
+    expect(boneFinding?.message).toContain('make equality name-sensitive');
+    expect(boneFinding?.message).toContain('mutate caller-owned bones');
+    expect(boneFinding?.message).toContain('allocate or copy the live bone array');
+    expect(boneFinding?.message).toContain('route the name through Any');
     expect(boneFinding?.message).toContain('reinterpret or cast the string');
     expect(boneFinding?.message).toContain('or add side storage');
 
@@ -5687,16 +5711,20 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(materialFinding?.message).toContain('or add side storage');
   });
 
-  it('keeps unrelated authored-name shapes generic and accepts one-sentinel internal storage', () => {
+  it('keeps unrelated authored-name shapes generic and separates live Bone2D storage from optional input', () => {
     const controls = [
       input('Other.ts', 'interface Attachment2D { kind: string; name?: string | null }'),
       input('packages/types/src/Attachment2D.ts', 'interface OtherAttachment { name?: string | null }'),
       input('packages/types/src/Bone2D.ts', 'interface Bone2D { label?: string | null }'),
+      input('packages/types/src/Bone2D.ts', 'interface OtherBone2D { name?: string | null }'),
+      input('packages/example/src/Bone2D.ts', 'interface Bone2D { name?: string | null }'),
+      input('packages/types/src/Bone2D.ts', 'interface Bone2D { name?: String | null }'),
       input('packages/types/src/Material.ts', 'interface Material { name?: String | null }'),
     ];
     const resolved = [
       input('RequiredName.ts', 'interface Material { name: string | null }'),
-      input('OptionalName.ts', 'interface Bone2D { name?: string }'),
+      input('packages/types/src/Bone2D.ts', 'interface Bone2D { name: string | null }'),
+      input('Bone2DInput.ts', 'interface Bone2DInput { name?: string }'),
     ];
 
     for (const control of controls) {
@@ -5705,9 +5733,9 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(findings[0]?.message).toContain(
         'combines an optional property with null; choose one absence representation or make all three states explicit.',
       );
-      expect(findings[0]?.message).not.toContain('internal Attachment2D authored-name slot');
-      expect(findings[0]?.message).not.toContain('internal Bone2D authored-name slot');
-      expect(findings[0]?.message).not.toContain('internal Material authored-name slot');
+      expect(findings[0]?.message).not.toContain("open Attachment2D family's authored-name metadata");
+      expect(findings[0]?.message).not.toContain('live Bone2D authored-name cell');
+      expect(findings[0]?.message).not.toContain('live Material authored-name cell');
     }
     expect(analyzeTypeScriptSourcePortability(resolved).findings).toEqual([]);
   });
