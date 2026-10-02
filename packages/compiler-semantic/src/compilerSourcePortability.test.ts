@@ -4295,7 +4295,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(4);
   });
 
-  it('separates closed Lottie sub-schemas from reviewed erased input boundaries', () => {
+  it('requires unused Lottie JSON fields to leave the portable projection', () => {
     const opaque = input(
       'LottieDocument.ts',
       `export interface LottieTextData {
@@ -4305,29 +4305,6 @@ describe('analyzeTypeScriptSourcePortability', () => {
          p?: unknown;
        }
        export interface LottieDocument { chars?: unknown[] }`,
-    );
-    const closed = input(
-      'PortableLottieDocument.ts',
-      `interface LottieCharacterShapes { readonly kind: 'shapes'; readonly shapes: readonly string[] }
-       interface LottieCharacterPrecomposition { readonly kind: 'precomposition'; readonly refId: string }
-       interface LottieCharacterData {
-         readonly ch: string;
-         readonly data: LottieCharacterPrecomposition | LottieCharacterShapes;
-         readonly fFamily: string;
-         readonly size: number;
-         readonly style: string;
-         readonly w: number;
-       }
-       interface LottieTextRange { readonly name: string; readonly start: number }
-       interface LottieTextAlignmentOptions { readonly grouping: 1 | 2 | 3 | 4 }
-       interface LottieTextFollowPathOptions { readonly firstMargin: number; readonly lastMargin: number }
-       export interface LottieTextData {
-         d: { readonly k: readonly string[] };
-         a?: LottieTextRange[];
-         m?: LottieTextAlignmentOptions;
-         p?: LottieTextFollowPathOptions;
-       }
-       export interface LottieDocument { chars?: LottieCharacterData[] }`,
     );
     const projected = input(
       'ProjectedLottieDocument.ts',
@@ -4349,28 +4326,35 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:LottieTextData/property:p',
     ]);
     expect(report.findings[0]?.message).toContain('character-data array');
-    expect(report.findings[0]?.message).toContain('parseLottieDocument only passes JSON through');
-    expect(report.findings[0]?.message).toContain('current importer never reads document.chars');
-    expect(report.findings[0]?.message).toContain('presence and omission have the same imported result');
+    expect(report.findings[0]?.message).toContain('caller-owned shallow Readonly<LottieDocument>');
+    expect(report.findings[0]?.message).toContain('returns the object unchanged or JSON.parse-casts the string');
+    expect(report.findings[0]?.message).toContain('isValidLottieDocument checks only fr, ip, op, w, h, and layers');
+    expect(report.findings[0]?.message).toContain('never reads document.chars, mutates or copies it');
+    expect(report.findings[0]?.message).toContain('neither retained nor serialized');
     expect(report.findings[0]?.message).toContain('Remove chars from the portable LottieDocument projection');
-    expect(report.findings[0]?.message).toContain('distinct shapes/precomposition arms');
+    expect(report.findings[0]?.message).toContain('distinct shape and precomposition arms');
     expect(report.findings[1]?.message).toContain('text-range array');
     expect(report.findings[2]?.message).toContain('text-alignment options');
     expect(report.findings[3]?.message).toContain('text follow-path options');
     for (const [index, property] of ['a', 'm', 'p'].entries()) {
       const message = report.findings[index + 1]?.message;
-      expect(message).toContain('appendLottieText reads only LottieTextData.d.k[0].s');
-      expect(message).toContain(`never reads ${property}`);
-      expect(message).toContain('presence and omission have the same imported result');
+      expect(message).toContain('isValidLottieDocument does not inspect layer.t');
+      expect(message).toContain('declaration comment saying animator data is retained and diagnosed');
+      expect(message).toContain('appendLottieText is the only production consumer of LottieTextData');
+      expect(message).toContain('reads only d.k[0].s');
+      expect(message).toContain(`never reads or diagnoses ${property}`);
+      expect(message).toContain(`No importer path mutates, copies, returns, or serializes ${property}`);
       expect(message).toContain(`Remove ${property} from the portable LottieTextData projection`);
+      expect(message).toContain(`give ${property} its own named closed payload`);
     }
     for (const finding of report.findings) {
-      expect(finding.message).toContain('reviewed source-portability exception for this exact property');
-      expect(finding.message).toContain('outside portable runtime storage');
-      expect(finding.message).toContain('target-specific Any carrier');
+      expect(finding.message).toContain('structural JSON parsing will still ignore the extra raw key');
+      expect(finding.message).toContain('Do not whitelist this unused erased field');
+      expect(finding.message).toContain('representation is not the gap');
+      expect(finding.message).toContain('clone or freeze caller-owned arrays');
+      expect(finding.message).not.toContain('source-portability exception');
     }
-    expect(report.findings[1]?.message).toContain('will not merge LottieTextData.a, .m, and .p');
-    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    expect(report.findings[1]?.message).toContain('do not merge LottieTextData.a, .m, and .p into one carrier');
     expect(analyzeTypeScriptSourcePortability([projected]).findings).toEqual([]);
     expect(analyzeTypeScriptSourcePortability([unrelated]).findings).toHaveLength(2);
     expect(
@@ -4379,20 +4363,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ),
     ).toBe(true);
 
-    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
-      exceptionPolicy: {
-        exceptions: report.findings.map((finding) => ({
-          findingIdentity: finding.identity,
-          reason: 'Importer retains this unsupported Lottie field only as unexamined input JSON.',
-          rule: 'opaque-value-domain' as const,
-        })),
-        schema: 'flight-compiler-source-portability-exceptions/1',
-      },
-    });
-    expect(reviewed.findings).toEqual([]);
-    expect(reviewed.acceptedExceptions.map(({ finding }) => finding.identity)).toEqual(
-      report.findings.map((finding) => finding.identity),
-    );
+    expect(report.acceptedExceptions).toEqual([]);
   });
 
   it('requires a closed handle domain or a reviewed exception for intentional erasure', () => {
