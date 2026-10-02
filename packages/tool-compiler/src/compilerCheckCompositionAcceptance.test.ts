@@ -1513,7 +1513,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
     );
     expect(sourcePortability.findings[0]?.message).toContain('one required GlAnisotropyCapability closed state');
+    expect(sourcePortability.findings[0]?.message).toContain('live runtime storage, not a construction input');
+    expect(sourcePortability.findings[0]?.message).toContain('downstream host-binding gap');
+    expect(sourcePortability.findings[0]?.message).toContain('truthful host adapter and binding manifest');
     expect(sourcePortability.findings[1]?.message).toContain('required WeakMap<object, object> | null field');
+    expect(sourcePortability.findings[1]?.message).toContain('live runtime storage rather than an input carrier');
+    expect(sourcePortability.findings[1]?.message).toContain(
+      'neither a backend representation gap nor a host-binding gap',
+    );
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
@@ -1534,6 +1541,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 2,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createGlContextRuntimeWorkspaceFiles(false));
@@ -5509,6 +5524,10 @@ export type GlAnisotropyCapability =
 export interface GlContextRuntime {
   anisotropy: GlAnisotropyCapability;
   sceneMeshUploadCache: WeakMap<object, object> | null;
+}
+export interface GlContextRuntimeInput {
+  anisotropyExt?: EXT_texture_filter_anisotropic;
+  sceneMeshUploadCache?: WeakMap<object, object>;
 }`;
   return {
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
