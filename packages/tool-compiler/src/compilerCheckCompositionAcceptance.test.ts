@@ -2092,9 +2092,11 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
     );
     expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
-      expect.stringContaining("preserving the clone's target sharing, weight copy, and detached geometry"),
-      expect.stringContaining('the WebGPU skin adapter returns false for skin == null'),
-      expect.stringContaining('cloneMesh constructs a fresh node runtime without copying'),
+      expect.stringContaining('Scene3DDocumentMesh.morph is the separate import carrier'),
+      expect.stringContaining('Scene3DDocumentMesh.skin is already an optional non-null numeric index'),
+      expect.stringContaining(
+        'No document field, importer, materializer input, or createMesh option carries this cache',
+      ),
     ]);
     expect(sourcePortability.acceptedExceptions).toEqual([]);
     expect(
@@ -2121,6 +2123,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 3,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createMeshDeformationWorkspaceFiles(false));

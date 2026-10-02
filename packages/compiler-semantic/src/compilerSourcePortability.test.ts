@@ -6218,8 +6218,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
     ]);
     const morph = findings[0]!.message;
     expect(morph).toContain('live mesh morph slot both omission and explicit null');
-    expect(morph).toContain('createMesh omits morph');
-    expect(morph).toContain('buildDocumentNode assigns the exact Scene3DDocument MeshMorph owner only when present');
+    expect(morph).toContain('createMesh has no morph input and omits the live field');
+    expect(morph).toContain('Scene3DDocumentMesh.morph is the separate import carrier');
+    expect(morph).toContain('built-in format producers omit it or assign a non-null MeshMorph');
+    expect(morph).toContain('buildDocumentNode collapses either nullish input spelling to live omission');
+    expect(morph).toContain('shares the exact present document owner across every live node');
     expect(morph).toContain('cloneMesh first detaches geometry whenever either deformer is present');
     expect(morph).toContain('shares its immutable targets, copies its mutable weight array');
     expect(morph).toContain('prepareScene3DMorph drives updateMeshMorph');
@@ -6231,8 +6234,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
 
     const skin = findings[1]!.message;
     expect(skin).toContain('live mesh skin slot both omission and explicit null');
-    expect(skin).toContain('createMesh omits skin');
-    expect(skin).toContain('applyDocumentSkins assigns an exact resolved Skin');
+    expect(skin).toContain('createMesh has no skin input and omits the live field');
+    expect(skin).toContain('Scene3DDocumentMesh.skin is already an optional non-null numeric index');
+    expect(skin).toContain('built-in format paths omit it, copy undefined, or assign a number, never null');
+    expect(skin).toContain('an in-range index assigns the exact materialized Skin');
+    expect(skin).toContain('an out-of-range structural index currently writes undefined');
     expect(skin).toContain('cloneMesh detaches geometry whenever either deformer is present');
     expect(skin).toContain('shares the exact present Skin and its Skeleton3D owner');
     expect(skin).toContain('updateMeshSkin and prepareMeshSkinning return for a nullish slot');
@@ -6244,6 +6250,9 @@ describe('analyzeTypeScriptSourcePortability', () => {
 
     const bounds = findings[2]!.message;
     expect(bounds).toContain("mesh node runtime's posed local-bounds cache both omission and explicit null");
+    expect(bounds).toContain(
+      'No document field, importer, materializer input, or createMesh option carries this cache',
+    );
     expect(bounds).toContain('createNode3DRuntime omits the slot for every createMesh call');
     expect(bounds).toContain('cloneMesh constructs a fresh node runtime without copying');
     expect(bounds).toContain('prepareMeshSkinning is the sole writer');
@@ -6258,6 +6267,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
 
     for (const finding of findings) {
       expect(finding.message).toContain('use omission or undefined as its sole');
+      expect(finding.message).toContain('disposeNode3D does not clear these GC-owned values');
+      expect(finding.message).toContain('no mesh disposal path calls disposeSkeleton3D');
       expect(finding.message).toContain('normalize');
       expect(finding.message).toContain('Do not whitelist the redundant live-storage spelling');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
