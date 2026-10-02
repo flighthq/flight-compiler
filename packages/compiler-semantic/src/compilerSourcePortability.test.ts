@@ -4391,27 +4391,51 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toHaveLength(4);
   });
 
-  it('requires unused Lottie JSON fields to leave the portable projection', () => {
-    const opaque = input(
-      'LottieDocument.ts',
-      `export interface LottieTextData {
-         d: { readonly k: readonly string[] };
+  it('requires unused Lottie input fields to leave the portable projection', () => {
+    const opaqueDeclarations = `export interface LottieKeyframe<T> { s?: T; t: number }
+       export interface LottieTextDocument { t: string }
+       export interface LottieTextData {
+         d: { k: LottieKeyframe<LottieTextDocument>[] };
          a?: unknown[];
          m?: unknown;
          p?: unknown;
        }
-       export interface LottieDocument { chars?: unknown[] }`,
+       export interface LottieLayer { t?: LottieTextData; ty: number }
+       export interface LottieDocument {
+         chars?: unknown[];
+         fr: number;
+         h: number;
+         ip: number;
+         layers: LottieLayer[];
+         op: number;
+         w: number;
+       }`;
+    const opaque = input('packages/types/src/LottieDocument.ts', opaqueDeclarations);
+    const closed = input(
+      'packages/types/src/LottieDocument.ts',
+      `interface LottieCharacterShapeData { readonly kind: 'shapes'; readonly shapes: readonly string[] }
+       interface LottieCharacterPrecompositionData { readonly kind: 'precomposition'; readonly refId: string }
+       interface LottieCharacterData {
+         readonly ch: string;
+         readonly data: LottieCharacterPrecompositionData | LottieCharacterShapeData;
+       }
+       interface LottieTextAnimatorData { readonly name: string }
+       interface LottieTextMoreOptions { readonly grouping: 1 | 2 | 3 | 4 }
+       interface LottieTextPathOptions { readonly firstMargin: number; readonly lastMargin: number }
+       export interface LottieTextData {
+         d: { readonly k: readonly string[] };
+         a?: LottieTextAnimatorData[];
+         m?: LottieTextMoreOptions;
+         p?: LottieTextPathOptions;
+       }
+       export interface LottieDocument { chars?: LottieCharacterData[] }`,
     );
     const projected = input(
-      'ProjectedLottieDocument.ts',
+      'packages/types/src/ProjectedLottieDocument.ts',
       `export interface LottieTextData { d: { readonly k: readonly string[] } }
        export interface LottieDocument { readonly layers: readonly string[] }`,
     );
-    const unrelated = input(
-      'OtherDocument.ts',
-      `interface LottieDocument { chars?: unknown[] }
-       interface LottieTextData { a?: unknown[] }`,
-    );
+    const sameBasename = input('packages/example/src/LottieDocument.ts', opaqueDeclarations);
 
     const report = analyzeTypeScriptSourcePortability([opaque]);
 
@@ -4422,24 +4446,30 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:LottieTextData/property:p',
     ]);
     expect(report.findings[0]?.message).toContain('character-data array');
-    expect(report.findings[0]?.message).toContain('caller-owned shallow Readonly<LottieDocument>');
-    expect(report.findings[0]?.message).toContain('returns the object unchanged or JSON.parse-casts the string');
+    expect(report.findings[0]?.message).toContain('JSON string or a caller-owned shallow Readonly<LottieDocument>');
+    expect(report.findings[0]?.message).toContain('caller-owned elements can be arbitrary JavaScript values');
+    expect(report.findings[0]?.message).toContain('JSON.parse result is only cast');
     expect(report.findings[0]?.message).toContain('isValidLottieDocument checks only fr, ip, op, w, h, and layers');
-    expect(report.findings[0]?.message).toContain('never reads document.chars, mutates or copies it');
-    expect(report.findings[0]?.message).toContain('neither retained nor serialized');
+    expect(report.findings[0]?.message).toContain('temporarily reachable through LottieImportContext');
+    expect(report.findings[0]?.message).toContain('never reads document.chars');
+    expect(report.findings[0]?.message).toContain('returned LottieDocumentImportResult');
+    expect(report.findings[0]?.message).toContain('not a runtime value domain that a portable target must transport');
     expect(report.findings[0]?.message).toContain('Remove chars from the portable LottieDocument projection');
     expect(report.findings[0]?.message).toContain('distinct shape and precomposition arms');
-    expect(report.findings[1]?.message).toContain('text-range array');
-    expect(report.findings[2]?.message).toContain('text-alignment options');
-    expect(report.findings[3]?.message).toContain('text follow-path options');
+    expect(report.findings[1]?.message).toContain('text-animator array');
+    expect(report.findings[2]?.message).toContain('LottieTextData.m payload');
+    expect(report.findings[3]?.message).toContain('LottieTextData.p payload');
     for (const [index, property] of ['a', 'm', 'p'].entries()) {
       const message = report.findings[index + 1]?.message;
+      expect(message).toContain('caller-owned unknowns can carry arbitrary JavaScript values');
       expect(message).toContain('isValidLottieDocument does not inspect layer.t');
-      expect(message).toContain('declaration comment saying animator data is retained and diagnosed');
+      expect(message).toContain('the declaration comment claims the data is retained and diagnosed');
       expect(message).toContain('appendLottieText is the only production consumer of LottieTextData');
       expect(message).toContain('reads only d.k[0].s');
       expect(message).toContain(`never reads or diagnoses ${property}`);
-      expect(message).toContain(`No importer path mutates, copies, returns, or serializes ${property}`);
+      expect(message).toContain('source graph is reachable only through the synchronous import context');
+      expect(message).toContain(`does not copy ${property} into a node, track, diagnostic, or result`);
+      expect(message).toContain('presence, omission, and payload identity cannot affect the imported result');
       expect(message).toContain(`Remove ${property} from the portable LottieTextData projection`);
       expect(message).toContain(`give ${property} its own named closed payload`);
     }
@@ -4451,12 +4481,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).not.toContain('source-portability exception');
     }
     expect(report.findings[1]?.message).toContain('do not merge LottieTextData.a, .m, and .p into one carrier');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     expect(analyzeTypeScriptSourcePortability([projected]).findings).toEqual([]);
-    expect(analyzeTypeScriptSourcePortability([unrelated]).findings).toHaveLength(2);
+    const sameBasenameFindings = analyzeTypeScriptSourcePortability([sameBasename]).findings;
+    expect(sameBasenameFindings).toHaveLength(4);
     expect(
-      analyzeTypeScriptSourcePortability([unrelated]).findings.every((finding) =>
-        finding.message.includes('Replace it with a named closed value type'),
-      ),
+      sameBasenameFindings.every((finding) => finding.message.includes('Replace it with a named closed value type')),
     ).toBe(true);
 
     expect(report.acceptedExceptions).toEqual([]);

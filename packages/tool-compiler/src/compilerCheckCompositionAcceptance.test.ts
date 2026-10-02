@@ -2659,7 +2659,7 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
-  it('keeps unused Lottie JSON fields source-owned through check mode', () => {
+  it('keeps unused Lottie input fields source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createLottieDocumentWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
       eligiblePackageNames: ['@flighthq/types'],
@@ -2698,12 +2698,24 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
       expectedSubjects.map((subject) => ({ rule: 'opaque-value-domain', subject })),
     );
-    expect(sourcePortability.findings[0]?.message).toContain('caller-owned shallow Readonly<LottieDocument>');
-    expect(sourcePortability.findings[0]?.message).toContain('neither retained nor serialized');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'JSON string or a caller-owned shallow Readonly<LottieDocument>',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'caller-owned elements can be arbitrary JavaScript values',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('temporarily reachable through LottieImportContext');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'not a runtime value domain that a portable target must transport',
+    );
     for (const [index, property] of ['a', 'm', 'p'].entries()) {
       const message = sourcePortability.findings[index + 1]?.message;
+      expect(message).toContain('caller-owned unknowns can carry arbitrary JavaScript values');
       expect(message).toContain('appendLottieText is the only production consumer of LottieTextData');
       expect(message).toContain(`never reads or diagnoses ${property}`);
+      expect(message).toContain('source graph is reachable only through the synchronous import context');
+      expect(message).toContain(`does not copy ${property} into a node, track, diagnostic, or result`);
+      expect(message).toContain('presence, omission, and payload identity cannot affect the imported result');
       expect(message).toContain(`Remove ${property} from the portable LottieTextData projection`);
     }
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
@@ -2732,6 +2744,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 4,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createLottieDocumentWorkspaceFiles(false));
@@ -5963,19 +5983,21 @@ function createLottieDocumentWorkspaceFiles(opaque: boolean): Record<string, str
 }
 export interface LottieTextDocument { readonly t: string }
 export interface LottieTextData {
-  readonly d: { readonly k: readonly LottieKeyframe<LottieTextDocument>[] };
+  d: { k: LottieKeyframe<LottieTextDocument>[] };
 ${unsupportedTextData}}
+export interface LottieLayer { t?: LottieTextData; ty: number }
 export interface LottieDocument {
 ${unsupportedCharacterData}  readonly fr: number;
   readonly h: number;
   readonly ip: number;
-  readonly layers: readonly string[];
+  readonly layers: LottieLayer[];
   readonly op: number;
   readonly w: number;
 }`,
     '/flight/packages/types/src/index.ts': `export type {
   LottieDocument,
   LottieKeyframe,
+  LottieLayer,
   LottieTextData,
   LottieTextDocument,
 } from './LottieDocument.js';`,
