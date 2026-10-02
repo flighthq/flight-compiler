@@ -13326,6 +13326,67 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('pins the material-family factory assertion and the constructor that replaces it', () => {
+    // Three material files carry the same five sites: every concrete material constructor opens with
+    //     const material = createSurfaceMaterial(Kind, opts) as <ConcreteMaterial>;
+    // That is the factory clause of the reference-assertion rule -- the factory allocated and returned a
+    // SurfaceMaterial owner, and the assertion names a different one whose cells (shininess, shader,
+    // extensions) the factory never created. The attribution is source-portability and the message names the
+    // remedy, which the control keeps true by running it.
+    const materials = `export interface SurfaceMaterial { readonly kind: string; readonly alphaCutoff: number }
+export interface BlinnPhongMaterial extends SurfaceMaterial { readonly shininess: number }
+export interface CustomShaderMaterial extends SurfaceMaterial { readonly shader: string }
+export interface ExtendedPbrMaterial extends SurfaceMaterial { readonly extensions: readonly string[] }
+export function createSurfaceMaterial(kind: string, opts?: Readonly<{ alphaCutoff?: number }>): SurfaceMaterial {
+  return { kind, alphaCutoff: opts?.alphaCutoff ?? 0.5 };
+}`;
+    const refusal = (file: string, body: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(
+          lower(
+            file,
+            `${materials}
+${body}`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ),
+      );
+
+    // one site per file, all the same clause
+    for (const [file, target, cell] of [
+      ['classicMaterials.ts', 'BlinnPhongMaterial', 'shininess: 0.2'],
+      ['customShaderMaterial.ts', 'CustomShaderMaterial', "shader: 'custom'"],
+      ['extendedPbrMaterial.ts', 'ExtendedPbrMaterial', 'extensions: []'],
+    ] as const) {
+      const failure = refusal(
+        file,
+        `export function build(opts?: Readonly<{ alphaCutoff?: number }>): ${target} {
+  const material = createSurfaceMaterial('kind', opts) as ${target};
+  material.${cell.split(': ')[0]} = ${cell.split(': ').slice(1).join(': ')};
+  return material;
+}`,
+      );
+      expect(failure.rule).toBe('cpp-reference-assertion-without-heritage');
+      expect(failure.classification).toBe('source-portability');
+      expect(failure.message).toContain('createSurfaceMaterial factory result');
+      expect(failure.message).toContain('already allocated and returned');
+    }
+
+    // The remedy the message names, run: construct the concrete owner with its own declared cells.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'classicMaterials-constructed.ts',
+          `${materials}
+export function build(opts?: Readonly<{ alphaCutoff?: number }>): BlinnPhongMaterial {
+  return { kind: 'kind', alphaCutoff: opts?.alphaCutoff ?? 0.5, shininess: 0.2 };
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('flight::Ref<BlinnPhongMaterial>');
+  });
+
   it('pins the extension-only spread a preset must destructure away', () => {
     // materialPresets.ts spreads a preset's whole options object into the material constructor:
     //     return createExtendedPbrMaterial({ ...opts, extensions: [...] });
