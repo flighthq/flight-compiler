@@ -2137,13 +2137,31 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'type:LogData',
     ]);
     const alias = report.findings.find(({ subject }) => subject === 'type:LogData');
+    expect(alias?.message).toContain('structured logging is intentional, but unknown is not');
+    expect(alias?.message).toContain('built-in object producers use only portable scalar and closed record fields');
+    expect(alias?.message).toContain('No production path registers a kind serializer');
+    expect(alias?.message).toContain('evaluates a LogDataProvider exactly once only after the level gate passes');
     expect(alias?.message).toContain('every sink and LogSignals receive the raw LogEntry');
+    expect(alias?.message).toContain('_emitToSinks synchronously passes the same entry owner');
+    expect(alias?.message).toContain(
+      'memory and buffered sinks shallow-copy the entry but retain the exact data owner',
+    );
+    expect(alias?.message).toContain('Sink-owned memory retention ends on ring overwrite or clear');
+    expect(alias?.message).toContain('a prior getMemoryLogSinkEntries result can extend that lifetime');
+    expect(alias?.message).toContain('dispose-time flush');
+    expect(alias?.message).toContain('does not unregister the callable sink');
+    expect(alias?.message).toContain('default console-capture formatter');
+    expect(alias?.message).toContain('createJsonLogFormatter is the only built-in path');
+    expect(alias?.message).toContain('file sink formats synchronously and offers only the resulting line');
     expect(alias?.message).toContain('before registered kind serializers and redaction run inside the JSON formatter');
     expect(alias?.message).toContain('portable scalars, arrays, and string-keyed records');
     expect(alias?.message).toContain('serializer results, serializeLogError, and formatter and redaction helpers');
     expect(alias?.message).toContain('formatter-only transforms over record values already inside LogFieldValue');
     expect(alias?.message).toContain('inputs and outputs as LogFields');
     expect(alias?.message).toContain('do not use them to admit live objects');
+    expect(alias?.message).toContain('Keep serializeLogError input unknown as the normalization ingress');
+    expect(alias?.message).toContain('flight::Record<flight::String, flight::Any>');
+    expect(alias?.message).toContain('Haxe exposes LogEntry.data and both fields members as Dynamic');
     expect(alias?.message).toContain('before LogEntry construction');
     for (const finding of report.findings.filter(({ subject }) => subject.endsWith('/property:fields'))) {
       expect(finding.message).toContain('merges them into LogData before LogEntry emission');
@@ -2152,8 +2170,18 @@ describe('analyzeTypeScriptSourcePortability', () => {
       );
     }
     expect(report.findings[0]?.message).toContain('createLogContext and createChildLogContext');
+    expect(report.findings[0]?.message).toContain('retains the exact input fields owner');
+    expect(report.findings[0]?.message).toContain('fresh top-level merge while sharing nested values');
+    expect(report.findings[0]?.message).toContain('no context disposer or process-global context registry');
+    expect(report.findings[0]?.message).toContain('readonly LogFields');
     expect(report.findings[1]?.message).toContain('active-span stack');
     expect(report.findings[1]?.message).toContain('createLogSpan');
+    expect(report.findings[1]?.message).toContain('retains the exact input fields owner');
+    expect(report.findings[1]?.message).toContain(
+      'one strong reference per entry until exitLogSpan removes the first matching identity',
+    );
+    expect(report.findings[1]?.message).toContain('does not clear the caller-owned span or its fields');
+    expect(report.findings[1]?.message).toContain('readonly LogFields');
     for (const finding of report.findings) {
       expect(finding.message).toContain('Do not whitelist');
       expect(finding.message).not.toContain('reviewed source-portability exception');

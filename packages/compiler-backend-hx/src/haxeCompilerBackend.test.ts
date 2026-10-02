@@ -2584,6 +2584,42 @@ describe('emitIrModuleHaxe', () => {
     expect(output).toContain('value:Dynamic');
   });
 
+  it('distinguishes erased log fields from the named recursive transport domain', () => {
+    const opaque = emitIrModuleHaxe(
+      lower(
+        'log-fields.ts',
+        `export type LogData = string | Readonly<Record<string, unknown>>;
+         export interface LogContext { readonly fields: Readonly<Record<string, unknown>> }
+         export interface LogSpan { readonly fields: Readonly<Record<string, unknown>> }`,
+      ).module,
+    ).contents;
+    expect(opaque).toContain('typedef LogData = Dynamic;');
+    expect(opaque.match(/fields:haxe\.DynamicAccess<Dynamic>/gu)).toHaveLength(2);
+
+    // The heterogeneous recursive value remains Dynamic at runtime, but every field names the closed
+    // source alias and its record element instead of exposing an unrestricted DynamicAccess value.
+    const closed = emitIrModuleHaxe(
+      lower(
+        'log-field-values.ts',
+        `export type LogFieldValue =
+           | boolean
+           | number
+           | string
+           | null
+           | readonly LogFieldValue[]
+           | Readonly<Record<string, LogFieldValue>>;
+         export type LogFields = Readonly<Record<string, LogFieldValue>>;
+         export type LogData = string | LogFields;
+         export interface LogContext { readonly fields: LogFields }
+         export interface LogSpan { readonly fields: LogFields }`,
+      ).module,
+    ).contents;
+    expect(closed).toContain('typedef LogFieldValue = Dynamic;');
+    expect(closed).toContain('typedef LogFields = haxe.DynamicAccess<LogFieldValue>;');
+    expect(closed.match(/fields:LogFields/gu)).toHaveLength(2);
+    expect(closed.match(/fields:haxe\.DynamicAccess<Dynamic>/gu) ?? []).toHaveLength(0);
+  });
+
   it('distinguishes erased notification payload cells from the named portable domain', () => {
     // Haxe represents both open unknown and this heterogeneous recursive union with Dynamic at runtime.
     // The named field still preserves the closed source contract instead of making target erasure the API.

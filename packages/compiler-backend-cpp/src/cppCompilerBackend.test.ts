@@ -15033,6 +15033,49 @@ export function add(frame: Frame2, value: unknown): void { frame.slices.push(val
     ).toContain('slices');
   });
 
+  it('distinguishes erased log fields from the closed recursive transport domain', () => {
+    const opaque = emitIrModuleCpp(
+      lower(
+        'log-fields.ts',
+        `export type LogData = string | Readonly<Record<string, unknown>>;
+         export interface LogContext { readonly fields: Readonly<Record<string, unknown>> }
+         export interface LogSpan { readonly fields: Readonly<Record<string, unknown>> }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(opaque).toContain(
+      'using LogData = std::variant<flight::Record<flight::String, flight::Any>, flight::String>;',
+    );
+    expect(opaque.match(/flight::Record<flight::String, flight::Any> fields;/gu)).toHaveLength(2);
+
+    const closed = emitIrModuleCpp(
+      lower(
+        'log-field-values.ts',
+        `export type LogFieldValue =
+           | boolean
+           | number
+           | string
+           | null
+           | readonly LogFieldValue[]
+           | Readonly<Record<string, LogFieldValue>>;
+         export type LogFields = Readonly<Record<string, LogFieldValue>>;
+         export type LogData = string | LogFields;
+         export interface LogContext { readonly fields: LogFields }
+         export interface LogSpan { readonly fields: LogFields }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(closed).toContain('struct LogFieldValue : public');
+    expect(closed).toContain('flight::Array<LogFieldValue>');
+    expect(closed).toContain('flight::Record<flight::String, LogFieldValue>');
+    expect(closed).toContain('using LogFields = flight::Record<flight::String, LogFieldValue>;');
+    expect(closed).toContain(
+      'using LogData = std::variant<flight::Record<flight::String, LogFieldValue>, flight::String>;',
+    );
+    expect(closed.match(/LogFields fields;/gu)).toHaveLength(2);
+    expect(closed).not.toContain('flight::Any');
+  });
+
   it('distinguishes erased notification payload cells from the closed portable domain', () => {
     // C++ can represent the current declarations, but an Any carrier does not make the source domain portable.
     // Pin both sides of the prescribed rewrite so backend support cannot be mistaken for an intentional open API.

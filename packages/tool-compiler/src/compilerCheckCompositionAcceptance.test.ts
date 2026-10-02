@@ -4090,6 +4090,13 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
       passed: false,
     });
+    const unchanged = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(unchanged).toMatchObject({ introduced: [], resolvedFindingIdentities: [] });
+    expect(unchanged.unchanged).toHaveLength(3);
+    expect(createCompilerPackageCheckPolicyResult(unchanged, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
 
     const portableSource = createMemoryWorkspaceSource(createLogWorkspaceFiles(false));
     const portableInput = createFlightWorkspaceCompilationInput({
