@@ -6843,6 +6843,130 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(JSON.stringify(create.body)).toContain('"name":"finishSignal"');
   });
 
+  it('retains safe-dispatch snapshots and exact teardown owners without callable assertions', () => {
+    const result = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/signals/src/safe.ts',
+        `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+       interface SignalData<T extends (...args: any[]) => void> {
+         slots: (SignalDispatch<T> | null)[];
+         priorities: number[];
+         repeat: boolean[];
+         cancelled: boolean;
+         depth: number;
+       }
+       interface Signal<T extends (...args: any[]) => void> {
+         data: SignalData<T> | null;
+         emit: SignalDispatch<T>;
+       }
+       function createNullSignalDispatch<T extends (...args: any[]) => void>(): SignalDispatch<T> {
+         return (..._args: Parameters<T>): void => {};
+       }
+       export function emitSignalSafe<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         ...args: Parameters<T>
+       ): void {
+         const data = signal.data;
+         if (data === null) return;
+         const slots = data.slots.slice();
+         const priorities = data.priorities.slice();
+         const repeat = data.repeat.slice();
+         data.cancelled = false;
+         data.depth++;
+         try {
+           for (let i = 0; i < slots.length; i++) {
+             const slot = slots[i];
+             if (slot === null) continue;
+             if (!repeat[i]) tombstoneOnceSlot(data, slot, priorities[i]);
+             slot(...args);
+             if (data.cancelled) break;
+           }
+         } finally {
+           data.depth--;
+           if (data.depth === 0) compactSignalData(signal, data);
+         }
+       }
+       function tombstoneOnceSlot<T extends (...args: any[]) => void>(
+         data: SignalData<T>,
+         slot: SignalDispatch<T>,
+         priority: number,
+       ): void {
+         for (let i = 0; i < data.slots.length; i++) {
+           if (data.slots[i] !== slot || data.repeat[i] || data.priorities[i] !== priority) continue;
+           data.slots[i] = null;
+           return;
+         }
+       }
+       function compactSignalData<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         data: SignalData<T>,
+       ): void {
+         let write = 0;
+         for (let read = 0; read < data.slots.length; read++) {
+           if (data.slots[read] === null) continue;
+           if (write !== read) {
+             data.slots[write] = data.slots[read];
+             data.priorities[write] = data.priorities[read];
+             data.repeat[write] = data.repeat[read];
+           }
+           write++;
+         }
+         if (write === data.slots.length) return;
+         data.slots.length = write;
+         data.priorities.length = write;
+         data.repeat.length = write;
+         if (write === 0 && signal.data === data) {
+           signal.emit = createNullSignalDispatch<T>();
+           signal.data = null;
+         }
+       }`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/signals', upstreamDirectory: '/flight' },
+    );
+    const emit = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'emitSignalSafe',
+    );
+    const tombstone = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'tombstoneOnceSlot',
+    );
+    const compact = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'compactSignalData',
+    );
+    if (emit?.kind !== 'function' || tombstone?.kind !== 'function' || compact?.kind !== 'function') {
+      throw new Error('Expected normalized safe-dispatch operations');
+    }
+    const assertions: IrExpression[] = [];
+    analyzeIrModuleTraversal(result.module, {
+      expression(expression) {
+        if (expression.kind === 'cast') assertions.push(expression);
+      },
+    });
+    const emitBody = JSON.stringify(emit.body);
+    const compactBody = JSON.stringify(compact.body);
+
+    expect(result.diagnostics).toEqual([]);
+    expect(assertions).toEqual([]);
+    expect(emit.parameters[1]?.dependentCallablePack).toMatchObject({
+      callable: emit.typeParameters[0]?.binding,
+      kind: 'parameters',
+      schema: 'flight-compiler-dependent-callable-pack/1',
+    });
+    expect(emitBody.match(/"name":"slice"/g)).toHaveLength(6);
+    expect(emitBody).toContain('"name":"cancelled"');
+    expect(emitBody).toContain('"name":"depth"');
+    expect(emitBody).toContain('"name":"tombstoneOnceSlot"');
+    expect(emitBody).toContain('"name":"compactSignalData"');
+    expect(JSON.stringify(tombstone.body)).toContain('"name":"repeat"');
+    expect(compactBody).toContain('"name":"slots"');
+    expect(compactBody).toContain('"name":"priorities"');
+    expect(compactBody).toContain('"name":"repeat"');
+    expect(compactBody).toContain('"name":"createNullSignalDispatch"');
+    expect(compactBody).toContain('"name":"emit"');
+    expect(compactBody).toContain('"name":"data"');
+  });
+
   it('retains named tracked-slot and scope-disconnect operations without owner assertions', () => {
     const result = lowerTypeScriptSource(
       ts.createSourceFile(

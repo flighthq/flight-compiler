@@ -19381,8 +19381,15 @@ int main() {
          signal.emit = nullSignalEmit as unknown as T;
          signal.data = null;
        }
-       export function finishSafeDispatch<T extends (...args: any[]) => void>(signal: Signal<T>): void {
-         signal.emit = nullSignalEmit as unknown as T;
+       export function finishSafeDispatch<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         data: SignalData,
+         empty: boolean,
+       ): void {
+         if (empty && signal.data === data) {
+           signal.emit = nullSignalEmit as unknown as T;
+           signal.data = null;
+         }
        }
        export function disconnectSignalConnection<T extends (...args: any[]) => void>(
          connection: SignalConnection<T>,
@@ -19413,6 +19420,8 @@ int main() {
     expect(emitted).toContain('if (connection->paused)');
     expect(emitted).toContain('disconnect_signal_connection<T>(connection);');
     expect(emitted).toContain('(connection->connected = false);');
+    expect(emitted).toContain('if ((empty && (signal->data == data)))');
+    expect(emitted).toContain('(signal->data = std::nullopt);');
     expect(emitted).toContain('slot(std::forward<ArgsPack>(args)...);');
     expect(emitted).not.toContain('flight::Any::');
     expect(emitted).not.toContain('static_cast');
@@ -19436,6 +19445,16 @@ int main() {
        export function initializeSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
          signal.emit = createNullSignalDispatch<T>();
          signal.data = null;
+       }
+       export function finishSafeDispatch<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         data: SignalData,
+         empty: boolean,
+       ): void {
+         if (empty && signal.data === data) {
+           signal.emit = createNullSignalDispatch<T>();
+           signal.data = null;
+         }
        }`,
     );
     expect(assertionFreeSignal.diagnostics).toEqual([]);
