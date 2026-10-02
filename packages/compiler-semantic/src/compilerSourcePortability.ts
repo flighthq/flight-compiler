@@ -937,6 +937,22 @@ function getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getCanvasBlendModeApplicationMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'CanvasRenderRegistries' ||
+    getNodeName(node.name) !== 'blendModeApplication' ||
+    !isFlightTypesSource(node, 'CanvasRenderState.ts') ||
+    !isOptionalNullableFunctionProperty(node)
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the Canvas pipeline's blend-mode application policy both omission and explicit null, but current producers have one no-policy state: allocateEmptyCanvasRenderRegistries leaves the property omitted, while defaultScene2DCanvasRenderRegistries supplies the exact applyCanvasBlendMode function, and no producer writes null. createCanvasRenderState snapshots registries.blendModeApplication ?? null into the required nullable CanvasRenderState.applyBlendMode hook, so either input absence spelling becomes the same passthrough state. Canvas draw paths optional-call that live hook, and enableCanvasBlendMode may install applyCanvasBlendMode later; keep CanvasRenderState.applyBlendMode required nullable for that live state. Make CanvasRenderRegistries.blendModeApplication an optional non-null function with its existing CanvasRenderState and BlendMode | null parameters. Preserve the exact present function owner, the default pipeline assignment, the empty-registry omission, the one-time ?? null normalization, and the runtime registry copies; no production consumer observes an omitted-versus-null registry spelling after construction. If an external compatibility boundary accepts explicit null, normalize it once to omission before constructing the pipeline; if a future registry update API must distinguish unchanged, disabled, and installed policy, give it a separate named closed update state. Do not whitelist the redundant registry spelling. The compiler will preserve every authored state and callback signature but will not choose or collapse an absence sentinel, infer or install blend support, call or bind the policy, re-parameterize the callback, rewrite draw dispatch or compositing state, route the function through Any, reinterpret or cast it, or add side storage.`;
+}
+
 function getRenderProxyColorMatrixMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -1348,6 +1364,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (scene2DAudioLoadContext) return scene2DAudioLoadContext;
   const sceneConstructionOwner = getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(node, subject);
   if (sceneConstructionOwner) return sceneConstructionOwner;
+  const canvasBlendModeApplication = getCanvasBlendModeApplicationMixedAbsencePropertyMessage(node, subject);
+  if (canvasBlendModeApplication) return canvasBlendModeApplication;
   const renderProxyColorMatrix = getRenderProxyColorMatrixMixedAbsencePropertyMessage(node, subject);
   if (renderProxyColorMatrix) return renderProxyColorMatrix;
   const colorAdjustmentFeature = getColorAdjustmentFeatureMixedAbsencePropertyMessage(node, subject);

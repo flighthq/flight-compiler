@@ -1279,6 +1279,76 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the Canvas blend-policy absence finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createCanvasRenderStateWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubject = 'interface:CanvasRenderRegistries/property:blendModeApplication';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'mixed-absence', subject: expectedSubject },
+    ]);
+    expect(sourcePortability.findings[0]?.message).toContain('registries.blendModeApplication ?? null');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Make CanvasRenderRegistries.blendModeApplication an optional non-null function',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('keep CanvasRenderState.applyBlendMode required nullable');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant registry spelling');
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: expectedSubject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createCanvasRenderStateWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both MeshAttachment2D point-storage findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createMeshAttachment2DWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -2010,6 +2080,23 @@ export interface EnvironmentOptions {
   intensity?: number;
 }`,
     '/flight/packages/types/src/index.ts': `export type { EnvironmentOptions } from './EnvironmentOptions.js';`,
+  };
+}
+
+function createCanvasRenderStateWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/CanvasRenderState.ts': `export interface CanvasRenderState {}
+export type BlendMode = 'normal' | 'add';
+export interface CanvasRenderRegistries {
+  blendModeApplication?: ((state: CanvasRenderState, blendMode: BlendMode | null) => void)${nullable};
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  BlendMode,
+  CanvasRenderRegistries,
+  CanvasRenderState,
+} from './CanvasRenderState.js';`,
   };
 }
 

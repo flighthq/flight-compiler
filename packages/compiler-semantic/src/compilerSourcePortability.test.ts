@@ -6685,6 +6685,83 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the single absent Canvas blend-policy registry state', () => {
+    const source = input(
+      'packages/types/src/CanvasRenderState.ts',
+      `interface CanvasRenderState {}
+       type BlendMode = 'normal' | 'add';
+       interface CanvasRenderRegistries {
+         blendModeApplication?: ((state: CanvasRenderState, blendMode: BlendMode | null) => void) | null;
+       }`,
+    );
+    const [finding] = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(finding).toMatchObject({
+      rule: 'mixed-absence',
+      subject: 'interface:CanvasRenderRegistries/property:blendModeApplication',
+    });
+    expect(finding?.message).toContain(
+      "gives the Canvas pipeline's blend-mode application policy both omission and explicit null",
+    );
+    expect(finding?.message).toContain('allocateEmptyCanvasRenderRegistries leaves the property omitted');
+    expect(finding?.message).toContain(
+      'defaultScene2DCanvasRenderRegistries supplies the exact applyCanvasBlendMode function',
+    );
+    expect(finding?.message).toContain('no producer writes null');
+    expect(finding?.message).toContain('registries.blendModeApplication ?? null');
+    expect(finding?.message).toContain('required nullable CanvasRenderState.applyBlendMode hook');
+    expect(finding?.message).toContain('Canvas draw paths optional-call that live hook');
+    expect(finding?.message).toContain('enableCanvasBlendMode may install applyCanvasBlendMode later');
+    expect(finding?.message).toContain(
+      'Make CanvasRenderRegistries.blendModeApplication an optional non-null function',
+    );
+    expect(finding?.message).toContain('existing CanvasRenderState and BlendMode | null parameters');
+    expect(finding?.message).toContain('Preserve the exact present function owner');
+    expect(finding?.message).toContain('runtime registry copies');
+    expect(finding?.message).toContain('normalize it once to omission before constructing the pipeline');
+    expect(finding?.message).toContain('unchanged, disabled, and installed policy');
+    expect(finding?.message).toContain('Do not whitelist the redundant registry spelling');
+    expect(finding?.message).toContain('will not choose or collapse an absence sentinel');
+    expect(finding?.message).toContain('call or bind the policy');
+    expect(finding?.message).toContain('re-parameterize the callback');
+    expect(finding?.message).toContain('route the function through Any');
+    expect(finding?.message).toContain('or add side storage');
+  });
+
+  it('keeps Canvas blend-policy lookalikes generic and accepts optional non-null input', () => {
+    const portable = input(
+      'packages/types/src/CanvasRenderState.ts',
+      `interface CanvasRenderState {}
+       type BlendMode = 'normal';
+       interface CanvasRenderRegistries {
+         blendModeApplication?: (state: CanvasRenderState, blendMode: BlendMode | null) => void;
+       }`,
+    );
+    const unrelated = [
+      input(
+        'packages/example/src/CanvasRenderState.ts',
+        `interface CanvasRenderRegistries { blendModeApplication?: (() => void) | null }`,
+      ),
+      input(
+        'packages/types/src/CanvasRenderState.ts',
+        `interface OtherCanvasRegistries { blendModeApplication?: (() => void) | null }`,
+      ),
+      input(
+        'packages/types/src/CanvasRenderState.ts',
+        `interface CanvasRenderRegistries { materialApplication?: (() => void) | null }`,
+      ),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability([portable]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const [finding] = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(finding?.message).toContain(
+        'combines an optional property with null; choose one absence representation or make all three states explicit.',
+      );
+      expect(finding?.message).not.toContain("Canvas pipeline's blend-mode application policy");
+    }
+  });
+
   it('explains the required nullable contract for the reusable RenderProxy color matrix', () => {
     const source = input(
       'packages/types/src/RenderProxy.ts',
