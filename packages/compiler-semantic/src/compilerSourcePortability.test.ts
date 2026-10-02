@@ -2549,58 +2549,84 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
-  it('preserves animation target and marker payloads as exact domain-owned references', () => {
+  it('replaces erased animation targets with open typed identity refs', () => {
     const target = input(
       'packages/types/src/AnimationChannel.ts',
       'interface AnimationChannel { track: AnimationTrack; targetRef: unknown }',
     );
-    const event = input(
-      'packages/types/src/AnimationClipEvent.ts',
-      'interface AnimationClipEvent { name: string; payload: unknown; time: number }',
+    const closed = input(
+      'packages/types/src/AnimationChannel.ts',
+      `interface AnimationTargetRef extends Entity { readonly kind: string }
+       interface AnimationChannel { track: AnimationTrack; targetRef: AnimationTargetRef }`,
     );
-    const closed = [
-      input(
-        'packages/types/src/AnimationChannel.ts',
-        `type AnimationTargetRef = { readonly kind: 'node'; readonly nodeId: string }
-           | { readonly boneIndex: number; readonly kind: 'bone' };
-         interface AnimationChannel { track: AnimationTrack; targetRef: AnimationTargetRef }`,
-      ),
-      input(
-        'packages/types/src/AnimationClipEvent.ts',
-        `type AnimationClipEventPayload =
-           | { readonly kind: 'audio'; readonly resource: string }
-           | { readonly kind: 'marker' };
-         interface AnimationClipEvent { name: string; payload: AnimationClipEventPayload; time: number }`,
-      ),
-    ];
     const controls = [
       input('packages/types/src/Other.ts', 'interface AnimationChannel { targetRef: unknown }'),
       input('packages/other/src/AnimationChannel.ts', 'interface AnimationChannel { targetRef: unknown }'),
       input('packages/types/src/AnimationChannel.ts', 'interface AnimationChannel { targetRef?: unknown }'),
       input('packages/types/src/AnimationChannel.ts', 'interface AnimationChannel { targetRef: any }'),
+    ];
+
+    const report = analyzeTypeScriptSourcePortability([target]);
+    expect(report.findings).toMatchObject([
+      { rule: 'opaque-value-domain', subject: 'interface:AnimationChannel/property:targetRef' },
+    ]);
+    const message = report.findings[0]?.message;
+    expect(message).toContain('createAnimationChannel and initializeAnimationChannel accept any value');
+    expect(message).toContain('cloneAnimationClip reuses the exact reference');
+    expect(message).toContain('blend trees, crossfades, state machines, and layer stacks');
+    expect(message).toContain('format-local Lottie and Rive callback shapes');
+    expect(message).toContain('dispatches through an open binder registry');
+    expect(message).toContain('stores node index plus path and rebuilds a binding');
+    expect(message).toContain('open named AnimationTargetRef entity containing a readonly string kind');
+    expect(message).toContain('domain-private typed WeakMap keyed by that ref');
+    expect(message).toContain('open skeleton binder resolves only the refs created by its paired producer');
+    expect(message).toContain('Do not whitelist the erased property');
+    expect(message).not.toContain('source-portability exception');
+    expect(message).toContain('target-specific Any carrier');
+    expect(message).toContain('retain or insert a cast');
+    expect(message).toContain('allocate or populate the domain maps');
+    expect(message).toContain('copy or materialize a target or ref');
+    expect(message).toContain('replace reference equality with structural equality');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    for (const control of controls) {
+      expect(
+        analyzeTypeScriptSourcePortability([control]).findings.every(
+          ({ message: controlMessage }) => !controlMessage.includes('domain-private typed WeakMap'),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('preserves animation marker payloads as exact domain-owned references', () => {
+    const event = input(
+      'packages/types/src/AnimationClipEvent.ts',
+      'interface AnimationClipEvent { name: string; payload: unknown; time: number }',
+    );
+    const closed = input(
+      'packages/types/src/AnimationClipEvent.ts',
+      `type AnimationClipEventPayload =
+           | { readonly kind: 'audio'; readonly resource: string }
+           | { readonly kind: 'marker' };
+         interface AnimationClipEvent { name: string; payload: AnimationClipEventPayload; time: number }`,
+    );
+    const controls = [
       input('packages/types/src/AnimationClipEvent.ts', 'interface AnimationClipEvent { payload?: unknown }'),
       input('packages/types/src/AnimationClipEvent.ts', 'interface AnimationClipEvent { payload: unknown[] }'),
       input('packages/types/src/AnimationClipEvent.ts', 'interface OtherEvent { payload: unknown }'),
     ];
 
-    const report = analyzeTypeScriptSourcePortability([event, target]);
-    expect(report.findings.map(({ subject }) => subject)).toEqual([
-      'interface:AnimationChannel/property:targetRef',
-      'interface:AnimationClipEvent/property:payload',
+    const report = analyzeTypeScriptSourcePortability([event]);
+    expect(report.findings).toMatchObject([
+      { rule: 'opaque-value-domain', subject: 'interface:AnimationClipEvent/property:payload' },
     ]);
-    expect(report.findings[0]?.message).toContain('crossfade and layer composition use identity equality only');
-    expect(report.findings[0]?.message).toContain('genuinely domain-opaque extensibility contract');
-    expect(report.findings[0]?.message).toContain('named closed tagged AnimationTargetRef domain');
-    expect(report.findings[1]?.message).toContain('cloneAnimationClip carries the same payload reference');
-    expect(report.findings[1]?.message).toContain('retained by the clip but remains genuinely domain-opaque');
-    expect(report.findings[1]?.message).toContain('named closed AnimationClipEventPayload domain');
-    for (const finding of report.findings) {
-      expect(finding.message).toContain('reviewed source-portability exception for this exact property');
-      expect(finding.message).toContain('target-specific Any carrier');
-      expect(finding.message).toContain('insert a cast');
-      expect(finding.message).toMatch(/copy or materialize the (?:target reference|payload)/u);
-    }
-    expect(analyzeTypeScriptSourcePortability(closed).findings).toEqual([]);
+    expect(report.findings[0]?.message).toContain('cloneAnimationClip carries the same payload reference');
+    expect(report.findings[0]?.message).toContain('retained by the clip but remains genuinely domain-opaque');
+    expect(report.findings[0]?.message).toContain('named closed AnimationClipEventPayload domain');
+    expect(report.findings[0]?.message).toContain('reviewed source-portability exception for this exact property');
+    expect(report.findings[0]?.message).toContain('target-specific Any carrier');
+    expect(report.findings[0]?.message).toContain('insert a cast');
+    expect(report.findings[0]?.message).toContain('copy or materialize the payload');
+    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     for (const control of controls) {
       expect(
         analyzeTypeScriptSourcePortability([control]).findings.every(
@@ -2609,7 +2635,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ).toBe(true);
     }
 
-    const reviewed = analyzeTypeScriptSourcePortability([event, target], {
+    const reviewed = analyzeTypeScriptSourcePortability([event], {
       exceptionPolicy: {
         exceptions: report.findings.map((finding) => ({
           findingIdentity: finding.identity,
@@ -2620,7 +2646,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       },
     });
     expect(reviewed.findings).toEqual([]);
-    expect(reviewed.acceptedExceptions).toHaveLength(2);
+    expect(reviewed.acceptedExceptions).toHaveLength(1);
   });
 
   it('replaces native-window and video erasure while keeping drawable identity provider-local', () => {
