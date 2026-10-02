@@ -1990,6 +1990,77 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the obsolete HostVideo stream erasure source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createHostVideoStreamWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const subject = 'interface:HostVideoCapability/method:attachStream.parameter:stream';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toMatchObject([{ rule: 'opaque-value-domain', subject }]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]?.message).toContain('exactly MediaStream at this web-only entry');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'not an open cross-host token or a request for unknown or Any representation',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('bind MediaStream as an exact external host type');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Electron, Tauri, Capacitor, Node, and other native hosts',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('rather than inventing a HostVideoStreamHandle');
+    expect(sourcePortability.findings[0]?.message).toContain('HostVideo.ts and attachStream are gone');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
+    expect(report.directFindings).toMatchObject([
+      {
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject: subject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createHostVideoStreamWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the three log transport domains source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createLogWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4261,6 +4332,27 @@ export interface NetResponse {
   NetResponse,
   NetResponseBody,
 } from './Net.js';`,
+  };
+}
+
+function createHostVideoStreamWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const sourceName = opaque ? 'HostVideo' : 'VideoCapabilityBackend';
+  const capability = opaque
+    ? `export interface HostVideoCapability {
+  attachStream?(stream: unknown): HostImageSource | null;
+  canPlayType(mimeType: string): boolean;
+}`
+    : `export interface VideoCapabilityBackend {
+  canPlayType(mimeType: string): boolean;
+  createVideoElement?(): HostImageSource | null;
+}`;
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    [`/flight/packages/types/src/${sourceName}.ts`]: `export interface HostImageSource { readonly id: string }
+${capability}`,
+    '/flight/packages/types/src/index.ts': opaque
+      ? `export type { HostImageSource, HostVideoCapability } from './HostVideo.js';`
+      : `export type { HostImageSource, VideoCapabilityBackend } from './VideoCapabilityBackend.js';`,
   };
 }
 

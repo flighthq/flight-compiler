@@ -2743,11 +2743,21 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings[0]?.message).toContain('Do not whitelist');
     expect(report.findings[0]?.message).not.toContain('reviewed source-portability exception');
     expect(report.findings[1]?.message).toContain('only production caller');
+    expect(report.findings[1]?.message).toContain('webHostVideo is the only production attachStream implementation');
+    expect(report.findings[1]?.message).toContain('Electron, Tauri, Capacitor, Node, and other native hosts');
+    expect(report.findings[1]?.message).toContain('asserts the unknown value to the DOM MediaProvider');
+    expect(report.findings[1]?.message).toContain('VideoResource retains only that element');
+    expect(report.findings[1]?.message).toContain('exactly MediaStream at this web-only entry');
+    expect(report.findings[1]?.message).toContain('not an open cross-host token or a request for unknown or Any');
+    expect(report.findings[1]?.message).toContain('bind MediaStream as an exact external host type');
     expect(report.findings[1]?.message).toContain('Remove attachStream from HostVideoCapability');
+    expect(report.findings[1]?.message).toContain('rather than inventing a HostVideoStreamHandle');
     expect(report.findings[1]?.message).toContain('createVideoResourceFromMediaStream accept');
     expect(report.findings[1]?.message).toContain('element.srcObject = stream');
     expect(report.findings[1]?.message).toContain('without stopping the caller-owned tracks');
-    expect(report.findings[1]?.message).toContain('Current Flight already applies this rewrite');
+    expect(report.findings[1]?.message).toContain('Current Flight already applies this typed rewrite');
+    expect(report.findings[1]?.message).toContain('HostVideo.ts and attachStream are gone');
+    expect(report.findings[1]?.message).toContain('no native stream adapter or erased compiler carrier is needed');
     expect(report.findings[1]?.message).toContain('Do not whitelist');
     expect(report.findings[1]?.message).not.toContain('reviewed source-portability exception');
     expect(report.findings[2]?.message).toContain('only in package-private SurfaceRuntime');
@@ -2760,7 +2770,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings[0]?.message).toContain('retain or insert a cast');
     expect(report.findings[0]?.message).toContain('copy or materialize the native window');
     expect(report.findings[1]?.message).toContain('target-specific Any carrier');
-    expect(report.findings[1]?.message).toContain('insert a cast for the stream');
+    expect(report.findings[1]?.message).toContain('synthesize a missing external binding');
+    expect(report.findings[1]?.message).toContain('insert or preserve the MediaProvider cast');
     expect(report.findings[1]?.message).toContain('copy or materialize the live stream');
     expect(analyzeTypeScriptSourcePortability(closed).findings).toEqual([]);
     for (const control of controls) {
