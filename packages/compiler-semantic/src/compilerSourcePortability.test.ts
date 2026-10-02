@@ -5696,13 +5696,33 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain(`MeshAttachment2D.${finding.subject.endsWith(':skin') ? 'skin' : 'vertices'}`);
       expect(finding.message).toContain('Spine JSON, Spine binary, and DragonBones mesh paths');
       expect(finding.message).toContain('all call initializeMeshAttachment2D, which writes both fields');
+      expect(finding.message).toContain('DragonBones shared and legacy weighted meshes return null before allocation');
+      expect(finding.message).toContain('not mesh records with omitted point storage');
       expect(finding.message).toContain('rigid meshes use skin null with a Float32Array of local vertices');
       expect(finding.message).toContain('weighted meshes use a Skin2D with vertices null');
       expect(finding.message).toContain('rejected empty Spine binary meshes use null for both');
+      expect(finding.message).toContain('readSpineBinaryVertices returns the same exclusive pair');
       expect(finding.message).toContain('deformSkeleton2DMeshAttachment passes the pair unchanged');
       expect(finding.message).toContain('a present skin selects weighted deformation and ignores vertices');
       expect(finding.message).toContain('null and undefined vertices both cause no coordinate writes');
       expect(finding.message).toContain('explainSkeleton2DDeformLength uses the same weighted-first dispatch');
+      expect(finding.message).toContain('only production readers of the point-storage pair');
+      expect(finding.message).toContain('deform bookkeeping retains attachment identity without reading either field');
+      expect(finding.message).toContain(
+        'cloneSkeleton2D shallow-copies Slot2D records but shares the exact mesh entity',
+      );
+      expect(finding.message).toContain('skins table that can retain it');
+      expect(finding.message).toContain(
+        'No production mutator assigns, clears, or deletes either field after finishEntity',
+      );
+      expect(finding.message).toContain('disposeSkeleton2D clears active slots without traversing or disposing meshes');
+      expect(finding.message).toContain('ordinary target lifetime management owns the mesh and both point owners');
+      expect(finding.message).toContain('@:optional var skin:Null<flight.Skin2D>');
+      expect(finding.message).toContain('@:optional var vertices:Null<js.lib.Float32Array>');
+      expect(finding.message).toContain('std::variant<flight::Ref<Skin2D>, flight::Null, flight::Undefined>');
+      expect(finding.message).toContain('std::variant<flight::Float32Array, flight::Null, flight::Undefined>');
+      expect(finding.message).toContain('std::optional<flight::Ref<Skin2D>>');
+      expect(finding.message).toContain('std::optional<flight::Float32Array>');
       expect(finding.message).toContain('Make MeshAttachment2D.skin a required Skin2D | null field');
       expect(finding.message).toContain('MeshAttachment2D.vertices a required Float32Array | null field');
       expect(finding.message).toContain('preserve the rejected-empty null pair');

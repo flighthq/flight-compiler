@@ -5733,6 +5733,16 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
         message.includes('Make MeshAttachment2D.skin a required Skin2D | null field'),
       ),
     ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('No production mutator assigns, clears, or deletes either field after finishEntity'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('disposeSkeleton2D clears active slots without traversing or disposing meshes'),
+      ),
+    ).toBe(true);
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
@@ -5753,6 +5763,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 2,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createMeshAttachment2DWorkspaceFiles(false));

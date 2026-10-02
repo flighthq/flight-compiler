@@ -14397,6 +14397,41 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     }
   });
 
+  // MeshAttachment2D.ts's two mixed-absence findings. Supported importers finish every entity with exactly
+  // one active point owner, runtime consumers dispatch weighted-first, and clone/disposal preserve the mesh
+  // owner rather than rewriting it. Both source shapes already have native carriers; the source fix removes
+  // only the unused Undefined arms and does not ask the backend to choose a sentinel or materialize storage.
+  it('classifies mesh point storage as two required nullable owner cells', () => {
+    const source = (required: boolean): string => {
+      const marker = required ? '' : '?';
+      return `export interface Attachment2D { kind: string }
+              export interface Skin2D { influences: Float32Array }
+              export interface MeshAttachment2D extends Attachment2D {
+                skin${marker}: Skin2D | null;
+                triangles: Uint16Array;
+                uvs: Float32Array;
+                vertexCount: number;
+                vertices${marker}: Float32Array | null;
+              }`;
+    };
+    const mixed = emitIrModuleCpp(lowerPackage('@flighthq/types', 'MeshAttachment2D.ts', source(false)).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    const resolved = emitIrModuleCpp(lowerPackage('@flighthq/types', 'MeshAttachment2D.ts', source(true)).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(mixed).toContain('std::variant<flight::Ref<Skin2D>, flight::Null, flight::Undefined> skin');
+    expect(mixed).toContain('std::variant<flight::Float32Array, flight::Null, flight::Undefined> vertices');
+    expect(resolved).toContain('std::optional<flight::Ref<Skin2D>> skin;');
+    expect(resolved).toContain('std::optional<flight::Float32Array> vertices;');
+    for (const emitted of [mixed, resolved]) {
+      expect(emitted).toContain('struct MeshAttachment2D : public flight::ReferenceEnabled');
+      expect(emitted).not.toContain('flight::Any');
+      expect(emitted).not.toContain('materialize_row');
+    }
+  });
+
   // Slot2D.ts's three mixed-absence findings are source-contract issues, not runtime-binding gaps. Importers
   // always write attachment and name, the deform setter owns the only later materialization, and cloning
   // makes a shallow slot record while preserving nested owners. The backend already carries every declared
