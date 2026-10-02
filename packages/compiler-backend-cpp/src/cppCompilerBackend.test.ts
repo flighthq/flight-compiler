@@ -26373,7 +26373,12 @@ Resolver make_resolver(TextureRef texture) {
     );
 
     expect(failure).toMatchObject({
-      classification: 'target-runtime',
+      // Source-portability rather than the runtime: the factory allocated and returned one exact owner and
+      // the assertion names another, so the claim is the declaration's -- and the two remedies the message
+      // leads with are source shapes (a factory generic in the owner it allocates, or a target owner
+      // constructed with its own cells, which the SDK's sibling constructors already do). The runtime
+      // recovery contract is the fallback the message names third, not the primary cause.
+      classification: 'source-portability',
       rule: 'cpp-reference-assertion-without-heritage',
     });
     expect(failure.message).toContain('createSurfaceMaterial factory result');
@@ -26390,6 +26395,43 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.message).toContain('reinterpret the factory result');
     expect(failure.message).toContain('copy or materialize a replacement owner');
     expect(failure.message).toContain('side storage');
+
+    // The upstream expression this lane is about: SurfaceMaterial's own constructor asserts the
+    // Material-shaped factory result to the concrete surface type. Same clause, same attribution, and the
+    // control beside it shows the source shape that needs no assertion at all -- the concrete owner built
+    // with its own declared cells, which is what the factory would have to allocate to be provable.
+    const upstream = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'surfaceMaterial.ts',
+          `interface Material { readonly kind: string }
+           interface SurfaceMaterial extends Material { readonly alphaCutoff: number }
+           export function createMaterial(kind: string): Material { return { kind }; }
+           export function createSurfaceMaterial(kind: string): SurfaceMaterial {
+             const material = createMaterial(kind) as SurfaceMaterial;
+             return material;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(upstream.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(upstream.classification).toBe('source-portability');
+    expect(upstream.message).toContain('createMaterial factory result');
+
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'surfaceMaterialConstructed.ts',
+          `interface Material { readonly kind: string }
+           interface SurfaceMaterial extends Material { readonly alphaCutoff: number }
+           export function createSurfaceMaterial(kind: string): SurfaceMaterial {
+             return { kind, alphaCutoff: 0.5 };
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('flight::Ref<SurfaceMaterial>');
 
     const accessorFailure = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(

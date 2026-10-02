@@ -4823,7 +4823,17 @@ function emitExpression(
                 ? `a reference assertion from the ${createFactoryName} factory result ${heritageSource} to ${heritageTarget} has no heritage to cast along: the call already allocated and returned the ${heritageSource} owner, and neither a target-typed use nor kind, options, or other arguments passed to the factory add the target owner's cells or change that identity. Make ${createFactoryName} generic in the exact owner it allocates and returns, or preallocate ${heritageTarget} and pass it through named generic shared-layer initializers that fill only their declared cells; then retain ${heritageTarget} through target-specific writes and the return boundary. A kind or registry tag is not owner validation. If the runtime intentionally erases concrete owners, add a checked recovery contract instead. The compiler will not use a native pointer cast, reinterpret the factory result, copy or materialize a replacement owner, or invent side storage`
                 : `a reference assertion from ${heritageSource} to ${heritageTarget} has no heritage to cast along: the declarations share no emitted C++ class-heritage path (source interface and intersection relationships flatten into independent owners), and the source carrier does not retain a checked dynamic owner that can recover the target. Keep the exact declared owner at the API boundary, or add a runtime contract that validates and recovers the target owner; the compiler will not use a native pointer cast, materialize a replacement row, or invent side storage`,
           'cpp-reference-assertion-without-heritage',
-          isDeclaredIntersectionTarget || hasRepresentedClassOwners ? undefined : 'target-runtime',
+          // An intersection or two represented class owners is the compiler's own refusal. A create-factory
+          // result is the source's: the call allocated and returned one exact owner, the assertion names
+          // another, and the remedies the message leads with are declarations the source writes -- make the
+          // factory generic in the owner it allocates, or construct the target owner with its own cells,
+          // which the SDK's sibling constructors already do. The runtime recovery contract is the fallback
+          // the message names third, not the primary cause.
+          isDeclaredIntersectionTarget || hasRepresentedClassOwners
+            ? undefined
+            : createFactoryName !== undefined
+              ? 'source-portability'
+              : 'target-runtime',
         );
       }
       // A reference assertion between records related by CLASS heritage is a POINTER cast, not a value
