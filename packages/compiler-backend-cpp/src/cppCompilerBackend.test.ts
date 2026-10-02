@@ -13869,6 +13869,32 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // refusal and its carriers, but I did NOT manage to construct a case that takes that secondary branch -- the
   // intersections I built resolve as structural rows, which makes the predicate return false. Recorded plainly
   // rather than claimed: the parked name describes the branch, and what is pinned here is the refusal it belongs to.
+  // Why the secondary branch above is shadowed. `hasCppDistinctIntersectionUnionOwnersCpp` needs a source slot
+  // whose runtime type is an intersection that is NOT structural-row resolvable. Every shape that makes an
+  // intersection non-structural -- a class-instance member, a method that cannot live in a row -- is refused
+  // EARLIER by `cpp-intersection-member-shapeless`, so the union conversion never sees it. Eight constructions
+  // across two passes could not reach the secondary branch; recorded as unreached-in-construction, which is not
+  // the same as proven unreachable, and pinned here so the reason is visible rather than re-derived.
+  it('refuses a non-structural intersection member before any union conversion sees it', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'intersection-class-member.ts',
+          `class Base { m(): number { return 1; } }
+           export type Intersection = Base & { cache: string | null };
+           export function set(x: { cache: string | null } | null): void { void x; }
+           export function use(x: Intersection | null): void { set(x); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+
+    // The earlier rule owns this shape, so the union rule's intersection branch is never consulted.
+    expect(failure.rule).toBe('cpp-intersection-member-shapeless');
+    expect(failure.classification).toBe('source-portability');
+    expect(failure.rule).not.toBe('cpp-contextual-union-inequivalent');
+  });
+
   it('refuses an intersection owner converting into a bare declared union arm', () => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(
