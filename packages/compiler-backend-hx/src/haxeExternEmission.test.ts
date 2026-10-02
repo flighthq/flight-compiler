@@ -349,6 +349,40 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(portable).not.toContain('Dynamic');
   });
 
+  it('separates erased command property cells from one typed numeric command kind', () => {
+    const module = lower(
+      '@flighthq/types',
+      'Command.ts',
+      `export interface NodeAny { readonly name: string | null }
+       export interface Node2D { readonly x: number; readonly y: number }
+       export interface CommandPropertyEntry {
+         readonly after: unknown;
+         readonly before: unknown;
+         readonly property: string;
+         readonly target: NodeAny;
+       }
+       export interface SetNodePositionCommand {
+         readonly afterX: number;
+         readonly afterY: number;
+         readonly beforeX: number;
+         readonly beforeY: number;
+         readonly target: Node2D;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CommandPropertyEntry.hx').contents;
+    const typed = findFile(files, 'flight/_js/SetNodePositionCommand.hx').contents;
+
+    expect(current).toContain('var after:Dynamic;');
+    expect(current).toContain('var before:Dynamic;');
+    expect(current).toContain('var target:flight.NodeAny;');
+    for (const field of ['afterX', 'afterY', 'beforeX', 'beforeY']) {
+      expect(typed).toContain(`var ${field}:Float;`);
+    }
+    expect(typed).toContain('var target:flight.Node2D;');
+    expect(typed).not.toContain('Dynamic');
+  });
+
   it('separates all five current GlRenderState absence markers from their required-nullable remedies', () => {
     const module = lower(
       '@flighthq/types',

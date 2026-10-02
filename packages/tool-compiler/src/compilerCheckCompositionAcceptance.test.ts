@@ -4635,21 +4635,31 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     for (const finding of sourcePortability.findings) {
       expect(finding.message).toContain('arbitrary live node-property payload transport');
       expect(finding.message).toContain('not an error channel or a closed portable value domain');
+      expect(finding.message).toContain('intentional JavaScript-side erasure');
+      expect(finding.message).toContain('does not give generated targets a closed source domain');
+      expect(finding.message).toContain('The after parameter admits every JavaScript value');
+      expect(finding.message).toContain('including undefined for a missing property');
+      expect(finding.message).toContain('performs no deep snapshot');
       expect(finding.message).toContain('binding before any history retention');
       expect(finding.message).toContain('absent a merge it pushes the exact live command reference');
       expect(finding.message).toContain('getCommandHistoryEntries exposes those same references');
       expect(finding.message).toContain('new action after undo truncates the redo tail');
-      expect(finding.message).toContain('none performs value-specific disposal');
+      expect(finding.message).toContain('no Command, CommandHistory, or payload-specific disposer exists');
       expect(finding.message).toContain('test over numeric x or y');
       expect(finding.message).toContain('including live entity or collection values');
+      expect(finding.message).toContain('There is no host capability or native API boundary for these cells');
       expect(finding.message).toContain('no command serializer, parser, persistent history store, or command codec');
       expect(finding.message).toContain(
         'recursive JSON-shaped value union would neither make this command serializable',
       );
-      expect(finding.message).toContain('C++ backend can store a declared unknown cell as flight::Any');
+      expect(finding.message).toContain('var after:Dynamic; and var before:Dynamic;');
+      expect(finding.message).toContain('flight::Any after; and flight::Any before;');
       expect(finding.message).toContain('storage representation neither closes the source domain');
       expect(finding.message).toContain('Remove CommandPropertyEntry, SetNodePropertyCommand');
       expect(finding.message).toContain('command-kind-specific data interface');
+      expect(finding.message).toContain('numeric SetNodePositionCommand emits Haxe Float fields');
+      expect(finding.message).toContain('C++ double fields and a flight::Ref<Node2D> target');
+      expect(finding.message).toContain('with no Dynamic, flight::Any, cast, reinterpretation, or external binding');
       expect(finding.message).toContain('separate validated serialized form with a stable node key or path');
       expect(finding.message).toContain('Do not replace unknown with a guessed scalar or recursive value union');
       expect(finding.message).toContain('do not whitelist');

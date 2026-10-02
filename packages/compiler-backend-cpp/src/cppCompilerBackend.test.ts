@@ -15032,6 +15032,53 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(typed).not.toContain('materialize_row');
   });
 
+  // Command.ts intentionally erases computed property values in its generic JavaScript implementation,
+  // but the public storage cells then admit every Any alternative and lose the target/key/value relation.
+  // A command-kind-specific numeric edit keeps both the value and node owner exact on the target.
+  it('separates erased command property cells from one typed numeric command kind', () => {
+    const current = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'Command.ts',
+        `export interface NodeAny { readonly name: string | null }
+         export interface CommandPropertyEntry {
+           readonly after: unknown;
+           readonly before: unknown;
+           readonly property: string;
+           readonly target: NodeAny;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const typed = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'Command.ts',
+        `export interface Node2D { readonly x: number; readonly y: number }
+         export interface SetNodePositionCommand {
+           readonly afterX: number;
+           readonly afterY: number;
+           readonly beforeX: number;
+           readonly beforeY: number;
+           readonly target: Node2D;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(current).toContain('flight::Any after;');
+    expect(current).toContain('flight::Any before;');
+    expect(current).toContain('flight::Ref<NodeAny> target;');
+    for (const field of ['after_x', 'after_y', 'before_x', 'before_y']) {
+      expect(typed).toContain(`double ${field};`);
+    }
+    expect(typed).toContain('flight::Ref<Node2D> target;');
+    expect(typed).not.toContain('flight::Any');
+    expect(typed).not.toContain('static_cast');
+    expect(typed).not.toContain('reinterpret_cast');
+    expect(typed).not.toContain('materialize_row');
+  });
+
   // Attachment2D.ts's mixed-absence finding. Every built-in producer finishes an entity with a present
   // string-or-null name, while runtime mutation swaps attachment owners and never edits this metadata. The
   // backend can represent both source spellings; the finding asks the source to remove the unused third
