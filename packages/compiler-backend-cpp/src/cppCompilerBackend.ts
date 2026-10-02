@@ -12775,12 +12775,20 @@ function emitCppOptionalErasedTypeofCpp(
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || !operandType) return undefined;
   const union = getIrUnionTypeCpp(operandType, context, new Set());
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
-  if (
-    plan?.kind !== 'optionalSingle' ||
-    plan.valueSlots[0]?.targetType !== 'flight::Any' ||
-    plan.sentinels.null !== 'absent' ||
-    plan.sentinels.undefined !== 'optionalAbsence'
-  ) {
+  const declaredOptionalErased =
+    plan?.kind === 'optionalSingle' &&
+    plan.valueSlots[0]?.targetType === 'flight::Any' &&
+    plan.sentinels.null === 'absent' &&
+    plan.sentinels.undefined === 'optionalAbsence';
+  // The declared type does not always name the carrier. A read of an open `Record<string, unknown>` reports
+  // the erased element while its CARRIER holds the absence an absent key needs, so `const value =
+  // resources[name]` types as the erased value and still emits an `std::optional<flight::Any>`. Asking only
+  // the type skipped this lowering and fell through to reading `.type_of()` off the optional, which is not a
+  // call the carrier has. The carrier answers the same question, and the emission below is unchanged, so an
+  // optional-erased carrier takes the guarded form whether the type named it or not.
+  const carrierOptionalErased =
+    !declaredOptionalErased && isCppErasedDynamicValueTypeCpp(operandType) && hasCppAbsenceStorageCpp(operand, context);
+  if (!declaredOptionalErased && !carrierOptionalErased) {
     return undefined;
   }
   const value = getGeneratedTargetName('typeofValue', context);

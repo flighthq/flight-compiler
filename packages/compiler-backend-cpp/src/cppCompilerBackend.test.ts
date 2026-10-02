@@ -14439,6 +14439,62 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // The typeof carrier over the same open lookup, which is a different site from the checked recovery and was
+  // failing separately. `typeof value` on a value bound from `resources[name]` reached the raw `.type_of()`
+  // path and asked the OPTIONAL for it, which the carrier does not have:
+  //   error: 'class std::optional<flight::Any>' has no member named 'type_of'
+  //
+  // WHY IT MISSED THE GUARDED LOWERING, which is the part worth recording: emitCppOptionalErasedTypeofCpp
+  // already emits exactly the right form, and it was already called immediately before the raw path. Its
+  // trigger asked the DECLARED TYPE to be an `optionalSingle` union of `Any`, but a binding taken from an open
+  // record read declares the erased element (`unknown`) while its CARRIER is an `std::optional<flight::Any>` --
+  // the read materializes the absent key. The carrier answers the same question, so the trigger now asks it
+  // too, and the emission is unchanged: no new lowering, no source-specific exception.
+  //
+  // THE SEMANTICS, which are JavaScript's: an absent key reports `undefined` because the carrier is empty, and
+  // anything present lets the erased payload name its own tag -- so a stored object still reports `object` and
+  // is not flattened to the erased value's own spelling.
+  it('answers typeof through an optional-erased carrier the declared type does not name', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'typeofOpenLookup.ts',
+        `export interface Hero { readonly hp: number }
+         export type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;
+         export function read(resources: FlightDocumentResourceLookup, name: string): Hero | null {
+           const value = resources[name];
+           return typeof value === 'object' && value !== null ? (value as Hero) : null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // Absent answers `undefined`, which is the tag JavaScript reports for a missing key.
+    expect(contents).toContain('if (!typeof_value.has_value()) return flight::String("undefined")');
+    // Present lets the erased payload answer for itself rather than being flattened.
+    expect(contents).toContain('typeof_value.value().type_of()');
+    // And the tag is never asked of the optional itself.
+    expect(contents).not.toMatch(/typeof_value\.type_of\(\)/u);
+  });
+
+  // Red before the change, green after, and the compiler is the witness.
+  it.skipIf(!cppSyntaxGate.available)('compiles typeof through an optional-erased open-lookup carrier', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'typeofOpenLookupSyntax.ts',
+        `export interface Hero { readonly hp: number }
+         export type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;
+         export function read(resources: FlightDocumentResourceLookup, name: string): Hero | null {
+           const value = resources[name];
+           return typeof value === 'object' && value !== null ? (value as Hero) : null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const result = cppSyntaxGate.checkCppSourceSyntax(contents, 'typeof-open-lookup');
+    expect(result.diagnostic).toBe('');
+    expect(result.ok).toBe(true);
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
