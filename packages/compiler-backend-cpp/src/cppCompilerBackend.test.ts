@@ -31839,6 +31839,48 @@ int main() {
     ).toBe('cpp-member-projection-multiple-present-domains');
   });
 
+  it('carries an immediate dense-array nonempty proof only to literal index zero', () => {
+    const guarded = emitIrModuleCpp(
+      lower(
+        'colorMatrixMath.ts',
+        `export function fuse(matrices: ReadonlyArray<Readonly<number[]>>): number[] {
+           if (matrices.length === 0) return [];
+           const out = matrices[0].slice();
+           return out;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(guarded).toContain('matrices.element(0.0).slice()');
+
+    const refusal = (body: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('dense-array-index-presence.ts', body).module, { runtimeProfile: 'flight-cpp' }),
+      );
+    const functionStart = 'export function read(values: ReadonlyArray<Readonly<number[]>>): number[] {';
+    expect(refusal(`${functionStart} return values[0].slice(); }`).rule).toBe(
+      'cpp-member-projection-without-present-storage',
+    );
+    expect(refusal(`${functionStart} if (values.length === 0) return []; return values[1].slice(); }`).rule).toBe(
+      'cpp-member-projection-without-present-storage',
+    );
+    expect(
+      refusal(
+        `export function read(values: number[][]): number[] {
+           if (values.length === 0) return [];
+           const result = values[0].slice();
+           return result;
+         }`,
+      ).rule,
+    ).toBe('cpp-member-projection-without-present-storage');
+    expect(
+      refusal(
+        `${functionStart} if (values.length === 0) return []; const marker = 1; void marker; return values[0].slice(); }`,
+      ).rule,
+    ).toBe('cpp-member-projection-without-present-storage');
+  });
+
   // The boundary the absence-storage decision runs on, pinned from both sides.
   //
   // The receiver the semantic layer records for `Readonly<Record<string, string>>` reads `unknown`, and

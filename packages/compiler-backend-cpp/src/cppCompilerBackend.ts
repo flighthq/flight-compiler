@@ -333,6 +333,10 @@ interface EmitContext {
   capturedReferentOnlyBindingIds: ReadonlySet<string>;
   defaultedParameterIds: ReadonlySet<string>;
   denseArrayLengthBindingIds: ReadonlySet<string>;
+  // A terminating zero-length guard proves one exact literal-zero read in the immediately following
+  // statement is present. The set is scoped to that statement so the proof cannot cross a call,
+  // mutation, alias, or later access.
+  immediateDenseArrayElementPresence: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   denseArraySequentialAppendPlans: ReadonlyMap<string, Readonly<CppDenseArraySequentialAppendPlan>>;
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
   exceptionPointerBindingIds: ReadonlySet<string>;
@@ -580,6 +584,7 @@ function emitIrModuleCppWithContext(
     contextualBindingStorageTargetTypes,
     defaultedParameterIds: new Set(),
     denseArrayLengthBindingIds: new Set([...denseArrayLengthBindingIds, ...denseArraySequentialAppendPlans.keys()]),
+    immediateDenseArrayElementPresence: new Set(),
     denseArraySequentialAppendPlans,
     dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
@@ -8919,7 +8924,16 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
       statementContext,
     );
     if (nullableWeakMapView) refuseCppErasedRefWeakMapView(statementContext, true);
-    emitted.push(...emitStatement(statement, statementContext));
+    const immediateDenseArrayElementPresence = getCppImmediateDenseArrayElementPresenceCpp(
+      statements[index - 1],
+      statement,
+      statementContext,
+    );
+    const emissionContext =
+      immediateDenseArrayElementPresence.size > 0
+        ? { ...statementContext, immediateDenseArrayElementPresence }
+        : statementContext;
+    emitted.push(...emitStatement(statement, emissionContext));
     const narrowing = getCppOptionalStoragePresentGuardNarrowingCpp(statement, statementContext);
     if (narrowing) {
       statementContext = {
@@ -8930,6 +8944,68 @@ function emitStatements(statements: readonly IrStatement[], context: EmitContext
     statementContext = withdrawCppAssignedNarrowingsCpp(statement, statementContext);
   }
   return emitted;
+}
+
+// The Flight array carrier is dense: after an empty-array guard terminates, literal index zero exists.
+// Keep that target-specific fact deliberately smaller than general control-flow narrowing. It reaches
+// only the exact element receiver in the immediately following single initializer, and only for a
+// readonly source array, so it cannot survive intervening evaluation or be reused for another index.
+function getCppImmediateDenseArrayElementPresenceCpp(
+  previous: Readonly<IrStatement> | undefined,
+  statement: Readonly<IrStatement>,
+  context: EmitContext,
+): ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>> {
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    previous?.kind !== 'if' ||
+    previous.otherwise ||
+    !isCppAbruptCompletionStatement(previous.consequent) ||
+    previous.condition.kind !== 'binary' ||
+    previous.condition.operator !== '===' ||
+    statement.kind !== 'variable' ||
+    statement.declarations.length !== 1
+  ) {
+    return new Set();
+  }
+  const guardedLength =
+    previous.condition.left.kind === 'property' &&
+    previous.condition.right.kind === 'literal' &&
+    previous.condition.right.value === 0
+      ? previous.condition.left
+      : previous.condition.right.kind === 'property' &&
+          previous.condition.left.kind === 'literal' &&
+          previous.condition.left.value === 0
+        ? previous.condition.right
+        : undefined;
+  if (
+    !guardedLength ||
+    guardedLength.name !== 'length' ||
+    guardedLength.member?.receiver !== 'array' ||
+    guardedLength.object.kind !== 'identifier' ||
+    guardedLength.object.reference.kind !== 'binding'
+  ) {
+    return new Set();
+  }
+  const arrayType = getCppBindingTypeCpp(guardedLength.object.reference.binding.id, context);
+  const array = arrayType ? getIrArrayTypeCpp(arrayType, context, new Set()) : undefined;
+  if (!array?.readonly) return new Set();
+  const declaration = statement.declarations[0]!;
+  const initializer = 'initializer' in declaration ? declaration.initializer : undefined;
+  const element =
+    initializer?.kind === 'call' && initializer.callee.kind === 'property' ? initializer.callee.object : undefined;
+  if (
+    element?.kind !== 'element' ||
+    element.optional ||
+    !element.semantics.receivers.includes('array') ||
+    element.index.kind !== 'literal' ||
+    element.index.value !== 0 ||
+    element.object.kind !== 'identifier' ||
+    element.object.reference.kind !== 'binding' ||
+    element.object.reference.binding.id !== guardedLength.object.reference.binding.id
+  ) {
+    return new Set();
+  }
+  return new Set([element]);
 }
 
 // A statement that writes a narrowed binding withdraws the narrowing for the statements after it. The
@@ -12546,7 +12622,10 @@ function hasCppPresentBindingStorageProofCpp(
 
 function hasCppPresentExpressionStorageProofCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
   if (expression.kind === 'identifier') return hasCppPresentBindingStorageProofCpp(expression, context);
-  return (expression.kind === 'property' || expression.kind === 'element') && expression.presence === 'narrowedPresent';
+  return (
+    ((expression.kind === 'property' || expression.kind === 'element') && expression.presence === 'narrowedPresent') ||
+    (expression.kind === 'element' && context.immediateDenseArrayElementPresence.has(expression))
+  );
 }
 
 // Project the value a presence proof names from the binding's existing carrier. This never rebuilds the
