@@ -105,6 +105,31 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(current + portable + binding).not.toContain('Dynamic');
   });
 
+  it('separates MeshGeometry option omission from required live indices despite union erasure', () => {
+    const module = lower(
+      '@flighthq/types',
+      'MeshGeometryOptions.ts',
+      `export interface CurrentMeshGeometryOptions {
+         indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> | null;
+       }
+       export interface PortableMeshGeometryOptions {
+         indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>>;
+       }
+       export interface MeshGeometry {
+         indices: Uint16Array<ArrayBuffer> | Uint32Array<ArrayBuffer> | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentMeshGeometryOptions.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableMeshGeometryOptions.hx').contents;
+    const live = findFile(files, 'flight/_js/MeshGeometry.hx').contents;
+
+    expect(current).toContain('@:optional var indices:Dynamic;');
+    expect(portable).toContain('@:optional var indices:Dynamic;');
+    expect(live).toContain('var indices:Dynamic;');
+    expect(live).not.toContain('@:optional');
+  });
+
   it('separates Scene2D resource input absence in Haxe without erasing the AudioContext owner', () => {
     const module = lower(
       '@flighthq/types',

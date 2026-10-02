@@ -13311,26 +13311,32 @@ export interface CanvasTextureResolvers extends Entity {
     // The two typed-array widths are runtime-native value alternatives. Required null and optional
     // undefined each need one outer absence, while the current optional-nullable construction input needs
     // both explicit sentinels. None of these carriers needs a host binding or erases the element width.
-    const indexOwner = 'Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>>';
-    const storage = (file: string, declaration: string) =>
-      emitIrModuleCpp(lower(file, `export interface M { ${declaration} }`).module, { runtimeProfile: 'flight-cpp' })
-        .contents;
+    const result = lower(
+      'MeshGeometryOptions.ts',
+      `export interface CurrentMeshGeometryOptions {
+         indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> | null;
+       }
+       export interface PortableMeshGeometryOptions {
+         indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>>;
+       }
+       export interface MeshGeometry {
+         indices: Uint16Array<ArrayBuffer> | Uint32Array<ArrayBuffer> | null;
+       }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
-    const required = storage('mesh-indices-required.ts', `indices: ${indexOwner} | null;`);
-    const portable = storage('mesh-indices-optional.ts', `indices?: ${indexOwner};`);
-    const current = storage('mesh-indices-optional-nullable.ts', `indices?: ${indexOwner} | null;`);
-
-    expect(required).toContain('std::optional<std::variant<flight::Uint16Array, flight::Uint32Array>> indices;');
-    expect(portable).toContain('std::optional<std::variant<flight::Uint16Array, flight::Uint32Array>> indices;');
-    expect(current).toContain(
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain(
       'std::variant<flight::Uint16Array, flight::Uint32Array, flight::Null, flight::Undefined> indices =',
     );
-    for (const contents of [required, portable, current]) {
-      expect(contents).not.toContain('ArrayBuffer');
-      expect(contents).not.toContain('flight::Any');
-      expect(contents).not.toContain('static_cast');
-      expect(contents).not.toContain('reinterpret_cast');
-    }
+    expect(
+      contents.match(/std::optional<std::variant<flight::Uint16Array, flight::Uint32Array>> indices;/gu),
+    ).toHaveLength(2);
+    expect(contents).not.toContain('ArrayBuffer');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
   });
 
   it('keeps InstancedMesh runtime extension owners native while removing redundant null', () => {

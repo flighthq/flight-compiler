@@ -5208,7 +5208,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     expect(finding?.message).toContain('createMeshGeometry is the sole MeshGeometryOptions consumer');
     expect(finding?.message).toContain('never retains or mutates the options');
-    expect(finding?.message).toContain('takes the vertices owner by reference');
+    expect(finding?.message).toContain('retains the vertices, layout, and supplied subsets owners by reference');
     expect(finding?.message).toContain('derives vertexCount from the layout');
     expect(finding?.message).toContain('tests options.indices by truthiness');
     expect(finding?.message).toContain('including an empty typed array');
@@ -5216,9 +5216,13 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(finding?.message).toContain('Uint32 is preserved');
     expect(finding?.message).toContain('Uint16 promotes when vertexCount exceeds 65535');
     expect(finding?.message).toContain('other Uint16 input stays Uint16');
-    expect(finding?.message).toContain('one required-nullable indices cell');
+    expect(finding?.message).toContain('the input index owner is never retained');
+    expect(finding?.message).toContain('createMeshGeometryRuntime initializes that fresh MeshGeometry');
+    expect(finding?.message).toContain('version 0, bounds null');
+    expect(finding?.message).toContain('GL and WebGPU upload slots are null');
+    expect(finding?.message).toContain('one mutable required-nullable indices cell');
     expect(finding?.message).toContain(
-      'omission, explicit undefined, and null all store null and select the same sequential non-indexed subset count',
+      'Omission, explicit undefined, and null all store null and select the same sequential non-indexed subset count',
     );
     expect(finding?.message).toContain('present empty array stays an indexed zero-element value');
     expect(finding?.message).toContain(
@@ -5232,48 +5236,66 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'mergeMeshGeometries and convertMeshGeometryLayout normalize their required live null with ?? undefined',
     );
     expect(finding?.message).toContain('No production caller uses explicit null');
-    expect(finding?.message).toContain('cloneMeshGeometry deep-copies a present live index array at the same width');
-    expect(finding?.message).toContain('preserves null, and preserves a present empty array');
-    expect(finding?.message).toContain('cloneMeshGeometryMetadata temporarily retains the exact live array');
+    expect(finding?.message).toContain('Mesh and Scene3D document materialization store the exact MeshGeometry owner');
+    expect(finding?.message).toContain('cloneMesh shares that owner for a rigid mesh');
+    expect(finding?.message).toContain('mutable indices, version, bounds cache');
+    expect(finding?.message).toContain('cloneMeshGeometryForDeformation deep-copies a deforming mesh');
+    expect(finding?.message).toContain('cloneMeshGeometry itself deep-copies vertices and a present live index array');
+    expect(finding?.message).toContain('preserves null and a present empty array');
+    expect(finding?.message).toContain('shares the exact layout owner');
+    expect(finding?.message).toContain('cloneMeshGeometryMetadata likewise creates a fresh geometry runtime');
+    expect(finding?.message).toContain('temporarily retains the exact live index array');
     expect(finding?.message).toContain('compact, expand, index, and weld operations replace the fresh result');
     expect(finding?.message).toContain('layout conversion re-enters the factory copy boundary');
-    expect(finding?.message).toContain('CPU triangle, validation, compute, and transform paths');
+    expect(finding?.message).toContain('CPU triangle, picking, validation, compute, and transform paths');
     expect(finding?.message).toContain('live null as sequential vertex indices');
     expect(finding?.message).toContain(
       'GL and WebGPU uploads create no index buffer and issue non-indexed draws for null',
     );
     expect(finding?.message).toContain('upload the exact Uint16/Uint32 elements, width, and count');
     expect(finding?.message).toContain('MeshGeometry.indices remains mutable required-nullable live state');
+    expect(finding?.message).toContain('mirrored transforms may reorder its elements in place');
     expect(finding?.message).toContain('computeMeshGeometryTangents may replace an output index array');
     expect(finding?.message).toContain('call invalidateMeshGeometry so bounds and GPU uploads refresh');
     expect(finding?.message).toContain('There is no destroyMeshGeometry or disposeMeshGeometry path');
-    expect(finding?.message).toContain('CPU index arrays are garbage-collected with their geometry owner');
+    expect(finding?.message).toContain('disposeNode3D detaches a Mesh and clears graph state');
+    expect(finding?.message).toContain('does not clear its geometry field or destroy an upload');
+    expect(finding?.message).toContain('another rigid clone can therefore keep the same geometry owner alive');
+    expect(finding?.message).toContain('CPU arrays follow ordinary target lifetime');
     expect(finding?.message).toContain('destroyMeshGeometryGlData and destroyMeshGeometryWgpuData');
-    expect(finding?.message).toContain('affect only separate runtime upload slots and never rewrite indices');
+    expect(finding?.message).toContain('clear only their separate runtime upload slots and never rewrite indices');
     expect(finding?.message).toContain(
       'Make MeshGeometryOptions.indices optional Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> without null',
     );
     expect(finding?.message).toContain('keeping MeshGeometry.indices required nullable');
     expect(finding?.message).toContain("preserving createMeshGeometry's authored promotion and copy");
     expect(finding?.message).toContain('This finding is not a host-binding gap');
-    expect(finding?.message).toContain('compiler-native typed-array carriers');
-    expect(finding?.message).toContain('ArrayBuffer backing argument is erased');
     expect(finding?.message).toContain(
-      'current optional-nullable input needs Uint16Array | Uint32Array | Null | Undefined',
+      'current input is std::variant<flight::Uint16Array, flight::Uint32Array, flight::Null, flight::Undefined>',
     );
-    expect(finding?.message).toContain('recommended optional-non-null input and required-nullable live field');
-    expect(finding?.message).toContain('one optional variant without an external binding');
+    expect(finding?.message).toContain(
+      'recommended optional-non-null input and required-nullable live field are std::optional<std::variant<flight::Uint16Array, flight::Uint32Array>>',
+    );
+    expect(finding?.message).toContain('ArrayBuffer backing argument is erased');
+    expect(finding?.message).toContain('with no external binding');
+    expect(finding?.message).toContain('@:optional var indices:Dynamic for both the current and recommended option');
+    expect(finding?.message).toContain('required live field is var indices:Dynamic');
+    expect(finding?.message).toContain('Haxe extern typing erases static width and nullability');
+    expect(finding?.message).toContain('preserves the exact JavaScript typed-array owner at runtime');
+    expect(finding?.message).toContain('separate target typing limitation');
     expect(finding?.message).toContain('normalize it once to omission before calling createMeshGeometry');
     expect(finding?.message).toContain('unchanged, cleared, and supplied indices');
     expect(finding?.message).toContain('Do not whitelist the redundant construction spelling');
     expect(finding?.message).toContain('will not choose or collapse an absence sentinel');
     expect(finding?.message).toContain('substitute an empty collection');
-    expect(finding?.message).toContain('merge the Uint16Array and Uint32Array owners');
-    expect(finding?.message).toContain('beyond the authored promoteIndices and clone paths');
+    expect(finding?.message).toContain('merge the Uint16Array and Uint32Array alternatives');
+    expect(finding?.message).toContain('copy either owner outside the authored promoteIndices and clone paths');
+    expect(finding?.message).toContain('allocate other backing storage');
     expect(finding?.message).toContain('select an index width');
-    expect(finding?.message).toContain('rewrite subsets, versioning, CPU traversal, or GPU draw mode');
+    expect(finding?.message).toContain('decide geometry sharing');
+    expect(finding?.message).toContain('rewrite subsets, versioning, CPU traversal, GPU draw mode, node disposal');
+    expect(finding?.message).toContain('or upload teardown');
     expect(finding?.message).toContain('destroy an upload or dispose a geometry');
-    expect(finding?.message).toContain('route elements through Any');
     expect(finding?.message).toContain('fabricate a host binding');
     expect(finding?.message).toContain('or add side storage');
   });

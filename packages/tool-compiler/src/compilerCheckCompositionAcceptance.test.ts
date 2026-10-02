@@ -3493,21 +3493,28 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(message).toContain('tests options.indices by truthiness');
     expect(message).toContain('present empty array stays an indexed zero-element value');
     expect(message).toContain('No production caller uses explicit null');
-    expect(message).toContain('cloneMeshGeometry deep-copies a present live index array');
-    expect(message).toContain('cloneMeshGeometryMetadata temporarily retains the exact live array');
-    expect(message).toContain('CPU triangle, validation, compute, and transform paths');
+    expect(message).toContain('cloneMesh shares that owner for a rigid mesh');
+    expect(message).toContain('cloneMeshGeometryForDeformation deep-copies a deforming mesh');
+    expect(message).toContain('cloneMeshGeometry itself deep-copies vertices and a present live index array');
+    expect(message).toContain('cloneMeshGeometryMetadata likewise creates a fresh geometry runtime');
+    expect(message).toContain('CPU triangle, picking, validation, compute, and transform paths');
     expect(message).toContain('GL and WebGPU uploads create no index buffer and issue non-indexed draws for null');
     expect(message).toContain('There is no destroyMeshGeometry or disposeMeshGeometry path');
+    expect(message).toContain('disposeNode3D detaches a Mesh and clears graph state');
     expect(message).toContain(
-      'destroyMeshGeometryGlData and destroyMeshGeometryWgpuData affect only separate runtime upload slots',
+      'destroyMeshGeometryGlData and destroyMeshGeometryWgpuData clear only their separate runtime upload slots',
     );
     expect(message).toContain(
       'Make MeshGeometryOptions.indices optional Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> without null',
     );
     expect(message).toContain('keeping MeshGeometry.indices required nullable');
     expect(message).toContain('This finding is not a host-binding gap');
-    expect(message).toContain('compiler-native typed-array carriers');
-    expect(message).toContain('one optional variant without an external binding');
+    expect(message).toContain(
+      'std::variant<flight::Uint16Array, flight::Uint32Array, flight::Null, flight::Undefined>',
+    );
+    expect(message).toContain('std::optional<std::variant<flight::Uint16Array, flight::Uint32Array>>');
+    expect(message).toContain('@:optional var indices:Dynamic');
+    expect(message).toContain('required live field is var indices:Dynamic');
     expect(message).toContain('Do not whitelist the redundant construction spelling');
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
@@ -3529,6 +3536,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
     });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
 
     const portableSource = createMemoryWorkspaceSource(createMeshGeometryOptionsWorkspaceFiles(false));
     const portableInput = createFlightWorkspaceCompilationInput({
@@ -3536,7 +3551,40 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+
+    expect(portableCompilation.report.modules).toHaveLength(2);
+    expect(
+      portableCompilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(portableSourcePortability).toMatchObject({ acceptedExceptions: [], findings: [] });
+    expect(portableReport.directFindings).toEqual([]);
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
   });
 
   it('keeps the three notification open-domain findings source-owned through check mode', () => {
