@@ -212,14 +212,25 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   }
   // The original source of each module, matched by package and source path, so a placeholder can quote what it
   // is standing in for. The text is already here: lowering was handed these source files.
+  //
+  // Built ONLY for a best-effort run, and only when a backend can actually write a placeholder, because nothing
+  // else reads it -- a strict run does no work for a feature it cannot use.
   const sourceTextByModule = new Map<string, string>();
-  for (const item of options.sources) {
-    const fileName = normalizePathPortable(item.sourceFile.fileName);
+  if (bestEffort && options.backend.emitRefusalPlaceholder) {
+    // Indexed once by package and portable path, so each module is one lookup rather than a scan of every
+    // source. The map is keyed on the path the module reports, which is the file name with the upstream
+    // directory removed.
+    const textByPackageAndPath = new Map<string, string>();
+    for (const item of options.sources) {
+      const fileName = normalizePathPortable(item.sourceFile.fileName);
+      const upstream = normalizePathPortable(item.upstreamDirectory);
+      const relative = fileName.startsWith(`${upstream}/`) ? fileName.slice(upstream.length + 1) : fileName;
+      const key = `${item.packageName}\u0000${relative}`;
+      if (!textByPackageAndPath.has(key)) textByPackageAndPath.set(key, item.sourceFile.getFullText());
+    }
     for (const module_ of modules) {
-      if (module_.packageName !== item.packageName) continue;
-      if (!fileName.endsWith(`/${normalizePathPortable(module_.source)}`)) continue;
-      const key = getCompilerPackageGraphModuleKey(module_);
-      if (!sourceTextByModule.has(key)) sourceTextByModule.set(key, item.sourceFile.getFullText());
+      const text = textByPackageAndPath.get(`${module_.packageName}\u0000${normalizePathPortable(module_.source)}`);
+      if (text !== undefined) sourceTextByModule.set(getCompilerPackageGraphModuleKey(module_), text);
     }
   }
   const placeholderFiles: EmittedFile[] = [];
