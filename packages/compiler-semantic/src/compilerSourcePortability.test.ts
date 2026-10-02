@@ -8740,10 +8740,32 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(registry).toContain('deletes one entry for a null resolver without replacing an empty map');
     expect(registry).toContain('resolveCanvasTexture reads registry?.get');
     expect(registry).toContain('explainCanvasTextureResolution reads registry?.has');
+    expect(registry).toContain('createCanvasRenderState retains the exact set in its runtime and owns its teardown');
+    expect(registry).toContain('createCanvasShapeRasterizer returns a closure that borrows that same set');
     expect(registry).toContain('shared Canvas shape rasterizer resolve through the same retained set and its caches');
+    expect(registry).toContain('Bitmap resolver closure borrows the exact HostImageCapability');
+    expect(registry).toContain('bitmapElementCache is a lazy WeakMap keyed by the exact Bitmap owner');
+    expect(registry).toContain('exact borrowed ImageResource.source together with bitmap.version');
+    expect(registry).toContain('image resolver returns the exact borrowed ImageResource.source');
+    expect(registry).toContain('textureWindowElementCache is a lazy WeakMap keyed by the exact Texture owner');
+    expect(registry).toContain('identity windows bypass that cache');
+    expect(registry).toContain(
+      'stale window allocates a new owned surface without destroying the old surface immediately',
+    );
+    expect(registry).toContain('every acquired surface remains in the private ownership set until teardown');
     expect(registry).toContain('clears the Map when present, then assigns registry = null');
+    expect(registry).toContain(
+      'asks destroyCanvasRenderSurface to release every tracked surface through its exact creator at most once',
+    );
+    expect(registry).toContain('does not clear or null either WeakMap field or surfaceCreator');
     expect(registry).toContain('Make registry a required Map<TextureSourceKind, CanvasTextureResolver> | null field');
     expect(registry).toContain('preserve the single lazy Map allocation plus exact map and callback owners');
+    expect(registry).toContain(
+      'Haxe changes @:optional var registry:Null<flighthq._internal._Map<flight.TextureSourceKind, flight.CanvasTextureResolver>> to the same Null carrier without @:optional',
+    );
+    expect(registry).toContain(
+      'C++ changes Map<..., CanvasTextureResolver> | Null | Undefined to one optional Map carrier',
+    );
     expect(registry).toContain('current no-profile flight-cpp corpus refusal');
     expect(registry).toContain('CanvasImageSource[type] and HTMLCanvasElement[type]');
     expect(registry).toContain('maintained sdl-image and sdl-gl manifests supply those exact bindings');
@@ -8759,16 +8781,28 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(registryMiss).toContain('CanvasTextureResolvers is an Entity and not an input carrier');
     expect(registryMiss).toContain('initializeCanvasTextureResolvers assigns registryMiss = null');
     expect(registryMiss).toContain('there is no Partial<CanvasTextureResolvers> construction path');
-    expect(registryMiss).toContain('createCanvasRenderState installs the state-owned set');
+    expect(registryMiss).toContain('createCanvasRenderState retains the exact set in its mutable runtime');
     expect(registryMiss).toContain('connectCanvasTextureResolverMisses installs the same closure shape');
-    expect(registryMiss).toContain('reads the retained RenderStateRuntime.registryMiss at call time');
+    expect(registryMiss).toContain('reads runtime.registryMiss at call time');
     expect(registryMiss).toContain('guards may be enabled after connection');
-    expect(registryMiss).toContain('resolveCanvasTexture optional-calls registryMiss only after a valid source kind');
+    expect(registryMiss).toContain('closure borrows the exact RenderStateRuntime rather than snapshotting its emitter');
+    expect(registryMiss).toContain('shape-rasterizer closure separately borrows the exact resolver set');
+    expect(registryMiss).toContain(
+      'resolveCanvasTexture optional-calls registryMiss only after a 2D texture has a valid source kind',
+    );
     expect(registryMiss).toContain('assigns registryMiss = null');
+    expect(registryMiss).toContain('releases the set-to-runtime closure after owned surfaces and registrations');
+    expect(registryMiss).toContain('without disposing the borrowed RenderStateRuntime');
     expect(registryMiss).toContain(
       'Make registryMiss a required ((registry: RenderRegistryTable, kind: Kind) => void) | null field',
     );
     expect(registryMiss).toContain('preserve the exact installed closures, late emitter read, miss timing');
+    expect(registryMiss).toContain(
+      'Haxe changes @:optional var registryMiss:Null<(flight.RenderRegistryTable, flight.Kind)->Void> to the same Null callback carrier without @:optional',
+    );
+    expect(registryMiss).toContain(
+      'C++ changes std::variant<std::function<void(RenderRegistryTable, Kind)>, flight::Null, flight::Undefined> to the exact std::optional<std::function<void(RenderRegistryTable, Kind)>> carrier',
+    );
     expect(registryMiss).toContain('registryMiss itself contains no host-owned drawable');
     expect(registryMiss).toContain('separate CanvasImageSource[type] and HTMLCanvasElement[type] requirements');
     expect(registryMiss).toContain('maintained sdl-image and sdl-gl manifests supply those exact bindings');

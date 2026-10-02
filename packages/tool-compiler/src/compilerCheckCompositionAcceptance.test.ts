@@ -6412,6 +6412,15 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain(
       'single lazy Map allocation plus exact map and callback owners',
     );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'bitmapElementCache is a lazy WeakMap keyed by the exact Bitmap owner',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'does not clear or null either WeakMap field or surfaceCreator',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'std::variant<flight::Map<TextureSourceKind, CanvasTextureResolver>, flight::Null, flight::Undefined>',
+    );
     expect(sourcePortability.findings[0]?.message).toContain('current no-profile flight-cpp corpus refusal');
     expect(sourcePortability.findings[0]?.message).toContain('CanvasImageSource[type] and HTMLCanvasElement[type]');
     expect(sourcePortability.findings[1]?.message).toContain(
@@ -6419,6 +6428,12 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     );
     expect(sourcePortability.findings[1]?.message).toContain(
       'preserve the exact installed closures, late emitter read, miss timing',
+    );
+    expect(sourcePortability.findings[1]?.message).toContain(
+      'closure borrows the exact RenderStateRuntime rather than snapshotting its emitter',
+    );
+    expect(sourcePortability.findings[1]?.message).toContain(
+      '@:optional var registryMiss:Null<(flight.RenderRegistryTable, flight.Kind)->Void>',
     );
     expect(sourcePortability.findings[1]?.message).toContain('registryMiss itself contains no host-owned drawable');
     expect(
@@ -6458,6 +6473,13 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
       failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
       passed: false,
+    });
+    const unchanged = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(unchanged).toMatchObject({ introduced: [], resolvedFindingIdentities: [] });
+    expect(unchanged.unchanged).toHaveLength(2);
+    expect(createCompilerPackageCheckPolicyResult(unchanged, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
 
     const portableSource = createMemoryWorkspaceSource(createCanvasTextureResolversWorkspaceFiles(false));

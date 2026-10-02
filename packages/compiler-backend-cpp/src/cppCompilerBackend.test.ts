@@ -13284,6 +13284,69 @@ export function test(r: M3): number { if (r.cursorBackend !== null) return 1; re
     expect(emitted).not.toContain('reinterpret_cast');
   });
 
+  it('removes only Undefined from Canvas texture resolver live-state carriers', () => {
+    const source = (required: boolean): string => {
+      const marker = required ? '' : '?';
+      return `export interface Entity { readonly kind: string; }
+export type Kind = string;
+export enum RenderRegistryTable { TextureResolver }
+export interface Texture { readonly dimension: string; }
+export type TextureSourceKind = string;
+export type CanvasTextureResolver = (
+  resolvers: CanvasTextureResolvers,
+  texture: Readonly<Texture>,
+) => CanvasImageSource | null;
+export interface CanvasTextureResolvers extends Entity {
+  registry${marker}: Map<TextureSourceKind, CanvasTextureResolver> | null;
+  registryMiss${marker}: ((registry: RenderRegistryTable, kind: Kind) => void) | null;
+}`;
+    };
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/canvas.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'CanvasImageSource',
+          space: 'type' as const,
+          targetName: 'host::CanvasImageSource',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const currentResult = lower('canvas-texture-resolvers-current.ts', source(false));
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(currentResult.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const current = emitIrModuleCpp(currentResult.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+    const resolvedResult = lower('canvas-texture-resolvers-resolved.ts', source(true));
+    const resolved = emitIrModuleCpp(resolvedResult.module, {
+      externalBindings,
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(currentResult.diagnostics).toEqual([]);
+    expect(resolvedResult.diagnostics).toEqual([]);
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-runtime-external-symbol-binding-incomplete',
+    });
+    expect(failure.message).toContain('missing: CanvasImageSource[type]');
+    expect(current).toContain('using CanvasTextureResolver = std::function<std::optional<host::CanvasImageSource>(');
+    expect(current).toContain(
+      'std::variant<flight::Map<TextureSourceKind, CanvasTextureResolver>, flight::Null, flight::Undefined> registry =',
+    );
+    expect(current).toContain(
+      'std::variant<std::function<void(RenderRegistryTable, Kind)>, flight::Null, flight::Undefined> registry_miss =',
+    );
+    expect(resolved).toContain('std::optional<flight::Map<TextureSourceKind, CanvasTextureResolver>> registry;');
+    expect(resolved).toContain('std::optional<std::function<void(RenderRegistryTable, Kind)>> registry_miss;');
+    expect(resolved).not.toContain('flight::Undefined');
+    expect(resolved).not.toContain('flight::Any');
+    expect(resolved).not.toContain('static_cast');
+    expect(resolved).not.toContain('reinterpret_cast');
+  });
+
   it('separates MeshGeometry index input absence from required nullable live storage', () => {
     // The two typed-array widths are runtime-native value alternatives. Required null and optional
     // undefined each need one outer absence, while the current optional-nullable construction input needs

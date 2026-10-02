@@ -176,6 +176,48 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(current + live + portable).not.toContain('Dynamic');
   });
 
+  it('removes only optionality from Canvas texture resolver live-state carriers', () => {
+    const source = (required: boolean): string => {
+      const marker = required ? '' : '?';
+      return `export interface Entity { readonly kind: string; }
+       export type Kind = string;
+       export enum RenderRegistryTable { TextureResolver }
+       export interface Texture { readonly dimension: string; }
+       export type TextureSourceKind = string;
+       export type CanvasTextureResolver = (
+         resolvers: CanvasTextureResolvers,
+         texture: Readonly<Texture>,
+       ) => CanvasImageSource | null;
+       export interface CanvasTextureResolvers extends Entity {
+         registry${marker}: Map<TextureSourceKind, CanvasTextureResolver> | null;
+         registryMiss${marker}: ((registry: RenderRegistryTable, kind: Kind) => void) | null;
+       }`;
+    };
+    const current = emitIrModuleHaxeExtern(lower('@flighthq/types', 'CanvasTextureResolver.ts', source(false)), {
+      rootPackage: 'flight',
+    });
+    const resolved = emitIrModuleHaxeExtern(lower('@flighthq/types', 'CanvasTextureResolver.ts', source(true)), {
+      rootPackage: 'flight',
+    });
+    const currentResolvers = findFile(current, 'flight/_js/CanvasTextureResolvers.hx').contents;
+    const resolvedResolvers = findFile(resolved, 'flight/_js/CanvasTextureResolvers.hx').contents;
+
+    expect(currentResolvers).toContain(
+      '@:optional var registry:Null<flighthq._internal._Map<flight.TextureSourceKind, flight.CanvasTextureResolver>>;',
+    );
+    expect(currentResolvers).toContain(
+      '@:optional var registryMiss:Null<(flight.RenderRegistryTable, flight.Kind)->Void>;',
+    );
+    expect(resolvedResolvers).toContain(
+      'var registry:Null<flighthq._internal._Map<flight.TextureSourceKind, flight.CanvasTextureResolver>>;',
+    );
+    expect(resolvedResolvers).toContain('var registryMiss:Null<(flight.RenderRegistryTable, flight.Kind)->Void>;');
+    expect(resolvedResolvers).not.toContain('@:optional var registry');
+    expect(findFile(current, 'flight/_js/CanvasTextureResolver.hx').contents).toContain(
+      'typedef CanvasTextureResolver = (flight.CanvasTextureResolvers, flight.Texture)->Null<Dynamic>;',
+    );
+  });
+
   it('separates the current Skin root sentinels from required-nullable live storage', () => {
     const module = lower(
       '@flighthq/types',
