@@ -12010,6 +12010,66 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('pins the signals connection site and the container shape that replaces it', () => {
+    // connection.ts asserts a connection into a scope whose element type is the WIDEST slot signature --
+    // "the cast is the variance of that container, not a claim about this connection", as its own comment
+    // says. The rule and both of its named rewrites are covered further up; what this adds is the exact
+    // expression, because the site is a push into a heterogeneous container rather than a widening return,
+    // and the container is what the rewrite has to change.
+    const signals = `interface Signal<T extends (...args: any[]) => void> { emit: T }
+interface SignalConnection<T extends (...args: any[]) => void> {
+  connected: boolean;
+  paused: boolean;
+  signal: Signal<T>;
+  slot: T;
+}
+interface SignalScope { connections: SignalConnection<(...args: any[]) => void>[] }`;
+
+    const pushed = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'connection.ts',
+          `${signals}
+export function connectSignalTracked<T extends (...args: any[]) => void>(
+  signal: Signal<T>,
+  slot: T,
+  scope?: SignalScope,
+): SignalConnection<T> {
+  const connection: SignalConnection<T> = { connected: true, paused: false, signal, slot };
+  scope?.connections.push(connection as unknown as SignalConnection<(...args: any[]) => void>);
+  return connection;
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(pushed.rule).toBe('cpp-generic-owner-argument-assertion-unproven');
+    expect(pushed.classification).toBe('source-portability');
+    expect(pushed.message).toContain('store an operation closure that captures the exact owner');
+
+    // The rewrite that fits this site: the scope keeps what it actually needs from the connection -- one
+    // closed operation per entry -- and the connection keeps its own instantiation.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'connection-closure.ts',
+          `${signals}
+interface SignalScope2 { disconnectors: (() => void)[] }
+export function connectSignalTracked2<T extends (...args: any[]) => void>(
+  signal: Signal<T>,
+  slot: T,
+  scope?: SignalScope2,
+): SignalConnection<T> {
+  const connection: SignalConnection<T> = { connected: true, paused: false, signal, slot };
+  scope?.disconnectors.push(() => { connection.connected = false; });
+  return connection;
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('disconnectors');
+  });
+
   it('pins which carrier a dynamic material write can reach and which it cannot', () => {
     // material.ts's copyMaterialFields copies every source member through the erased view
     // (`dst as unknown as Record<string, unknown>`), which the read-only named view cannot answer. The
