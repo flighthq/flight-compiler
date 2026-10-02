@@ -499,6 +499,71 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the hierarchy writable-capability refusal source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNodeHierarchyWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule(module) {
+          if (module.source === 'packages/node/src/hierarchy.ts') {
+            throw createBackendEmissionFailure(
+              'acceptance',
+              module,
+              'the readonly hierarchy boundary does not prove writable parent and child authority',
+              'cpp-structural-assertion-writable-capability-unproven',
+              { classification: 'source-portability' },
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toEqual([]);
+    expect(report.directFindings).toMatchObject([
+      {
+        identity:
+          'flight-compiler-check-finding/1:["@flighthq/node","packages/node/src/hierarchy.ts","Hierarchy","emission","unsupported-ir","cpp-structural-assertion-writable-capability-unproven"]',
+        module: { source: 'packages/node/src/hierarchy.ts' },
+        policyClass: 'source-portability',
+        rule: 'cpp-structural-assertion-writable-capability-unproven',
+        stage: 'emission',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 1,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 1, directlyRefused: 1, emitted: 0, total: 2 },
+      packages: 1,
+    });
+    const comparison = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.resolvedFindingIdentities).toEqual([]);
+    expect(comparison.unchanged).toHaveLength(1);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('keeps the specialized GL color-adjustment absence finding stable through check mode', () => {
     const source = createMemoryWorkspaceSource(createColorAdjustmentWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -3861,6 +3926,26 @@ export function getNodeWidth<Traits extends object>(source: Spatial2DNode<Traits
   getNodeHeight,
   getNodeWidth,
 } from './boundsRectangle.js';`,
+  };
+}
+
+function createNodeHierarchyWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/node/package.json': createPackageManifest('@flighthq/node'),
+    '/flight/packages/node/src/hierarchy.ts': `interface Node<Traits extends object> { readonly name: string }
+type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+function getNodeParent<Traits extends object>(_source: Readonly<Node<Traits>>): NodeOf<Traits> | null {
+  return null;
+}
+export function getNodeCommonAncestor<Traits extends object>(
+  a: Readonly<Node<Traits>>,
+  b: Readonly<Node<Traits>>,
+): NodeOf<Traits> | null {
+  const aNode = a as NodeOf<Traits>;
+  if (aNode === b) return aNode;
+  return getNodeParent(b as NodeOf<Traits>);
+}`,
+    '/flight/packages/node/src/index.ts': `export { getNodeCommonAncestor } from './hierarchy.js';`,
   };
 }
 

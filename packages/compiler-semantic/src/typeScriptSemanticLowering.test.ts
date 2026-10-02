@@ -12799,6 +12799,104 @@ it('keeps a caller type parameter in imported generic NodeOf traversal evidence'
   expect(JSON.stringify(traversal.module)).not.toContain('"source":"unknown"');
 });
 
+it('retains readonly hierarchy inputs beside exact writable parent and child mutations', () => {
+  const [result] = lowerTypeScriptSources([
+    {
+      packageName: '@flighthq/node',
+      sourceFile: ts.createSourceFile(
+        '/flight/packages/node/src/hierarchy.ts',
+        `interface NodeRuntime<Traits extends object> {
+           children: NodeOf<Traits>[];
+           childrenId: number;
+           parent: NodeOf<Traits>;
+         }
+         interface Node<Traits extends object> {
+           readonly name: string;
+           runtime: NodeRuntime<Traits>;
+         }
+         type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+         function getNodeParent<Traits extends object>(
+           _source: Readonly<Node<Traits>>,
+         ): NodeOf<Traits> | null { return null; }
+         export function addNodeChild<Traits extends object>(
+           target: NodeOf<Traits>,
+           child: NodeOf<Traits>,
+         ): void {
+           target.runtime.children.push(child);
+           target.runtime.childrenId++;
+           child.runtime.parent = target;
+         }
+         export function getNodeCommonAncestor<Traits extends object>(
+           a: Readonly<Node<Traits>>,
+           b: Readonly<Node<Traits>>,
+         ): NodeOf<Traits> | null {
+           const aNode = a as NodeOf<Traits>;
+           if (aNode === b) return aNode;
+           const bNode = b as NodeOf<Traits>;
+           return getNodeParent(bNode);
+         }`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      upstreamDirectory: '/flight',
+    },
+  ]);
+  const commonAncestor = result!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'getNodeCommonAncestor',
+  );
+  const addChild = result!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'addNodeChild',
+  );
+  if (commonAncestor?.kind !== 'function' || addChild?.kind !== 'function') {
+    throw new Error('Expected hierarchy functions');
+  }
+  const assertions: IrExpression[] = [];
+  analyzeIrModuleTraversal(result!.module, {
+    expression(expression) {
+      if (expression.kind === 'cast') assertions.push(expression);
+    },
+  });
+
+  expect(result!.diagnostics).toEqual([]);
+  expect(assertions).toHaveLength(2);
+  expect(commonAncestor.parameters.map(({ type }) => type)).toMatchObject([
+    {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Readonly' },
+      typeArguments: [{ kind: 'named', reference: { binding: { name: 'Node' }, kind: 'binding' } }],
+    },
+    {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'Readonly' },
+      typeArguments: [{ kind: 'named', reference: { binding: { name: 'Node' }, kind: 'binding' } }],
+    },
+  ]);
+  for (const assertion of assertions) {
+    expect(assertion).toMatchObject({
+      expression: { kind: 'identifier', reference: { binding: { kind: 'parameter' }, kind: 'binding' } },
+      kind: 'cast',
+      type: {
+        kind: 'named',
+        reference: { binding: { name: 'NodeOf' }, kind: 'binding' },
+      },
+    });
+  }
+  expect(
+    assertions.map((assertion) =>
+      assertion.kind === 'cast' &&
+      assertion.expression.kind === 'identifier' &&
+      assertion.expression.reference.kind === 'binding'
+        ? assertion.expression.reference.binding.id
+        : undefined,
+    ),
+  ).toEqual(commonAncestor.parameters.map(({ binding }) => binding.id));
+  const writes = JSON.stringify(addChild.body);
+  for (const field of ['children', 'childrenId', 'parent']) {
+    expect(writes).toContain(`"name":"${field}"`);
+  }
+  expect(JSON.stringify(commonAncestor.body)).toContain('"name":"getNodeParent"');
+});
+
 it('keeps caller-owned NodeOf evidence across an imported generic and a recursive overload', () => {
   const moduleResolution = {
     edges: [

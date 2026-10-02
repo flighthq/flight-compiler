@@ -4100,6 +4100,131 @@ describe('createCppCompilerBackend', () => {
     expect(write).not.toContain('static_pointer_cast');
   });
 
+  it('splits readonly hierarchy traversal from exact writable parent and child ownership', () => {
+    const source = (file: string, text: string) => ({
+      packageName: '@flighthq/node',
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources([
+      source(
+        'node/src/hierarchy.ts',
+        `interface Node<Traits extends object> { readonly name: string }
+         type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+         function getNodeParent<Traits extends object>(
+           _source: Readonly<Node<Traits>>,
+         ): NodeOf<Traits> | null { return null; }
+         export function getNodeCommonAncestor<Traits extends object>(
+           a: Readonly<Node<Traits>>,
+           b: Readonly<Node<Traits>>,
+         ): NodeOf<Traits> | null {
+           const aAncestors = new Set<NodeOf<Traits>>();
+           const aNode = a as NodeOf<Traits>;
+           aAncestors.add(aNode);
+           let current = getNodeParent(aNode);
+           while (current !== null) {
+             aAncestors.add(current);
+             current = getNodeParent(current);
+           }
+           let bCurrent: NodeOf<Traits> | null = b as NodeOf<Traits>;
+           while (bCurrent !== null) {
+             if (aAncestors.has(bCurrent)) return bCurrent;
+             bCurrent = getNodeParent(bCurrent);
+           }
+           return null;
+         }`,
+      ),
+      source(
+        'node/src/typedHierarchy.ts',
+        `interface ReadonlyHierarchyNode<Traits extends object> {
+           readonly name: string;
+           readonly parent: ReadonlyHierarchyNode<Traits> | null;
+           readonly traits: Readonly<Traits>;
+         }
+         interface NodeRuntime<Traits extends object> {
+           children: NodeOf<Traits>[];
+           childrenId: number;
+           parent: NodeOf<Traits>;
+         }
+         interface Node<Traits extends object> {
+           readonly name: string;
+           runtime: NodeRuntime<Traits>;
+         }
+         type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;
+         function getReadonlyNodeParent<Traits extends object>(
+           source: ReadonlyHierarchyNode<Traits>,
+         ): ReadonlyHierarchyNode<Traits> | null {
+           return source.parent;
+         }
+         function getWritableNodeRuntime<Traits extends object>(
+           source: NodeOf<Traits>,
+         ): NodeRuntime<Traits> {
+           return source.runtime;
+         }
+         export function addNodeChild<Traits extends object>(
+           target: NodeOf<Traits>,
+           child: NodeOf<Traits>,
+         ): void {
+           const targetRuntime = getWritableNodeRuntime(target);
+           const childRuntime = getWritableNodeRuntime(child);
+           targetRuntime.children.push(child);
+           targetRuntime.childrenId++;
+           childRuntime.parent = target;
+         }
+         export function getNodeCommonAncestor<Traits extends object>(
+           a: ReadonlyHierarchyNode<Traits>,
+           b: ReadonlyHierarchyNode<Traits>,
+         ): ReadonlyHierarchyNode<Traits> | null {
+           const aAncestors: ReadonlyHierarchyNode<Traits>[] = [];
+           let aCurrent: ReadonlyHierarchyNode<Traits> | null = a;
+           while (aCurrent !== null) {
+             aAncestors.push(aCurrent);
+             aCurrent = getReadonlyNodeParent(aCurrent);
+           }
+           let bCurrent: ReadonlyHierarchyNode<Traits> | null = b;
+           while (bCurrent !== null) {
+             if (aAncestors.includes(bCurrent)) return bCurrent;
+             bCurrent = getReadonlyNodeParent(bCurrent);
+           }
+           return null;
+         }`,
+      ),
+    ]);
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution: { edges: [], schema: 'flight-compiler-module-resolution/1' },
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[0]!));
+    const emitted = session.emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(refused.classification).toBe('source-portability');
+    expect(refused.message).toContain('getNodeCommonAncestor casts a and b only to retain object identity');
+    expect(refused.message).toContain('NodeRuntime<Traits>.parent and NodeRuntime<Traits>.children');
+    expect(refused.message).toContain('one Traits specialization');
+    expect(refused.message).toContain('make readonly traversal accept Readonly<NodeOf<Traits>>');
+    expect(refused.message).toContain('a named readonly hierarchy view with the same Traits parameter');
+    expect(refused.message).toContain('return that readonly view');
+    expect(refused.message).toContain('use a separate mutable parent accessor');
+    expect(refused.message).toContain("allocate, splice, or swap the parent's children array");
+    expect(refused.message).toContain("set or clear the child's parent");
+    expect(refused.message).toContain("reparentNode's no-mutation result for a singular parent transform");
+    expect(refused.message).toContain('traversal, bounds, rendering, interaction, skeleton cloning');
+    expect(refused.message).toContain('Rive ordering, and slot replacement');
+    expect(refused.message).toContain('gizmo removal is the current consumer');
+    expect(refused.message).toContain('Do not whitelist these assertions');
+    expect(emitted).toContain('get_readonly_node_parent<Traits>');
+    expect(emitted).toContain('get_writable_node_runtime<Traits>');
+    expect(emitted).toContain('target_runtime->children');
+    expect(emitted).toContain('target_runtime->children_id');
+    expect(emitted).toContain('child_runtime->parent');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize_row');
+  });
+
   it('requires the bounds runtime slot and accessor to carry their writable cells', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
