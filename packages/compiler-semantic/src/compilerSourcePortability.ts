@@ -375,6 +375,31 @@ function getAttachmentPointStorageMixedAbsencePropertyMessage(
   return `${subject} makes ${field} one optional-null half of the attachment's paired point storage. The represented contract has two present owners: Skin2D influences in weighted mode or a Float32Array of local points in rigid mode; rejected or empty input may carry neither. Import initializers assign both fields, and skinSkeleton2DAttachmentPoints treats undefined exactly like null before selecting the existing owner. Make both skin and vertices required nullable fields on each concrete Attachment2D and initialize both on every construction path, preserving the exact Skin2D and Float32Array owners. If callers must distinguish not initialized from weighted, rigid, or unavailable storage, replace the independent fields with a named closed state whose arms carry those owners explicitly. The compiler will not infer a mode from whichever optional field happened to be written, choose or collapse an absence sentinel, reconstruct points from influences, allocate or copy either owner, route elements through Any, reinterpret or cast storage, or add side storage.`;
 }
 
+function getPathAttachment2DMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'PathAttachment2D' ||
+    !interfaceExtendsType(node.parent, 'Attachment2D') ||
+    !isFlightTypesSource(node, 'PathAttachment2D.ts')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field !== 'skin' && field !== 'vertices') return undefined;
+  const skin = getInterfaceProperty(node.parent, 'skin');
+  const vertices = getInterfaceProperty(node.parent, 'vertices');
+  if (
+    !isOptionalNullableNamedTypeProperty(skin, 'Skin2D') ||
+    !isOptionalNullableNamedTypeProperty(vertices, 'Float32Array')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives PathAttachment2D.${field} both omission and explicit null, but the path deformation contract gives those spellings one absence meaning at this storage boundary. deformSkeleton2DPathAttachment passes skin and vertices unchanged to skinSkeleton2DAttachmentPoints: a present Skin2D selects weighted deformation and ignores vertices; otherwise a present Float32Array supplies rigid local points, while a nullish vertices value causes no coordinate writes. explainSkeleton2DDeformLength makes the same dispatch and treats null and undefined vertices as zero addressed offsets. Current production code has no PathAttachment2D constructor or importer; every concrete repository test constructor assigns both fields, including null for the inactive owner and for an empty rigid path. Make PathAttachment2D.skin a required Skin2D | null field and PathAttachment2D.vertices a required Float32Array | null field, initialize both on every future construction path, and retain the current weighted-first dispatch. If weighted, rigid, empty, and not-yet-initialized must become distinct, replace the pair with one named closed storage state and handle every arm explicitly. Do not whitelist either redundant absence spelling. The compiler will not choose or collapse an absence sentinel, infer or change the deformation mode, fabricate a Skin2D or vertex buffer, rewrite commands or pointCount, allocate or copy either owner, route elements through Any, reinterpret or cast storage, or add side storage.`;
+}
+
 function interfaceExtendsType(node: ts.InterfaceDeclaration, name: string): boolean {
   return (
     node.heritageClauses?.some(
@@ -1125,6 +1150,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
     subject,
   );
   if (meshGeometryFromAttributesOptions) return meshGeometryFromAttributesOptions;
+  const pathAttachment2D = getPathAttachment2DMixedAbsencePropertyMessage(node, subject);
+  if (pathAttachment2D) return pathAttachment2D;
   const attachmentPointStorage = getAttachmentPointStorageMixedAbsencePropertyMessage(node, subject);
   if (attachmentPointStorage) return attachmentPointStorage;
   const authoredName = getAuthoredNameMixedAbsencePropertyMessage(node, subject);

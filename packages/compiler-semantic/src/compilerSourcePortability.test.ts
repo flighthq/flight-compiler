@@ -4869,6 +4869,109 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(unrelatedFindings.every((finding) => finding.message.includes('combines an optional property'))).toBe(true);
   });
 
+  it('explains PathAttachment2D point storage from its weighted-first deformation contract', () => {
+    const source = input(
+      'packages/types/src/PathAttachment2D.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influenceCounts: Uint16Array; influences: Float32Array }
+       interface PathAttachment2D extends Attachment2D {
+         commands: number[];
+         kind: 'PathAttachment2D';
+         pointCount: number;
+         skin?: Skin2D | null;
+         vertices?: Float32Array | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['skin', 'vertices'].map((field) => ({
+        rule: 'mixed-absence',
+        subject: `interface:PathAttachment2D/property:${field}`,
+      })),
+    );
+    for (const finding of findings) {
+      expect(finding.message).toContain(`PathAttachment2D.${finding.subject.endsWith(':skin') ? 'skin' : 'vertices'}`);
+      expect(finding.message).toContain('deformSkeleton2DPathAttachment passes skin and vertices unchanged');
+      expect(finding.message).toContain('a present Skin2D selects weighted deformation and ignores vertices');
+      expect(finding.message).toContain('a present Float32Array supplies rigid local points');
+      expect(finding.message).toContain('a nullish vertices value causes no coordinate writes');
+      expect(finding.message).toContain('explainSkeleton2DDeformLength makes the same dispatch');
+      expect(finding.message).toContain('no PathAttachment2D constructor or importer');
+      expect(finding.message).toContain('every concrete repository test constructor assigns both fields');
+      expect(finding.message).toContain('Make PathAttachment2D.skin a required Skin2D | null field');
+      expect(finding.message).toContain('PathAttachment2D.vertices a required Float32Array | null field');
+      expect(finding.message).toContain('retain the current weighted-first dispatch');
+      expect(finding.message).toContain('one named closed storage state');
+      expect(finding.message).toContain('Do not whitelist either redundant absence spelling');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('infer or change the deformation mode');
+      expect(finding.message).toContain('fabricate a Skin2D or vertex buffer');
+      expect(finding.message).toContain('rewrite commands or pointCount');
+      expect(finding.message).toContain('allocate or copy either owner');
+      expect(finding.message).toContain('route elements through Any');
+      expect(finding.message).toContain('reinterpret or cast storage');
+      expect(finding.message).toContain('or add side storage');
+      expect(finding.message).not.toContain('Import initializers assign both fields');
+    }
+  });
+
+  it('keeps PathAttachment2D guidance exact and accepts required nullable or closed storage', () => {
+    const controls = [
+      input(
+        'packages/example/src/PathAttachment2D.ts',
+        `interface Attachment2D { kind: string }
+         interface Skin2D { influences: Float32Array }
+         interface PathAttachment2D extends Attachment2D {
+           skin?: Skin2D | null;
+           vertices?: Float32Array | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/PathAttachment2D.ts',
+        `interface Attachment2D { kind: string }
+         interface Skin2D { influences: Float32Array }
+         interface OtherPathAttachment2D extends Attachment2D {
+           skin?: Skin2D | null;
+           vertices?: Float32Array | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/PathAttachment2D.ts',
+        `interface Attachment2D { kind: string }
+         interface Skin2D { influences: Float32Array }
+         interface PathAttachment2D extends Attachment2D {
+           skin?: Skin2D | null;
+           vertices?: number[] | null;
+         }`,
+      ),
+    ];
+    const required = input(
+      'packages/types/src/PathAttachment2D.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influences: Float32Array }
+       interface PathAttachment2D extends Attachment2D {
+         skin: Skin2D | null;
+         vertices: Float32Array | null;
+       }`,
+    );
+    const closed = input(
+      'packages/types/src/PathAttachment2D.ts',
+      `interface Attachment2D { kind: string }
+       interface Skin2D { influences: Float32Array }
+       type PathPointStorage =
+         | { mode: 'empty' }
+         | { mode: 'weighted'; skin: Skin2D }
+         | { mode: 'rigid'; vertices: Float32Array };
+       interface PathAttachment2D extends Attachment2D { points: PathPointStorage }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability(controls).findings;
+
+    expect(findings).toHaveLength(6);
+    expect(findings.every((finding) => !finding.message.includes('path deformation contract'))).toBe(true);
+    expect(analyzeTypeScriptSourcePortability([required, closed]).findings).toEqual([]);
+  });
+
   it('explains the one-sentinel contract for internal authored-name storage', () => {
     const sources = [
       input(
