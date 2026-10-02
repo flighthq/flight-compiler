@@ -2527,6 +2527,100 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the two InstancedMesh runtime absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createInstancedMeshRuntimeWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'interface:InstancedMeshCullRuntime/property:instanceLocalBounds',
+      'interface:InstancedMeshSignalsRuntime/property:instancedMeshSignals',
+    ];
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
+      expect.stringContaining('Shared render culling is the sole cache consumer and writer'),
+      expect.stringContaining('enableInstancedMeshSignals is the sole outer-slot writer'),
+    ]);
+    for (const { message } of sourcePortability.findings) {
+      expect(message).toContain(
+        'createNode3DRuntime, which initializes the base runtime but omits this extension slot',
+      );
+      expect(message).toContain('cloneInstancedMesh');
+      expect(message).toContain('disposeNode3D delegates to disposeNode');
+      expect(message).toContain('no InstancedMesh-specific disposer or destroyer');
+      expect(message).toContain('optional non-null');
+      expect(message).toContain('This finding is not a host-binding gap');
+      expect(message).toContain('with no external binding, Any route, or cast');
+      expect(message).toContain('Do not whitelist the redundant live-storage spelling');
+    }
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createInstancedMeshRuntimeWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the three Slot2D absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createSlot2DWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -7213,6 +7307,23 @@ export interface MeshDeformRuntime {
   deformedLocalBounds?: Aabb${nullable};
 }`,
     '/flight/packages/types/src/index.ts': `export type { Mesh, MeshDeformRuntime } from './Mesh.js';`,
+  };
+}
+
+function createInstancedMeshRuntimeWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/InstancedMesh.ts': `interface Aabb { readonly minX: number }
+interface InstancedMeshSignals { readonly onCleared: object }
+export interface InstancedMeshCullRuntime {
+  instanceLocalBounds?: Aabb${nullable};
+  instanceLocalBoundsVersion?: number;
+}
+export interface InstancedMeshSignalsRuntime {
+  instancedMeshSignals?: InstancedMeshSignals${nullable};
+}`,
+    '/flight/packages/types/src/index.ts': `export type { InstancedMeshCullRuntime, InstancedMeshSignalsRuntime } from './InstancedMesh.js';`,
   };
 }
 

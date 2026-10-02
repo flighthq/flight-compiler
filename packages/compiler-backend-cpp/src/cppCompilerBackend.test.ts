@@ -13157,6 +13157,34 @@ export function test(r: M3): number { if (r.cursorBackend !== null) return 1; re
     }
   });
 
+  it('keeps InstancedMesh runtime extension owners native while removing redundant null', () => {
+    // These are lazy live-runtime extensions, not construction inputs or host objects. The current source
+    // requires both explicit sentinels; removing null keeps omission and each exact Ref owner.
+    const declarations = (nullable: string): string => `export interface Aabb { readonly minX: number }
+export interface InstancedMeshSignals { readonly id: number }
+export interface InstancedMeshCullRuntime { instanceLocalBounds?: Aabb${nullable} }
+export interface InstancedMeshSignalsRuntime { instancedMeshSignals?: InstancedMeshSignals${nullable} }`;
+    const storage = (file: string, nullable: string) =>
+      emitIrModuleCpp(lower(file, declarations(nullable)).module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    const current = storage('instanced-mesh-runtime-current.ts', ' | null');
+    const portable = storage('instanced-mesh-runtime-portable.ts', '');
+
+    expect(current).toContain(
+      'std::variant<flight::Ref<Aabb>, flight::Null, flight::Undefined> instance_local_bounds =',
+    );
+    expect(current).toContain(
+      'std::variant<flight::Ref<InstancedMeshSignals>, flight::Null, flight::Undefined> instanced_mesh_signals =',
+    );
+    expect(portable).toContain('std::optional<flight::Ref<Aabb>> instance_local_bounds;');
+    expect(portable).toContain('std::optional<flight::Ref<InstancedMeshSignals>> instanced_mesh_signals;');
+    for (const contents of [current, portable]) {
+      expect(contents).not.toContain('flight::Any');
+      expect(contents).not.toContain('static_cast');
+      expect(contents).not.toContain('reinterpret_cast');
+    }
+  });
+
   it('separates a guard member from the host handle one of its parameters names', () => {
     // GlScene3DRuntime carries five opt-in guards, and ALL FIVE are the same mixed-absence family: an
     // optional callable beside null. Four of them lower on their own; the fifth names a host handle in its

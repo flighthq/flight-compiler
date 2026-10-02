@@ -6658,6 +6658,161 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the one-sentinel contract for InstancedMesh runtime extensions', () => {
+    const source = input(
+      'packages/types/src/InstancedMesh.ts',
+      `interface Aabb { readonly minX: number }
+       interface InstancedMeshSignals { readonly onCleared: object }
+       interface InstancedMeshCullRuntime {
+         instanceLocalBounds?: Aabb | null;
+         instanceLocalBoundsVersion?: number;
+       }
+       interface InstancedMeshSignalsRuntime {
+         instancedMeshSignals?: InstancedMeshSignals | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:InstancedMeshCullRuntime/property:instanceLocalBounds',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:InstancedMeshSignalsRuntime/property:instancedMeshSignals',
+      },
+    ]);
+
+    const bounds = findings[0]!.message;
+    expect(bounds).toContain("InstancedMesh node runtime's local-bounds cache both omission and explicit null");
+    expect(bounds).toContain('one not-computed state');
+    expect(bounds).toContain('No document field, importer, materializer, createInstancedMesh argument');
+    expect(bounds).toContain('stored in the InstancedMeshCullRuntime extension of the base Node3DRuntime');
+    expect(bounds).toContain('createNode3DRuntime, which initializes the base runtime but omits this extension slot');
+    expect(bounds).toContain('cloneInstancedMesh constructs another InstancedMesh with a fresh runtime');
+    expect(bounds).toContain('shares geometry, shallow-copies materials, deep-copies live matrices');
+    expect(bounds).toContain('resets version to zero');
+    expect(bounds).toContain('never copies the source cache');
+    expect(bounds).toContain('cloneNode3DSubtree has no InstancedMesh branch');
+    expect(bounds).toContain('cloneMesh produces an ordinary Mesh-shaped clone');
+    expect(bounds).toContain('cloneInstancedMesh is the type-preserving clone');
+    expect(bounds).toContain('computeInstancedMeshLocalBoundsAabb writes only its caller-owned Aabb');
+    expect(bounds).toContain('Shared render culling is the sole cache consumer and writer');
+    expect(bounds).toContain('instanceLocalBoundsVersion equals mesh.version');
+    expect(bounds).toContain('reuses that Aabb or creates one');
+    expect(bounds).toContain('folds the geometry bounds through every live instance matrix');
+    expect(bounds).toContain('visible list reaches GL or WebGPU');
+    expect(bounds).toContain('Null and undefined therefore take the same cache-miss path');
+    expect(bounds).toContain('no production path writes null');
+    expect(bounds).toContain('bump mesh.version rather than clearing the cache');
+    expect(bounds).toContain('reserve without a live-payload change leaves the version alone');
+    expect(bounds).toContain('must invalidate explicitly');
+    expect(bounds).toContain('Aabb owns no GPU or native resource');
+    expect(bounds).toContain('Make InstancedMeshCullRuntime.instanceLocalBounds an optional non-null Aabb field');
+    expect(bounds).toContain('preserving lazy extension storage, exact-owner reuse, version invalidation');
+    expect(bounds).toContain('Keep instanceLocalBoundsVersion optional');
+    expect(bounds).toContain('current field as Aabb | Null | Undefined');
+    expect(bounds).toContain('recommended field as one optional Ref<Aabb>');
+    expect(bounds).toContain('infer geometry or instance bounds');
+    expect(bounds).toContain('change cloneNode3DSubtree dispatch, culling, or draw selection');
+
+    const signals = findings[1]!.message;
+    expect(signals).toContain("InstancedMesh node runtime's opt-in signal-group slot both omission and explicit null");
+    expect(signals).toContain('one signals-disabled state');
+    expect(signals).toContain('No document field, importer, materializer, or createInstancedMesh argument');
+    expect(signals).toContain('stored in the InstancedMeshSignalsRuntime extension of the base Node3DRuntime');
+    expect(signals).toContain('createNode3DRuntime, which initializes the base runtime but omits this extension slot');
+    expect(signals).toContain('cloneInstancedMesh constructs a fresh runtime and copies no cache or signal owner');
+    expect(signals).toContain('cloneNode3DSubtree has no InstancedMesh branch');
+    expect(signals).toContain('cloneMesh produces an ordinary Mesh-shaped clone');
+    expect(signals).toContain('cloneInstancedMesh is the type-preserving clone');
+    expect(signals).toContain('enableInstancedMeshSignals is the sole outer-slot writer');
+    expect(signals).toContain('allocates one exact InstancedMeshSignals owner on the first nullish read');
+    expect(signals).toContain('getInstancedMeshSignals normalizes either absent spelling');
+    expect(signals).toContain('materializes three distinct Signal owners');
+    expect(signals).toContain('inner listener data to null and its no-listener emitter');
+    expect(signals).toContain('different carriers');
+    expect(signals).toContain('appendInstancedMeshInstance, clearInstancedMesh, and removeInstancedMeshInstance');
+    expect(signals).toContain('count, matrix, range, color, and reserve operations do not emit');
+    expect(signals).toContain('never rewrite instancedMeshSignals');
+    expect(signals).toContain('no production path writes null or undefined after enablement');
+    expect(signals).toContain('does not clear the InstancedMeshSignals owner, its three listener registries');
+    expect(signals).toContain('a retained disposed node still retains it');
+    expect(signals).toContain(
+      'Make InstancedMeshSignalsRuntime.instancedMeshSignals an optional non-null InstancedMeshSignals field',
+    );
+    expect(signals).toContain('preserving allocation-free construction, idempotent enablement');
+    expect(signals).toContain("getter's nullable result");
+    expect(signals).toContain('clear all three present Signals and then delete the one optional outer slot');
+    expect(signals).toContain('current field as InstancedMeshSignals | Null | Undefined');
+    expect(signals).toContain('recommended field as one optional Ref<InstancedMeshSignals>');
+    expect(signals).toContain('create, connect, disconnect, clear, or emit a Signal');
+
+    for (const finding of findings) {
+      expect(finding.message).toContain('it is live runtime-only');
+      expect(finding.message).toContain('disposeNode3D delegates to disposeNode');
+      expect(finding.message).toContain('does not');
+      expect(finding.message).toContain('no InstancedMesh-specific disposer or destroyer');
+      expect(finding.message).toContain('ordinary target lifetime');
+      expect(finding.message).toContain('use omission or undefined as its sole');
+      expect(finding.message).toContain('preserving');
+      expect(finding.message).toContain('clone freshness');
+      expect(finding.message).toContain('This finding is not a host-binding gap');
+      expect(finding.message).toContain('with no external binding, Any route, or cast');
+      expect(finding.message).toContain('Do not whitelist the redundant live-storage spelling');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('fabricate a host binding');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps InstancedMesh runtime lookalikes generic and accepts either single absence representation', () => {
+    const optional = input(
+      'packages/types/src/InstancedMesh.ts',
+      `interface Aabb {}
+       interface InstancedMeshSignals {}
+       interface InstancedMeshCullRuntime { instanceLocalBounds?: Aabb }
+       interface InstancedMeshSignalsRuntime { instancedMeshSignals?: InstancedMeshSignals }`,
+    );
+    const nullable = input(
+      'packages/types/src/InstancedMesh.ts',
+      `interface Aabb {}
+       interface InstancedMeshSignals {}
+       interface InstancedMeshCullRuntime { instanceLocalBounds: Aabb | null }
+       interface InstancedMeshSignalsRuntime { instancedMeshSignals: InstancedMeshSignals | null }`,
+    );
+    const unrelated = [
+      input(
+        'packages/example/src/InstancedMesh.ts',
+        'interface InstancedMeshCullRuntime { instanceLocalBounds?: Aabb | null }',
+      ),
+      input(
+        'packages/types/src/InstancedMesh.ts',
+        'interface OtherInstancedMeshRuntime { instanceLocalBounds?: Aabb | null }',
+      ),
+      input('packages/types/src/InstancedMesh.ts', 'interface InstancedMeshCullRuntime { bounds?: Aabb | null }'),
+      input(
+        'packages/types/src/InstancedMesh.ts',
+        'interface OtherAabb {} interface InstancedMeshCullRuntime { instanceLocalBounds?: OtherAabb | null }',
+      ),
+      input(
+        'packages/types/src/InstancedMesh.ts',
+        `interface InstancedMeshSignals<T> {}
+         interface InstancedMeshSignalsRuntime { instancedMeshSignals?: InstancedMeshSignals<string> | null }`,
+      ),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability([optional, nullable]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('InstancedMesh node runtime');
+      expect(findings[0]?.message).not.toContain('Do not whitelist the redundant live-storage spelling');
+    }
+  });
+
   it('explains the one-sentinel document contract for inline Scene3D morph data', () => {
     const source = input(
       'packages/types/src/Scene3DDocument.ts',
