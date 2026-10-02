@@ -1937,9 +1937,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.acceptedExceptions).toEqual([]);
     expect(sourcePortability.findings).toHaveLength(1);
     expect(sourcePortability.findings[0]).toMatchObject({ rule: 'mixed-absence', subject });
-    expect(sourcePortability.findings[0]?.message).toContain('applyDocumentSkins is the only other production builder');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Both single- and multi-scene assembly converge on applyDocumentSkins',
+    );
     expect(sourcePortability.findings[0]?.message).toContain(
       'Make Skeleton3D.names a required readonly string[] | null field',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'source contract, not a compiler-runtime or host-binding gap',
     );
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant live-storage spelling');
     expect(report.directFindings).toMatchObject([
@@ -1955,6 +1960,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 1,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createSkeleton3DNamesWorkspaceFiles(false));

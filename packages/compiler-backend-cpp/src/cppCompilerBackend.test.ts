@@ -22620,6 +22620,30 @@ int main() {
     expect(recoveryFailure.rule).toBe('cpp-weak-map-erased-ref-view-unsupported');
   });
 
+  it('classifies Skeleton3D names as a source sentinel rather than a runtime or host-binding gap', () => {
+    const current = lowerPackage(
+      '@flighthq/types',
+      'Skeleton3D.ts',
+      'export interface Skeleton3D { names?: readonly string[] | null }',
+    );
+    const resolved = lowerPackage(
+      '@flighthq/types',
+      'Skeleton3D.ts',
+      'export interface Skeleton3D { names: readonly string[] | null }',
+    );
+    const currentEmission = emitIrModuleCpp(current.module, { runtimeProfile: 'flight-cpp' }).contents;
+    const resolvedEmission = emitIrModuleCpp(resolved.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect([...current.diagnostics, ...resolved.diagnostics]).toEqual([]);
+    expect(currentEmission).toContain(
+      'std::variant<flight::Array<flight::String>, flight::Null, flight::Undefined> names =',
+    );
+    expect(currentEmission).toContain('std::in_place_type<flight::Undefined>');
+    expect(resolvedEmission).toContain('std::optional<flight::Array<flight::String>> names;');
+    expect(resolvedEmission).not.toContain('flight::Undefined');
+    expect(resolvedEmission).not.toContain('host::');
+  });
+
   it('represents WgpuRenderState named WeakMap values and its authored opaque cache slot', () => {
     // Representation is not ownership evidence: the current source never reads or writes the
     // WgpuRenderStateRuntime sceneMeshUploadCache duplicate. Scene3D uses the separately declared
