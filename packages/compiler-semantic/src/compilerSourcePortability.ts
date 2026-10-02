@@ -854,6 +854,38 @@ function getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
   return `${subject} gives the persisted FlightDocument node interaction slot ${field} both omission and explicit null, but the represented contract has one inactive state and transition is invalid without interactiveStates. flightDocumentText.readNode returns { children, fields, interactiveStates, kind, transition }, and the 2D and 3D scene writers assign both fields from readInteractiveStateBindingMetadata; format, refusal, and materialization paths collapse undefined and null with == null, != null, or ?? null. By contrast, substituteNode rebuilds { children, fields, kind }, demonstrating how optional storage can silently discard present interaction metadata. Make interactiveStates and transition required nullable fields on FlightDocumentNode, normalize omitted input syntax to null at ingress, and initialize or deliberately preserve both fields in every parser, writer, and reconstruction path. If callers need to distinguish absent syntax from disabled interaction, use a separate input shape or one named closed metadata state before constructing the persisted node. The compiler will not choose or collapse an absence sentinel, infer a transition from interactive states, decide whether a transformation preserves or clears metadata, clone or materialize either metadata owner, route it through Any, reinterpret or cast it, or add side storage.`;
 }
 
+function getAnimationPlayerSignalMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'AnimationPlayer' ||
+    !isFlightTypesSource(node, 'AnimationPlayer.ts') ||
+    node.questionToken === undefined
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field !== 'onEvent' && field !== 'onFinished' && field !== 'onLooped') return undefined;
+  const owner = node.type ? getMixedAbsenceGenericCallableOwner(node.type) : undefined;
+  if (!owner || getNodeName(owner.typeName) !== 'Signal') return undefined;
+  const flow = getAnimationPlayerSignalFlow(field);
+  const ownerType = owner.getText(node.getSourceFile());
+  return `${subject} gives the opt-in AnimationPlayer signal ${field} both omission and explicit null, but the represented player has one signal-free state. cloneAnimationPlayer and initializeAnimationPlayer assign onEvent, onFinished, and onLooped to null; createAnimationPlayer delegates to that initializer, so both library construction paths choose the same sentinel. enableAnimationPlayerSignals checks each slot with == null, installs its exact Signal owner only when absent, is idempotent, and no path clears an enabled slot. ${flow} Make all three slots required fields with their exact callable-bearing Signal type | null, retain the explicit null assignments in the clone and initializer, and keep the nullish guards at emission. Null initialization remains allocation-free: the library creates the three Signal owners only in enableAnimationPlayerSignals. The C++ backend can already preserve the current null and undefined tags, the exact ${ownerType} value alternative, assignments, and nullish guards; that representation support does not choose the source contract's redundant disabled sentinel. If an external compatibility input must still accept omitted signal slots, keep that boundary shape separate and normalize it to null before constructing an AnimationPlayer; if omission and explicit disable must differ, replace them with one named closed signal state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, allocate or clone a Signal owner, connect or emit a listener, re-parameterize the callback, route it through Any, reinterpret or cast it, or add side storage.`;
+}
+
+function getAnimationPlayerSignalFlow(field: 'onEvent' | 'onFinished' | 'onLooped'): string {
+  switch (field) {
+    case 'onEvent':
+      return 'emitAnimationPlayerEvents snapshots onEvent for each traversal segment, returns when it is == null, and otherwise emits only the clip markers crossed in that segment.';
+    case 'onFinished':
+      return 'emitAnimationPlayerFinished checks onFinished with != null and emits it when non-looping playback reaches an endpoint or a finite repeat budget is exhausted.';
+    case 'onLooped':
+      return 'emitAnimationPlayerLooped checks onLooped with != null and emits it once after an advance performs at least one permitted repeat wrap or ping-pong bounce without exhausting the budget.';
+  }
+}
+
 function getTypeLiteralDiscriminant(node: ts.TypeLiteralNode): string | undefined {
   for (const member of node.members) {
     if (!ts.isPropertySignature(member) || member.questionToken || !member.type || !ts.isLiteralTypeNode(member.type)) {
@@ -940,6 +972,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
     subject,
   );
   if (flightDocumentNodeInteraction) return flightDocumentNodeInteraction;
+  const animationPlayerSignal = getAnimationPlayerSignalMixedAbsencePropertyMessage(node, subject);
+  if (animationPlayerSignal) return animationPlayerSignal;
   const callableOwner = node.type ? getMixedAbsenceGenericCallableOwner(node.type) : undefined;
   if (callableOwner) {
     const ownerType = callableOwner.getText(node.getSourceFile());

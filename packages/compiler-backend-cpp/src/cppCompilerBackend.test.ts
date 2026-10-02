@@ -9251,8 +9251,9 @@ int main() {
   it('stores an optional property that also admits null through one plan, and refuses two value domains', () => {
     // The three real AnimationPlayer signal shapes from @flighthq/types. A `?` marker and a `null` in the
     // same type are two spellings of one three-state question, so the declaration and every crossing that
-    // reads or writes it must ask the same authority. Current constructors write null and all direct uses
-    // collapse null/undefined with a nullish guard; that makes required-nullable the narrow source remedy,
+    // reads or writes it must ask the same authority. cloneAnimationPlayer and initializeAnimationPlayer
+    // write null, enableAnimationPlayerSignals installs each owner behind `== null`, and the three emitters
+    // collapse null/undefined with a nullish guard. That makes required-nullable the narrow source remedy,
     // but the backend still has to preserve the authored three states until the declaration changes.
     //
     // Lowered together and with the resolution plan, because the property's declared type lives in the
@@ -9270,7 +9271,7 @@ int main() {
       `import type { AnimationClipEvent, AnimationPlayer, Signal } from '@flighthq/types';
        function createSignal<T>(): Signal<T> { return { id: 1 }; }
        function emitSignal<T>(signal: Signal<T>): void { void signal.id; }
-       export function stop(player: AnimationPlayer): void {
+       export function initializeSignals(player: AnimationPlayer): void {
          player.onEvent = null;
          player.onFinished = null;
          player.onLooped = null;
@@ -9283,7 +9284,8 @@ int main() {
          if (player.onLooped == null) player.onLooped = createSignal<() => void>();
        }
        export function emitAll(player: AnimationPlayer): void {
-         if (player.onEvent != null) emitSignal(player.onEvent);
+         const eventSignal = player.onEvent;
+         if (eventSignal != null) emitSignal(eventSignal);
          if (player.onFinished != null) emitSignal(player.onFinished);
          if (player.onLooped != null) emitSignal(player.onLooped);
        }
@@ -9367,6 +9369,13 @@ int main() {
     expect(both).toContain(
       'emit_signal<std::function<void()>>(std::get<flight::Ref<flighthq_types::Signal<std::function<void()>>>>(player->on_finished))',
     );
+    expect(both).not.toContain('reinterpret_cast');
+
+    // The source-owned remedy uses the ordinary required-nullable carrier; it needs neither the undefined
+    // alternative nor a new compiler representation.
+    const required = emit('onFinished: Signal<() => void> | null;');
+    expect(required).toContain('std::optional<flight::Ref<Signal<std::function<void()>>>> on_finished;');
+    expect(required).toContain('(player->on_finished = std::nullopt);');
 
     // The storage-mismatch counterexample: two value domains leaves no single alternative a null-guard
     // proves, so the access still refuses rather than picking one of them.

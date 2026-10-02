@@ -4411,9 +4411,9 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability(resolved).findings).toEqual([]);
   });
 
-  it('guides optional nullable generic callable owners to one explicit state model', () => {
+  it('traces the three AnimationPlayer signal slots to one explicit disabled state', () => {
     const mixed = input(
-      'AnimationPlayer.ts',
+      'packages/types/src/AnimationPlayer.ts',
       `interface AnimationClipEvent { readonly name: string }
        interface Signal<T> { readonly id: number }
        interface AnimationPlayer {
@@ -4450,42 +4450,60 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'GenericMixedAbsence.ts',
       'interface Box<T> { value: T } interface Contract { value?: Box<number> | null }',
     );
+    const sameShapeElsewhere = input(
+      'packages/example/src/AnimationPlayer.ts',
+      `interface Signal<T> { readonly id: number }
+       interface AnimationPlayer { onFinished?: Signal<() => void> | null }`,
+    );
 
-    // A callback-bearing Signal does not make the two implicit absence spellings one source contract. The
-    // measured constructors write null, and every direct use collapses null and undefined with `== null`, so
-    // making these properties required-nullable is the exact narrow source fix. The declaration nevertheless
-    // exposes three distinguishable states to other consumers until it chooses that one sentinel (or names
-    // all three states explicitly), so the gate must not infer the choice from current downstream uses.
-    expect(analyzeTypeScriptSourcePortability([mixed]).findings).toMatchObject([
+    // Both library construction paths write null, the opt-in enabler replaces either nullish spelling with the
+    // exact Signal owner, and every emitter collapses null and undefined. That makes required-nullable the exact
+    // source remedy. The target still preserves the authored states until the declaration chooses that sentinel.
+    const findings = analyzeTypeScriptSourcePortability([mixed]).findings;
+    expect(findings).toMatchObject([
       {
-        message: expect.stringContaining(
-          'generic callable owner Signal<(event: Readonly<AnimationClipEvent>) => void>',
-        ),
         rule: 'mixed-absence',
         subject: 'interface:AnimationPlayer/property:onEvent',
       },
       {
-        message: expect.stringContaining('generic callable owner Signal<() => void>'),
         rule: 'mixed-absence',
         subject: 'interface:AnimationPlayer/property:onFinished',
       },
       {
-        message: expect.stringContaining('generic callable owner Signal<() => void>'),
         rule: 'mixed-absence',
         subject: 'interface:AnimationPlayer/property:onLooped',
       },
     ]);
-    for (const finding of analyzeTypeScriptSourcePortability([mixed]).findings) {
-      expect(finding.message).toContain('both an implicit undefined state and an explicit null state');
-      expect(finding.message).toContain('present owner retains its exact callable type argument');
-      expect(finding.message).toContain('declare the property as a required Signal<');
-      expect(finding.message).toContain('initialize it to null in every construction path');
-      expect(finding.message).toContain('retain the nullish guard at reads');
-      expect(finding.message).toContain('remove null instead');
-      expect(finding.message).toContain('named discriminated state');
+    const exactFlows = [
+      ['onEvent', 'emits only the clip markers crossed in that segment'],
+      ['onFinished', 'a finite repeat budget is exhausted'],
+      ['onLooped', 'at least one permitted repeat wrap or ping-pong bounce'],
+    ] as const;
+    for (const [index, finding] of findings.entries()) {
+      const [field, flow] = exactFlows[index]!;
+      expect(finding.message).toContain(`opt-in AnimationPlayer signal ${field}`);
+      expect(finding.message).toContain('both omission and explicit null');
+      expect(finding.message).toContain('one signal-free state');
+      expect(finding.message).toContain(
+        'cloneAnimationPlayer and initializeAnimationPlayer assign onEvent, onFinished, and onLooped to null',
+      );
+      expect(finding.message).toContain('createAnimationPlayer delegates to that initializer');
+      expect(finding.message).toContain('enableAnimationPlayerSignals checks each slot with == null');
+      expect(finding.message).toContain('is idempotent, and no path clears an enabled slot');
+      expect(finding.message).toContain(flow);
+      expect(finding.message).toContain(
+        'Make all three slots required fields with their exact callable-bearing Signal type | null',
+      );
+      expect(finding.message).toContain('retain the explicit null assignments in the clone and initializer');
+      expect(finding.message).toContain('Null initialization remains allocation-free');
+      expect(finding.message).toContain('C++ backend can already preserve the current null and undefined tags');
+      expect(finding.message).toContain("does not choose the source contract's redundant disabled sentinel");
+      expect(finding.message).toContain('external compatibility input');
+      expect(finding.message).toContain('one named closed signal state');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
-      expect(finding.message).toContain('allocate or clone a callable owner');
-      expect(finding.message).toContain('re-parameterize its callable argument');
+      expect(finding.message).toContain('allocate or clone a Signal owner');
+      expect(finding.message).toContain('connect or emit a listener');
+      expect(finding.message).toContain('re-parameterize the callback');
       expect(finding.message).toContain('route it through Any');
       expect(finding.message).toContain('reinterpret or cast it');
       expect(finding.message).toContain('or add side storage');
@@ -4498,6 +4516,9 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([unrelated]).findings[0]?.message).toBe(
       'interface:Contract/property:value combines an optional property with null; choose one absence representation or make all three states explicit.',
     );
+    const [other] = analyzeTypeScriptSourcePortability([sameShapeElsewhere]).findings;
+    expect(other?.message).toContain('generic callable owner Signal<() => void>');
+    expect(other?.message).not.toContain('enableAnimationPlayerSignals');
   });
 
   it('guides optional nullable collection inputs to one absence sentinel without replacing owners', () => {
