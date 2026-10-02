@@ -2222,7 +2222,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
-  it('recognizes the paired HostAppLoop handle as a provider-owned cancellation token', () => {
+  it('requires the paired HostAppLoop boundary to use its exact numeric handle', () => {
     const opaque = input(
       'packages/types/src/HostAppLoop.ts',
       `interface HostAppLoopCapability {
@@ -2249,6 +2249,14 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ),
       input('packages/types/src/HostAppLoop.ts', 'interface OtherLoop { cancelFrame(handle: unknown): void }'),
       input('packages/types/src/HostAppLoop.ts', 'interface HostAppLoopCapability { cancelFrame(handle: any): void }'),
+      input(
+        'packages/types/src/HostAppLoop.ts',
+        'interface HostAppLoopCapability { requestFrame(callback: () => void): unknown }',
+      ),
+      input(
+        'packages/types/src/HostAppLoop.ts',
+        'interface HostAppLoopCapability { cancelFrame(handle: unknown): number }',
+      ),
     ];
 
     const report = analyzeTypeScriptSourcePortability([opaque]);
@@ -2256,16 +2264,21 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:HostAppLoopCapability/method:cancelFrame.parameter:handle',
       'interface:HostAppLoopCapability/method:requestFrame.return',
     ]);
-    expect(report.findings[0]?.message).toContain('sole semantic consumer');
-    expect(report.findings[1]?.message).toContain('stores it only in private LoopState');
+    expect(report.findings[0]?.message).toContain('same exact numeric animation-frame handle');
+    expect(report.findings[0]?.message).toContain('handle as number');
+    expect(report.findings[0]?.message).toContain('cancel_animation_frame');
+    expect(report.findings[1]?.message).toContain('webHostLoop is the sole TypeScript production provider');
+    expect(report.findings[1]?.message).toContain('(time: number) => void callback');
+    expect(report.findings[1]?.message).toContain('same browser high-resolution millisecond clock');
+    expect(report.findings[1]?.message).toContain('issues finite numeric IDs');
     for (const finding of report.findings) {
-      expect(finding.message).toContain('paired identity transport is genuinely opaque');
-      expect(finding.message).toContain('named closed AppLoopFrameHandle domain');
-      expect(finding.message).toContain('reviewed source-portability exception for this exact');
-      expect(finding.message).toContain("will not assume the web provider's numeric handle");
-      expect(finding.message).toContain('target-specific Any carrier');
-      expect(finding.message).toContain('insert a cast');
-      expect(finding.message).toContain('copy or materialize the token');
+      expect(finding.message).toContain('AppLoopFrameHandle = number');
+      expect(finding.message).toContain('js.Browser.window');
+      expect(finding.message).toContain('sdl-app profile');
+      expect(finding.message).toContain('AnimationFrameHandle = double');
+      expect(finding.message).toContain('no new host external type, branded entity, or Any carrier is needed');
+      expect(finding.message).toContain('Do not whitelist');
+      expect(finding.message).not.toContain('source-portability exception');
     }
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     for (const control of controls) {
@@ -2276,18 +2289,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ).toBe(true);
     }
 
-    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
-      exceptionPolicy: {
-        exceptions: report.findings.map((finding) => ({
-          findingIdentity: finding.identity,
-          reason: 'The provider token is returned only to the same provider for cancellation.',
-          rule: 'opaque-value-domain' as const,
-        })),
-        schema: 'flight-compiler-source-portability-exceptions/1',
-      },
-    });
-    expect(reviewed.findings).toEqual([]);
-    expect(reviewed.acceptedExceptions).toHaveLength(2);
+    expect(report.acceptedExceptions).toEqual([]);
   });
 
   it('keeps AppLoop frame-handle storage on the paired provider boundary', () => {
@@ -2323,21 +2325,19 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings).toMatchObject([
       { rule: 'opaque-value-domain', subject: 'interface:LoopState/property:frameHandle' },
     ]);
-    expect(finding.message).toContain('private storage leg of HostAppLoopCapability');
+    expect(finding.message).toContain('redundantly erases the numeric animation-frame handle');
     expect(finding.message).toContain('backend.requestFrame(tick)');
     expect(finding.message).toContain('backend.cancelFrame on the same retained capability');
     expect(finding.message).toContain('Pause, frame-rate throttling, normal rescheduling, and initial scheduling');
-    expect(finding.message).toContain('initial null is never passed to cancelFrame');
-    expect(finding.message).toContain('paired identity transport is genuinely provider-opaque');
-    expect(finding.message).toContain('reviewed source-portability exception for this exact property');
-    expect(finding.message).toContain('requestFrame remains its sole non-sentinel producer');
-    expect(finding.message).toContain('cancelFrame remains its sole semantic consumer');
-    expect(finding.message).toContain('does not justify the null as unknown assertion');
-    expect(finding.message).toContain('named closed AppLoopFrameHandle domain');
-    expect(finding.message).toContain("will not assume the web provider's numeric handle");
-    expect(finding.message).toContain('target-specific Any carrier');
-    expect(finding.message).toContain('retain or insert a cast');
-    expect(finding.message).toContain('copy or materialize the token');
+    expect(finding.message).toContain('AnimationFrameHandle alias is double');
+    expect(finding.message).toContain('Prefer removing frameHandle from LoopState');
+    expect(finding.message).toContain('four scheduling sites');
+    expect(finding.message).toContain("createLoopState's null as unknown sentinel");
+    expect(finding.message).toContain('AppLoopFrameHandle | null');
+    expect(finding.message).toContain("Remove webHostLoop's handle as number cast");
+    expect(finding.message).toContain('Do not whitelist this redundant erasure');
+    expect(finding.message).toContain('representation is already closed');
+    expect(finding.message).not.toContain('source-portability exception');
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     for (const control of controls) {
       expect(
@@ -2347,20 +2347,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       ).toBe(true);
     }
 
-    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
-      exceptionPolicy: {
-        exceptions: [
-          {
-            findingIdentity: finding.identity,
-            reason: 'The private token is returned only to the same provider for cancellation.',
-            rule: 'opaque-value-domain',
-          },
-        ],
-        schema: 'flight-compiler-source-portability-exceptions/1',
-      },
-    });
-    expect(reviewed.findings).toEqual([]);
-    expect(reviewed.acceptedExceptions).toHaveLength(1);
+    expect(report.acceptedExceptions).toEqual([]);
   });
 
   it('keeps batch command property values as exact identity transport', () => {

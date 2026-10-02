@@ -2142,6 +2142,90 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the exact HostAppLoop numeric handle source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createHostAppLoopWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'interface:HostAppLoopCapability/method:cancelFrame.parameter:handle',
+      'interface:HostAppLoopCapability/method:requestFrame.return',
+    ];
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'opaque-value-domain', subject })),
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('js.Browser.window.cancelAnimationFrame');
+    expect(sourcePortability.findings[0]?.message).toContain('flight::host_sdl::cancel_animation_frame');
+    expect(sourcePortability.findings[1]?.message).toContain('webHostLoop is the sole TypeScript production provider');
+    expect(sourcePortability.findings[1]?.message).toContain('flight::host_sdl::request_animation_frame');
+    expect(sourcePortability.findings.every(({ message }) => message.includes('AppLoopFrameHandle = number'))).toBe(
+      true,
+    );
+    expect(sourcePortability.findings.every(({ message }) => message.includes('AnimationFrameHandle = double'))).toBe(
+      true,
+    );
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createHostAppLoopWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the obsolete HostVideo stream erasure source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createHostVideoStreamWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -4706,6 +4790,22 @@ export interface NetResponse {
   NetResponse,
   NetResponseBody,
 } from './Net.js';`,
+  };
+}
+
+function createHostAppLoopWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const handle = opaque ? 'unknown' : 'AppLoopFrameHandle';
+  const handleAlias = opaque ? '' : 'export type AppLoopFrameHandle = number;\n';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/HostAppLoop.ts': `${handleAlias}export interface HostAppLoopCapability {
+  requestFrame(callback: (time: number) => void): ${handle};
+  cancelFrame(handle: ${handle}): void;
+  now(): number;
+}`,
+    '/flight/packages/types/src/index.ts': opaque
+      ? `export type { HostAppLoopCapability } from './HostAppLoop.js';`
+      : `export type { AppLoopFrameHandle, HostAppLoopCapability } from './HostAppLoop.js';`,
   };
 }
 

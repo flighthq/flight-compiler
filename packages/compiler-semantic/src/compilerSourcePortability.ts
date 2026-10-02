@@ -2799,7 +2799,7 @@ function getAppLoopOpaqueFrameHandleGuidance(
   ) {
     return undefined;
   }
-  return `${subject} is the private storage leg of HostAppLoopCapability's provider-issued cancellation token. Every scheduling path in startAppLoop assigns backend.requestFrame(tick) to frameHandle and immediately installs a cleanup closure that returns the currently scheduled token only to backend.cancelFrame on the same retained capability. Pause, frame-rate throttling, normal rescheduling, and initial scheduling all preserve that pairing; no application consumer inspects, coerces, serializes, exposes, or persists the token. createLoopState's initial null is never passed to cancelFrame because no cleanup closure exists until after the first requestFrame assignment. This paired identity transport is genuinely provider-opaque, so record a reviewed source-portability exception for this exact property while requestFrame remains its sole non-sentinel producer, cancelFrame remains its sole semantic consumer, and LoopState stays private. The exception does not justify the null as unknown assertion: initialize unknown directly with null or model the uninitialized state explicitly. If handles must cross portable storage, results, or providers, define one named closed AppLoopFrameHandle domain shared by HostAppLoopCapability, LoopState, and every provider. The compiler will not assume the web provider's numeric handle, choose a target-specific Any carrier, retain or insert a cast, copy or materialize the token, or change its identity.`;
+  return `${subject} redundantly erases the numeric animation-frame handle already shared by every provider boundary. Every scheduling path in startAppLoop assigns backend.requestFrame(tick) to frameHandle and immediately replaces the kLoop cleanup with a closure that passes the current handle only to backend.cancelFrame on the same retained capability. Pause, frame-rate throttling, normal rescheduling, and initial scheduling all preserve that pairing; no application consumer otherwise reads, clones, serializes, exposes, or persists the value. The concrete domain is not provider-opaque: webHostLoop returns the browser requestAnimationFrame number, the Haxe binding targets js.Browser.window.requestAnimationFrame and narrows cancellation to Int, and flight-cpp's sdl-app profile declares callResultType double for flight::host_sdl::request_animation_frame, whose AnimationFrameHandle alias is double. Define AppLoopFrameHandle = number in HostAppLoop.ts and use it for requestFrame and cancelFrame. Prefer removing frameHandle from LoopState: at each of the four scheduling sites capture the returned AppLoopFrameHandle directly in the newly installed cleanup closure, eliminating createLoopState's null as unknown sentinel and keeping cancellation paired to that exact request. If storage remains, type it AppLoopFrameHandle | null, initialize it with null without an assertion, and narrow before cancellation. Remove webHostLoop's handle as number cast; the global and native external bindings already represent the numeric domain. Do not whitelist this redundant erasure or route it through a target Any carrier: representation is already closed. The compiler will not infer number from a web cast or downstream binding profile, rewrite the capability and LoopState, capture the scheduled value, remove the sentinel or cast, or change cleanup replacement and cancellation behavior.`;
 }
 
 function getCommandPropertyInputOpaqueValueGuidance(
@@ -2885,17 +2885,37 @@ function getHostAppLoopOpaqueHandleGuidance(
   if (
     !hasOnlyUnknown(kinds) ||
     type.kind !== ts.SyntaxKind.UnknownKeyword ||
-    !isFlightTypesSource(node, 'HostAppLoop.ts')
+    !isFlightTypesSource(node, 'HostAppLoop.ts') ||
+    !hasExactHostAppLoopHandleMethodSignature(node, subject)
   ) {
     return undefined;
   }
   if (subject === 'interface:HostAppLoopCapability/method:requestFrame.return') {
-    return `${subject} is a provider-issued cancellation token. startAppLoop stores it only in private LoopState and returns the same token to HostAppLoopCapability.cancelFrame; no consumer inspects, coerces, persists, or exposes it. This paired identity transport is genuinely opaque, so record a reviewed source-portability exception for this exact return boundary while that invariant holds. If handles must cross a portable result or storage boundary, define one named closed AppLoopFrameHandle domain shared by requestFrame, LoopState, cancelFrame, and every provider. The compiler will not assume the web provider's numeric handle, choose a target-specific Any carrier, insert a cast, or copy or materialize the token.`;
+    return `${subject} erases an exact numeric animation-frame handle, not a provider-owned opaque token. webHostLoop is the sole TypeScript production provider: requestFrame forwards the (time: number) => void callback to browser requestAnimationFrame and returns its number unchanged, while now uses the same browser high-resolution millisecond clock. Haxe binds requestAnimationFrame to js.Browser.window.requestAnimationFrame. The native flight-cpp sdl-app profile binds it to flight::host_sdl::request_animation_frame with callResultType double; that runtime defines AnimationFrameHandle = double, issues finite numeric IDs, and pumps the same double timestamp callback. startAppLoop assigns each result to private LoopState on its paused, throttled, ordinary, and initial scheduling paths, then its cleanup passes the value only to cancelFrame; no path clones, serializes, exposes, or persists it. Export AppLoopFrameHandle = number from HostAppLoop.ts, return it from requestFrame, accept it in cancelFrame, and use it or a directly captured local in appLoop.ts. The existing Haxe and C++ external bindings already represent that source number, so no new host external type, branded entity, or Any carrier is needed. Do not whitelist the erased return. The compiler will not infer number from a web implementation or downstream binding profile, preserve callback-to-handle correlation implicitly, rewrite private storage, remove its sentinel, or change scheduling and cancellation behavior.`;
   }
   if (subject === 'interface:HostAppLoopCapability/method:cancelFrame.parameter:handle') {
-    return `${subject} accepts only the provider-issued token previously returned by requestFrame. startAppLoop passes that token back unchanged from private LoopState, and cancelFrame is the sole semantic consumer; portable code never examines the token. This paired identity transport is genuinely opaque, so record a reviewed source-portability exception for this exact parameter boundary while that invariant holds. If handles must cross a portable result or storage boundary, define one named closed AppLoopFrameHandle domain shared by requestFrame, LoopState, cancelFrame, and every provider. The compiler will not assume the web provider's numeric handle, choose a target-specific Any carrier, insert a cast, or copy or materialize the token.`;
+    return `${subject} erases the same exact numeric animation-frame handle returned by requestFrame. startAppLoop's paused, throttled, ordinary, and initial scheduling paths store each result only until the matching kLoop cleanup passes it unchanged to cancelFrame on the same retained capability; no other application consumer reads, clones, serializes, exposes, or persists it. webHostLoop currently recovers number with handle as number before browser cancelAnimationFrame. Haxe binds that global to js.Browser.window.cancelAnimationFrame and narrows its numeric argument to Int, while flight-cpp's sdl-app profile binds it to flight::host_sdl::cancel_animation_frame, which accepts AnimationFrameHandle = double from the paired request binding's double result. Export AppLoopFrameHandle = number from HostAppLoop.ts and use it for both methods and any private storage, then pass handle directly in webHostLoop. Prefer capturing each scheduled handle in its installed cleanup and removing LoopState.frameHandle; otherwise store AppLoopFrameHandle | null and narrow its initialization state explicitly. The existing Haxe and C++ external bindings already represent the source number, so no new host external type, branded entity, or Any carrier is needed. Do not whitelist the erased parameter. The compiler will not infer number from the web cast or downstream binding profile, retain or remove that cast, rewrite private storage, or change handle identity and cancellation behavior.`;
   }
   return undefined;
+}
+
+function hasExactHostAppLoopHandleMethodSignature(node: ts.MethodSignature, subject: string): boolean {
+  if (node.questionToken !== undefined || !node.type || node.parameters.length !== 1) return false;
+  if (subject === 'interface:HostAppLoopCapability/method:cancelFrame.parameter:handle') {
+    return (
+      node.parameters[0]?.type?.kind === ts.SyntaxKind.UnknownKeyword && node.type.kind === ts.SyntaxKind.VoidKeyword
+    );
+  }
+  if (subject !== 'interface:HostAppLoopCapability/method:requestFrame.return') return false;
+  const callback = node.parameters[0]?.type;
+  return (
+    node.type.kind === ts.SyntaxKind.UnknownKeyword &&
+    callback !== undefined &&
+    ts.isFunctionTypeNode(callback) &&
+    callback.parameters.length === 1 &&
+    callback.parameters[0]?.type?.kind === ts.SyntaxKind.NumberKeyword &&
+    callback.type.kind === ts.SyntaxKind.VoidKeyword
+  );
 }
 
 function hasOnlyUnknown(kinds: ReadonlySet<OpaqueTypeKind>): boolean {
