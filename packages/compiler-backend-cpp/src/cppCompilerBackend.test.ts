@@ -15073,14 +15073,44 @@ export function setKind(dst: Material, kind: string): void { dst.kind = kind; }`
   });
 
   it('names the representation a multi-alternative mixed-absence member needs', () => {
-    // MeshGeometryFromAttributesOptions is the SDK's shape: `indices?: readonly number[] | Uint16Array |
-    // Uint32Array | null`. Its declaration lowers, and every consumer read of it refuses -- and both of
-    // those refusals used to be unruled, so the ledger could not attribute them. The discriminator is the
-    // NUMBER of value alternatives, which the control beside them shows.
+    // MeshGeometryFromAttributesOptions is the SDK's shape. Its current declaration preserves both
+    // absence spellings, while the recommended construction contract removes exactly the Null arm and
+    // keeps each collection owner. All of these are runtime-native carriers; no host binding, Any route,
+    // or cast is involved at the source/target boundary.
     const options = `export interface Opts {
   indices?: readonly number[] | Uint16Array | Uint32Array | null;
+  normals?: readonly number[] | null;
   positions: readonly number[];
+  uvs?: readonly number[] | null;
 }`;
+    const currentDeclaration = emitIrModuleCpp(lower('mesh-current.ts', options).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    const portableDeclaration = emitIrModuleCpp(lower('mesh-portable.ts', options.replaceAll(' | null', '')).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(currentDeclaration).toContain(
+      'std::variant<flight::Array<double>, flight::Uint16Array, flight::Uint32Array, flight::Null, flight::Undefined> indices =',
+    );
+    expect(currentDeclaration).toContain(
+      'std::variant<flight::Array<double>, flight::Null, flight::Undefined> normals =',
+    );
+    expect(currentDeclaration).toContain('std::variant<flight::Array<double>, flight::Null, flight::Undefined> uvs =');
+    expect(portableDeclaration).toContain(
+      'std::optional<std::variant<flight::Array<double>, flight::Uint16Array, flight::Uint32Array>> indices;',
+    );
+    expect(portableDeclaration).toContain('std::optional<flight::Array<double>> normals;');
+    expect(portableDeclaration).toContain('std::optional<flight::Array<double>> uvs;');
+    for (const contents of [currentDeclaration, portableDeclaration]) {
+      expect(contents).not.toContain('flight::Any');
+      expect(contents).not.toContain('static_cast');
+      expect(contents).not.toContain('reinterpret_cast');
+    }
+
+    // Every current consumer read of the multi-alternative index member refuses -- and both of those
+    // refusals used to be unruled, so the ledger could not attribute them. The discriminator is the
+    // NUMBER of value alternatives, which the control beside them shows.
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
         emitIrModuleCpp(lower('mesh-options.ts', source).module, { runtimeProfile: 'flight-cpp' }),

@@ -5180,38 +5180,89 @@ describe('analyzeTypeScriptSourcePortability', () => {
         `construction-only mesh attribute input ${field} both omission and explicit null`,
       );
       expect(finding.message).toContain('createMeshGeometryFromAttributes has one not-supplied state');
-      expect(finding.message).toContain('It is the sole production consumer');
-      expect(finding.message).toContain('normalizes normals and uvs with ?? null and tests indices by truthiness');
+      expect(finding.message).toContain('It is the only MeshGeometryFromAttributesOptions consumer');
+      expect(finding.message).toContain('receives the options as Readonly');
+      expect(finding.message).toContain('neither mutates nor retains that record or any supplied collection');
+      expect(finding.message).toContain('derives vertexCount from the required positions length');
+      expect(finding.message).toContain('normalizes normals and uvs with ?? null');
+      expect(finding.message).toContain('tests indices by truthiness');
       expect(finding.message).toContain('null and undefined take the same path');
       expect(finding.message).toContain(
-        'Repository call sites either omit each optional field or supply its collection',
+        'Positions and every present normal or UV component are copied into a fresh canonical interleaved Float32Array',
       );
-      expect(finding.message).toContain('has no update or clear operation for explicit null to express');
+      expect(finding.message).toContain('not any input collection, becomes MeshGeometry.vertices');
+      expect(finding.message).toContain('Missing normals trigger computeMeshGeometryNormals');
+      expect(finding.message).toContain('tangents are always computed from the packed normals and UVs');
+      expect(finding.message).toContain('bounds are then refreshed');
+      expect(finding.message).toContain('mutate only the fresh MeshGeometry');
+      expect(finding.message).toContain('increment its version for normal and tangent writes');
+      expect(finding.message).toContain('may replace its fresh vertices and indices to split a mirrored-UV seam');
+      expect(finding.message).toContain('never write an input owner');
+      expect(finding.message).toContain(
+        'Every in-repository call site is test code and either omits an optional field or supplies its collection',
+      );
+      expect(finding.message).toContain('none passes explicit null');
+      expect(finding.message).toContain('has no update or clear operation for null to express');
+      expect(finding.message).toContain(
+        'CPU triangle, picking, validation, transform, clone, and GL and WebGPU upload paths',
+      );
+      expect(finding.message).toContain('required live MeshGeometry.vertices');
+      expect(finding.message).toContain('required-nullable MeshGeometry.indices carriers, not these options');
+      expect(finding.message).toContain('direct typed-array edits operate on those live carriers');
+      expect(finding.message).toContain('direct edits require invalidateMeshGeometry');
+      expect(finding.message).toContain('cloning copies live payloads and never recovers an input owner');
+      expect(finding.message).toContain('There is no MeshGeometryFromAttributesOptions disposal path');
+      expect(finding.message).toContain('no destroyMeshGeometry or disposeMeshGeometry path');
+      expect(finding.message).toContain('caller-owned input record and collections remain caller-owned');
+      expect(finding.message).toContain('transient factory arrays follow ordinary target lifetime');
+      expect(finding.message).toContain('copied CPU arrays follow the returned geometry');
+      expect(finding.message).toContain('destroyMeshGeometryGlData and destroyMeshGeometryWgpuData');
+      expect(finding.message).toContain('without rewriting CPU storage');
       expect(finding.message).toContain(
         'Make indices optional readonly number[] | Uint16Array | Uint32Array and make normals and uvs optional readonly number[]',
       );
       expect(finding.message).toContain('removing null from all three input fields');
       expect(finding.message).toContain('retaining positions as required');
+      expect(finding.message).toContain('Preserve the authored copy, derived-normal, zero-UV, tangent, bounds');
       expect(finding.message).toContain('keep MeshGeometry.indices required nullable at the stored geometry boundary');
-      expect(finding.message).toContain('empty present collection still enters the supplied-data path');
+      expect(finding.message).toContain('every empty present collection still enters its supplied-data path');
+      expect(finding.message).toContain('This finding is not a host-binding gap');
+      expect(finding.message).toContain(
+        'current indices declaration as Array<double> | Uint16Array | Uint32Array | Null | Undefined',
+      );
+      expect(finding.message).toContain('current normal and UV declarations as Array<double> | Null | Undefined');
+      expect(finding.message).toContain('recommended contract removes only Null');
+      expect(finding.message).toContain('one optional native collection carrier for each field');
+      expect(finding.message).toContain('No external binding, Any route, cast, or side storage is required');
       expect(finding.message).toContain('normalize it once into this optional non-null construction shape');
       expect(finding.message).toContain('Do not whitelist the redundant construction spelling');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('substitute an empty collection');
       expect(finding.message).toContain('merge the array and typed-array owners');
+      expect(finding.message).toContain('mutate or clone an input owner');
+      expect(finding.message).toContain('compute normals, tangents, or bounds');
+      expect(finding.message).toContain('change versioning or GPU upload invalidation');
+      expect(finding.message).toContain('destroy an upload or dispose a geometry');
       expect(finding.message).toContain('route elements through Any');
+      expect(finding.message).toContain('fabricate a host binding');
       expect(finding.message).toContain('or add side storage');
     }
     expect(findings[0]?.message).toContain(
-      'present readonly array, Uint16Array, or Uint32Array is copied element by element',
+      'present readonly array, Uint16Array, or Uint32Array, including an empty owner, is copied element by element',
     );
-    expect(findings[0]?.message).toContain('fresh Uint16Array or Uint32Array selected from the vertex count');
-    expect(findings[0]?.message).toContain('absence leaves the local indexArray undefined');
-    expect(findings[0]?.message).toContain('required-null MeshGeometry.indices storage slot');
-    expect(findings[1]?.message).toContain('present readonly array is copied into the canonical normal channels');
-    expect(findings[1]?.message).toContain('computeMeshGeometryNormals to derive from the faces');
-    expect(findings[2]?.message).toContain('present readonly array is copied into the canonical UV channels');
-    expect(findings[2]?.message).toContain('freshly allocated Float32Array cells at zero before tangent computation');
+    expect(findings[0]?.message).toContain(
+      'transient Uint16Array or Uint32Array selected solely from the vertex count',
+    );
+    expect(findings[0]?.message).toContain('copies that transient owner again through promoteIndices');
+    expect(findings[0]?.message).toContain('local indexArray undefined');
+    expect(findings[0]?.message).toContain('required MeshGeometry.indices null state with a sequential subset count');
+    expect(findings[0]?.message).toContain('present zero-element index buffer with a zero-element subset');
+    expect(findings[1]?.message).toContain('present readonly array is copied by numeric reads');
+    expect(findings[1]?.message).toContain('computeMeshGeometryNormals derives from the faces');
+    expect(findings[1]?.message).toContain('out-of-range reads become NaN');
+    expect(findings[2]?.message).toContain('present readonly array is copied by numeric reads');
+    expect(findings[2]?.message).toContain('leaves the fresh Float32Array cells at zero for tangent computation');
+    expect(findings[2]?.message).toContain('out-of-range reads become NaN');
   });
 
   it('keeps mesh attribute lookalikes generic and accepts either single absence representation', () => {
@@ -5247,6 +5298,16 @@ describe('analyzeTypeScriptSourcePortability', () => {
         `interface MeshGeometryFromAttributesOptions {
            indices?: readonly number[] | Uint16Array | null;
          }`,
+      ),
+      input(
+        'packages/types/src/MeshGeometryFromAttributesOptions.ts',
+        `interface MeshGeometryFromAttributesOptions {
+           indices?: readonly number[] | Uint16Array | Uint32Array | Float32Array | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/MeshGeometryFromAttributesOptions.ts',
+        'interface MeshGeometryFromAttributesOptions { normals?: number[] | null }',
       ),
       input(
         'packages/types/src/MeshGeometryFromAttributesOptions.ts',

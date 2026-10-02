@@ -2729,16 +2729,25 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
       expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
     );
-    expect(
-      sourcePortability.findings.every(({ message }) =>
-        message.includes('createMeshGeometryFromAttributes has one not-supplied state'),
-      ),
-    ).toBe(true);
-    expect(
-      sourcePortability.findings.every(({ message }) =>
-        message.includes('Do not whitelist the redundant construction spelling'),
-      ),
-    ).toBe(true);
+    for (const { message } of sourcePortability.findings) {
+      expect(message).toContain('createMeshGeometryFromAttributes has one not-supplied state');
+      expect(message).toContain('neither mutates nor retains that record or any supplied collection');
+      expect(message).toContain('not any input collection, becomes MeshGeometry.vertices');
+      expect(message).toContain('mutate only the fresh MeshGeometry');
+      expect(message).toContain('Every in-repository call site is test code');
+      expect(message).toContain('none passes explicit null');
+      expect(message).toContain('CPU triangle, picking, validation, transform, clone, and GL and WebGPU upload paths');
+      expect(message).toContain('There is no MeshGeometryFromAttributesOptions disposal path');
+      expect(message).toContain('no destroyMeshGeometry or disposeMeshGeometry path');
+      expect(message).toContain('destroyMeshGeometryGlData and destroyMeshGeometryWgpuData');
+      expect(message).toContain(
+        'Make indices optional readonly number[] | Uint16Array | Uint32Array and make normals and uvs optional readonly number[]',
+      );
+      expect(message).toContain('This finding is not a host-binding gap');
+      expect(message).toContain('one optional native collection carrier for each field');
+      expect(message).toContain('No external binding, Any route, cast, or side storage is required');
+      expect(message).toContain('Do not whitelist the redundant construction spelling');
+    }
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
         policyClass,
