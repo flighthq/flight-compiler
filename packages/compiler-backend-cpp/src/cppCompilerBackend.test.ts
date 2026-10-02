@@ -12010,6 +12010,61 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('pins which carrier a dynamic material write can reach and which it cannot', () => {
+    // material.ts's copyMaterialFields copies every source member through the erased view
+    // (`dst as unknown as Record<string, unknown>`), which the read-only named view cannot answer. The
+    // message offers two remedies, and a reader's first guess at the first one does not work -- so both
+    // halves are pinned here, plus the form that does.
+    const material = `export interface Material { readonly kind: string; readonly name?: string | null }`;
+    const refusal = (source: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('material-copy.ts', source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+
+    const copy = refusal(`${material}
+export function copyMaterialFields(dst: Material, src: Readonly<Material>): void {
+  const dstFields = dst as unknown as Record<string, unknown>;
+  const srcFields = src as unknown as Record<string, unknown>;
+  for (const key of Object.keys(srcFields)) dstFields[key] = srcFields[key];
+}`);
+    expect(copy.rule).toBe('cpp-named-properties-write-unsupported');
+    expect(copy.classification).toBe('target-runtime');
+    expect(copy.message).toContain(
+      'adding an index signature to a type that DECLARES members does not make it that record carrier',
+    );
+
+    // The reader's first guess at that remedy: the type keeps its declared members and gains an index
+    // signature. It still refuses, which is why the message says so.
+    expect(
+      refusal(`export interface OpenMaterial { kind: string; [key: string]: unknown }
+export function copy(dst: OpenMaterial, src: Readonly<OpenMaterial>): void { for (const key of Object.keys(src)) { dst[key] = src[key]; } }`)
+        .rule,
+    ).toBe('cpp-named-properties-write-unsupported');
+
+    // The two forms that do lower: a carrier whose storage IS the record, and assignment through the
+    // declared members.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'open-bag.ts',
+          `export interface Bag { [key: string]: unknown }
+export function put(bag: Bag, key: string, value: unknown): void { bag[key] = value; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('.set(');
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'typed-assignment.ts',
+          `${material}
+export function setKind(dst: Material, kind: string): void { dst.kind = kind; }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('dst->kind');
+  });
+
   it('names the representation a multi-alternative mixed-absence member needs', () => {
     // MeshGeometryFromAttributesOptions is the SDK's shape: `indices?: readonly number[] | Uint16Array |
     // Uint32Array | null`. Its declaration lowers, and every consumer read of it refuses -- and both of
