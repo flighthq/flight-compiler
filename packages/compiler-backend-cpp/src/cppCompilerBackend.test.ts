@@ -14267,14 +14267,6 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(nestedCoalesce.ok).toBe(true);
   });
 
-  // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
-  // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
-  // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
-  // TypeScript, and this compiler keeps a union's alternatives rather than collapsing them, which the Blob
-  // and typeof-erasure controls already pin. What blocks the module is ownership, not shape: three host-owned
-  // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
-  // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
-  // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
   // FlightDocumentNodeSchema's opaque-value-domain finding. Its open-ended domain is
   //   export type FlightDocumentResourceLookup = Readonly<Record<string, unknown>>;
   // -- deliberately open, per its own comment: a vendor resource kind may resolve to its own value without
@@ -14284,11 +14276,9 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // unresolved-`auto`-placeholder family; that entry is stale, and the `auto` lines a consumer emits are
   // local deduction rather than a retained placeholder.
   //
-  // The OWNERSHIP CONTRACT is the part a caller needs, and it is what makes the open domain safe to use:
-  // a value read back out is recovered with a CHECKED conversion that throws when the erased value does not
-  // hold the asserted type. Asserting is therefore not a reinterpretation, and the producer is not trusted
-  // to have got it right.
-  it('recovers a value from the open document lookup with a checked conversion', () => {
+  // The represented producer half writes through the record's checked set operation. The intended read-side
+  // checked conversion is not pinned here because its current emission does not compile, as noted below.
+  it('keeps the open document lookup on its represented record carrier', () => {
     const contents = emitIrModuleCpp(
       lower(
         'flightDocumentNodeSchema.ts',
@@ -14307,7 +14297,7 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
       { runtimeProfile: 'flight-cpp' },
     ).contents;
 
-    // The open domain itself: an erased record keyed by name, not a closed union and not Any.
+    // The open domain itself: an erased record keyed by name, not a closed union or a whole-lookup Any.
     expect(contents).toContain('using FlightDocumentResourceLookup = flight::Record<flight::String, flight::Any>');
     // A write goes through the record's own set rather than assigning into erased storage directly.
     expect(contents).toContain('resources.set(name, assignment_value)');
@@ -14317,6 +14307,14 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     // 'object_if'. Pinning that would enshrine output that cannot compile; it is reported as its own slice.
   });
 
+  // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
+  // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
+  // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
+  // TypeScript, and this compiler keeps a union's alternatives rather than collapsing them, which the Blob
+  // and typeof-erasure controls already pin. What blocks the module is ownership, not shape: three host-owned
+  // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
+  // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
+  // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
