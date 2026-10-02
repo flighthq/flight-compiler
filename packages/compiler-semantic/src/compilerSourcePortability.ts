@@ -309,6 +309,24 @@ function getMeshDeformationMixedAbsencePropertyMessage(
   return undefined;
 }
 
+function getSkeleton2DMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'Skeleton2D' ||
+    !isFlightTypesSource(node, 'Skeleton2D.ts')
+  ) {
+    return undefined;
+  }
+  const name = getNodeName(node.name);
+  if (name === 'skins' && isOptionalNullableNamedArrayProperty(node, 'AttachmentSkin2D')) {
+    return `${subject} gives the retained Skeleton2D wardrobe list both omission and explicit null, but current Flight has one no-wardrobe state. createSkeleton2D always initializes skins to null. The Spine JSON, Spine binary, and DragonBones importers leave that null intact when parsing produces no skins and overwrite it only with a non-empty AttachmentSkin2D array; Rive's pure-bone skeleton likewise retains null. initializeSkeleton2D stores the exact argument, and cloneSkeleton2D preserves the exact skins array owner rather than copying it. getSkeleton2DSkin returns null for either undefined or null before searching a present array, and no other production consumer reads the collection. Make Skeleton2D.skins a required AttachmentSkin2D[] | null field, keep createSkeleton2D's null initializer, narrow initializeSkeleton2D's parameter to the same required-nullable type, and retain each importer's non-empty assignment plus the clone's shared array identity. A present empty array remains a present collection and must not be substituted for either absence spelling. If structural or compatibility inputs allow omission, give them a separate shape and normalize once before initializing the live skeleton. The C++ backend can retain the current null, undefined, and exact array alternatives and can represent the required-nullable rewrite without Any; that carrier support does not give the second absence spelling a source meaning. The compiler will not whitelist a redundant absence spelling, choose or collapse a sentinel, infer or parse a wardrobe, apply a skin, substitute an empty array, copy or materialize the skin collection or its attachment owners, reinterpret or cast it, or add side storage.`;
+  }
+  if (name === 'slots' && isOptionalNullableNamedArrayProperty(node, 'Slot2D')) {
+    return `${subject} gives the live Skeleton2D slot and draw-order list both omission and explicit null, but current Flight has one no-slots state. createSkeleton2D defaults slots to null; the Spine JSON, Spine binary, and DragonBones importers pass their parsed Slot2D array, including an empty array, while Rive's pure-bone skeleton keeps the default null. initializeSkeleton2D stores that exact value, cloneSkeleton2D allocates new records for a present slot array while preserving either absence spelling, and disposeSkeleton2D explicitly clears the cell to null. setSkeleton2DSkin, slot animation, deform animation, and path-attachment resolution all return for both undefined and null before indexing a present array. Make Skeleton2D.slots a required Slot2D[] | null field, narrow createSkeleton2D and initializeSkeleton2D to that type, preserve null as the pure-rig and disposed sentinel, and simplify the clone and consumers to the single null check while retaining their present-array behavior. A present empty array remains an authored slot list and must not be replaced with null. If structural or compatibility inputs allow omission, give them a separate shape and normalize once before initializing the live skeleton. The C++ backend can retain the current null, undefined, and exact array alternatives and can represent the required-nullable rewrite without Any; that carrier support does not give the second absence spelling a source meaning. The compiler will not whitelist a redundant absence spelling, choose or collapse a sentinel, infer or parse slots, apply a skin or animation, solve a path constraint, substitute an empty array, copy or materialize slot or attachment owners beyond the authored clone, reinterpret or cast them, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getSlot2DMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: string): string | undefined {
   if (
     !ts.isInterfaceDeclaration(node.parent) ||
@@ -423,6 +441,20 @@ function isOptionalNullableNamedTypeProperty(node: ts.PropertySignature | undefi
   let type = present[0]!;
   while (ts.isParenthesizedTypeNode(type)) type = type.type;
   return ts.isTypeReferenceNode(type) && getNodeName(type.typeName) === name;
+}
+
+function isOptionalNullableNamedArrayProperty(node: ts.PropertySignature, name: string): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  if (!ts.isArrayTypeNode(type)) return false;
+  let element = type.elementType;
+  while (ts.isParenthesizedTypeNode(element)) element = element.type;
+  return (
+    ts.isTypeReferenceNode(element) && element.typeArguments === undefined && getNodeName(element.typeName) === name
+  );
 }
 
 function isOptionalNullableNumberProperty(node: ts.PropertySignature): boolean {
@@ -1143,6 +1175,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (scene3DRenderProxy) return scene3DRenderProxy;
   const meshDeformation = getMeshDeformationMixedAbsencePropertyMessage(node, subject);
   if (meshDeformation) return meshDeformation;
+  const skeleton2D = getSkeleton2DMixedAbsencePropertyMessage(node, subject);
+  if (skeleton2D) return skeleton2D;
   const slot2D = getSlot2DMixedAbsencePropertyMessage(node, subject);
   if (slot2D) return slot2D;
   const meshGeometryFromAttributesOptions = getMeshGeometryFromAttributesOptionsMixedAbsencePropertyMessage(

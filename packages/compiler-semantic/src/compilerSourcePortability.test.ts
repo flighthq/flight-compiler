@@ -5358,6 +5358,98 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings.every((finding) => !finding.message.includes('mesh deformation slot'))).toBe(true);
   });
 
+  it('explains the required-nullable contract for Skeleton2D wardrobe and slot collections', () => {
+    const source = input(
+      'packages/types/src/Skeleton2D.ts',
+      `interface AttachmentSkin2D { readonly name: string }
+       interface Slot2D { readonly boneIndex: number }
+       interface Skeleton2D {
+         skins?: AttachmentSkin2D[] | null;
+         slots?: Slot2D[] | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:Skeleton2D/property:skins',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:Skeleton2D/property:slots',
+      },
+    ]);
+
+    const skins = findings[0]!.message;
+    expect(skins).toContain('retained Skeleton2D wardrobe list both omission and explicit null');
+    expect(skins).toContain('createSkeleton2D always initializes skins to null');
+    expect(skins).toContain('Spine JSON, Spine binary, and DragonBones importers leave that null intact');
+    expect(skins).toContain('overwrite it only with a non-empty AttachmentSkin2D array');
+    expect(skins).toContain("Rive's pure-bone skeleton likewise retains null");
+    expect(skins).toContain('cloneSkeleton2D preserves the exact skins array owner rather than copying it');
+    expect(skins).toContain('getSkeleton2DSkin returns null for either undefined or null');
+    expect(skins).toContain('Make Skeleton2D.skins a required AttachmentSkin2D[] | null field');
+    expect(skins).toContain("retain each importer's non-empty assignment plus the clone's shared array identity");
+    expect(skins).toContain('infer or parse a wardrobe');
+    expect(skins).toContain('copy or materialize the skin collection or its attachment owners');
+
+    const slots = findings[1]!.message;
+    expect(slots).toContain('live Skeleton2D slot and draw-order list both omission and explicit null');
+    expect(slots).toContain('createSkeleton2D defaults slots to null');
+    expect(slots).toContain('Spine JSON, Spine binary, and DragonBones importers pass their parsed Slot2D array');
+    expect(slots).toContain("Rive's pure-bone skeleton keeps the default null");
+    expect(slots).toContain('cloneSkeleton2D allocates new records for a present slot array');
+    expect(slots).toContain('disposeSkeleton2D explicitly clears the cell to null');
+    expect(slots).toContain('setSkeleton2DSkin, slot animation, deform animation, and path-attachment resolution');
+    expect(slots).toContain('Make Skeleton2D.slots a required Slot2D[] | null field');
+    expect(slots).toContain('preserve null as the pure-rig and disposed sentinel');
+    expect(slots).toContain('solve a path constraint');
+    expect(slots).toContain('beyond the authored clone');
+
+    for (const finding of findings) {
+      expect(finding.message).toContain('A present empty array remains');
+      expect(finding.message).toContain('must not be');
+      expect(finding.message).toContain('give them a separate shape and normalize once');
+      expect(finding.message).toContain('can retain the current null, undefined, and exact array alternatives');
+      expect(finding.message).toContain('represent the required-nullable rewrite without Any');
+      expect(finding.message).toContain('does not give the second absence spelling a source meaning');
+      expect(finding.message).toContain('will not whitelist a redundant absence spelling');
+      expect(finding.message).toContain('substitute an empty array');
+      expect(finding.message).toContain('reinterpret or cast');
+      expect(finding.message).toContain('or add side storage');
+    }
+  });
+
+  it('keeps unrelated Skeleton2D-like collections generic and accepts one live absence state', () => {
+    const controls = [
+      input('Other.ts', 'interface Skeleton2D { skins?: AttachmentSkin2D[] | null }'),
+      input('packages/types/src/Skeleton2D.ts', 'interface OtherSkeleton { slots?: Slot2D[] | null }'),
+      input('packages/example/src/Skeleton2D.ts', 'interface Skeleton2D { slots?: Slot2D[] | null }'),
+      input('packages/types/src/Skeleton2D.ts', 'interface Skeleton2D { attachments?: Slot2D[] | null }'),
+      input('packages/types/src/Skeleton2D.ts', 'interface Skeleton2D { skins?: Skin2D[] | null }'),
+      input('packages/types/src/Skeleton2D.ts', 'interface Skeleton2D { slots?: readonly Slot2D[] | null }'),
+    ];
+    const resolved = input(
+      'packages/types/src/Skeleton2D.ts',
+      `interface AttachmentSkin2D { readonly name: string }
+       interface Slot2D { readonly boneIndex: number }
+       interface Skeleton2D {
+         skins: AttachmentSkin2D[] | null;
+         slots: Slot2D[] | null;
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]!.message).toContain('combines an optional property with null');
+      expect(findings[0]!.message).not.toContain('retained Skeleton2D wardrobe list');
+      expect(findings[0]!.message).not.toContain('live Skeleton2D slot and draw-order list');
+    }
+  });
+
   it('explains the one-sentinel contract for live Slot2D fields', () => {
     const source = input(
       'packages/types/src/Slot2D.ts',

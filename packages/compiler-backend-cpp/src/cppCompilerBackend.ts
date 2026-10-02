@@ -13257,7 +13257,15 @@ function emitCppPresenceTestCpp(
     context.includes.add('variant');
     const sentinels = getCppDualSentinelTargetTypes(context);
     const selected = sentinel === 'null' ? sentinels.null : sentinels.undefined;
-    const value = emitExpression(operand, context);
+    // A chained strict test such as `value === undefined || value === null` narrows the right operand's
+    // source type after the left test fails, but the comparison still inspects the ORIGINAL variant carrier.
+    // Projecting the narrowed value here would emit `holds_alternative<Null>(std::get<0>(value))`, asking an
+    // array/reference payload for a sentinel it cannot hold. Presence tests on a binding therefore name its
+    // storage directly; short-circuit control flow supplies the narrowing without changing that storage.
+    const value =
+      operand.kind === 'identifier' && operand.reference.kind === 'binding'
+        ? emitIdentifierReference(operand.reference, context)
+        : emitExpression(operand, context);
     const test = strict
       ? `std::holds_alternative<${selected}>(${value})`
       : `(std::holds_alternative<${sentinels.null}>(${value}) || std::holds_alternative<${sentinels.undefined}>(${value}))`;

@@ -46509,6 +46509,72 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     }
   });
 
+  it('represents the current Skeleton2D collection sentinels and required-nullable rewrite', () => {
+    const result = lower(
+      'skeleton2d-collections.ts',
+      `export interface AttachmentSkin2D { name: string }
+       export interface Slot2D { boneIndex: number }
+       export interface CurrentSkeleton2D {
+         skins?: AttachmentSkin2D[] | null;
+         slots?: Slot2D[] | null;
+       }
+       export interface ResolvedSkeleton2D {
+         skins: AttachmentSkin2D[] | null;
+         slots: Slot2D[] | null;
+       }
+       export function createCurrent(): CurrentSkeleton2D { return { skins: null, slots: null }; }
+       export function getCurrentSkin(
+         skeleton: CurrentSkeleton2D,
+         name: string,
+       ): AttachmentSkin2D | null {
+         const skins = skeleton.skins;
+         if (skins === undefined || skins === null) return null;
+         for (const skin of skins) if (skin.name === name) return skin;
+         return null;
+       }
+       export function clearCurrentSlots(skeleton: CurrentSkeleton2D): void { skeleton.slots = null; }
+       export function createResolved(): ResolvedSkeleton2D { return { skins: null, slots: null }; }
+       export function getResolvedSkin(
+         skeleton: ResolvedSkeleton2D,
+         name: string,
+       ): AttachmentSkin2D | null {
+         const skins = skeleton.skins;
+         if (skins === null) return null;
+         for (const skin of skins) if (skin.name === name) return skin;
+         return null;
+       }
+       export function clearResolvedSlots(skeleton: ResolvedSkeleton2D): void { skeleton.slots = null; }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain(
+      'std::variant<flight::Array<flight::Ref<AttachmentSkin2D>>, flight::Null, flight::Undefined> skins',
+    );
+    expect(output).toContain('std::optional<flight::Array<flight::Ref<AttachmentSkin2D>>> skins;');
+    expect(output).toContain('std::optional<flight::Array<flight::Ref<Slot2D>>> slots;');
+    expect(output).toContain('std::holds_alternative<flight::Undefined>(skins)');
+    expect(output).toContain('std::holds_alternative<flight::Null>(skins)');
+    expect(output).toContain('skins.value()');
+    expect(output).not.toContain('flight::Any');
+    expect(output).not.toContain('static_cast');
+    expect(output).not.toContain('reinterpret_cast');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-skeleton2d-collections-'));
+      const header = path.join(directory, 'skeleton2d_collections.hpp');
+      try {
+        writeFileSync(header, output, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('names the flattening behind an unidentified heritage assertion and keeps its rewrite exact', () => {
     const shared = `interface RenderState { readonly pipeline: string }
        interface RenderProxyBase { readonly id: string }
