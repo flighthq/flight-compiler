@@ -6718,10 +6718,17 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     expect(cameraFinding?.message).toContain('createCamera3D passes its options once to initializeCamera3D');
     expect(cameraFinding?.message).toContain('out.nearClipPlane = opts.nearClipPlane ?? null');
-    expect(cameraFinding?.message).toContain('getCamera3DViewProjectionMatrix4 applies the plane only when present');
-    expect(cameraFinding?.message).toContain('reflectCamera3DByPlane copies the live required nullable field directly');
+    expect(cameraFinding?.message).toContain('The only downstream consumers are getCamera3DViewProjectionMatrix4');
+    expect(cameraFinding?.message).toContain('which applies the plane only when present');
+    expect(cameraFinding?.message).toContain(
+      'reflectCamera3DByPlane, which copies the live required nullable field directly',
+    );
     expect(cameraFinding?.message).toContain('Keep Camera3D.nearClipPlane required nullable');
     expect(cameraFinding?.message).toContain('make Camera3DOptions.nearClipPlane an optional Plane without null');
+    expect(cameraFinding?.message).toContain('Do not whitelist the redundant explicit-null construction spelling');
+    expect(cameraFinding?.message).toContain(
+      "representation support does not replace the source's one-shot option normalization",
+    );
     expect(cameraFinding?.message).toContain('unchanged, disabled, and present-plane cases are explicit');
     expect(cameraFinding?.message).toContain('infer or construct a Plane');
     expect(cameraFinding?.message).toContain('copy or materialize the plane owner, or add side storage');
