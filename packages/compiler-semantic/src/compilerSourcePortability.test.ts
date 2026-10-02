@@ -6172,6 +6172,141 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('separates lazy GlMeshProgram location caches from collapsed skin-sampler absence', () => {
+    const source = input(
+      'packages/types/src/GlMeshProgram.ts',
+      `interface GlMeshProgram {
+         locAlphaIsCoverage?: WebGLUniformLocation | null;
+         locColorBias?: WebGLUniformLocation | null;
+         locColorMatrix0?: WebGLUniformLocation | null;
+         locColorMatrix1?: WebGLUniformLocation | null;
+         locColorMatrix2?: WebGLUniformLocation | null;
+         locColorMatrix3?: WebGLUniformLocation | null;
+         locColorMatrixOffset?: WebGLUniformLocation | null;
+         locColorScale?: WebGLUniformLocation | null;
+         locInstanceColorPalette?: WebGLUniformLocation | null;
+         locInstancePalette?: WebGLUniformLocation | null;
+         locJointNormalTexture?: WebGLUniformLocation | null;
+         locJointTexture?: WebGLUniformLocation | null;
+         locObjectAlpha?: WebGLUniformLocation | null;
+         locUvTransform?: WebGLUniformLocation | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+    const skinFields = new Set(['locJointNormalTexture', 'locJointTexture']);
+    const lazyFields = new Set([
+      'locAlphaIsCoverage',
+      'locColorBias',
+      'locColorMatrix0',
+      'locColorMatrix1',
+      'locColorMatrix2',
+      'locColorMatrix3',
+      'locColorMatrixOffset',
+      'locColorScale',
+      'locInstanceColorPalette',
+      'locInstancePalette',
+      'locObjectAlpha',
+      'locUvTransform',
+    ]);
+
+    expect(findings).toHaveLength(14);
+    expect(findings.every((finding) => finding.rule === 'mixed-absence')).toBe(true);
+    for (const finding of findings) {
+      const field = finding.subject.slice(finding.subject.lastIndexOf(':') + 1);
+      if (skinFields.has(field)) {
+        expect(finding.message).toContain(`gives the eager skin-sampler location ${field}`);
+        expect(finding.message).toContain('the represented draw contract has one unusable state');
+        expect(finding.message).toContain('factories that support skinning assign the result of getUniformLocation');
+        expect(finding.message).toContain('families that are not wired for skinning omit the property');
+        expect(finding.message).toContain('bindGlMeshSkinPalette collapses both with != null');
+        expect(finding.message).toContain('the shadow path normalizes locJointTexture with ?? null');
+        expect(finding.message).toContain(`make ${field} optional non-null`);
+        expect(finding.message).toContain(`make it required WebGLUniformLocation | null`);
+        expect(finding.message).toContain('this redundant pair does not need a reviewed exception');
+        expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+        expect(finding.message).toContain('query or bind a GL uniform');
+        expect(finding.message).toContain('infer whether a program supports skinning');
+        expect(finding.message).toContain('coordinate the pose and normal samplers');
+        continue;
+      }
+
+      expect(lazyFields.has(field)).toBe(true);
+      expect(finding.message).toContain(`gives the lazy GL uniform-location cache ${field} three observed states`);
+      expect(finding.message).toContain('undefined means unresolved');
+      expect(finding.message).toContain(
+        'null means getUniformLocation already proved the linked program omits the uniform',
+      );
+      expect(finding.message).toContain('WebGLUniformLocation means present');
+      expect(finding.message).toContain('Preserve that query-once contract');
+      expect(finding.message).toContain('a reviewed source-portability exception for this exact property');
+      expect(finding.message).toContain('Do not collapse undefined to null, which would skip the first query');
+      expect(finding.message).toContain('null to undefined, which would repeat the query');
+      expect(finding.message).toContain('will preserve authored states but will not query GL');
+      expect(finding.message).toContain('choose or collapse an absence sentinel');
+      expect(finding.message).toContain('coordinate related cache fields');
+      expect(finding.message).toContain('route it through Any, or add side storage');
+      if (field.startsWith('locColorMatrix')) {
+        expect(finding.message).toContain('queries and caches all five color-matrix locations together');
+        expect(finding.message).toContain('present arm carries all five locations');
+      } else if (field === 'locColorScale' || field === 'locColorBias') {
+        expect(finding.message).toContain('queries and caches locColorScale and locColorBias together');
+        expect(finding.message).toContain('present arm carries both locations');
+      } else if (field === 'locObjectAlpha' || field === 'locAlphaIsCoverage') {
+        expect(finding.message).toContain('uploadGlMeshDrawAlpha queries this location only while it is undefined');
+      } else if (field === 'locInstancePalette') {
+        expect(finding.message).toContain('bindGlInstancePalette queries this location only while it is undefined');
+      } else if (field === 'locInstanceColorPalette') {
+        expect(finding.message).toContain(
+          'bindGlInstanceColorPalette queries this location only while it is undefined',
+        );
+      } else {
+        expect(finding.message).toContain('bindGlUvTransform queries this location only while it is undefined');
+      }
+    }
+  });
+
+  it('keeps unrelated uniform locations generic and accepts explicit GlMeshProgram cache states', () => {
+    const resolved = input(
+      'packages/types/src/GlMeshProgram.ts',
+      `type UniformLocationCache =
+         | { readonly state: 'unresolved' }
+         | { readonly state: 'absent' }
+         | { readonly location: WebGLUniformLocation; readonly state: 'present' };
+       interface GlMeshProgram {
+         locJointNormalTexture: WebGLUniformLocation | null;
+         locJointTexture?: WebGLUniformLocation;
+         locObjectAlpha: UniformLocationCache;
+       }`,
+    );
+    const unrelated = [
+      input(
+        'packages/types/src/GlMeshProgram.ts',
+        'interface OtherProgram { locObjectAlpha?: WebGLUniformLocation | null }',
+      ),
+      input(
+        'packages/example/src/GlMeshProgram.ts',
+        'interface GlMeshProgram { locObjectAlpha?: WebGLUniformLocation | null }',
+      ),
+      input(
+        'packages/types/src/GlMeshProgram.ts',
+        'interface GlMeshProgram { locMaterialAlpha?: WebGLUniformLocation | null }',
+      ),
+      input(
+        'packages/types/src/GlMeshProgram.ts',
+        'interface GlMeshProgram { locObjectAlpha?: OtherUniformLocation | null }',
+      ),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('lazy GL uniform-location cache');
+      expect(findings[0]?.message).not.toContain('eager skin-sampler location');
+    }
+  });
+
   it('explains the required nullable contract for GL render-pass tracking slots', () => {
     const source = input(
       'packages/types/src/GlRenderState.ts',

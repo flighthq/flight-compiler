@@ -741,6 +741,58 @@ function getGlRenderPassTrackingMixedAbsencePropertyMessage(
   return `${subject} gives the active GL render-pass tracking slot ${field} both omission and explicit null, but the represented runtime has one outside-pass or inactive state. createGlRenderStateRuntime already assigns runtime.currentRenderTarget = null; _createGlRenderStateFromContext and test helpers assign runtime.currentScissorRect = null, while saveGlPassState normalizes both slots with ?? null and restoreGlPassState, GL state brackets, and cube-face passes save and restore them directly. beginGlRenderPass writes the current target and active scissor together, invalidateGlRenderStateCache clears the tracked scissor to null, and consumers use == null or ?? null before target and scissor work. Make currentRenderTarget a required GlCubeRenderTarget | GlRenderTarget | null field and currentScissorRect a required GlScissorRect | null field, initialize both in createGlRenderStateRuntime so every exported construction path receives the complete contract, and preserve the direct pass save and restore assignments; the analogous Canvas and WebGPU pass-state slots are already required nullable. If a lifecycle must distinguish an uninitialized runtime from a constructed runtime outside a pass, model that as a closed runtime or pass state rather than as a second field-level absence sentinel. The compiler will not choose or collapse an absence sentinel, infer a render target or scissor rectangle, bind or clear a framebuffer, alter the pass or clip stack, copy or materialize a target or rectangle, or add side storage.`;
 }
 
+function getGlMeshProgramUniformLocationMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'GlMeshProgram' ||
+    !isFlightTypesSource(node, 'GlMeshProgram.ts') ||
+    !isOptionalNullableNamedTypeProperty(node, 'WebGLUniformLocation')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field === 'locJointTexture' || field === 'locJointNormalTexture') {
+    return `${subject} gives the eager skin-sampler location ${field} both omission and explicit null, but the represented draw contract has one unusable state. Shader-family factories that support skinning assign the result of getUniformLocation, including null, while families that are not wired for skinning omit the property; bindGlMeshSkinPalette collapses both with != null, and the shadow path normalizes locJointTexture with ?? null. Use one absence spelling: either make ${field} optional non-null and omit the assignment when getUniformLocation returns null, or make it required WebGLUniformLocation | null and initialize it in every program factory. If own-property presence is externally observable and semantically distinct, replace the sentinels with a named closed skin-sampler state and handle every arm explicitly; otherwise this redundant pair does not need a reviewed exception. The compiler will not choose or collapse an absence sentinel, query or bind a GL uniform, infer whether a program supports skinning, coordinate the pose and normal samplers, reinterpret or cast a location, or add side storage.`;
+  }
+
+  const colorMatrixFields: readonly string[] = [
+    'locColorMatrix0',
+    'locColorMatrix1',
+    'locColorMatrix2',
+    'locColorMatrix3',
+    'locColorMatrixOffset',
+  ];
+  let cacheContract: string | undefined;
+  let rewrite: string | undefined;
+  if (field !== undefined && colorMatrixFields.includes(field)) {
+    cacheContract =
+      'drawGlMeshSubset tests locColorMatrix0 for undefined, queries and caches all five color-matrix locations together, treats a null locColorMatrix0 as the absent group, and reads the other four only for the present group';
+    rewrite =
+      'one named closed color-matrix cache whose unresolved and absent arms carry no locations and whose present arm carries all five locations';
+  } else if (field === 'locColorScale' || field === 'locColorBias') {
+    cacheContract =
+      'drawGlMeshSubset tests locColorScale for undefined, queries and caches locColorScale and locColorBias together, and uploads only when both cached locations are present';
+    rewrite =
+      'one named closed color-scale/bias cache whose unresolved and absent arms carry no locations and whose present arm carries both locations';
+  } else if (field === 'locObjectAlpha' || field === 'locAlphaIsCoverage') {
+    cacheContract =
+      'uploadGlMeshDrawAlpha queries this location only while it is undefined, caches null or the returned location, and skips the upload after a null result';
+    rewrite = 'a named closed uniform-location cache with unresolved, absent, and present-location arms';
+  } else if (field === 'locInstancePalette' || field === 'locInstanceColorPalette') {
+    cacheContract = `${field === 'locInstancePalette' ? 'bindGlInstancePalette' : 'bindGlInstanceColorPalette'} queries this location only while it is undefined, caches null or the returned location, and skips the sampler upload after a null result`;
+    rewrite = 'a named closed uniform-location cache with unresolved, absent, and present-location arms';
+  } else if (field === 'locUvTransform') {
+    cacheContract =
+      'bindGlUvTransform queries this location only while it is undefined, caches null or the returned location, and skips the matrix upload after a null result';
+    rewrite = 'a named closed uniform-location cache with unresolved, absent, and present-location arms';
+  }
+  if (cacheContract === undefined || rewrite === undefined) return undefined;
+  return `${subject} gives the lazy GL uniform-location cache ${field} three observed states: undefined means unresolved, null means getUniformLocation already proved the linked program omits the uniform, and WebGLUniformLocation means present. ${cacheContract}. Preserve that query-once contract by replacing the optional-null field with ${rewrite} and handling every arm explicitly. If the existing JavaScript tri-state must remain during migration, approve a reviewed source-portability exception for this exact property that records those meanings and the query-once invariant. Do not collapse undefined to null, which would skip the first query, or null to undefined, which would repeat the query on later draws or binds. The compiler will preserve authored states but will not query GL, choose or collapse an absence sentinel, infer or synthesize a location, coordinate related cache fields, reinterpret or cast a location, route it through Any, or add side storage.`;
+}
+
 function getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -842,6 +894,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (compressedTexturePolicyOption) return compressedTexturePolicyOption;
   const scene3DDiagnosticGuard = getScene3DDiagnosticGuardMixedAbsencePropertyMessage(node, subject);
   if (scene3DDiagnosticGuard) return scene3DDiagnosticGuard;
+  const glMeshProgramUniformLocation = getGlMeshProgramUniformLocationMixedAbsencePropertyMessage(node, subject);
+  if (glMeshProgramUniformLocation) return glMeshProgramUniformLocation;
   const glRenderPassTracking = getGlRenderPassTrackingMixedAbsencePropertyMessage(node, subject);
   if (glRenderPassTracking) return glRenderPassTracking;
   const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
