@@ -4808,22 +4808,26 @@ describe('analyzeTypeScriptSourcePortability', () => {
     for (const [index, finding] of findings.entries()) {
       const name = ['bottom', 'height', 'left', 'right', 'top', 'width'][index];
       expect(finding.message).toContain(`gives the anchor constraint ${name} both an omitted state and explicit null`);
-      expect(finding.message).toContain('repository construction sites omit inactive constraints');
-      expect(finding.message).toContain('isOptionalNumber accepts null and undefined');
+      expect(finding.message).toContain('current Flight gives them one inactive meaning');
+      expect(finding.message).toContain('In-memory construction sites omit inactive constraints');
+      expect(finding.message).toContain(
+        'the generic FlightDocument read, write, and clone paths may preserve an explicit null inside itemStyle',
+      );
+      expect(finding.message).toContain('without attaching anchor-specific meaning');
+      expect(finding.message).toContain('isOptionalNumber accepts both null and undefined');
       expect(finding.message).toContain('anchorLayoutResolver normalizes left, right, top, and bottom with ?? null');
       expect(finding.message).toContain('When opposing pins do not determine an axis');
       expect(finding.message).toContain('width and height expressions each use ?? intrinsicSizes');
-      expect(finding.message).toContain('both absence spellings select the same natural-size fallback');
+      expect(finding.message).toContain('either absence spelling selects the same natural-size fallback');
       expect(finding.message).toContain('placement uses a pin or alignment');
       expect(finding.message).toContain(
         'Make all six bottom, height, left, right, top, and width constraints optional number fields',
       );
-      expect(finding.message).toContain('reserve null for the enclosing itemStyle no-style sentinel');
+      expect(finding.message).toContain('reserve null for the enclosing LayoutNode.itemStyle no-style sentinel');
       expect(finding.message).toContain('keep that boundary shape separate');
-      expect(finding.message).toContain('normalize it into the optional-number layout style');
-      expect(finding.message).toContain('approve reviewed exceptions for these exact six properties');
-      expect(finding.message).toContain('record the redundant spelling');
+      expect(finding.message).toContain('normalize it once into the optional-number layout style');
       expect(finding.message).toContain('name a closed constraint-state union and handle it separately');
+      expect(finding.message).toContain('will not whitelist a redundant spelling');
       expect(finding.message).toContain('will not preserve a redundant third sentinel in target storage');
       expect(finding.message).toContain('zero is a real pin or size');
       expect(finding.message).toContain('collapse a present value');

@@ -388,6 +388,80 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the six anchor-layout absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createAnchorLayoutWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = ['bottom', 'height', 'left', 'right', 'top', 'width'].map(
+      (name) => `interface:AnchorLayoutItemStyle/property:${name}`,
+    );
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('FlightDocument read, write, and clone paths may preserve an explicit null'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => message.includes('will not whitelist a redundant spelling')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 6,
+      directOccurrences: 6,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createAnchorLayoutWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps all six Scene3D render-proxy absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createScene3DRenderProxyWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -844,6 +918,22 @@ function createPackageManifest(name: string, dependencies: Readonly<Record<strin
     name,
     version: '1.0.0',
   });
+}
+
+function createAnchorLayoutWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Layout.ts': `export interface AnchorLayoutItemStyle {
+  bottom?: number${nullable};
+  height?: number${nullable};
+  left?: number${nullable};
+  right?: number${nullable};
+  top?: number${nullable};
+  width?: number${nullable};
+}`,
+    '/flight/packages/types/src/index.ts': `export type { AnchorLayoutItemStyle } from './Layout.js';`,
+  };
 }
 
 function createColorAdjustmentWorkspaceFiles(): Record<string, string> {
