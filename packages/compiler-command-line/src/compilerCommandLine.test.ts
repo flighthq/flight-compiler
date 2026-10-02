@@ -953,6 +953,34 @@ describe('validateCompilerCommandLineCheckRequest', () => {
     expect(run.out.join('')).not.toContain('"schema"');
   });
 
+  it('writes a machine-readable refusal report when workspace discovery cannot complete', () => {
+    const run = checkRun([
+      {
+        directory: 'core',
+        name: '@flighthq/core',
+        sources: {
+          'glTestHelper.ts':
+            "import { expect } from 'vitest'; export function expectReady(value: unknown): void { expect(value); }",
+          'index.ts': "export { expectReady } from './glTestHelper.js';",
+        },
+      },
+    ]);
+
+    const result = validateCompilerCommandLineCheckRequest(
+      { argv: ['/ws', '--target', 'rust', '--format', 'json', '--report', '/ws/check-report.json'] },
+      run.capabilities,
+    );
+
+    expect(result).toMatchObject({ exitCode: 2 });
+    expect(run.err.join('')).toContain('Cannot resolve workspace import');
+    expect(run.out).toEqual([]);
+    expect(JSON.parse(run.reports.get('/ws/check-report.json')!)).toMatchObject({
+      exitCode: 2,
+      schema: 'flight-compiler-check-run/1',
+      reason: expect.stringContaining('glTestHelper'),
+    });
+  });
+
   it('renders the same JSON for the same run, under one identity', () => {
     const first = checkRun([core]);
     const second = checkRun([core]);

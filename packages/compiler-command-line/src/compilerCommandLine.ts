@@ -215,10 +215,10 @@ export function validateCompilerCommandLineCheckRequest(
       capabilities.workspaceSource,
     );
   } catch (error) {
-    return refuseCompilerCommandLineCheck(capabilities, `${describeCompilerCommandLineFailure(error)}\n`);
+    return refuseCompilerCommandLineCheck(capabilities, `${describeCompilerCommandLineFailure(error)}\n`, parsed);
   }
   const selection = selectCompilerCommandLinePackages(manifests, parsed, capabilities);
-  if ('failure' in selection) return refuseCompilerCommandLineCheck(capabilities, `${selection.failure}\n`);
+  if ('failure' in selection) return refuseCompilerCommandLineCheck(capabilities, `${selection.failure}\n`, parsed);
   const selectedPackageNames = selection.includedPackageNames;
   if (selectedPackageNames.length === 0) {
     // Nothing in scope is an invocation failure rather than a clean run: the check was pointed at something
@@ -236,13 +236,14 @@ export function validateCompilerCommandLineCheckRequest(
             ? `No packages under ${parsed.workspaceDirectory}`
             : `No package under ${parsed.workspaceDirectory} declares ${parsed.environment}`
       }\n`,
+      parsed,
     );
   }
   const baseline = readCompilerCommandLineCheckBaseline(capabilities, parsed);
-  if ('failure' in baseline) return refuseCompilerCommandLineCheck(capabilities, `${baseline.failure}\n`);
+  if ('failure' in baseline) return refuseCompilerCommandLineCheck(capabilities, `${baseline.failure}\n`, parsed);
   const bindingProfiles = readCompilerCommandLineCheckBindingProfiles(parsed, capabilities);
   if ('failure' in bindingProfiles) {
-    return refuseCompilerCommandLineCheck(capabilities, `${bindingProfiles.failure}\n`);
+    return refuseCompilerCommandLineCheck(capabilities, `${bindingProfiles.failure}\n`, parsed);
   }
   let report: CompilerPackageCheckReport;
   try {
@@ -265,7 +266,7 @@ export function validateCompilerCommandLineCheckRequest(
       sourcePortability,
     });
   } catch (error) {
-    return refuseCompilerCommandLineCheck(capabilities, `${describeCompilerCommandLineFailure(error)}\n`);
+    return refuseCompilerCommandLineCheck(capabilities, `${describeCompilerCommandLineFailure(error)}\n`, parsed);
   }
   const comparison = compareCompilerPackageCheckBaseline(report, baseline.baseline);
   const policyResult = createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict());
@@ -378,9 +379,17 @@ function describeCompilerCommandLineFailure(error: unknown): string {
 function refuseCompilerCommandLineCheck(
   capabilities: Readonly<CompilerCommandLineCheckCapabilities>,
   text: string,
+  output?: Readonly<Pick<ParsedCompilerCommandLineCheckRequest, 'format' | 'reportPath'>>,
 ): CompilerCommandLineCheckRefusal {
+  const reason = text.trimEnd();
+  if (output?.reportPath !== undefined) {
+    capabilities.writeReportFile(
+      output.reportPath,
+      createCompilerCommandLineCheckReport({ exitCode: 2, reason }, output.format),
+    );
+  }
   capabilities.writeError(text);
-  return { exitCode: 2, reason: text.trimEnd() };
+  return { exitCode: 2, reason };
 }
 
 // What the compiler could not do, grouped by reason rather than listed by module. One rule blocking
