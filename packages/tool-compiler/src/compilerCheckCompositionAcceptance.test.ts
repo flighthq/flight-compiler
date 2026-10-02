@@ -463,6 +463,78 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the three Mesh deformation absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createMeshDeformationWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'interface:Mesh/property:morph',
+      'interface:Mesh/property:skin',
+      'interface:MeshDeformRuntime/property:deformedLocalBounds',
+    ];
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
+      expect.stringContaining('GL and WebGPU draw the geometry that preparation updates'),
+      expect.stringContaining('the WebGPU skin adapter returns false for skin == null'),
+      expect.stringContaining('Shared culling before GL or WebGPU draws falls back with ?? to geometry bounds'),
+    ]);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createMeshDeformationWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both specialized entity guard set traps stable through check mode', () => {
     const source = createMemoryWorkspaceSource(createEntityGuardWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -854,6 +926,24 @@ export function createNode2D<R extends Node2DRuntime>(
     createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>),
   );
 }`,
+  };
+}
+
+function createMeshDeformationWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Mesh.ts': `interface Aabb { readonly minX: number }
+interface MeshMorph { readonly weights: Float32Array }
+interface Skin { readonly skeleton: object }
+export interface Mesh {
+  morph?: MeshMorph${nullable};
+  skin?: Skin${nullable};
+}
+export interface MeshDeformRuntime {
+  deformedLocalBounds?: Aabb${nullable};
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Mesh, MeshDeformRuntime } from './Mesh.js';`,
   };
 }
 

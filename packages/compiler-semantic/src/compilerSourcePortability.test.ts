@@ -5007,22 +5007,40 @@ describe('analyzeTypeScriptSourcePortability', () => {
         subject: 'interface:MeshDeformRuntime/property:deformedLocalBounds',
       },
     ]);
-    for (const [index, finding] of findings.entries()) {
-      const name = ['morph', 'skin', 'deformedLocalBounds'][index];
-      expect(finding.message).toContain(
-        `gives the mesh deformation slot ${name} both an omitted state and explicit null`,
-      );
-      expect(finding.message).toContain('createMesh leaves morph and skin absent');
-      expect(finding.message).toContain('cloneMesh and sceneDocument assign only a present deformer');
-      expect(finding.message).toContain('prepareScene3DSkinning creates deformedLocalBounds lazily');
-      expect(finding.message).toContain('every direct reader collapses null and undefined');
-      expect(finding.message).toContain(
-        'Make morph, skin, and deformedLocalBounds optional non-null fields and use omission or undefined as the sole inactive state',
-      );
-      expect(finding.message).toContain('name a closed deformation-state union and handle both states explicitly');
+    const morph = findings[0]!.message;
+    expect(morph).toContain('mesh deformation slot morph both an omitted state and explicit null');
+    expect(morph).toContain('createMesh omits morph');
+    expect(morph).toContain('cloneMesh and scene-document import assign it only when a MeshMorph is present');
+    expect(morph).toContain('updateMeshMorph, getMeshDeformer, animation routing, and the GL deform guard');
+    expect(morph).toContain('GL and WebGPU draw the geometry that preparation updates');
+    expect(morph).toContain('Make morph an optional non-null MeshMorph field');
+    expect(morph).toContain('infer or create a morph');
+    expect(morph).toContain('rewrite or clone the mesh or its geometry');
+
+    const skin = findings[1]!.message;
+    expect(skin).toContain('mesh deformation slot skin both an omitted state and explicit null');
+    expect(skin).toContain('createMesh omits skin');
+    expect(skin).toContain('cloneMesh and scene-document import assign it only when a Skin is present');
+    expect(skin).toContain('updateMeshSkin and prepareMeshSkinning return on a nullish skin');
+    expect(skin).toContain('GL forward and shadow draws require skin != null');
+    expect(skin).toContain('the WebGPU skin adapter returns false for skin == null');
+    expect(skin).toContain('Make skin an optional non-null Skin field');
+    expect(skin).toContain('infer or create a skin or palette');
+
+    const bounds = findings[2]!.message;
+    expect(bounds).toContain('mesh deformation slot deformedLocalBounds both an omitted state and explicit null');
+    expect(bounds).toContain('prepareMeshSkinning is its producer');
+    expect(bounds).toContain('allocates and stores one Aabb when the slot is nullish');
+    expect(bounds).toContain('Shared culling before GL or WebGPU draws falls back with ?? to geometry bounds');
+    expect(bounds).toContain('picking uses a nullish presence check');
+    expect(bounds).toContain('the GL deform guard treats both absence spellings alike');
+    expect(bounds).toContain('Make deformedLocalBounds an optional non-null Aabb field');
+    expect(bounds).toContain('infer bounds or run skinning');
+
+    for (const finding of findings) {
+      expect(finding.message).toContain('use omission or undefined as its sole');
+      expect(finding.message).toContain('normalize it once');
       expect(finding.message).toContain('will not preserve a redundant null sentinel');
-      expect(finding.message).toContain('infer or create a deformer or bounds value');
-      expect(finding.message).toContain('rewrite or clone the mesh');
       expect(finding.message).toContain('copy or materialize deformation storage, or add side storage');
     }
   });
