@@ -7793,6 +7793,135 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the required nullable live contract for Canvas texture resolver state', () => {
+    const source = input(
+      'packages/types/src/CanvasTextureResolver.ts',
+      `interface Entity { readonly kind: string }
+       type Kind = string;
+       enum RenderRegistryTable { TextureResolver }
+       type TextureSourceKind = string;
+       type CanvasTextureResolver = () => CanvasImageSource | null;
+       interface CanvasTextureResolvers extends Entity {
+         registry?: Map<TextureSourceKind, CanvasTextureResolver> | null;
+         registryMiss?: ((registry: RenderRegistryTable, kind: Kind) => void) | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['registry', 'registryMiss'].map((field) => ({
+        rule: 'mixed-absence',
+        subject: `interface:CanvasTextureResolvers/property:${field}`,
+      })),
+    );
+    const byField = new Map(findings.map((finding) => [finding.subject.split(':').at(-1), finding.message]));
+
+    const registry = byField.get('registry')!;
+    expect(registry).toContain('live Canvas texture-resolver registry both omission and explicit null');
+    expect(registry).toContain('sanctioned construction and teardown materialize one empty state');
+    expect(registry).toContain('CanvasTextureResolvers is an Entity and not an input carrier');
+    expect(registry).toContain('initializeCanvasTextureResolvers assigns registry = null');
+    expect(registry).toContain('finishEntity returns that same owner');
+    expect(registry).toContain('EntityConstruction only removes readonly modifiers');
+    expect(registry).toContain('there is no Partial<CanvasTextureResolvers> construction path');
+    expect(registry).toContain('importer, document materializer, serializer, or clone');
+    expect(registry).toContain('registerCanvasTextureResolver uses registry ??= new Map()');
+    expect(registry).toContain('deletes one entry for a null resolver without replacing an empty map');
+    expect(registry).toContain('resolveCanvasTexture reads registry?.get');
+    expect(registry).toContain('explainCanvasTextureResolution reads registry?.has');
+    expect(registry).toContain('shared Canvas shape rasterizer resolve through the same retained set and its caches');
+    expect(registry).toContain('clears the Map when present, then assigns registry = null');
+    expect(registry).toContain('Make registry a required Map<TextureSourceKind, CanvasTextureResolver> | null field');
+    expect(registry).toContain('preserve the single lazy Map allocation plus exact map and callback owners');
+    expect(registry).toContain('current no-profile flight-cpp corpus refusal');
+    expect(registry).toContain('CanvasImageSource[type] and HTMLCanvasElement[type]');
+    expect(registry).toContain('maintained sdl-image and sdl-gl manifests supply those exact bindings');
+    expect(registry).toContain('neither makes registry a host handle nor chooses its absence sentinel');
+    expect(registry).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(registry).toContain('will not choose or collapse an absence sentinel');
+    expect(registry).toContain('allocate, clear, or clone a Map');
+    expect(registry).toContain('fabricate a host binding');
+
+    const registryMiss = byField.get('registryMiss')!;
+    expect(registryMiss).toContain('live Canvas texture-resolver miss seam both omission and explicit null');
+    expect(registryMiss).toContain('sanctioned construction and teardown materialize one disconnected state');
+    expect(registryMiss).toContain('CanvasTextureResolvers is an Entity and not an input carrier');
+    expect(registryMiss).toContain('initializeCanvasTextureResolvers assigns registryMiss = null');
+    expect(registryMiss).toContain('there is no Partial<CanvasTextureResolvers> construction path');
+    expect(registryMiss).toContain('createCanvasRenderState installs the state-owned set');
+    expect(registryMiss).toContain('connectCanvasTextureResolverMisses installs the same closure shape');
+    expect(registryMiss).toContain('reads the retained RenderStateRuntime.registryMiss at call time');
+    expect(registryMiss).toContain('guards may be enabled after connection');
+    expect(registryMiss).toContain('resolveCanvasTexture optional-calls registryMiss only after a valid source kind');
+    expect(registryMiss).toContain('assigns registryMiss = null');
+    expect(registryMiss).toContain(
+      'Make registryMiss a required ((registry: RenderRegistryTable, kind: Kind) => void) | null field',
+    );
+    expect(registryMiss).toContain('preserve the exact installed closures, late emitter read, miss timing');
+    expect(registryMiss).toContain('registryMiss itself contains no host-owned drawable');
+    expect(registryMiss).toContain('separate CanvasImageSource[type] and HTMLCanvasElement[type] requirements');
+    expect(registryMiss).toContain('maintained sdl-image and sdl-gl manifests supply those exact bindings');
+    expect(registryMiss).toContain('neither changes this source callback domain nor chooses its absence sentinel');
+    expect(registryMiss).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(registryMiss).toContain('will not choose or collapse an absence sentinel');
+    expect(registryMiss).toContain('install, clear, synthesize, or invoke a diagnostic seam');
+    expect(registryMiss).toContain('report or suppress a miss');
+    expect(registryMiss).toContain('fabricate a host binding');
+  });
+
+  it('keeps Canvas texture resolver lookalikes generic and accepts required nullable live state', () => {
+    const resolved = input(
+      'packages/types/src/CanvasTextureResolver.ts',
+      `interface Entity { readonly kind: string }
+       type Kind = string;
+       enum RenderRegistryTable { TextureResolver }
+       type TextureSourceKind = string;
+       type CanvasTextureResolver = () => CanvasImageSource | null;
+       interface CanvasTextureResolvers extends Entity {
+         registry: Map<TextureSourceKind, CanvasTextureResolver> | null;
+         registryMiss: ((registry: RenderRegistryTable, kind: Kind) => void) | null;
+       }`,
+    );
+    const unrelated = [
+      input(
+        'packages/example/src/CanvasTextureResolver.ts',
+        `interface Entity {}
+         interface CanvasTextureResolvers extends Entity { registry?: Map<TextureSourceKind, CanvasTextureResolver> | null }`,
+      ),
+      input(
+        'packages/types/src/CanvasTextureResolver.ts',
+        'interface OtherResolvers { registry?: Map<TextureSourceKind, CanvasTextureResolver> | null }',
+      ),
+      input(
+        'packages/types/src/CanvasTextureResolver.ts',
+        'interface Entity {} interface CanvasTextureResolvers extends Entity { table?: Map<TextureSourceKind, CanvasTextureResolver> | null }',
+      ),
+      input(
+        'packages/types/src/CanvasTextureResolver.ts',
+        'interface Entity {} interface CanvasTextureResolvers extends Entity { registry?: Map<string, CanvasTextureResolver> | null }',
+      ),
+      input(
+        'packages/types/src/CanvasTextureResolver.ts',
+        `interface Entity {}
+         interface CanvasTextureResolvers extends Entity {
+           registryMiss?: ((registry: RenderRegistryTable, kind: string) => void) | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/CanvasTextureResolver.ts',
+        'interface CanvasTextureResolvers { registryMiss?: ((registry: RenderRegistryTable, kind: Kind) => void) | null }',
+      ),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('live Canvas texture-resolver');
+    }
+  });
+
   it('explains the required nullable contract for the reusable RenderProxy color matrix', () => {
     const source = input(
       'packages/types/src/RenderProxy.ts',

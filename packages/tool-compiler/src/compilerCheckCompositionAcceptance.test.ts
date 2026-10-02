@@ -5005,6 +5005,108 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps both Canvas texture resolver live-state findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createCanvasTextureResolversWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = ['registry', 'registryMiss'].map(
+      (field) => `interface:CanvasTextureResolvers/property:${field}`,
+    );
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Make registry a required Map<TextureSourceKind, CanvasTextureResolver> | null field',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'single lazy Map allocation plus exact map and callback owners',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('current no-profile flight-cpp corpus refusal');
+    expect(sourcePortability.findings[0]?.message).toContain('CanvasImageSource[type] and HTMLCanvasElement[type]');
+    expect(sourcePortability.findings[1]?.message).toContain(
+      'Make registryMiss a required ((registry: RenderRegistryTable, kind: Kind) => void) | null field',
+    );
+    expect(sourcePortability.findings[1]?.message).toContain(
+      'preserve the exact installed closures, late emitter read, miss timing',
+    );
+    expect(sourcePortability.findings[1]?.message).toContain('registryMiss itself contains no host-owned drawable');
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('maintained sdl-image and sdl-gl manifests supply those exact bindings'),
+      ),
+    ).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('not an input carrier'))).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      [expectedSubjects[1]!, expectedSubjects[0]!].map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createCanvasTextureResolversWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps both MeshAttachment2D point-storage findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createMeshAttachment2DWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -6886,6 +6988,30 @@ export interface CanvasRenderRegistries {
   CanvasRenderRegistries,
   CanvasRenderState,
 } from './CanvasRenderState.js';`,
+  };
+}
+
+function createCanvasTextureResolversWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/CanvasTextureResolver.ts': `export interface Entity { readonly kind: string }
+export type Kind = string;
+export enum RenderRegistryTable { TextureResolver }
+export type TextureSourceKind = string;
+export type CanvasTextureResolver = () => CanvasImageSource | null;
+export interface CanvasTextureResolvers extends Entity {
+  registry${marker}: Map<TextureSourceKind, CanvasTextureResolver> | null;
+  registryMiss${marker}: ((registry: RenderRegistryTable, kind: Kind) => void) | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  CanvasTextureResolver,
+  CanvasTextureResolvers,
+  Entity,
+  Kind,
+  TextureSourceKind,
+} from './CanvasTextureResolver.js';
+export { RenderRegistryTable } from './CanvasTextureResolver.js';`,
   };
 }
 

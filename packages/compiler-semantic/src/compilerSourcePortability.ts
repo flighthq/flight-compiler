@@ -1059,6 +1059,72 @@ function getCanvasBlendModeApplicationMixedAbsencePropertyMessage(
   return `${subject} gives the Canvas pipeline's blend-mode application policy both omission and explicit null, but current producers have one no-policy state: allocateEmptyCanvasRenderRegistries leaves the property omitted, while defaultScene2DCanvasRenderRegistries supplies the exact applyCanvasBlendMode function, and no producer writes null. createCanvasRenderState snapshots registries.blendModeApplication ?? null into the required nullable CanvasRenderState.applyBlendMode hook, so either input absence spelling becomes the same passthrough state. Canvas draw paths optional-call that live hook, and enableCanvasBlendMode may install applyCanvasBlendMode later; keep CanvasRenderState.applyBlendMode required nullable for that live state. Make CanvasRenderRegistries.blendModeApplication an optional non-null function with its existing CanvasRenderState and BlendMode | null parameters. Preserve the exact present function owner, the default pipeline assignment, the empty-registry omission, the one-time ?? null normalization, and the runtime registry copies; no production consumer observes an omitted-versus-null registry spelling after construction. If an external compatibility boundary accepts explicit null, normalize it once to omission before constructing the pipeline; if a future registry update API must distinguish unchanged, disabled, and installed policy, give it a separate named closed update state. Do not whitelist the redundant registry spelling. The compiler will preserve every authored state and callback signature but will not choose or collapse an absence sentinel, infer or install blend support, call or bind the policy, re-parameterize the callback, rewrite draw dispatch or compositing state, route the function through Any, reinterpret or cast it, or add side storage.`;
 }
 
+function getCanvasTextureResolversMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'CanvasTextureResolvers' ||
+    !interfaceExtendsType(node.parent, 'Entity') ||
+    !isFlightTypesSource(node, 'CanvasTextureResolver.ts')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field === 'registry' && isOptionalNullableCanvasTextureResolverMapProperty(node)) {
+    return `${subject} gives the live Canvas texture-resolver registry both omission and explicit null, but sanctioned construction and teardown materialize one empty state. CanvasTextureResolvers is an Entity and not an input carrier: createCanvasTextureResolvers allocates one owner, initializeCanvasTextureResolvers assigns registry = null through EntityConstruction<CanvasTextureResolvers>, and finishEntity returns that same owner. EntityConstruction only removes readonly modifiers; there is no Partial<CanvasTextureResolvers> construction path, importer, document materializer, serializer, or clone. registerCanvasTextureResolver uses registry ??= new Map() for the first registration, retains that exact Map for the entity lifetime, and deletes one entry for a null resolver without replacing an empty map with another absence state. resolveCanvasTexture reads registry?.get and reports a miss only when the lookup is undefined, while explainCanvasTextureResolution reads registry?.has; null and a missing cell therefore mean the same no-registration state. Bitmap, image, and render-target registrars install exact CanvasTextureResolver callbacks, and Canvas renderers or a shared Canvas shape rasterizer resolve through the same retained set and its caches. destroyCanvasTextureResolvers destroys every resolver-owned surface, clears the Map when present, then assigns registry = null; its ownership-set deletion makes repeated destruction return before any second transition. Make registry a required Map<TextureSourceKind, CanvasTextureResolver> | null field, retain the explicit null initializer and teardown assignment, and preserve the single lazy Map allocation plus exact map and callback owners. If a structural compatibility input must allow omission, keep it separate and normalize once before initialization; if uninitialized, empty, and registered must ever differ, use one named closed registry state and handle every arm explicitly. The current no-profile flight-cpp corpus refusal for CanvasTextureResolver.ts is a separate downstream host-binding gap: CanvasTextureResolver and the cache records reach CanvasImageSource[type] and HTMLCanvasElement[type], while the maintained sdl-image and sdl-gl manifests supply those exact bindings and the SDL generation lanes compose both profiles. That host requirement neither makes registry a host handle nor chooses its absence sentinel, so no compiler representation change or source erasure is warranted. Do not whitelist the redundant live-storage spelling. The compiler will preserve the exact map and callbacks but will not choose or collapse an absence sentinel, allocate, clear, or clone a Map, register or invoke a resolver, resolve or materialize a host drawable, create or destroy a surface, copy a cache or callback owner, fabricate a host binding, reinterpret or cast the registry, or add side storage.`;
+  }
+  if (field === 'registryMiss' && isOptionalNullableCanvasTextureResolverMissProperty(node)) {
+    return `${subject} gives the live Canvas texture-resolver miss seam both omission and explicit null, but sanctioned construction and teardown materialize one disconnected state. CanvasTextureResolvers is an Entity and not an input carrier: createCanvasTextureResolvers allocates one owner, initializeCanvasTextureResolvers assigns registryMiss = null through EntityConstruction<CanvasTextureResolvers>, and finishEntity returns that same owner. EntityConstruction only removes readonly modifiers; there is no Partial<CanvasTextureResolvers> construction path, importer, document materializer, serializer, or clone. createCanvasRenderState installs the state-owned set's exact diagnostic closure, while connectCanvasTextureResolverMisses installs the same closure shape on a standalone set used by a Canvas shape rasterizer. Each closure reads the retained RenderStateRuntime.registryMiss at call time and optional-calls it, so guards may be enabled after connection without replacing the Canvas seam. resolveCanvasTexture optional-calls registryMiss only after a valid source kind has no registered resolver; null and a missing cell are therefore the same silent state. destroyCanvasTextureResolvers destroys every resolver-owned surface and then assigns registryMiss = null; its ownership-set deletion makes repeated destruction return before any second transition. Make registryMiss a required ((registry: RenderRegistryTable, kind: Kind) => void) | null field, retain the explicit null initializer and teardown assignment, and preserve the exact installed closures, late emitter read, miss timing, and optional call. If a structural compatibility input must allow omission, keep it separate and normalize once before initialization; if never-connected, disconnected, and connected must ever differ, use one named closed diagnostic-seam state and handle every arm explicitly. registryMiss itself contains no host-owned drawable, but the current no-profile flight-cpp corpus refuses its CanvasTextureResolver.ts module for the separate CanvasImageSource[type] and HTMLCanvasElement[type] requirements; the maintained sdl-image and sdl-gl manifests supply those exact bindings and the SDL generation lanes compose both profiles. That module-level host-binding gap neither changes this source callback domain nor chooses its absence sentinel, so no compiler representation change or source erasure is warranted. Do not whitelist the redundant live-storage spelling. The compiler will preserve the exact callback and null but will not choose or collapse an absence sentinel, install, clear, synthesize, or invoke a diagnostic seam, enable a guard, report or suppress a miss, change resolver dispatch, copy or materialize the render-state owner, fabricate a host binding, reinterpret or cast the callback, or add side storage.`;
+  }
+  return undefined;
+}
+
+function isOptionalNullableCanvasTextureResolverMapProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  if (!ts.isTypeReferenceNode(type) || getNodeName(type.typeName) !== 'Map' || type.typeArguments?.length !== 2) {
+    return false;
+  }
+  return (
+    isExactNamedTypeNode(type.typeArguments[0]!, 'TextureSourceKind') &&
+    isExactNamedTypeNode(type.typeArguments[1]!, 'CanvasTextureResolver')
+  );
+}
+
+function isOptionalNullableCanvasTextureResolverMissProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  if (!ts.isFunctionTypeNode(type) || type.parameters.length !== 2 || type.type.kind !== ts.SyntaxKind.VoidKeyword) {
+    return false;
+  }
+  const [registry, kind] = type.parameters;
+  return (
+    registry !== undefined &&
+    registry.questionToken === undefined &&
+    registry.dotDotDotToken === undefined &&
+    registry.type !== undefined &&
+    isExactNamedTypeNode(registry.type, 'RenderRegistryTable') &&
+    kind !== undefined &&
+    kind.questionToken === undefined &&
+    kind.dotDotDotToken === undefined &&
+    kind.type !== undefined &&
+    isExactNamedTypeNode(kind.type, 'Kind')
+  );
+}
+
+function isExactNamedTypeNode(node: ts.TypeNode, name: string): boolean {
+  while (ts.isParenthesizedTypeNode(node)) node = node.type;
+  return ts.isTypeReferenceNode(node) && node.typeArguments === undefined && getNodeName(node.typeName) === name;
+}
+
 function getRenderProxyColorMatrixMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -1515,6 +1581,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (sceneConstructionOwner) return sceneConstructionOwner;
   const canvasBlendModeApplication = getCanvasBlendModeApplicationMixedAbsencePropertyMessage(node, subject);
   if (canvasBlendModeApplication) return canvasBlendModeApplication;
+  const canvasTextureResolvers = getCanvasTextureResolversMixedAbsencePropertyMessage(node, subject);
+  if (canvasTextureResolvers) return canvasTextureResolvers;
   const renderProxyColorMatrix = getRenderProxyColorMatrixMixedAbsencePropertyMessage(node, subject);
   if (renderProxyColorMatrix) return renderProxyColorMatrix;
   const colorAdjustmentFeature = getColorAdjustmentFeatureMixedAbsencePropertyMessage(node, subject);
