@@ -12022,6 +12022,77 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('documents the layout style fields, their live records, and what clearing writes', () => {
+    // Layout.ts's six style fields are all `?: number | null` -- doubly optional -- while its live records
+    // are `ContainerStyle | null` / `ItemStyle | null`, required and nullable. The two families get different
+    // carriers, and a clear is a WRITE of one sentinel or the other, which the carrier preserves.
+    const layout = `export interface ContainerStyle { readonly display: string }
+export interface ItemStyle { readonly grow: number }
+export interface LayoutStyle {
+  top?: number | null;
+  right?: number | null;
+  bottom?: number | null;
+  left?: number | null;
+  width?: number | null;
+  height?: number | null;
+}
+export interface LiveLayout { containerStyle: ContainerStyle | null; itemStyle: ItemStyle | null; }`;
+
+    const emitted = emitIrModuleCpp(lower('layout-style.ts', layout).module, { runtimeProfile: 'flight-cpp' }).contents;
+    // six doubly-optional fields: one carrier with both sentinels, defaulting to undefined
+    // six fields, each appearing twice: the declaration and its default initializer
+    expect(emitted.match(/std::variant<double, flight::Null, flight::Undefined>/gu)).toHaveLength(12);
+    expect(emitted).toContain('std::in_place_type<flight::Undefined>');
+    // the live records are required and nullable: one sentinel, no default absence
+    expect(emitted).toContain('std::optional<flight::Ref<ContainerStyle>> container_style;');
+    expect(emitted).toContain('std::optional<flight::Ref<ItemStyle>> item_style;');
+
+    // Clearing writes a sentinel into the same carrier, and the two clears stay distinguishable.
+    const cleared = emitIrModuleCpp(
+      lower(
+        'layout-clear.ts',
+        `${layout}
+export function clear(layout: LayoutStyle): void {
+  layout.top = null;
+  layout.right = undefined;
+}`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(cleared).toContain('std::in_place_type<flight::Null>, flight::null');
+    expect(cleared).toContain('std::in_place_type<flight::Undefined>, flight::undefined');
+
+    // The test that proves presence for a doubly-optional field excludes BOTH sentinels, and the read behind
+    // it names the value alternative.
+    const loose = emitIrModuleCpp(
+      lower(
+        'layout-loose-test.ts',
+        `export interface S { top?: number | null }
+export function read(s: S): number { if (s.top != null) return s.top; return 0; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(loose).toContain('std::holds_alternative<flight::Null>(s->top)');
+    expect(loose).toContain('std::holds_alternative<flight::Undefined>(s->top)');
+    expect(loose).toContain('return std::get<double>(s->top);');
+
+    // REPORTED, NOT ENDORSED: a STRICT `!== null` test excludes only one sentinel, and for a primitive the
+    // read behind it is emitted as `std::get<0>` over a variant that may still hold Undefined -- which throws.
+    // The reference-member case refuses for the same insufficient proof (cpp-member-projection-without-
+    // present-storage), so this pins the current behaviour deliberately: a fix that refuses here too should
+    // change THIS assertion, and I have reported the divergence rather than widening a guard on my own.
+    const strict = emitIrModuleCpp(
+      lower(
+        'layout-strict-test.ts',
+        `export interface S2 { top?: number | null }
+export function read(s: S2): number { if (s.top !== null) return s.top; return 0; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(strict).toContain('if (!(std::holds_alternative<flight::Null>(s->top))) {');
+    expect(strict).toContain('return std::get<0>(s->top);');
+  });
+
   it('separates an optional non-null input from required nullable live state', () => {
     // InteractionManager declares BOTH spellings -- `cursorBackend: CursorBackend | null` as required live
     // state and `cursorBackend?: CursorBackend | null` as an optional input -- and the task was to tell them
