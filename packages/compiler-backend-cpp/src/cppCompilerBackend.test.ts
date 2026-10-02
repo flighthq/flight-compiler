@@ -13238,72 +13238,66 @@ export interface InstancedMeshSignalsRuntime { instancedMeshSignals?: InstancedM
     }
   });
 
-  it('separates a guard member from the host handle one of its parameters names', () => {
-    // GlScene3DRuntime carries five opt-in guards, and ALL FIVE are the same mixed-absence family: an
-    // optional callable beside null. Four of them lower on their own; the fifth names a host handle in its
-    // parameter list, and the refusal that produces belongs to the host-symbol binding lane rather than to
-    // the guard shape -- which is the separation this control exists to make.
-    const guards = `export interface GlRenderState { readonly kind: string }
+  it('separates all five GL Scene3D guard sentinels from the custom-shader host binding', () => {
+    const declarations = (optional: boolean): string => `export interface GlRenderState { readonly kind: string }
 export interface Mesh { readonly id: number }
 export interface Scene3DLightsLike { readonly count: number }
-export interface PbrExtension { readonly name: string }`;
-
-    // Four of the five, and their consumer spellings, all emit as dual-sentinel variants.
-    const four = `${guards}
+export interface PbrExtension { readonly name: string }
 export interface GlScene3DGuards {
-  readonly colorSpaceGuard?: (() => void) | null;
-  readonly deformGuard?: ((mesh: Mesh) => void) | null;
-  readonly forwardLightSelectionGuard?: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
-  readonly pbrExtensionGuard?: ((extensions: readonly PbrExtension[]) => void) | null;
+  readonly colorSpaceGuard${optional ? '?' : ''}: (() => void) | null;
+  readonly customShaderGuard${optional ? '?' : ''}: ((state: GlRenderState, program: WebGLProgram, shaderKey: string) => void) | null;
+  readonly deformGuard${optional ? '?' : ''}: ((mesh: Mesh) => void) | null;
+  readonly forwardLightSelectionGuard${optional ? '?' : ''}: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+  readonly pbrExtensionGuard${optional ? '?' : ''}: ((extensions: readonly PbrExtension[]) => void) | null;
 }`;
-    const emitted = emitIrModuleCpp(lower('gl-scene3d-guards.ts', four).module, {
+    const current = lower('gl-scene3d-guards-current.ts', declarations(true));
+    const portable = lower('gl-scene3d-guards-portable.ts', declarations(false));
+    const externalBindings = {
+      bindings: [
+        {
+          headers: ['host/webgl.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'WebGLProgram',
+          space: 'type' as const,
+          targetName: 'host::WebGlProgram',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const currentOutput = emitIrModuleCpp(current.module, { externalBindings, runtimeProfile: 'flight-cpp' }).contents;
+    const portableOutput = emitIrModuleCpp(portable.module, {
+      externalBindings,
       runtimeProfile: 'flight-cpp',
     }).contents;
-    expect(emitted).toContain('std::variant<std::function<void()>, flight::Null, flight::Undefined>');
-    expect(emitted).toContain('color_space_guard');
+    const carriers = new Map([
+      ['color_space_guard', 'std::function<void()>'],
+      ['custom_shader_guard', 'std::function<void(flight::Ref<GlRenderState>, host::WebGlProgram, flight::String)>'],
+      ['deform_guard', 'std::function<void(flight::Ref<Mesh>)>'],
+      [
+        'forward_light_selection_guard',
+        'std::function<void(flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Scene3DLightsLike>>>>)>',
+      ],
+      ['pbr_extension_guard', 'std::function<void(flight::Array<flight::Ref<PbrExtension>>)>'],
+    ]);
 
-    expect(
-      emitIrModuleCpp(
-        lower(
-          'gl-scene3d-consumers.ts',
-          `${four}
-export function use(r: GlScene3DGuards, lights: Scene3DLightsLike, mesh: Mesh): void {
-  r.colorSpaceGuard?.();
-  if (r.forwardLightSelectionGuard != null) r.forwardLightSelectionGuard(lights);
-  r.deformGuard?.(mesh);
-}`,
-        ).module,
-        { runtimeProfile: 'flight-cpp' },
-      ).contents,
-    ).toContain('holds_alternative<flight::Null>');
+    expect(current.diagnostics).toEqual([]);
+    expect(portable.diagnostics).toEqual([]);
+    for (const [field, callable] of carriers) {
+      expect(currentOutput).toContain(`std::variant<${callable}, flight::Null, flight::Undefined> ${field}`);
+      expect(portableOutput).toContain(`std::optional<${callable}> ${field};`);
+    }
+    for (const output of [currentOutput, portableOutput]) {
+      expect(output).not.toContain('flight::Any');
+      expect(output).not.toContain('static_cast');
+      expect(output).not.toContain('reinterpret_cast');
+    }
 
-    // The fifth guard is the same shape, and the SAME SHAPE with a representable parameter lowers -- so the
-    // guard is not what refuses. What refuses is the host handle in its parameter list, and the rule that
-    // answers is the binding lane's, not a guard rule.
-    expect(
-      emitIrModuleCpp(
-        lower(
-          'gl-custom-shader-guard-representable.ts',
-          `${guards}
-export interface WithShaderKey { readonly customShaderGuard?: ((state: GlRenderState, shaderKey: string) => void) | null }`,
-        ).module,
-        { runtimeProfile: 'flight-cpp' },
-      ).contents,
-    ).toContain('custom_shader_guard');
-
+    // The only target-runtime dependency in the family comes from the custom-shader callback parameter.
+    // Without that exact host binding both the current and recommended source shapes refuse in the binding
+    // lane; the source sentinel rewrite neither fixes nor creates that separate target obligation.
     const hostHandle = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(
-        lower(
-          'gl-custom-shader-guard-host-handle.ts',
-          `${guards}
-declare const program: WebGLProgram;
-export interface WithHostHandle {
-  readonly customShaderGuard?: ((state: GlRenderState, program: WebGLProgram, shaderKey: string) => void) | null;
-}
-export function use(r: WithHostHandle, state: GlRenderState): void { r.customShaderGuard?.(state, program, 'key'); }`,
-        ).module,
-        { runtimeProfile: 'flight-cpp' },
-      ),
+      emitIrModuleCpp(portable.module, { runtimeProfile: 'flight-cpp' }),
     );
     expect(hostHandle.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
     expect(hostHandle.classification).toBe('target-runtime');

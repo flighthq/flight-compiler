@@ -1621,6 +1621,93 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps all five GL Scene3D diagnostic guard findings source-owned through strict check mode', () => {
+    const source = createMemoryWorkspaceSource(createGlScene3DRuntimeWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedFields = [
+      'colorSpaceGuard',
+      'customShaderGuard',
+      'deformGuard',
+      'forwardLightSelectionGuard',
+      'pbrExtensionGuard',
+    ];
+    const expectedSubjects = expectedFields.map((field) => `interface:GlScene3DRuntime/property:${field}`);
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(sourcePortability.findings).toHaveLength(5);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 5,
+      directOccurrences: 5,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createGlScene3DRuntimeWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps all five GlRenderState runtime absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createGlRenderStateWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -6774,6 +6861,31 @@ export interface GlMeshProgram {
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
     '/flight/packages/types/src/GlMeshProgram.ts': declaration,
     '/flight/packages/types/src/index.ts': `export type { GlMeshProgram } from './GlMeshProgram.js';`,
+  };
+}
+
+function createGlScene3DRuntimeWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const optional = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/GlScene3DRuntime.ts': `export interface GlRenderState { readonly kind: string }
+export interface Mesh { readonly id: number }
+export interface Scene3DLightsLike { readonly count: number }
+export interface PbrExtension { readonly name: string }
+export interface GlScene3DRuntime {
+  colorSpaceGuard${optional}: (() => void) | null;
+  customShaderGuard${optional}: ((state: GlRenderState, program: WebGLProgram, shaderKey: string) => void) | null;
+  deformGuard${optional}: ((mesh: Mesh) => void) | null;
+  forwardLightSelectionGuard${optional}: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+  pbrExtensionGuard${optional}: ((extensions: readonly PbrExtension[]) => void) | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  GlRenderState,
+  GlScene3DRuntime,
+  Mesh,
+  PbrExtension,
+  Scene3DLightsLike,
+} from './GlScene3DRuntime.js';`,
   };
 }
 

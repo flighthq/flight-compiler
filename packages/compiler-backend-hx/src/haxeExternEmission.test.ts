@@ -93,6 +93,49 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(findFile(files, 'flight/_js/PortableSkin.hx').contents).not.toContain('@:optional var skeletonRoot');
   });
 
+  it('removes only optionality from the five nullable GL Scene3D diagnostic guard carriers', () => {
+    const module = lower(
+      '@flighthq/types',
+      'GlScene3DRuntime.ts',
+      `export interface GlRenderState { readonly kind: string }
+       export interface Mesh { readonly id: number }
+       export interface Scene3DLightsLike { readonly count: number }
+       export interface PbrExtension { readonly name: string }
+       export interface CurrentGlScene3DRuntime {
+         colorSpaceGuard?: (() => void) | null;
+         customShaderGuard?: ((state: GlRenderState, program: WebGLProgram, shaderKey: string) => void) | null;
+         deformGuard?: ((mesh: Mesh) => void) | null;
+         forwardLightSelectionGuard?: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+         pbrExtensionGuard?: ((extensions: readonly PbrExtension[]) => void) | null;
+       }
+       export interface PortableGlScene3DRuntime {
+         colorSpaceGuard: (() => void) | null;
+         customShaderGuard: ((state: GlRenderState, program: WebGLProgram, shaderKey: string) => void) | null;
+         deformGuard: ((mesh: Mesh) => void) | null;
+         forwardLightSelectionGuard: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+         pbrExtensionGuard: ((extensions: readonly PbrExtension[]) => void) | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentGlScene3DRuntime.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableGlScene3DRuntime.hx').contents;
+    const carriers = new Map([
+      ['colorSpaceGuard', '()->Void'],
+      ['customShaderGuard', '(flight.GlRenderState, js.html.webgl.Program, String)->Void'],
+      ['deformGuard', '(flight.Mesh)->Void'],
+      ['forwardLightSelectionGuard', '(flight.Scene3DLightsLike)->Void'],
+      ['pbrExtensionGuard', '(Array<flight.PbrExtension>)->Void'],
+    ]);
+
+    for (const [field, callable] of carriers) {
+      expect(current).toContain(`@:optional var ${field}:Null<${callable}>;`);
+      expect(portable).toContain(`var ${field}:Null<${callable}>;`);
+      expect(portable).not.toContain(`@:optional var ${field}`);
+    }
+    expect(current).not.toContain('Dynamic');
+    expect(portable).not.toContain('Dynamic');
+  });
+
   it('removes null from all six optional anchor-layout constraints without changing their number carrier', () => {
     const constraints = ['bottom', 'height', 'left', 'right', 'top', 'width'] as const;
     const fields = constraints.map((name) => `${name}?: number`).join('; ');

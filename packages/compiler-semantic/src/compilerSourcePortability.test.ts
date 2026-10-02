@@ -9204,21 +9204,50 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('the represented per-state runtime has one disabled state');
       if (backend === 'GL') {
         expect(finding.message).toContain(glFlows.get(field)!);
-        expect(finding.message).toContain('creates one runtime per GlRenderState');
+        expect(finding.message).toContain('stores one runtime in a WeakMap under the exact GlRenderState');
+        expect(finding.message).toContain(
+          'a derived state gets its own guard slots even when it shares the context-tier mesh upload cache',
+        );
         expect(finding.message).toContain(
           'currently omits colorSpaceGuard, customShaderGuard, deformGuard, and forwardLightSelectionGuard while assigning pbrExtensionGuard: null',
         );
-        expect(finding.message).toContain('Every enable function overwrites its exact slot');
-        expect(finding.message).toContain('no path clears a guard back to either absence spelling');
+        expect(finding.message).toContain(
+          'first four enable functions assign module-level diagnostic functions whose identities are reused across enabled states',
+        );
+        expect(finding.message).toContain('module-level WeakSet to warn once per WebGLProgram');
+        expect(finding.message).toContain(
+          'every call replaces the slot with a fresh closure that captures the exact GlRenderState',
+        );
+        expect(finding.message).toContain('Re-enabling any guard overwrites its exact slot');
+        expect(finding.message).toContain('no disable path clears a guard back to either absence spelling');
+        expect(finding.message).toContain(
+          'releases scene GPU resources and clears draw collections but neither clears these five slots nor removes the runtime from its WeakMap',
+        );
+        expect(finding.message).toContain('callbacks own no GPU resource');
+        expect(finding.message).toContain('remain reachable with that state runtime until garbage collection');
         expect(finding.message).toContain('pbrExtensionGuard initializer is already semantically required');
         expect(finding.message).toContain('an omitted undefined slot would incorrectly report enabled');
+        expect(finding.message).toContain('the other four probes use != null and currently collapse both spellings');
         expect(finding.message).toContain(
           'Make all five guard slots required fields with their exact callable type | null',
         );
-        expect(finding.message).toContain('initialize all five to null in the runtime object literal');
-        expect(finding.message).toContain('project the sole exact callable alternative');
-        expect(finding.message).toContain('assignments, probes, optional calls, and the guarded local call');
-        expect(finding.message).toContain("does not choose the source contract's disabled sentinel");
+        expect(finding.message).toContain('Add explicit null initializers for the first four');
+        expect(finding.message).toContain('preserve pbrExtensionGuard: null while removing only its optional marker');
+        expect(finding.message).toContain('do not rewrite any slot as optional non-null');
+        expect(finding.message).toContain(
+          'Haxe externs currently expose each slot as @:optional var field:Null<exact-callable>',
+        );
+        expect(finding.message).toContain('removes only @:optional and retains Null<exact-callable>');
+        expect(finding.message).toContain(
+          'C++ currently carries each slot as variant<function<exact-signature>, Null, Undefined>',
+        );
+        expect(finding.message).toContain('rewrite yields optional<function<exact-signature>>');
+        expect(finding.message).toContain('truthful external type binding for WebGLProgram');
+        expect(finding.message).toContain('other four signatures need no host-handle binding');
+        expect(finding.message).toContain("do not choose the source contract's disabled sentinel");
+        expect(finding.message).toContain('Do not whitelist the redundant live-runtime spelling');
+        expect(finding.message).toContain('fabricate or erase a WebGLProgram binding');
+        expect(finding.message).toContain('alter teardown, or add side storage');
       } else {
         if (field === 'customShaderGuard') {
           expect(finding.message).toContain('runWgpuCustomShaderGuards returns on == null when invoked directly');
@@ -9249,7 +9278,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('import or install a diagnostic guard');
       expect(finding.message).toContain('invoke or synthesize a callback');
       expect(finding.message).toContain('widen its callable signature');
-      expect(finding.message).toContain('change the render-state or runtime owner, or add side storage');
+      expect(finding.message).toContain('change the render-state or runtime owner');
+      expect(finding.message).toContain('add side storage');
     }
   });
 
