@@ -271,18 +271,21 @@ function getScene3DRenderProxyMixedAbsencePropertyMessage(
   subject: string,
 ): string | undefined {
   const name = getNodeName(node.name);
+  const isExactSlot =
+    (name === 'colorMatrix' && isOptionalNullableReadonlyNumberArrayProperty(node)) ||
+    (name === 'colorScaleBias' && isOptionalNullableReadonlyNamedTypeProperty(node, 'ColorScaleBias')) ||
+    ((name === 'instanceColors' ||
+      name === 'instanceMatrices' ||
+      name === 'jointMatrices' ||
+      name === 'normalMatrices') &&
+      isOptionalNullableReadonlyNamedTypeProperty(node, 'Float32Array'));
   if (
     ts.isInterfaceDeclaration(node.parent) &&
     node.parent.name.text === 'Scene3DRenderProxy' &&
     normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/Scene3DRenderProxy.ts') &&
-    (name === 'colorMatrix' ||
-      name === 'colorScaleBias' ||
-      name === 'instanceColors' ||
-      name === 'instanceMatrices' ||
-      name === 'jointMatrices' ||
-      name === 'normalMatrices')
+    isExactSlot
   ) {
-    return `${subject} gives the reused per-draw proxy slot ${name} both an omitted state and explicit null, but the current renderers have one inactive state. GL and WebGPU overwrite colorMatrix, colorScaleBias, jointMatrices, and normalMatrices with a value or null on every draw, and each writes instanceMatrices for an instanced draw before clearing it to null afterward. GL likewise writes and clears its separate instanceColors slot; WebGPU instead packs instance colors beside matrices in one instance buffer and never reads that slot. Shader preparation treats null and undefined identically with nullish checks before binding or uploading. Make all six colorMatrix, colorScaleBias, instanceColors, instanceMatrices, jointMatrices, and normalMatrices slots required nullable fields on the internal Scene3DRenderProxy scratch record, initialize all six to null, and overwrite or clear every backend-owned slot before each draw so a reused proxy cannot retain prior-draw state. If compatibility inputs may omit a slot, normalize them once at the boundary into that required internal record. The compiler will not choose between two equivalent absence sentinels, infer a palette or color default, synthesize presence bits, retain stale state, copy or materialize a buffer, or add side storage.`;
+    return `${subject} gives the reused per-draw proxy slot ${name} both an omitted state and explicit null, but current Flight has one inactive state for each of these six slots. Production owns three module-local scratch records and never clones them: the GL and WebGPU forward proxies are exposed only for one renderer draw call, while the WebGPU shadow proxy is passed only to writeWgpuDrawUniform once per caster; renderer contracts forbid retaining them. Both forward producers assign colorMatrix, colorScaleBias, jointMatrices, and normalMatrices to a value or null on every regular draw. Their instanced phases assign the color slots and instanceMatrices, clear both skin palettes, then clear instanceCount and instanceMatrices afterward; GL also assigns and clears its separate instanceColors, while WebGPU packs instance colors beside matrices in one buffer and never reads instanceColors. The WebGPU shadow producer assigns jointMatrices to a palette or null for every caster and currently leaves the other five optional slots omitted; bind-group selection consumes that same local palette, while writeWgpuDrawUniform reads only the nullish color slots from this group. GL drawGlMeshSubset checks every consumed color, skin, matrix, and color-instance slot with != null; WebGPU drawWgpuMeshSubset normalizes the two skin palettes with ?? null and explicitly accepts null or undefined instanceMatrices, while writeWgpuDrawUniform uses nullish color checks. Neither backend distinguishes omission from null. Make all six colorMatrix, colorScaleBias, instanceColors, instanceMatrices, jointMatrices, and normalMatrices slots required nullable fields on the internal Scene3DRenderProxy scratch contract, initialize all six to null in all three scratch records, preserve the authoritative per-draw writes and post-instancing clears, and keep each existing buffer owner rather than copying it. If compatibility callers must omit a slot, give that input a separate shape and normalize it once before the scratch record reaches a renderer. Do not whitelist the redundant live-storage spelling. The compiler will not choose or collapse an absence sentinel, infer a palette or color default, synthesize presence bits, retain stale state, clone a proxy, copy or materialize a buffer, rewrite draw ordering or shader selection, or add side storage.`;
   }
   return undefined;
 }

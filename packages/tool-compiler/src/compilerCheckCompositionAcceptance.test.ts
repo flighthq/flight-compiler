@@ -606,12 +606,23 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(
       compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
     ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
       expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
     );
     expect(
       sourcePortability.findings.every(({ message }) =>
-        message.includes('WebGPU instead packs instance colors beside matrices in one instance buffer'),
+        message.includes('Production owns three module-local scratch records and never clones them'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('The WebGPU shadow producer assigns jointMatrices to a palette or null for every caster'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Do not whitelist the redundant live-storage spelling'),
       ),
     ).toBe(true);
     expect(
@@ -641,7 +652,10 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
   });
 
   it('keeps the three Mesh deformation absence findings source-owned through check mode', () => {

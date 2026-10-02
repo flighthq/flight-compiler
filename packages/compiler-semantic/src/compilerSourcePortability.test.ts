@@ -5718,32 +5718,74 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain(
         `gives the reused per-draw proxy slot ${name} both an omitted state and explicit null`,
       );
-      expect(finding.message).toContain('the current renderers have one inactive state');
+      expect(finding.message).toContain('current Flight has one inactive state for each of these six slots');
+      expect(finding.message).toContain('Production owns three module-local scratch records and never clones them');
       expect(finding.message).toContain(
-        'GL and WebGPU overwrite colorMatrix, colorScaleBias, jointMatrices, and normalMatrices with a value or null on every draw',
+        'the GL and WebGPU forward proxies are exposed only for one renderer draw call',
       );
       expect(finding.message).toContain(
-        'each writes instanceMatrices for an instanced draw before clearing it to null afterward',
-      );
-      expect(finding.message).toContain('GL likewise writes and clears its separate instanceColors slot');
-      expect(finding.message).toContain(
-        'WebGPU instead packs instance colors beside matrices in one instance buffer and never reads that slot',
+        'the WebGPU shadow proxy is passed only to writeWgpuDrawUniform once per caster; renderer contracts forbid retaining them',
       );
       expect(finding.message).toContain(
-        'Shader preparation treats null and undefined identically with nullish checks before binding or uploading',
+        'Both forward producers assign colorMatrix, colorScaleBias, jointMatrices, and normalMatrices to a value or null on every regular draw',
+      );
+      expect(finding.message).toContain('Their instanced phases assign the color slots and instanceMatrices');
+      expect(finding.message).toContain('then clear instanceCount and instanceMatrices afterward');
+      expect(finding.message).toContain('GL also assigns and clears its separate instanceColors');
+      expect(finding.message).toContain(
+        'WebGPU packs instance colors beside matrices in one buffer and never reads instanceColors',
+      );
+      expect(finding.message).toContain(
+        'The WebGPU shadow producer assigns jointMatrices to a palette or null for every caster and currently leaves the other five optional slots omitted',
+      );
+      expect(finding.message).toContain(
+        'GL drawGlMeshSubset checks every consumed color, skin, matrix, and color-instance slot with != null',
+      );
+      expect(finding.message).toContain(
+        'WebGPU drawWgpuMeshSubset normalizes the two skin palettes with ?? null and explicitly accepts null or undefined instanceMatrices',
       );
       expect(finding.message).toContain(
         'Make all six colorMatrix, colorScaleBias, instanceColors, instanceMatrices, jointMatrices, and normalMatrices slots required nullable fields',
       );
-      expect(finding.message).toContain(
-        'initialize all six to null, and overwrite or clear every backend-owned slot before each draw',
-      );
-      expect(finding.message).toContain('a reused proxy cannot retain prior-draw state');
-      expect(finding.message).toContain('normalize them once at the boundary into that required internal record');
-      expect(finding.message).toContain('will not choose between two equivalent absence sentinels');
+      expect(finding.message).toContain('initialize all six to null in all three scratch records');
+      expect(finding.message).toContain('preserve the authoritative per-draw writes and post-instancing clears');
+      expect(finding.message).toContain('give that input a separate shape and normalize it once');
+      expect(finding.message).toContain('Do not whitelist the redundant live-storage spelling');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('infer a palette or color default');
-      expect(finding.message).toContain('retain stale state, copy or materialize a buffer, or add side storage');
+      expect(finding.message).toContain('retain stale state, clone a proxy, copy or materialize a buffer');
     }
+  });
+
+  it('requires the exact Scene3D render-proxy slot shapes for specialized guidance', () => {
+    const source = input(
+      'packages/types/src/Scene3DRenderProxy.ts',
+      `interface OtherBias { readonly redScale: number }
+       interface Scene3DRenderProxy {
+         colorMatrix?: readonly string[] | null;
+         colorScaleBias?: Readonly<OtherBias> | null;
+         instanceColors?: Float32Array | null;
+         instanceMatrices?: Readonly<Uint32Array> | null;
+         jointMatrices?: Readonly<Float32Array> | string | null;
+         normalMatrices?: readonly number[] | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['colorMatrix', 'colorScaleBias', 'instanceColors', 'instanceMatrices', 'jointMatrices', 'normalMatrices'].map(
+        (name) => ({
+          rule: 'mixed-absence',
+          subject: `interface:Scene3DRenderProxy/property:${name}`,
+        }),
+      ),
+    );
+    expect(
+      findings.every(({ message }) =>
+        message.endsWith('choose one absence representation or make all three states explicit.'),
+      ),
+    ).toBe(true);
+    expect(findings.every(({ message }) => !message.includes('module-local scratch records'))).toBe(true);
   });
 
   it('keeps unrelated optional-nullable render-proxy properties on generic mixed-absence guidance', () => {
