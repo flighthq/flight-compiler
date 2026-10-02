@@ -12010,6 +12010,78 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('separates a guard member from the host handle one of its parameters names', () => {
+    // GlScene3DRuntime carries five opt-in guards, and ALL FIVE are the same mixed-absence family: an
+    // optional callable beside null. Four of them lower on their own; the fifth names a host handle in its
+    // parameter list, and the refusal that produces belongs to the host-symbol binding lane rather than to
+    // the guard shape -- which is the separation this control exists to make.
+    const guards = `export interface GlRenderState { readonly kind: string }
+export interface Mesh { readonly id: number }
+export interface Scene3DLightsLike { readonly count: number }
+export interface PbrExtension { readonly name: string }`;
+
+    // Four of the five, and their consumer spellings, all emit as dual-sentinel variants.
+    const four = `${guards}
+export interface GlScene3DGuards {
+  readonly colorSpaceGuard?: (() => void) | null;
+  readonly deformGuard?: ((mesh: Mesh) => void) | null;
+  readonly forwardLightSelectionGuard?: ((lights: Readonly<Scene3DLightsLike>) => void) | null;
+  readonly pbrExtensionGuard?: ((extensions: readonly PbrExtension[]) => void) | null;
+}`;
+    const emitted = emitIrModuleCpp(lower('gl-scene3d-guards.ts', four).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    expect(emitted).toContain('std::variant<std::function<void()>, flight::Null, flight::Undefined>');
+    expect(emitted).toContain('color_space_guard');
+
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'gl-scene3d-consumers.ts',
+          `${four}
+export function use(r: GlScene3DGuards, lights: Scene3DLightsLike, mesh: Mesh): void {
+  r.colorSpaceGuard?.();
+  if (r.forwardLightSelectionGuard != null) r.forwardLightSelectionGuard(lights);
+  r.deformGuard?.(mesh);
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('holds_alternative<flight::Null>');
+
+    // The fifth guard is the same shape, and the SAME SHAPE with a representable parameter lowers -- so the
+    // guard is not what refuses. What refuses is the host handle in its parameter list, and the rule that
+    // answers is the binding lane's, not a guard rule.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'gl-custom-shader-guard-representable.ts',
+          `${guards}
+export interface WithShaderKey { readonly customShaderGuard?: ((state: GlRenderState, shaderKey: string) => void) | null }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('custom_shader_guard');
+
+    const hostHandle = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'gl-custom-shader-guard-host-handle.ts',
+          `${guards}
+declare const program: WebGLProgram;
+export interface WithHostHandle {
+  readonly customShaderGuard?: ((state: GlRenderState, program: WebGLProgram, shaderKey: string) => void) | null;
+}
+export function use(r: WithHostHandle, state: GlRenderState): void { r.customShaderGuard?.(state, program, 'key'); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(hostHandle.rule).toBe('cpp-runtime-external-symbol-binding-incomplete');
+    expect(hostHandle.classification).toBe('target-runtime');
+    expect(hostHandle.message).toContain('WebGLProgram');
+  });
+
   it('separates a mixed-absence guard member from an opaque adapter member', () => {
     // WgpuScene3DRuntime carries both families side by side, which is what the lane asked to separate. They
     // render differently and behave differently, so the control pins both rather than describing them: an
