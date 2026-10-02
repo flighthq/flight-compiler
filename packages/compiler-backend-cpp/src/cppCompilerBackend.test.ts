@@ -13954,6 +13954,110 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // RenderProxy.ts mixed-absence finding, carried at RenderProxy.colorMatrix:
+  //   colorMatrix?: readonly number[] | null;      -- optional (admits undefined) AND nullable (admits null)
+  // That is three retirement states, so the carrier is a dual-sentinel variant, and the optional's ABSENT
+  // state must initialise to `Undefined` rather than to `Null` or to an empty array: in TypeScript an unset
+  // optional property reads as undefined. The declaration and every producer write are faithful, and the
+  // control pins the initialiser because that is the one a defaulted init could silently get wrong.
+  it('carries the mixed-absence optional as a dual-sentinel variant absent state', () => {
+    const contents = emitIrModuleCpp(
+      lower(
+        'render-proxy-color-matrix.ts',
+        `export interface RenderProxy {
+           colorMatrix?: readonly number[] | null;
+         }
+         export function set(proxy: RenderProxy, mode: number): void {
+           if (mode === 0) proxy.colorMatrix = [1, 0, 0, 0, 0, 0, 1];
+           else if (mode === 1) proxy.colorMatrix = null;
+           else proxy.colorMatrix = undefined;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // The absent state of an unset optional is Undefined, not Null and not an empty array.
+    expect(contents).toContain(
+      'std::variant<flight::Array<double>, flight::Null, flight::Undefined> color_matrix = std::variant<flight::Array<double>, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined};',
+    );
+    // Each producer writes the alternative its source names, and none of them collapses to another.
+    expect(contents).toContain('std::in_place_type<flight::Array<double>>');
+    expect(contents).toContain('std::in_place_type<flight::Null>, flight::null');
+    expect(contents).toContain('std::in_place_type<flight::Undefined>, flight::undefined');
+
+    // The required nullable form beside it stays a two-state optional, which is the contrast that shows the
+    // optional marker is what selects the three-state carrier.
+    expect(
+      emitIrModuleCpp(
+        lower('render-proxy-required-nullable.ts', `export interface P { colorMatrix: readonly number[] | null; }`)
+          .module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('std::optional<flight::Array<double>> color_matrix;');
+  });
+
+  // The consumer boundary for that carrier, which is NARROW: one nullish comparison of the member emits, and
+  // each comparison lowers to exactly the alternative it names. A second comparison of the same member in the
+  // same flow refuses -- the compiler cannot establish dual-sentinel evidence once the member expression has
+  // been narrowed once -- and the refusal is `compiler-restriction`, so the compiler owns it rather than the
+  // target. Truthiness emits. The working source pattern is pinned beside it: rebinding the member to a local
+  // first makes the identical logic emit faithfully, which is the answer to what a source contract can do
+  // about this today.
+  it('refuses a second nullish comparison of a dual-sentinel member and emits the rebound form', () => {
+    const declaration = `export interface RenderProxy { colorMatrix?: readonly number[] | null; }`;
+
+    // One comparison: faithful, and it names exactly the alternative the source tests.
+    const single = emitIrModuleCpp(
+      lower(
+        'render-proxy-single-test.ts',
+        `${declaration}
+         export function isUnset(proxy: RenderProxy): boolean { return proxy.colorMatrix === undefined; }
+         export function isNull(proxy: RenderProxy): boolean { return proxy.colorMatrix === null; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(single).toContain('std::holds_alternative<flight::Undefined>(proxy->color_matrix)');
+    expect(single).toContain('std::holds_alternative<flight::Null>(proxy->color_matrix)');
+
+    // Two comparisons of the member in one flow: refused, as a compiler restriction rather than a target gap.
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'render-proxy-two-tests.ts',
+          `${declaration}
+           export function read(proxy: RenderProxy): number {
+             if (proxy.colorMatrix === undefined) return 0;
+             if (proxy.colorMatrix === null) return 1;
+             return proxy.colorMatrix.length;
+           }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(failure.rule).toBe('cpp-dual-sentinel-comparison-unrepresented');
+    expect(failure.classification).toBe('compiler-restriction');
+    expect(failure.message).toContain(
+      'nullish comparison admitting null and undefined requires dual-sentinel union evidence',
+    );
+
+    // The same logic through a local: emitted, with each alternative handled in order.
+    const rebound = emitIrModuleCpp(
+      lower(
+        'render-proxy-rebound.ts',
+        `${declaration}
+         export function read(proxy: RenderProxy): number {
+           const matrix = proxy.colorMatrix;
+           if (matrix === undefined) return 0;
+           if (matrix === null) return 1;
+           return matrix.length;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(rebound).toContain('std::holds_alternative<flight::Undefined>(optional_property)');
+    expect(rebound).toContain('std::holds_alternative<flight::Null>(optional_property)');
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
