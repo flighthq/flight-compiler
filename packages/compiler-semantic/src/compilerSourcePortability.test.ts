@@ -2047,7 +2047,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(alias?.message).toContain('every sink and LogSignals receive the raw LogEntry');
     expect(alias?.message).toContain('before registered kind serializers and redaction run inside the JSON formatter');
     expect(alias?.message).toContain('portable scalars, arrays, and string-keyed records');
-    expect(alias?.message).toContain('serializer results, and serializeLogError');
+    expect(alias?.message).toContain('serializer results, serializeLogError, and formatter and redaction helpers');
+    expect(alias?.message).toContain('formatter-only transforms over record values already inside LogFieldValue');
+    expect(alias?.message).toContain('inputs and outputs as LogFields');
+    expect(alias?.message).toContain('do not use them to admit live objects');
+    expect(alias?.message).toContain('before LogEntry construction');
     for (const finding of report.findings.filter(({ subject }) => subject.endsWith('/property:fields'))) {
       expect(finding.message).toContain('merges them into LogData before LogEntry emission');
       expect(finding.message).toContain(
