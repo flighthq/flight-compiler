@@ -13248,6 +13248,42 @@ export function test(r: M3): number { if (r.cursorBackend !== null) return 1; re
     ).toContain('holds_alternative<flight::Null>');
   });
 
+  it('pins BitmapText construction omission against nullable live layout values', () => {
+    // The portable construction inputs and required-nullable live cells each have one source-level
+    // absence, so they intentionally share std::optional storage even though one means omitted and the
+    // other means disabled. Only the current optional-nullable inputs need both explicit sentinels.
+    const emitted = emitIrModuleCpp(
+      lower(
+        'BitmapText.ts',
+        `export interface CurrentBitmapTextOptions {
+           maxLines?: number | null;
+           wrapWidth?: number | null;
+         }
+         export interface PortableBitmapTextOptions {
+           maxLines?: number;
+           wrapWidth?: number;
+         }
+         export interface BitmapTextData {
+           maxLines: number | null;
+           wrapWidth: number | null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain(
+      'std::variant<double, flight::Null, flight::Undefined> max_lines = std::variant<double, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined};',
+    );
+    expect(emitted).toContain(
+      'std::variant<double, flight::Null, flight::Undefined> wrap_width = std::variant<double, flight::Null, flight::Undefined>{std::in_place_type<flight::Undefined>, flight::undefined};',
+    );
+    expect(emitted.match(/std::optional<double> max_lines;/gu)).toHaveLength(2);
+    expect(emitted.match(/std::optional<double> wrap_width;/gu)).toHaveLength(2);
+    expect(emitted).not.toContain('flight::Any');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('reinterpret_cast');
+  });
+
   it('separates MeshGeometry index input absence from required nullable live storage', () => {
     // The two typed-array widths are runtime-native value alternatives. Required null and optional
     // undefined each need one outer absence, while the current optional-nullable construction input needs

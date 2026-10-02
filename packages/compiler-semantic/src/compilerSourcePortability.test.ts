@@ -7689,10 +7689,16 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     for (const [index, finding] of findings.entries()) {
       const name = ['maxLines', 'wrapWidth'][index];
+      const cppName = ['max_lines', 'wrap_width'][index];
       expect(finding.message).toContain(
         `gives the construction-only BitmapText option ${name} both omission and explicit null`,
       );
       expect(finding.message).toContain('BitmapTextOptions has one production consumer and one not-supplied meaning');
+      expect(finding.message).toContain(
+        name === 'maxLines'
+          ? 'null means unlimited lines, while a present number participates in the line-limit comparisons that discard later lines, mark the layout truncated, and gate an ellipsis on the final visible line'
+          : 'null disables word-boundary wrapping and makes the widest laid-out line the alignment extent, while a present number controls line breaks, center and right alignment, justification spacing, and ellipsis trimming',
+      );
       expect(finding.message).toContain(
         'createBitmapText allocates fresh BitmapTextData through createBitmapTextData and initializeBitmapTextData',
       );
@@ -7737,8 +7743,20 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('will preserve every authored number and live null');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('Zero remains a present limit or width');
+      expect(finding.message).toContain(`@:optional var ${name}:Null<Float>;`);
+      expect(finding.message).toContain(`@:optional var ${name}:Float;`);
+      expect(finding.message).toContain(`var ${name}:Null<Float>;`);
+      expect(finding.message).toContain(`std::variant<double, flight::Null, flight::Undefined> ${cppName}`);
+      expect(finding.message).toContain(`std::optional<double> ${cppName}`);
+      expect(finding.message).toContain(
+        'the shared one-sentinel carrier does not merge their distinct source meanings',
+      );
+      expect(finding.message).toContain(
+        'Neither backend needs Dynamic, flight::Any, a cast, reinterpretation, or an external binding',
+      );
       expect(finding.message).toContain('rewrite existing BitmapTextData, call a setter, re-layout text');
       expect(finding.message).toContain('change wrapping, truncation, ellipsis, alignment, or justification');
+      expect(finding.message).toContain('route a value through Dynamic or Any, cast or reinterpret it');
       expect(finding.message).toContain('or add side storage');
     }
   });

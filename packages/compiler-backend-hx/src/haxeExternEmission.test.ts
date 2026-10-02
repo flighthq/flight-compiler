@@ -144,6 +144,38 @@ describe('emitIrModuleHaxeExtern', () => {
     }
   });
 
+  it('separates BitmapText construction omission from nullable live layout values', () => {
+    const module = lower(
+      '@flighthq/types',
+      'BitmapText.ts',
+      `export interface CurrentBitmapTextOptions {
+         maxLines?: number | null;
+         wrapWidth?: number | null;
+       }
+       export interface PortableBitmapTextOptions {
+         maxLines?: number;
+         wrapWidth?: number;
+       }
+       export interface BitmapTextData {
+         maxLines: number | null;
+         wrapWidth: number | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentBitmapTextOptions.hx').contents;
+    const live = findFile(files, 'flight/_js/BitmapTextData.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableBitmapTextOptions.hx').contents;
+
+    for (const field of ['maxLines', 'wrapWidth']) {
+      expect(current).toContain(`@:optional var ${field}:Null<Float>;`);
+      expect(portable).toContain(`@:optional var ${field}:Float;`);
+      expect(portable).not.toContain(`@:optional var ${field}:Null<Float>;`);
+      expect(live).toContain(`var ${field}:Null<Float>;`);
+      expect(live).not.toContain(`@:optional var ${field}`);
+    }
+    expect(current + live + portable).not.toContain('Dynamic');
+  });
+
   it('separates the current Skin root sentinels from required-nullable live storage', () => {
     const module = lower(
       '@flighthq/types',

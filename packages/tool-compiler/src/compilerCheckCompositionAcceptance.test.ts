@@ -5112,6 +5112,23 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
         ),
       ),
     ).toBe(true);
+    for (const [index, finding] of sourcePortability.findings.entries()) {
+      const name = ['maxLines', 'wrapWidth'][index];
+      const cppName = ['max_lines', 'wrap_width'][index];
+      expect(finding?.message).toContain(
+        name === 'maxLines'
+          ? 'null means unlimited lines, while a present number participates in the line-limit comparisons that discard later lines, mark the layout truncated, and gate an ellipsis on the final visible line'
+          : 'null disables word-boundary wrapping and makes the widest laid-out line the alignment extent, while a present number controls line breaks, center and right alignment, justification spacing, and ellipsis trimming',
+      );
+      expect(finding?.message).toContain(`@:optional var ${name}:Null<Float>;`);
+      expect(finding?.message).toContain(`@:optional var ${name}:Float;`);
+      expect(finding?.message).toContain(`var ${name}:Null<Float>;`);
+      expect(finding?.message).toContain(`std::variant<double, flight::Null, flight::Undefined> ${cppName}`);
+      expect(finding?.message).toContain(`std::optional<double> ${cppName}`);
+      expect(finding?.message).toContain(
+        'Neither backend needs Dynamic, flight::Any, a cast, reinterpretation, or an external binding',
+      );
+    }
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
       sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
