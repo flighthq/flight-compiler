@@ -141,6 +141,11 @@ export interface CppCompilerExternalBindingRecordConversion {
 export interface CppCompilerExternalBinding {
   /** The one source sentinel represented by an absent `callResultType` carrier. */
   readonly callResultAbsence?: 'null' | 'undefined' | undefined;
+  /**
+   * Exact target carrier for direct calls and retained callable utility projections. A utility
+   * projection that the TypeScript checker resolves to a named ambient type still requires that
+   * type's exact type-space binding.
+   */
   readonly callResultType?: string | undefined;
   readonly construction?: CppCompilerExternalBindingConstruction | undefined;
   readonly headers: readonly string[];
