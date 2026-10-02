@@ -348,6 +348,22 @@ function getSlot2DMixedAbsencePropertyMessage(node: ts.PropertySignature, subjec
   return undefined;
 }
 
+function getMeshGeometryOptionsMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'MeshGeometryOptions' ||
+    getNodeName(node.name) !== 'indices' ||
+    !isFlightTypesSource(node, 'MeshGeometryOptions.ts') ||
+    !isOptionalNullableReadonlyArrayBufferViewUnionProperty(node, ['Uint16Array', 'Uint32Array'])
+  ) {
+    return undefined;
+  }
+  return `${subject} gives createMeshGeometry's construction-only index input both omission and explicit null, but the factory tests options.indices by truthiness and initializes the required MeshGeometry.indices field to null when no index collection is supplied. A present Uint16Array or Uint32Array, including an empty typed array, enters promoteIndices and is copied into a fresh typed array of the authored or vertex-count-required width; omission, explicit undefined, and null all produce the same non-indexed geometry instead. Production callers either omit indices, pass undefined after normalizing a nullable stored field, or pass a present typed array; no construction caller uses explicit null to request a distinct operation. Make MeshGeometryOptions.indices optional Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> without null, while keeping MeshGeometry.indices required nullable because mesh index operations and GL and WebGPU uploads use null as the live sequential/non-indexed state and later mutators may install or clear an index buffer. Preserve createMeshGeometry's authored promotion and copy, including the present-empty-array case. If an external compatibility boundary accepts explicit null, normalize it once to omission before calling createMeshGeometry; if a future update API must distinguish unchanged, cleared, and supplied indices, give it a separate named closed update state. Do not whitelist the redundant construction spelling. The compiler will preserve every authored state and typed-array element domain but will not choose or collapse an absence sentinel, infer an index buffer, substitute an empty collection, merge the Uint16Array and Uint32Array owners, allocate or copy backing storage beyond the authored promoteIndices path, route elements through Any, reinterpret or cast a collection, or add side storage.`;
+}
+
 function getMeshGeometryFromAttributesOptionsMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -607,6 +623,42 @@ function isOptionalNullableNamedAndReadonlyNumberArrayUnionProperty(
   return (
     hasReadonlyNumberArray && names.size === expectedNames.length && expectedNames.every((name) => names.has(name))
   );
+}
+
+function isOptionalNullableReadonlyArrayBufferViewUnionProperty(
+  node: ts.PropertySignature,
+  expectedNames: readonly string[],
+): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== expectedNames.length) return false;
+  const names = new Set<string>();
+  for (let type of present) {
+    while (ts.isParenthesizedTypeNode(type)) type = type.type;
+    if (
+      !ts.isTypeReferenceNode(type) ||
+      getNodeName(type.typeName) !== 'Readonly' ||
+      type.typeArguments?.length !== 1
+    ) {
+      return false;
+    }
+    let view = type.typeArguments[0]!;
+    while (ts.isParenthesizedTypeNode(view)) view = view.type;
+    if (!ts.isTypeReferenceNode(view) || view.typeArguments?.length !== 1) return false;
+    const name = getNodeName(view.typeName);
+    if (name === undefined || names.has(name)) return false;
+    let buffer = view.typeArguments[0]!;
+    while (ts.isParenthesizedTypeNode(buffer)) buffer = buffer.type;
+    if (
+      !ts.isTypeReferenceNode(buffer) ||
+      buffer.typeArguments !== undefined ||
+      getNodeName(buffer.typeName) !== 'ArrayBuffer'
+    ) {
+      return false;
+    }
+    names.add(name);
+  }
+  return names.size === expectedNames.length && expectedNames.every((name) => names.has(name));
 }
 
 function isOptionalNullableObjectWeakMapProperty(node: ts.PropertySignature): boolean {
@@ -1254,6 +1306,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (skeleton2D) return skeleton2D;
   const slot2D = getSlot2DMixedAbsencePropertyMessage(node, subject);
   if (slot2D) return slot2D;
+  const meshGeometryOptions = getMeshGeometryOptionsMixedAbsencePropertyMessage(node, subject);
+  if (meshGeometryOptions) return meshGeometryOptions;
   const meshGeometryFromAttributesOptions = getMeshGeometryFromAttributesOptionsMixedAbsencePropertyMessage(
     node,
     subject,

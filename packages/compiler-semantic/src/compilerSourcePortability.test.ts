@@ -4700,6 +4700,87 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains the one non-indexed state for mesh geometry construction options', () => {
+    const source = input(
+      'packages/types/src/MeshGeometryOptions.ts',
+      `interface MeshGeometryOptions {
+         indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> | null;
+         vertices: Float32Array<ArrayBuffer>;
+       }`,
+    );
+    const [finding] = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(finding).toMatchObject({
+      rule: 'mixed-absence',
+      subject: 'interface:MeshGeometryOptions/property:indices',
+    });
+    expect(finding?.message).toContain(
+      "gives createMeshGeometry's construction-only index input both omission and explicit null",
+    );
+    expect(finding?.message).toContain('tests options.indices by truthiness');
+    expect(finding?.message).toContain('required MeshGeometry.indices field to null');
+    expect(finding?.message).toContain('including an empty typed array');
+    expect(finding?.message).toContain('enters promoteIndices and is copied into a fresh typed array');
+    expect(finding?.message).toContain(
+      'omission, explicit undefined, and null all produce the same non-indexed geometry',
+    );
+    expect(finding?.message).toContain(
+      'Production callers either omit indices, pass undefined after normalizing a nullable stored field, or pass a present typed array',
+    );
+    expect(finding?.message).toContain(
+      'Make MeshGeometryOptions.indices optional Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> without null',
+    );
+    expect(finding?.message).toContain('keeping MeshGeometry.indices required nullable');
+    expect(finding?.message).toContain('mesh index operations and GL and WebGPU uploads');
+    expect(finding?.message).toContain('later mutators may install or clear an index buffer');
+    expect(finding?.message).toContain("Preserve createMeshGeometry's authored promotion and copy");
+    expect(finding?.message).toContain('normalize it once to omission before calling createMeshGeometry');
+    expect(finding?.message).toContain('unchanged, cleared, and supplied indices');
+    expect(finding?.message).toContain('Do not whitelist the redundant construction spelling');
+    expect(finding?.message).toContain('will not choose or collapse an absence sentinel');
+    expect(finding?.message).toContain('substitute an empty collection');
+    expect(finding?.message).toContain('merge the Uint16Array and Uint32Array owners');
+    expect(finding?.message).toContain('beyond the authored promoteIndices path');
+    expect(finding?.message).toContain('route elements through Any');
+    expect(finding?.message).toContain('or add side storage');
+  });
+
+  it('keeps mesh geometry option lookalikes generic and accepts the optional non-null contract', () => {
+    const portable = input(
+      'packages/types/src/MeshGeometryOptions.ts',
+      `interface MeshGeometryOptions {
+         indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>>;
+       }`,
+    );
+    const unrelated = [
+      input(
+        'packages/example/src/MeshGeometryOptions.ts',
+        `interface MeshGeometryOptions {
+           indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/MeshGeometryOptions.ts',
+        `interface OtherMeshGeometryOptions {
+           indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/MeshGeometryOptions.ts',
+        `interface MeshGeometryOptions {
+           data?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> | null;
+         }`,
+      ),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability([portable]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const [finding] = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(finding?.message).toContain('gives the optional collection input');
+      expect(finding?.message).not.toContain("createMeshGeometry's construction-only index input");
+    }
+  });
+
   it('explains the one not-supplied state for mesh geometry attribute construction inputs', () => {
     const source = input(
       'packages/types/src/MeshGeometryFromAttributesOptions.ts',

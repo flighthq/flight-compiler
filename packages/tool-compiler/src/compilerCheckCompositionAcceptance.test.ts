@@ -755,6 +755,76 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the MeshGeometryOptions index absence finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createMeshGeometryOptionsWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubject = 'interface:MeshGeometryOptions/property:indices';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'mixed-absence', subject: expectedSubject },
+    ]);
+    expect(sourcePortability.findings[0]?.message).toContain('tests options.indices by truthiness');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Make MeshGeometryOptions.indices optional Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>> without null',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('keeping MeshGeometry.indices required nullable');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant construction spelling');
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: expectedSubject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createMeshGeometryOptionsWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps the three notification open-domain findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createNotificationWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -1821,6 +1891,18 @@ function createMeshGeometryFromAttributesWorkspaceFiles(mixedAbsence: boolean): 
   uvs?: readonly number[]${nullable};
 }`,
     '/flight/packages/types/src/index.ts': `export type { MeshGeometryFromAttributesOptions } from './MeshGeometryFromAttributesOptions.js';`,
+  };
+}
+
+function createMeshGeometryOptionsWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/MeshGeometryOptions.ts': `export interface MeshGeometryOptions {
+  indices?: Readonly<Uint16Array<ArrayBuffer>> | Readonly<Uint32Array<ArrayBuffer>>${nullable};
+  vertices: Float32Array<ArrayBuffer>;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { MeshGeometryOptions } from './MeshGeometryOptions.js';`,
   };
 }
 
