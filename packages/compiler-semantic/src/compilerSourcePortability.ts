@@ -692,7 +692,7 @@ function getNormalizedStringOptionMixedAbsencePropertyMessage(
     guidance = {
       destination: 'Scene2DDocumentImportContext.mimeType',
       normalization:
-        'loadScene2DDocumentFromUrl writes mimeType: options?.mimeType ?? null into the required nullable Scene2DDocumentImportContext',
+        'loadScene2DDocumentFromUrl writes mimeType: options?.mimeType ?? null into the required nullable Scene2DDocumentImportContext; createScene2DDocumentFromBytes then passes that context unchanged to each registry matcher and the selected importer, while the Lottie, SVG, and SWF matchers compare only their exact MIME strings before falling back to byte sniffing',
       presentMeaning: 'MIME hint',
     };
   } else if (
@@ -709,6 +709,22 @@ function getNormalizedStringOptionMixedAbsencePropertyMessage(
   }
   if (field === undefined || guidance === undefined) return undefined;
   return `${subject} gives the normalized string input ${owner}.${field} both omission and explicit null, but ${guidance.normalization}. That ?? null boundary makes the two absence spellings identical while an empty string remains a present ${guidance.presentMeaning}. Keep ${guidance.destination} required nullable, but declare ${owner}.${field} as an optional string so omission is the sole input-side absence. If the input later becomes an update patch where omission means unchanged and null means clear, replace the property with one named closed input state and handle each arm explicitly. The compiler will not choose or collapse an absence sentinel, replace a present empty string with null or a default, synthesize a replacement ${guidance.presentMeaning}, rewrite the caller or downstream storage, reinterpret or cast the value, or add side storage.`;
+}
+
+function getScene2DAudioLoadContextMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'LoadScene2DAudioResourcesOptions' ||
+    getNodeName(node.name) !== 'context' ||
+    !isFlightTypesSource(node, 'Scene2DResources.ts') ||
+    !isOptionalNullableNamedTypeProperty(node, 'AudioContext')
+  ) {
+    return undefined;
+  }
+  return `${subject} gives the one-shot Scene2D audio load's platform decoder context both omission and explicit null, but loadScene2DAudioResources immediately evaluates options?.context ?? null and passes that required AudioContext | null unchanged to resolveAudioResourceReference for every selected reference. External references resolve only through the fetch seam and never inspect the context. Embedded references first try a registered MIME decoder; decodeAudioResourceBytes calls AudioContext.decodeAudioData only when no registered decoder handled the bytes and returns null when the normalized context is null. Thus omitted and explicit-null options both disable only the platform decode fallback, while a present AudioContext owner is borrowed unchanged for this operation and never retained. Declare LoadScene2DAudioResourcesOptions.context as optional AudioContext without null, and keep the required nullable resolver and decoder parameters plus the ?? null normalization at the load boundary. If omission and an explicit platform-decoder disable must differ, replace the property with one named closed context-input state and resolve every arm before loading. The compiler will not whitelist a redundant absence spelling, choose or collapse a sentinel, construct, resume, or close an AudioContext, select or invoke a decoder or fetcher, copy or materialize the host context owner, rewrite reference state or load results, reinterpret or cast the context, or add side storage.`;
 }
 
 function getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(
@@ -1132,6 +1148,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (morphShapeGradientEndpoint) return morphShapeGradientEndpoint;
   const normalizedStringOption = getNormalizedStringOptionMixedAbsencePropertyMessage(node, subject);
   if (normalizedStringOption) return normalizedStringOption;
+  const scene2DAudioLoadContext = getScene2DAudioLoadContextMixedAbsencePropertyMessage(node, subject);
+  if (scene2DAudioLoadContext) return scene2DAudioLoadContext;
   const sceneConstructionOwner = getSceneConstructionOwnerOptionMixedAbsencePropertyMessage(node, subject);
   if (sceneConstructionOwner) return sceneConstructionOwner;
   const renderProxyColorMatrix = getRenderProxyColorMatrixMixedAbsencePropertyMessage(node, subject);

@@ -7261,6 +7261,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('reinterpret or cast the value');
       expect(finding.message).toContain('or add side storage');
     }
+    expect(findings[1]!.message).toContain(
+      'createScene2DDocumentFromBytes then passes that context unchanged to each registry matcher and the selected importer',
+    );
+    expect(findings[1]!.message).toContain(
+      'Lottie, SVG, and SWF matchers compare only their exact MIME strings before falling back to byte sniffing',
+    );
   });
 
   it('keeps unrelated string options generic and accepts one input absence state', () => {
@@ -7305,6 +7311,74 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(findings).toHaveLength(1);
       expect(findings[0]?.message).toContain('combines an optional property with null');
       expect(findings[0]?.message).not.toContain('normalized string input');
+    }
+  });
+
+  it('explains the one-sentinel contract for the Scene2D audio platform decoder input', () => {
+    const source = input(
+      'packages/types/src/Scene2DResources.ts',
+      `interface AudioContext { decodeAudioData(buffer: ArrayBuffer): Promise<object> }
+       interface LoadScene2DAudioResourcesOptions { context?: AudioContext | null }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:LoadScene2DAudioResourcesOptions/property:context',
+      },
+    ]);
+    const message = findings[0]!.message;
+    expect(message).toContain("one-shot Scene2D audio load's platform decoder context");
+    expect(message).toContain('loadScene2DAudioResources immediately evaluates options?.context ?? null');
+    expect(message).toContain('passes that required AudioContext | null unchanged to resolveAudioResourceReference');
+    expect(message).toContain('External references resolve only through the fetch seam and never inspect the context');
+    expect(message).toContain('Embedded references first try a registered MIME decoder');
+    expect(message).toContain(
+      'decodeAudioResourceBytes calls AudioContext.decodeAudioData only when no registered decoder',
+    );
+    expect(message).toContain('returns null when the normalized context is null');
+    expect(message).toContain('disable only the platform decode fallback');
+    expect(message).toContain(
+      'a present AudioContext owner is borrowed unchanged for this operation and never retained',
+    );
+    expect(message).toContain('Declare LoadScene2DAudioResourcesOptions.context as optional AudioContext without null');
+    expect(message).toContain('keep the required nullable resolver and decoder parameters');
+    expect(message).toContain('named closed context-input state');
+    expect(message).toContain('will not whitelist a redundant absence spelling');
+    expect(message).toContain('construct, resume, or close an AudioContext');
+    expect(message).toContain('select or invoke a decoder or fetcher');
+    expect(message).toContain('copy or materialize the host context owner');
+    expect(message).toContain('reinterpret or cast the context, or add side storage');
+  });
+
+  it('keeps unrelated audio context inputs generic and accepts one input absence state', () => {
+    const controls = [
+      input('Other.ts', 'interface LoadScene2DAudioResourcesOptions { context?: AudioContext | null }'),
+      input('packages/types/src/Scene2DResources.ts', 'interface OtherOptions { context?: AudioContext | null }'),
+      input(
+        'packages/types/src/Scene2DResources.ts',
+        'interface LoadScene2DAudioResourcesOptions { device?: AudioContext | null }',
+      ),
+      input(
+        'packages/types/src/Scene2DResources.ts',
+        'interface LoadScene2DAudioResourcesOptions { context?: OfflineAudioContext | null }',
+      ),
+    ];
+    const resolved = [
+      input(
+        'packages/types/src/Scene2DResources.ts',
+        'interface LoadScene2DAudioResourcesOptions { context?: AudioContext }',
+      ),
+      input('Downstream.ts', 'interface AudioResolverInput { context: AudioContext | null }'),
+    ];
+
+    expect(analyzeTypeScriptSourcePortability(resolved).findings).toEqual([]);
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]!.message).toContain('combines an optional property with null');
+      expect(findings[0]!.message).not.toContain('Scene2D audio load');
     }
   });
 
