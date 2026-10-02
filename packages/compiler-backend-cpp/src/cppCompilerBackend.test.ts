@@ -4469,18 +4469,9 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(refused.rule).toBe('cpp-structural-assertion-owner-unproven');
     expect(refused.classification).toBe('source-portability');
-    expect(refused.message).toContain('stores it in the module scratch array _members typed NodeAny[]');
-    expect(refused.message).toContain('NodeAny preserves node identity but erases the Traits specialization');
-    expect(refused.message).toContain('NodeOrderList<Traits>.nodes is currently Node<Traits>[]');
-    expect(refused.message).toContain('make NodeOrderList<Traits>.nodes, its entry APIs');
-    expect(refused.message).toContain('reusable numeric list-entry indices');
-    expect(refused.message).toContain('Map<NodeAny, number> may remain only as an identity-key index');
-    expect(refused.message).toContain('duplicate nodes resolve to their last entry');
-    expect(refused.message).toContain("forEachNodeOrderListEntry's insertion-order, early-stop iteration");
-    expect(refused.message).toContain('SWF frame construction');
-    expect(refused.message).toContain('Rive draw rules');
-    expect(refused.message).toContain('skeleton draw-order animation');
-    expect(refused.message).toContain('Do not whitelist the assertion');
+    expect(refused.message).toContain(
+      'For reusable scratch storage, retain indices, keys, or tokens into storage that remains typed as',
+    );
     expect(emitted).toContain('get_writable_node_runtime<Traits>(target)');
     expect(emitted).toContain('member_entry_indices');
     expect(emitted).toContain('flight::row_get<flight::RowKey<"nodes">>(list)');
@@ -8531,7 +8522,7 @@ describe('createCppCompilerBackend', () => {
       expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
       expect(failure.classification).toBe('source-portability');
       expect(failure.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
-      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('an assertion cannot add those cells');
       expect(failure.message).toContain('type the retaining slot and every accessor result as');
       expect(failure.message).toContain(
         'changing only the accessor result cannot recover a wider owner after a base-typed slot erased it',
@@ -8581,7 +8572,7 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('renderProxyAdapterMap');
     expect(failure.message).toContain('registryMiss');
     expect(failure.message).toContain('tempStack');
-    expect(failure.message).toContain('An assertion cannot add those cells');
+    expect(failure.message).toContain('an assertion cannot add those cells');
     expect(failure.message).toContain('type the retaining slot and every accessor result as');
     expect(typed).toContain('get_render_state_runtime');
     expect(typed).not.toContain('static_pointer_cast');
@@ -8757,7 +8748,7 @@ describe('createCppCompilerBackend', () => {
     for (const failure of [scene, sprite, transmission]) {
       expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
       expect(failure.classification).toBe('source-portability');
-      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('an assertion cannot add those cells');
     }
     expect(scene.message).toContain('scene2dSignals');
     expect(sprite.message).toContain('flight::Ref<flighthq_types::Node<flight::Any>>');
@@ -8809,7 +8800,7 @@ describe('createCppCompilerBackend', () => {
     for (const failure of [video, textShaper]) {
       expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
       expect(failure.classification).toBe('source-portability');
-      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('an assertion cannot add those cells');
       expect(failure.message).toContain('type the retaining slot and every accessor result as');
     }
     expect(video.message).toContain('flight::Ref<flighthq_types::TextureSource>');
@@ -8929,7 +8920,7 @@ describe('createCppCompilerBackend', () => {
     for (const failure of [authored, morph, shape]) {
       expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
       expect(failure.classification).toBe('source-portability');
-      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('an assertion cannot add those cells');
       expect(failure.message).toContain('construct');
       expect(failure.message).toContain('type the retaining slot and every accessor result as');
     }
@@ -8976,8 +8967,8 @@ describe('createCppCompilerBackend', () => {
       expect(failure.message).toContain(
         "whose optionality or value representation is not representation-equivalent to the source type's cells",
       );
-      expect(failure.message).toContain('An assertion cannot add those cells');
-      expect(failure.message).toContain('or change their representation');
+      expect(failure.message).toContain('an assertion cannot add those cells');
+      expect(failure.message).toContain('change their representation');
       expect(failure.message).toContain('construct');
       expect(failure.message).toContain('with the asserted optionality and value representation');
       expect(failure.message).toContain('type the retaining slot and every accessor result as');
@@ -9240,7 +9231,7 @@ describe('createCppCompilerBackend', () => {
         rule: 'cpp-structural-assertion-owner-unproven',
       });
       expect(failure.message).toContain('flighthq_types::MaterialLike');
-      expect(failure.message).toContain('a tag or registry key carried beside the value does not prove');
+      expect(failure.message).toContain('identifies an entry but does not prove its owner');
       expect(failure.message).toContain('type the retaining slot and every accessor result');
       expect(failure.message).toContain('will not reinterpret the owner, cast it');
       expect(failure.message).toContain('copy or materialize a replacement');
@@ -9349,7 +9340,7 @@ describe('createCppCompilerBackend', () => {
     for (const failure of [mesh, movieClip]) {
       expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
       expect(failure.classification).toBe('source-portability');
-      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('an assertion cannot add those cells');
       expect(failure.message).toContain('type the retaining slot and every accessor result as');
     }
     expect(mesh.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
@@ -9380,7 +9371,7 @@ describe('createCppCompilerBackend', () => {
       expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
       expect(failure.classification).toBe('source-portability');
       expect(failure.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
-      expect(failure.message).toContain('An assertion cannot add those cells');
+      expect(failure.message).toContain('an assertion cannot add those cells');
       expect(failure.message).toContain('type the retaining slot and every accessor result as');
     }
     expect(dialog.message).toContain('flight::Ref<flighthq_types::FileDialogHandleRuntime>');
@@ -9412,7 +9403,7 @@ describe('createCppCompilerBackend', () => {
     expect(failure.message).toContain('flight::Ref<flighthq_types::EntityRuntime>');
     expect(failure.message).toContain('flight::Ref<flighthq_types::SelectionStateRuntime<NodeType>>');
     expect(failure.message).toContain('reads activeNode, selectedNodeSet, selectedNodes and signals');
-    expect(failure.message).toContain('An assertion cannot add those cells');
+    expect(failure.message).toContain('an assertion cannot add those cells');
     expect(failure.message).toContain('type the retaining slot and every accessor result as');
     expect(typed).toContain('get_typed_selection_state_runtime');
     expect(typed).toContain(
@@ -9922,7 +9913,7 @@ int main() {
     expect(failure.message).toContain('flight::Ref<flighthq_types::RenderProxy>');
     expect(failure.message).toContain('flight::Ref<flighthq_types::RenderProxy2D>');
     expect(failure.message).toContain('clipDepth, transform2D and traverseChildren');
-    expect(failure.message).toContain('An assertion cannot add those cells');
+    expect(failure.message).toContain('an assertion cannot add those cells');
 
     // Typing the storage with the concrete owner preserves the same object through the optional result;
     // no pointer cast, reconstructed row, or replacement object is necessary.
@@ -34347,8 +34338,10 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.classification).toBe('source-portability');
     expect(failure.message).toContain('reads children, which the source type does not declare');
     expect(failure.message).toContain('Preserve the concrete owner in the source type');
-    expect(failure.message).toContain('make an intentionally erased registry validate and recover that owner');
-    expect(failure.message).toContain('a tag or registry key carried beside the value does not prove');
+    expect(failure.message).toContain(
+      'checked recovery contract that validates and returns the exact owner before dispatch',
+    );
+    expect(failure.message).toContain('identifies an entry but does not prove its owner');
 
     // Keeping the exact command owner at the callback/API boundary is already represented and reads the
     // existing row directly; it needs no cast, replacement row, or side storage.
