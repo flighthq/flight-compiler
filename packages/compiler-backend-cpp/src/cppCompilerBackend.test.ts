@@ -13326,6 +13326,69 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('classifies the WgpuRenderState findings as represented declarations with two known consumers', () => {
+    // A report listing three mixed-absence findings in WgpuRenderState reads as three problems in the file.
+    // The three DECLARATIONS are all represented, with the carrier each spelling deserves -- so the findings
+    // are not in the declarations. The two refusing shapes near them are consumer-side and already have their
+    // own controls; this names them so a reader lands on the right lane instead of re-deriving it.
+    const prelude = `export interface Bias { readonly scale: number }
+export interface Tint { readonly color: number }
+export interface WgpuRenderTextureGuard { readonly alive: boolean }`;
+    const members = `${prelude}
+export interface Spelled {
+  readonly wgpuRenderTextureGuard?: WgpuRenderTextureGuard | null;
+  readonly quadBatchWriterUniformColorScaleBias?: Bias | Tint | readonly number[] | null;
+  readonly sceneMeshUploadCache?: WeakMap<object, object> | null;
+}`;
+    const emitted = emitIrModuleCpp(lower('wgpu-render-state-spellings.ts', members).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    expect(emitted).toContain('std::variant<flight::Ref<WgpuRenderTextureGuard>, flight::Null, flight::Undefined>');
+    expect(emitted).toContain(
+      'std::variant<flight::Array<double>, flight::Ref<Bias>, flight::Ref<Tint>, flight::Null, flight::Undefined>',
+    );
+    // the WeakMap value `object` becomes the runtime's erased reference, which is why the DECLARATION is fine
+    // and the lookup is where the value domain matters
+    expect(emitted).toContain('std::variant<flight::WeakMap<flight::Ref<void>, flight::ErasedRef>, flight::Null');
+
+    // Consumer one: a caller converting a subset union into the record parameter -- source-portability, with
+    // its verified remedies pinned by the WgpuRenderState control.
+    const caller = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'wgpu-record-caller.ts',
+          `${prelude}
+export interface Writer {
+  record(colorScaleBias: Bias | Tint | readonly number[] | null | undefined, index: number): void;
+}
+export function use(w: Writer, bias: Bias | null): void { w.record(bias, 0); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(caller.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(caller.classification).toBe('source-portability');
+
+    // Consumer two: the cache LOOKUP, whose value domain is the bare object -- pinned with its remedy (name
+    // what the cache holds) by the weak-map control.
+    const lookup = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'wgpu-cache-lookup.ts',
+          `${prelude}
+export interface Holder { readonly sceneMeshUploadCache?: WeakMap<object, object> | null }
+export function read(h: Holder, key: object): object | undefined {
+  const cache = h.sceneMeshUploadCache;
+  if (cache != null) return cache.get(key);
+  return undefined;
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(lookup.rule).toContain('cpp-contextual-union-missing-expression-type');
+  });
+
   it('classifies the GlScene3DRuntime findings as one downstream binding family', () => {
     // The file's mixed-absence findings are not source contracts and not one shape problem: their value types
     // are host handles. Each refuses once, naming its own symbol, with the same downstream requirement -- one
