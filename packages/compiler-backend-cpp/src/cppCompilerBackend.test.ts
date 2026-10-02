@@ -15747,6 +15747,43 @@ export interface WebServiceWorkerNotificationInstance { readonly data?: unknown;
     expect(closed).not.toContain('flight::Any');
   });
 
+  it('replaces the erased dialog close payload with its application-selected type parameter', () => {
+    const current = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'GuiDialog.ts',
+        `export type GuiDialogCloseReason = 'accepted' | 'cancelled' | 'dismissed';
+         export interface GuiDialogCloseResult {
+           readonly entryId: string;
+           readonly reason: GuiDialogCloseReason;
+           readonly value?: unknown;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    const generic = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'GuiDialog.ts',
+        `export type GuiDialogCloseReason = 'accepted' | 'cancelled' | 'dismissed';
+         export interface GuiDialogCloseResult<CloseValue> {
+           readonly entryId: string;
+           readonly reason: GuiDialogCloseReason;
+           readonly value?: CloseValue;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(current).toContain('std::optional<flight::Any> value;');
+    expect(generic).toContain('template <typename CloseValue>');
+    expect(generic).toContain('struct GuiDialogCloseResult');
+    expect(generic).toContain('std::optional<CloseValue> value;');
+    expect(generic).not.toContain('flight::Any');
+    expect(generic).not.toContain('static_cast');
+    expect(generic).not.toContain('reinterpret_cast');
+  });
+
   it('separates the WgpuScene3DRuntime guard sentinels from the closed skinning-adapter domain', () => {
     // Representation proves target capacity, not the source contract. The paired emissions pin the exact
     // narrower carrier for each source-owned remedy: required-nullable callables for the two one-sentinel

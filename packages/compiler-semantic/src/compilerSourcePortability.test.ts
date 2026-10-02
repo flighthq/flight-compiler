@@ -3302,24 +3302,26 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(reviewed.acceptedExceptions).toMatchObject([{ finding: { identity: finding.identity } }]);
   });
 
-  it('closes the public dialog-result value domain without changing identity transport', () => {
+  it('makes the application-defined dialog-result value domain explicit without changing identity transport', () => {
     const opaque = input(
       'packages/types/src/GuiDialog.ts',
       'interface GuiDialogCloseResult { entryId: string; reason: string; value?: unknown }',
     );
-    const closed = input(
+    const generic = input(
       'packages/types/src/GuiDialog.ts',
-      `interface GuiDialogCloseFields { readonly [name: string]: GuiDialogCloseValue }
-       type GuiDialogCloseValue =
-         | boolean
-         | number
-         | string
-         | null
-         | readonly GuiDialogCloseValue[]
-         | Readonly<GuiDialogCloseFields>;
-       type GuiDialogCloseResult =
-         | { readonly entryId: string; readonly reason: 'accepted'; readonly value?: GuiDialogCloseValue }
-         | { readonly entryId: string; readonly reason: 'cancelled' | 'dismissed' };`,
+      `interface GuiDialog<CloseValue = never> { readonly closeValueType?: CloseValue }
+       interface GuiDialogCloseResult<CloseValue> {
+         readonly entryId: string;
+         readonly reason: 'accepted' | 'cancelled' | 'dismissed';
+         readonly value?: CloseValue;
+       }
+       interface GuiDialogSignals<CloseValue> {
+         readonly onClose: (result: Readonly<GuiDialogCloseResult<CloseValue>>) => void;
+       }
+       declare function closeGuiDialog<CloseValue>(
+         dialog: GuiDialog<CloseValue>,
+         result: Readonly<GuiDialogCloseResult<CloseValue>>,
+       ): boolean;`,
     );
     const controls = [
       input('packages/types/src/Other.ts', 'interface GuiDialogCloseResult { value?: unknown }'),
@@ -3338,27 +3340,30 @@ describe('analyzeTypeScriptSourcePortability', () => {
       subject: 'interface:GuiDialogCloseResult/property:value',
     });
     expect(report.acceptedExceptions).toEqual([]);
-    expect(finding.message).toContain('public dialog-close signal');
-    expect(finding.message).toContain('built-in backdrop producer closes the active entry as dismissed with no value');
-    expect(finding.message).toContain('accepted with the numeric value 7 plus accepted and cancelled without a value');
-    expect(finding.message).toContain('no cancelled or dismissed producer attaches a payload');
+    expect(finding.message).toContain('application-defined payload on the public dialog-close signal');
+    expect(finding.message).toContain('only production producer is the backdrop handler');
+    expect(finding.message).toContain('numeric value 7 is test evidence, not a production domain');
+    expect(finding.message).toContain('No production listener interprets a value');
     expect(finding.message).toContain('validates only that result.entryId names the active entry');
-    expect(finding.message).toContain('synchronously emits the exact result object through onClose');
-    expect(finding.message).toContain('Identity transport does not make unknown a portable public domain');
-    expect(finding.message).toContain('reason-discriminated arms');
-    expect(finding.message).toContain('recursive closed GuiDialogCloseValue');
-    expect(finding.message).toContain('accepted arm may keep value optional');
-    expect(finding.message).toContain('cancelled and dismissed arm must have no value property');
-    expect(finding.message).toContain('null remains an intentional accepted payload rather than a missing property');
-    expect(finding.message).toContain('stable string handle');
-    expect(finding.message).toContain('application-owned typed storage after onClose');
+    expect(finding.message).toContain('synchronously emits the exact caller-owned result object through onClose');
+    expect(finding.message).toContain('Signal dispatch retains listener slots but never an emitted argument');
+    expect(finding.message).toContain('disposeGuiDialog rejects later closes');
+    expect(finding.message).toContain('drops its retained entry, backdrop, and focus references');
+    expect(finding.message).toContain('No Host capability, serializer, clone, or native disposer');
+    expect(finding.message).toContain('intentional application variability, not a finite repository-owned schema');
+    expect(finding.message).toContain('Parameterize GuiDialogCloseResult as GuiDialogCloseResult<CloseValue>');
+    expect(finding.message).toContain('thread that same CloseValue through GuiDialog, GuiDialogSignals');
+    expect(finding.message).toContain('Payload-free dialogs use never');
+    expect(finding.message).toContain('numeric test dialog uses number');
+    expect(finding.message).toContain('identity-bearing application value uses its explicit portable interface');
+    expect(finding.message).toContain('Haxe changes ?value:Dynamic to ?value:CloseValue');
+    expect(finding.message).toContain('C++ changes std::optional<flight::Any> to std::optional<CloseValue>');
     expect(finding.message).toContain('Do not whitelist the public signal domain');
-    expect(finding.message).toContain('target-specific Any carrier');
+    expect(finding.message).toContain('choose or infer CloseValue');
     expect(finding.message).toContain('insert or retain a cast');
-    expect(finding.message).toContain('allocate or consult a handle registry');
     expect(finding.message).toContain('change close ordering or emission');
     expect(finding.message).toContain('copy or materialize the payload');
-    expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability([generic]).findings).toEqual([]);
     for (const control of controls) {
       expect(
         analyzeTypeScriptSourcePortability([control]).findings.every(

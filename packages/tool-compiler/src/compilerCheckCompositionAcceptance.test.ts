@@ -3771,16 +3771,18 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
       { rule: 'opaque-value-domain', subject: expectedSubject },
     ]);
+    expect(sourcePortability.findings[0]?.message).toContain('only production producer is the backdrop handler');
     expect(sourcePortability.findings[0]?.message).toContain(
-      'built-in backdrop producer closes the active entry as dismissed with no value',
+      'synchronously emits the exact caller-owned result object through onClose',
     );
+    expect(sourcePortability.findings[0]?.message).toContain('intentional application variability');
     expect(sourcePortability.findings[0]?.message).toContain(
-      'synchronously emits the exact result object through onClose',
+      'Parameterize GuiDialogCloseResult as GuiDialogCloseResult<CloseValue>',
     );
-    expect(sourcePortability.findings[0]?.message).toContain('reason-discriminated arms');
-    expect(sourcePortability.findings[0]?.message).toContain('recursive closed GuiDialogCloseValue');
-    expect(sourcePortability.findings[0]?.message).toContain('cancelled and dismissed arm must have no value property');
-    expect(sourcePortability.findings[0]?.message).toContain('stable string handle');
+    expect(sourcePortability.findings[0]?.message).toContain('Haxe changes ?value:Dynamic to ?value:CloseValue');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'C++ changes std::optional<flight::Any> to std::optional<CloseValue>',
+    );
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
     expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
     expect(
@@ -3811,6 +3813,13 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       failingFindingIdentities: [report.directFindings[0]?.identity],
       passed: false,
     });
+    const unchanged = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(unchanged).toMatchObject({ introduced: [], resolvedFindingIdentities: [] });
+    expect(unchanged.unchanged).toHaveLength(1);
+    expect(createCompilerPackageCheckPolicyResult(unchanged, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
 
     const portableSource = createMemoryWorkspaceSource(createGuiDialogCloseResultWorkspaceFiles(false));
     const portableInput = createFlightWorkspaceCompilationInput({
@@ -3818,9 +3827,38 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+
+    expect(portableSourcePortability).toMatchObject({
       acceptedExceptions: [],
       findings: [],
+    });
+    expect(portableReport.directFindings).toEqual([]);
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
   });
 
@@ -8516,22 +8554,21 @@ export interface GuiDialogCloseResult {
   readonly reason: GuiDialogCloseReason;
   readonly value?: unknown;
 }`
-    : `export interface GuiDialogCloseFields {
-  readonly [name: string]: GuiDialogCloseValue;
+    : `export type GuiDialogCloseReason = 'accepted' | 'cancelled' | 'dismissed';
+export interface GuiDialog<CloseValue = never> {
+  readonly closeValueType?: CloseValue;
 }
-export type GuiDialogCloseValue =
-  | boolean
-  | number
-  | string
-  | null
-  | readonly GuiDialogCloseValue[]
-  | Readonly<GuiDialogCloseFields>;
-export type GuiDialogCloseResult =
-  | { readonly entryId: string; readonly reason: 'accepted'; readonly value?: GuiDialogCloseValue }
-  | { readonly entryId: string; readonly reason: 'cancelled' | 'dismissed' };`;
+export interface GuiDialogCloseResult<CloseValue> {
+  readonly entryId: string;
+  readonly reason: GuiDialogCloseReason;
+  readonly value?: CloseValue;
+}
+export interface GuiDialogSignals<CloseValue> {
+  readonly onClose: (result: Readonly<GuiDialogCloseResult<CloseValue>>) => void;
+}`;
   const exports = opaque
     ? 'export type { GuiDialogCloseReason, GuiDialogCloseResult }'
-    : 'export type { GuiDialogCloseFields, GuiDialogCloseResult, GuiDialogCloseValue }';
+    : 'export type { GuiDialog, GuiDialogCloseReason, GuiDialogCloseResult, GuiDialogSignals }';
   return {
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
     '/flight/packages/types/src/GuiDialog.ts': declaration,

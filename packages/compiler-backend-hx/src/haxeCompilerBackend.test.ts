@@ -2711,6 +2711,39 @@ export interface NetJsonObject { readonly [name: string]: NetJsonValue }`,
     expect(closed.match(/\?data:Dynamic/gu) ?? []).toHaveLength(0);
   });
 
+  it('replaces the erased dialog close payload with its application-selected type parameter', () => {
+    const current = emitIrModuleHaxe(
+      lowerPackage(
+        '@flighthq/types',
+        'GuiDialog.ts',
+        `export type GuiDialogCloseReason = 'accepted' | 'cancelled' | 'dismissed';
+         export interface GuiDialogCloseResult {
+           readonly entryId: string;
+           readonly reason: GuiDialogCloseReason;
+           readonly value?: unknown;
+         }`,
+      ).module,
+    ).contents;
+    const generic = emitIrModuleHaxe(
+      lowerPackage(
+        '@flighthq/types',
+        'GuiDialog.ts',
+        `export type GuiDialogCloseReason = 'accepted' | 'cancelled' | 'dismissed';
+         export interface GuiDialogCloseResult<CloseValue> {
+           readonly entryId: string;
+           readonly reason: GuiDialogCloseReason;
+           readonly value?: CloseValue;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(current).toContain('?value:Dynamic');
+    expect(generic).toContain('typedef GuiDialogCloseResult<CloseValue>');
+    expect(generic).toContain('?value:CloseValue');
+    expect(generic).not.toContain('?value:Dynamic');
+    expect(generic).not.toContain('cast value');
+  });
+
   it('emits for-of iteration without async or patterns', () => {
     const result = lower(
       'for-of.ts',
