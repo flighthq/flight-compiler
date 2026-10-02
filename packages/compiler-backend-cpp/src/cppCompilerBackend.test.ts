@@ -14296,8 +14296,8 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // unresolved-`auto`-placeholder family; that entry is stale, and the `auto` lines a consumer emits are
   // local deduction rather than a retained placeholder.
   //
-  // The represented producer half writes through the record's checked set operation. The intended read-side
-  // checked conversion is not pinned here because its current emission does not compile, as noted below.
+  // The represented producer half writes through the record's checked set operation. The read-side checked
+  // conversion and its target-compiler acceptance are pinned separately below.
   it('keeps the open document lookup on its represented record carrier', () => {
     const contents = emitIrModuleCpp(
       lower(
@@ -14321,20 +14321,9 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(contents).toContain('using FlightDocumentResourceLookup = flight::Record<flight::String, flight::Any>');
     // A write goes through the record's own set rather than assigning into erased storage directly.
     expect(contents).toContain('resources.set(name, assignment_value)');
-    // The READ path is deliberately NOT pinned here. Its recovery asks the unwrapped value for the asserted
-    // owner, but the storage the record hands back is `std::optional<flight::Any>`, so it calls object_if on
-    // the optional and the target compiler rejects it: 'std::optional<flight::Any>' has no member named
-    // 'object_if'. Pinning that would enshrine output that cannot compile; it is reported as its own slice.
+    // The recovery shape and target-compiler acceptance are covered by the focused controls below.
   });
 
-  // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
-  // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
-  // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
-  // TypeScript, and this compiler keeps a union's alternatives rather than collapsing them, which the Blob
-  // and typeof-erasure controls already pin. What blocks the module is ownership, not shape: three host-owned
-  // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
-  // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
-  // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
   // The checked recovery over an open lookup, and the three JavaScript answers it has to keep.
   //
   // `resources[name] as Hero` on `Readonly<Record<string, unknown>>` reached the recovery with the CARRIER of
@@ -14427,6 +14416,14 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(direct.ok).toBe(true);
   });
 
+  // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
+  // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
+  // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
+  // TypeScript, and this compiler keeps a union's alternatives rather than collapsing them, which the Blob
+  // and typeof-erasure controls already pin. What blocks the module is ownership, not shape: three host-owned
+  // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
+  // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
+  // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
