@@ -6662,6 +6662,133 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('explains required nullable contracts for GL runtime seams and uniform color scratch', () => {
+    const source = input(
+      'packages/types/src/GlRenderState.ts',
+      `interface GlRenderState {}
+       interface ColorScaleBias { readonly scale: number }
+       interface TintMaterialData { readonly tint: number }
+       type GlRenderTextureGuard = (state: GlRenderState) => void;
+       interface GlRenderStateRuntime {
+         flushPendingDraws?: ((state: GlRenderState) => void) | null;
+         glRenderTextureGuard?: GlRenderTextureGuard | null;
+         quadBatchWriterUniformColorScaleBias?: ColorScaleBias | TintMaterialData | readonly number[] | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['flushPendingDraws', 'glRenderTextureGuard', 'quadBatchWriterUniformColorScaleBias'].map((field) => ({
+        rule: 'mixed-absence',
+        subject: `interface:GlRenderStateRuntime/property:${field}`,
+      })),
+    );
+    const byField = new Map(findings.map((finding) => [finding.subject.split(':').at(-1), finding.message]));
+
+    const flush = byField.get('flushPendingDraws')!;
+    expect(flush).toContain('lazily installed GL pending-draw seam both omission and explicit null');
+    expect(flush).toContain('one uninstalled state');
+    expect(flush).toContain('_createGlRenderStateFromContext and the GL test helpers initialize');
+    expect(flush).toContain('createGlRenderStateRuntime is the exported construction path that still omits it');
+    expect(flush).toContain('prepareGlQuadBatchWrite installs the exact flushGlQuadBatchWriter callback');
+    expect(flush).toContain('beginGlCubeRenderFace and pushGlRenderState optional-call the slot');
+    expect(flush).toContain('required ((state: GlRenderState) => void) | null field');
+    expect(flush).toContain('initialize it to null in createGlRenderStateRuntime');
+    expect(flush).toContain('does not import or install scene2d-gl');
+    expect(flush).toContain('will not choose or collapse an absence sentinel');
+    expect(flush).toContain('reorder a flush around GL state capture');
+
+    const guard = byField.get('glRenderTextureGuard')!;
+    expect(guard).toContain('opt-in GL render-texture diagnostic guard both omission and explicit null');
+    expect(guard).toContain('one disabled state');
+    expect(guard).toContain('createGlRenderStateRuntime currently omits the slot');
+    expect(guard).toContain('setGlRenderTextureGuard overwrites it with the exact guard or null');
+    expect(guard).toContain('enableGlRenderTextureGuards installs the warning guard');
+    expect(guard).toContain('render-texture notification optional-calls the slot');
+    expect(guard).toContain('required GlRenderTextureGuard | null field');
+    expect(guard).toContain('initialize it to null in createGlRenderStateRuntime');
+    expect(guard).toContain('logger and warning implementation remain shakeable');
+    expect(guard).toContain('will not choose or collapse an absence sentinel');
+    expect(guard).toContain('change render-texture publication');
+
+    const uniform = byField.get('quadBatchWriterUniformColorScaleBias')!;
+    expect(uniform).toContain("GL quad batch's uniform color-adjustment scratch slot both omission and explicit null");
+    expect(uniform).toContain('its mode field is the authority');
+    expect(uniform).toContain('registerGlColorAdjustmentMaterialFeature initializes the mode on opt-in');
+    expect(uniform).toContain('recordGlColorAdjustment normalizes an absent mode to NONE');
+    expect(uniform).toContain('writes the exact ColorScaleBias, TintMaterialData, or readonly number[] owner');
+    expect(uniform).toContain('flushGlColorAdjustmentMaterialFeature returns before reading the slot in NONE mode');
+    expect(uniform).toContain('clears it to null after capture');
+    expect(uniform).toContain('required ColorScaleBias | TintMaterialData | readonly number[] | null field');
+    expect(uniform).toContain('initialize it to null in createGlRenderStateRuntime');
+    expect(uniform).toContain('preserve the mode as the state-machine discriminant');
+    expect(uniform).toContain('does not register the color-adjustment feature');
+    expect(uniform).toContain('will not choose or collapse an absence sentinel');
+    expect(uniform).toContain('copy or materialize adjustment data');
+  });
+
+  it('keeps unrelated GL runtime slots generic and accepts one absence representation', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/GlRenderState.ts',
+        'interface GlRenderState {} interface OtherGlRuntime { flushPendingDraws?: ((state: GlRenderState) => void) | null }',
+      ),
+      input(
+        'packages/example/src/GlRenderState.ts',
+        'interface GlRenderTextureGuard {} interface GlRenderStateRuntime { glRenderTextureGuard?: GlRenderTextureGuard | null }',
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface ColorScaleBias {}
+         interface TintMaterialData {}
+         interface GlRenderStateRuntime {
+           savedUniformColorScaleBias?: ColorScaleBias | TintMaterialData | readonly number[] | null;
+         }`,
+      ),
+      input(
+        'packages/types/src/GlRenderState.ts',
+        `interface ColorScaleBias {}
+         interface GlRenderStateRuntime {
+           quadBatchWriterUniformColorScaleBias?: ColorScaleBias | readonly number[] | null;
+         }`,
+      ),
+    ];
+    const resolved = input(
+      'packages/types/src/GlRenderState.ts',
+      `interface GlRenderState {}
+       interface ColorScaleBias {}
+       interface TintMaterialData {}
+       interface GlRenderTextureGuard {}
+       interface GlRenderStateRuntime {
+         flushPendingDraws: ((state: GlRenderState) => void) | null;
+         glRenderTextureGuard: GlRenderTextureGuard | null;
+         quadBatchWriterUniformColorScaleBias: ColorScaleBias | TintMaterialData | readonly number[] | null;
+       }`,
+    );
+    const omitted = input(
+      'packages/types/src/GlRenderState.ts',
+      `interface GlRenderState {}
+       interface ColorScaleBias {}
+       interface TintMaterialData {}
+       interface GlRenderTextureGuard {}
+       interface GlRenderStateRuntime {
+         flushPendingDraws?: (state: GlRenderState) => void;
+         glRenderTextureGuard?: GlRenderTextureGuard;
+         quadBatchWriterUniformColorScaleBias?: ColorScaleBias | TintMaterialData | readonly number[];
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved, omitted]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('pending-draw seam');
+      expect(findings[0]?.message).not.toContain('render-texture diagnostic guard');
+      expect(findings[0]?.message).not.toContain('uniform color-adjustment scratch slot');
+    }
+  });
+
   it('explains normalized optional-null string inputs at their required-nullable boundaries', () => {
     const gltf = input(
       'packages/types/src/GltfExtension.ts',

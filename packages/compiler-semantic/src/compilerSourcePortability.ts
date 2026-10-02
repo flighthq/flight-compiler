@@ -397,6 +397,35 @@ function isOptionalNullableReadonlyNumberArrayProperty(node: ts.PropertySignatur
   );
 }
 
+function isOptionalNullableGlColorAdjustmentDataProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 3) return false;
+  const names = new Set<string>();
+  let hasReadonlyNumberArray = false;
+  for (let type of present) {
+    while (ts.isParenthesizedTypeNode(type)) type = type.type;
+    if (ts.isTypeReferenceNode(type) && type.typeArguments === undefined) {
+      const name = getNodeName(type.typeName);
+      if (name === undefined || names.has(name)) return false;
+      names.add(name);
+      continue;
+    }
+    if (
+      ts.isTypeOperatorNode(type) &&
+      type.operator === ts.SyntaxKind.ReadonlyKeyword &&
+      ts.isArrayTypeNode(type.type) &&
+      type.type.elementType.kind === ts.SyntaxKind.NumberKeyword &&
+      !hasReadonlyNumberArray
+    ) {
+      hasReadonlyNumberArray = true;
+      continue;
+    }
+    return false;
+  }
+  return hasReadonlyNumberArray && names.size === 2 && names.has('ColorScaleBias') && names.has('TintMaterialData');
+}
+
 function isOptionalNullableReadonlyNamedTypeProperty(node: ts.PropertySignature, name: string): boolean {
   if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
   const present = getMixedAbsencePresentTypes(node.type);
@@ -778,6 +807,30 @@ function getGlRenderPassTrackingMixedAbsencePropertyMessage(
   return `${subject} gives the active GL render-pass tracking slot ${field} both omission and explicit null, but the represented runtime has one outside-pass or inactive state. createGlRenderStateRuntime already assigns runtime.currentRenderTarget = null; _createGlRenderStateFromContext and test helpers assign runtime.currentScissorRect = null, while saveGlPassState normalizes both slots with ?? null and restoreGlPassState, GL state brackets, and cube-face passes save and restore them directly. beginGlRenderPass writes the current target and active scissor together, invalidateGlRenderStateCache clears the tracked scissor to null, and consumers use == null or ?? null before target and scissor work. Make currentRenderTarget a required GlCubeRenderTarget | GlRenderTarget | null field and currentScissorRect a required GlScissorRect | null field, initialize both in createGlRenderStateRuntime so every exported construction path receives the complete contract, and preserve the direct pass save and restore assignments; the analogous Canvas and WebGPU pass-state slots are already required nullable. If a lifecycle must distinguish an uninitialized runtime from a constructed runtime outside a pass, model that as a closed runtime or pass state rather than as a second field-level absence sentinel. The compiler will not choose or collapse an absence sentinel, infer a render target or scissor rectangle, bind or clear a framebuffer, alter the pass or clip stack, copy or materialize a target or rectangle, or add side storage.`;
 }
 
+function getGlRenderRuntimeInactiveSlotMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'GlRenderStateRuntime' ||
+    !isFlightTypesSource(node, 'GlRenderState.ts')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field === 'flushPendingDraws' && isOptionalNullableFunctionProperty(node)) {
+    return `${subject} gives the lazily installed GL pending-draw seam both omission and explicit null, but the represented runtime has one uninstalled state. _createGlRenderStateFromContext and the GL test helpers initialize flushPendingDraws to null, while createGlRenderStateRuntime is the exported construction path that still omits it. prepareGlQuadBatchWrite installs the exact flushGlQuadBatchWriter callback before it can queue a batch; beginGlCubeRenderFace and pushGlRenderState optional-call the slot before handing GL state to another owner, so null and undefined perform the same no-flush action. Make flushPendingDraws a required ((state: GlRenderState) => void) | null field, initialize it to null in createGlRenderStateRuntime, and preserve the lazy scene2d-gl assignment and nullish calls. Initializing the header-owned slot does not import or install scene2d-gl, so applications that never use its quad writer retain no implementation. If uninstalled and deliberately disabled must differ, replace the sentinels with a named closed seam state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or install a batch writer, invoke or synthesize a flush callback, reorder a flush around GL state capture, widen its callable signature, or add side storage.`;
+  }
+  if (field === 'glRenderTextureGuard' && isOptionalNullableNamedTypeProperty(node, 'GlRenderTextureGuard')) {
+    return `${subject} gives the opt-in GL render-texture diagnostic guard both omission and explicit null, but the represented runtime has one disabled state. createGlRenderStateRuntime currently omits the slot; setGlRenderTextureGuard overwrites it with the exact guard or null, enableGlRenderTextureGuards installs the warning guard through that setter, and render-texture notification optional-calls the slot. Make glRenderTextureGuard a required GlRenderTextureGuard | null field and initialize it to null in createGlRenderStateRuntime, retaining the nullable setter and optional call. Null initialization does not import or install the diagnostic module, so its logger and warning implementation remain shakeable. If disabled and not-yet-configured must differ, replace the sentinels with a named closed guard state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or install a diagnostic guard, invoke or synthesize a callback, widen its callable signature, change render-texture publication, or add side storage.`;
+  }
+  if (field === 'quadBatchWriterUniformColorScaleBias' && isOptionalNullableGlColorAdjustmentDataProperty(node)) {
+    return `${subject} gives the GL quad batch's uniform color-adjustment scratch slot both omission and explicit null, but its mode field is the authority and the represented scratch value has one empty state. registerGlColorAdjustmentMaterialFeature initializes the mode on opt-in; recordGlColorAdjustment normalizes an absent mode to NONE and the uniform slot with ?? null, writes the exact ColorScaleBias, TintMaterialData, or readonly number[] owner only when the first adjusted instance selects UNIFORM mode, and promotes that owner when later values diverge. flushGlColorAdjustmentMaterialFeature returns before reading the slot in NONE mode, otherwise normalizes it with ?? null and clears it to null after capture. Make quadBatchWriterUniformColorScaleBias a required ColorScaleBias | TintMaterialData | readonly number[] | null field and initialize it to null in createGlRenderStateRuntime; preserve the mode as the state-machine discriminant and the null clear after flush. Initializing a null header-owned scratch slot does not register the color-adjustment feature or retain its shader implementation. If empty, uniform, and promoted storage need a stronger invariant, model the batch fold as one named closed state whose uniform arm owns the exact adjustment value. The compiler will not choose or collapse an absence sentinel, infer a fold mode or identity adjustment, register the feature, compile or bind a shader, copy or materialize adjustment data, reinterpret or cast an owner, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getGlMeshProgramUniformLocationMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -977,6 +1030,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (glMeshProgramUniformLocation) return glMeshProgramUniformLocation;
   const glRenderPassTracking = getGlRenderPassTrackingMixedAbsencePropertyMessage(node, subject);
   if (glRenderPassTracking) return glRenderPassTracking;
+  const glRenderRuntimeInactiveSlot = getGlRenderRuntimeInactiveSlotMixedAbsencePropertyMessage(node, subject);
+  if (glRenderRuntimeInactiveSlot) return glRenderRuntimeInactiveSlot;
   const flightDocumentNodeInteraction = getFlightDocumentNodeInteractiveMetadataMixedAbsencePropertyMessage(
     node,
     subject,
