@@ -31514,7 +31514,9 @@ Resolver make_resolver(TextureRef texture) {
     expect(multiDomain.rule).toBe('cpp-dual-sentinel-optional-chain-projection-unproven');
     expect(multiDomain.message).toContain('requires one concrete receiver value domain');
     expect(multiDomain.message).toContain('one value alternative lowers through `?.` or an explicit `x != null` guard');
-    expect(multiDomain.message).toContain('several value alternatives need separate slots or one closed discriminated state');
+    expect(multiDomain.message).toContain(
+      'several value alternatives need separate slots or one closed discriminated state',
+    );
     expect(multiDomain.message).toContain('no nullish guard can choose which domain to project');
   });
 
