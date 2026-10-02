@@ -3291,6 +3291,8 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain('flight::host_sdl::cancel_animation_frame');
     expect(sourcePortability.findings[1]?.message).toContain('webHostLoop is the sole TypeScript production provider');
     expect(sourcePortability.findings[1]?.message).toContain('flight::host_sdl::request_animation_frame');
+    expect(sourcePortability.findings.every(({ message }) => message.includes('closed numeric'))).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('not arbitrary payload'))).toBe(true);
     expect(sourcePortability.findings.every(({ message }) => message.includes('AppLoopFrameHandle = number'))).toBe(
       true,
     );
@@ -3320,6 +3322,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 2,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createHostAppLoopWorkspaceFiles(false));

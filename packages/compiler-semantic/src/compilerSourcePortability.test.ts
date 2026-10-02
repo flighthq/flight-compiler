@@ -2370,9 +2370,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'interface:HostAppLoopCapability/method:cancelFrame.parameter:handle',
       'interface:HostAppLoopCapability/method:requestFrame.return',
     ]);
-    expect(report.findings[0]?.message).toContain('same exact numeric animation-frame handle');
+    expect(report.findings[0]?.message).toContain('same closed numeric animation-frame handle');
+    expect(report.findings[0]?.message).toContain('not arbitrary payload');
     expect(report.findings[0]?.message).toContain('handle as number');
     expect(report.findings[0]?.message).toContain('cancel_animation_frame');
+    expect(report.findings[1]?.message).toContain('closed numeric animation-frame handle');
+    expect(report.findings[1]?.message).toContain('not arbitrary payload or a provider-owned opaque token');
     expect(report.findings[1]?.message).toContain('webHostLoop is the sole TypeScript production provider');
     expect(report.findings[1]?.message).toContain('(time: number) => void callback');
     expect(report.findings[1]?.message).toContain('same browser high-resolution millisecond clock');

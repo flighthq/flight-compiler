@@ -3707,17 +3707,19 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('static_cast<flight::Any>(value)');
   });
 
-  it('keeps an intentionally erased loop handle opaque until the source closes its domain', () => {
+  it('classifies the HostAppLoop handle as a closed numeric identity rather than arbitrary payload', () => {
     const erased = emitIrModuleCpp(
-      lower(
-        'erased-loop-handle.ts',
-        `interface LoopBackend {
+      lowerPackage(
+        '@flighthq/types',
+        'HostAppLoop.ts',
+        `export interface HostAppLoopCapability {
            requestFrame(callback: (time: number) => void): unknown;
            cancelFrame(handle: unknown): void;
+           now(): number;
          }
          interface LoopState { frameHandle: unknown }
          export function replaceFrame(
-           backend: LoopBackend,
+           backend: HostAppLoopCapability,
            state: LoopState,
            callback: (time: number) => void,
          ): void {
@@ -3728,16 +3730,18 @@ describe('createCppCompilerBackend', () => {
       { runtimeProfile: 'flight-cpp' },
     ).contents;
     const closed = emitIrModuleCpp(
-      lower(
-        'closed-loop-handle.ts',
-        `type AppLoopFrameHandle = number;
-         interface LoopBackend {
+      lowerPackage(
+        '@flighthq/types',
+        'HostAppLoop.ts',
+        `export type AppLoopFrameHandle = number;
+         export interface HostAppLoopCapability {
            requestFrame(callback: (time: number) => void): AppLoopFrameHandle;
            cancelFrame(handle: AppLoopFrameHandle): void;
+           now(): number;
          }
          interface LoopState { frameHandle: AppLoopFrameHandle }
          export function replaceFrame(
-           backend: LoopBackend,
+           backend: HostAppLoopCapability,
            state: LoopState,
            callback: (time: number) => void,
          ): void {
@@ -3757,6 +3761,8 @@ describe('createCppCompilerBackend', () => {
     expect(erased).not.toContain('materialize_row');
     expect(closed).toContain('using AppLoopFrameHandle = double;');
     expect(closed).toContain('AppLoopFrameHandle frame_handle;');
+    expect(closed).toContain('std::function<AppLoopFrameHandle(std::function<void(double)>)> request_frame;');
+    expect(closed).toContain('std::function<void(AppLoopFrameHandle)> cancel_frame;');
     expect(closed).toContain('state->frame_handle = backend->request_frame(callback)');
     expect(closed).toContain('backend->cancel_frame(state->frame_handle)');
     expect(closed).not.toContain('flight::Any');
