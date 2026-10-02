@@ -4864,6 +4864,10 @@ describe('createCppCompilerBackend', () => {
     const nonNumericFailure = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(nonNumericTag.module, { runtimeProfile: 'flight-cpp' }),
     );
+    expect(nonNumericFailure).toMatchObject({
+      classification: 'source-portability',
+      rule: 'cpp-typeof-runtime-domain-unrepresented',
+    });
     expect(nonNumericFailure.message).toContain('typeof requires closed runtime type evidence');
 
     const unstable = lower(
@@ -4881,7 +4885,10 @@ describe('createCppCompilerBackend', () => {
       emitIrModuleCpp(unstable.module, { runtimeProfile: 'flight-cpp' }),
     );
     expect(unstable.diagnostics).toEqual([]);
-    expect(unstableFailure.rule).toBe('cpp-numeric-property-typeof-guard-unstable-read');
+    expect(unstableFailure).toMatchObject({
+      classification: 'compiler-restriction',
+      rule: 'cpp-numeric-property-typeof-guard-unstable-read',
+    });
   });
 
   it('uses exact imported storage for flightDocumentText closed keys and refuses a heterogeneous assertion', () => {
@@ -13412,7 +13419,7 @@ int main() {
   // `optional<Record>` lands in a slot declared `variant<Record, Null, Undefined>`; with it, the existing
   // contextual union construction widens the value into the target -- once, mapping the missing optional
   // to Null because Null is the absent alternative the source union names.
-  it('widens a local-callable argument into the target variant from the binding signature', () => {
+  it('retains numeric typeof evidence while widening a converted GL extension into a local callable', () => {
     const provider = ts.createSourceFile(
       '/flight/packages/types/src/GlContext.ts',
       `export interface GlContext extends Pick<WebGL2RenderingContext, 'getExtension'> {}`,
@@ -13501,6 +13508,21 @@ int main() {
     );
     // Each call widens its own argument, and each evaluates the source once into that local.
     expect(emitted.match(/auto contextual_union_source(_\d+)? = astc;/gu)).toHaveLength(2);
+    // The local callable keeps the Record value proof after that widening: optional-chain absence and a
+    // missing key both take the source fallback, while a present numeric cell is read through the same
+    // Record carrier. No assertion, native cast, or materialized replacement supplies the evidence.
+    expect(emitted).toContain(
+      'if (!std::holds_alternative<flight::Record<flight::String, double>>(optional_chain_receiver)) return -1.0;',
+    );
+    expect(emitted).toContain(
+      'const auto numeric_property_lookup = std::get<flight::Record<flight::String, double>>(optional_chain_receiver).get(numeric_property_key);',
+    );
+    expect(emitted).toContain('if (!numeric_property_lookup.has_value()) return -1.0;');
+    expect(emitted).toContain(
+      'return std::get<flight::Record<flight::String, double>>(optional_chain_receiver).get(numeric_property_key).value();',
+    );
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('materialize');
   });
 
   // The opposite sentinel does not borrow the proof: an asserted `undefined` union is not the null union
