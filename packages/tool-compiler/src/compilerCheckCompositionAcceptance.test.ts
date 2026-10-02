@@ -388,6 +388,81 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps all six Scene3D render-proxy absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createScene3DRenderProxyWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'colorMatrix',
+      'colorScaleBias',
+      'instanceColors',
+      'instanceMatrices',
+      'jointMatrices',
+      'normalMatrices',
+    ].map((name) => `interface:Scene3DRenderProxy/property:${name}`);
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('WebGPU instead packs instance colors beside matrices in one instance buffer'),
+      ),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 6,
+      directOccurrences: 6,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createScene3DRenderProxyWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both specialized entity guard set traps stable through check mode', () => {
     const source = createMemoryWorkspaceSource(createEntityGuardWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -779,6 +854,25 @@ export function createNode2D<R extends Node2DRuntime>(
     createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>),
   );
 }`,
+  };
+}
+
+function createScene3DRenderProxyWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Scene3DRenderProxy.ts': `interface ColorScaleBias { readonly redScale: number }
+export interface Scene3DRenderProxy {
+  alpha?: number;
+  colorMatrix${marker}: readonly number[] | null;
+  colorScaleBias${marker}: Readonly<ColorScaleBias> | null;
+  instanceColors${marker}: Readonly<Float32Array> | null;
+  instanceCount?: number;
+  instanceMatrices${marker}: Readonly<Float32Array> | null;
+  jointMatrices${marker}: Readonly<Float32Array> | null;
+  normalMatrices${marker}: Readonly<Float32Array> | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Scene3DRenderProxy } from './Scene3DRenderProxy.js';`,
   };
 }
 

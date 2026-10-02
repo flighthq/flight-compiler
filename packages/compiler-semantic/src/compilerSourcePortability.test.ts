@@ -4894,12 +4894,26 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain(
         `gives the reused per-draw proxy slot ${name} both an omitted state and explicit null`,
       );
-      expect(finding.message).toContain('GL and WebGPU producers write null to clear inactive');
-      expect(finding.message).toContain('consumers use nullish checks before binding or uploading');
+      expect(finding.message).toContain('the current renderers have one inactive state');
+      expect(finding.message).toContain(
+        'GL and WebGPU overwrite colorMatrix, colorScaleBias, jointMatrices, and normalMatrices with a value or null on every draw',
+      );
+      expect(finding.message).toContain(
+        'each writes instanceMatrices for an instanced draw before clearing it to null afterward',
+      );
+      expect(finding.message).toContain('GL likewise writes and clears its separate instanceColors slot');
+      expect(finding.message).toContain(
+        'WebGPU instead packs instance colors beside matrices in one instance buffer and never reads that slot',
+      );
+      expect(finding.message).toContain(
+        'Shader preparation treats null and undefined identically with nullish checks before binding or uploading',
+      );
       expect(finding.message).toContain(
         'Make all six colorMatrix, colorScaleBias, instanceColors, instanceMatrices, jointMatrices, and normalMatrices slots required nullable fields',
       );
-      expect(finding.message).toContain('initialize them to null, and overwrite or clear them for every draw');
+      expect(finding.message).toContain(
+        'initialize all six to null, and overwrite or clear every backend-owned slot before each draw',
+      );
       expect(finding.message).toContain('a reused proxy cannot retain prior-draw state');
       expect(finding.message).toContain('normalize them once at the boundary into that required internal record');
       expect(finding.message).toContain('will not choose between two equivalent absence sentinels');
