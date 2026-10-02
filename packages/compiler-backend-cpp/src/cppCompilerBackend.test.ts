@@ -13338,13 +13338,6 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
-  // Assets.ts's opaque-value-domain finding. The library is deliberately resource-type-agnostic: it decodes
-  // nothing itself and binds each asset *type* to its loader through an open adapter registry, so the payload
-  // is erased BY CONSTRUCTION rather than being a domain the compiler failed to close. The September corpus
-  // ledger listed this module under the unresolved-`auto`-placeholder family; that placeholder is gone, and
-  // the erased carriers below are what the source actually declares, so the classification is "arbitrary data
-  // already carried" and no guidance is warranted. The open-string key is the other half: `(string & {})` is
-  // every string, so the literal seeds collapse into `flight::String` instead of being enumerated.
   // Net.ts's opaque-value-domain finding. The transport's own domains are representable: NetMethod is an open
   // string that collapses to flight::String, headers is a plain record, NetBody is a CLOSED union of four
   // concrete alternatives, and NetResponseBody is arbitrary -- a union naming `unknown` is the top type in
@@ -13432,6 +13425,13 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(contents).toContain('flight::Any');
   });
 
+  // Assets.ts's opaque-value-domain finding. The library is deliberately resource-type-agnostic: it decodes
+  // nothing itself and binds each asset *type* to its loader through an open adapter registry, so the payload
+  // is erased BY CONSTRUCTION rather than being a domain the compiler failed to close. The September corpus
+  // ledger listed this module under the unresolved-`auto`-placeholder family; that placeholder is gone, and
+  // the erased carriers below are what the source actually declares, so the classification is "arbitrary data
+  // already carried" and no guidance is warranted. The open-string key is the other half: `(string & {})` is
+  // every string, so the literal seeds collapse into `flight::String` instead of being enumerated.
   it('classifies the asset library payload domain as arbitrary data already carried', () => {
     const emitted = emitIrModuleCpp(
       lower(
