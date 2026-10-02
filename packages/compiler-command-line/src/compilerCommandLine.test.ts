@@ -457,6 +457,37 @@ function source(moduleName: string, contents: string): CompilerCommandLineSource
   return { contents, moduleName, sourcePath: `/src/${moduleName}` };
 }
 
+describe('compileCompilerCommandLineRequest emit-path filter', () => {
+  it('writes only the selected subtree and reports the rest as skipped', () => {
+    const sources = [
+      source('Add.ts', 'export function add(value: number): number { return value + 1; }'),
+      source('Other.ts', 'export function other(value: number): number { return value + 2; }'),
+    ];
+    const run = (argv: readonly string[]) => {
+      const written = new Map<string, string>();
+      return {
+        result: compileCompilerCommandLineRequest({ argv }, capabilities(sources, written, [])),
+        written,
+      };
+    };
+
+    const filtered = run(['/src', '--target', 'cpp', '--out', '/out', '--emit-path', 'Add.ts']);
+    expect(filtered.written.size).toBe(1);
+    expect([...filtered.written.keys()][0]).toContain('add');
+
+    // Several prefixes in one option, and an unfiltered run is unchanged.
+    const both = run(['/src', '--target', 'cpp', '--out', '/out', '--emit-path', 'Add.ts,Other.ts']);
+    expect(both.written.size).toBe(2);
+    const all = run(['/src', '--target', 'cpp', '--out', '/out']);
+    expect(all.written.size).toBe(2);
+
+    // A prefix that selects nothing writes nothing, and is not a failure.
+    const none = run(['/src', '--target', 'cpp', '--out', '/out', '--emit-path', 'nope/']);
+    expect(none.written.size).toBe(0);
+    expect(none.result.exitCode).toBe(0);
+  });
+});
+
 describe('compileCompilerCommandLineRequest best-effort', () => {
   it('writes a manifest naming what each module became, and only when asked', () => {
     const sources = [source('Add.ts', 'export function add(value: number): number { return value + 1; }')];
@@ -500,6 +531,7 @@ describe('getCompilerCommandLineUsage', () => {
     expect(usage).toContain('--runtime-header');
     expect(usage).toContain('--runtime-profile');
     expect(usage).toContain('--best-effort');
+    expect(usage).toContain('--emit-path');
     expect(usage).toContain('--progress');
     expect(usage).toContain('--report');
   });

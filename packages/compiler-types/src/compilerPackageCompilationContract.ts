@@ -64,6 +64,15 @@ export interface CompileTypeScriptPackageGraphOptions<BackendOptions> {
    * produces exactly the dependency-closed output it always has.
    */
   readonly bestEffort?: boolean | undefined;
+  /**
+   * Restrict which modules are EMITTED, by portable source-path prefix; every module is still lowered, so a
+   * selected module resolves the types it imports from an unselected one. Absent or empty emits everything.
+   *
+   * This scopes a run's OUTPUT, not its analysis: a module outside the prefixes produces no file and no
+   * placeholder, and is reported as `skipped` rather than as a failure. It is the way to generate a subtree at a
+   * time -- useful on a corpus large enough that one run is hard to watch.
+   */
+  readonly emitPathPrefixes?: readonly string[] | undefined;
   readonly backendOptions: Readonly<BackendOptions>;
   readonly graph: Readonly<CompilerPackageGraph>;
   readonly moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined;
@@ -156,7 +165,11 @@ export interface CompilerPackageCompilationModuleReport {
   readonly module: CompilerModuleIdentity;
   readonly outputFiles: readonly string[];
   readonly refusals: readonly CompilerPackageCompilationRefusal[];
-  readonly status: 'emitted' | 'refused';
+  /**
+   * `skipped` means the run's emit-path filter did not select this module: it was lowered and it is not refused,
+   * it simply was not asked for, which is a different thing from a module that failed.
+   */
+  readonly status: 'emitted' | 'refused' | 'skipped';
 }
 
 export interface CompilerPackageCompilationPackageReport {

@@ -230,6 +230,65 @@ describe('compileTypeScriptPackageGraph', () => {
     ]);
   });
 
+  // The emit-path filter scopes OUTPUT without scoping analysis: every module is still lowered, so a selected
+  // module resolves what it imports from an unselected one, but only selected modules produce a file. A module
+  // the filter left out is reported as SKIPPED -- not refused -- because it was not asked for, and calling that a
+  // failure would make an intentionally narrow run read as a broken one.
+  it('emits only what an emit-path filter selects and reports the rest as skipped', () => {
+    const badA = source('@local/source', 'source', 'badA.ts', 'export const badA = 1;');
+    const dependent = source(
+      '@local/source',
+      'source',
+      'dependent.ts',
+      "import { badA } from './badA.js'; export function dependent(): number { return badA; }",
+    );
+    const badAIdentity = identity(badA, 'BadA');
+    const dependentIdentity = identity(dependent, 'Dependent');
+    const backend: CompilerBackend = {
+      emitModule(module) {
+        if (module.name !== 'Dependent') {
+          throw createBackendEmissionFailure('fixture', module, `unsupported ${module.name}`);
+        }
+        return [{ contents: module.name, path: `${module.name}.txt` }];
+      },
+      emitRefusalPlaceholder: (module) => ({ contents: '// placeholder', path: `placeholder/${module.name}.txt` }),
+      name: 'fixture',
+    };
+    const compile = (emitPathPrefixes: readonly string[]) =>
+      compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        bestEffort: true,
+        emitPathPrefixes,
+        graph: graph(
+          [],
+          [{ importer: dependentIdentity, specifier: './badA.js', target: badAIdentity }],
+          [{ dependencies: [], name: '@local/source', root: dependent.packageRoot }],
+        ),
+        sources: [dependent, badA],
+      });
+
+    // An exact path selects exactly one module, and the other is skipped rather than stubbed.
+    const exact = compile(['packages/source/src/dependent.ts']);
+    expect(exact.compilation.files.map((file) => file.path)).toEqual(['Dependent.txt']);
+    expect(exact.report.modules.map((module) => [module.module.name, module.status])).toEqual([
+      ['BadA', 'skipped'],
+      ['Dependent', 'emitted'],
+    ]);
+    expect(exact.report.bestEffort?.modules.map((module) => module.module.name)).toEqual(['Dependent']);
+
+    // A DIRECTORY prefix selects everything under it, and does not leak into a sibling directory that merely
+    // shares the prefix's spelling.
+    expect(compile(['packages/source/src']).compilation.files.map((file) => file.path)).toEqual([
+      'Dependent.txt',
+      'placeholder/BadA.txt',
+    ]);
+    expect(compile(['packages/source/sr']).compilation.files).toEqual([]);
+
+    // An empty filter is not a filter: the run emits everything, exactly as if it had not been passed.
+    expect(compile([]).compilation.files.map((file) => file.path)).toEqual(['Dependent.txt', 'placeholder/BadA.txt']);
+  });
+
   // Best-effort is one predicate wide: a module refused only because a DEPENDENCY refused still emits its own
   // real output, and a module refused for its own reasons gets a replaceable placeholder at its path instead of
   // nothing. Strict mode is untouched, which is the whole reason the mode is opt-in.

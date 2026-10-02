@@ -85,6 +85,7 @@ export function compileCompilerCommandLineRequest(
     backend,
     backendOptions,
     ...(parsed.bestEffort ? { bestEffort: true } : {}),
+    ...(parsed.emitPathPrefixes === undefined ? {} : { emitPathPrefixes: parsed.emitPathPrefixes }),
     graph: {
       entries: [],
       moduleDependencies: [],
@@ -413,11 +414,13 @@ const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp
   --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
   --runtime-header <path> Override the flight-cpp runtime include spelling
   --best-effort           Emit every module that lowered, plus a replaceable stub where one refused
+  --emit-path <prefixes>  Emit only modules under these source-path prefixes (comma separated)
   --progress              Write bounded package-compilation progress as JSON Lines to stderr
   --report                Report refusals without failing the run`;
 
 interface ParsedCompilerCommandLineRequest {
   readonly bestEffort: boolean;
+  readonly emitPathPrefixes?: readonly string[] | undefined;
   readonly emissionMode: HaxeCompilerEmissionMode;
   readonly outputDirectory: string;
   readonly packageName: string;
@@ -484,6 +487,11 @@ function parseCompilerCommandLineRequest(
   if (runtimeProfile !== 'flight-cpp' && runtimeProfile !== 'standard-library') {
     return { failure: '--runtime-profile must be flight-cpp or standard-library' };
   }
+  // A comma-separated list, because the parser accepts each option once and a run may want several subtrees.
+  const emitPathPrefixes = (named.get('emit-path') ?? '')
+    .split(',')
+    .map((prefix) => prefix.trim())
+    .filter((prefix) => prefix.length > 0);
   const runtimeHeader = named.get('runtime-header');
   if ((named.has('runtime-profile') || runtimeHeader !== undefined) && target !== 'cpp') {
     return { failure: '--runtime-profile and --runtime-header require --target cpp' };
@@ -498,6 +506,7 @@ function parseCompilerCommandLineRequest(
   }
   return {
     bestEffort,
+    ...(emitPathPrefixes.length === 0 ? {} : { emitPathPrefixes }),
     emissionMode,
     outputDirectory,
     packageName: named.get('package') ?? '@local/source',
@@ -517,6 +526,7 @@ function isPortableIncludePath(value: string): boolean {
 
 const commandLineValueOptions = new Set([
   '--emission-mode',
+  '--emit-path',
   '--out',
   '--package',
   '--root-package',

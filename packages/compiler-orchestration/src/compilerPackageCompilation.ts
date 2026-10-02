@@ -129,11 +129,13 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     });
   }
   const bestEffort = options.bestEffort === true;
+  const emitPathPrefixes = options.emitPathPrefixes;
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
 
-  const emissionModules = modules.filter((module) =>
-    isCompilerPackageGraphModuleEmittable(records.get(getCompilerPackageGraphModuleKey(module))!, bestEffort),
-  );
+  const emissionModules = modules.filter((module) => {
+    if (!isCompilerPackageGraphModuleSelectedByEmitPaths(module, emitPathPrefixes)) return false;
+    return isCompilerPackageGraphModuleEmittable(records.get(getCompilerPackageGraphModuleKey(module))!, bestEffort);
+  });
   const moduleResolution = createCompilerPackageGraphModuleResolution(moduleDependencies, options.moduleResolution);
   const emitContext = {
     moduleResolution,
@@ -239,6 +241,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     const emitPlaceholder = options.backend.emitRefusalPlaceholder;
     for (const key of [...records.keys()].sort(compareTextCodeUnits)) {
       const record = records.get(key)!;
+      if (!isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes)) continue;
       if (isCompilerPackageGraphModuleEmittable(record, bestEffort)) continue;
       const refusal = [...record.refusals].sort(compareCompilerPackageGraphRefusals)[0];
       if (!refusal) continue;
@@ -263,16 +266,28 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   }
 
   const files = [...records.values()]
-    .filter((record) => isCompilerPackageGraphModuleEmittable(record, bestEffort))
+    .filter(
+      (record) =>
+        isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes) &&
+        isCompilerPackageGraphModuleEmittable(record, bestEffort),
+    )
     .flatMap((record) => record.files)
     .concat(placeholderFiles)
     .sort(compareCompilerPackageGraphFiles);
   validateCompilerPackageGraphOutput(files, options);
-  const moduleReports = createCompilerPackageGraphModuleReports(records, refusedDependencies, bestEffort);
-  const fileReports = createCompilerPackageGraphFileReports(records, bestEffort);
+  const moduleReports = createCompilerPackageGraphModuleReports(
+    records,
+    refusedDependencies,
+    bestEffort,
+    emitPathPrefixes,
+  );
+  const fileReports = createCompilerPackageGraphFileReports(records, bestEffort, emitPathPrefixes);
   const bestEffortManifest: CompilerPackageCompilationBestEffortManifest | undefined = bestEffort
     ? {
         modules: [...records.values()]
+          // Only what this run was asked to generate: a skipped module produced no file, and the module reports
+          // are where a reader looks to see that it was out of scope rather than missing.
+          .filter((record) => isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes))
           .sort((left, right) => compareCompilerPackageGraphModules(left.module, right.module))
           .map((record): CompilerPackageCompilationBestEffortModule => {
             const key = getCompilerPackageGraphModuleKey(record.module);
@@ -474,9 +489,14 @@ function createCompilerPackageGraphFailure(
 function createCompilerPackageGraphFileReports(
   records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
   bestEffort: boolean,
+  emitPathPrefixes: readonly string[] | undefined,
 ): CompilerPackageCompilationFileReport[] {
   return [...records.values()]
-    .filter((record) => isCompilerPackageGraphModuleEmittable(record, bestEffort))
+    .filter(
+      (record) =>
+        isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes) &&
+        isCompilerPackageGraphModuleEmittable(record, bestEffort),
+    )
     .flatMap((record) =>
       record.files.map((file) => ({
         dependencies: [...(file.dependencies ?? [])],
@@ -498,6 +518,9 @@ function createCompilerPackageGraphInitialization(
     // evaluation plan describes what can actually be RUN, and a module whose dependency is unavailable cannot be
     // evaluated however willing we are to write its file out. Widening this to the best-effort predicate admits a
     // dependency-incomplete module whose dependency is still refused, and the plan then fails building it.
+    // Deliberately NOT scoped by the emit-path filter. The filter scopes OUTPUT, not the plan: a skipped module
+    // was never asked to emit, so it never had the chance to refuse, and treating it as unavailable here would
+    // fail its importers with `missing-dependency` for a dependency that is merely out of this run's scope.
     const availableKeys = new Set(
       [...records].filter(([, record]) => record.refusals.length === 0).map(([key]) => key),
     );
@@ -540,14 +563,17 @@ function createCompilerPackageGraphModuleReports(
   records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
   refusedDependencies: ReadonlyMap<string, readonly string[]>,
   bestEffort: boolean,
+  emitPathPrefixes: readonly string[] | undefined,
 ): CompilerPackageCompilationModuleReport[] {
   return [...records.values()]
     .sort((left, right) => compareCompilerPackageGraphModules(left.module, right.module))
     .map((record) => ({
       module: cloneCompilerPackageGraphIdentity(record.module),
-      outputFiles: isCompilerPackageGraphModuleEmittable(record, bestEffort)
-        ? record.files.map((file) => file.path).sort(compareTextCodeUnits)
-        : [],
+      outputFiles:
+        isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes) &&
+        isCompilerPackageGraphModuleEmittable(record, bestEffort)
+          ? record.files.map((file) => file.path).sort(compareTextCodeUnits)
+          : [],
       refusals: [...record.refusals]
         .sort(compareCompilerPackageGraphRefusals)
         .map((refusal) =>
@@ -556,9 +582,14 @@ function createCompilerPackageGraphModuleReports(
             refusedDependencies.get(getCompilerPackageGraphModuleKey(record.module)),
           ),
         ),
-      // A module that produced output reports as emitted in either mode; an inherited refusal still appears in
-      // its `refusals`, so nothing is lost by saying so.
-      status: isCompilerPackageGraphModuleEmittable(record, bestEffort) ? ('emitted' as const) : ('refused' as const),
+      // A module the filter did not select was not asked for, which is a different answer from one that
+      // failed, and saying so is what keeps a scoped run from reading as a broken one. Otherwise a module that
+      // produced output reports as emitted in either mode; an inherited refusal still appears in its `refusals`.
+      status: !isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes)
+        ? ('skipped' as const)
+        : isCompilerPackageGraphModuleEmittable(record, bestEffort)
+          ? ('emitted' as const)
+          : ('refused' as const),
     }));
 }
 
@@ -883,6 +914,21 @@ const compilerRestrictionInitializationCodes: ReadonlySet<string> = new Set([
   'top-level-await',
   'unsupported-default-expression-order',
 ]);
+
+// Whether the run's emit-path filter asked for this module. A prefix matches the module's own portable source
+// path, either exactly or as a directory it sits under, so `packages/types` selects `packages/types/src/Asset.ts`
+// without also selecting `packages/types-extra/...`.
+function isCompilerPackageGraphModuleSelectedByEmitPaths(
+  module: Readonly<IrModule>,
+  emitPathPrefixes: readonly string[] | undefined,
+): boolean {
+  if (emitPathPrefixes === undefined || emitPathPrefixes.length === 0) return true;
+  const source = normalizePathPortable(module.source);
+  return emitPathPrefixes.some((rawPrefix) => {
+    const prefix = normalizePathPortable(rawPrefix).replace(/\/+$/u, '');
+    return prefix.length > 0 && (source === prefix || source.startsWith(`${prefix}/`));
+  });
+}
 
 // Whether a module contributes its own output. A module emits when nothing refused it. Best-effort widens that
 // by exactly one case: a module refused only because a DEPENDENCY refused still emits, because the module itself
