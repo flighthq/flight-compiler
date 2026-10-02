@@ -19226,7 +19226,8 @@ int main() {
       '@flighthq/signals',
       'represented-callables.ts',
       `const nullSignalEmit = (): void => {};
-       interface Signal<T extends (...args: any[]) => void> { emit: T }
+       interface SignalData { cancelled: boolean }
+       interface Signal<T extends (...args: any[]) => void> { data: SignalData | null; emit: T }
        interface SignalConnection<T extends (...args: any[]) => void> {
          connected: boolean;
          paused: boolean;
@@ -19235,6 +19236,7 @@ int main() {
        }
        export function initializeSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
          signal.emit = nullSignalEmit as unknown as T;
+         signal.data = null;
        }
        export function finishSafeDispatch<T extends (...args: any[]) => void>(signal: Signal<T>): void {
          signal.emit = nullSignalEmit as unknown as T;
@@ -19275,6 +19277,35 @@ int main() {
     expect(emitted).not.toContain('structural_ref_cast');
     expect(emitted).not.toContain('make_ref');
     expect(emitted).not.toContain('materialize');
+
+    const assertionFreeSignal = lowerPackage(
+      '@flighthq/signals',
+      'assertion-free-signal.ts',
+      `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+       interface SignalData { cancelled: boolean }
+       interface Signal<T extends (...args: any[]) => void> {
+         data: SignalData | null;
+         emit: SignalDispatch<T>;
+       }
+       function createNullSignalDispatch<T extends (...args: any[]) => void>(): SignalDispatch<T> {
+         return (..._args: Parameters<T>): void => {};
+       }
+       export function initializeSignal<T extends (...args: any[]) => void>(signal: Signal<T>): void {
+         signal.emit = createNullSignalDispatch<T>();
+         signal.data = null;
+       }`,
+    );
+    expect(assertionFreeSignal.diagnostics).toEqual([]);
+    const assertionFreeSignalFailure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(assertionFreeSignal.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    expect(assertionFreeSignalFailure).toMatchObject({
+      classification: 'compiler-restriction',
+      rule: 'cpp-callable-type-unresolvable',
+    });
+    expect(assertionFreeSignalFailure.message).toContain(
+      'Parameters<T> requires a statically resolvable non-generic callable type',
+    );
 
     const assertionFree = lowerPackage(
       '@flighthq/signals',

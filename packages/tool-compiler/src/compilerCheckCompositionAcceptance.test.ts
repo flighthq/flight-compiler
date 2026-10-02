@@ -553,6 +553,104 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps signal initialization assertion source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createSignalInitializationWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/signals'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const sourceIdentity =
+      'flight-compiler-source-portability-finding/1:["@flighthq/signals","packages/signals/src/signal.ts","unchecked-double-assertion","function:initializeSignal","sha256:b5bbae897f9e913d563ac4e91c64e4b602a758962e348006f67b9b98160b8d9e"]:0';
+    const checkIdentity = `flight-compiler-check-finding/1:${JSON.stringify([
+      '@flighthq/signals',
+      'packages/signals/src/signal.ts',
+      'Signal',
+      'source',
+      'source-portability',
+      'unchecked-double-assertion',
+      sourceIdentity,
+    ])}`;
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toMatchObject([
+      {
+        identity: sourceIdentity,
+        rule: 'unchecked-double-assertion',
+        subject: 'function:initializeSignal',
+      },
+    ]);
+    expect(sourcePortability.findings).toHaveLength(1);
+    expect(sourcePortability.findings[0]?.message).toContain('finishEntity returns that same owner');
+    expect(sourcePortability.findings[0]?.message).toContain('There is no cloneSignal or signal-specific disposer');
+    expect(sourcePortability.findings[0]?.message).toContain('createNullSignalDispatch<T>()');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'current C++ storage emission cannot resolve Parameters<T>',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'no named initialization operation alone is end-to-end portable',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist this bridge');
+    expect(report.directFindings).toMatchObject([
+      {
+        code: 'source-portability',
+        identity: checkIdentity,
+        policyClass: 'source-portability',
+        rule: 'unchecked-double-assertion',
+        sourceFindingIdentity: sourceIdentity,
+        sourceFindingSubject: 'function:initializeSignal',
+        stage: 'source',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [checkIdentity],
+      passed: false,
+    });
+
+    const assertionFreeSource = createMemoryWorkspaceSource(createSignalInitializationWorkspaceFiles(false));
+    const assertionFreeInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/signals'],
+      source: assertionFreeSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(assertionFreeInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps signal-connection callable and owner assertions distinct through check mode', () => {
     const source = createMemoryWorkspaceSource(createSignalConnectionWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -5849,6 +5947,51 @@ export function createGuardedEntityRuntime(runtime: EntityRuntime): EntityRuntim
   });
 }`,
     '/flight/packages/entity/src/index.ts': `export { createGuardedEntity, createGuardedEntityRuntime } from './guards.js';`,
+  };
+}
+
+function createSignalInitializationWorkspaceFiles(asserted: boolean): Record<string, string> {
+  const signal = asserted
+    ? `interface SignalData<T extends (...args: any[]) => void> { slots: (T | null)[] }
+interface Signal<T extends (...args: any[]) => void> { data: SignalData<T> | null; emit: T }
+type SignalConstruction<T extends (...args: any[]) => void> = Signal<T>;
+declare const allocateSignal: <T extends (...args: any[]) => void>() => SignalConstruction<T>;
+declare const finishSignal: <T extends (...args: any[]) => void>(out: SignalConstruction<T>) => Signal<T>;
+const nullSignalEmit = (): void => {};
+export function createSignal<T extends (...args: any[]) => void>(): Signal<T> {
+  const out = allocateSignal<T>();
+  initializeSignal(out);
+  return finishSignal(out);
+}
+export function initializeSignal<T extends (...args: any[]) => void>(out: SignalConstruction<T>): void {
+  out.emit = nullSignalEmit as unknown as T;
+  out.data = null;
+}`
+    : `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+interface SignalData<T extends (...args: any[]) => void> { slots: (T | null)[] }
+interface Signal<T extends (...args: any[]) => void> {
+  data: SignalData<T> | null;
+  emit: SignalDispatch<T>;
+}
+type SignalConstruction<T extends (...args: any[]) => void> = Signal<T>;
+declare const allocateSignal: <T extends (...args: any[]) => void>() => SignalConstruction<T>;
+declare const finishSignal: <T extends (...args: any[]) => void>(out: SignalConstruction<T>) => Signal<T>;
+function createNullSignalDispatch<T extends (...args: any[]) => void>(): SignalDispatch<T> {
+  return (..._args: Parameters<T>): void => {};
+}
+export function createSignal<T extends (...args: any[]) => void>(): Signal<T> {
+  const out = allocateSignal<T>();
+  initializeSignal(out);
+  return finishSignal(out);
+}
+export function initializeSignal<T extends (...args: any[]) => void>(out: SignalConstruction<T>): void {
+  out.emit = createNullSignalDispatch<T>();
+  out.data = null;
+}`;
+  return {
+    '/flight/packages/signals/package.json': createPackageManifest('@flighthq/signals'),
+    '/flight/packages/signals/src/index.ts': `export { createSignal, initializeSignal } from './signal.js';`,
+    '/flight/packages/signals/src/signal.ts': signal,
   };
 }
 

@@ -6771,6 +6771,78 @@ export function read<Value extends { data: object }>(value: Readonly<Partial<Inn
     expect(JSON.stringify(returned.expression.body)).toContain('"name":"slots"');
   });
 
+  it('initializes and finishes one signal owner through a named no-op dispatch without assertions', () => {
+    const result = lowerTypeScriptSource(
+      ts.createSourceFile(
+        '/flight/packages/signals/src/signal.ts',
+        `type SignalDispatch<T extends (...args: any[]) => void> = (...args: Parameters<T>) => void;
+       interface Signal<T extends (...args: any[]) => void> {
+         runtime: object | undefined;
+         data: object | null;
+         emit: SignalDispatch<T>;
+       }
+       interface SignalConstruction<T extends (...args: any[]) => void> {
+         runtime: object | undefined;
+         data: object | null;
+         emit: SignalDispatch<T>;
+       }
+       declare const allocateSignal: <T extends (...args: any[]) => void>() => SignalConstruction<T>;
+       declare const finishSignal: <T extends (...args: any[]) => void>(out: SignalConstruction<T>) => Signal<T>;
+       function createNullSignalDispatch<T extends (...args: any[]) => void>(): SignalDispatch<T> {
+         return (..._args: Parameters<T>): void => {};
+       }
+       export function initializeSignal<T extends (...args: any[]) => void>(
+         out: SignalConstruction<T>,
+       ): void {
+         out.emit = createNullSignalDispatch<T>();
+         out.data = null;
+       }
+       export function createSignal<T extends (...args: any[]) => void>(): Signal<T> {
+         const out = allocateSignal<T>();
+         initializeSignal(out);
+         return finishSignal(out);
+       }`,
+        ts.ScriptTarget.Latest,
+        true,
+      ),
+      { packageName: '@flighthq/signals', upstreamDirectory: '/flight' },
+    );
+    const initialize = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'initializeSignal',
+    );
+    const create = result.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'createSignal',
+    );
+    if (initialize?.kind !== 'function' || create?.kind !== 'function' || create.body[0]?.kind !== 'variable') {
+      throw new Error('Expected normalized signal construction functions');
+    }
+    const out = create.body[0].declarations[0];
+    if (!out || !('binding' in out)) throw new Error('Expected retained signal construction owner');
+    const assertions: IrExpression[] = [];
+    const ownerReferences: IrExpression[] = [];
+    analyzeIrModuleTraversal(result.module, {
+      expression(expression) {
+        if (expression.kind === 'cast') assertions.push(expression);
+        if (
+          expression.kind === 'identifier' &&
+          expression.reference.kind === 'binding' &&
+          expression.reference.binding.id === out.binding.id
+        ) {
+          ownerReferences.push(expression);
+        }
+      },
+    });
+
+    expect(result.diagnostics).toEqual([]);
+    expect(assertions).toEqual([]);
+    expect(ownerReferences).toHaveLength(2);
+    expect(JSON.stringify(initialize.body)).toContain('"name":"createNullSignalDispatch"');
+    expect(JSON.stringify(initialize.body)).toContain('"name":"emit"');
+    expect(JSON.stringify(initialize.body)).toContain('"name":"data"');
+    expect(JSON.stringify(create.body)).toContain('"name":"allocateSignal"');
+    expect(JSON.stringify(create.body)).toContain('"name":"finishSignal"');
+  });
+
   it('retains named tracked-slot and scope-disconnect operations without owner assertions', () => {
     const result = lowerTypeScriptSource(
       ts.createSourceFile(
