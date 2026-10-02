@@ -14699,6 +14699,84 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // The writable-capability family, which the six node-package refusals share. Its invariant is stronger than
+  // the previous two lanes': this is not a missing proof but a FALSE CLAIM. A readonly row never becomes
+  // writable, because the boundary the value came through said its subject must not be mutated through it, and
+  // no cast, copy, or re-view can carry a capability the source withheld. The assertions in that family claim
+  // authority the source deliberately refused, so no owner or capability evidence can prove them -- there is
+  // nothing to find, because the capability was never granted.
+  //
+  // The trigger is exact and worth pinning, because it is what separates this refusal from an ordinary
+  // same-shape assertion: the source must resolve as a READONLY structural row AND the asserted target must
+  // declare members the source does not carry. Without the absent members there is no claim to refuse, which
+  // the third case below pins by emitting.
+  //
+  // TWO GENUINELY DIFFERENT SHAPES live in the family, and they need different source repairs:
+  //   - a readonly RUNTIME accessor asserted to a wider writable runtime. The repair is a mutable-source
+  //     accessor that returns the full writable owner from the typed runtime slot, keeping the readonly
+  //     accessor for reads.
+  //   - a readonly NODE asserted to a writable node. The repair is to split the contracts by authority:
+  //     readonly views on the read paths, and a separate mutable entry for the paths that really mutate.
+  // Both are pinned below, so the distinction is recorded rather than left to whoever reads the six messages.
+  //
+  // FLAGGED RATHER THAN DEEPENED: this one rule already carries SIX file-specific remediations, each keyed on
+  // the module's package, exact source path, accessor name, and exact emitted type text, and each running one
+  // to two thousand characters. The rule also has a general answer, including a general refinement for the
+  // retained-owner mismatch, so the bespoke texts are both redundant and path-coupled. That is the
+  // file-specific-exception pattern at six times the scale seen on nodeOrderList, and it is reported rather
+  // than extended here.
+  it('refuses a readonly structural row asserted into a wider writable one', () => {
+    const emitCase = (body: string) =>
+      emitIrModuleCpp(
+        lower(
+          'writableCapability.ts',
+          `export interface NodeRuntime<Traits extends object> {
+             parent: NodeRuntime<Traits> | null;
+             traits: Traits;
+           }
+           export interface NodeOf<Traits extends object> { readonly traits: Traits }
+           ${body}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      );
+
+    // Shape one: the readonly RUNTIME accessor.
+    const runtime = captureBackendEmissionFailure(() =>
+      emitCase(
+        `export function f(runtime: Readonly<NodeRuntime<object>>): NodeRuntime<object> & { readonly bounds: number } {
+           return runtime as NodeRuntime<object> & { readonly bounds: number };
+         }`,
+      ),
+    );
+    expect(runtime.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(runtime.classification).toBe('source-portability');
+    expect(runtime.message).toContain('a readonly row never becomes writable');
+    expect(runtime.message).toContain('no cast, copy, or re-view can carry a capability the source withheld');
+
+    // Shape two: the readonly NODE. Same rule and classification, different owner in the message.
+    const node = captureBackendEmissionFailure(() =>
+      emitCase(
+        `export function f(node: Readonly<NodeOf<object>>): NodeOf<object> & { readonly extra: number } {
+           return node as NodeOf<object> & { readonly extra: number };
+         }`,
+      ),
+    );
+    expect(node.rule).toBe(runtime.rule);
+    expect(node.classification).toBe(runtime.classification);
+    expect(node.message).toContain('a readonly row never becomes writable');
+
+    // The boundary: with no member the source lacks there is no authority claim to refuse, so the same
+    // readonly-to-writable assertion on the same owner EMITS. This is what makes the refusal about the
+    // withheld capability rather than about asserting a readonly type.
+    expect(
+      emitCase(
+        `export function f(runtime: Readonly<NodeRuntime<object>>): NodeRuntime<object> {
+           return runtime as NodeRuntime<object>;
+         }`,
+      ).contents,
+    ).toContain('inline');
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
