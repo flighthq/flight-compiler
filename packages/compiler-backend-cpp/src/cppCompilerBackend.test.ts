@@ -12046,12 +12046,19 @@ export function use(s: S): number { ${body} }`,
       ).toContain('holds_alternative<flight::Null>');
     }
 
-    // The callable slot: `?.` has two sentinels to test, and the guard the message names lowers.
+    // The callable slot has one exact value alternative, so `?.` can positively select it while preserving
+    // both sentinel tags. The loose guard remains the equivalent explicit source form.
     const callable = `export interface S2 { readonly flushPendingDraws?: ((state: S2) => void) | null }`;
-    const optionalCall = refusal(`${callable}
-export function run(s: S2): void { s.flushPendingDraws?.(s); }`);
-    expect(optionalCall.rule).toBe('cpp-dual-sentinel-optional-chain-projection-unproven');
-    expect(optionalCall.message).toContain('Test both at once with `x != null`');
+    const optionalCall = emitIrModuleCpp(
+      lower(
+        'gl-flush-optional.ts',
+        `${callable}
+export function run(s: S2): void { s.flushPendingDraws?.(s); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(optionalCall).toContain('holds_alternative<std::function<void(');
+    expect(optionalCall).toContain('std::get<std::function<void(');
     expect(
       emitIrModuleCpp(
         lower(
