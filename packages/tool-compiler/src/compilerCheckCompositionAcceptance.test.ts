@@ -1758,6 +1758,86 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the unresolved Tray creation error domains source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createTrayCreateResultWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'type:TrayCreateProviderResult/arm:outcome=invalid-icon/property:error',
+      'type:TrayCreateProviderResult/arm:outcome=runtime-api-unavailable/property:error',
+      'type:TrayCreateProviderResult/arm:outcome=tray-create-failed/property:error',
+    ];
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'opaque-value-domain', subject })),
+    );
+    expect(sourcePortability.findings.every(({ message }) => message.includes('representation is not the gap'))).toBe(
+      true,
+    );
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('unguarded member access across a Tray result union is a separate source-narrowing issue'),
+      ),
+    ).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createTrayCreateResultWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the three log transport domains source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createLogWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -3978,6 +4058,28 @@ export interface NetResponse {
   NetResponse,
   NetResponseBody,
 } from './Net.js';`,
+  };
+}
+
+function createTrayCreateResultWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const error = opaque ? 'error?: unknown' : 'error: TrayErrorPayload | null';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Tray.ts': `export interface TrayErrorPayload {
+  readonly code: string;
+  readonly message: string;
+  readonly operation: string;
+}
+export type TrayCreateProviderResult =
+  | { readonly outcome: 'created' }
+  | { readonly outcome: 'cancelled' }
+  | { readonly ${error}; readonly outcome: 'runtime-api-unavailable' }
+  | { readonly ${error}; readonly outcome: 'invalid-icon' }
+  | { readonly ${error}; readonly outcome: 'tray-create-failed' };`,
+    '/flight/packages/types/src/index.ts': `export type {
+  TrayCreateProviderResult,
+  TrayErrorPayload,
+} from './Tray.js';`,
   };
 }
 

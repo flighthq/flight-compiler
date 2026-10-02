@@ -3459,12 +3459,12 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
   });
 
-  it('identifies the exact Tray result errors that preserve genuinely opaque host payloads', () => {
+  it('identifies the exact Tray result errors whose public domains remain source-owned', () => {
     const opaqueText = `interface TrayDestroyFailure {
          readonly error?: unknown;
          readonly step: 'native-resource';
        }
-       type TrayCreateCapabilityResult =
+       type TrayCreateProviderResult =
          | { readonly error?: unknown; readonly outcome: 'runtime-api-unavailable' }
          | { readonly error?: unknown; readonly outcome: 'invalid-icon' }
          | { readonly error?: unknown; readonly outcome: 'tray-create-failed' };
@@ -3517,6 +3517,13 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'packages/types/src/Tray.ts',
       `type OtherResult = { readonly error?: unknown; readonly outcome: 'runtime-api-unavailable' };`,
     );
+    const legacyName = input(
+      'packages/types/src/Tray.ts',
+      `type TrayCreateCapabilityResult = {
+         readonly error?: unknown;
+         readonly outcome: 'runtime-api-unavailable';
+       };`,
+    );
     const anyProbe = input(
       'packages/types/src/Tray.ts',
       `type TrayReleaseResult = { readonly error?: any; readonly outcome: 'release-failed' };`,
@@ -3538,9 +3545,9 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'type:TrayBalloonDisplayResult/arm:outcome=balloon-display-failed/property:error',
       'type:TrayBalloonRemoveResult/arm:outcome=balloon-remove-failed/property:error',
       'type:TrayBoundsResult/arm:outcome=bounds-read-failed/property:error',
-      'type:TrayCreateCapabilityResult/arm:outcome=invalid-icon/property:error',
-      'type:TrayCreateCapabilityResult/arm:outcome=runtime-api-unavailable/property:error',
-      'type:TrayCreateCapabilityResult/arm:outcome=tray-create-failed/property:error',
+      'type:TrayCreateProviderResult/arm:outcome=invalid-icon/property:error',
+      'type:TrayCreateProviderResult/arm:outcome=runtime-api-unavailable/property:error',
+      'type:TrayCreateProviderResult/arm:outcome=tray-create-failed/property:error',
       'type:TrayDoubleClickPolicyUpdateResult/arm:outcome=double-click-policy-update-failed/property:error',
       'type:TrayEventAttachResult/arm:outcome=subscription-failed/property:error',
       'type:TrayImageUpdateResult/arm:outcome=image-update-failed/property:error',
@@ -3582,10 +3589,13 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(message).toContain('neither a detection-only probe nor a normalized value: it is genuinely opaque');
       expect(message).toContain('named closed TrayErrorPayload');
       expect(message).toContain('required TrayErrorPayload | null');
-      expect(message).toContain('make error required unknown');
-      expect(message).toContain('reviewed source-portability exception for this exact property');
+      expect(message).toContain('representation is not the gap');
+      expect(message).toContain(
+        'unguarded member access across a Tray result union is a separate source-narrowing issue',
+      );
+      expect(message).toContain('Do not whitelist these public result fields');
       expect(message).toContain('can lower the current guarded presence test and exact value forwarding');
-      expect(message).toContain('target-specific Any carrier');
+      expect(message).toContain('define the portable payload domain');
       expect(message).toContain('insert a cast');
       expect(message).toContain('collapse or invent an absence sentinel');
       expect(message).toContain('copy or materialize the payload');
@@ -3595,6 +3605,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       [renamed, 1],
       [sameBasename, 1],
       [unrelated, 1],
+      [legacyName, 1],
       [anyProbe, 1],
       [requiredProbe, 1],
       [nullableProbe, 2],
@@ -3604,19 +3615,6 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(findings.every((finding) => !finding.message.includes('public Tray result boundary'))).toBe(true);
       expect(findings.every((finding) => !finding.message.includes('none observes own-property presence'))).toBe(true);
     }
-
-    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
-      exceptionPolicy: {
-        exceptions: report.findings.map((finding) => ({
-          findingIdentity: finding.identity,
-          reason: 'Tray deliberately returns the provider-owned payload only for unexamined host diagnostics.',
-          rule: 'opaque-value-domain' as const,
-        })),
-        schema: 'flight-compiler-source-portability-exceptions/1',
-      },
-    });
-    expect(reviewed.findings).toEqual([]);
-    expect(reviewed.acceptedExceptions).toHaveLength(22);
   });
 
   it('keeps Tray creation wrapper errors at their proven provider-opaque boundary', () => {
