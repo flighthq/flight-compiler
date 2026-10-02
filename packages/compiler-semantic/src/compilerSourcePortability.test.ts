@@ -5910,40 +5910,51 @@ describe('analyzeTypeScriptSourcePortability', () => {
       },
     ]);
     const morph = findings[0]!.message;
-    expect(morph).toContain('mesh deformation slot morph both an omitted state and explicit null');
+    expect(morph).toContain('live mesh morph slot both omission and explicit null');
     expect(morph).toContain('createMesh omits morph');
-    expect(morph).toContain('cloneMesh and scene-document import assign it only when a MeshMorph is present');
-    expect(morph).toContain('updateMeshMorph, getMeshDeformer, animation routing, and the GL deform guard');
-    expect(morph).toContain('GL and WebGPU draw the geometry that preparation updates');
-    expect(morph).toContain('Make morph an optional non-null MeshMorph field');
-    expect(morph).toContain('infer or create a morph');
-    expect(morph).toContain('rewrite or clone the mesh or its geometry');
+    expect(morph).toContain('buildDocumentNode assigns the exact Scene3DDocument MeshMorph owner only when present');
+    expect(morph).toContain('cloneMesh first detaches geometry whenever either deformer is present');
+    expect(morph).toContain('shares its immutable targets, copies its mutable weight array');
+    expect(morph).toContain('prepareScene3DMorph drives updateMeshMorph');
+    expect(morph).toContain("updateMeshSkin's composed-deformation refresh");
+    expect(morph).toContain('GL and WebGPU draw or upload the geometry');
+    expect(morph).toContain('Make Mesh.morph an optional non-null MeshMorph field');
+    expect(morph).toContain("preserving the clone's target sharing, weight copy, and detached geometry");
+    expect(morph).toContain('infer or create a morph or bind pose');
 
     const skin = findings[1]!.message;
-    expect(skin).toContain('mesh deformation slot skin both an omitted state and explicit null');
+    expect(skin).toContain('live mesh skin slot both omission and explicit null');
     expect(skin).toContain('createMesh omits skin');
-    expect(skin).toContain('cloneMesh and scene-document import assign it only when a Skin is present');
-    expect(skin).toContain('updateMeshSkin and prepareMeshSkinning return on a nullish skin');
-    expect(skin).toContain('GL forward and shadow draws require skin != null');
+    expect(skin).toContain('applyDocumentSkins assigns an exact resolved Skin');
+    expect(skin).toContain('cloneMesh detaches geometry whenever either deformer is present');
+    expect(skin).toContain('shares the exact present Skin and its Skeleton3D owner');
+    expect(skin).toContain('updateMeshSkin and prepareMeshSkinning return for a nullish slot');
+    expect(skin).toContain('GL forward and shadow paths require skin != null');
     expect(skin).toContain('the WebGPU skin adapter returns false for skin == null');
-    expect(skin).toContain('Make skin an optional non-null Skin field');
-    expect(skin).toContain('infer or create a skin or palette');
+    expect(skin).toContain('Make Mesh.skin an optional non-null Skin field');
+    expect(skin).toContain("A future skin-removal lifecycle must clear this mesh's node-owned deformedLocalBounds");
+    expect(skin).toContain('infer or create a skin, skeleton, palette, or bind pose');
 
     const bounds = findings[2]!.message;
-    expect(bounds).toContain('mesh deformation slot deformedLocalBounds both an omitted state and explicit null');
-    expect(bounds).toContain('prepareMeshSkinning is its producer');
+    expect(bounds).toContain("mesh node runtime's posed local-bounds cache both omission and explicit null");
+    expect(bounds).toContain('createNode3DRuntime omits the slot for every createMesh call');
+    expect(bounds).toContain('cloneMesh constructs a fresh node runtime without copying');
+    expect(bounds).toContain('prepareMeshSkinning is the sole writer');
     expect(bounds).toContain('allocates and stores one Aabb when the slot is nullish');
-    expect(bounds).toContain('Shared culling before GL or WebGPU draws falls back with ?? to geometry bounds');
-    expect(bounds).toContain('picking uses a nullish presence check');
-    expect(bounds).toContain('the GL deform guard treats both absence spellings alike');
-    expect(bounds).toContain('Make deformedLocalBounds an optional non-null Aabb field');
+    expect(bounds).toContain('updateMeshSkin and morph-only preparation');
+    expect(bounds).toContain('uses deformedLocalBounds ?? ensureMeshGeometryBounds');
+    expect(bounds).toContain('Picking uses a nullish presence check');
+    expect(bounds).toContain('no teardown or lifecycle path writes null');
+    expect(bounds).toContain('Make MeshDeformRuntime.deformedLocalBounds an optional non-null Aabb field');
+    expect(bounds).toContain("preserving node ownership, the clone's fresh cache, and the producer's same-box reuse");
     expect(bounds).toContain('infer bounds or run skinning');
 
     for (const finding of findings) {
       expect(finding.message).toContain('use omission or undefined as its sole');
-      expect(finding.message).toContain('normalize it once');
-      expect(finding.message).toContain('will not preserve a redundant null sentinel');
-      expect(finding.message).toContain('copy or materialize deformation storage, or add side storage');
+      expect(finding.message).toContain('normalize');
+      expect(finding.message).toContain('Do not whitelist the redundant live-storage spelling');
+      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
+      expect(finding.message).toContain('or add side storage');
     }
   });
 
@@ -5973,7 +5984,29 @@ describe('analyzeTypeScriptSourcePortability', () => {
         subject: 'interface:Mesh/property:bounds',
       },
     ]);
-    expect(findings.every((finding) => !finding.message.includes('mesh deformation slot'))).toBe(true);
+    expect(findings.every((finding) => !finding.message.includes('live mesh'))).toBe(true);
+  });
+
+  it('requires each exact Mesh deformation present type before specializing guidance', () => {
+    const controls = [
+      input('packages/types/src/Mesh.ts', 'interface OtherMorph {} interface Mesh { morph?: OtherMorph | null }'),
+      input(
+        'packages/types/src/Mesh.ts',
+        'interface MeshMorph<T> {} interface Mesh { morph?: MeshMorph<string> | null }',
+      ),
+      input('packages/types/src/Mesh.ts', 'interface OtherSkin {} interface Mesh { skin?: OtherSkin | null }'),
+      input(
+        'packages/types/src/Mesh.ts',
+        'interface OtherBounds {} interface MeshDeformRuntime { deformedLocalBounds?: OtherBounds | null }',
+      ),
+    ];
+
+    for (const control of controls) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('Do not whitelist the redundant live-storage spelling');
+    }
   });
 
   it('explains the one-sentinel document contract for inline Scene3D morph data', () => {

@@ -1165,10 +1165,16 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
     );
     expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
-      expect.stringContaining('GL and WebGPU draw the geometry that preparation updates'),
+      expect.stringContaining("preserving the clone's target sharing, weight copy, and detached geometry"),
       expect.stringContaining('the WebGPU skin adapter returns false for skin == null'),
-      expect.stringContaining('Shared culling before GL or WebGPU draws falls back with ?? to geometry bounds'),
+      expect.stringContaining('cloneMesh constructs a fresh node runtime without copying'),
     ]);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Do not whitelist the redundant live-storage spelling'),
+      ),
+    ).toBe(true);
     expect(
       report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
         policyClass,
