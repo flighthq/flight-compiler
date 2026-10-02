@@ -13170,7 +13170,7 @@ export function read(s: S2): number { if (s.top !== null) return s.top; return 0
     expect(strict.message).toContain('still admits absence');
   });
 
-  it('separates an optional non-null input from required nullable live state', () => {
+  it('pins both InteractionManager service inputs against their nullable live carriers', () => {
     // InteractionManager declares BOTH spellings -- `cursorBackend: CursorBackend | null` as required live
     // state and `cursorBackend?: CursorBackend | null` as an optional input -- and the task was to tell them
     // apart. They are three spellings over two C++ storages, and the mapping is worth pinning because it is
@@ -13189,25 +13189,27 @@ export interface M { ${declaration} }`,
         { runtimeProfile: 'flight-cpp' },
       ).contents;
 
-    // required nullable live state: absence is the null the source assigns
-    expect(storage('im-required.ts', 'cursorBackend: CursorBackend | null;')).toContain(
-      'std::optional<flight::Ref<CursorBackend>> cursor_backend;',
-    );
-    // optional non-null input: absence is not-supplied -- and it lands in the SAME storage
-    expect(storage('im-optional.ts', 'cursorBackend?: CursorBackend;')).toContain(
-      'std::optional<flight::Ref<CursorBackend>> cursor_backend;',
-    );
-    expect(storage('im-spatial-required.ts', 'spatialIndex: SpatialIndex2D | null;')).toContain(
-      'std::optional<flight::Ref<SpatialIndex2D>> spatial_index;',
-    );
-    expect(storage('im-spatial-optional.ts', 'spatialIndex?: SpatialIndex2D;')).toContain(
-      'std::optional<flight::Ref<SpatialIndex2D>> spatial_index;',
-    );
+    // Required-nullable live state and the recommended optional-non-null construction input each carry
+    // one absence, so both lower to std::optional even though that absence has a different source name.
+    const cursorLive = storage('im-cursor-live.ts', 'cursorBackend: CursorBackend | null;');
+    const cursorPortable = storage('im-cursor-portable.ts', 'cursorBackend?: CursorBackend;');
+    const spatialLive = storage('im-spatial-live.ts', 'spatialIndex: SpatialIndex2D | null;');
+    const spatialPortable = storage('im-spatial-portable.ts', 'spatialIndex?: SpatialIndex2D;');
+    expect(cursorLive).toContain('std::optional<flight::Ref<CursorBackend>> cursor_backend;');
+    expect(cursorPortable).toContain('std::optional<flight::Ref<CursorBackend>> cursor_backend;');
+    expect(spatialLive).toContain('std::optional<flight::Ref<SpatialIndex2D>> spatial_index;');
+    expect(spatialPortable).toContain('std::optional<flight::Ref<SpatialIndex2D>> spatial_index;');
+    for (const oneAbsence of [cursorLive, cursorPortable, spatialLive, spatialPortable]) {
+      expect(oneAbsence).not.toContain('flight::Null');
+      expect(oneAbsence).not.toContain('flight::Undefined');
+    }
     // optional AND nullable: both absences can occur, so the carrier keeps both sentinels
     const dual = storage('im-optional-nullable.ts', 'cursorBackend?: CursorBackend | null;');
     expect(dual).toContain('std::variant<flight::Ref<CursorBackend>, flight::Null, flight::Undefined>');
     const spatialDual = storage('im-spatial-optional-nullable.ts', 'spatialIndex?: SpatialIndex2D | null;');
     expect(spatialDual).toContain('std::variant<flight::Ref<SpatialIndex2D>, flight::Null, flight::Undefined>');
+    expect(dual).not.toContain('std::optional<flight::Ref<CursorBackend>> cursor_backend;');
+    expect(spatialDual).not.toContain('std::optional<flight::Ref<SpatialIndex2D>> spatial_index;');
 
     // And the tests agree with the storage: every spelling that can only be absent ONE way answers
     // has_value(), including the loose and strict forms of each, because both compile to the same optional.

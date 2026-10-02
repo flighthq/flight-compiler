@@ -108,6 +108,42 @@ describe('emitIrModuleHaxeExtern', () => {
     );
   });
 
+  it('separates InteractionManager construction sentinels from nullable live service owners', () => {
+    const module = lower(
+      '@flighthq/types',
+      'InteractionManager.ts',
+      `export interface CursorBackend { setCursor(value: string | null): void }
+       export interface SpatialIndex2D { readonly capacity: number }
+       export interface InteractionManager {
+         cursorBackend: CursorBackend | null;
+         spatialIndex: SpatialIndex2D | null;
+       }
+       export interface CurrentInteractionManagerOptions {
+         cursorBackend?: CursorBackend | null;
+         spatialIndex?: SpatialIndex2D | null;
+       }
+       export interface PortableInteractionManagerOptions {
+         cursorBackend?: CursorBackend;
+         spatialIndex?: SpatialIndex2D;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentInteractionManagerOptions.hx').contents;
+    const live = findFile(files, 'flight/_js/InteractionManager.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableInteractionManagerOptions.hx').contents;
+
+    for (const [field, owner] of [
+      ['cursorBackend', 'CursorBackend'],
+      ['spatialIndex', 'SpatialIndex2D'],
+    ] as const) {
+      expect(current).toContain(`@:optional var ${field}:Null<flight.${owner}>;`);
+      expect(portable).toContain(`@:optional var ${field}:flight.${owner};`);
+      expect(portable).not.toContain(`@:optional var ${field}:Null<flight.${owner}>;`);
+      expect(live).toContain(`var ${field}:Null<flight.${owner}>;`);
+      expect(live).not.toContain(`@:optional var ${field}`);
+    }
+  });
+
   it('separates the current Skin root sentinels from required-nullable live storage', () => {
     const module = lower(
       '@flighthq/types',

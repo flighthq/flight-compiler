@@ -7826,32 +7826,46 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     const byName = new Map(findings.map((finding) => [finding.subject.split(':').at(-1), finding.message]));
     for (const name of ['cursorBackend', 'spatialIndex']) {
+      const owner = name === 'cursorBackend' ? 'CursorBackend' : 'SpatialIndex2D';
       const message = byName.get(name)!;
       expect(message).toContain(`gives the construction-only InteractionManager ${name} input`);
       expect(message).toContain('both omission and explicit null');
-      expect(message).toContain('those spellings have one disabled meaning');
-      expect(message).toContain('createInteractionManager is the sole allocating producer');
+      expect(message).toContain('initializeInteractionManager deliberately collapses both before storage');
+      expect(message).toContain('different absent behavior but the same source repair');
+      expect(message).toContain('createInteractionManager is the only production allocating producer');
       expect(message).toContain('passes its options once into initializeInteractionManager');
-      expect(message).toContain('sole initializer reads the options without retaining them');
+      expect(message).toContain('initializer reads the options without retaining them');
       expect(message).toContain('out.cursorBackend = options.cursorBackend ?? null');
       expect(message).toContain('out.spatialIndex = options.spatialIndex ?? null');
-      expect(message).toContain('exact present service owner or required live null');
+      expect(message).toContain('exact present service reference or required live null');
       expect(message).toContain(
         'No production importer, deserializer, document materializer, copy helper, or clone constructs',
       );
-      expect(message).toContain('mutable required-nullable service cells');
+      expect(message).toContain('retains exact service identity without copying or transferring it');
+      expect(message).toContain('No production interaction function reassigns either field after initialization');
+      expect(message).toContain('public manager shape keeps both live cells writable');
+      expect(message).toContain('external caller can replace or explicitly clear an installed owner');
       expect(message).toContain('There is no destroyInteractionManager or dispose path');
+      expect(message).toContain('losing the final manager owner releases its retained service references');
+      expect(message).toContain('manager-keyed spatial candidate WeakMap entry then becomes collectible');
       expect(message).toContain('does not call setCursor(null), clearSpatialIndex2D, or dispose either service owner');
-      expect(message).toContain(
-        `Keep the corresponding live field required ${name === 'cursorBackend' ? 'CursorBackend' : 'SpatialIndex2D'} | null`,
-      );
+      expect(message).toContain(`Keep the corresponding live field required ${owner} | null`);
       expect(message).toContain('preserve both live cells as required nullable');
       expect(message).toContain(`make InteractionManagerOptions.${name} optional non-null`);
-      expect(message).toContain('omission is the sole construction-time disabled state');
+      expect(message).toContain('omission is the sole construction-time absence');
       expect(message).toContain('keep it separate and normalize once before construction');
-      expect(message).toContain('unchanged, disabled, and installed cases are explicit');
+      expect(message).toContain('unchanged, absent, and installed cases are explicit');
+      expect(message).toContain(
+        `current C++ construction carrier is std::variant<flight::Ref<${owner}>, flight::Null, flight::Undefined>`,
+      );
+      expect(message).toContain(
+        `recommended optional-non-null input and the required-nullable live field both lower to std::optional<flight::Ref<${owner}>>`,
+      );
+      expect(message).toContain(`current Haxe construction carrier is @:optional var ${name}:Null<flight.${owner}>`);
+      expect(message).toContain(`recommended input is @:optional var ${name}:flight.${owner}`);
+      expect(message).toContain(`live field remains var ${name}:Null<flight.${owner}>`);
       expect(message).toContain('Neither option finding is a host-binding gap');
-      expect(message).toContain('C++ backend represents both required-nullable live storage');
+      expect(message).toContain('both backends preserve these exact service references');
       expect(message).toContain("createWebCursorBackend's HTMLElement is a separate host-adapter boundary");
       expect(message).toContain('pinned flight-cpp InteractionManager type refusal');
       expect(message).toContain('earlier Entity dependency cascade');
@@ -7862,23 +7876,28 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
 
     const cursor = byName.get('cursorBackend')!;
+    expect(cursor).toContain('no cursor backend is installed');
+    expect(cursor).toContain('pointer interaction still dispatches');
+    expect(cursor).toContain('hover-driven cursor application is inactive');
     expect(cursor).toContain('createWebCursorBackend allocates a Flight entity');
-    expect(cursor).toContain('setCursor closure retains one HTMLElement');
+    expect(cursor).toContain('setCursor closure retains the exact HTMLElement');
     expect(cursor).toContain('native callers may supply another implementation');
     expect(cursor).toContain('dispatchInteractionPointerMove uses live cursorBackend presence');
     expect(cursor).toContain('invalidateInteractionCursor reapplies that target');
     expect(cursor).toContain('calls the exact backend with the resolved Cursor | null');
-    expect(cursor).toContain('No interaction function reassigns cursorBackend after initialization');
 
     const spatial = byName.get('spatialIndex')!;
+    expect(spatial).toContain('no broadphase is installed');
+    expect(spatial).toContain('target resolution remains active through the linear graph hit walk');
+    expect(spatial).toContain('selected by manager.precise');
     expect(spatial).toContain('createSpatialIndex2D allocates a Flight entity');
-    expect(spatial).toContain('caller backend or a new default uniform-grid backend');
+    expect(spatial).toContain('runtime retains the caller backend or a new default uniform-grid backend');
     expect(spatial).toContain('findInteractionTarget selects the spatial path only while the live field is present');
     expect(spatial).toContain('findSpatialInteractionTarget queries that exact index');
     expect(spatial).toContain('refreshInteractionSpatialIndex clears and repopulates it');
-    expect(spatial).toContain('manager-keyed WeakMap');
+    expect(spatial).toContain('WeakMap keyed by the exact manager');
     expect(spatial).toContain('mutate the index contents, not the manager field');
-    expect(spatial).toContain('No interaction function reassigns spatialIndex after initialization');
+    expect(spatial).toContain('aliasing one index across managers would therefore alias one mutable contents table');
   });
 
   it('keeps unrelated service options generic and accepts split InteractionManager contracts', () => {
