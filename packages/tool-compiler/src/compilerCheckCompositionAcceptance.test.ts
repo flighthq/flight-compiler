@@ -1916,6 +1916,10 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain(
       'Make Scene3DDocumentMesh.morph an optional non-null MeshMorph field',
     );
+    expect(sourcePortability.findings[0]?.message).toContain('@:optional var morph:Null<flight.MeshMorph>');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'std::variant<flight::Ref<MeshMorph>, flight::Null, flight::Undefined>',
+    );
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant document spelling');
     expect(report.directFindings).toMatchObject([
       {
@@ -1930,6 +1934,21 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 1,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+    const unchanged = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(unchanged).toMatchObject({ introduced: [], resolvedFindingIdentities: [] });
+    expect(unchanged.unchanged).toHaveLength(1);
+    expect(createCompilerPackageCheckPolicyResult(unchanged, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
 
     const portableSource = createMemoryWorkspaceSource(createScene3DDocumentMeshWorkspaceFiles(false));

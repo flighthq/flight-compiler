@@ -11690,6 +11690,26 @@ int main() {
     expect(contents).not.toContain('externalBindings');
   });
 
+  it('separates Scene3D document morph omission from the exact morph owner', () => {
+    const result = lower(
+      'Scene3DDocument.ts',
+      `export interface MeshMorph { weights: Float32Array; }
+       export interface Scene3DDocumentMesh { morph?: MeshMorph | null; }
+       export interface PortableScene3DDocumentMesh { morph?: MeshMorph; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('struct MeshMorph : public flight::ReferenceEnabled');
+    expect(contents).toContain('flight::Float32Array weights;');
+    expect(contents).toContain('std::variant<flight::Ref<MeshMorph>, flight::Null, flight::Undefined> morph =');
+    expect(contents).toContain('std::optional<flight::Ref<MeshMorph>> morph;');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
+  });
+
   it('separates TextInput merge-tag input absence from required nullable history storage', () => {
     // ReplaceTextInputOptions is an ephemeral edit input, while both history interfaces describe the
     // normalized retained record. All are compiler-native strings: required null and optional undefined

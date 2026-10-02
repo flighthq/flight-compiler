@@ -93,6 +93,27 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(findFile(files, 'flight/_js/PortableSkin.hx').contents).not.toContain('@:optional var skeletonRoot');
   });
 
+  it('separates Scene3D document morph omission from the exact morph owner', () => {
+    const module = lower(
+      '@flighthq/types',
+      'Scene3DDocument.ts',
+      `export interface MeshMorph { weights: Float32Array; }
+       export interface Scene3DDocumentMesh { morph?: MeshMorph | null; }
+       export interface PortableScene3DDocumentMesh { morph?: MeshMorph; }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+
+    expect(findFile(files, 'flight/_js/MeshMorph.hx').contents).toContain(
+      'var weights:flighthq._internal._Float32Array;',
+    );
+    expect(findFile(files, 'flight/_js/Scene3DDocumentMesh.hx').contents).toContain(
+      '@:optional var morph:Null<flight.MeshMorph>;',
+    );
+    expect(findFile(files, 'flight/_js/PortableScene3DDocumentMesh.hx').contents).toContain(
+      '@:optional var morph:flight.MeshMorph;',
+    );
+  });
+
   it('groups values from every package module into one deterministically ordered holder', () => {
     const distance = lower(
       '@flighthq/geometry',
