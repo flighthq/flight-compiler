@@ -12010,6 +12010,49 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('names the value domain a weak-map member lookup needs', () => {
+    // WgpuRenderState's sceneMeshUploadCache is `WeakMap<object, object> | null`, and the discriminator is
+    // the VALUE type, not the optional member: a lookup through this member lowers when the value domain is
+    // concrete, declared, or erased, and refuses only for the bare `object`. The refusal is otherwise
+    // attributed to the compiler by default, so the control carries the remedy that makes the guidance
+    // actionable.
+    const member = (value: string) => `export interface S { readonly cache: WeakMap<object, ${value}> }`;
+    const read = (value: string) => `${member(value)}
+export function read(s: S, key: object): unknown { return s.cache.get(key); }`;
+
+    // Every domain that lowers, including the erased one -- so the remedy is not "add erasure", it is "name
+    // what the cache holds".
+    for (const [file, value] of [
+      ['weak-map-string.ts', 'string'],
+      ['weak-map-entry.ts', 'Entry'],
+      ['weak-map-unknown.ts', 'unknown'],
+    ] as const) {
+      const source =
+        value === 'Entry'
+          ? `export interface Entry { readonly version: number }
+${member(value)}
+export function read(s: S, key: object): Entry | undefined { return s.cache.get(key); }`
+          : read(value);
+      expect(emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }).contents).toContain('get(');
+    }
+
+    // The bare object value: refused, and the rule that answers is not one this lane should move, because it
+    // is shared with every other missing-expression-type site. The control records it rather than pinning a
+    // classification the declaration's ownership argues against.
+    const bare = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'weak-map-object.ts',
+          `${member('object')}
+export function read(s: S, key: object): object | undefined { return s.cache.get(key); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(bare.rule).toContain('cpp-contextual-union-missing-expression-type');
+    expect(bare.classification).toBe('compiler-restriction');
+  });
+
   it('documents the representation an opaque result payload arm already has', () => {
     // Tray.ts carries ~22 failed-outcome arms shaped `{ readonly error?: unknown; readonly outcome: '...' }`.
     // The opaque payload is NOT a gap: `unknown` is represented by the runtime's erased dynamic value, and
