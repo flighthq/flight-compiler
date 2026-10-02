@@ -46372,6 +46372,83 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     }
   });
 
+  it('lowers the current WebGPU Scene3D guards and the named skinning-adapter rewrite', () => {
+    const result = lower(
+      'wgpu-scene3d-runtime.ts',
+      `export interface Mesh { id: number }
+       export interface WgpuSkinningAdapter { isGpuSkinned(mesh: Readonly<Mesh>): boolean }
+       export interface WgpuScene3DRuntime {
+         customShaderGuard?: ((shaderKey: string) => void) | null;
+         forwardLightSelectionGuard?: ((count: number) => void) | null;
+         skinningAdapter: WgpuSkinningAdapter | null;
+       }
+       export function createRuntime(): WgpuScene3DRuntime {
+         return { customShaderGuard: null, forwardLightSelectionGuard: null, skinningAdapter: null };
+       }
+       export function enableCustomShader(
+         runtime: WgpuScene3DRuntime,
+         guard: (shaderKey: string) => void,
+       ): void {
+         runtime.customShaderGuard = guard;
+       }
+       export function isCustomShaderEnabled(runtime: WgpuScene3DRuntime): boolean {
+         return runtime.customShaderGuard != null;
+       }
+       export function runCustomShader(runtime: WgpuScene3DRuntime, shaderKey: string): void {
+         if (runtime.customShaderGuard == null) return;
+       }
+       export function validateCustomShader(runtime: WgpuScene3DRuntime, shaderKey: string): void {
+         runtime.customShaderGuard?.(shaderKey);
+       }
+       export function warnForwardSelection(runtime: WgpuScene3DRuntime, count: number): void {
+         runtime.forwardLightSelectionGuard?.(count);
+       }
+       export function registerSkinning(
+         runtime: WgpuScene3DRuntime,
+         adapter: WgpuSkinningAdapter,
+       ): void {
+         runtime.skinningAdapter = adapter;
+       }
+       export function getSkinning(runtime: WgpuScene3DRuntime): WgpuSkinningAdapter | null {
+         return runtime.skinningAdapter;
+       }
+       export function isGpuSkinned(
+         runtime: WgpuScene3DRuntime,
+         mesh: Readonly<Mesh>,
+       ): boolean {
+         const skinning = runtime.skinningAdapter;
+         return skinning !== null && skinning.isGpuSkinned(mesh);
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('std::function<void(flight::String)>');
+    expect(output).toContain('std::function<void(double)>');
+    expect(output).toContain('std::holds_alternative<std::function<void(flight::String)>>');
+    expect(output).toContain('std::get<std::function<void(flight::String)>>');
+    expect(output).toContain('std::holds_alternative<flight::Undefined>');
+    expect(output).toContain('std::optional<flight::Ref<WgpuSkinningAdapter>> skinning_adapter;');
+    expect(output).toContain('skinning.value()->is_gpu_skinned(mesh)');
+    expect(output).not.toContain('flight::Any');
+    expect(output).not.toContain('static_cast');
+    expect(output).not.toContain('reinterpret_cast');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-wgpu-scene3d-runtime-'));
+      const header = path.join(directory, 'wgpu_scene3d_runtime.hpp');
+      try {
+        writeFileSync(header, output, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('names the flattening behind an unidentified heritage assertion and keeps its rewrite exact', () => {
     const shared = `interface RenderState { readonly pipeline: string }
        interface RenderProxyBase { readonly id: string }

@@ -3009,24 +3009,72 @@ describe('analyzeTypeScriptSourcePortability', () => {
     ]);
     const message = report.findings[0]?.message;
     expect(message).toContain('erases a contract that is already closed');
-    expect(message).toContain('WgpuRenderRegistries.gpuSkinning is a SlotTable<WgpuSkinningAdapter>');
-    expect(message).toContain('late registration updates the same slot');
-    expect(message).toContain('direct mesh upload, draw, pipeline, and wireframe consumers immediately restore');
-    expect(message).toContain('shadow and shader consumers receive that type through the accessor');
+    expect(message).toContain('initializes skinningAdapter to null');
+    expect(message).toContain('registerWgpuGpuSkinning is the sole non-null producer');
+    expect(message).toContain('module-level WGPU_SKINNING_ADAPTER singleton');
+    expect(message).toContain('No path clears or substitutes another value');
+    expect(message).toContain(
+      'plus four direct mesh-upload, mesh-selection, draw-bind-group, and pipeline-layout reads',
+    );
+    expect(message).toContain('Classic, PBR, Shaded, Toon, and Unlit shader construction plus both shadow paths');
     expect(message).toContain('Type the runtime property directly as WgpuSkinningAdapter | null');
-    expect(message).toContain('Registry extensibility does not make the adapter opaque');
+    expect(message).toContain('remove all five casts while preserving the null checks and owner identity');
+    expect(message).toContain('adjacent shaded-material cache values are genuinely backend-private unknowns');
+    expect(message).toContain('WgpuSkinningAdapter is already a public closed interface in @flighthq/types');
+    expect(message).toContain('nullable interface reference without an Any carrier');
     expect(message).toContain('A reviewed exception is not justified');
     expect(message).toContain('target-specific Any carrier');
     expect(message).toContain('retain or insert a cast');
+    expect(message).toContain('infer or install a skinning adapter');
+    expect(message).toContain('invoke an adapter method');
     expect(message).toContain('copy or materialize the adapter');
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     for (const control of controls) {
       expect(
         analyzeTypeScriptSourcePortability([control]).findings.every(
-          ({ message: controlMessage }) => !controlMessage.includes('WgpuRenderRegistries.gpuSkinning'),
+          ({ message: controlMessage }) =>
+            !controlMessage.includes('registerWgpuGpuSkinning is the sole non-null producer'),
         ),
       ).toBe(true);
     }
+  });
+
+  it('resolves exactly the three current WGPU Scene3D runtime findings', () => {
+    const current = input(
+      'packages/types/src/WgpuScene3DRuntime.ts',
+      `interface WgpuScene3DRuntime {
+         customShaderGuard?: ((shaderKey: string) => void) | null;
+         forwardLightSelectionGuard?: ((lights: Readonly<object>) => void) | null;
+         skinningAdapter: unknown | null;
+       }`,
+    );
+    const resolved = input(
+      'packages/types/src/WgpuScene3DRuntime.ts',
+      `interface WgpuSkinningAdapter { isGpuSkinned(mesh: object): boolean }
+       interface WgpuScene3DRuntime {
+         customShaderGuard: ((shaderKey: string) => void) | null;
+         forwardLightSelectionGuard: ((lights: Readonly<object>) => void) | null;
+         skinningAdapter: WgpuSkinningAdapter | null;
+       }`,
+    );
+
+    const report = analyzeTypeScriptSourcePortability([current]);
+    expect(report.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:WgpuScene3DRuntime/property:customShaderGuard',
+      },
+      {
+        rule: 'mixed-absence',
+        subject: 'interface:WgpuScene3DRuntime/property:forwardLightSelectionGuard',
+      },
+      {
+        rule: 'opaque-value-domain',
+        subject: 'interface:WgpuScene3DRuntime/property:skinningAdapter',
+      },
+    ]);
+    expect(report.acceptedExceptions).toEqual([]);
+    expect(analyzeTypeScriptSourcePortability([resolved]).findings).toEqual([]);
   });
 
   it('keeps Scene2D materialization dimension probes on the declared node traits contract', () => {
@@ -6372,14 +6420,28 @@ describe('analyzeTypeScriptSourcePortability', () => {
         expect(finding.message).toContain('assignments, probes, optional calls, and the guarded local call');
         expect(finding.message).toContain("does not choose the source contract's disabled sentinel");
       } else {
+        if (field === 'customShaderGuard') {
+          expect(finding.message).toContain('runWgpuCustomShaderGuards returns on == null when invoked directly');
+          expect(finding.message).toContain(
+            'an active pass, a usable material and shader key, and the resolved WGSL source',
+          );
+        } else {
+          expect(finding.message).toContain('no matching prepared forward-light list exists');
+          expect(finding.message).toContain('the input has excess punctual lights');
+        }
+        expect(finding.message).toContain('creates one runtime per WgpuRenderState');
         expect(finding.message).toContain(
-          'getWgpuScene3DRuntime assigns customShaderGuard: null and forwardLightSelectionGuard: null',
+          'already initializes both customShaderGuard and forwardLightSelectionGuard to null',
         );
-        expect(finding.message).toContain('Each enable function overwrites its exact slot with the diagnostic closure');
-        expect(finding.message).toContain('collapse undefined and null through != null, !== null, optional call');
-        expect(finding.message).toContain('Make all five GL guard slots and both WebGPU guard slots required fields');
-        expect(finding.message).toContain('their exact callable type | null');
-        expect(finding.message).toContain('initialize every slot to null in the corresponding runtime object literal');
+        expect(finding.message).toContain('Each enable function overwrites its exact slot with one diagnostic closure');
+        expect(finding.message).toContain('no path clears or replaces either installed guard');
+        expect(finding.message).toContain(
+          'Make both guard slots required fields with their exact callable type | null',
+        );
+        expect(finding.message).toContain('preserving the two existing null initializers');
+        expect(finding.message).toContain('project the sole exact callable alternative');
+        expect(finding.message).toContain('assignments, comparisons, and optional calls');
+        expect(finding.message).toContain("does not choose the source contract's disabled sentinel");
       }
       expect(finding.message).toContain('logging dependencies remain shakeable');
       expect(finding.message).toContain('one named closed guard state and handle every arm explicitly');
