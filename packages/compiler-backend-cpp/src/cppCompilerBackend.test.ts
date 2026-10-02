@@ -13326,6 +13326,92 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  it('pins the extension-only spread a preset must destructure away', () => {
+    // materialPresets.ts spreads a preset's whole options object into the material constructor:
+    //     return createExtendedPbrMaterial({ ...opts, extensions: [...] });
+    // The options type carries extension-only members (`standard`, `transmissionVolume`) that the material
+    // does not declare, and object spread preserves every enumerable source property -- so the refusal is
+    // about the EXTRA keys, not about spreading. Both remedies the message names are pinned here, because a
+    // remedy that does not lower is worse than no message at all.
+    const prelude = `export interface StandardPbrMaterialProperties { readonly baseColor?: number }
+export interface TransmissionVolumePbrExtension { readonly ior?: number }
+export interface SurfaceMaterialOptions { readonly alphaCutoff?: number; readonly doubleSided?: boolean }
+export interface GlassExtendedPbrMaterialOptions extends SurfaceMaterialOptions {
+  readonly standard?: Readonly<Partial<StandardPbrMaterialProperties>>;
+  readonly transmissionVolume?: Readonly<Partial<TransmissionVolumePbrExtension>>;
+}
+export interface ExtendedPbrMaterial {
+  readonly alphaCutoff?: number;
+  readonly doubleSided?: boolean;
+  readonly extensions: readonly string[];
+  readonly standard?: StandardPbrMaterialProperties;
+}
+export function createExtendedPbrMaterial(options: Readonly<Partial<ExtendedPbrMaterial>>): ExtendedPbrMaterial {
+  return {
+    alphaCutoff: options.alphaCutoff,
+    doubleSided: options.doubleSided,
+    extensions: options.extensions ?? [],
+    standard: options.standard,
+  };
+}`;
+
+    const spread = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'material-preset.ts',
+          `${prelude}
+export function createGlassExtendedPbrMaterial(opts?: Readonly<GlassExtendedPbrMaterialOptions>): ExtendedPbrMaterial {
+  return createExtendedPbrMaterial({ ...opts, extensions: [] });
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(spread.rule).toBe('cpp-structural-row-spread-extra-property-unproven');
+    expect(spread.classification).toBe('source-portability');
+    expect(spread.message).toContain('transmissionVolume');
+
+    // The control that keeps this about the EXTRA keys: the same spread of a partial OF THE TARGET lowers.
+    expect(
+      emitIrModuleCpp(
+        lower(
+          'material-preset-target-partial.ts',
+          `${prelude}
+export function preset(opts?: Readonly<Partial<ExtendedPbrMaterial>>): ExtendedPbrMaterial {
+  return createExtendedPbrMaterial({ ...opts, extensions: [] });
+}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents,
+    ).toContain('create_extended_pbr_material');
+
+    // The two remedies the message names, each run rather than repeated: name the declared properties, or
+    // build the target object first and pass that.
+    for (const [file, body] of [
+      [
+        'material-preset-explicit.ts',
+        'return createExtendedPbrMaterial({ alphaCutoff: opts?.alphaCutoff, doubleSided: opts?.doubleSided, extensions: [], standard: opts?.standard });',
+      ],
+      [
+        'material-preset-built.ts',
+        'const base: Partial<ExtendedPbrMaterial> = { alphaCutoff: opts?.alphaCutoff, doubleSided: opts?.doubleSided, extensions: [], standard: opts?.standard };\n  return createExtendedPbrMaterial(base);',
+      ],
+    ] as const) {
+      expect(
+        emitIrModuleCpp(
+          lower(
+            file,
+            `${prelude}
+export function preset(opts?: Readonly<GlassExtendedPbrMaterialOptions>): ExtendedPbrMaterial {
+  ${body}
+}`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ).contents,
+      ).toContain('create_extended_pbr_material');
+    }
+  });
+
   it('separates the readable erased view from the write it cannot take', () => {
     // material.ts reports five findings against ONE shape: the `as unknown as Record<string, unknown>` view of
     // a material. Four of them are READS -- equalsMaterial's key enumeration, its existence test and its
