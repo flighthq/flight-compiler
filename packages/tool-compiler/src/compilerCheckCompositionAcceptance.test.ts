@@ -4142,6 +4142,103 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps both InteractionManager construction-service findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createInteractionManagerWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = ['cursorBackend', 'spatialIndex'].map(
+      (field) => `interface:InteractionManagerOptions/property:${field}`,
+    );
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('No production importer, deserializer, document materializer, copy helper, or clone'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('There is no destroyInteractionManager or dispose path'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Neither option finding is a host-binding gap'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('Do not whitelist the redundant construction spelling'),
+      ),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createInteractionManagerWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the Capacitor altitude-accuracy finding source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createCapacitorPositionCoordsWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -6963,6 +7060,29 @@ function createBitmapTextOptionsWorkspaceFiles(mixedAbsence: boolean): Record<st
   wrapWidth?: number${nullable};
 }`,
     '/flight/packages/types/src/index.ts': `export type { BitmapTextOptions } from './BitmapText.js';`,
+  };
+}
+
+function createInteractionManagerWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/InteractionManager.ts': `export interface CursorBackend { readonly kind: string }
+export interface SpatialIndex2D { readonly kind: string }
+export interface InteractionManager {
+  cursorBackend: CursorBackend | null;
+  spatialIndex: SpatialIndex2D | null;
+}
+export interface InteractionManagerOptions {
+  cursorBackend?: CursorBackend${nullable};
+  spatialIndex?: SpatialIndex2D${nullable};
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  CursorBackend,
+  InteractionManager,
+  InteractionManagerOptions,
+  SpatialIndex2D,
+} from './InteractionManager.js';`,
   };
 }
 

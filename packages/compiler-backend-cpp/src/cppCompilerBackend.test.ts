@@ -12978,7 +12978,8 @@ export function read(s: S2): number { if (s.top !== null) return s.top; return 0
     // apart. They are three spellings over two C++ storages, and the mapping is worth pinning because it is
     // not one-to-one: the required-nullable and optional-non-null forms share a single-optional storage while
     // meaning different absences, and only the doubly-optional form needs the dual-sentinel carrier.
-    const backend = `export interface CursorBackend { readonly kind: string }`;
+    const backend = `export interface CursorBackend { readonly kind: string }
+export interface SpatialIndex2D { readonly kind: string }`;
 
     const storage = (file: string, declaration: string) =>
       emitIrModuleCpp(
@@ -12998,9 +12999,17 @@ export interface M { ${declaration} }`,
     expect(storage('im-optional.ts', 'cursorBackend?: CursorBackend;')).toContain(
       'std::optional<flight::Ref<CursorBackend>> cursor_backend;',
     );
+    expect(storage('im-spatial-required.ts', 'spatialIndex: SpatialIndex2D | null;')).toContain(
+      'std::optional<flight::Ref<SpatialIndex2D>> spatial_index;',
+    );
+    expect(storage('im-spatial-optional.ts', 'spatialIndex?: SpatialIndex2D;')).toContain(
+      'std::optional<flight::Ref<SpatialIndex2D>> spatial_index;',
+    );
     // optional AND nullable: both absences can occur, so the carrier keeps both sentinels
     const dual = storage('im-optional-nullable.ts', 'cursorBackend?: CursorBackend | null;');
     expect(dual).toContain('std::variant<flight::Ref<CursorBackend>, flight::Null, flight::Undefined>');
+    const spatialDual = storage('im-spatial-optional-nullable.ts', 'spatialIndex?: SpatialIndex2D | null;');
+    expect(spatialDual).toContain('std::variant<flight::Ref<SpatialIndex2D>, flight::Null, flight::Undefined>');
 
     // And the tests agree with the storage: every spelling that can only be absent ONE way answers
     // has_value(), including the loose and strict forms of each, because both compile to the same optional.

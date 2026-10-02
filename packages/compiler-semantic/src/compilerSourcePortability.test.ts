@@ -7027,7 +7027,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(findings.every((finding) => !finding.message.includes('construction-only BitmapText option'))).toBe(true);
   });
 
-  it('explains the construction-only absence contract for InteractionManager services', () => {
+  it('separates InteractionManager construction inputs from exact live service owners', () => {
     const source = input(
       'packages/types/src/InteractionManager.ts',
       `interface CursorBackend { setCursor(value: string | null): void }
@@ -7046,30 +7046,61 @@ describe('analyzeTypeScriptSourcePortability', () => {
         subject: `interface:InteractionManagerOptions/property:${name}`,
       })),
     );
-    for (const [index, finding] of findings.entries()) {
-      const name = ['cursorBackend', 'spatialIndex'][index];
-      expect(finding.message).toContain(
-        `gives the InteractionManager construction option ${name} both omission and explicit null`,
+    const byName = new Map(findings.map((finding) => [finding.subject.split(':').at(-1), finding.message]));
+    for (const name of ['cursorBackend', 'spatialIndex']) {
+      const message = byName.get(name)!;
+      expect(message).toContain(`gives the construction-only InteractionManager ${name} input`);
+      expect(message).toContain('both omission and explicit null');
+      expect(message).toContain('those spellings have one disabled meaning');
+      expect(message).toContain('createInteractionManager is the sole allocating producer');
+      expect(message).toContain('passes its options once into initializeInteractionManager');
+      expect(message).toContain('sole initializer reads the options without retaining them');
+      expect(message).toContain('out.cursorBackend = options.cursorBackend ?? null');
+      expect(message).toContain('out.spatialIndex = options.spatialIndex ?? null');
+      expect(message).toContain('exact present service owner or required live null');
+      expect(message).toContain(
+        'No production importer, deserializer, document materializer, copy helper, or clone constructs',
       );
-      expect(finding.message).toContain(
-        'createInteractionManager passes its options once into initializeInteractionManager for a fresh manager',
+      expect(message).toContain('mutable required-nullable service cells');
+      expect(message).toContain('There is no destroyInteractionManager or dispose path');
+      expect(message).toContain('does not call setCursor(null), clearSpatialIndex2D, or dispose either service owner');
+      expect(message).toContain(
+        `Keep the corresponding live field required ${name === 'cursorBackend' ? 'CursorBackend' : 'SpatialIndex2D'} | null`,
       );
-      expect(finding.message).toContain('out.cursorBackend = options.cursorBackend ?? null');
-      expect(finding.message).toContain('out.spatialIndex = options.spatialIndex ?? null');
-      expect(finding.message).toContain('normalize either spelling to the same disabled service');
-      expect(finding.message).toContain(
-        'applyInteractionCursor, findInteractionTarget, and refreshInteractionSpatialIndex',
-      );
-      expect(finding.message).toContain(
-        'Keep the InteractionManager cursorBackend and spatialIndex fields required nullable',
-      );
-      expect(finding.message).toContain('make both fields optional non-null in InteractionManagerOptions');
-      expect(finding.message).toContain('omission is the sole construction-time absence');
-      expect(finding.message).toContain('unchanged, disabled, and installed cases are explicit');
-      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
-      expect(finding.message).toContain('construct a cursor backend or spatial index');
-      expect(finding.message).toContain('change service-owner identity, or add side storage');
+      expect(message).toContain('preserve both live cells as required nullable');
+      expect(message).toContain(`make InteractionManagerOptions.${name} optional non-null`);
+      expect(message).toContain('omission is the sole construction-time disabled state');
+      expect(message).toContain('keep it separate and normalize once before construction');
+      expect(message).toContain('unchanged, disabled, and installed cases are explicit');
+      expect(message).toContain('Neither option finding is a host-binding gap');
+      expect(message).toContain('C++ backend represents both required-nullable live storage');
+      expect(message).toContain("createWebCursorBackend's HTMLElement is a separate host-adapter boundary");
+      expect(message).toContain('pinned flight-cpp InteractionManager type refusal');
+      expect(message).toContain('earlier Entity dependency cascade');
+      expect(message).toContain('Do not whitelist the redundant construction spelling');
+      expect(message).toContain('will not choose or collapse an absence sentinel');
+      expect(message).toContain('bind or fabricate an HTMLElement');
+      expect(message).toContain('change service-owner identity, or add side storage');
     }
+
+    const cursor = byName.get('cursorBackend')!;
+    expect(cursor).toContain('createWebCursorBackend allocates a Flight entity');
+    expect(cursor).toContain('setCursor closure retains one HTMLElement');
+    expect(cursor).toContain('native callers may supply another implementation');
+    expect(cursor).toContain('dispatchInteractionPointerMove uses live cursorBackend presence');
+    expect(cursor).toContain('invalidateInteractionCursor reapplies that target');
+    expect(cursor).toContain('calls the exact backend with the resolved Cursor | null');
+    expect(cursor).toContain('No interaction function reassigns cursorBackend after initialization');
+
+    const spatial = byName.get('spatialIndex')!;
+    expect(spatial).toContain('createSpatialIndex2D allocates a Flight entity');
+    expect(spatial).toContain('caller backend or a new default uniform-grid backend');
+    expect(spatial).toContain('findInteractionTarget selects the spatial path only while the live field is present');
+    expect(spatial).toContain('findSpatialInteractionTarget queries that exact index');
+    expect(spatial).toContain('refreshInteractionSpatialIndex clears and repopulates it');
+    expect(spatial).toContain('manager-keyed WeakMap');
+    expect(spatial).toContain('mutate the index contents, not the manager field');
+    expect(spatial).toContain('No interaction function reassigns spatialIndex after initialization');
   });
 
   it('keeps unrelated service options generic and accepts split InteractionManager contracts', () => {
