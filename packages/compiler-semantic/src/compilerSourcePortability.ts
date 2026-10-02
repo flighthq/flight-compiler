@@ -727,8 +727,29 @@ function getScene3DDiagnosticGuardMixedAbsencePropertyMessage(
     owner === 'WgpuScene3DRuntime' &&
     (field === 'customShaderGuard' || field === 'forwardLightSelectionGuard');
   if (!isGlGuard && !isWgpuGuard) return undefined;
+  if (isGlGuard && field !== undefined) {
+    const flow = getGlScene3DDiagnosticGuardFlow(field);
+    return `${subject} gives the opt-in GL Scene3D diagnostic guard slot ${field} both omission and explicit null, but the represented per-state runtime has one disabled state. ${flow} getGlScene3DRuntime creates one runtime per GlRenderState; it currently omits colorSpaceGuard, customShaderGuard, deformGuard, and forwardLightSelectionGuard while assigning pbrExtensionGuard: null. Every enable function overwrites its exact slot with a diagnostic closure and no path clears a guard back to either absence spelling. The pbrExtensionGuard initializer is already semantically required: areGlPbrExtensionGuardsEnabled uses !== null, so an omitted undefined slot would incorrectly report enabled even though the optional call would skip it. Make all five guard slots required fields with their exact callable type | null and initialize all five to null in the runtime object literal. Null initialization neither imports nor installs a diagnostic implementation, so the separately imported enable modules and their logging dependencies remain shakeable. The C++ backend can preserve the current null and undefined tags and project the sole exact callable alternative for these assignments, probes, optional calls, and the guarded local call; that target capability does not choose the source contract's disabled sentinel. If disabled and not-yet-configured must differ, replace the absence spellings with one named closed guard state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or install a diagnostic guard, invoke or synthesize a callback, widen its callable signature, change the render-state or runtime owner, or add side storage.`;
+  }
   const backend = isGlGuard ? 'GL' : 'WebGPU';
   return `${subject} gives the opt-in ${backend} Scene3D diagnostic guard slot ${field} both omission and explicit null, but the represented per-state runtime has one disabled state. getGlScene3DRuntime currently omits colorSpaceGuard, customShaderGuard, deformGuard, and forwardLightSelectionGuard while assigning pbrExtensionGuard: null; getWgpuScene3DRuntime assigns customShaderGuard: null and forwardLightSelectionGuard: null. Each enable function overwrites its exact slot with the diagnostic closure, while enabled probes and render consumers collapse undefined and null through != null, !== null, optional call, or a nullish local guard. Make all five GL guard slots and both WebGPU guard slots required fields with their exact callable type | null, and initialize every slot to null in the corresponding runtime object literal. Null initialization does not import or install a diagnostic implementation, so the separately imported enable modules and their logging dependencies remain shakeable. If disabled and not-yet-configured must differ, replace the absence sentinels with one named closed guard state and handle every arm explicitly. The compiler will not choose or collapse an absence sentinel, import or install a diagnostic guard, invoke or synthesize a callback, widen its callable signature, change the render-state or runtime owner, or add side storage.`;
+}
+
+function getGlScene3DDiagnosticGuardFlow(field: string): string {
+  switch (field) {
+    case 'colorSpaceGuard':
+      return 'areGlScene3DColorSpaceGuardsEnabled uses != null, and renderGlScene3D optional-calls the guard only when a direct canvas draw has no render-target color-space declaration.';
+    case 'customShaderGuard':
+      return 'areGlScene3DCustomShaderGuardsEnabled uses != null, and customShaderGlMeshMaterialRenderer optional-calls the guard after resolving the exact bound program and shader key.';
+    case 'deformGuard':
+      return 'areGlScene3DDeformGuardsEnabled uses != null, and renderGlScene3D snapshots the slot once, checks != null, and calls the same closure for each visible mesh.';
+    case 'forwardLightSelectionGuard':
+      return 'areGlScene3DForwardLightSelectionGuardsEnabled uses != null, and renderGlScene3D optional-calls the guard only when punctual lights exceed the forward limit without a prepared per-object selection list.';
+    case 'pbrExtensionGuard':
+      return 'areGlPbrExtensionGuardsEnabled uses !== null, and extendedPbrGlMeshMaterialRenderer optional-calls the guard only when extension contribution resolution fails.';
+    default:
+      return '';
+  }
 }
 
 function getGlRenderPassTrackingMixedAbsencePropertyMessage(

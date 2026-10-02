@@ -6209,23 +6209,49 @@ describe('analyzeTypeScriptSourcePortability', () => {
         subject: `interface:${owner}/property:${field}`,
       })),
     );
+    const glFlows = new Map<string, string>([
+      ['colorSpaceGuard', 'a direct canvas draw has no render-target color-space declaration'],
+      ['customShaderGuard', 'after resolving the exact bound program and shader key'],
+      ['deformGuard', 'calls the same closure for each visible mesh'],
+      [
+        'forwardLightSelectionGuard',
+        'punctual lights exceed the forward limit without a prepared per-object selection list',
+      ],
+      ['pbrExtensionGuard', 'only when extension contribution resolution fails'],
+    ]);
     for (const [index, finding] of findings.entries()) {
       const [, field, backend] = expected[index]!;
       expect(finding.message).toContain(
         `gives the opt-in ${backend} Scene3D diagnostic guard slot ${field} both omission and explicit null`,
       );
       expect(finding.message).toContain('the represented per-state runtime has one disabled state');
-      expect(finding.message).toContain(
-        'getGlScene3DRuntime currently omits colorSpaceGuard, customShaderGuard, deformGuard, and forwardLightSelectionGuard while assigning pbrExtensionGuard: null',
-      );
-      expect(finding.message).toContain(
-        'getWgpuScene3DRuntime assigns customShaderGuard: null and forwardLightSelectionGuard: null',
-      );
-      expect(finding.message).toContain('Each enable function overwrites its exact slot with the diagnostic closure');
-      expect(finding.message).toContain('collapse undefined and null through != null, !== null, optional call');
-      expect(finding.message).toContain('Make all five GL guard slots and both WebGPU guard slots required fields');
-      expect(finding.message).toContain('their exact callable type | null');
-      expect(finding.message).toContain('initialize every slot to null in the corresponding runtime object literal');
+      if (backend === 'GL') {
+        expect(finding.message).toContain(glFlows.get(field)!);
+        expect(finding.message).toContain('creates one runtime per GlRenderState');
+        expect(finding.message).toContain(
+          'currently omits colorSpaceGuard, customShaderGuard, deformGuard, and forwardLightSelectionGuard while assigning pbrExtensionGuard: null',
+        );
+        expect(finding.message).toContain('Every enable function overwrites its exact slot');
+        expect(finding.message).toContain('no path clears a guard back to either absence spelling');
+        expect(finding.message).toContain('pbrExtensionGuard initializer is already semantically required');
+        expect(finding.message).toContain('an omitted undefined slot would incorrectly report enabled');
+        expect(finding.message).toContain(
+          'Make all five guard slots required fields with their exact callable type | null',
+        );
+        expect(finding.message).toContain('initialize all five to null in the runtime object literal');
+        expect(finding.message).toContain('project the sole exact callable alternative');
+        expect(finding.message).toContain('assignments, probes, optional calls, and the guarded local call');
+        expect(finding.message).toContain("does not choose the source contract's disabled sentinel");
+      } else {
+        expect(finding.message).toContain(
+          'getWgpuScene3DRuntime assigns customShaderGuard: null and forwardLightSelectionGuard: null',
+        );
+        expect(finding.message).toContain('Each enable function overwrites its exact slot with the diagnostic closure');
+        expect(finding.message).toContain('collapse undefined and null through != null, !== null, optional call');
+        expect(finding.message).toContain('Make all five GL guard slots and both WebGPU guard slots required fields');
+        expect(finding.message).toContain('their exact callable type | null');
+        expect(finding.message).toContain('initialize every slot to null in the corresponding runtime object literal');
+      }
       expect(finding.message).toContain('logging dependencies remain shakeable');
       expect(finding.message).toContain('one named closed guard state and handle every arm explicitly');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');

@@ -46208,6 +46208,58 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     ).toBe('cpp-dual-sentinel-comparison-unrepresented');
   });
 
+  it('lowers the current GL Scene3D diagnostic guard sentinel operations', () => {
+    const result = lower(
+      'gl-scene3d-diagnostic-guards.ts',
+      `export interface GlScene3DRuntime {
+         colorSpaceGuard?: (() => void) | null;
+         deformGuard?: ((mesh: string) => void) | null;
+         pbrExtensionGuard?: ((extensions: readonly string[]) => void) | null;
+       }
+       export function createRuntime(): GlScene3DRuntime { return { pbrExtensionGuard: null }; }
+       export function enableColorSpace(runtime: GlScene3DRuntime, guard: () => void): void {
+         runtime.colorSpaceGuard = guard;
+       }
+       export function isColorSpaceEnabled(runtime: GlScene3DRuntime): boolean {
+         return runtime.colorSpaceGuard != null;
+       }
+       export function isPbrEnabled(runtime: GlScene3DRuntime): boolean {
+         return runtime.pbrExtensionGuard !== null;
+       }
+       export function render(runtime: GlScene3DRuntime, mesh: string): void {
+         runtime.colorSpaceGuard?.();
+         const deformGuard = runtime.deformGuard;
+         if (deformGuard != null) deformGuard(mesh);
+         runtime.pbrExtensionGuard?.([]);
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain('std::function<void()>');
+    expect(output).toContain('std::function<void(flight::String)>');
+    expect(output).toContain('std::function<void(flight::Array<flight::String>)>');
+    expect(output).toContain('std::holds_alternative<std::function<void()>>');
+    expect(output).toContain('std::get<std::function<void()>>');
+    expect(output).toContain('std::holds_alternative<flight::Undefined>');
+    expect(output).not.toContain('static_cast');
+    expect(output).not.toContain('reinterpret_cast');
+
+    if (canCompileCpp && cppToolchain) {
+      const directory = mkdtempSync(path.join(tmpdir(), 'flight-gl-scene3d-diagnostic-guards-'));
+      const header = path.join(directory, 'gl_scene3d_diagnostic_guards.hpp');
+      try {
+        writeFileSync(header, output, 'utf8');
+        const arguments_ = createCppSyntaxOnlyArguments(cppToolchain, header, cppRuntimeIncludeDirectories);
+        expect(() =>
+          execFileSync(cppToolchain.command, arguments_, { cwd: directory, encoding: 'utf8', stdio: 'pipe' }),
+        ).not.toThrow();
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    }
+  });
+
   it('names the flattening behind an unidentified heritage assertion and keeps its rewrite exact', () => {
     const shared = `interface RenderState { readonly pipeline: string }
        interface RenderProxyBase { readonly id: string }

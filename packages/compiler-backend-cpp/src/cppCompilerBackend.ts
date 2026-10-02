@@ -27561,10 +27561,15 @@ function emitOptionalCallExpressionCpp(
 ): string {
   const semantics = expression.semantics.optionalChain;
   if (!semantics) emissionError(context, 'optional call lacks neutral optional-chain evidence');
-  assertIrOptionalChainReceiverIsSingleSentinelCpp(semantics.receiverType, context);
   if (semantics.receiverNullish === 'excluded') {
     return emitExpression({ ...expression, optional: false }, context);
   }
+  // Calling a value through `?.` asks one representation question: does this carrier hold its callable
+  // alternative? A dual-sentinel variant answers that exactly when it has one value slot; both null and
+  // undefined fail the positive alternative test, while the invocation reads the same callable carrier.
+  // This is the same projection used by optional member calls, and it preserves both authored sentinel
+  // tags without choosing one, casting the callable, or introducing side storage.
+  const receiverProjection = getCppOptionalChainReceiverProjectionCpp(semantics.receiverType, context);
   const valueType = emitOptionalChainPayloadIrTypeCpp(semantics.valueType, context);
   const callee = emitOptionalChainReceiverCpp(expression.callee, context);
   const arguments_ = appendCppOmittedInvocationArguments(
@@ -27574,14 +27579,14 @@ function emitOptionalCallExpressionCpp(
   ).join(', ');
   const receiverType = emitOptionalChainPayloadIrTypeCpp(semantics.receiverType, context);
   const invocation = getCppCallableObjectIrTypeCpp(receiverType, context, new Set())
-    ? `(*optional_chain_receiver.value())(${arguments_})`
-    : `optional_chain_receiver.value()(${arguments_})`;
+    ? `(*${receiverProjection.value})(${arguments_})`
+    : `${receiverProjection.value}(${arguments_})`;
   context.includes.add('optional');
   if (valueType.kind === 'primitive' && valueType.name === 'void') {
-    return `([&]() { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return; ${invocation}; }())`;
+    return `([&]() { auto optional_chain_receiver = ${callee}; if (${receiverProjection.absent}) return; ${invocation}; }())`;
   }
   const payload = emitType(valueType, context);
-  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${callee}; if (!optional_chain_receiver.has_value()) return std::nullopt; return ${invocation}; }())`;
+  return `([&]() -> std::optional<${payload}> { auto optional_chain_receiver = ${callee}; if (${receiverProjection.absent}) return std::nullopt; return ${invocation}; }())`;
 }
 
 // A chained call on a primitive receiver whose member IS bound: the chain adds the presence test and nothing
