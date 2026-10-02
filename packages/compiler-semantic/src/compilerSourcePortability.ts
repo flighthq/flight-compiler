@@ -720,8 +720,10 @@ function getAuthoredNameMixedAbsencePropertyMessage(node: ts.PropertySignature, 
     return undefined;
   }
   const owner = node.parent.name.text;
+  if (owner === 'Attachment2D' && isFlightTypesSource(node, 'Attachment2D.ts')) {
+    return `${subject} gives the open Attachment2D family's authored-name metadata both omission and explicit null, but current Flight has one unnamed attachment state. Spine JSON passes each supported region or mesh attachment's string skin-entry key to its concrete initializer; Spine binary stores its optional name reference ?? the skin-entry key and therefore passes string | null; DragonBones normalizes a non-string display.name to null. Every built-in RegionAttachment2D and MeshAttachment2D initializer assigns out.name. No production consumer reads Attachment2D.name: Spine setup and animation lookup use the separate SkinAttachment2D.name plus slotIndex, DragonBones animation uses positional display tables, and deformation and rendering dispatch on kind and concrete data. cloneSkeleton2D shares the exact attachment owners through skins and slots rather than cloning or rewriting their name cells. Make Attachment2D.name a required string | null field, preserve every imported string, initialize null for unnamed built-in and custom concrete attachments, and keep the open kind family unchanged. If external structural inputs must allow omission, give them a separate shape and normalize once before constructing the live attachment. If omitted, unnamed, and named metadata must differ in a future contract, replace the two absence spellings with one named closed state and handle every arm explicitly. Do not whitelist the redundant live-storage spelling. The compiler will preserve every authored string and attachment owner but will not choose or collapse an absence sentinel, infer a name from the skin-entry key, slot, kind, atlas path, or display position, rewrite setup or animation lookup, clone or materialize an attachment, route the name through Any, reinterpret or cast the string, or add side storage.`;
+  }
   const isAuthoredName =
-    (owner === 'Attachment2D' && isFlightTypesSource(node, 'Attachment2D.ts')) ||
     (owner === 'Bone2D' && isFlightTypesSource(node, 'Bone2D.ts')) ||
     (owner === 'Material' && isFlightTypesSource(node, 'Material.ts'));
   if (!isAuthoredName) return undefined;

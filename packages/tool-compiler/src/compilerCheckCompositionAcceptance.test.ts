@@ -1058,6 +1058,76 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the Attachment2D authored-name finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createAttachment2DWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubject = 'interface:Attachment2D/property:name';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'mixed-absence', subject: expectedSubject },
+    ]);
+    expect(sourcePortability.findings[0]?.message).toContain('No production consumer reads Attachment2D.name');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Spine setup and animation lookup use the separate SkinAttachment2D.name plus slotIndex',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('Make Attachment2D.name a required string | null field');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: expectedSubject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createAttachment2DWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both BoundingBoxAttachment2D point-storage findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createBoundingBoxAttachment2DWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -2033,6 +2103,18 @@ export interface LoadScene2DAudioResourcesOptions {
   LoadScene2DAudioResourcesOptions,
   Scene2DDocumentLoadOptions,
 } from './Scene2DResources.js';`,
+  };
+}
+
+function createAttachment2DWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Attachment2D.ts': `export interface Attachment2D {
+  kind: string;
+  name${marker}: string | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Attachment2D } from './Attachment2D.js';`,
   };
 }
 

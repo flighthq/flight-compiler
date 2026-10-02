@@ -5478,8 +5478,47 @@ describe('analyzeTypeScriptSourcePortability', () => {
         subject: `interface:${owner}/property:name`,
       })),
     );
-    for (const [index, finding] of findings.entries()) {
-      const owner = ['Attachment2D', 'Bone2D', 'Material'][index];
+    const [attachmentFinding, ...otherFindings] = findings;
+    expect(attachmentFinding?.message).toContain(
+      "gives the open Attachment2D family's authored-name metadata both omission and explicit null",
+    );
+    expect(attachmentFinding?.message).toContain('current Flight has one unnamed attachment state');
+    expect(attachmentFinding?.message).toContain(
+      "Spine JSON passes each supported region or mesh attachment's string skin-entry key",
+    );
+    expect(attachmentFinding?.message).toContain(
+      'Spine binary stores its optional name reference ?? the skin-entry key',
+    );
+    expect(attachmentFinding?.message).toContain('DragonBones normalizes a non-string display.name to null');
+    expect(attachmentFinding?.message).toContain(
+      'Every built-in RegionAttachment2D and MeshAttachment2D initializer assigns out.name',
+    );
+    expect(attachmentFinding?.message).toContain('No production consumer reads Attachment2D.name');
+    expect(attachmentFinding?.message).toContain(
+      'Spine setup and animation lookup use the separate SkinAttachment2D.name plus slotIndex',
+    );
+    expect(attachmentFinding?.message).toContain('DragonBones animation uses positional display tables');
+    expect(attachmentFinding?.message).toContain('deformation and rendering dispatch on kind and concrete data');
+    expect(attachmentFinding?.message).toContain('cloneSkeleton2D shares the exact attachment owners');
+    expect(attachmentFinding?.message).toContain('Make Attachment2D.name a required string | null field');
+    expect(attachmentFinding?.message).toContain(
+      'initialize null for unnamed built-in and custom concrete attachments',
+    );
+    expect(attachmentFinding?.message).toContain('keep the open kind family unchanged');
+    expect(attachmentFinding?.message).toContain('separate shape and normalize once');
+    expect(attachmentFinding?.message).toContain('replace the two absence spellings with one named closed state');
+    expect(attachmentFinding?.message).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(attachmentFinding?.message).toContain('will not choose or collapse an absence sentinel');
+    expect(attachmentFinding?.message).toContain(
+      'infer a name from the skin-entry key, slot, kind, atlas path, or display position',
+    );
+    expect(attachmentFinding?.message).toContain('rewrite setup or animation lookup');
+    expect(attachmentFinding?.message).toContain('clone or materialize an attachment');
+    expect(attachmentFinding?.message).toContain('route the name through Any');
+    expect(attachmentFinding?.message).toContain('or add side storage');
+
+    for (const [index, finding] of otherFindings.entries()) {
+      const owner = ['Bone2D', 'Material'][index];
       expect(finding.message).toContain(
         `gives the internal ${owner} authored-name slot both omission and explicit null`,
       );
