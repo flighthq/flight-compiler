@@ -2470,7 +2470,7 @@ function getFlightLogOpaqueValueGuidance(
   ) {
     return undefined;
   }
-  return `${subject} gives structured log records an open unknown value domain. Log producers pass those records through span and context merging into memory or buffered sinks, registered kind serializers and redaction, and JSON or text formatters; the values therefore cross capture and transport boundaries rather than remaining unexamined tokens. Normalize each producer before LogEntry construction to one named closed LogFieldValue domain shared by LogData, context and span fields, serializers, and sinks. A reviewed source-portability exception for this exact alias is justified only for a deliberately JavaScript-only diagnostic boundary whose values never enter portable storage or transport. The compiler will not infer a schema from logger call sites, stringify arbitrary fields, choose a target-specific Any carrier, insert a cast, or copy or materialize the record.`;
+  return `${subject} gives structured log records an open value domain even though every sink and LogSignals receive the raw LogEntry. Memory and buffered sinks can retain data before registered kind serializers and redaction run inside the JSON formatter, while text and custom formatters need the same declared values directly. Define a recursive named closed LogFieldValue domain covering portable scalars, arrays, and string-keyed records plus a LogFields record alias; make LogData string | LogFields and use LogFields for context fields, span fields, serializer results, and serializeLogError. Normalize current live object producers into those values before LogEntry construction. Do not whitelist the transport domain: the compiler will not infer a schema from logger call sites, invoke late serializers, stringify arbitrary fields, choose a target-specific Any carrier, insert a cast, or copy or materialize the record.`;
 }
 
 function getFlightTypesOpaquePropertyGuidance(
@@ -2511,7 +2511,12 @@ function getFlightTypesOpaquePropertyGuidance(
   ) {
     return `${subject} erases a contract that is already closed. getWgpuScene3DRuntime creates one runtime per WgpuRenderState and initializes skinningAdapter to null; registerWgpuGpuSkinning is the sole non-null producer and overwrites it with the module-level WGPU_SKINNING_ADAPTER singleton, which is declared as WgpuSkinningAdapter. No path clears or substitutes another value. getWgpuSkinningAdapter plus four direct mesh-upload, mesh-selection, draw-bind-group, and pipeline-layout reads immediately cast the slot back to WgpuSkinningAdapter | null. The accessor then supplies the same named type to Classic, PBR, Shaded, Toon, and Unlit shader construction plus both shadow paths. Type the runtime property directly as WgpuSkinningAdapter | null with a type-only import and remove all five casts while preserving the null checks and owner identity. The adjacent shaded-material cache values are genuinely backend-private unknowns, but that rationale does not apply to this slot because WgpuSkinningAdapter is already a public closed interface in @flighthq/types. The C++ backend can carry its nullable interface reference without an Any carrier or identity-changing conversion. A reviewed exception is not justified. The compiler will not choose a target-specific Any carrier, retain or insert a cast, infer or install a skinning adapter, invoke an adapter method, or copy or materialize the adapter.`;
   }
-  if (isFlightTypesSource(node, 'Log.ts') && isReadonlyUnknownRecord(node.type) && node.questionToken === undefined) {
+  if (
+    isFlightTypesSource(node, 'Log.ts') &&
+    isReadonlyUnknownRecord(node.type) &&
+    node.questionToken === undefined &&
+    !node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword)
+  ) {
     const owner =
       subject === 'interface:LogContext/property:fields'
         ? 'context'
@@ -2519,7 +2524,12 @@ function getFlightTypesOpaquePropertyGuidance(
           ? 'span'
           : undefined;
     if (owner === undefined) return undefined;
-    return `${subject} gives the bound log ${owner} an open unknown field-value domain. The log package merges these fields into LogData before LogEntry emission, after which memory and buffered sinks may retain them and serializers, redaction, and formatters may inspect or serialize them. Normalize fields at createLog${owner === 'context' ? 'Context/createChildLogContext' : 'Span'} before they enter the ${owner}, using the same named closed LogFieldValue domain as LogData and every sink. A reviewed source-portability exception for this exact property is justified only for a deliberately JavaScript-only diagnostic boundary whose values never enter portable storage or transport. The compiler will not infer values from field names, stringify arbitrary fields, choose a target-specific Any carrier, insert a cast, or copy or materialize the record.`;
+    const constructor = owner === 'context' ? 'createLogContext and createChildLogContext' : 'createLogSpan';
+    const retention =
+      owner === 'context'
+        ? 'The context retains those fields and every logWith path merges them into LogData before LogEntry emission.'
+        : 'The active-span stack retains those fields and every enabled log path merges them into LogData before LogEntry emission.';
+    return `${subject} gives the bound log ${owner} a second open field-value domain. ${retention} Memory or buffered sinks and LogSignals can then retain or observe the values before JSON serializers or redaction run. Type fields as the same LogFields alias backed by the recursive named closed LogFieldValue domain as LogData, make ${constructor} accept that type, and normalize live object fields at their callers before constructing the ${owner}. Do not whitelist the merged transport domain: the compiler will not infer values from field names, invoke late serializers, stringify arbitrary fields, choose a target-specific Any carrier, insert a cast, or copy or materialize the record.`;
   }
   if (
     isFlightTypesSource(node, 'Command.ts') &&

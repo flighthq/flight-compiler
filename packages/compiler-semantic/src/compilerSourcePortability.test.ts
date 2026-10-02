@@ -1993,7 +1993,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([explicit]).findings).toEqual([]);
   });
 
-  it('traces Flight log records to their producer normalization boundary', () => {
+  it('traces every Flight log record to one closed recursive transport domain', () => {
     const opaque = input(
       'packages/types/src/Log.ts',
       `type LogData = string | Readonly<Record<string, unknown>>;
@@ -2002,16 +2002,25 @@ describe('analyzeTypeScriptSourcePortability', () => {
     );
     const closed = input(
       'packages/types/src/Log.ts',
-      `type LogFieldValue = boolean | number | string | null;
-       type LogData = string | Readonly<Record<string, LogFieldValue>>;
-       interface LogContext { fields: Readonly<Record<string, LogFieldValue>> }
-       interface LogSpan { fields: Readonly<Record<string, LogFieldValue>> }`,
+      `type LogFieldValue =
+         | boolean
+         | number
+         | string
+         | null
+         | readonly LogFieldValue[]
+         | Readonly<Record<string, LogFieldValue>>;
+       type LogFields = Readonly<Record<string, LogFieldValue>>;
+       type LogData = string | LogFields;
+       interface LogContext { fields: LogFields }
+       interface LogSpan { fields: LogFields }`,
     );
     const controls = [
       input('packages/types/src/Other.ts', 'type LogData = string | Readonly<Record<string, unknown>>;'),
       input('packages/other/src/Log.ts', 'interface LogContext { fields: Readonly<Record<string, unknown>> }'),
       input('packages/types/src/Log.ts', 'type LogData = unknown;'),
       input('packages/types/src/Log.ts', 'interface LogSpan { fields: unknown }'),
+      input('packages/types/src/Log.ts', 'interface LogContext { readonly fields: Readonly<Record<string, unknown>> }'),
+      input('packages/types/src/Log.ts', 'interface LogSpan { fields?: Readonly<Record<string, unknown>> }'),
       input('packages/types/src/Log.ts', 'interface LogContext { fields: Readonly<Record<string, any>> }'),
     ];
 
@@ -2022,14 +2031,22 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'type:LogData',
     ]);
     const alias = report.findings.find(({ subject }) => subject === 'type:LogData');
-    expect(alias?.message).toContain('through span and context merging');
-    expect(alias?.message).toContain('Normalize each producer before LogEntry construction');
+    expect(alias?.message).toContain('every sink and LogSignals receive the raw LogEntry');
+    expect(alias?.message).toContain('before registered kind serializers and redaction run inside the JSON formatter');
+    expect(alias?.message).toContain('portable scalars, arrays, and string-keyed records');
+    expect(alias?.message).toContain('serializer results, and serializeLogError');
     for (const finding of report.findings.filter(({ subject }) => subject.endsWith('/property:fields'))) {
-      expect(finding.message).toContain('merges these fields into LogData before LogEntry emission');
-      expect(finding.message).toContain('same named closed LogFieldValue domain as LogData and every sink');
+      expect(finding.message).toContain('merges them into LogData before LogEntry emission');
+      expect(finding.message).toContain(
+        'same LogFields alias backed by the recursive named closed LogFieldValue domain',
+      );
     }
+    expect(report.findings[0]?.message).toContain('createLogContext and createChildLogContext');
+    expect(report.findings[1]?.message).toContain('active-span stack');
+    expect(report.findings[1]?.message).toContain('createLogSpan');
     for (const finding of report.findings) {
-      expect(finding.message).toContain('reviewed source-portability exception for this exact');
+      expect(finding.message).toContain('Do not whitelist');
+      expect(finding.message).not.toContain('reviewed source-portability exception');
       expect(finding.message).toContain('target-specific Any carrier');
       expect(finding.message).toContain('insert a cast');
       expect(finding.message).toContain('copy or materialize the record');

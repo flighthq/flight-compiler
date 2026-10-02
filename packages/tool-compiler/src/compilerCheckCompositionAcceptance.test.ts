@@ -832,6 +832,88 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the three log transport domains source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createLogWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = [
+      'interface:LogContext/property:fields',
+      'interface:LogSpan/property:fields',
+      'type:LogData',
+    ];
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'opaque-value-domain', subject })),
+    );
+    expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
+      expect.stringContaining('createLogContext and createChildLogContext'),
+      expect.stringContaining('active-span stack'),
+      expect.stringContaining('every sink and LogSignals receive the raw LogEntry'),
+    ]);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('recursive named closed LogFieldValue domain'),
+      ),
+    ).toBe(true);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
+    ).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'opaque-value-domain',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createLogWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both Scene2D resource input absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createScene2DResourceWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -1463,6 +1545,29 @@ export function createNode2D<R extends Node2DRuntime>(
     createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>),
   );
 }`,
+  };
+}
+
+function createLogWorkspaceFiles(opaque: boolean): Record<string, string> {
+  const declarations = opaque
+    ? `export type LogData = string | Readonly<Record<string, unknown>>;
+export interface LogContext { fields: Readonly<Record<string, unknown>> }
+export interface LogSpan { fields: Readonly<Record<string, unknown>> }`
+    : `export type LogFieldValue =
+  | boolean
+  | number
+  | string
+  | null
+  | readonly LogFieldValue[]
+  | Readonly<Record<string, LogFieldValue>>;
+export type LogFields = Readonly<Record<string, LogFieldValue>>;
+export type LogData = string | LogFields;
+export interface LogContext { fields: LogFields }
+export interface LogSpan { fields: LogFields }`;
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Log.ts': declarations,
+    '/flight/packages/types/src/index.ts': `export type { LogContext, LogData, LogSpan } from './Log.js';`,
   };
 }
 
