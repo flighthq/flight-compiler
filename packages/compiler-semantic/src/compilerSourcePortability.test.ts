@@ -8204,11 +8204,6 @@ describe('analyzeTypeScriptSourcePortability', () => {
          }
          const transition = node.transition ?? null;
          void transition;
-       }
-       function substituteNode(node: Readonly<FlightDocumentNode>): FlightDocumentNode {
-         const children = node.children;
-         const fields = node.fields;
-         return { children, fields, kind: node.kind };
        }`,
     );
     const findings = analyzeTypeScriptSourcePortability([source]).findings;
@@ -8230,23 +8225,26 @@ describe('analyzeTypeScriptSourcePortability', () => {
       );
       expect(finding.message).toContain('the represented contract has one inactive state');
       expect(finding.message).toContain('transition is invalid without interactiveStates');
+      expect(finding.message).toContain('flightDocumentText.readNode initializes both slots to null');
+      expect(finding.message).toContain('normalizes omitted text keys to those values');
+      expect(finding.message).toContain('rejects a transition without interactiveStates');
+      expect(finding.message).toContain('returns { children, fields, interactiveStates, kind, transition }');
+      expect(finding.message).toContain('readInteractiveStateBindingMetadata returns the same required nullable pair');
+      expect(finding.message).toContain('the 2D and 3D scene writers assign both fields from it');
       expect(finding.message).toContain(
-        'flightDocumentText.readNode returns { children, fields, interactiveStates, kind, transition }',
+        'Formatting, refusal, and 2D and 3D materialization collapse undefined and null',
       );
-      expect(finding.message).toContain(
-        'the 2D and 3D scene writers assign both fields from readInteractiveStateBindingMetadata',
-      );
-      expect(finding.message).toContain('collapse undefined and null with == null, != null, or ?? null');
-      expect(finding.message).toContain('substituteNode rebuilds { children, fields, kind }');
-      expect(finding.message).toContain('optional storage can silently discard present interaction metadata');
+      expect(finding.message).toContain('no production consumer assigns distinct behavior to omission');
       expect(finding.message).toContain(
         'Make interactiveStates and transition required nullable fields on FlightDocumentNode',
       );
-      expect(finding.message).toContain('normalize omitted input syntax to null at ingress');
+      expect(finding.message).toContain("retain the parser and scene writers' explicit null initialization");
       expect(finding.message).toContain(
-        'initialize or deliberately preserve both fields in every parser, writer, and reconstruction path',
+        'make every manual construction or transformation deliberately preserve or clear both fields',
       );
-      expect(finding.message).toContain('a separate input shape or one named closed metadata state');
+      expect(finding.message).toContain('a separate raw input shape or one named closed metadata state');
+      expect(finding.message).toContain('Do not whitelist either redundant absence spelling');
+      expect(finding.message).toContain('can preserve the authored tags and exact metadata owners');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('infer a transition from interactive states');
       expect(finding.message).toContain('decide whether a transformation preserves or clears metadata');
