@@ -9518,8 +9518,9 @@ describe('analyzeTypeScriptSourcePortability', () => {
       },
       {
         boundary:
-          'replaceTextInputRange passes options?.mergeKind ?? null to recordTextInputEdit, whose required nullable parameter is stored in TextInputHistoryEntry',
-        destination: 'recordTextInputEdit mergeKind and TextInputHistoryEntry.mergeKind',
+          'replaceSelectedTextInput only forwards the exact readonly options to replaceTextInput, which is their sole reader and never mutates or retains them',
+        destination:
+          'recordTextInputEdit mergeKind, TextInputHistoryEntry.mergeKind, and the parallel TextInputEditRecord.mergeKind contract',
         field: 'mergeKind',
         owner: 'ReplaceTextInputOptions',
         presentMeaning: 'merge tag',
@@ -9572,6 +9573,54 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(scene2DMessage).toContain(
       "representation support does not replace the source's single normalized input state",
     );
+    const textInputMessage = findings[1]!.message;
+    expect(textInputMessage).toContain('replaceSelectedTextInput only forwards the exact readonly options');
+    expect(textInputMessage).toContain('replaceTextInput, which is their sole reader');
+    expect(textInputMessage).toContain('never mutates or retains them');
+    expect(textInputMessage).toContain(
+      'All production append, delete, keyboard, paste, and TextInputManager routes omit mergeKind',
+    );
+    expect(textInputMessage).toContain('insertTextInput supplies only applyInputRules');
+    expect(textInputMessage).toContain('no production caller supplies either explicit null or a present merge tag');
+    expect(textInputMessage).toContain('no-op empty insertion returns before history handling');
+    expect(textInputMessage).toContain('skipHistory or historyLimit === 0 bypasses mergeKind entirely');
+    expect(textInputMessage).toContain('passes options?.mergeKind ?? null to recordTextInputEdit');
+    expect(textInputMessage).toContain('first discards any redo tail');
+    expect(textInputMessage).toContain('compares a non-null tag with the current TextInputHistoryEntry');
+    expect(textInputMessage).toContain('preserves the original before snapshot and tag');
+    expect(textInputMessage).toContain('replacing only the after text, caret, and selection');
+    expect(textInputMessage).toContain('null always creates a separate undo step');
+    expect(textInputMessage).toContain('appends one entry containing the exact string scalar or required null');
+    expect(textInputMessage).toContain(
+      'empty string remains a present tag and coalesces only with another empty string',
+    );
+    expect(textInputMessage).toContain(
+      'TextInputEditRecord exposes the same required-nullable data contract but has no production consumer',
+    );
+    expect(textInputMessage).toContain('Undo and redo ignore mergeKind and restore only the recorded snapshots');
+    expect(textInputMessage).toContain('New edits after undo release the redo tail');
+    expect(textInputMessage).toContain('history-limit trimming releases the oldest entries');
+    expect(textInputMessage).toContain('clearTextInputHistory releases the complete array without changing text');
+    expect(textInputMessage).toContain('disableTextInput detaches the entire TextInputState');
+    expect(textInputMessage).toContain(
+      'disposeTextInputController invokes that detach only when the controller owns the input capability',
+    );
+    expect(textInputMessage).toContain("No path mutates an entry's mergeKind after insertion");
+    expect(textInputMessage).toContain('copies history into another RichText');
+    expect(textInputMessage).toContain('requires disposal of a string scalar');
+    expect(textInputMessage).toContain('Do not whitelist the redundant explicit-null edit option');
+    expect(textInputMessage).toContain('This finding is not a host-binding gap');
+    expect(textInputMessage).toContain('String is a compiler-native value');
+    expect(textInputMessage).toContain('current optional-nullable input lowers as String | Null | Undefined');
+    expect(textInputMessage).toContain('recommended optional string');
+    expect(textInputMessage).toContain('required string | null history boundary');
+    expect(textInputMessage).toContain('one optional String carrier without an external binding');
+    expect(textInputMessage).toContain('Carrier support does not authorize the compiler to compare tags');
+    expect(textInputMessage).toContain('coalesce history entries, select or copy snapshots');
+    expect(textInputMessage).toContain('mutate text, caret, or selection state');
+    expect(textInputMessage).toContain('discard a redo tail');
+    expect(textInputMessage).toContain('trim, clear, detach, or copy history');
+    expect(textInputMessage).toContain('invent string disposal');
   });
 
   it('keeps unrelated string options generic and accepts one input absence state', () => {

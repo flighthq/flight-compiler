@@ -4166,6 +4166,101 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the TextInput merge-tag input finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createTextInputEditingOptionsWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubject = 'interface:ReplaceTextInputOptions/property:mergeKind';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'mixed-absence', subject: expectedSubject },
+    ]);
+    const message = sourcePortability.findings[0]!.message;
+    expect(message).toContain('replaceSelectedTextInput only forwards the exact readonly options');
+    expect(message).toContain('replaceTextInput, which is their sole reader and never mutates or retains them');
+    expect(message).toContain('no production caller supplies either explicit null or a present merge tag');
+    expect(message).toContain('skipHistory or historyLimit === 0 bypasses mergeKind entirely');
+    expect(message).toContain('passes options?.mergeKind ?? null to recordTextInputEdit');
+    expect(message).toContain('preserves the original before snapshot and tag');
+    expect(message).toContain('null always creates a separate undo step');
+    expect(message).toContain('empty string remains a present tag and coalesces only with another empty string');
+    expect(message).toContain('Undo and redo ignore mergeKind');
+    expect(message).toContain('history-limit trimming releases the oldest entries');
+    expect(message).toContain('clearTextInputHistory releases the complete array');
+    expect(message).toContain('disableTextInput detaches the entire TextInputState');
+    expect(message).toContain("No path mutates an entry's mergeKind after insertion");
+    expect(message).toContain('declare ReplaceTextInputOptions.mergeKind as an optional string');
+    expect(message).toContain('Do not whitelist the redundant explicit-null edit option');
+    expect(message).toContain('This finding is not a host-binding gap');
+    expect(message).toContain('String is a compiler-native value');
+    expect(message).toContain('String | Null | Undefined');
+    expect(message).toContain('one optional String carrier without an external binding');
+    expect(message).toContain('Carrier support does not authorize the compiler to compare tags');
+    expect(message).toContain('trim, clear, detach, or copy history');
+    expect(message).not.toContain('reviewed source-portability exception');
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: expectedSubject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createTextInputEditingOptionsWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both BitmapText construction-option findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createBitmapTextOptionsWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -7275,6 +7370,29 @@ export interface LoadScene2DAudioResourcesOptions {
   LoadScene2DAudioResourcesOptions,
   Scene2DDocumentLoadOptions,
 } from './Scene2DResources.js';`,
+  };
+}
+
+function createTextInputEditingOptionsWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/TextInputEditingOptions.ts': `export interface ReplaceTextInputOptions {
+  applyInputRules?: boolean;
+  mergeKind?: string${nullable};
+  skipHistory?: boolean;
+}
+export interface TextInputHistoryEntry {
+  mergeKind: string | null;
+}
+export interface TextInputEditRecord {
+  mergeKind: string | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type {
+  ReplaceTextInputOptions,
+  TextInputEditRecord,
+  TextInputHistoryEntry,
+} from './TextInputEditingOptions.js';`,
   };
 }
 

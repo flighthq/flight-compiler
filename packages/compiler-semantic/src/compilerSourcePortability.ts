@@ -994,10 +994,13 @@ function getNormalizedStringOptionMixedAbsencePropertyMessage(
     field === 'mergeKind'
   ) {
     guidance = {
-      destination: 'recordTextInputEdit mergeKind and TextInputHistoryEntry.mergeKind',
+      destination:
+        'recordTextInputEdit mergeKind, TextInputHistoryEntry.mergeKind, and the parallel TextInputEditRecord.mergeKind contract',
       normalization:
-        'replaceTextInputRange passes options?.mergeKind ?? null to recordTextInputEdit, whose required nullable parameter is stored in TextInputHistoryEntry and compared with null before coalescing',
+        "replaceSelectedTextInput only forwards the exact readonly options to replaceTextInput, which is their sole reader and never mutates or retains them. All production append, delete, keyboard, paste, and TextInputManager routes omit mergeKind; insertTextInput supplies only applyInputRules, and no production caller supplies either explicit null or a present merge tag. A no-op empty insertion returns before history handling, while skipHistory or historyLimit === 0 bypasses mergeKind entirely. For every recorded edit, replaceTextInput passes options?.mergeKind ?? null to recordTextInputEdit. That function first discards any redo tail, then compares a non-null tag with the current TextInputHistoryEntry: an equal tag preserves the original before snapshot and tag while replacing only the after text, caret, and selection, whereas null always creates a separate undo step. Otherwise it appends one entry containing the exact string scalar or required null; an empty string remains a present tag and coalesces only with another empty string. TextInputEditRecord exposes the same required-nullable data contract but has no production consumer. Undo and redo ignore mergeKind and restore only the recorded snapshots. New edits after undo release the redo tail, history-limit trimming releases the oldest entries, clearTextInputHistory releases the complete array without changing text, and disableTextInput detaches the entire TextInputState; disposeTextInputController invokes that detach only when the controller owns the input capability. No path mutates an entry's mergeKind after insertion, copies history into another RichText, or requires disposal of a string scalar",
       presentMeaning: 'merge tag',
+      whitelistGuidance:
+        'Do not whitelist the redundant explicit-null edit option. This finding is not a host-binding gap: String is a compiler-native value, the current optional-nullable input lowers as String | Null | Undefined, and the recommended optional string plus every required string | null history boundary use one optional String carrier without an external binding. Carrier support does not authorize the compiler to compare tags, coalesce history entries, select or copy snapshots, mutate text, caret, or selection state, discard a redo tail, trim, clear, detach, or copy history, or invent string disposal.',
     };
   }
   if (field === undefined || guidance === undefined) return undefined;

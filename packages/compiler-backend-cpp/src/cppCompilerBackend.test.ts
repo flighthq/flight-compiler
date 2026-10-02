@@ -11666,6 +11666,28 @@ int main() {
     expect(contents).not.toContain('reinterpret_cast');
   });
 
+  it('separates TextInput merge-tag input absence from required nullable history storage', () => {
+    // ReplaceTextInputOptions is an ephemeral edit input, while both history interfaces describe the
+    // normalized retained record. All are compiler-native strings: required null and optional undefined
+    // share one optional carrier, but the current optional-nullable spelling preserves both sentinels.
+    const result = lower(
+      'TextInputEditingOptions.ts',
+      `export interface ReplaceTextInputOptions { mergeKind?: string | null; }
+       export interface PortableReplaceTextInputOptions { mergeKind?: string; }
+       export interface TextInputHistoryEntry { mergeKind: string | null; }
+       export interface TextInputEditRecord { mergeKind: string | null; }`,
+    );
+    const contents = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(contents).toContain('std::variant<flight::String, flight::Null, flight::Undefined> merge_kind =');
+    expect(contents.match(/std::optional<flight::String> merge_kind;/gu)).toHaveLength(3);
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
+  });
+
   it('does not classify Web Audio value-space constructors as object handle types', () => {
     const result = lower(
       'WebAudioConstructors.ts',
