@@ -13329,6 +13329,53 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     ).toContain('disconnectors');
   });
 
+  // Assets.ts's opaque-value-domain finding. The library is deliberately resource-type-agnostic: it decodes
+  // nothing itself and binds each asset *type* to its loader through an open adapter registry, so the payload
+  // is erased BY CONSTRUCTION rather than being a domain the compiler failed to close. The September corpus
+  // ledger listed this module under the unresolved-`auto`-placeholder family; that placeholder is gone, and
+  // the erased carriers below are what the source actually declares, so the classification is "arbitrary data
+  // already carried" and no guidance is warranted. The open-string key is the other half: `(string & {})` is
+  // every string, so the literal seeds collapse into `flight::String` instead of being enumerated.
+  it('classifies the asset library payload domain as arbitrary data already carried', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'assets.ts',
+        `export type AssetType = 'image' | 'audio' | 'textureAtlas' | (string & {});
+         export interface AssetLoaderAdapter<T = unknown> {
+           load(descriptor: string): Promise<T>;
+           dispose(value: T): void;
+         }
+         export interface AssetEntry {
+           value: unknown;
+           loadPromise: Promise<unknown> | null;
+           resident: boolean;
+         }
+         export interface AssetLibraryRuntime {
+           adapters: Map<AssetType, AssetLoaderAdapter>;
+           descriptors: Map<string, string>;
+           entries: Map<string, AssetEntry>;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    // The open key domain is every string, not the three seeds the source happens to list.
+    expect(emitted).toContain('using AssetType = flight::String;');
+
+    // `unknown` erases to `flight::Any` -- the arbitrary-payload carrier, distinct from the `object` default
+    // that erases to `flight::ErasedRef`. A bare `AssetLoaderAdapter` reference takes that default, which is
+    // why the reference is emitted as `<>` and why the declaration above it must carry `= flight::Any`:
+    // an empty argument list is only well-formed against a declaration whose default is visible.
+    expect(emitted).toContain('template <typename T = flight::Any>');
+    expect(emitted).toContain('struct AssetLoaderAdapter;');
+    expect(emitted).toContain('flight::Map<AssetType, flight::Ref<AssetLoaderAdapter<>>> adapters;');
+
+    // The entry payload is the same erasure one level down, and a required `| null` is still optional
+    // storage rather than a second sentinel.
+    expect(emitted).toContain('flight::Any value;');
+    expect(emitted).toContain('std::optional<flight::Task<flight::Any>> load_promise;');
+  });
+
   it('classifies the aseprite payload array as arbitrary data already carried', () => {
     // AsepriteSchema's single opaque-value-domain finding is `slices?: unknown[]` -- an optional array of
     // ARBITRARY values, not a closed domain. It is a different shape from the erased-Record CAST that refuses
