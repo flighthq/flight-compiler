@@ -14489,6 +14489,86 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // The nodeOrderList erased-scratch round trip, and why no owner evidence can prove it.
+  //
+  // The shape is exact and minimal: children typed `NodeOf<Traits>` are pushed into a module-level scratch
+  // typed `NodeAny[]`, then asserted back to `NodeOf<Traits>` when written into the child slot. The scratch is
+  // where the specialization dies -- `NodeAny` preserves node identity and nothing else -- and the identity map
+  // and sort key that sit beside it answer WHICH entry, never WHICH trait specialization was stored.
+  //
+  // IT IS NOT PROVABLE, and the control below is the evidence rather than the assertion of it. A structural
+  // owner binds the members and storage representations of the type the object was FIRST REACHED AS, so a read
+  // of a member the source type does not carry has no compatible cell to answer it. An assertion cannot add
+  // those cells, change their representation, or recover which wider owner was stored, and the only mechanisms
+  // that could fake it are the ones this compiler refuses by name: an unchecked cast, a copied or materialized
+  // row, a registry key carried beside the value, or side storage. The sound repair is the one the refusal
+  // names -- keep the exact row in typed storage instead of recovering it by assertion.
+  it('refuses an erased-scratch round trip that asserts a specialization back', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/index.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, path: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${path}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const emit = (assertion: string) => {
+      const results = lowerTypeScriptSources(
+        [
+          source(
+            '@flighthq/types',
+            'packages/types/src/index.ts',
+            `export interface NodeAny { readonly kind: string }`,
+          ),
+          source(
+            '@flighthq/node',
+            'packages/node/src/nodeOrderList.ts',
+            `import type { NodeAny } from '@flighthq/types';
+             export interface NodeOf<Traits extends object> { readonly traits: Traits }
+             let _members: NodeAny[] = [];
+             export function apply<Traits extends object>(children: NodeOf<Traits>[]): void {
+               _members.length = 0;
+               for (let i = 0; i < children.length; i++) _members.push(children[i]);
+               for (let i = 0; i < _members.length; i++) children[i] = _members[i] ${assertion};
+             }`,
+          ),
+        ],
+        moduleResolution,
+      ) as readonly any[];
+      const session = createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules: results.map((result) => result.module),
+        options: { runtimeProfile: 'flight-cpp' },
+      });
+      return captureBackendEmissionFailure(() => session.emitModule(results[1]!.module));
+    };
+
+    // The erased assertion: the rule that names the invariant, and the invariant in its own words.
+    const erased = emit('as unknown as NodeOf<Traits>');
+    expect(erased.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(erased.classification).toBe('source-portability');
+    expect(erased.message).toContain('the asserted row from');
+    expect(erased.message).toContain(
+      'binds the members and storage representations of the type the object was first reached as',
+    );
+    expect(erased.message).toContain(
+      'An assertion cannot add those cells or change their representation, or prove which wider owner was stored',
+    );
+
+    // The single assertion of the SAME source line is refused a rule earlier, and classified differently.
+    // Both refuse -- the specialization is unrecoverable either way -- but the pair is pinned here because a
+    // reader comparing the two messages would otherwise have to discover that for themselves.
+    const direct = emit('as NodeOf<Traits>');
+    expect(direct.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(direct.classification).toBe('target-runtime');
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
