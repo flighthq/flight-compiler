@@ -14598,6 +14598,108 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // ambient types must each receive one externalBindings entry. Two of the three carry remediation prose;
   // ArrayBufferView is the one symbol in this set that reports bare (it has no renderMissing* sibling and is
   // absent from the ambient surface), which is reported to Foreman as its own slice rather than invented here.
+  // The signals connection assertion, which is the generic-owner case rather than the structural one: a
+  // `SignalConnection<T>` is asserted into a container typed `SignalConnection<(...args: never[]) => void>`,
+  // the same generic declaration with a different type argument.
+  //
+  // IT IS NOT PROVABLE, and the reason is the invariant itself: sharing one generic declaration does not make
+  // two type arguments representation-equivalent, because the argument binds the member and callable CELLS of
+  // each concrete owner. `SignalConnection<T>` carries `slot: T` and the container's element carries
+  // `slot: Wide`; those are two C++ types with different cells, not one type reached two ways, so there is no
+  // heritage to travel and nothing for a cast to preserve. The remedies that would fake it -- reinterpreting
+  // the owner, copying or materializing a replacement, a registry key, side storage -- are the ones the
+  // refusal names and this compiler does not take. The sound source repair is in the same message: preserve
+  // the exact instantiation through its retaining slot, or give a genuinely heterogeneous container an
+  // explicit type-erased handle.
+  //
+  // TWO THINGS FLAGGED RATHER THAN FIXED, both pinned below:
+  //  1. The rule a reader sees depends on the ASSERTION'S SPELLING. `as unknown as` reaches this rule as
+  //     source-portability; the single `as` of the same line is refused a rule earlier as
+  //     cpp-reference-assertion-without-heritage, classified target-runtime. Both refuse, so nothing is
+  //     unsound, but one intent reports two rules and two owners. The same pair showed up on nodeOrderList,
+  //     so it is systematic rather than local to this file.
+  //  2. Unlike nodeOrderList, this rule carries NO file-specific remediation -- verified by lowering the same
+  //     shape at a neutral package and source path and getting the identical message. That asymmetry is worth
+  //     knowing before anyone copies the bespoke pattern: this rule's general answer is the better design.
+  it('refuses a generic-owner argument assertion whose instantiation is not representation-equivalent', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, path: string, body: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${path}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const refuse = (assertion: string, consumerPath: string, consumerPackage: string) => {
+      const results = lowerTypeScriptSources(
+        [
+          source(
+            '@flighthq/types',
+            'packages/types/src/contract.ts',
+            `export interface SignalConnection<T extends (...args: never[]) => void> { connected: boolean; slot: T }
+             export interface Scope { readonly connections: SignalConnection<(...args: never[]) => void>[] }`,
+          ),
+          source(
+            consumerPackage,
+            consumerPath,
+            `import type { SignalConnection, Scope } from '@flighthq/types/contract';
+             export function attach<T extends (...args: never[]) => void>(
+               connection: SignalConnection<T>,
+               scope: Scope,
+             ): void {
+               scope.connections.push(connection ${assertion});
+             }`,
+          ),
+        ],
+        moduleResolution,
+      ) as readonly any[];
+      const session = createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules: results.map((result) => result.module),
+        options: { runtimeProfile: 'flight-cpp' },
+      });
+      return captureBackendEmissionFailure(() => session.emitModule(results[1]!.module));
+    };
+
+    // The erased assertion: the rule, and the invariant in its own words.
+    const erased = refuse(
+      'as unknown as SignalConnection<(...args: never[]) => void>',
+      'packages/signals/src/connection.ts',
+      '@flighthq/signals',
+    );
+    expect(erased.rule).toBe('cpp-generic-owner-argument-assertion-unproven');
+    expect(erased.classification).toBe('source-portability');
+    expect(erased.message).toContain('cannot re-instantiate the represented generic owner');
+    expect(erased.message).toContain(
+      'sharing one generic declaration does not make different type arguments representation-equivalent, because those arguments bind the member and callable cells of each concrete owner',
+    );
+
+    // The same shape at a neutral package and path reports the SAME message, which is how the absence of a
+    // file-specific remediation was established rather than assumed.
+    const neutral = refuse(
+      'as unknown as SignalConnection<(...args: never[]) => void>',
+      'packages/other/src/other.ts',
+      '@flighthq/other',
+    );
+    expect(neutral.rule).toBe(erased.rule);
+    expect(neutral.message).toContain('cannot re-instantiate the represented generic owner');
+
+    // The spelling effect, pinned so the pair is visible together rather than discovered.
+    const direct = refuse(
+      'as SignalConnection<(...args: never[]) => void>',
+      'packages/signals/src/connection.ts',
+      '@flighthq/signals',
+    );
+    expect(direct.rule).toBe('cpp-reference-assertion-without-heritage');
+    expect(direct.classification).toBe('target-runtime');
+  });
+
   it('classifies the net transport host bindings as one target-runtime family', () => {
     const result = lower(
       'Net.ts',
