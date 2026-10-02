@@ -1631,6 +1631,88 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the Material authored-name finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createMaterialWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubject = 'interface:Material/property:name';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'mixed-absence', subject: expectedSubject },
+    ]);
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'createMaterial calls initializeMaterial, which assigns name = null',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'cloneMaterial and copyMaterial copy the enumerable name cell without transformation',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('equalsMaterial compares own-key sets and exact values');
+    expect(sourcePortability.findings[0]?.message).toContain('Make Material.name a required string | null field');
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
+    expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: expectedSubject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createMaterialWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps both BoundingBoxAttachment2D point-storage findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createBoundingBoxAttachment2DWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -2862,6 +2944,19 @@ function createAttachment2DWorkspaceFiles(mixedAbsence: boolean): Record<string,
   name${marker}: string | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { Attachment2D } from './Attachment2D.js';`,
+  };
+}
+
+function createMaterialWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const marker = mixedAbsence ? '?' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/Material.ts': `interface Entity { readonly id: number }
+export interface Material extends Entity {
+  readonly kind: string;
+  name${marker}: string | null;
+}`,
+    '/flight/packages/types/src/index.ts': `export type { Material } from './Material.js';`,
   };
 }
 

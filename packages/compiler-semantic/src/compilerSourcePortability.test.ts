@@ -5524,28 +5524,65 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(attachmentFinding?.message).toContain('route the name through Any');
     expect(attachmentFinding?.message).toContain('or add side storage');
 
-    for (const [index, finding] of otherFindings.entries()) {
-      const owner = ['Bone2D', 'Material'][index];
-      expect(finding.message).toContain(
-        `gives the internal ${owner} authored-name slot both omission and explicit null`,
-      );
-      expect(finding.message).toContain('Spine and DragonBones parsers write a string or null');
-      expect(finding.message).toContain('initializeMaterial writes null');
-      expect(finding.message).toContain('lookup paths recognize only exact present strings');
-      expect(finding.message).toContain(
-        'Make Attachment2D.name, Bone2D.name, and Material.name required string | null fields',
-      );
-      expect(finding.message).toContain('initialize every construction path to null');
-      expect(finding.message).toContain('structural convenience inputs must allow omission');
-      expect(finding.message).toContain('separate shapes and normalize them once');
-      expect(finding.message).toContain('replace the two absence spellings with one named closed state');
-      expect(finding.message).toContain('will not choose or collapse an absence sentinel');
-      expect(finding.message).toContain('infer a name from kind or position');
-      expect(finding.message).toContain('rewrite name lookup');
-      expect(finding.message).toContain('clone or materialize an owner');
-      expect(finding.message).toContain('reinterpret or cast the string');
-      expect(finding.message).toContain('or add side storage');
-    }
+    const [boneFinding, materialFinding] = otherFindings;
+    expect(boneFinding?.message).toContain(
+      'gives the internal Bone2D authored-name slot both omission and explicit null',
+    );
+    expect(boneFinding?.message).toContain('Spine and DragonBones parsers write a string or null');
+    expect(boneFinding?.message).toContain('lookup paths recognize only exact present strings');
+    expect(boneFinding?.message).toContain(
+      'Make Attachment2D.name, Bone2D.name, and Material.name required string | null fields',
+    );
+    expect(boneFinding?.message).toContain('initialize every construction path to null');
+    expect(boneFinding?.message).toContain('structural convenience inputs must allow omission');
+    expect(boneFinding?.message).toContain('separate shapes and normalize them once');
+    expect(boneFinding?.message).toContain('replace the two absence spellings with one named closed state');
+    expect(boneFinding?.message).toContain('will not choose or collapse an absence sentinel');
+    expect(boneFinding?.message).toContain('infer a name from kind or position');
+    expect(boneFinding?.message).toContain('rewrite name lookup');
+    expect(boneFinding?.message).toContain('clone or materialize an owner');
+    expect(boneFinding?.message).toContain('reinterpret or cast the string');
+    expect(boneFinding?.message).toContain('or add side storage');
+
+    expect(materialFinding?.message).toContain(
+      'gives the live Material authored-name cell both omission and explicit null',
+    );
+    expect(materialFinding?.message).toContain('sanctioned construction has one anonymous state');
+    expect(materialFinding?.message).toContain('createMaterial calls initializeMaterial, which assigns name = null');
+    expect(materialFinding?.message).toContain(
+      'createSurfaceMaterial plus every built-in surface-material constructor delegate to that path',
+    );
+    expect(materialFinding?.message).toContain(
+      'materializeDocumentMaterial either retains an importer-created Material entity',
+    );
+    expect(materialFinding?.message).toContain('overlays a structural MaterialLike onto createMaterial(source.kind)');
+    expect(materialFinding?.message).toContain('glTF uses material.name ?? null');
+    expect(materialFinding?.message).toContain('AWD and 3DS normalize an empty name to null');
+    expect(materialFinding?.message).toContain('OBJ, MD2, and MD5 assign their authored handles');
+    expect(materialFinding?.message).toContain('glTF promotion handlers copy the exact prior string or null');
+    expect(materialFinding?.message).toContain(
+      'cloneMaterial and copyMaterial copy the enumerable name cell without transformation',
+    );
+    expect(materialFinding?.message).toContain('equalsMaterial compares own-key sets and exact values');
+    expect(materialFinding?.message).toContain('copyMaterial writes null instead of leaving a stale destination name');
+    expect(materialFinding?.message).toContain('findScene3DMaterialByName is the only semantic name lookup');
+    expect(materialFinding?.message).toContain('renderers and reference-identity batching do not inspect the metadata');
+    expect(materialFinding?.message).toContain('Make Material.name a required string | null field');
+    expect(materialFinding?.message).toContain(
+      'give that convenience input a separate optional-non-null shape and continue normalizing it through createMaterial',
+    );
+    expect(materialFinding?.message).toContain('Do not whitelist the redundant missing-cell spelling');
+    expect(materialFinding?.message).toContain(
+      'representation support does not make an absent own key equal to an explicit null cell under Object.keys',
+    );
+    expect(materialFinding?.message).toContain('update clone, copy, equality, import, and lookup together');
+    expect(materialFinding?.message).toContain('will not choose or collapse an absence sentinel');
+    expect(materialFinding?.message).toContain('infer a name from kind, texture path, or document position');
+    expect(materialFinding?.message).toContain(
+      'rewrite clone, equality, serialization, lookup, rendering, or batching',
+    );
+    expect(materialFinding?.message).toContain('route the name through Any');
+    expect(materialFinding?.message).toContain('or add side storage');
   });
 
   it('keeps unrelated authored-name shapes generic and accepts one-sentinel internal storage', () => {
