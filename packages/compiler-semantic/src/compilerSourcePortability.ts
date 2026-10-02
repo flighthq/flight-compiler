@@ -1673,6 +1673,15 @@ function getGenericOwnerArgumentDoubleAssertionGuidance(
   if (sourceArguments.every((argument, index) => argument === targetArguments[index])) return undefined;
   const sourceType = source.getText(node.getSourceFile());
   const targetType = target.getText(node.getSourceFile());
+  if (
+    subject === 'function:connectSignalTracked' &&
+    normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/signals/src/connection.ts') &&
+    retained.text === 'connection' &&
+    sourceType === 'SignalConnection<T>' &&
+    targetType === 'SignalConnection<(...args: any[]) => void>'
+  ) {
+    return `${subject} uses a double assertion through ${bridge} to push the represented ${sourceType} owner into SignalScope.connections as ${targetType}. Sharing the generic declaration name does not make those instantiations representation-equivalent: T determines the signal and slot cells bound to this concrete connection. For the current bulk-disconnect scope contract, change the retained element contract to a named zero-argument disconnect operation, push a closure that captures this exact connection and calls disconnectSignalConnection(connection), and have disconnectSignalScope drain and invoke those operations; preserve connection as ${sourceType} for the return and individual-handle operations. If callers must retain heterogeneous handles rather than one closed operation, declare an explicit type-erased handle and target-runtime contract instead. The compiler will not treat type-parameter variance as representation equivalence, reinterpret or cast the owner, copy or materialize a replacement, or add side storage.`;
+  }
   return `${subject} uses a double assertion through ${bridge} to re-parameterize the represented ${sourceType} owner as ${targetType}. Sharing the generic declaration name does not make those instantiations representation-equivalent: their type arguments determine the member and callable cells bound to each concrete owner. Preserve ${retained.text} as ${sourceType}. If heterogeneous storage needs only one closed operation, store an operation closure that captures this exact owner; otherwise declare an explicit type-erased handle and target-runtime contract instead of widening the generic owner. The compiler will preserve an unchanged generic instantiation, but will not treat type-parameter variance as representation equivalence, reinterpret or cast the owner, copy or materialize a replacement, or add side storage.`;
 }
 

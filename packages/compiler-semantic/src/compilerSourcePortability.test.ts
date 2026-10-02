@@ -1924,6 +1924,43 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(analyzeTypeScriptSourcePortability([typed]).findings).toEqual([]);
   });
 
+  it('traces the Flight signal scope owner widening to its bulk-disconnect contract', () => {
+    const connection = input(
+      'packages/signals/src/connection.ts',
+      `export function connectSignalTracked<T extends (...args: any[]) => void>(
+         signal: Signal<T>,
+         slot: T,
+         options?: Readonly<SignalTrackedConnectOptions>,
+       ): SignalConnection<T> {
+         const connection: SignalConnection<T> = { connected: true, paused: false, signal, slot };
+         options?.scope?.connections.push(
+           connection as unknown as SignalConnection<(...args: any[]) => void>,
+         );
+         return connection;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([connection]).findings;
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: 'unchecked-double-assertion',
+      subject: 'function:connectSignalTracked',
+    });
+    expect(findings[0]?.message).toContain(
+      'push the represented SignalConnection<T> owner into SignalScope.connections',
+    );
+    expect(findings[0]?.message).toContain('current bulk-disconnect scope contract');
+    expect(findings[0]?.message).toContain('named zero-argument disconnect operation');
+    expect(findings[0]?.message).toContain('calls disconnectSignalConnection(connection)');
+    expect(findings[0]?.message).toContain('have disconnectSignalScope drain and invoke those operations');
+    expect(findings[0]?.message).toContain('preserve connection as SignalConnection<T>');
+    expect(findings[0]?.message).toContain('explicit type-erased handle and target-runtime contract');
+    expect(findings[0]?.message).toContain('will not treat type-parameter variance as representation equivalence');
+    expect(findings[0]?.message).toContain('reinterpret or cast the owner');
+    expect(findings[0]?.message).toContain('copy or materialize a replacement');
+    expect(findings[0]?.message).toContain('or add side storage');
+  });
+
   it('requires one shared closed domain for a nested opaque parameter property', () => {
     const opaque = input(
       'command.ts',
