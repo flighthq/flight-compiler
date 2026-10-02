@@ -12070,6 +12070,17 @@ export function run(s: S2): void { if (s.flushPendingDraws != null) s.flushPendi
       ).contents,
     ).toContain('holds_alternative<flight::Null>');
 
+    // Several callable alternatives in one slot: there is no call to choose between and no guard that
+    // chooses one, which is what the message says instead of naming a guard that would not lower.
+    const severalCallables = `export interface A { readonly f: (x: number) => number }
+export interface B { readonly g: (x: number) => number }
+export interface S5 { readonly h?: A | B | null }`;
+    const multiVariant = refusal(`${severalCallables}
+export function run(s: S5): void { s.h?.(1); }`);
+    expect(multiVariant.rule).toBe('cpp-dual-sentinel-optional-chain-projection-unproven');
+    expect(multiVariant.message).toContain('one concrete receiver value domain');
+    expect(multiVariant.message).toContain('give each one its own slot');
+
     // The coalesce: the projection needs a destination, and declaring the result supplies one.
     const bias = `export interface Bias { readonly scale: number }
 export interface S3 { readonly b?: Bias | null }`;

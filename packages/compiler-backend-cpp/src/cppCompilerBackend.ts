@@ -28278,7 +28278,7 @@ function getCppOptionalChainReceiverProjectionCpp(
   if (!value) {
     emissionError(
       context,
-      'dual-sentinel optional chaining requires one concrete receiver value domain',
+      'dual-sentinel optional chaining requires one concrete receiver value domain: the receiver carries both null and undefined AND several value alternatives, so there is no single operation for the presence test to select and no guard that would choose one. A slot whose value domain is ONE callable lowers directly, both as `?.` and as an `x != null` guard followed by the call; with several alternatives, give each one its own slot',
       'cpp-dual-sentinel-optional-chain-projection-unproven',
     );
   }
