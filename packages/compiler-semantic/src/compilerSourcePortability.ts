@@ -253,6 +253,7 @@ function getAnchorLayoutMixedAbsencePropertyMessage(node: ts.PropertySignature, 
     ts.isInterfaceDeclaration(node.parent) &&
     node.parent.name.text === 'AnchorLayoutItemStyle' &&
     normalizePathPortable(node.getSourceFile().fileName).endsWith('/packages/types/src/Layout.ts') &&
+    isOptionalNullableNumberProperty(node) &&
     (name === 'bottom' ||
       name === 'height' ||
       name === 'left' ||
@@ -260,7 +261,7 @@ function getAnchorLayoutMixedAbsencePropertyMessage(node: ts.PropertySignature, 
       name === 'top' ||
       name === 'width')
   ) {
-    return `${subject} gives the anchor constraint ${name} both an omitted state and explicit null, but the represented layout contract uses them identically: style construction omits inactive constraints, isOptionalNumber accepts null and undefined, and anchorLayoutResolver collapses either before opposing-pin stretch, intrinsic-size fallback, or aligned placement. Make all six bottom, height, left, right, top, and width constraints optional number fields and reserve null for the enclosing itemStyle no-style sentinel. If callers need a distinct explicit-clear state, name a closed constraint-state union and handle it separately. The compiler will not preserve a redundant third sentinel in target storage, infer a numeric default because zero is a real pin or size, collapse a present value, or add side storage.`;
+    return `${subject} gives the anchor constraint ${name} both an omitted state and explicit null, but the represented layout contract uses them identically: repository construction sites omit inactive constraints, isOptionalNumber accepts null and undefined, and anchorLayoutResolver normalizes left, right, top, and bottom with ?? null. When opposing pins do not determine an axis, its width and height expressions each use ?? intrinsicSizes so both absence spellings select the same natural-size fallback before placement uses a pin or alignment. Make all six bottom, height, left, right, top, and width constraints optional number fields and reserve null for the enclosing itemStyle no-style sentinel. If a serialized or public compatibility input must continue accepting explicit null, keep that boundary shape separate and normalize it into the optional-number layout style, or approve reviewed exceptions for these exact six properties that record the redundant spelling; if explicit clear must differ from omission, name a closed constraint-state union and handle it separately. The compiler will not preserve a redundant third sentinel in target storage, infer a numeric default because zero is a real pin or size, collapse a present value, rewrite an input boundary, or add side storage.`;
   }
   return undefined;
 }
@@ -345,6 +346,15 @@ function isOptionalNullableNamedTypeProperty(node: ts.PropertySignature | undefi
   let type = present[0]!;
   while (ts.isParenthesizedTypeNode(type)) type = type.type;
   return ts.isTypeReferenceNode(type) && getNodeName(type.typeName) === name;
+}
+
+function isOptionalNullableNumberProperty(node: ts.PropertySignature): boolean {
+  if (!node.type || node.questionToken === undefined || !hasNullType(node.type)) return false;
+  const present = getMixedAbsencePresentTypes(node.type);
+  if (present.length !== 1) return false;
+  let type = present[0]!;
+  while (ts.isParenthesizedTypeNode(type)) type = type.type;
+  return type.kind === ts.SyntaxKind.NumberKeyword;
 }
 
 function isOptionalNullableNamedTypeUnionProperty(node: ts.PropertySignature, names: readonly string[]): boolean {

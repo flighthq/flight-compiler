@@ -4723,22 +4723,30 @@ describe('analyzeTypeScriptSourcePortability', () => {
     for (const [index, finding] of findings.entries()) {
       const name = ['bottom', 'height', 'left', 'right', 'top', 'width'][index];
       expect(finding.message).toContain(`gives the anchor constraint ${name} both an omitted state and explicit null`);
-      expect(finding.message).toContain('style construction omits inactive constraints');
+      expect(finding.message).toContain('repository construction sites omit inactive constraints');
       expect(finding.message).toContain('isOptionalNumber accepts null and undefined');
-      expect(finding.message).toContain('anchorLayoutResolver collapses either');
-      expect(finding.message).toContain('opposing-pin stretch, intrinsic-size fallback, or aligned placement');
+      expect(finding.message).toContain('anchorLayoutResolver normalizes left, right, top, and bottom with ?? null');
+      expect(finding.message).toContain('When opposing pins do not determine an axis');
+      expect(finding.message).toContain('width and height expressions each use ?? intrinsicSizes');
+      expect(finding.message).toContain('both absence spellings select the same natural-size fallback');
+      expect(finding.message).toContain('placement uses a pin or alignment');
       expect(finding.message).toContain(
         'Make all six bottom, height, left, right, top, and width constraints optional number fields',
       );
       expect(finding.message).toContain('reserve null for the enclosing itemStyle no-style sentinel');
+      expect(finding.message).toContain('keep that boundary shape separate');
+      expect(finding.message).toContain('normalize it into the optional-number layout style');
+      expect(finding.message).toContain('approve reviewed exceptions for these exact six properties');
+      expect(finding.message).toContain('record the redundant spelling');
       expect(finding.message).toContain('name a closed constraint-state union and handle it separately');
       expect(finding.message).toContain('will not preserve a redundant third sentinel in target storage');
       expect(finding.message).toContain('zero is a real pin or size');
-      expect(finding.message).toContain('collapse a present value, or add side storage');
+      expect(finding.message).toContain('collapse a present value');
+      expect(finding.message).toContain('rewrite an input boundary, or add side storage');
     }
   });
 
-  it('keeps unrelated optional-nullable layout properties on the generic mixed-absence guidance', () => {
+  it('keeps unrelated layout properties generic and accepts one-sentinel anchor constraints', () => {
     const unrelatedOwner = input('OtherLayoutStyle.ts', 'interface OtherLayoutStyle { left?: number | null }');
     const unrelatedMember = input(
       'AnchorLayoutItemStyle.ts',
@@ -4748,7 +4756,29 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'packages/example/src/Layout.ts',
       'interface AnchorLayoutItemStyle { left?: number | null }',
     );
-    const findings = analyzeTypeScriptSourcePortability([unrelatedOwner, unrelatedMember, unrelatedLocation]).findings;
+    const unrelatedType = input(
+      'packages/types/src/Layout.ts',
+      'interface AnchorLayoutItemStyle { left?: string | null }',
+    );
+    const optionalNumber = input('packages/types/src/Layout.ts', 'interface AnchorLayoutItemStyle { left?: number }');
+    const requiredNullable = input(
+      'packages/types/src/Layout.ts',
+      'interface AnchorLayoutItemStyle { left: number | null }',
+    );
+    const explicit = input(
+      'packages/types/src/Layout.ts',
+      `type AnchorConstraint =
+         | { readonly state: 'cleared' }
+         | { readonly state: 'omitted' }
+         | { readonly state: 'present'; readonly value: number };
+       interface AnchorLayoutItemStyle { left: AnchorConstraint }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([
+      unrelatedOwner,
+      unrelatedMember,
+      unrelatedLocation,
+      unrelatedType,
+    ]).findings;
 
     expect(findings).toMatchObject([
       {
@@ -4769,8 +4799,15 @@ describe('analyzeTypeScriptSourcePortability', () => {
         rule: 'mixed-absence',
         subject: 'interface:AnchorLayoutItemStyle/property:left',
       },
+      {
+        message:
+          'interface:AnchorLayoutItemStyle/property:left combines an optional property with null; choose one absence representation or make all three states explicit.',
+        rule: 'mixed-absence',
+        subject: 'interface:AnchorLayoutItemStyle/property:left',
+      },
     ]);
     expect(findings.every((finding) => !finding.message.includes('anchorLayoutResolver'))).toBe(true);
+    expect(analyzeTypeScriptSourcePortability([optionalNumber, requiredNullable, explicit]).findings).toEqual([]);
   });
 
   it('explains the one-sentinel contract for reusable Scene3D render-proxy slots', () => {
