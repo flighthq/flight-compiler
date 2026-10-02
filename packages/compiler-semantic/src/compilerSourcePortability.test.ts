@@ -6776,7 +6776,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
-  it('explains the create-only texture resource association', () => {
+  it('explains the create-only texture resource subscription', () => {
     const source = input(
       'packages/types/src/CreateTextureOptions.ts',
       `interface ImageResourceReference { textures?: Texture[] }
@@ -6810,18 +6810,35 @@ describe('analyzeTypeScriptSourcePortability', () => {
       },
     ]);
     const message = findings[0]?.message;
-    expect(message).toContain('gives the create-only texture resource association both omission and explicit null');
+    expect(message).toContain('gives the create-only texture resource subscription both omission and explicit null');
+    expect(message).toContain('createEmbeddedTextureRef and createExternalTextureRef helpers create or reuse an exact');
+    expect(message).toContain('glTF texture resolver does the same after rejecting a missing image reference');
+    expect(message).toContain('direct decoded, render, video, and blank texture construction omits resource');
+    expect(message).toContain(
+      "SWF's deliberately late image pairing writes the finished reference's subscriber list instead of using this creation option",
+    );
     expect(message).toContain('createTexture and createTexture2D each pass opts?.resource to attachTextureToResource');
-    expect(message).toContain('resource != null guard skips both absence spellings');
-    expect(message).toContain('a present ImageResourceReference owner');
-    expect(message).toContain('present resource receives the texture exactly once');
+    expect(message).toContain('uses resource != null to skip both absence spellings');
+    expect(message).toContain('(resource.textures ??= []).push(texture)');
+    expect(message).toContain("normalize a present owner's optional subscriber list");
+    expect(message).toContain('Texture has no resource field and no later association update or detach operation');
+    expect(message).toContain(
+      'Scene 2D loading reads reference.textures and fans one resolved source out to every subscriber',
+    );
+    expect(message).toContain('scene 3D discovery iterates resource.textures ?? []');
+    expect(message).toContain('reverse-lookups ownership with includes');
     expect(message).toContain('Declare CreateTextureOptions.resource as optional ImageResourceReference without null');
-    expect(message).toContain('omission is the sole no-association input');
-    expect(message).toContain('one named closed association state and handle every arm explicitly');
+    expect(message).toContain('omission is the sole no-owner input');
+    expect(message).toContain(
+      'requiring ImageResourceReference | null would force unrelated constructors to manufacture null',
+    );
+    expect(message).toContain('Keep ImageResourceReference.textures as its independently normalized subscriber list');
+    expect(message).toContain('separate named closed association state and handle every arm explicitly');
+    expect(message).toContain('Do not whitelist the redundant creation spelling');
     expect(message).toContain('will not choose or collapse an absence sentinel');
     expect(message).toContain('attach or detach a texture');
     expect(message).toContain('infer a resource from its source');
-    expect(message).toContain('allocate or mutate the resource texture list');
+    expect(message).toContain('allocate or mutate the resource subscriber list');
     expect(message).toContain('copy or materialize either owner');
     expect(message).toContain('rewrite dimension dispatch');
     expect(message).toContain('reinterpret or cast the association');
@@ -6873,7 +6890,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(findings[0]?.message).toContain(
         'combines an optional property with null; choose one absence representation or make all three states explicit.',
       );
-      expect(findings[0]?.message).not.toContain('create-only texture resource association');
+      expect(findings[0]?.message).not.toContain('create-only texture resource subscription');
     }
   });
 

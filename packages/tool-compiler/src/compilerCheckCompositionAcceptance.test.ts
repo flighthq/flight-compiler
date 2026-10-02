@@ -2212,6 +2212,95 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps the texture resource subscription finding source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createTextureOptionsWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubject = 'type:CreateTextureOptions/property:resource';
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'mixed-absence', subject: expectedSubject },
+    ]);
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'createEmbeddedTextureRef and createExternalTextureRef helpers create or reuse an exact',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      '(resource.textures ??= []).push(texture) to normalize a present owner',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Scene 2D loading reads reference.textures and fans one resolved source out to every subscriber',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Declare CreateTextureOptions.resource as optional ImageResourceReference without null',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'requiring ImageResourceReference | null would force unrelated constructors to manufacture null',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
+    expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual([
+      {
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject: expectedSubject,
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [report.directFindings[0]?.identity],
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createTextureOptionsWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps the Attachment2D authored-name finding source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createAttachment2DWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -3764,6 +3853,23 @@ function createGltfImportOptionsWorkspaceFiles(mixedAbsence: boolean): Record<st
   basePath?: string${nullable};
 }`,
     '/flight/packages/types/src/index.ts': `export type { GltfImportOptions } from './GltfExtension.js';`,
+  };
+}
+
+function createTextureOptionsWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const nullable = mixedAbsence ? ' | null' : '';
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/CreateTextureOptions.ts': `export interface ImageResourceReference {
+  readonly kind: string;
+}
+export type CreateTextureOptions = {
+  readonly resource?: ImageResourceReference${nullable};
+};`,
+    '/flight/packages/types/src/index.ts': `export type {
+  CreateTextureOptions,
+  ImageResourceReference,
+} from './CreateTextureOptions.js';`,
   };
 }
 
