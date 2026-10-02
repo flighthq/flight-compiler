@@ -12010,6 +12010,61 @@ int main() {
     expect(emitIrModuleCpp(finite.module, { runtimeProfile: 'flight-cpp' }).contents).not.toContain('named_properties');
   });
 
+  it('pins the shapes a mixed-absence argument conversion accepts and refuses', () => {
+    // WgpuRenderState's record() parameter is the SDK's explicit mixed-absence shape:
+    // `Bias | Tint | readonly number[] | null | undefined`. The declaration lowers; what a CALLER can write
+    // is the part worth pinning, because the refusal is attributed to the caller and its guidance has to be
+    // true. Two shapes lower and one refuses, and the difference is the whole guidance.
+    const writer = `export interface Bias { readonly scale: number }
+export interface Tint { readonly color: number }
+export interface Writer { record(colorScaleBias: Bias | Tint | readonly number[] | null | undefined, index: number): void }`;
+
+    // The declaration itself names every alternative plus both sentinels.
+    expect(
+      emitIrModuleCpp(lower('wgpu-record.ts', writer).module, { runtimeProfile: 'flight-cpp' }).contents,
+    ).toContain(
+      'std::variant<flight::Array<double>, flight::Ref<Bias>, flight::Ref<Tint>, flight::Null, flight::Undefined>',
+    );
+
+    // The shapes the guidance names, each verified rather than asserted: the parameter's own union, the same
+    // value guarded past absence, and the sentinel itself.
+    for (const [file, body] of [
+      [
+        'wgpu-exact.ts',
+        'export function use(w: Writer, v: Bias | Tint | readonly number[] | null | undefined): void { w.record(v, 0); }',
+      ],
+      ['wgpu-guarded.ts', 'export function use2(w: Writer, v: Bias | null): void { if (v != null) w.record(v, 0); }'],
+      ['wgpu-null.ts', 'export function use4(w: Writer): void { w.record(null, 0); }'],
+    ] as const) {
+      expect(
+        emitIrModuleCpp(
+          lower(
+            file,
+            `${writer}
+${body}`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        ).contents,
+      ).toContain('record(');
+    }
+
+    // A subset union that still carries absence has no equivalent carrier set, and the refusal belongs to the
+    // caller -- who can write either of the two shapes above.
+    const subset = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower(
+          'wgpu-subset.ts',
+          `${writer}
+export function use3(w: Writer, v: Bias | null): void { w.record(v, 0); }`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(subset.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(subset.classification).toBe('source-portability');
+    expect(subset.message).toContain('Narrow or convert the source expression');
+  });
+
   it('attributes the node assertion family consistently across its two shapes', () => {
     // Four of the six @flighthq/node findings assert `Node<Traits>` to the alias `NodeOf<Traits>`, which is
     // an INTERSECTION (`Node<Traits> & NoInfer<Traits>`); the other two assert to an aliased intersection
