@@ -3602,6 +3602,29 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
         message.includes('Make interactiveStates and transition required nullable fields on FlightDocumentNode'),
       ),
     ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) => message.includes('exactly three legal metadata pairs')),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('the recursive 2D and 3D writers assign both own fields on every node'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('substituteFlightDocumentSceneTokens is the only production tree reconstruction'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('lossy clone enabled by optionality, not an intentional undefined state'),
+      ),
+    ).toBe(true);
+    expect(
+      sourcePortability.findings.every(({ message }) =>
+        message.includes('one named closed metadata state with inactive and interactive arms'),
+      ),
+    ).toBe(true);
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
       sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),
@@ -3625,6 +3648,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       directOccurrences: 2,
       modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
       packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
     });
 
     const portableSource = createMemoryWorkspaceSource(createFlightDocumentWorkspaceFiles(false));
@@ -6011,14 +6042,20 @@ function createFlightDocumentWorkspaceFiles(mixedAbsence: boolean): Record<strin
   const marker = mixedAbsence ? '?' : '';
   return {
     '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
-    '/flight/packages/types/src/FlightDocument.ts': `interface FlightDocumentInteractiveStates {
+    '/flight/packages/types/src/FlightDocument.ts': `interface FlightDocumentFields {
+  readonly [name: string]: boolean | number | string | null;
+}
+interface FlightDocumentInteractiveStates {
   readonly hover: boolean;
 }
 interface FlightDocumentInteractiveStateTransitionDescriptor {
   readonly kind: string;
 }
 export interface FlightDocumentNode {
+  children: FlightDocumentNode[];
+  fields: FlightDocumentFields;
   interactiveStates${marker}: FlightDocumentInteractiveStates | null;
+  kind: string;
   transition${marker}: FlightDocumentInteractiveStateTransitionDescriptor | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { FlightDocumentNode } from './FlightDocument.js';`,

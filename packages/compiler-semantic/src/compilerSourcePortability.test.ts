@@ -9294,6 +9294,11 @@ describe('analyzeTypeScriptSourcePortability', () => {
          }
          const transition = node.transition ?? null;
          void transition;
+       }
+       function substituteNode(node: Readonly<FlightDocumentNode>): FlightDocumentNode {
+         const children = node.children.map(substituteNode);
+         const fields = { ...node.fields };
+         return { children, fields, kind: node.kind };
        }`,
     );
     const findings = analyzeTypeScriptSourcePortability([source]).findings;
@@ -9313,32 +9318,45 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain(
         `gives the persisted FlightDocument node interaction slot ${field} both omission and explicit null`,
       );
-      expect(finding.message).toContain('the represented contract has one inactive state');
-      expect(finding.message).toContain('transition is invalid without interactiveStates');
+      expect(finding.message).toContain('exactly three legal metadata pairs');
+      expect(finding.message).toContain('(null, null)');
+      expect(finding.message).toContain('(interactiveStates, null)');
+      expect(finding.message).toContain('(interactiveStates, transition)');
+      expect(finding.message).toContain('no legal pair uses undefined');
       expect(finding.message).toContain('flightDocumentText.readNode initializes both slots to null');
       expect(finding.message).toContain('normalizes omitted text keys to those values');
       expect(finding.message).toContain('rejects a transition without interactiveStates');
       expect(finding.message).toContain('returns { children, fields, interactiveStates, kind, transition }');
-      expect(finding.message).toContain('readInteractiveStateBindingMetadata returns the same required nullable pair');
-      expect(finding.message).toContain('the 2D and 3D scene writers assign both fields from it');
+      expect(finding.message).toContain('the formatter omits the inactive pair from text');
+      expect(finding.message).toContain('an absent live binding becomes { interactiveStates: null, transition: null }');
+      expect(finding.message).toContain('a present binding is deep-cloned');
+      expect(finding.message).toContain('the recursive 2D and 3D writers assign both own fields on every node');
+      expect(finding.message).toContain('Refusal and materialization paths use nullish checks');
+      expect(finding.message).toContain('materialization retains the exact present interactiveStates owner');
+      expect(finding.message).toContain('normalizes transition with ?? null');
+      expect(finding.message).toContain('inert descriptor arrays have no disposal path');
+      expect(finding.message).toContain('live binding disposal is a later @flighthq/interaction concern');
       expect(finding.message).toContain(
-        'Formatting, refusal, and 2D and 3D materialization collapse undefined and null',
+        'substituteFlightDocumentSceneTokens is the only production tree reconstruction',
       );
-      expect(finding.message).toContain('no production consumer assigns distinct behavior to omission');
+      expect(finding.message).toContain('returns only { children, fields, kind }');
+      expect(finding.message).toContain('silently drops both metadata owners from every substituted node');
+      expect(finding.message).toContain('lossy clone enabled by optionality, not an intentional undefined state');
       expect(finding.message).toContain(
         'Make interactiveStates and transition required nullable fields on FlightDocumentNode',
       );
       expect(finding.message).toContain("retain the parser and scene writers' explicit null initialization");
       expect(finding.message).toContain(
-        'make every manual construction or transformation deliberately preserve or clear both fields',
+        'repair token substitution to preserve, substitute, or deliberately clear both fields',
       );
-      expect(finding.message).toContain('a separate raw input shape or one named closed metadata state');
+      expect(finding.message).toContain('one named closed metadata state with inactive and interactive arms');
       expect(finding.message).toContain('Do not whitelist either redundant absence spelling');
       expect(finding.message).toContain('can preserve the authored tags and exact metadata owners');
       expect(finding.message).toContain('will not choose or collapse an absence sentinel');
       expect(finding.message).toContain('infer a transition from interactive states');
-      expect(finding.message).toContain('decide whether a transformation preserves or clears metadata');
+      expect(finding.message).toContain('decide whether a transformation preserves, substitutes, or clears metadata');
       expect(finding.message).toContain('clone or materialize either metadata owner');
+      expect(finding.message).toContain('create or dispose a live binding');
       expect(finding.message).toContain('route it through Any');
       expect(finding.message).toContain('reinterpret or cast it');
       expect(finding.message).toContain('or add side storage');
