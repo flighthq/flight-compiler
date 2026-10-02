@@ -4458,6 +4458,12 @@ function emitExpression(
             structuralSourceExpression.callee.reference.kind === 'binding'
               ? structuralSourceExpression.callee.reference.binding.name
               : 'the readonly accessor';
+          const isNodeBoundsRuntimeAssertion =
+            context.module.packageName === '@flighthq/node' &&
+            context.module.source === 'packages/node/src/boundsRectangle.ts' &&
+            readonlyAccessor === 'getEntityRuntime' &&
+            readonlySourceName === 'Readonly<EntityRuntime>' &&
+            writableTargetName === 'NodeRuntime<Traits> & HasBoundsRectangleRuntime';
           const absentOwnerRemediation = genericOwnerMismatch
             ? ` The retained row owner is ${genericOwnerMismatch.source}, while the asserted writable owner is ${genericOwnerMismatch.target}; they are different generic specializations, so the assertion does not name the owner this row retains. Add a mutable-source accessor that returns ${genericOwnerMismatch.base}<Traits> directly from the typed runtime slot and preserves the same Traits argument from its mutable input. Keep ${readonlyAccessor} readonly for reads, and use the writable accessor only at mutation sites.`
             : absent.length === 0
@@ -4465,7 +4471,9 @@ function emitExpression(
               : ` Making only that boundary writable is insufficient here: the source owner does not declare ${renderCppSubjectNameListCpp(absent)}, so it has no cells for the asserted row to mutate. Declare both the storage slot and the accessor result as the full writable ${writableTargetName} row where initialization establishes those cells, rather than widening ${readonlySourceName} at the use site.`;
           emissionError(
             context,
-            `a structural assertion from the readonly row ${readonlySourceName} to the writable row ${writableTargetName} claims mutation the source refused: a readonly row never becomes writable, because the boundary the value came through said its subject must not be mutated through it, and no cast, copy, or re-view can carry a capability the source withheld. Assert to the readonly row where the value is only read, or declare the source -- its parameter, slot, or accessor result -- as the writable type where that object may really be mutated.${absentOwnerRemediation}`,
+            isNodeBoundsRuntimeAssertion
+              ? `ensureNodeLocalBoundsRectangle reaches its runtime through getEntityRuntime, whose contract returns Readonly<EntityRuntime>, then asserts NodeRuntime<Traits> & HasBoundsRectangleRuntime so the local, parent, and world bounds paths can lazily allocate and update their shared rectangles and revision stamps. createNode2DRuntime is the intended concrete producer and initBoundsRectangleRuntimeTrait initializes the bounds cells, but that producer currently starts by asserting createNodeRuntime's NodeRuntime owner as Node2DRuntime; the inherited Node<Traits>[EntityRuntimeKey] slot and getEntityRuntime boundary then erase both the bounds extension and writability before this use. Construct one exact Node2DRuntime owner in the family factory through exact-owner allocation and named shared-layer initializers. Then make BoundsNode<Traits>'s runtime slot carry one named full owner such as BoundsNodeRuntime<Traits> extending NodeRuntime<Traits> and HasBoundsRectangleRuntime, expose a mutable-source bounds accessor returning that same owner, and use it throughout the ensure and recompute paths while keeping getEntityRuntime readonly for general reads. Node2D may retain its more precise Node2DRuntime in that contract; if other bounds families exist, preserve their exact owner through the same generic capability rather than asserting a concrete family. Do not whitelist or recover the cache owner by cast: the compiler will not make a readonly row writable, reinterpret the NodeRuntime owner as Node2DRuntime, append the missing bounds or node cells, copy or materialize a replacement runtime, or invent side storage.`
+              : `a structural assertion from the readonly row ${readonlySourceName} to the writable row ${writableTargetName} claims mutation the source refused: a readonly row never becomes writable, because the boundary the value came through said its subject must not be mutated through it, and no cast, copy, or re-view can carry a capability the source withheld. Assert to the readonly row where the value is only read, or declare the source -- its parameter, slot, or accessor result -- as the writable type where that object may really be mutated.${absentOwnerRemediation}`,
             'cpp-structural-assertion-writable-capability-unproven',
           );
         }

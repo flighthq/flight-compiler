@@ -266,6 +266,113 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the bounds runtime owner and both parent-space assertions source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNodeBoundsWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule(module) {
+          if (module.source === 'packages/node/src/boundsRectangle.ts') {
+            throw createBackendEmissionFailure(
+              'acceptance',
+              module,
+              'the readonly entity runtime boundary does not prove the writable bounds runtime owner',
+              'cpp-structural-assertion-writable-capability-unproven',
+              { classification: 'source-portability' },
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const options = {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    };
+    const report = createCompilerPackageCheckReport(compilation.report, options);
+
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual([
+      { rule: 'unchecked-double-assertion', subject: 'function:getNodeHeight' },
+      { rule: 'unchecked-double-assertion', subject: 'function:getNodeWidth' },
+    ]);
+    expect(sourcePortability.findings.every(({ message }) => message.includes('parent-space axis-aligned box'))).toBe(
+      true,
+    );
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(compilation.report.modules.map(({ module, status }) => ({ source: module.source, status }))).toEqual([
+      { source: 'packages/node/src/boundsRectangle.ts', status: 'refused' },
+      { source: 'packages/node/src/index.ts', status: 'refused' },
+    ]);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject, stage }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+        stage,
+      })),
+    ).toEqual([
+      {
+        policyClass: 'source-portability',
+        rule: 'cpp-structural-assertion-writable-capability-unproven',
+        sourceFindingSubject: undefined,
+        stage: 'emission',
+      },
+      {
+        policyClass: 'source-portability',
+        rule: 'unchecked-double-assertion',
+        sourceFindingSubject: 'function:getNodeHeight',
+        stage: 'source',
+      },
+      {
+        policyClass: 'source-portability',
+        rule: 'unchecked-double-assertion',
+        sourceFindingSubject: 'function:getNodeWidth',
+        stage: 'source',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 1,
+      directFindings: 3,
+      directOccurrences: 3,
+      modules: { dependencyRefused: 1, directlyRefused: 1, emitted: 0, total: 2 },
+      packages: 1,
+    });
+
+    const baseline = createCompilerPackageCheckBaseline(report);
+    const revisedReport = createCompilerPackageCheckReport(compilation.report, {
+      ...options,
+      sourcePortability: {
+        ...sourcePortability,
+        findings: sourcePortability.findings.map((finding) => ({
+          ...finding,
+          message: `revised ${finding.subject} guidance`,
+        })),
+      },
+    });
+    const comparison = compareCompilerPackageCheckBaseline(revisedReport, baseline);
+
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.resolvedFindingIdentities).toEqual([]);
+    expect(comparison.unchanged).toHaveLength(3);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('keeps the specialized GL color-adjustment absence finding stable through check mode', () => {
     const source = createMemoryWorkspaceSource(createColorAdjustmentWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -2863,6 +2970,49 @@ export function createNode2D<R extends Node2DRuntime>(
     createNode2DRuntimeFactory ?? (createNode2DRuntime as unknown as NodeRuntimeFactory<R>),
   );
 }`,
+  };
+}
+
+function createNodeBoundsWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/node/package.json': createPackageManifest('@flighthq/node'),
+    '/flight/packages/node/src/boundsRectangle.ts': `interface EntityRuntime { binding: object | null }
+interface HasBoundsRectangleRuntime extends EntityRuntime { boundsRectangle: object | null }
+interface NodeRuntime<Traits extends object> extends EntityRuntime { traits?: Traits }
+interface Node<Traits extends object> { readonly traits?: Traits }
+interface HasBoundsRectangle { readonly bounds: true }
+interface HasTransform2D { readonly x: number }
+type NodeOf<Traits extends object> = Node<Traits> & Traits;
+type BoundsNode<Traits extends object> = NodeOf<Traits> & HasBoundsRectangle;
+type Spatial2DNode<Traits extends object> = NodeOf<Traits> & HasBoundsRectangle & HasTransform2D;
+const entityRuntime: EntityRuntime = { binding: null };
+const out = {};
+function getEntityRuntime(_source: object): Readonly<EntityRuntime> { return entityRuntime; }
+function getNodeParent<Traits extends object>(_source: Readonly<Node<Traits>>): NodeOf<Traits> | null {
+  return null;
+}
+function computeNodeBoundsRectangle<Traits extends object>(
+  _out: object,
+  _source: Spatial2DNode<Traits>,
+  _targetCoordinateSpace: Spatial2DNode<Traits> | null | undefined,
+): void {}
+export function ensureNodeLocalBoundsRectangle<Traits extends object>(target: BoundsNode<Traits>): void {
+  const runtime = getEntityRuntime(target) as NodeRuntime<Traits> & HasBoundsRectangleRuntime;
+  runtime.boundsRectangle = null;
+}
+export function getNodeHeight<Traits extends object>(source: Spatial2DNode<Traits>): number {
+  computeNodeBoundsRectangle(out, source, getNodeParent(source) as unknown as Spatial2DNode<Traits> | null);
+  return 0;
+}
+export function getNodeWidth<Traits extends object>(source: Spatial2DNode<Traits>): number {
+  computeNodeBoundsRectangle(out, source, getNodeParent(source) as unknown as Spatial2DNode<Traits> | null);
+  return 0;
+}`,
+    '/flight/packages/node/src/index.ts': `export {
+  ensureNodeLocalBoundsRectangle,
+  getNodeHeight,
+  getNodeWidth,
+} from './boundsRectangle.js';`,
   };
 }
 

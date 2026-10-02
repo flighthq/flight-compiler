@@ -4208,11 +4208,23 @@ describe('createCppCompilerBackend', () => {
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
     expect(refused.classification).toBe('source-portability');
-    expect(refused.message).toContain('Making only that boundary writable is insufficient here');
-    expect(refused.message).toContain('boundsRectangle');
-    expect(refused.message).toContain('isLocalBoundsRectangleValid');
-    expect(refused.message).toContain('Declare both the storage slot and the accessor result');
-    expect(refused.message).toContain('rather than widening Readonly<EntityRuntime> at the use site');
+    expect(refused.message).toContain('ensureNodeLocalBoundsRectangle reaches its runtime through getEntityRuntime');
+    expect(refused.message).toContain('returns Readonly<EntityRuntime>');
+    expect(refused.message).toContain('local, parent, and world bounds paths');
+    expect(refused.message).toContain('lazily allocate and update their shared rectangles and revision stamps');
+    expect(refused.message).toContain('createNode2DRuntime is the intended concrete producer');
+    expect(refused.message).toContain('initBoundsRectangleRuntimeTrait initializes the bounds cells');
+    expect(refused.message).toContain("asserting createNodeRuntime's NodeRuntime owner as Node2DRuntime");
+    expect(refused.message).toContain('Node<Traits>[EntityRuntimeKey] slot');
+    expect(refused.message).toContain('Construct one exact Node2DRuntime owner in the family factory');
+    expect(refused.message).toContain('exact-owner allocation and named shared-layer initializers');
+    expect(refused.message).toContain("make BoundsNode<Traits>'s runtime slot carry one named full owner");
+    expect(refused.message).toContain('BoundsNodeRuntime<Traits>');
+    expect(refused.message).toContain('expose a mutable-source bounds accessor returning that same owner');
+    expect(refused.message).toContain('keeping getEntityRuntime readonly for general reads');
+    expect(refused.message).toContain('Node2D may retain its more precise Node2DRuntime');
+    expect(refused.message).toContain('Do not whitelist or recover the cache owner by cast');
+    expect(refused.message).toContain('reinterpret the NodeRuntime owner as Node2DRuntime');
     // The source fix is the real capability proof: both the stored owner and the accessor carry one named
     // full writable runtime type, so the same writes lower directly without a cast, copied row, or side owner.
     expect(emitted).toContain('get_bounds_runtime<Traits>(target)');

@@ -459,6 +459,13 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain(
         'does not prove that a parent returned by the node runtime owns either capability',
       );
+      expect(finding.message).toContain('concrete Node2D family already names Node2DRuntime and Node2DTraits');
+      expect(finding.message).toContain('Node2DTraits includes both spatial capabilities');
+      expect(finding.message).toContain('generic alias and getter signatures are the boundary that discards');
+      expect(finding.message).toContain('measure the parent-space axis-aligned box');
+      expect(finding.message).toContain('GUI sizing, resize, orientation extent, and scroll limits');
+      expect(finding.message).toContain('setNodeHeight and setNodeWidth are its inverse');
+      expect(finding.message).toContain('substituting null or source would select source-local space instead');
       expect(finding.message).toContain('Put the spatial capabilities inside the family contract');
       expect(finding.message).toContain('constrain Traits to a named HasBoundsRectangle & HasTransform2D base');
       expect(finding.message).toContain('accept the matching NodeOf<Traits> spatial owner');
@@ -466,6 +473,8 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('NodeRuntime<Traits>.parent retains that proof');
       expect(finding.message).toContain('typed spatial predicate');
       expect(finding.message).toContain('choose null or another explicit coordinate space');
+      expect(finding.message).toContain('Do not whitelist the missing family proof');
+      expect(finding.message).toContain('or change the coordinate space to avoid the assertion');
       expect(finding.message).toContain('preserve the exact parent owner and null sentinel');
       expect(finding.message).toContain('will not infer intersection members that the generic parameter omits');
       expect(finding.message).toContain('reinterpret or cast the parent');
