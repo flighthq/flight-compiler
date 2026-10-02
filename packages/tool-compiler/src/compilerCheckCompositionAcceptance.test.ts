@@ -5246,10 +5246,25 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       'createMaterial calls initializeMaterial, which assigns name = null',
     );
     expect(sourcePortability.findings[0]?.message).toContain(
-      'cloneMaterial and copyMaterial copy the enumerable name cell without transformation',
+      'The one built-in undefined producer is createShadedMaterial',
     );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'initializeShadedMaterial currently omits the inherited name cell',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('cloneMaterial deliberately creates a new Material owner');
     expect(sourcePortability.findings[0]?.message).toContain('equalsMaterial compares own-key sets and exact values');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'Mesh and InstancedMesh clones shallow-copy their materials arrays',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('disposeNode3D delegates to disposeNode');
     expect(sourcePortability.findings[0]?.message).toContain('Make Material.name a required string | null field');
+    expect(sourcePortability.findings[0]?.message).toContain('add out.name = null to initializeShadedMaterial');
+    expect(sourcePortability.findings[0]?.message).toContain('optional ?name:Null<String>');
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'std::variant<flight::String, flight::Null, flight::Undefined>',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('std::optional<flight::String>');
+    expect(sourcePortability.findings[0]?.message).toContain('This finding is not a host-binding gap');
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
     expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
     expect(

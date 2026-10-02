@@ -14469,6 +14469,37 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     }
   });
 
+  // Material.ts's live authored-name field is ordinary scalar metadata on an exact entity owner. Most
+  // constructors already write null, and the source correction makes the one omitted ShadedMaterial cell
+  // required too. Both source shapes have native carriers; no host binding, Any route, owner copy, or cast
+  // is involved in removing the unused Undefined alternative.
+  it('classifies material names as one required nullable live cell', () => {
+    const source = (required: boolean): string => {
+      const marker = required ? '' : '?';
+      return `export interface Entity { readonly id: number }
+              export interface Material extends Entity {
+                readonly kind: string;
+                name${marker}: string | null;
+              }`;
+    };
+    const mixed = emitIrModuleCpp(lowerPackage('@flighthq/types', 'Material.ts', source(false)).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+    const resolved = emitIrModuleCpp(lowerPackage('@flighthq/types', 'Material.ts', source(true)).module, {
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(mixed).toContain('std::variant<flight::String, flight::Null, flight::Undefined> name');
+    expect(resolved).toContain('std::optional<flight::String> name;');
+    for (const emitted of [mixed, resolved]) {
+      expect(emitted).toContain('struct Material : public flight::ReferenceEnabled');
+      expect(emitted).not.toContain('flight::Any');
+      expect(emitted).not.toContain('materialize_row');
+      expect(emitted).not.toContain('static_cast');
+      expect(emitted).not.toContain('reinterpret_cast');
+    }
+  });
+
   // BoundingBoxAttachment2D.ts's two mixed-absence findings. Import skips never retain an attachment,
   // the only constructor writes both cells, and clone, slot mutation, and disposal preserve the exact
   // owner lifetimes. Both source spellings already have exact target carriers; the source fix removes

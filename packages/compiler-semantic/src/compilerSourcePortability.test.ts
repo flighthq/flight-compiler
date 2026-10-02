@@ -6111,45 +6111,86 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(materialFinding?.message).toContain(
       'gives the live Material authored-name cell both omission and explicit null',
     );
-    expect(materialFinding?.message).toContain('sanctioned construction has one anonymous state');
+    expect(materialFinding?.message).toContain('current Flight has one anonymous-material state');
     expect(materialFinding?.message).toContain('createMaterial calls initializeMaterial, which assigns name = null');
     expect(materialFinding?.message).toContain(
-      'createSurfaceMaterial plus every built-in surface-material constructor delegate to that path',
+      'createSurfaceMaterial and the @flighthq/materials 3D constructors delegate to that path',
+    );
+    expect(materialFinding?.message).toContain('initializeStandardMaterial assigns options?.name ?? null');
+    expect(materialFinding?.message).toContain('The one built-in undefined producer is createShadedMaterial');
+    expect(materialFinding?.message).toContain('initializeShadedMaterial currently omits the inherited name cell');
+    expect(materialFinding?.message).toContain('a programmatically created ShadedMaterial retains the missing own key');
+    expect(materialFinding?.message).toContain(
+      'materializeDocumentMaterial preserves an importer-created Material entity by exact identity',
     );
     expect(materialFinding?.message).toContain(
-      'materializeDocumentMaterial either retains an importer-created Material entity',
+      'a structural MaterialLike is overlaid onto createMaterial(source.kind)',
     );
-    expect(materialFinding?.message).toContain('overlays a structural MaterialLike onto createMaterial(source.kind)');
-    expect(materialFinding?.message).toContain('glTF uses material.name ?? null');
+    expect(materialFinding?.message).toContain(
+      'Material.name is mutable plain data with no setter, version, or signal',
+    );
+    expect(materialFinding?.message).toContain('every node sharing that owner observes the same metadata');
+    expect(materialFinding?.message).toContain('glTF assigns material.name ?? null');
     expect(materialFinding?.message).toContain('AWD and 3DS normalize an empty name to null');
     expect(materialFinding?.message).toContain('OBJ, MD2, and MD5 assign their authored handles');
-    expect(materialFinding?.message).toContain('glTF promotion handlers copy the exact prior string or null');
     expect(materialFinding?.message).toContain(
-      'cloneMaterial and copyMaterial copy the enumerable name cell without transformation',
+      'glTF promotion handlers create a replacement owner and copy the exact prior string or null',
     );
+    expect(materialFinding?.message).toContain(
+      'cloneMaterial deliberately creates a new Material owner, copies every enumerable source field',
+    );
+    expect(materialFinding?.message).toContain('shares referenced texture or map owners');
+    expect(materialFinding?.message).toContain(
+      'copyMaterial writes the same fields into its existing destination owner',
+    );
+    expect(materialFinding?.message).toContain('without deleting destination-only keys');
     expect(materialFinding?.message).toContain('equalsMaterial compares own-key sets and exact values');
-    expect(materialFinding?.message).toContain('copyMaterial writes null instead of leaving a stale destination name');
-    expect(materialFinding?.message).toContain('findScene3DMaterialByName is the only semantic name lookup');
-    expect(materialFinding?.message).toContain('renderers and reference-identity batching do not inspect the metadata');
+    expect(materialFinding?.message).toContain('a missing name and an explicit null name are observably unequal');
+    expect(materialFinding?.message).toContain('leaving a stale destination name');
+    expect(materialFinding?.message).toContain('Mesh and InstancedMesh clones shallow-copy their materials arrays');
+    expect(materialFinding?.message).toContain('retain each exact Material owner');
+    expect(materialFinding?.message).toContain('cloneNode3DSubtree does the same by default');
+    expect(materialFinding?.message).toContain('caller-supplied materialOverride');
+    expect(materialFinding?.message).toContain('none calls cloneMaterial implicitly');
+    expect(materialFinding?.message).toContain('getScene3DMaterials deduplicates them by reference');
+    expect(materialFinding?.message).toContain('draw batching plus WebGPU weak caches key on owner identity');
+    expect(materialFinding?.message).toContain('findScene3DMaterialByName is the sole semantic name consumer');
+    expect(materialFinding?.message).toContain('null and a missing cell are equally unmatchable');
+    expect(materialFinding?.message).toContain('disposeNode3D delegates to disposeNode');
+    expect(materialFinding?.message).toContain('does not traverse or clear Mesh.materials');
+    expect(materialFinding?.message).toContain('a retained disposed mesh still retains its material owners');
+    expect(materialFinding?.message).toContain('there is no Material-specific disposer or destroyer');
+    expect(materialFinding?.message).toContain('the scalar name owns no GPU or native resource');
     expect(materialFinding?.message).toContain('Make Material.name a required string | null field');
-    expect(materialFinding?.message).toContain(
-      'give that convenience input a separate optional-non-null shape and continue normalizing it through createMaterial',
-    );
+    expect(materialFinding?.message).toContain('add out.name = null to initializeShadedMaterial');
+    expect(materialFinding?.message).toContain("Omit<EntityWithoutRuntime<Material>, 'name'> & { name?: string }");
+    expect(materialFinding?.message).toContain('keep Partial constructor options as boundary inputs');
     expect(materialFinding?.message).toContain('Do not whitelist the redundant missing-cell spelling');
     expect(materialFinding?.message).toContain(
-      'representation support does not make an absent own key equal to an explicit null cell under Object.keys',
+      'an absent own key is not equal to an explicit null cell under Object.keys',
     );
-    expect(materialFinding?.message).toContain('update clone, copy, equality, import, and lookup together');
+    expect(materialFinding?.message).toContain(
+      'update initialization, import, clone, copy, equality, and lookup together',
+    );
+    expect(materialFinding?.message).toContain('This finding is not a host-binding gap');
+    expect(materialFinding?.message).toContain('optional ?name:Null<String>');
+    expect(materialFinding?.message).toContain('public var name:Null<String> = null under structInit');
+    expect(materialFinding?.message).toContain('required-nullable rewrite as name:Null<String>');
+    expect(materialFinding?.message).toContain('std::variant<flight::String, flight::Null, flight::Undefined>');
+    expect(materialFinding?.message).toContain('std::optional<flight::String>');
+    expect(materialFinding?.message).toContain('Neither backend needs an external binding');
     expect(materialFinding?.message).toContain('will not choose or collapse an absence sentinel');
+    expect(materialFinding?.message).toContain('initialize ShadedMaterial');
     expect(materialFinding?.message).toContain('infer a name from kind, texture path, or document position');
     expect(materialFinding?.message).toContain(
-      'rewrite clone, equality, serialization, lookup, rendering, or batching',
+      'rewrite clone, copy, equality, serialization, lookup, rendering, batching, disposal, or cache identity',
     );
-    expect(materialFinding?.message).toContain('route the name through Any');
+    expect(materialFinding?.message).toContain('route the name through Dynamic or Any');
+    expect(materialFinding?.message).toContain('reinterpret or cast the string');
     expect(materialFinding?.message).toContain('or add side storage');
   });
 
-  it('keeps unrelated authored-name shapes generic and separates live Bone2D storage from optional input', () => {
+  it('keeps unrelated authored-name shapes generic and separates live storage from optional input', () => {
     const controls = [
       input('Other.ts', 'interface Attachment2D { kind: string; name?: string | null }'),
       input('packages/types/src/Attachment2D.ts', 'interface OtherAttachment { name?: string | null }'),
@@ -6157,10 +6198,15 @@ describe('analyzeTypeScriptSourcePortability', () => {
       input('packages/types/src/Bone2D.ts', 'interface OtherBone2D { name?: string | null }'),
       input('packages/example/src/Bone2D.ts', 'interface Bone2D { name?: string | null }'),
       input('packages/types/src/Bone2D.ts', 'interface Bone2D { name?: String | null }'),
+      input('packages/example/src/Material.ts', 'interface Material { name?: string | null }'),
+      input('packages/types/src/Material.ts', 'interface OtherMaterial { name?: string | null }'),
+      input('packages/types/src/Material.ts', 'interface Material { label?: string | null }'),
       input('packages/types/src/Material.ts', 'interface Material { name?: String | null }'),
     ];
     const resolved = [
-      input('RequiredName.ts', 'interface Material { name: string | null }'),
+      input('packages/types/src/Material.ts', 'interface Material { name: string | null }'),
+      input('packages/types/src/Material.ts', 'interface Material { name?: string }'),
+      input('MaterialInput.ts', 'interface MaterialInput { name?: string }'),
       input('packages/types/src/Bone2D.ts', 'interface Bone2D { name: string | null }'),
       input('Bone2DInput.ts', 'interface Bone2DInput { name?: string }'),
     ];

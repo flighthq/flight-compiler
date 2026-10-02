@@ -2717,6 +2717,37 @@ describe('emitIrModuleHaxe structural record election', () => {
     expect(output).toContain('public var value:Float;');
     expect(output).toContain('public var label:Null<String> = null;');
   });
+
+  // Material.ts's authored name is live scalar metadata, not a host object or an erased value. Haxe
+  // expresses the current mixed-absence source as an optional nullable field; making the live field
+  // required removes only the optional/default marker and keeps the exact Null<String> carrier.
+  it('keeps a required nullable Material name exact in anonymous and structInit records', () => {
+    const source = (required: boolean): string => {
+      const marker = required ? '' : '?';
+      return `export interface Entity { readonly id: number }
+              export interface Material extends Entity {
+                readonly kind: string;
+                name${marker}: string | null;
+              }`;
+    };
+    const mixed = lowerPackage('@flighthq/types', 'Material.ts', source(false)).module;
+    const resolved = lowerPackage('@flighthq/types', 'Material.ts', source(true)).module;
+    const mixedAnonymous = emitIrModuleHaxe(mixed).contents;
+    const resolvedAnonymous = emitIrModuleHaxe(resolved).contents;
+    const mixedStruct = emitIrModuleHaxe(mixed, { structuralRecords: 'structInit' }).contents;
+    const resolvedStruct = emitIrModuleHaxe(resolved, { structuralRecords: 'structInit' }).contents;
+
+    expect(mixedAnonymous).toContain('?name:Null<String>');
+    expect(resolvedAnonymous).toContain('name:Null<String>');
+    expect(resolvedAnonymous).not.toContain('?name:Null<String>');
+    expect(mixedStruct).toContain('public var name:Null<String> = null;');
+    expect(resolvedStruct).toContain('public var name:Null<String>;');
+    expect(resolvedStruct).not.toContain('public var name:Null<String> = null;');
+    for (const emitted of [mixedAnonymous, resolvedAnonymous, mixedStruct, resolvedStruct]) {
+      expect(emitted).not.toContain('name:Dynamic');
+      expect(emitted).not.toContain('cast name');
+    }
+  });
 });
 
 describe('emitIrModuleHaxe expression coverage', () => {
