@@ -4225,6 +4225,125 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('materialize_row');
   });
 
+  it('retains the exact node-order owner instead of recovering it from shared NodeAny scratch', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'types/src/contract.ts',
+          `export interface NodeRuntime<Traits extends object> {
+             children: NodeOf<Traits>[];
+             childrenId: number;
+           }
+           export interface Node<Traits extends object> {
+             readonly name: string;
+             runtime: NodeRuntime<Traits>;
+           }
+           export type NodeAny = Node<any>;
+           export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/nodeOrderList.ts',
+          `import type { NodeAny, NodeOf } from '@flighthq/types/contract';
+           const _members: NodeAny[] = [];
+           export function applyNodeOrderList<Traits extends object>(children: NodeOf<Traits>[]): void {
+             if (_members.length === 0) return;
+             children[0] = _members[0] as NodeOf<Traits>;
+           }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/typedNodeOrderList.ts',
+          `import type { Node, NodeAny, NodeOf, NodeRuntime } from '@flighthq/types/contract';
+           interface ExactNodeOrderList<Traits extends object> {
+             entryCount: number;
+             nodes: NodeOf<Traits>[];
+             sortKeys: number[];
+           }
+           const _listIndex = new Map<NodeAny, number>();
+           const _memberEntryIndices: number[] = [];
+           const _slots: number[] = [];
+           function getWritableNodeRuntime<Traits extends object>(source: NodeOf<Traits>): NodeRuntime<Traits> {
+             return source.runtime;
+           }
+           export function applyNodeOrderList<Traits extends object>(
+             target: NodeOf<Traits>,
+             list: Readonly<ExactNodeOrderList<Traits>>,
+           ): void {
+             const runtime = getWritableNodeRuntime(target);
+             const children = runtime.children;
+             _listIndex.clear();
+             _memberEntryIndices.length = 0;
+             _slots.length = 0;
+             for (let i = 0; i < list.entryCount; i++) _listIndex.set(list.nodes[i], i);
+             for (let i = 0; i < children.length; i++) {
+               const entryIndex = _listIndex.get(children[i]);
+               if (entryIndex === undefined) continue;
+               _memberEntryIndices.push(entryIndex);
+               _slots.push(i);
+             }
+             for (let i = 0; i < _slots.length; i++) {
+               children[_slots[i]] = list.nodes[_memberEntryIndices[i]];
+             }
+             runtime.childrenId++;
+           }
+           export function includesNode<Traits extends object>(
+             _source: Readonly<Node<Traits>>,
+             node: NodeOf<Traits>,
+           ): boolean {
+             return _listIndex.has(node);
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+    const emitted = session.emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(refused.rule).toBe('cpp-structural-assertion-owner-unproven');
+    expect(refused.classification).toBe('source-portability');
+    expect(refused.message).toContain('stores it in the module scratch array _members typed NodeAny[]');
+    expect(refused.message).toContain('NodeAny preserves node identity but erases the Traits specialization');
+    expect(refused.message).toContain('NodeOrderList<Traits>.nodes is currently Node<Traits>[]');
+    expect(refused.message).toContain('make NodeOrderList<Traits>.nodes, its entry APIs');
+    expect(refused.message).toContain('reusable numeric list-entry indices');
+    expect(refused.message).toContain('Map<NodeAny, number> may remain only as an identity-key index');
+    expect(refused.message).toContain('duplicate nodes resolve to their last entry');
+    expect(refused.message).toContain("forEachNodeOrderListEntry's insertion-order, early-stop iteration");
+    expect(refused.message).toContain('SWF frame construction');
+    expect(refused.message).toContain('Rive draw rules');
+    expect(refused.message).toContain('skeleton draw-order animation');
+    expect(refused.message).toContain('Do not whitelist the assertion');
+    expect(emitted).toContain('get_writable_node_runtime<Traits>(target)');
+    expect(emitted).toContain('member_entry_indices');
+    expect(emitted).toContain('flight::row_get<flight::RowKey<"nodes">>(list)');
+    expect(emitted).toContain('runtime->children_id++');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize_row');
+  });
+
   it('requires the bounds runtime slot and accessor to carry their writable cells', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [

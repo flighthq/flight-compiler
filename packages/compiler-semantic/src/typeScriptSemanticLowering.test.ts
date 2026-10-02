@@ -12897,6 +12897,99 @@ it('retains readonly hierarchy inputs beside exact writable parent and child mut
   expect(JSON.stringify(commonAncestor.body)).toContain('"name":"getNodeParent"');
 });
 
+it('retains the NodeAny scratch erasure before a node-order owner assertion', () => {
+  const moduleResolution = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  } as const;
+  const results = lowerTypeScriptSources(
+    [
+      {
+        packageName: '@flighthq/types',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/types/src/contract.ts',
+          `export interface Node<Traits extends object> { readonly name: string }
+           export type NodeAny = Node<any>;
+           export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+      {
+        packageName: '@flighthq/node',
+        sourceFile: ts.createSourceFile(
+          '/flight/packages/node/src/nodeOrderList.ts',
+          `import type { NodeAny, NodeOf } from '@flighthq/types/contract';
+           const _members: NodeAny[] = [];
+           export function applyNodeOrderList<Traits extends object>(children: NodeOf<Traits>[]): void {
+             if (_members.length === 0) return;
+             children[0] = _members[0] as NodeOf<Traits>;
+           }`,
+          ts.ScriptTarget.Latest,
+          true,
+        ),
+        upstreamDirectory: '/flight',
+      },
+    ],
+    moduleResolution,
+  );
+  const order = results[1]!;
+  const members = order.module.declarations.find(
+    (declaration) =>
+      declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === '_members',
+  );
+  const apply = order.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'applyNodeOrderList',
+  );
+  if (members?.kind !== 'variable' || !('binding' in members) || apply?.kind !== 'function') {
+    throw new Error('Expected node-order declarations');
+  }
+  const assertions: IrExpression[] = [];
+  analyzeIrModuleTraversal(order.module, {
+    expression(expression) {
+      if (expression.kind === 'cast') assertions.push(expression);
+    },
+  });
+
+  expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+  expect(members.type).toMatchObject({
+    element: { kind: 'named', reference: { binding: { kind: 'import', name: 'NodeAny' }, kind: 'binding' } },
+    kind: 'array',
+  });
+  expect(apply.parameters[0]?.type).toMatchObject({
+    element: {
+      kind: 'named',
+      reference: { binding: { kind: 'import', name: 'NodeOf' }, kind: 'binding' },
+      typeArguments: [{ kind: 'named', reference: { binding: apply.typeParameters[0]!.binding, kind: 'binding' } }],
+    },
+    kind: 'array',
+  });
+  expect(assertions).toMatchObject([
+    {
+      expression: {
+        kind: 'element',
+        object: {
+          kind: 'identifier',
+          reference: { binding: members.binding, kind: 'binding' },
+        },
+      },
+      kind: 'cast',
+      type: {
+        kind: 'named',
+        reference: { binding: { kind: 'import', name: 'NodeOf' }, kind: 'binding' },
+        typeArguments: [{ kind: 'named', reference: { binding: apply.typeParameters[0]!.binding, kind: 'binding' } }],
+      },
+    },
+  ]);
+  expect(JSON.stringify(apply.body)).toContain('"operator":"="');
+});
+
 it('keeps caller-owned NodeOf evidence across an imported generic and a recursive overload', () => {
   const moduleResolution = {
     edges: [
