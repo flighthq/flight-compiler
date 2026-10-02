@@ -13561,7 +13561,7 @@ it('retains readonly traversal inputs beside writable node results and graph mut
   }
 });
 
-it('retains the NodeAny scratch erasure before a node-order owner assertion', () => {
+it('retains the same scratch-owner evidence for direct and erased node-order assertions', () => {
   const moduleResolution = {
     edges: [
       {
@@ -13571,87 +13571,113 @@ it('retains the NodeAny scratch erasure before a node-order owner assertion', ()
     ],
     schema: 'flight-compiler-module-resolution/1',
   } as const;
-  const results = lowerTypeScriptSources(
-    [
-      {
-        packageName: '@flighthq/types',
-        sourceFile: ts.createSourceFile(
-          '/flight/packages/types/src/contract.ts',
-          `export interface Node<Traits extends object> { readonly name: string }
-           export type NodeAny = Node<any>;
-           export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;`,
-          ts.ScriptTarget.Latest,
-          true,
-        ),
-        upstreamDirectory: '/flight',
-      },
-      {
-        packageName: '@flighthq/node',
-        sourceFile: ts.createSourceFile(
-          '/flight/packages/node/src/nodeOrderList.ts',
-          `import type { NodeAny, NodeOf } from '@flighthq/types/contract';
-           const _members: NodeAny[] = [];
-           export function applyNodeOrderList<Traits extends object>(children: NodeOf<Traits>[]): void {
-             if (_members.length === 0) return;
-             children[0] = _members[0] as NodeOf<Traits>;
-           }`,
-          ts.ScriptTarget.Latest,
-          true,
-        ),
-        upstreamDirectory: '/flight',
-      },
-    ],
-    moduleResolution,
-  );
-  const order = results[1]!;
-  const members = order.module.declarations.find(
-    (declaration) =>
-      declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === '_members',
-  );
-  const apply = order.module.declarations.find(
-    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'applyNodeOrderList',
-  );
-  if (members?.kind !== 'variable' || !('binding' in members) || apply?.kind !== 'function') {
-    throw new Error('Expected node-order declarations');
-  }
-  const assertions: IrExpression[] = [];
-  analyzeIrModuleTraversal(order.module, {
-    expression(expression) {
-      if (expression.kind === 'cast') assertions.push(expression);
-    },
-  });
-
-  expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-  expect(members.type).toMatchObject({
-    element: { kind: 'named', reference: { binding: { kind: 'import', name: 'NodeAny' }, kind: 'binding' } },
-    kind: 'array',
-  });
-  expect(apply.parameters[0]?.type).toMatchObject({
-    element: {
-      kind: 'named',
-      reference: { binding: { kind: 'import', name: 'NodeOf' }, kind: 'binding' },
-      typeArguments: [{ kind: 'named', reference: { binding: apply.typeParameters[0]!.binding, kind: 'binding' } }],
-    },
-    kind: 'array',
-  });
-  expect(assertions).toMatchObject([
-    {
-      expression: {
-        kind: 'element',
-        object: {
-          kind: 'identifier',
-          reference: { binding: members.binding, kind: 'binding' },
+  const inspect = (assertion: string) => {
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `export interface Node<Traits extends object> { readonly name: string }
+             export type NodeAny = Node<any>;
+             export type NodeOf<Traits extends object> = Node<Traits> & NoInfer<Traits>;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
         },
+        {
+          packageName: '@flighthq/node',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/node/src/nodeOrderList.ts',
+            `import type { NodeAny, NodeOf } from '@flighthq/types/contract';
+             const _members: NodeAny[] = [];
+             export function applyNodeOrderList<Traits extends object>(children: NodeOf<Traits>[]): void {
+               if (_members.length === 0) return;
+               children[0] = _members[0] ${assertion};
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const order = results[1]!;
+    const members = order.module.declarations.find(
+      (declaration) =>
+        declaration.kind === 'variable' && 'binding' in declaration && declaration.binding.name === '_members',
+    );
+    const apply = order.module.declarations.find(
+      (declaration) => declaration.kind === 'function' && declaration.binding.name === 'applyNodeOrderList',
+    );
+    if (members?.kind !== 'variable' || !('binding' in members) || apply?.kind !== 'function') {
+      throw new Error('Expected node-order declarations');
+    }
+    const assertions: IrExpression[] = [];
+    analyzeIrModuleTraversal(order.module, {
+      expression(expression) {
+        if (expression.kind === 'cast') assertions.push(expression);
       },
-      kind: 'cast',
-      type: {
+    });
+    const ownerAssertion = assertions.find(
+      (candidate) =>
+        candidate.kind === 'cast' &&
+        candidate.type.kind === 'named' &&
+        candidate.type.reference.kind === 'binding' &&
+        candidate.type.reference.binding.name === 'NodeOf',
+    );
+    if (ownerAssertion?.kind !== 'cast') throw new Error('Expected node-owner assertion');
+    let retainedSubject = ownerAssertion.expression;
+    while (retainedSubject.kind === 'cast') retainedSubject = retainedSubject.expression;
+    return {
+      apply,
+      assertions,
+      diagnostics: results.flatMap((result) => result.diagnostics),
+      members,
+      ownerAssertion,
+      retainedSubject,
+    };
+  };
+
+  for (const [assertion, assertionCount] of [
+    ['as NodeOf<Traits>', 1],
+    ['as unknown as NodeOf<Traits>', 2],
+  ] as const) {
+    const result = inspect(assertion);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.members.type).toMatchObject({
+      element: { kind: 'named', reference: { binding: { kind: 'import', name: 'NodeAny' }, kind: 'binding' } },
+      kind: 'array',
+    });
+    expect(result.apply.parameters[0]?.type).toMatchObject({
+      element: {
         kind: 'named',
         reference: { binding: { kind: 'import', name: 'NodeOf' }, kind: 'binding' },
-        typeArguments: [{ kind: 'named', reference: { binding: apply.typeParameters[0]!.binding, kind: 'binding' } }],
+        typeArguments: [
+          { kind: 'named', reference: { binding: result.apply.typeParameters[0]!.binding, kind: 'binding' } },
+        ],
       },
-    },
-  ]);
-  expect(JSON.stringify(apply.body)).toContain('"operator":"="');
+      kind: 'array',
+    });
+    expect(result.ownerAssertion.type).toMatchObject({
+      kind: 'named',
+      reference: { binding: { kind: 'import', name: 'NodeOf' }, kind: 'binding' },
+      typeArguments: [
+        { kind: 'named', reference: { binding: result.apply.typeParameters[0]!.binding, kind: 'binding' } },
+      ],
+    });
+    expect(result.retainedSubject).toMatchObject({
+      kind: 'element',
+      object: {
+        kind: 'identifier',
+        reference: { binding: result.members.binding, kind: 'binding' },
+      },
+    });
+    expect(result.assertions).toHaveLength(assertionCount);
+    expect(JSON.stringify(result.apply.body)).toContain('"operator":"="');
+  }
 });
 
 it('retains the erased readonly runtime and writable bounds probe in scene2d stage fit', () => {

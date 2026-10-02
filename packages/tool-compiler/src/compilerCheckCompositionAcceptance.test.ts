@@ -1232,28 +1232,14 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
     const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
     const compilation = compileTypeScriptPackageGraph({
-      backend: {
-        emitModule(module) {
-          if (module.source === 'packages/node/src/nodeOrderList.ts') {
-            throw createBackendEmissionFailure(
-              'acceptance',
-              module,
-              'the NodeAny scratch does not retain the trait-specialized node-order owner',
-              'cpp-structural-assertion-owner-unproven',
-              { classification: 'source-portability' },
-            );
-          }
-          return [{ contents: module.name, path: `${module.name}.txt` }];
-        },
-        name: 'acceptance',
-      },
-      backendOptions: {},
+      backend: createCppCompilerBackend(),
+      backendOptions: { runtimeProfile: 'flight-cpp' },
       ...input,
     });
     const report = createCompilerPackageCheckReport(compilation.report, {
       provenance: {
         compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
-        target: { name: 'fixture-target', revision: 'target-revision' },
+        target: { name: 'flight-cpp', revision: 'target-revision' },
         upstream: { name: 'flight', revision: 'upstream-revision' },
       },
       sourcePortability,
@@ -1271,6 +1257,16 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
         stage: 'emission',
       },
     ]);
+    expect(report.directFindings[0]?.occurrences).toMatchObject([
+      {
+        message: expect.stringContaining(
+          'For reusable scratch storage, retain indices, keys, or tokens into storage that remains typed as',
+        ),
+      },
+    ]);
+    expect(report.directFindings[0]?.occurrences[0]?.message).not.toMatch(
+      /applyNodeOrderList|NodeOrderList|_members|SWF|Rive/u,
+    );
     expect(report.totals).toEqual({
       dependencyCascades: 1,
       directFindings: 1,

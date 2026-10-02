@@ -14510,12 +14510,12 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(result.ok).toBe(true);
   });
 
-  // The nodeOrderList erased-scratch round trip, and why no owner evidence can prove it.
+  // The erased-scratch round trip, and why no owner evidence can prove it.
   //
-  // The shape is exact and minimal: children typed `NodeOf<Traits>` are pushed into a module-level scratch
-  // typed `NodeAny[]`, then asserted back to `NodeOf<Traits>` when written into the child slot. The scratch is
-  // where the specialization dies -- `NodeAny` preserves node identity and nothing else -- and the identity map
-  // and sort key that sit beside it answer WHICH entry, never WHICH trait specialization was stored.
+  // The shape is exact and minimal: specialized items are pushed into a module-level scratch typed as their
+  // base owner, then asserted back to the specialization when written into the result slot. The scratch is
+  // where the specialization dies, and a key or token beside it answers WHICH entry, never WHICH wider owner
+  // was stored.
   //
   // IT IS NOT PROVABLE, and the control below is the evidence rather than the assertion of it. A structural
   // owner binds the members and storage representations of the type the object was FIRST REACHED AS, so a read
@@ -14524,12 +14524,12 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
   // that could fake it are the ones this compiler refuses by name: an unchecked cast, a copied or materialized
   // row, a registry key carried beside the value, or side storage. The sound repair is the one the refusal
   // names -- keep the exact row in typed storage instead of recovering it by assertion.
-  it('refuses an erased-scratch round trip that asserts a specialization back', () => {
+  it('classifies both erased-scratch assertion spellings by retained owner evidence', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
         {
-          specifier: '@flighthq/types',
-          target: { packageName: '@flighthq/types', source: 'packages/types/src/index.ts' },
+          specifier: '@example/contracts',
+          target: { packageName: '@example/contracts', source: 'packages/contracts/src/index.ts' },
         },
       ],
       schema: 'flight-compiler-module-resolution/1',
@@ -14543,20 +14543,20 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
       const results = lowerTypeScriptSources(
         [
           source(
-            '@flighthq/types',
-            'packages/types/src/index.ts',
-            `export interface NodeAny { readonly kind: string }`,
+            '@example/contracts',
+            'packages/contracts/src/index.ts',
+            `export interface StoredItem { readonly kind: string }`,
           ),
           source(
-            '@flighthq/node',
-            'packages/node/src/nodeOrderList.ts',
-            `import type { NodeAny } from '@flighthq/types';
-             export interface NodeOf<Traits extends object> { readonly traits: Traits }
-             let _members: NodeAny[] = [];
-             export function apply<Traits extends object>(children: NodeOf<Traits>[]): void {
-               _members.length = 0;
-               for (let i = 0; i < children.length; i++) _members.push(children[i]);
-               for (let i = 0; i < _members.length; i++) children[i] = _members[i] ${assertion};
+            '@example/ordering',
+            'packages/ordering/src/reorder.ts',
+            `import type { StoredItem } from '@example/contracts';
+             export interface SpecializedItem<Shape extends object> extends StoredItem { readonly shape: Shape }
+             let scratch: StoredItem[] = [];
+             export function reorder<Shape extends object>(items: SpecializedItem<Shape>[]): void {
+               scratch.length = 0;
+               for (let i = 0; i < items.length; i++) scratch.push(items[i]);
+               for (let i = 0; i < scratch.length; i++) items[i] = scratch[i] ${assertion};
              }`,
           ),
         ],
@@ -14570,24 +14570,23 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
       return captureBackendEmissionFailure(() => session.emitModule(results[1]!.module));
     };
 
-    // The erased assertion: the rule that names the invariant, and the invariant in its own words.
-    const erased = emit('as unknown as NodeOf<Traits>');
-    expect(erased.rule).toBe('cpp-structural-assertion-owner-unproven');
-    expect(erased.classification).toBe('source-portability');
-    expect(erased.message).toContain('the asserted row from');
-    expect(erased.message).toContain(
-      'binds the members and storage representations of the type the object was first reached as',
-    );
-    expect(erased.message).toContain(
-      'An assertion cannot add those cells or change their representation, or prove which wider owner was stored',
-    );
-
-    // The single assertion of the SAME source line is refused a rule earlier, and classified differently.
-    // Both refuse -- the specialization is unrecoverable either way -- but the pair is pinned here because a
-    // reader comparing the two messages would otherwise have to discover that for themselves.
-    const direct = emit('as NodeOf<Traits>');
-    expect(direct.rule).toBe('cpp-reference-assertion-without-heritage');
-    expect(direct.classification).toBe('target-runtime');
+    const erased = emit('as unknown as SpecializedItem<Shape>');
+    const direct = emit('as SpecializedItem<Shape>');
+    for (const failure of [erased, direct]) {
+      expect(failure.rule).toBe('cpp-structural-assertion-owner-unproven');
+      expect(failure.classification).toBe('source-portability');
+      expect(failure.message).toContain('the asserted row from');
+      expect(failure.message).toContain(
+        'binds the members and storage representations of the type the object was first reached as',
+      );
+      expect(failure.message).toContain('Reading the value back from retained storage does not recover a wider owner');
+      expect(failure.message).toContain(
+        'For reusable scratch storage, retain indices, keys, or tokens into storage that remains typed as',
+      );
+      expect(failure.message).toContain('give it a checked recovery contract');
+      expect(failure.message).not.toMatch(/applyNodeOrderList|NodeOrderList|nodeOrderList|_members|SWF|Rive/u);
+    }
+    expect(direct.message).toBe(erased.message);
   });
 
   // The signals connection assertion, which is the generic-owner case rather than the structural one: a
