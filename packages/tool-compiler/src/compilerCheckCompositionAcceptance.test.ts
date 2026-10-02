@@ -388,6 +388,113 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps all fourteen GlMeshProgram absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createGlMeshProgramWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const lazyFields = [
+      'locAlphaIsCoverage',
+      'locColorBias',
+      'locColorMatrix0',
+      'locColorMatrix1',
+      'locColorMatrix2',
+      'locColorMatrix3',
+      'locColorMatrixOffset',
+      'locColorScale',
+      'locInstanceColorPalette',
+      'locInstancePalette',
+      'locObjectAlpha',
+      'locUvTransform',
+    ];
+    const requiredNullableFields = ['locJointNormalTexture', 'locJointTexture'];
+    const expectedSubjects = [...lazyFields, ...requiredNullableFields]
+      .sort()
+      .map((field) => `interface:GlMeshProgram/property:${field}`);
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    for (const finding of sourcePortability.findings) {
+      const field = finding.subject.slice(finding.subject.lastIndexOf(':') + 1);
+      expect(finding.message).toContain('Do not whitelist');
+      expect(finding.message).not.toContain('reviewed source-portability exception');
+      if (requiredNullableFields.includes(field)) {
+        expect(finding.message).toContain('construction-time skin-sampler location');
+        expect(finding.message).toContain(
+          'Make locJointTexture and locJointNormalTexture required WebGLUniformLocation | null fields',
+        );
+        expect(finding.message).toContain('does not make the duplicate unusable sentinel a source contract');
+      } else {
+        expect(lazyFields).toContain(field);
+        expect(finding.message).toContain('three observed states');
+        expect(finding.message).toContain('Preserve that query-once contract');
+        expect(finding.message).toContain('require the named cache arms above');
+        expect(finding.message).toContain("representation support does not replace the source's named cache state");
+      }
+    }
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 14,
+      directOccurrences: 14,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const introduced = compareCompilerPackageCheckBaseline(report, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(createCompilerPackageCheckPolicyResult(introduced, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: report.directFindings.map(({ identity }) => identity),
+      passed: false,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createGlMeshProgramWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
+  });
+
   it('keeps the six anchor-layout absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createAnchorLayoutWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -1982,6 +2089,65 @@ export interface GlRenderStateOptions {
   colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { GlColorAdjustmentMaterialFeature, GlRenderStateOptions } from './GlRenderStateOptions.js';`,
+  };
+}
+
+function createGlMeshProgramWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const declaration = mixedAbsence
+    ? `export interface GlMeshProgram {
+  locAlphaIsCoverage?: WebGLUniformLocation | null;
+  locColorBias?: WebGLUniformLocation | null;
+  locColorMatrix0?: WebGLUniformLocation | null;
+  locColorMatrix1?: WebGLUniformLocation | null;
+  locColorMatrix2?: WebGLUniformLocation | null;
+  locColorMatrix3?: WebGLUniformLocation | null;
+  locColorMatrixOffset?: WebGLUniformLocation | null;
+  locColorScale?: WebGLUniformLocation | null;
+  locInstanceColorPalette?: WebGLUniformLocation | null;
+  locInstancePalette?: WebGLUniformLocation | null;
+  locJointNormalTexture?: WebGLUniformLocation | null;
+  locJointTexture?: WebGLUniformLocation | null;
+  locObjectAlpha?: WebGLUniformLocation | null;
+  locUvTransform?: WebGLUniformLocation | null;
+}`
+    : `type GlUniformLocationCache =
+  | { readonly state: 'unresolved' }
+  | { readonly state: 'absent' }
+  | { readonly location: WebGLUniformLocation; readonly state: 'present' };
+type GlColorMatrixUniformCache =
+  | { readonly state: 'unresolved' }
+  | { readonly state: 'absent' }
+  | {
+      readonly location0: WebGLUniformLocation;
+      readonly location1: WebGLUniformLocation;
+      readonly location2: WebGLUniformLocation;
+      readonly location3: WebGLUniformLocation;
+      readonly locationOffset: WebGLUniformLocation;
+      readonly state: 'present';
+    };
+type GlColorScaleBiasUniformCache =
+  | { readonly state: 'unresolved' }
+  | { readonly state: 'absent' }
+  | {
+      readonly bias: WebGLUniformLocation;
+      readonly scale: WebGLUniformLocation;
+      readonly state: 'present';
+    };
+export interface GlMeshProgram {
+  colorMatrixUniforms: GlColorMatrixUniformCache;
+  colorScaleBiasUniforms: GlColorScaleBiasUniformCache;
+  locAlphaIsCoverage: GlUniformLocationCache;
+  locInstanceColorPalette: GlUniformLocationCache;
+  locInstancePalette: GlUniformLocationCache;
+  locJointNormalTexture: WebGLUniformLocation | null;
+  locJointTexture: WebGLUniformLocation | null;
+  locObjectAlpha: GlUniformLocationCache;
+  locUvTransform: GlUniformLocationCache;
+}`;
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/GlMeshProgram.ts': declaration,
+    '/flight/packages/types/src/index.ts': `export type { GlMeshProgram } from './GlMeshProgram.js';`,
   };
 }
 

@@ -7469,6 +7469,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
         );
         expect(finding.message).toContain('initialize both to null in the three factories that currently omit them');
         expect(finding.message).toContain('one named closed skin-program capability');
+        expect(finding.message).toContain('Do not whitelist either field or treat backend tag support as resolution');
         expect(finding.message).toContain('C++ backend can preserve the current null and undefined tags');
         expect(finding.message).toContain('does not make the duplicate unusable sentinel a source contract');
         expect(finding.message).toContain('will not choose or collapse an absence sentinel');
@@ -7488,6 +7489,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('Preserve that query-once contract');
       expect(finding.message).toContain('Do not collapse undefined to null, which would skip the first query');
       expect(finding.message).toContain('null to undefined, which would repeat the query');
+      expect(finding.message).toContain('Do not whitelist the mixed spelling or treat backend tag support');
       expect(finding.message).toContain('C++ backend already represents all three tags');
       expect(finding.message).toContain('strict undefined/null probes without Any, casts, or side storage');
       expect(finding.message).toContain('no compiler lowering change is warranted');
@@ -7532,14 +7534,39 @@ describe('analyzeTypeScriptSourcePortability', () => {
   it('keeps unrelated uniform locations generic and accepts explicit GlMeshProgram cache states', () => {
     const resolved = input(
       'packages/types/src/GlMeshProgram.ts',
-      `type UniformLocationCache =
+      `type GlUniformLocationCache =
          | { readonly state: 'unresolved' }
          | { readonly state: 'absent' }
          | { readonly location: WebGLUniformLocation; readonly state: 'present' };
+       type GlColorMatrixUniformCache =
+         | { readonly state: 'unresolved' }
+         | { readonly state: 'absent' }
+         | {
+             readonly location0: WebGLUniformLocation;
+             readonly location1: WebGLUniformLocation;
+             readonly location2: WebGLUniformLocation;
+             readonly location3: WebGLUniformLocation;
+             readonly locationOffset: WebGLUniformLocation;
+             readonly state: 'present';
+           };
+       type GlColorScaleBiasUniformCache =
+         | { readonly state: 'unresolved' }
+         | { readonly state: 'absent' }
+         | {
+             readonly bias: WebGLUniformLocation;
+             readonly scale: WebGLUniformLocation;
+             readonly state: 'present';
+           };
        interface GlMeshProgram {
+         colorMatrixUniforms: GlColorMatrixUniformCache;
+         colorScaleBiasUniforms: GlColorScaleBiasUniformCache;
          locJointNormalTexture: WebGLUniformLocation | null;
-         locJointTexture?: WebGLUniformLocation;
-         locObjectAlpha: UniformLocationCache;
+         locJointTexture: WebGLUniformLocation | null;
+         locAlphaIsCoverage: GlUniformLocationCache;
+         locInstanceColorPalette: GlUniformLocationCache;
+         locInstancePalette: GlUniformLocationCache;
+         locObjectAlpha: GlUniformLocationCache;
+         locUvTransform: GlUniformLocationCache;
        }`,
     );
     const unrelated = [
