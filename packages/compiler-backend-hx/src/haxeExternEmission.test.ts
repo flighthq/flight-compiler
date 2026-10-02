@@ -206,6 +206,36 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(current + live + portable).not.toContain('Dynamic');
   });
 
+  it('separates TreeViewController construction omission from nullable live selection', () => {
+    const module = lower(
+      '@flighthq/types',
+      'TreeViewController.ts',
+      `export interface TreeViewControllerItem { readonly id: number }
+       export interface CurrentTreeViewControllerOptions {
+         items: readonly Readonly<TreeViewControllerItem>[];
+         selectedItem?: TreeViewControllerItem | null;
+       }
+       export interface PortableTreeViewControllerOptions {
+         items: readonly Readonly<TreeViewControllerItem>[];
+         selectedItem?: TreeViewControllerItem;
+       }
+       export interface TreeViewControllerRuntime {
+         selectedItem: Readonly<TreeViewControllerItem> | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentTreeViewControllerOptions.hx').contents;
+    const live = findFile(files, 'flight/_js/TreeViewControllerRuntime.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableTreeViewControllerOptions.hx').contents;
+
+    expect(current).toContain('@:optional var selectedItem:Null<flight.TreeViewControllerItem>;');
+    expect(portable).toContain('@:optional var selectedItem:flight.TreeViewControllerItem;');
+    expect(portable).not.toContain('@:optional var selectedItem:Null<flight.TreeViewControllerItem>;');
+    expect(live).toContain('var selectedItem:Null<flight.TreeViewControllerItem>;');
+    expect(live).not.toContain('@:optional var selectedItem');
+    expect(current + live + portable).not.toContain('Dynamic');
+  });
+
   it('removes only optionality from Canvas texture resolver live-state carriers', () => {
     const source = (required: boolean): string => {
       const marker = required ? '' : '?';

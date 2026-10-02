@@ -15151,6 +15151,46 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(portable).not.toContain('materialize_row');
   });
 
+  // TreeViewController.ts consumes its option once, then stores and mutates one required-nullable live
+  // selection cell. C++ can represent all three source shapes exactly: the current option keeps Null and
+  // Undefined distinct, while the portable option uses one optional Ref and the required-nullable live
+  // cell uses one optional readonly structural view over that exact item owner.
+  it('separates TreeViewController construction omission from nullable live selection', () => {
+    const contents = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'TreeViewController.ts',
+        `export interface TreeViewControllerItem { readonly id: number }
+         export interface CurrentTreeViewControllerOptions {
+           items: readonly Readonly<TreeViewControllerItem>[];
+           selectedItem?: TreeViewControllerItem | null;
+         }
+         export interface PortableTreeViewControllerOptions {
+           items: readonly Readonly<TreeViewControllerItem>[];
+           selectedItem?: TreeViewControllerItem;
+         }
+         export interface TreeViewControllerRuntime {
+           selectedItem: Readonly<TreeViewControllerItem> | null;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(contents).toContain(
+      'std::variant<flight::Ref<TreeViewControllerItem>, flight::Null, flight::Undefined> selected_item =',
+    );
+    expect(contents).toContain('std::optional<flight::Ref<TreeViewControllerItem>> selected_item;');
+    expect(contents).toContain(
+      'std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<TreeViewControllerItem>>>>> selected_item;',
+    );
+    expect(contents).toContain('struct TreeViewControllerItem : public flight::ReferenceEnabled');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('materialize_row');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
+  });
+
   // Attachment2D.ts's mixed-absence finding. Every built-in producer finishes an entity with a present
   // string-or-null name, while runtime mutation swaps attachment owners and never edits this metadata. The
   // backend can represent both source spellings; the finding asks the source to remove the unused third

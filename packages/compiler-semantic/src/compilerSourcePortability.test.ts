@@ -8417,11 +8417,17 @@ describe('analyzeTypeScriptSourcePortability', () => {
       'gives the one-shot TreeViewController initial selection both omission and explicit null',
     );
     expect(message).toContain('createTreeViewController consumes the options only while building one controller');
-    expect(message).toContain('flattens options.items into the runtime items array and parent map');
+    expect(message).toContain('recursively flattens options.items into an items array and identity-keyed parent map');
+    expect(message).toContain('makes only a shallow roots array copy');
+    expect(message).toContain('the options object is not retained');
+    expect(message).toContain('retain the exact caller-supplied item objects without cloning them');
     expect(message).toContain('selectedItem: options.selectedItem ?? null');
     expect(message).toContain('required Readonly<TreeViewControllerItem> | null runtime storage');
     expect(message).toContain(
       'present initial item is retained by identity without a membership check or an onSelect emission',
+    );
+    expect(message).toContain(
+      'initial foreign item can therefore remain observable through the getter and Enter activation',
     );
     expect(message).toContain('EntityRuntimeKey-owned runtime');
     expect(message).toContain('getTreeViewControllerSelectedItem returns the exact required nullable cell');
@@ -8434,7 +8440,13 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain('Enter emits onActivate only for a present selection');
     expect(message).toContain('Selection never drives item visibility or styling');
     expect(message).toContain('expansion state alone feeds updateTreeViewControllerVisibility');
-    expect(message).toContain('does not emit a final selection change');
+    expect(message).toContain('No production importer, deserializer, materializer, copy helper, or clone');
+    expect(message).toContain('marks the runtime disposed');
+    expect(message).toContain('disconnects the item visual interactions');
+    expect(message).toContain('restores their prior hit-test states');
+    expect(message).toContain('clears expanded, items, parents, roots, and selectedItem');
+    expect(message).toContain('emits no final selection change');
+    expect(message).toContain('controller-owned runtime and its public signal objects remain');
     expect(message).toContain(
       'Make TreeViewControllerOptions.selectedItem an optional TreeViewControllerItem without null',
     );
@@ -8444,6 +8456,22 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(message).toContain(
       'Keep the runtime field, live setter parameter, getter result, and TreeViewControllerSignals.onSelect payload required nullable',
     );
+    expect(message).toContain(
+      'current C++ option carrier is std::variant<flight::Ref<TreeViewControllerItem>, flight::Null, flight::Undefined>',
+    );
+    expect(message).toContain(
+      'recommended optional-non-null option lowers to std::optional<flight::Ref<TreeViewControllerItem>>',
+    );
+    expect(message).toContain(
+      'required-nullable Readonly<TreeViewControllerItem> live cell lowers to std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<TreeViewControllerItem>>>>>',
+    );
+    expect(message).toContain('preserving its readonly structural view rather than copying the item');
+    expect(message).toContain(
+      'current Haxe option carrier is @:optional var selectedItem:Null<flight.TreeViewControllerItem>;',
+    );
+    expect(message).toContain('recommended option is @:optional var selectedItem:flight.TreeViewControllerItem;');
+    expect(message).toContain('live cell remains var selectedItem:Null<flight.TreeViewControllerItem>;');
+    expect(message).toContain('not a host-binding gap');
     expect(message).toContain('unchanged, clear, and select');
     expect(message).toContain('Do not whitelist the redundant construction spelling');
     expect(message).toContain('will not choose or collapse an absence sentinel');

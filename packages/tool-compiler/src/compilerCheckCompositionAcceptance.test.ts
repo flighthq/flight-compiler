@@ -5772,6 +5772,9 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       'present initial item is retained by identity without a membership check or an onSelect emission',
     );
     expect(sourcePortability.findings[0]?.message).toContain(
+      'retain the exact caller-supplied item objects without cloning them or rewriting their fields',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
       'setTreeViewControllerSelectedItem is the distinct live update boundary',
     );
     expect(sourcePortability.findings[0]?.message).toContain(
@@ -5783,6 +5786,19 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings[0]?.message).toContain(
       'Keep the runtime field, live setter parameter, getter result, and TreeViewControllerSignals.onSelect payload required nullable',
     );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'current C++ option carrier is std::variant<flight::Ref<TreeViewControllerItem>, flight::Null, flight::Undefined>',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'recommended optional-non-null option lowers to std::optional<flight::Ref<TreeViewControllerItem>>',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'required-nullable Readonly<TreeViewControllerItem> live cell lowers to std::optional<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<TreeViewControllerItem>>>>>',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain(
+      'current Haxe option carrier is @:optional var selectedItem:Null<flight.TreeViewControllerItem>;',
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('not a host-binding gap');
     expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist');
     expect(sourcePortability.findings[0]?.message).not.toContain('reviewed source-portability exception');
     expect(
