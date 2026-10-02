@@ -373,6 +373,69 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     });
   });
 
+  it('keeps the 2D transform runtime owner refusal source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createNodeTransform2dWorkspaceFiles());
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/node'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule(module) {
+          if (module.source === 'packages/node/src/nodeTransform2d.ts') {
+            throw createBackendEmissionFailure(
+              'acceptance',
+              module,
+              'the readonly entity runtime boundary does not prove the writable 2D transform cache owner',
+              'cpp-structural-assertion-writable-capability-unproven',
+              { classification: 'source-portability' },
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings).toEqual([]);
+    expect(report.directFindings).toMatchObject([
+      {
+        module: { source: 'packages/node/src/nodeTransform2d.ts' },
+        policyClass: 'source-portability',
+        rule: 'cpp-structural-assertion-writable-capability-unproven',
+        stage: 'emission',
+      },
+    ]);
+    expect(report.totals).toEqual({
+      dependencyCascades: 1,
+      directFindings: 1,
+      directOccurrences: 1,
+      modules: { dependencyRefused: 1, directlyRefused: 1, emitted: 0, total: 2 },
+      packages: 1,
+    });
+    const comparison = compareCompilerPackageCheckBaseline(report, createCompilerPackageCheckBaseline(report));
+    expect(comparison.introduced).toEqual([]);
+    expect(comparison.resolvedFindingIdentities).toEqual([]);
+    expect(comparison.unchanged).toHaveLength(1);
+    expect(createCompilerPackageCheckPolicyResult(comparison, createCompilerPackageCheckPolicyStrict())).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
+    });
+  });
+
   it('keeps the specialized GL color-adjustment absence finding stable through check mode', () => {
     const source = createMemoryWorkspaceSource(createColorAdjustmentWorkspaceFiles());
     const input = createFlightWorkspaceCompilationInput({
@@ -3212,6 +3275,29 @@ export function getNodeWidth<Traits extends object>(source: Spatial2DNode<Traits
   getNodeHeight,
   getNodeWidth,
 } from './boundsRectangle.js';`,
+  };
+}
+
+function createNodeTransform2dWorkspaceFiles(): Record<string, string> {
+  return {
+    '/flight/packages/node/package.json': createPackageManifest('@flighthq/node'),
+    '/flight/packages/node/src/index.ts': `export { ensureNodeLocalMatrix } from './nodeTransform2d.js';`,
+    '/flight/packages/node/src/nodeTransform2d.ts': `interface EntityRuntime { binding: object | null }
+interface HasTransform2DRuntime extends EntityRuntime {
+  localMatrix: number | null;
+  rotationAngle: number;
+}
+interface NodeRuntime<Traits extends object> extends EntityRuntime { traits?: Traits }
+interface Node<Traits extends object> { readonly traits?: Traits }
+interface HasTransform2D { rotation: number }
+type Transform2DNode<Traits extends object> = Node<Traits> & HasTransform2D;
+const entityRuntime: EntityRuntime = { binding: null };
+function getEntityRuntime(_source: object): Readonly<EntityRuntime> { return entityRuntime; }
+export function ensureNodeLocalMatrix<Traits extends object>(target: Transform2DNode<Traits>): void {
+  const runtime = getEntityRuntime(target) as NodeRuntime<Traits> & HasTransform2DRuntime;
+  runtime.rotationAngle = target.rotation;
+  runtime.localMatrix = 1;
+}`,
   };
 }
 

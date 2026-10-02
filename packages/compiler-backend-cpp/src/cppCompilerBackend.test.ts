@@ -4235,6 +4235,150 @@ describe('createCppCompilerBackend', () => {
     expect(emitted).not.toContain('make_ref');
   });
 
+  it('requires the 2D transform runtime slot and accessor to carry one writable cache owner', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/runtime.ts' },
+        },
+        {
+          specifier: '@flighthq/entity/contract',
+          target: { packageName: '@flighthq/entity', source: 'packages/entity/src/runtime.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (packageName: string, file: string, text: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'types/src/runtime.ts',
+          `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+           export interface EntityRuntime { binding: object | null }
+           export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+           export interface NodeRuntime<Traits extends object> extends EntityRuntime {
+             localTransformId: number;
+             localTransformUsingLocalTransformId: number;
+             worldTransformId: number;
+             worldTransformUsingLocalTransformId: number;
+             worldTransformUsingParentTransformId: number;
+           }
+           export interface Node<Traits extends object> extends Entity {
+             [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+           }
+           export interface HasTransform2D { rotation: number }
+           export type Transform2DNode<Traits extends object> = Node<Traits> & HasTransform2D;
+           export interface HasTransform2DRuntime extends EntityRuntime {
+             localMatrix: number | null;
+             rotationAngle: number;
+             rotationCosine: number;
+             rotationSine: number;
+             worldMatrix: number | null;
+           }`,
+        ),
+        source(
+          '@flighthq/entity',
+          'entity/src/runtime.ts',
+          `import type { Entity, EntityRuntime } from '@flighthq/types/contract';
+           import { EntityRuntimeKey } from '@flighthq/types/contract';
+           export function getEntityRuntime(source: Readonly<Entity>): Readonly<EntityRuntime> {
+             return source[EntityRuntimeKey]!;
+           }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/nodeTransform2d.ts',
+          `import { getEntityRuntime } from '@flighthq/entity/contract';
+           import type {
+             HasTransform2DRuntime,
+             NodeRuntime,
+             Transform2DNode,
+           } from '@flighthq/types/contract';
+           export function ensureNodeLocalMatrix<Traits extends object>(target: Transform2DNode<Traits>): void {
+             const runtime = getEntityRuntime(target) as NodeRuntime<Traits> & HasTransform2DRuntime;
+             runtime.rotationAngle = target.rotation;
+             runtime.rotationSine = 0;
+             runtime.rotationCosine = 1;
+             runtime.localMatrix = 1;
+             runtime.localTransformUsingLocalTransformId = runtime.localTransformId;
+           }`,
+        ),
+        source(
+          '@flighthq/node',
+          'node/src/typedNodeTransform2d.ts',
+          `import { EntityRuntimeKey } from '@flighthq/types/contract';
+           import type { HasTransform2DRuntime, NodeRuntime } from '@flighthq/types/contract';
+           interface Transform2DNodeRuntime<Traits extends object>
+             extends NodeRuntime<Traits>, HasTransform2DRuntime {}
+           interface Transform2DRuntimeHolder<Traits extends object> {
+             [EntityRuntimeKey]: Transform2DNodeRuntime<Traits> | undefined;
+             rotation: number;
+           }
+           function getTransform2DRuntime<Traits extends object>(
+             source: Transform2DRuntimeHolder<Traits>,
+           ): Transform2DNodeRuntime<Traits> {
+             return source[EntityRuntimeKey]!;
+           }
+           export function ensureNodeLocalMatrix<Traits extends object>(
+             target: Transform2DRuntimeHolder<Traits>,
+           ): void {
+             const runtime = getTransform2DRuntime(target);
+             runtime.rotationAngle = target.rotation;
+             runtime.rotationSine = 0;
+             runtime.rotationCosine = 1;
+             runtime.localMatrix = 1;
+             runtime.localTransformUsingLocalTransformId = runtime.localTransformId;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const refused = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    const emitted = session.emitModule(modules[3]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(refused.rule).toBe('cpp-structural-assertion-writable-capability-unproven');
+    expect(refused.classification).toBe('source-portability');
+    expect(refused.message).toContain('ensureNodeLocalMatrix reaches its runtime through getEntityRuntime');
+    expect(refused.message).toContain('returns Readonly<EntityRuntime>');
+    expect(refused.message).toContain('rotationAngle, rotationSine, rotationCosine');
+    expect(refused.message).toContain('localMatrix coefficients');
+    expect(refused.message).toContain('computeNodeWorldTransformRevision advances');
+    expect(refused.message).toContain('bounds aggregation, preserve-world reparenting');
+    expect(refused.message).toContain('interaction hit tests and coordinate conversion');
+    expect(refused.message).toContain('createNode2DRuntime is the intended concrete producer');
+    expect(refused.message).toContain('initTransform2DRuntimeTrait initializes the transform cells');
+    expect(refused.message).toContain("asserting createNodeRuntime's NodeRuntime owner as Node2DRuntime");
+    expect(refused.message).toContain('Construct one exact Node2DRuntime owner in the family factory');
+    expect(refused.message).toContain("make Transform2DNode<Traits>'s runtime slot carry one named full owner");
+    expect(refused.message).toContain('Transform2DNodeRuntime<Traits>');
+    expect(refused.message).toContain('mutable-source transform accessor');
+    expect(refused.message).toContain('keeping getEntityRuntime readonly for general reads');
+    expect(refused.message).toContain('put HasTransform2D inside the Traits family constraint');
+    expect(refused.message).toContain('NodeRuntime<Traits>.parent retains the transform capability');
+    expect(refused.message).toContain('Do not whitelist or recover the cache owner by cast');
+    expect(refused.message).toContain('alter coordinate spaces');
+    expect(emitted).toContain('get_transform2_druntime<Traits>(target)');
+    expect(emitted).toContain('(runtime->rotation_angle = target->rotation)');
+    expect(emitted).toContain('(runtime->local_matrix = std::optional<double>{1.0})');
+    expect(emitted).toContain('(runtime->local_transform_using_local_transform_id = runtime->local_transform_id)');
+    expect(emitted).not.toContain('structural_ref_cast');
+    expect(emitted).not.toContain('materialize_row');
+    expect(emitted).not.toContain('make_ref');
+  });
+
   it('reuses the pre-erasure row owner for the transform velocity child assertion', () => {
     const { moduleResolution, results } = lowerImportedTransformVelocityModules();
     const modules = results.map((result) => result.module);

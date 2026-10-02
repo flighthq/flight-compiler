@@ -18376,3 +18376,121 @@ it('marks properties introduced only by control-flow narrowing as structural acc
     kind: 'return',
   });
 });
+
+it('retains the exact readonly entity-runtime source and writable 2D transform target', () => {
+  const moduleResolution = {
+    edges: [
+      {
+        specifier: '@flighthq/types/contract',
+        target: { packageName: '@flighthq/types', source: 'packages/types/src/runtime.ts' },
+      },
+      {
+        specifier: '@flighthq/entity/contract',
+        target: { packageName: '@flighthq/entity', source: 'packages/entity/src/runtime.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  } as const;
+  const source = (packageName: string, file: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/packages/${file}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const results = lowerTypeScriptSources(
+    [
+      source(
+        '@flighthq/types',
+        'types/src/runtime.ts',
+        `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+         export interface EntityRuntime { binding: object | null }
+         export interface Entity { [EntityRuntimeKey]: EntityRuntime | undefined }
+         export interface NodeRuntime<Traits extends object> extends EntityRuntime {
+           localTransformId: number;
+           localTransformUsingLocalTransformId: number;
+         }
+         export interface Node<Traits extends object> extends Entity {
+           [EntityRuntimeKey]: NodeRuntime<Traits> | undefined;
+         }
+         export interface HasTransform2D { rotation: number }
+         export type Transform2DNode<Traits extends object> = Node<Traits> & HasTransform2D;
+         export interface HasTransform2DRuntime extends EntityRuntime {
+           localMatrix: number | null;
+           rotationAngle: number;
+           rotationCosine: number;
+           rotationSine: number;
+           worldMatrix: number | null;
+         }`,
+      ),
+      source(
+        '@flighthq/entity',
+        'entity/src/runtime.ts',
+        `import type { Entity, EntityRuntime } from '@flighthq/types/contract';
+         import { EntityRuntimeKey } from '@flighthq/types/contract';
+         export function getEntityRuntime(source: Readonly<Entity>): Readonly<EntityRuntime> {
+           return source[EntityRuntimeKey]!;
+         }`,
+      ),
+      source(
+        '@flighthq/node',
+        'node/src/nodeTransform2d.ts',
+        `import { getEntityRuntime } from '@flighthq/entity/contract';
+         import type { HasTransform2DRuntime, NodeRuntime, Transform2DNode } from '@flighthq/types/contract';
+         export function ensureNodeLocalMatrix<Traits extends object>(target: Transform2DNode<Traits>): void {
+           const runtime = getEntityRuntime(target) as NodeRuntime<Traits> & HasTransform2DRuntime;
+           runtime.rotationAngle = target.rotation;
+           runtime.rotationSine = 0;
+           runtime.rotationCosine = 1;
+           runtime.localMatrix = 1;
+           runtime.localTransformUsingLocalTransformId = runtime.localTransformId;
+         }`,
+      ),
+    ],
+    moduleResolution,
+  );
+  const ensure = results[2]!.module.declarations.find(
+    (declaration) => declaration.kind === 'function' && declaration.binding.name === 'ensureNodeLocalMatrix',
+  );
+  if (ensure?.kind !== 'function') throw new Error('Expected ensureNodeLocalMatrix');
+  const runtime = ensure.body[0];
+  const writes = JSON.stringify(ensure.body.slice(1));
+
+  expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+  expect(runtime).toMatchObject({
+    declarations: [
+      {
+        initializer: {
+          expression: {
+            callee: { reference: { binding: { name: 'getEntityRuntime' }, kind: 'binding' } },
+            kind: 'call',
+            semantics: {
+              resultType: {
+                kind: 'named',
+                reference: { kind: 'ambient', name: 'Readonly' },
+                typeArguments: [{ kind: 'named', reference: { binding: { name: 'EntityRuntime' } } }],
+              },
+            },
+          },
+          kind: 'cast',
+          type: {
+            kind: 'intersection',
+            types: [
+              { kind: 'named', reference: { binding: { name: 'NodeRuntime' } } },
+              { kind: 'named', reference: { binding: { name: 'HasTransform2DRuntime' } } },
+            ],
+          },
+        },
+      },
+    ],
+    kind: 'variable',
+  });
+  for (const field of [
+    'rotationAngle',
+    'rotationSine',
+    'rotationCosine',
+    'localMatrix',
+    'localTransformUsingLocalTransformId',
+    'localTransformId',
+  ]) {
+    expect(writes).toContain(`"name":"${field}"`);
+  }
+});
