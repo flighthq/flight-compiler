@@ -3476,26 +3476,28 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
       expectedSubjects.map((subject) => ({ rule: 'opaque-value-domain', subject })),
     );
+    expect(sourcePortability.findings[0]?.message).toContain('embedded-font glyph array');
+    expect(sourcePortability.findings[0]?.message).toContain('declared upstream as LottieCharacterData[]');
+    expect(sourcePortability.findings[0]?.message).toContain('parseLottieDocument owns a newly parsed graph');
+    expect(sourcePortability.findings[0]?.message).toContain('borrows the exact caller graph');
     expect(sourcePortability.findings[0]?.message).toContain(
-      'JSON string or a caller-owned shallow Readonly<LottieDocument>',
-    );
-    expect(sourcePortability.findings[0]?.message).toContain(
-      'caller-owned elements can be arbitrary JavaScript values',
-    );
-    expect(sourcePortability.findings[0]?.message).toContain('temporarily reachable through LottieImportContext');
-    expect(sourcePortability.findings[0]?.message).toContain(
-      'not a runtime value domain that a portable target must transport',
+      'LottieImportContext borrows the document only during the synchronous import',
     );
     for (const [index, property] of ['a', 'm', 'p'].entries()) {
       const message = sourcePortability.findings[index + 1]?.message;
-      expect(message).toContain('caller-owned unknowns can carry arbitrary JavaScript values');
+      expect(message).toContain('not an intentionally erased public value domain');
+      expect(message).toContain('parseLottieDocument owns the newly parsed graph but only casts it');
+      expect(message).toContain('synchronous importer borrows the exact caller graph');
       expect(message).toContain('appendLottieText is the only production consumer of LottieTextData');
       expect(message).toContain(`never reads or diagnoses ${property}`);
-      expect(message).toContain('source graph is reachable only through the synchronous import context');
+      expect(message).toContain('LottieImportContext does not take ownership of the nested value');
       expect(message).toContain(`does not copy ${property} into a node, track, diagnostic, or result`);
       expect(message).toContain('presence, omission, and payload identity cannot affect the imported result');
-      expect(message).toContain(`Remove ${property} from the portable LottieTextData projection`);
+      expect(message).toContain(`Remove ${property} from the current portable LottieTextData projection`);
     }
+    expect(sourcePortability.findings[1]?.message).toContain('LottieTextAnimatorData[]');
+    expect(sourcePortability.findings[2]?.message).toContain('LottieTextMoreOptions');
+    expect(sourcePortability.findings[3]?.message).toContain('LottieTextPathOptions');
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(sourcePortability.findings.every(({ message }) => message.includes('representation is not the gap'))).toBe(
       true,
@@ -3538,9 +3540,43 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+    expect(portableSourcePortability).toMatchObject({
       acceptedExceptions: [],
       findings: [],
+    });
+    expect(portableReport.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 0,
+      directOccurrences: 0,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
   });
 

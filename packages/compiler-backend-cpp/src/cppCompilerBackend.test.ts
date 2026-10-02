@@ -14593,6 +14593,75 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     }
   });
 
+  // The four Lottie unknowns name defined interchange-format features, but the current importer ignores
+  // them. This pins both honest source remedies: omit those keys from the supported projection, or model
+  // each retained feature with its own named closed domain. The current spelling alone elects Any.
+  it('separates ignored Lottie input keys from their four closed format domains', () => {
+    const contents = emitIrModuleCpp(
+      lowerPackage(
+        '@flighthq/types',
+        'LottieDocument.ts',
+        `export interface LottieShapeItem { readonly ty: string }
+         export interface LottieCharacterData {
+           readonly ch: string;
+           readonly data: { readonly shapes: readonly LottieShapeItem[] };
+           readonly fFamily: string;
+           readonly size: number;
+           readonly style: string;
+           readonly w: number;
+         }
+         export interface LottieAnimatable<T> { readonly k: T }
+         export interface LottieTextAnimatorData {
+           readonly a: { readonly o?: LottieAnimatable<number> };
+           readonly s: { readonly s?: LottieAnimatable<number>; readonly e?: LottieAnimatable<number> };
+         }
+         export interface LottieTextMoreOptions {
+           readonly a: LottieAnimatable<number[]>;
+           readonly g: 1 | 2 | 3 | 4;
+         }
+         export interface LottieTextPathOptions {
+           readonly a?: 0 | 1;
+           readonly f?: LottieAnimatable<number>;
+           readonly l?: LottieAnimatable<number>;
+           readonly m?: number;
+           readonly p?: 0 | 1;
+           readonly r?: 0 | 1;
+         }
+         export interface CurrentLottieTextData { d: string; a?: unknown[]; m?: unknown; p?: unknown }
+         export interface TypedLottieTextData {
+           d: string;
+           a?: LottieTextAnimatorData[];
+           m?: LottieTextMoreOptions;
+           p?: LottieTextPathOptions;
+         }
+         export interface ProjectedLottieTextData { d: string }
+         export interface CurrentLottieDocument { chars?: unknown[]; layers: number[] }
+         export interface TypedLottieDocument { chars?: LottieCharacterData[]; layers: number[] }
+         export interface ProjectedLottieDocument { layers: number[] }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(contents.match(/std::optional<flight::Array<flight::Any>>/gu)).toHaveLength(2);
+    expect(contents).toContain('std::optional<flight::Any> m;');
+    expect(contents).toContain('std::optional<flight::Any> p;');
+    expect(contents).toContain('std::optional<flight::Array<flight::Ref<LottieTextAnimatorData>>> a;');
+    expect(contents).toContain('std::optional<flight::Ref<LottieTextMoreOptions>> m;');
+    expect(contents).toContain('std::optional<flight::Ref<LottieTextPathOptions>> p;');
+    expect(contents).toContain('std::optional<flight::Array<flight::Ref<LottieCharacterData>>> chars;');
+    expect(contents).toContain(
+      'struct ProjectedLottieTextData : public flight::ReferenceEnabled {\n  flight::String d;\n};',
+    );
+    expect(contents).toContain(
+      'struct ProjectedLottieDocument : public flight::ReferenceEnabled {\n  flight::Array<double> layers;\n};',
+    );
+    expect(contents.match(/flight::Any/gu)).toHaveLength(4);
+    expect(contents).not.toContain('materialize_row');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+    expect(contents).not.toContain('externalBindings');
+  });
+
   // Material.ts's live authored-name field is ordinary scalar metadata on an exact entity owner. Most
   // constructors already write null, and the source correction makes the one omitted ShadedMaterial cell
   // required too. Both source shapes have native carriers; no host binding, Any route, owner copy, or cast

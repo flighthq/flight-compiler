@@ -135,6 +135,74 @@ describe('emitIrModuleHaxeExtern', () => {
     );
   });
 
+  it('separates ignored Lottie input keys from their four closed format domains', () => {
+    const module = lower(
+      '@flighthq/types',
+      'LottieDocument.ts',
+      `export interface LottieShapeItem { readonly ty: string }
+       export interface LottieCharacterData {
+         readonly ch: string;
+         readonly data: { readonly shapes: readonly LottieShapeItem[] };
+         readonly fFamily: string;
+         readonly size: number;
+         readonly style: string;
+         readonly w: number;
+       }
+       export interface LottieAnimatable<T> { readonly k: T }
+       export interface LottieTextAnimatorData {
+         readonly a: { readonly o?: LottieAnimatable<number> };
+         readonly s: { readonly s?: LottieAnimatable<number>; readonly e?: LottieAnimatable<number> };
+       }
+       export interface LottieTextMoreOptions {
+         readonly a: LottieAnimatable<number[]>;
+         readonly g: 1 | 2 | 3 | 4;
+       }
+       export interface LottieTextPathOptions {
+         readonly a?: 0 | 1;
+         readonly f?: LottieAnimatable<number>;
+         readonly l?: LottieAnimatable<number>;
+         readonly m?: number;
+         readonly p?: 0 | 1;
+         readonly r?: 0 | 1;
+       }
+       export interface CurrentLottieTextData { d: string; a?: unknown[]; m?: unknown; p?: unknown }
+       export interface TypedLottieTextData {
+         d: string;
+         a?: LottieTextAnimatorData[];
+         m?: LottieTextMoreOptions;
+         p?: LottieTextPathOptions;
+       }
+       export interface ProjectedLottieTextData { d: string }
+       export interface CurrentLottieDocument { chars?: unknown[]; layers: number[] }
+       export interface TypedLottieDocument { chars?: LottieCharacterData[]; layers: number[] }
+       export interface ProjectedLottieDocument { layers: number[] }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const currentText = findFile(files, 'flight/_js/CurrentLottieTextData.hx').contents;
+    const typedText = findFile(files, 'flight/_js/TypedLottieTextData.hx').contents;
+    const projectedText = findFile(files, 'flight/_js/ProjectedLottieTextData.hx').contents;
+    const currentDocument = findFile(files, 'flight/_js/CurrentLottieDocument.hx').contents;
+    const typedDocument = findFile(files, 'flight/_js/TypedLottieDocument.hx').contents;
+    const projectedDocument = findFile(files, 'flight/_js/ProjectedLottieDocument.hx').contents;
+
+    expect(currentText).toContain('@:optional var a:Array<Dynamic>;');
+    expect(currentText).toContain('@:optional var m:Dynamic;');
+    expect(currentText).toContain('@:optional var p:Dynamic;');
+    expect(currentDocument).toContain('@:optional var chars:Array<Dynamic>;');
+    expect(typedText).toContain('@:optional var a:Array<flight.LottieTextAnimatorData>;');
+    expect(typedText).toContain('@:optional var m:flight.LottieTextMoreOptions;');
+    expect(typedText).toContain('@:optional var p:flight.LottieTextPathOptions;');
+    expect(typedDocument).toContain('@:optional var chars:Array<flight.LottieCharacterData>;');
+    expect(projectedText).not.toContain('var a:');
+    expect(projectedText).not.toContain('var m:');
+    expect(projectedText).not.toContain('var p:');
+    expect(projectedDocument).not.toContain('var chars:');
+    for (const typed of [typedText, typedDocument, projectedText, projectedDocument]) {
+      expect(typed).not.toContain('Dynamic');
+      expect(typed).not.toContain('cast ');
+    }
+  });
+
   it('groups values from every package module into one deterministically ordered holder', () => {
     const distance = lower(
       '@flighthq/geometry',
