@@ -11617,6 +11617,55 @@ int main() {
     expect(contents).not.toContain('materialize');
   });
 
+  it('separates Scene2D resource input absence from the AudioContext host binding', () => {
+    // The two Scene2DResources findings share a one-sentinel source remedy, but only AudioContext crosses a
+    // host boundary. Pin all three spellings for both value families so a target binding cannot be mistaken
+    // for permission to retain the redundant Undefined + Null carrier.
+    const result = lower(
+      'Scene2DResourceInputs.ts',
+      `export interface Scene2DDocumentImportContext { mimeType: string | null; }
+       export interface Scene2DDocumentLoadOptions { mimeType?: string | null; }
+       export interface PortableScene2DDocumentLoadOptions { mimeType?: string; }
+       export interface Scene2DAudioResolveInput { context: AudioContext | null; }
+       export interface LoadScene2DAudioResourcesOptions { context?: AudioContext | null; }
+       export interface PortableLoadScene2DAudioResourcesOptions { context?: AudioContext; }`,
+    );
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
+    );
+    const contents = emitIrModuleCpp(result.module, {
+      externalBindings: {
+        bindings: [
+          {
+            headers: ['host/audio.hpp'],
+            nullability: 'non-null',
+            ownership: 'shared',
+            sourceName: 'AudioContext',
+            space: 'type',
+            targetName: 'host::AudioContext',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      },
+      runtimeProfile: 'flight-cpp',
+    }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(failure).toMatchObject({
+      classification: 'target-runtime',
+      rule: 'cpp-runtime-external-symbol-binding-incomplete',
+    });
+    expect(failure.message).toContain('missing: AudioContext[type]');
+    expect(failure.message).toContain('reuse the same AudioContext engine owner and lifecycle');
+    expect(contents.match(/std::optional<flight::String> mime_type;/gu)).toHaveLength(2);
+    expect(contents).toContain('std::variant<flight::String, flight::Null, flight::Undefined> mime_type =');
+    expect(contents.match(/std::optional<host::AudioContext> context;/gu)).toHaveLength(2);
+    expect(contents).toContain('std::variant<host::AudioContext, flight::Null, flight::Undefined> context =');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+  });
+
   it('does not classify Web Audio value-space constructors as object handle types', () => {
     const result = lower(
       'WebAudioConstructors.ts',

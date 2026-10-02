@@ -4088,10 +4088,27 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
       expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
     );
-    expect(sourcePortability.findings.map(({ message }) => message)).toMatchObject([
-      expect.stringContaining('disable only the platform decode fallback'),
-      expect.stringContaining('passes that context unchanged to each registry matcher and the selected importer'),
-    ]);
+    const findingBySubject = new Map(
+      sourcePortability.findings.map(({ message, subject }) => [subject.split(':').at(-1), message]),
+    );
+    const contextMessage = findingBySubject.get('context')!;
+    expect(contextMessage).toContain('sole production LoadScene2DAudioResourcesOptions.context reader');
+    expect(contextMessage).toContain('no repository production caller constructs that exported options input');
+    expect(contextMessage).toContain('AudioContext is never stored in the document, reference, resource, result');
+    expect(contextMessage).toContain('createWebAudioDeviceBackend separately constructs AudioContext owners');
+    expect(contextMessage).toContain('not a producer for this input');
+    expect(contextMessage).toContain('AudioContext owner is a genuine target-runtime binding boundary');
+    expect(contextMessage).toContain('extra absence sentinel is not the binding gap');
+    expect(contextMessage).toContain('Resolve the host binding and source absence contract independently');
+    const mimeTypeMessage = findingBySubject.get('mimeType')!;
+    expect(mimeTypeMessage).toContain('sole production Scene2DDocumentLoadOptions.mimeType reader');
+    expect(mimeTypeMessage).toContain('no repository production caller constructs that exported options input');
+    expect(mimeTypeMessage).toContain('passes the exact same readonly context synchronously');
+    expect(mimeTypeMessage).toContain(
+      'No Flight registry, document, resource, failure notice, or module state retains',
+    );
+    expect(mimeTypeMessage).toContain('This MIME finding is not a host-binding gap');
+    expect(mimeTypeMessage).toContain('without an external binding');
     expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
     expect(
       sourcePortability.findings.every(({ message }) => !message.includes('reviewed source-portability exception')),

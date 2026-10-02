@@ -9450,7 +9450,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     const expected = [
       {
         boundary:
-          'loadScene2DDocumentFromUrl writes mimeType: options?.mimeType ?? null into the required nullable Scene2DDocumentImportContext',
+          'materializes a fresh required-nullable Scene2DDocumentImportContext with mimeType: options?.mimeType ?? null',
         destination: 'Scene2DDocumentImportContext.mimeType',
         field: 'mimeType',
         owner: 'Scene2DDocumentLoadOptions',
@@ -9490,14 +9490,27 @@ describe('analyzeTypeScriptSourcePortability', () => {
       expect(finding.message).toContain('reinterpret or cast the value');
       expect(finding.message).toContain('or add side storage');
     }
-    expect(findings[0]!.message).toContain(
-      'createScene2DDocumentFromBytes then passes that context unchanged to each registry matcher and the selected importer',
+    const scene2DMessage = findings[0]!.message;
+    expect(scene2DMessage).toContain('sole production Scene2DDocumentLoadOptions.mimeType reader');
+    expect(scene2DMessage).toContain('no repository production caller constructs that exported options input');
+    expect(scene2DMessage).toContain('after a successful fetch the API materializes a fresh required-nullable');
+    expect(scene2DMessage).toContain('mimeType: options?.mimeType ?? null and the exact URL');
+    expect(scene2DMessage).toContain(
+      'direct createScene2DDocumentFromBytes entry point defaults both context fields to null',
     );
-    expect(findings[0]!.message).toContain(
-      'Lottie, SVG, and SWF matchers compare only their exact MIME strings before falling back to byte sniffing',
-    );
-    expect(findings[0]!.message).toContain('Do not whitelist the redundant explicit-null MIME hint');
-    expect(findings[0]!.message).toContain(
+    expect(scene2DMessage).toContain('passes the exact same readonly context synchronously');
+    expect(scene2DMessage).toContain('Lottie and SVG matchers recognize only their exact MIME strings');
+    expect(scene2DMessage).toContain('Rive matcher and all three built-in importers ignore the hint');
+    expect(scene2DMessage).toContain('No Flight registry, document, resource, failure notice, or module state retains');
+    expect(scene2DMessage).toContain('Flight neither clones nor mutates either');
+    expect(scene2DMessage).toContain('custom registered callback that retains its argument owns that choice');
+    expect(scene2DMessage).toContain('There is no context disposal path');
+    expect(scene2DMessage).toContain('This MIME finding is not a host-binding gap');
+    expect(scene2DMessage).toContain('current optional-nullable input as String | Null | Undefined');
+    expect(scene2DMessage).toContain('recommended optional-non-null input and required-nullable import-context field');
+    expect(scene2DMessage).toContain('without an external binding');
+    expect(scene2DMessage).toContain('Do not whitelist the redundant explicit-null MIME hint');
+    expect(scene2DMessage).toContain(
       "representation support does not replace the source's single normalized input state",
     );
   });
@@ -9563,26 +9576,42 @@ describe('analyzeTypeScriptSourcePortability', () => {
     ]);
     const message = findings[0]!.message;
     expect(message).toContain("one-shot Scene2D audio load's platform decoder context");
-    expect(message).toContain('loadScene2DAudioResources immediately evaluates options?.context ?? null');
-    expect(message).toContain('passes that required AudioContext | null unchanged to resolveAudioResourceReference');
+    expect(message).toContain('sole production LoadScene2DAudioResourcesOptions.context reader');
+    expect(message).toContain('no repository production caller constructs that exported options input');
+    expect(message).toContain('loader immediately evaluates options?.context ?? null once');
+    expect(message).toContain(
+      'Every selected-reference closure captures that exact required AudioContext | null local',
+    );
+    expect(message).toContain('until Promise.all settles');
+    expect(message).toContain('passes it unchanged to resolveAudioResourceReference');
     expect(message).toContain('External references resolve only through the fetch seam and never inspect the context');
     expect(message).toContain('Embedded references first try a registered MIME decoder');
+    expect(message).toContain('only the fallback in decodeAudioResourceBytes uses the owner');
+    expect(message).toContain('copying the encoded byte view before calling decodeAudioData');
+    expect(message).toContain('resulting AudioBuffer is installed into the existing AudioResource');
+    expect(message).toContain('reference failure and resolution state mutate independently');
     expect(message).toContain(
-      'decodeAudioResourceBytes calls AudioContext.decodeAudioData only when no registered decoder',
+      'AudioContext is never stored in the document, reference, resource, result, or module state',
     );
-    expect(message).toContain('returns null when the normalized context is null');
-    expect(message).toContain('disable only the platform decode fallback');
-    expect(message).toContain(
-      'a present AudioContext owner is borrowed unchanged for this operation and never retained',
-    );
+    expect(message).toContain('Scene2D resource path has no AudioContext importer, materializer, or clone');
+    expect(message).toContain('never resumes, closes, mutates, or disposes this borrowed host owner');
+    expect(message).toContain('operation closures release it after the concurrent load settles');
+    expect(message).toContain('createWebAudioDeviceBackend separately constructs AudioContext owners');
+    expect(message).toContain('closes them in destroyDevice');
+    expect(message).toContain('exposes no AudioContext owner to this loader');
+    expect(message).toContain('not a producer for this input');
+    expect(message).toContain('AudioContext owner is a genuine target-runtime binding boundary');
+    expect(message).toContain('extra absence sentinel is not the binding gap');
+    expect(message).toContain('without an exact AudioContext[type] external binding');
+    expect(message).toContain('current optional-nullable input uses AudioContext | Null | Undefined');
+    expect(message).toContain('recommended optional-non-null input and required-nullable resolver parameter');
     expect(message).toContain('Declare LoadScene2DAudioResourcesOptions.context as optional AudioContext without null');
     expect(message).toContain('keep the required nullable resolver and decoder parameters');
     expect(message).toContain('named closed context-input state');
+    expect(message).toContain('Resolve the host binding and source absence contract independently');
     expect(message).toContain('Do not whitelist the redundant explicit-null context spelling');
-    expect(message).toContain(
-      "representation support does not replace the source's single normalized decoder input state",
-    );
-    expect(message).toContain('construct, resume, or close an AudioContext');
+    expect(message).toContain('construct, import, clone, retain beyond the operation');
+    expect(message).toContain('resume, close, or dispose an AudioContext');
     expect(message).toContain('select or invoke a decoder or fetcher');
     expect(message).toContain('copy or materialize the host context owner');
     expect(message).toContain('reinterpret or cast the context, or add side storage');
