@@ -2817,14 +2817,19 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
-  it('preserves asset cache values as exact adapter-owned resources', () => {
+  it('replaces erased asset cache values with closed handles over adapter-private resources', () => {
     const opaque = input(
       'packages/types/src/Assets.ts',
       'interface AssetEntry { loadPromise: Promise<unknown> | null; resident: boolean; value: unknown }',
     );
     const closed = input(
       'packages/types/src/Assets.ts',
-      'interface AssetEntry<T> { loadPromise: Promise<T> | null; resident: boolean; value: T }',
+      `interface AssetHandle extends Entity { readonly id: string; readonly type: AssetType }
+       interface AssetEntry {
+         loadPromise: Promise<AssetHandle> | null;
+         resident: boolean;
+         value: AssetHandle | null;
+       }`,
     );
     const controls = [
       input('packages/types/src/Other.ts', 'interface AssetEntry { value: unknown }'),
@@ -2839,37 +2844,27 @@ describe('analyzeTypeScriptSourcePortability', () => {
     expect(report.findings.map(({ subject }) => subject)).toEqual(['interface:AssetEntry/property:value']);
     const finding = report.findings[0];
     if (!finding) throw new Error('Expected the AssetEntry value finding');
-    expect(finding.message).toContain('AssetLoaderAdapter selected for the entry');
-    expect(finding.message).toContain('getAsset returns the resident identity');
-    expect(finding.message).toContain('genuinely adapter-owned opaque resource boundary');
-    expect(finding.message).toContain('reviewed source-portability exception for this exact property');
-    expect(finding.message).toContain('typed per-kind access capabilities');
+    expect(finding.message).toContain('registerAssetLoader casts AssetLoaderAdapter<T>');
+    expect(finding.message).toContain('let each caller choose an unrelated T');
+    expect(finding.message).toContain('no production code outside the assets package');
+    expect(finding.message).toContain('closed AssetHandle entity');
+    expect(finding.message).toContain('adapter-private typed storage');
+    expect(finding.message).toContain('AssetEntry.value to AssetHandle | null');
+    expect(finding.message).toContain("remove registerAssetLoader's generic cast");
+    expect(finding.message).toContain('Do not merely parameterize AssetEntry<T>');
+    expect(finding.message).toContain('Do not whitelist');
+    expect(finding.message).not.toContain('reviewed source-portability exception');
     expect(finding.message).toContain('target-specific Any carrier');
-    expect(finding.message).toContain('insert a cast');
+    expect(finding.message).toContain('retain or insert a cast');
     expect(finding.message).toContain('copy or materialize the decoded resource');
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     for (const control of controls) {
       expect(
         analyzeTypeScriptSourcePortability([control]).findings.every(
-          ({ message }) => !message.includes('adapter-owned opaque resource boundary'),
+          ({ message }) => !message.includes('closed AssetHandle entity'),
         ),
       ).toBe(true);
     }
-
-    const reviewed = analyzeTypeScriptSourcePortability([opaque], {
-      exceptionPolicy: {
-        exceptions: [
-          {
-            findingIdentity: finding.identity,
-            reason: 'The cache returns each decoded resource only to callers and its paired adapter.',
-            rule: 'opaque-value-domain',
-          },
-        ],
-        schema: 'flight-compiler-source-portability-exceptions/1',
-      },
-    });
-    expect(reviewed.findings).toEqual([]);
-    expect(reviewed.acceptedExceptions).toMatchObject([{ finding: { identity: finding.identity } }]);
   });
 
   it('keeps resolved document resources inside the paired open registries', () => {
