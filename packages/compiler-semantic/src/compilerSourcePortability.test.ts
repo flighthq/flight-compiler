@@ -2808,14 +2808,21 @@ describe('analyzeTypeScriptSourcePortability', () => {
       { rule: 'opaque-value-domain', subject: 'interface:AsepriteMeta/property:slices' },
     ]);
     const message = report.findings[0]?.message;
-    expect(message).toContain('exposes the Aseprite JSON slice array through AsepriteDocument');
-    expect(message).toContain('parseAsepriteSpritesheetDocument casts JSON.parse directly');
-    expect(message).toContain('named closed AsepriteSlice, AsepriteSliceKey, and point schemas');
-    expect(message).toContain('validate or normalize the parsed JSON');
-    expect(message).toContain('reviewed source-portability exception is justified only if slices are rejected');
+    expect(message).toContain('unchecked JSON.parse assertions in parseAsepriteSpritesheet');
+    expect(message).toContain('document parser returns the exact AsepriteDocument');
+    expect(message).toContain('dataToMeta currently omits slices');
+    expect(message).toContain('lossy serialization is not ingress validation');
+    expect(message).toContain('named closed AsepritePoint, AsepriteSliceKey, and AsepriteSlice schemas');
+    expect(message).toContain('Use AsepriteRect for bounds and center, AsepritePoint for pivot');
+    expect(message).toContain('Validate or normalize JSON.parse before either parser');
+    expect(message).toContain('explicitly document and test their omission if serialization is deliberately lossy');
+    expect(message).toContain('Do not whitelist this property');
+    expect(message).not.toContain('source-portability exception');
     expect(message).toContain('target-specific Any carrier');
     expect(message).toContain('insert a cast');
     expect(message).toContain('copy or materialize the slice payload');
+    expect(message).toContain('preserve it during serialization');
+    expect(message).toContain('decide to drop it');
     expect(analyzeTypeScriptSourcePortability([closed]).findings).toEqual([]);
     for (const control of controls) {
       expect(
