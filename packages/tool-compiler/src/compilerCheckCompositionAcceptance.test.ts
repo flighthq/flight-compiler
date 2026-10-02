@@ -588,6 +588,78 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(analyzeTypeScriptSourcePortability(portableInput.sources).findings).toEqual([]);
   });
 
+  it('keeps both GlContextRuntime absence findings source-owned through check mode', () => {
+    const source = createMemoryWorkspaceSource(createGlContextRuntimeWorkspaceFiles(true));
+    const input = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source,
+      upstreamDirectory: '/flight',
+    });
+    const sourcePortability = analyzeTypeScriptSourcePortability(input.sources);
+    const compilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...input,
+    });
+    const report = createCompilerPackageCheckReport(compilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability,
+    });
+    const expectedSubjects = ['anisotropyExt', 'sceneMeshUploadCache'].map(
+      (field) => `interface:GlContextRuntime/property:${field}`,
+    );
+
+    expect(compilation.report.modules).toHaveLength(2);
+    expect(
+      compilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(sourcePortability.acceptedExceptions).toEqual([]);
+    expect(sourcePortability.findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      expectedSubjects.map((subject) => ({ rule: 'mixed-absence', subject })),
+    );
+    expect(sourcePortability.findings[0]?.message).toContain('one required GlAnisotropyCapability closed state');
+    expect(sourcePortability.findings[1]?.message).toContain('required WeakMap<object, object> | null field');
+    expect(sourcePortability.findings.every(({ message }) => message.includes('Do not whitelist'))).toBe(true);
+    expect(
+      report.directFindings.map(({ policyClass, rule, sourceFindingSubject }) => ({
+        policyClass,
+        rule,
+        sourceFindingSubject,
+      })),
+    ).toEqual(
+      expectedSubjects.map((sourceFindingSubject) => ({
+        policyClass: 'source-portability',
+        rule: 'mixed-absence',
+        sourceFindingSubject,
+      })),
+    );
+    expect(report.totals).toEqual({
+      dependencyCascades: 0,
+      directFindings: 2,
+      directOccurrences: 2,
+      modules: { dependencyRefused: 0, directlyRefused: 0, emitted: 2, total: 2 },
+      packages: 1,
+    });
+
+    const portableSource = createMemoryWorkspaceSource(createGlContextRuntimeWorkspaceFiles(false));
+    const portableInput = createFlightWorkspaceCompilationInput({
+      eligiblePackageNames: ['@flighthq/types'],
+      source: portableSource,
+      upstreamDirectory: '/flight',
+    });
+    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+      acceptedExceptions: [],
+      findings: [],
+    });
+  });
+
   it('keeps the six anchor-layout absence findings source-owned through check mode', () => {
     const source = createMemoryWorkspaceSource(createAnchorLayoutWorkspaceFiles(true));
     const input = createFlightWorkspaceCompilationInput({
@@ -2196,6 +2268,43 @@ export interface GlRenderStateOptions {
   colorAdjustmentFeature?: GlColorAdjustmentMaterialFeature | null;
 }`,
     '/flight/packages/types/src/index.ts': `export type { GlColorAdjustmentMaterialFeature, GlRenderStateOptions } from './GlRenderStateOptions.js';`,
+  };
+}
+
+function createGlContextRuntimeWorkspaceFiles(mixedAbsence: boolean): Record<string, string> {
+  const declaration = mixedAbsence
+    ? `export interface EXT_texture_filter_anisotropic {
+  readonly MAX_TEXTURE_MAX_ANISOTROPY_EXT: number;
+  readonly TEXTURE_MAX_ANISOTROPY_EXT: number;
+}
+export interface GlContextRuntime {
+  anisotropyExt?: EXT_texture_filter_anisotropic | null;
+  maxAnisotropy?: number;
+  sceneMeshUploadCache?: WeakMap<object, object> | null;
+}`
+    : `export interface EXT_texture_filter_anisotropic {
+  readonly MAX_TEXTURE_MAX_ANISOTROPY_EXT: number;
+  readonly TEXTURE_MAX_ANISOTROPY_EXT: number;
+}
+export type GlAnisotropyCapability =
+  | { readonly state: 'unqueried' }
+  | { readonly state: 'unsupported' }
+  | {
+      readonly extension: EXT_texture_filter_anisotropic;
+      readonly maximum: number;
+      readonly state: 'supported';
+    };
+export interface GlContextRuntime {
+  anisotropy: GlAnisotropyCapability;
+  sceneMeshUploadCache: WeakMap<object, object> | null;
+}`;
+  return {
+    '/flight/packages/types/package.json': createPackageManifest('@flighthq/types'),
+    '/flight/packages/types/src/GlContextRuntime.ts': declaration,
+    '/flight/packages/types/src/index.ts': `export type {
+  EXT_texture_filter_anisotropic,
+  GlContextRuntime,
+} from './GlContextRuntime.js';`,
   };
 }
 

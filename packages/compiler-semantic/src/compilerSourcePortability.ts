@@ -1076,6 +1076,27 @@ function getWgpuScene3DDiagnosticGuardFlow(field: string): string {
   }
 }
 
+function getGlContextRuntimeMixedAbsencePropertyMessage(
+  node: ts.PropertySignature,
+  subject: string,
+): string | undefined {
+  if (
+    !ts.isInterfaceDeclaration(node.parent) ||
+    node.parent.name.text !== 'GlContextRuntime' ||
+    !isFlightTypesSource(node, 'GlContextRuntime.ts')
+  ) {
+    return undefined;
+  }
+  const field = getNodeName(node.name);
+  if (field === 'anisotropyExt' && isOptionalNullableNamedTypeProperty(node, 'EXT_texture_filter_anisotropic')) {
+    return `${subject} encodes a real three-state context capability with an optional nullable field: undefined means unqueried, null means queried and unsupported, and an EXT_texture_filter_anisotropic owner means supported. initializeGlContextState omits anisotropyExt and maxAnisotropy; the first sampler-bearing applyGlTextureSampler call reaches ensureGlAnisotropyExt, which queries only when anisotropyExt === undefined, stores the exact extension or null, and stores the reported maximum or 1. Later texture binds return the cached extension without querying again, and the supported path clamps the requested level with maxAnisotropy ?? 1 before texParameterf. GlContextRuntime is constructed once per GlContextState, every GlRenderState created from that state retains the same context owner, and no production clone copies this cache. Preserve all three meanings but make them explicit: replace anisotropyExt and maxAnisotropy with one required GlAnisotropyCapability closed state whose arms are unqueried, unsupported, and supported with the exact extension plus maximum; initialize unqueried, transition once on the first anisotropic sampler bind, and issue texParameterf only from the supported arm. If compatibility code observes the two legacy fields, normalize it at a separate boundary rather than admitting duplicate absence tags to the live context. Do not whitelist the mixed-absence spelling. The compiler will not query a GL extension or hardware limit, choose or collapse a cache state, fabricate an extension owner, infer a maximum, rewrite sampler timing or texture parameters, clone the context, or add side storage.`;
+  }
+  if (field === 'sceneMeshUploadCache' && isOptionalNullableObjectWeakMapProperty(node)) {
+    return `${subject} gives the context-owned Scene3D mesh upload cache both omission and explicit null, but current Flight has one not-yet-allocated state. initializeGlContextState creates the sole GlContextRuntime and currently omits this slot. getGlScene3DRuntime reads stateRuntime.context.sceneMeshUploadCache with == null, allocates and stores one WeakMap when absent, and gives each per-GlRenderState scene runtime that exact context-tier owner; every GlRenderState created from the same GlContextState shares it, and no production clone copies it. ensureGlMeshUpload then reads and writes that WeakMap by MeshGeometry identity, preserving each GlMeshUpload owner across render states; destroyGlScene3DRuntime cannot enumerate the weak cache, so geometry teardown or GL context loss remains the resource lifetime boundary. Make sceneMeshUploadCache a required WeakMap<object, object> | null field, initialize it to null in initializeGlContextState, and retain the single lazy allocation plus exact shared map reference. If a public compatibility input may omit the field, keep that input shape separate and normalize it before constructing the context runtime. Do not whitelist the redundant live-storage spelling. The compiler will not choose or collapse an absence sentinel, allocate or clone a WeakMap, copy or materialize a mesh upload, change geometry identity or teardown, redirect the cache to render-state scope, erase keys or values through Any, or add side storage.`;
+  }
+  return undefined;
+}
+
 function getGlRenderPassTrackingMixedAbsencePropertyMessage(
   node: ts.PropertySignature,
   subject: string,
@@ -1368,6 +1389,8 @@ function renderMixedAbsencePropertyMessage(node: ts.PropertySignature, subject: 
   if (scene3DDiagnosticGuard) return scene3DDiagnosticGuard;
   const glMeshProgramUniformLocation = getGlMeshProgramUniformLocationMixedAbsencePropertyMessage(node, subject);
   if (glMeshProgramUniformLocation) return glMeshProgramUniformLocation;
+  const glContextRuntime = getGlContextRuntimeMixedAbsencePropertyMessage(node, subject);
+  if (glContextRuntime) return glContextRuntime;
   const glRenderPassTracking = getGlRenderPassTrackingMixedAbsencePropertyMessage(node, subject);
   if (glRenderPassTracking) return glRenderPassTracking;
   const glRenderRuntimeInactiveSlot = getGlRenderRuntimeInactiveSlotMixedAbsencePropertyMessage(node, subject);

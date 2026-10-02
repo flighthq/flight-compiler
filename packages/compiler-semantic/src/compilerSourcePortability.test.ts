@@ -7780,6 +7780,109 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
+  it('separates the GlContext capability state from its one-sentinel mesh cache', () => {
+    const source = input(
+      'packages/types/src/GlContextRuntime.ts',
+      `interface EXT_texture_filter_anisotropic {
+         readonly MAX_TEXTURE_MAX_ANISOTROPY_EXT: number;
+         readonly TEXTURE_MAX_ANISOTROPY_EXT: number;
+       }
+       interface GlContextRuntime {
+         anisotropyExt?: EXT_texture_filter_anisotropic | null;
+         maxAnisotropy?: number;
+         sceneMeshUploadCache?: WeakMap<object, object> | null;
+       }`,
+    );
+    const findings = analyzeTypeScriptSourcePortability([source]).findings;
+
+    expect(findings.map(({ rule, subject }) => ({ rule, subject }))).toEqual(
+      ['anisotropyExt', 'sceneMeshUploadCache'].map((field) => ({
+        rule: 'mixed-absence',
+        subject: `interface:GlContextRuntime/property:${field}`,
+      })),
+    );
+    const byField = new Map(findings.map((finding) => [finding.subject.split(':').at(-1), finding.message]));
+
+    const anisotropy = byField.get('anisotropyExt')!;
+    expect(anisotropy).toContain('real three-state context capability');
+    expect(anisotropy).toContain('undefined means unqueried, null means queried and unsupported');
+    expect(anisotropy).toContain('initializeGlContextState omits anisotropyExt and maxAnisotropy');
+    expect(anisotropy).toContain('the first sampler-bearing applyGlTextureSampler call');
+    expect(anisotropy).toContain('queries only when anisotropyExt === undefined');
+    expect(anisotropy).toContain('stores the reported maximum or 1');
+    expect(anisotropy).toContain('clamps the requested level with maxAnisotropy ?? 1');
+    expect(anisotropy).toContain('no production clone copies this cache');
+    expect(anisotropy).toContain('one required GlAnisotropyCapability closed state');
+    expect(anisotropy).toContain('unqueried, unsupported, and supported with the exact extension plus maximum');
+    expect(anisotropy).toContain('Do not whitelist the mixed-absence spelling');
+    expect(anisotropy).toContain('will not query a GL extension or hardware limit');
+    expect(anisotropy).toContain('rewrite sampler timing or texture parameters');
+
+    const uploadCache = byField.get('sceneMeshUploadCache')!;
+    expect(uploadCache).toContain('context-owned Scene3D mesh upload cache both omission and explicit null');
+    expect(uploadCache).toContain('one not-yet-allocated state');
+    expect(uploadCache).toContain('initializeGlContextState creates the sole GlContextRuntime');
+    expect(uploadCache).toContain('getGlScene3DRuntime reads stateRuntime.context.sceneMeshUploadCache with == null');
+    expect(uploadCache).toContain('gives each per-GlRenderState scene runtime that exact context-tier owner');
+    expect(uploadCache).toContain('no production clone copies it');
+    expect(uploadCache).toContain('ensureGlMeshUpload then reads and writes that WeakMap by MeshGeometry identity');
+    expect(uploadCache).toContain('geometry teardown or GL context loss remains the resource lifetime boundary');
+    expect(uploadCache).toContain('required WeakMap<object, object> | null field');
+    expect(uploadCache).toContain('initialize it to null in initializeGlContextState');
+    expect(uploadCache).toContain('Do not whitelist the redundant live-storage spelling');
+    expect(uploadCache).toContain('redirect the cache to render-state scope');
+  });
+
+  it('requires exact GlContext slot shapes and accepts the two resolved contracts', () => {
+    const unrelated = [
+      input(
+        'packages/types/src/GlContextRuntime.ts',
+        'interface EXT_texture_filter_anisotropic {} interface OtherRuntime { anisotropyExt?: EXT_texture_filter_anisotropic | null }',
+      ),
+      input(
+        'packages/example/src/GlContextRuntime.ts',
+        'interface EXT_texture_filter_anisotropic {} interface GlContextRuntime { anisotropyExt?: EXT_texture_filter_anisotropic | null }',
+      ),
+      input(
+        'packages/types/src/GlContextRuntime.ts',
+        'interface OtherExtension {} interface GlContextRuntime { anisotropyExt?: OtherExtension | null }',
+      ),
+      input(
+        'packages/types/src/GlContextRuntime.ts',
+        'interface GlContextRuntime { sceneMeshUploadCache?: WeakMap<string, object> | null }',
+      ),
+    ];
+    const resolved = input(
+      'packages/types/src/GlContextRuntime.ts',
+      `interface EXT_texture_filter_anisotropic {}
+       type GlAnisotropyCapability =
+         | { readonly state: 'unqueried' }
+         | { readonly state: 'unsupported' }
+         | { readonly extension: EXT_texture_filter_anisotropic; readonly maximum: number; readonly state: 'supported' };
+       interface GlContextRuntime {
+         anisotropy: GlAnisotropyCapability;
+         sceneMeshUploadCache: WeakMap<object, object> | null;
+       }`,
+    );
+    const omitted = input(
+      'packages/types/src/GlContextRuntime.ts',
+      `interface EXT_texture_filter_anisotropic {}
+       interface GlContextRuntime {
+         anisotropyExt?: EXT_texture_filter_anisotropic;
+         sceneMeshUploadCache?: WeakMap<object, object>;
+       }`,
+    );
+
+    expect(analyzeTypeScriptSourcePortability([resolved, omitted]).findings).toEqual([]);
+    for (const control of unrelated) {
+      const findings = analyzeTypeScriptSourcePortability([control]).findings;
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.message).toContain('combines an optional property with null');
+      expect(findings[0]?.message).not.toContain('three-state context capability');
+      expect(findings[0]?.message).not.toContain('context-owned Scene3D mesh upload cache');
+    }
+  });
+
   it('explains required nullable contracts for GL runtime seams and uniform color scratch', () => {
     const source = input(
       'packages/types/src/GlRenderState.ts',
