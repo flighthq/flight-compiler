@@ -20024,6 +20024,76 @@ int main() {
     );
   });
 
+  it('proves inherited WeakMap values across a cyclic imported runtime graph', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './RenderProxyAdapter',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RenderProxyAdapter.ts' },
+        },
+        {
+          specifier: './RenderState',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/RenderState.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/RenderState.ts',
+            `import type { RenderProxyAdapter } from './RenderProxyAdapter';
+             export interface RenderState { readonly frame: number }
+             export interface RenderStateRuntime {
+               renderProxyAdapterMap: WeakMap<RenderState, RenderProxyAdapter>;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/RenderProxyAdapter.ts',
+            `import type { RenderState } from './RenderState';
+             export type RenderProxyAdapter = { adapt(state: RenderState): boolean };`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/WgpuRenderState.ts',
+            `import type { RenderStateRuntime } from './RenderState';
+             export interface WgpuRenderStateRuntime extends RenderStateRuntime {
+               readonly frameLabel: string;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain(
+      'flight::WeakMap<flight::Ref<flighthq_types::RenderState>, flight::Ref<flighthq_types::RenderProxyAdapter>> render_proxy_adapter_map;',
+    );
+  });
+
   it('proves closed inline object and intersection WeakMap values', () => {
     const result = lower(
       'closed-weak-map-values.ts',

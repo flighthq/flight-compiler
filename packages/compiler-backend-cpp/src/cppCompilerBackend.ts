@@ -10965,7 +10965,22 @@ function hasProvenWeakMapValueRepresentationCpp(type: Readonly<IrType>, context:
       ? (getCppImportedBindingDeclarationCpp(type, context) ??
         getCppReexportedImportedBindingDeclarationCpp(type, context))
       : undefined);
-  const value = context.referenceRepresentationPlanner.plan(type, owner?.module ?? context.module);
+  // Interface inheritance synthesizes imports in the derived module after the session planner snapshots
+  // the source graph. The declaration lookup above still proves one exact target, but asking the planner
+  // about that synthetic import binding reports it unresolved. Re-spell only that proven target through
+  // its declaration binding so cyclic imported runtime graphs retain the target's actual representation.
+  const representedType =
+    owner &&
+    type.kind === 'named' &&
+    type.reference.kind === 'binding' &&
+    type.reference.binding.kind === 'import' &&
+    'binding' in owner.declaration
+      ? {
+          ...type,
+          reference: { binding: owner.declaration.binding, kind: 'binding' as const, path: [] },
+        }
+      : type;
+  const value = context.referenceRepresentationPlanner.plan(representedType, owner?.module ?? context.module);
   return value.kind === 'represented' && value.identity.identity !== 'indeterminate';
 }
 
