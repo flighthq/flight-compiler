@@ -16670,6 +16670,19 @@ function getCppExportedTypeDeclarationOwnersCpp(
     }
     return [{ declaration, module }];
   });
+  const localForwarded = module.exports.flatMap((exported): readonly CppTypeDeclarationOwner[] => {
+    if (exported.kind !== 'local' || exported.exported !== exportedName) return [];
+    const imported = module.imports.flatMap((item) =>
+      item.bindings.flatMap((binding) =>
+        binding.binding.id === exported.binding.id ? [{ binding, specifier: item.specifier }] : [],
+      ),
+    )[0];
+    if (!imported || imported.binding.imported === '*') return [];
+    const moduleContext = module === context.module ? context : { ...context, module };
+    return getCppResolvedImportModules(imported.specifier, moduleContext).flatMap((targetModule) =>
+      getCppExportedTypeDeclarationOwnersCpp(targetModule, imported.binding.imported, context, nextVisited),
+    );
+  });
   const forwarded = module.exports.flatMap((exported): readonly CppTypeDeclarationOwner[] => {
     const importedName =
       exported.kind === 'all'
@@ -16683,7 +16696,7 @@ function getCppExportedTypeDeclarationOwnersCpp(
       getCppExportedTypeDeclarationOwnersCpp(targetModule, importedName, context, nextVisited),
     );
   });
-  return [...direct, ...forwarded];
+  return [...direct, ...localForwarded, ...forwarded];
 }
 
 // Names the alternatives the declaring module minted, qualified by that module's namespace, so a
@@ -30697,7 +30710,11 @@ function getCppImportedBindingTargetName(
   const ownerContext = ownerModule === context.module ? context : { ...context, module: ownerModule };
   const targetModules = getCppResolvedImportModules(specifier, ownerContext);
   if (targetModules.length === 0) {
-    return context.targetNames.get(bindingId) ?? safeCppName(importedBinding?.binding.name ?? importedName);
+    emissionError(
+      context,
+      `imported ${space} binding ${importedName} requires one exact exported declaration owner`,
+      'cpp-imported-binding-no-export-target',
+    );
   }
   if (space === 'value') {
     // A facade owns the import route but not the declaration's C++ name. Follow named and star
@@ -30716,29 +30733,36 @@ function getCppImportedBindingTargetName(
       const target = [...unique.values()][0]!;
       const targetName =
         context.targetNameMaps.get(getCppModuleIdentityKey(target.module))?.get(target.binding.id) ??
-        safeCppName(target.binding.name);
+        getCppPreferredBindingName(target.binding);
       return `${getCppCompilerPackageNamespace(target.module.packageName, context.options.packageTargets)}::${targetName}`;
     }
-    if (unique.size > 1) {
-      emissionError(
-        context,
-        `imported binding ${importedName} requires one module export target`,
-        'cpp-imported-binding-no-export-target',
-      );
-    }
-  }
-  const directTargets = targetModules.filter((target) => hasCppDirectExportName(target, importedName));
-  const targetModule =
-    directTargets.length === 1 ? directTargets[0]! : getCppResolvedImportModule(specifier, ownerContext);
-  if (!targetModule) {
     emissionError(
       context,
-      `imported binding ${importedName} requires one module export target`,
+      `imported value binding ${importedName} requires one exact exported declaration owner`,
       'cpp-imported-binding-no-export-target',
     );
   }
-  const targetName = getCppResolvedExportTargetName(targetModule, importedName, space, context);
-  return `${getCppCompilerPackageNamespace(targetModule.packageName, context.options.packageTargets)}::${targetName}`;
+  const candidates = targetModules.flatMap((targetModule) =>
+    getCppExportedTypeDeclarationOwnersCpp(targetModule, importedName, context, new Set()),
+  );
+  const unique = new Map(
+    candidates.map((candidate) => [
+      `${getCppModuleIdentityKey(candidate.module)}\0${candidate.declaration.binding.id}`,
+      candidate,
+    ]),
+  );
+  if (unique.size !== 1) {
+    emissionError(
+      context,
+      `imported type binding ${importedName} requires one exact exported declaration owner`,
+      'cpp-imported-binding-no-export-target',
+    );
+  }
+  const target = [...unique.values()][0]!;
+  const targetName =
+    context.targetNameMaps.get(getCppModuleIdentityKey(target.module))?.get(target.declaration.binding.id) ??
+    safeCppTypeName(target.declaration.binding.name);
+  return `${getCppCompilerPackageNamespace(target.module.packageName, context.options.packageTargets)}::${targetName}`;
 }
 
 function getCppExportedValueBindingOwnersCpp(
@@ -30766,6 +30790,19 @@ function getCppExportedValueBindingOwnersCpp(
     const binding = getCppValueDeclarationBindingCpp(declaration);
     return binding && directBindingIds.has(binding.id) ? [{ binding, module }] : [];
   });
+  const localForwarded = module.exports.flatMap((exported): readonly CppValueBindingOwner[] => {
+    if (exported.kind !== 'local' || exported.typeOnly || exported.exported !== exportedName) return [];
+    const imported = module.imports.flatMap((item) =>
+      item.bindings.flatMap((binding) =>
+        binding.binding.id === exported.binding.id ? [{ binding, specifier: item.specifier }] : [],
+      ),
+    )[0];
+    if (!imported || imported.binding.typeOnly || imported.binding.imported === '*') return [];
+    const moduleContext = module === context.module ? context : { ...context, module };
+    return getCppResolvedImportModules(imported.specifier, moduleContext).flatMap((targetModule) =>
+      getCppExportedValueBindingOwnersCpp(targetModule, imported.binding.imported, context, nextVisited),
+    );
+  });
   const forwarded = module.exports.flatMap((exported): readonly CppValueBindingOwner[] => {
     if ('typeOnly' in exported && exported.typeOnly) return [];
     const importedName =
@@ -30780,7 +30817,7 @@ function getCppExportedValueBindingOwnersCpp(
       getCppExportedValueBindingOwnersCpp(targetModule, importedName, context, nextVisited),
     );
   });
-  return [...direct, ...forwarded];
+  return [...direct, ...localForwarded, ...forwarded];
 }
 
 function getCppValueDeclarationBindingCpp(

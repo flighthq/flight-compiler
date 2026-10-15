@@ -212,4 +212,159 @@ describe('C++ imported value qualification', () => {
     expect(output).toContain('return flight::types::lux_light_unit;');
     expect(output).toContain('return unitless_light_unit;');
   });
+
+  it('qualifies aliased type and value reexports by their distinct declaration owners', () => {
+    const fixture = createCrossPackageQualificationFixture();
+    const output = emitCrossPackageQualificationFixture(fixture, fixture.moduleResolution);
+
+    expect(output).toContain('double imported(fixture::model::Point point)');
+    expect(output).toContain('return (fixture::constants::origin + point.value);');
+    expect(output).toContain('double local(LocalPoint point)');
+    expect(output).toContain('return (local_value + point.value);');
+    expect(output).not.toContain('fixture::facade::Shared');
+    expect(output).not.toContain('fixture::consumer::LocalPoint');
+    expect(output).not.toContain('fixture::consumer::local_value');
+  });
+
+  it('refuses ambiguous imported type ownership without selecting a module', () => {
+    const fixture = createCrossPackageQualificationFixture();
+    const modules = [...fixture.modules];
+    modules[2] = {
+      ...modules[2]!,
+      exports: [
+        ...modules[2]!.exports,
+        {
+          exported: 'SharedType',
+          imported: 'Point',
+          kind: 'reexport',
+          specifier: '@fixture/alternate',
+          typeOnly: true,
+        },
+      ],
+    };
+    const ambiguous: CompilerModuleResolutionPlan = {
+      ...fixture.moduleResolution,
+      edges: [
+        ...fixture.moduleResolution.edges,
+        {
+          importer: modules[2],
+          specifier: '@fixture/alternate',
+          target: { packageName: '@fixture/alternate', source: 'packages/alternate/src/point.ts' },
+        },
+      ],
+    };
+
+    const failure = captureQualificationFailure(() =>
+      emitCrossPackageQualificationFixture({ ...fixture, modules }, ambiguous),
+    );
+
+    expect(failure).toMatchObject({ rule: 'cpp-imported-binding-no-export-target' });
+    expect(failure.message).toContain('imported type binding SharedType requires one exact exported declaration owner');
+  });
+
+  it('refuses unresolved imported value ownership instead of emitting a local spelling', () => {
+    const fixture = createCrossPackageQualificationFixture();
+    const unresolved: CompilerModuleResolutionPlan = {
+      ...fixture.moduleResolution,
+      edges: fixture.moduleResolution.edges.filter((edge) => edge.specifier !== '@fixture/constants'),
+    };
+
+    const failure = captureQualificationFailure(() => emitCrossPackageQualificationFixture(fixture, unresolved));
+
+    expect(failure).toMatchObject({ rule: 'cpp-imported-binding-no-export-target' });
+    expect(failure.message).toContain(
+      'imported value binding SharedValue requires one exact exported declaration owner',
+    );
+  });
 });
+
+function captureQualificationFailure(action: () => string): Error & { rule?: string | undefined } {
+  try {
+    action();
+  } catch (error) {
+    if (error instanceof Error) return error;
+    throw error;
+  }
+  throw new Error('Expected C++ qualification emission to fail');
+}
+
+function createCrossPackageQualificationFixture() {
+  const source = (packageName: string, sourcePath: string, text: string) => ({
+    packageName,
+    sourceFile: ts.createSourceFile(`/flight/${sourcePath}`, text, ts.ScriptTarget.Latest, true),
+    upstreamDirectory: '/flight',
+  });
+  const loweringResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      {
+        specifier: '@fixture/model',
+        target: { packageName: '@fixture/model', source: 'packages/model/src/point.ts' },
+      },
+      {
+        specifier: '@fixture/constants',
+        target: { packageName: '@fixture/constants', source: 'packages/constants/src/origin.ts' },
+      },
+      {
+        specifier: '@fixture/facade',
+        target: { packageName: '@fixture/facade', source: 'packages/facade/src/contract.ts' },
+      },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  const results = lowerTypeScriptSources(
+    [
+      source('@fixture/model', 'packages/model/src/point.ts', 'export interface Point { value: number }'),
+      source('@fixture/constants', 'packages/constants/src/origin.ts', 'export const ORIGIN = 1;'),
+      source(
+        '@fixture/facade',
+        'packages/facade/src/contract.ts',
+        `import type { Point as ModelPoint } from '@fixture/model';
+         import { ORIGIN as originValue } from '@fixture/constants';
+         export type { ModelPoint as SharedType };
+         export { originValue as SharedValue };`,
+      ),
+      source(
+        '@fixture/consumer',
+        'packages/consumer/src/use.ts',
+        `import { SharedValue as importedValue } from '@fixture/facade';
+         import type { SharedType as ImportedType } from '@fixture/facade';
+         interface LocalPoint { value: number }
+         const localValue = 2;
+         export function imported(point: ImportedType): number { return importedValue + point.value; }
+         export function local(point: LocalPoint): number { return localValue + point.value; }`,
+      ),
+      source('@fixture/alternate', 'packages/alternate/src/point.ts', 'export interface Point { other: number }'),
+    ],
+    loweringResolution,
+  );
+  expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+  const modules = results.map((result) => result.module);
+  const moduleResolution: CompilerModuleResolutionPlan = {
+    edges: [
+      { importer: modules[2], ...loweringResolution.edges[0]! },
+      { importer: modules[2], ...loweringResolution.edges[1]! },
+      { importer: modules[3], ...loweringResolution.edges[2]! },
+    ],
+    schema: 'flight-compiler-module-resolution/1',
+  };
+  return { moduleResolution, modules };
+}
+
+function emitCrossPackageQualificationFixture(
+  fixture: ReturnType<typeof createCrossPackageQualificationFixture>,
+  moduleResolution: CompilerModuleResolutionPlan,
+): string {
+  return createCppCompilerBackend().createEmissionSession!({
+    moduleResolution,
+    modules: fixture.modules,
+    options: {
+      packageTargets: {
+        '@fixture/alternate': { includePrefix: 'fixture/alternate', namespace: 'fixture::alternate' },
+        '@fixture/constants': { includePrefix: 'fixture/constants', namespace: 'fixture::constants' },
+        '@fixture/consumer': { includePrefix: 'fixture/consumer', namespace: 'fixture::consumer' },
+        '@fixture/facade': { includePrefix: 'fixture/facade', namespace: 'fixture::facade' },
+        '@fixture/model': { includePrefix: 'fixture/model', namespace: 'fixture::model' },
+      },
+    },
+  }).emitModule(fixture.modules[3]!)[0]!.contents;
+}
