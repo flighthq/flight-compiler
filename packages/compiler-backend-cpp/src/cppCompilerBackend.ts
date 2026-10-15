@@ -346,6 +346,11 @@ interface EmitContext {
   // one of them is dependent C++, which is what decides whether a member template call needs its
   // `template` disambiguator. See `isCppTypeDependentReceiverCpp`.
   typeParameterNames: ReadonlySet<string>;
+  // The source binding owned by the C++ handler currently being emitted. A direct `throw binding`
+  // inside that handler is the source spelling of rethrowing the active exception, so it must become
+  // bare `throw;` rather than copying the handler's static `std::exception` view and slicing the object.
+  // Function boundaries and nested handlers clear or replace this identity.
+  activeCatchBindingId?: string | undefined;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   // An interface is emitted as a struct of its own, so a `this` type inside one has a declaring type
   // exactly as a class member does. Kept apart from `currentClass` because the two name that type
@@ -5401,6 +5406,7 @@ function emitExpression(
           expression.typeParameters,
         ),
         async: false,
+        activeCatchBindingId: undefined,
         bindingTypes,
         defaultedParameterIds: new Set([
           ...context.defaultedParameterIds,
@@ -9352,6 +9358,13 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
       if (
         statement.expression.kind === 'identifier' &&
         statement.expression.reference.kind === 'binding' &&
+        statement.expression.reference.binding.id === context.activeCatchBindingId
+      ) {
+        return ['throw;'];
+      }
+      if (
+        statement.expression.kind === 'identifier' &&
+        statement.expression.reference.kind === 'binding' &&
         context.exceptionPointerBindingIds.has(statement.expression.reference.binding.id)
       ) {
         context.includes.add('exception');
@@ -9381,12 +9394,65 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
   }
 }
 
+// Only a throw in the current handler can use bare `throw;`. A nested catch has its own active
+// exception, while a closure can outlive the handler entirely, so neither is inspected here. Normal
+// control-flow statements keep the current handler active and are safe to descend through.
+function countCppDirectCatchBindingRethrowsCpp(statement: Readonly<IrStatement>, bindingId: string): number {
+  switch (statement.kind) {
+    case 'throw':
+      return statement.expression.kind === 'identifier' &&
+        statement.expression.reference.kind === 'binding' &&
+        statement.expression.reference.binding.id === bindingId
+        ? 1
+        : 0;
+    case 'block':
+      return statement.statements.reduce(
+        (count, nested) => count + countCppDirectCatchBindingRethrowsCpp(nested, bindingId),
+        0,
+      );
+    case 'do':
+    case 'for':
+    case 'forIn':
+    case 'forOf':
+    case 'while':
+      return countCppDirectCatchBindingRethrowsCpp(statement.body, bindingId);
+    case 'if':
+      return (
+        countCppDirectCatchBindingRethrowsCpp(statement.consequent, bindingId) +
+        (statement.otherwise ? countCppDirectCatchBindingRethrowsCpp(statement.otherwise, bindingId) : 0)
+      );
+    case 'switch':
+      return statement.cases.reduce(
+        (count, switchCase) =>
+          count +
+          switchCase.statements.reduce(
+            (caseCount, nested) => caseCount + countCppDirectCatchBindingRethrowsCpp(nested, bindingId),
+            0,
+          ),
+        0,
+      );
+    case 'try':
+      return (
+        countCppDirectCatchBindingRethrowsCpp(statement.tryBody, bindingId) +
+        (statement.finallyBody ? countCppDirectCatchBindingRethrowsCpp(statement.finallyBody, bindingId) : 0)
+      );
+    case 'break':
+    case 'continue':
+    case 'expression':
+    case 'return':
+    case 'variable':
+      return 0;
+  }
+}
+
 // A handler whose binding is used only to record an already-elected exception slot does not need a
 // named caught value: that record lowers to `std::current_exception()` and never mentions the binding.
 // Catching everything makes the attempt-all pattern faithful for non-class throws too -- the pointer
-// reifies the original value and `std::rethrow_exception` later restores it. Any real read of the caught
-// value keeps the narrow std::exception binding because C++ cannot name an arbitrary non-class value.
-function isCppReifyOnlyCatchBindingCpp(
+// reifies the original value and `std::rethrow_exception` later restores it. A direct rethrow also needs
+// no binding after it becomes bare `throw;`, which preserves the original object without a copy. Any real
+// read of the caught value keeps the narrow std::exception binding because C++ cannot name an arbitrary
+// non-class value.
+function isCppElidableCatchBindingCpp(
   binding: Readonly<IrBindingIdentity>,
   body: Readonly<IrStatement>,
   context: EmitContext,
@@ -9416,20 +9482,27 @@ function isCppReifyOnlyCatchBindingCpp(
       }
     },
   });
-  return references === records;
+  const directRethrows = countCppDirectCatchBindingRethrowsCpp(body, binding.id);
+  return references === records + directRethrows;
 }
 
 function emitCatchClauseCpp(
   catchClause: NonNullable<Extract<IrStatement, { kind: 'try' }>['catchClause']>,
   context: EmitContext,
 ): string[] {
-  const reifyOnly = catchClause.binding
-    ? isCppReifyOnlyCatchBindingCpp(catchClause.binding, catchClause.body, context)
+  const elideBinding = catchClause.binding
+    ? isCppElidableCatchBindingCpp(catchClause.binding, catchClause.body, context)
     : false;
-  if (catchClause.binding && !reifyOnly) context.includes.add('stdexcept');
+  if (catchClause.binding && !elideBinding) context.includes.add('stdexcept');
   const catchVar =
-    catchClause.binding && !reifyOnly ? `const std::exception& ${safeCppName(catchClause.binding.name)}` : '...';
-  return [`catch (${catchVar}) {`, ...indentSourceLines(emitStatementBody(catchClause.body, context)), '}'];
+    catchClause.binding && !elideBinding
+      ? `const std::exception& ${getBindingTargetName(catchClause.binding, context)}`
+      : '...';
+  const catchContext: EmitContext = {
+    ...context,
+    activeCatchBindingId: catchClause.binding?.id,
+  };
+  return [`catch (${catchVar}) {`, ...indentSourceLines(emitStatementBody(catchClause.body, catchContext)), '}'];
 }
 
 function emitTryCatchAwaitCpp(

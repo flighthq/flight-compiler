@@ -58,15 +58,17 @@ describe('C++ reify-only catch handler breadth', () => {
     expect(contents).toContain('std::rethrow_exception(failure);');
   });
 
-  it('keeps the narrow handler when the caught value is directly rethrown', () => {
+  it('widens a handler whose binding is used only to rethrow the active exception', () => {
     const contents = compile(`
       export function rethrow(value: number): void {
         try { if (value > 1) throw new Error('too big'); }
         catch (error) { throw error; }
       }`);
 
-    expect(contents).toContain('catch (const std::exception& error) {');
-    expect(contents).not.toContain('catch (...) {');
+    expect(contents).toContain('catch (...) {');
+    expect(contents).not.toContain('const std::exception& error');
+    expect(contents).toContain('throw;');
+    expect(contents).not.toContain('throw error;');
   });
 
   it('keeps a binding-less catch-all unchanged', () => {
