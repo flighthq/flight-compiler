@@ -60,13 +60,17 @@ interface PlanningContext {
   readonly referencePlanner: ReturnType<typeof createIrTypeReferenceRepresentationPlannerCpp>;
 }
 
-class CAbiPlanningFailure extends Error {
+interface CAbiPlanningFailure extends Error {
   readonly code: CompilerCppCAbiDiagnosticCode;
+  readonly kind: 'cpp-c-abi-planning-failure';
+}
 
-  constructor(code: CompilerCppCAbiDiagnosticCode, message: string) {
-    super(message);
-    this.code = code;
-  }
+function createCAbiPlanningFailure(code: CompilerCppCAbiDiagnosticCode, message: string): CAbiPlanningFailure {
+  return Object.assign(new Error(message), { code, kind: 'cpp-c-abi-planning-failure' as const });
+}
+
+function isCAbiPlanningFailure(error: unknown): error is CAbiPlanningFailure {
+  return error instanceof Error && 'kind' in error && error.kind === 'cpp-c-abi-planning-failure';
 }
 
 const errorPlan = {
@@ -104,7 +108,7 @@ export function createIrModulesCAbiPlanCpp(
     try {
       drafts.push(createFunctionDraft(candidate, context));
     } catch (error) {
-      if (!(error instanceof CAbiPlanningFailure)) throw error;
+      if (!isCAbiPlanningFailure(error)) throw error;
       diagnostics.push(createDiagnostic(candidate, error.code, error.message));
     }
   }
@@ -177,19 +181,19 @@ function collectFunctionCandidates(modules: readonly Readonly<IrModule>[]): read
 function createFunctionDraft(candidate: FunctionCandidate, context: PlanningContext): FunctionDraft {
   const { declaration, module } = candidate;
   if (declaration.overloads.length > 0) {
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       'overloaded-function',
       `exported function ${declaration.binding.name} has overloads, which ABI v1 does not elect`,
     );
   }
   if (declaration.typeParameters.length > 0) {
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       'generic-surface',
       `exported function ${declaration.binding.name} is generic, which ABI v1 does not monomorphize`,
     );
   }
   if (declaration.async) {
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       'unsupported-carrier',
       `exported function ${declaration.binding.name} is async, but ABI v1 has no task carrier`,
     );
@@ -200,14 +204,14 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
   const parameterNames = new Set<string>();
   const parameters = declaration.parameters.map((parameter, position): CompilerCppCAbiParameterPlan => {
     if (parameter.rest) {
-      throw new CAbiPlanningFailure(
+      throw createCAbiPlanningFailure(
         'unsupported-parameter',
         `parameter ${parameter.binding.name} is variadic, which ABI v1 does not flatten`,
       );
     }
     const name = safeCIdentifier(parameter.binding.name);
     if (parameterNames.has(name) || name === 'out_result') {
-      throw new CAbiPlanningFailure(
+      throw createCAbiPlanningFailure(
         'unsupported-parameter',
         `parameter ${parameter.binding.name} does not have a unique C spelling`,
       );
@@ -215,11 +219,11 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
     parameterNames.add(name);
     const carrier = planCarrier(parameter.type, module, context, false, new Set());
     if (carrier.kind === 'void') {
-      throw new CAbiPlanningFailure('unsupported-parameter', `parameter ${parameter.binding.name} has type void`);
+      throw createCAbiPlanningFailure('unsupported-parameter', `parameter ${parameter.binding.name} has type void`);
     }
     if (carrier.kind === 'scalar') {
       if (parameter.optional) {
-        throw new CAbiPlanningFailure(
+        throw createCAbiPlanningFailure(
           'unsupported-parameter',
           `optional scalar parameter ${parameter.binding.name} needs a presence carrier that ABI v1 does not define`,
         );
@@ -236,7 +240,7 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
     let presence = carrier.presence;
     if (parameter.optional) {
       if (presence === 'nullable-null') {
-        throw new CAbiPlanningFailure(
+        throw createCAbiPlanningFailure(
           'dual-sentinel-union',
           `optional parameter ${parameter.binding.name} also admits null, but one C pointer cannot preserve both sentinels`,
         );
@@ -317,20 +321,20 @@ function planCarrier(
       if (type.name === 'boolean') return { carrier: 'bool', kind: 'scalar' };
       if (type.name === 'number') return { carrier: 'double', kind: 'scalar' };
       if (type.name === 'void') return { kind: 'void' };
-      throw new CAbiPlanningFailure('unsupported-carrier', `primitive ${type.name} has no ABI v1 C carrier`);
+      throw createCAbiPlanningFailure('unsupported-carrier', `primitive ${type.name} has no ABI v1 C carrier`);
     case 'literal':
       if (typeof type.value === 'boolean') return { carrier: 'bool', kind: 'scalar' };
       if (typeof type.value === 'number') return { carrier: 'double', kind: 'scalar' };
-      throw new CAbiPlanningFailure('unsupported-carrier', 'string literal values have no ABI v1 C carrier');
+      throw createCAbiPlanningFailure('unsupported-carrier', 'string literal values have no ABI v1 C carrier');
     case 'function':
-      throw new CAbiPlanningFailure('callable-value', 'callable values have no ABI v1 C carrier');
+      throw createCAbiPlanningFailure('callable-value', 'callable values have no ABI v1 C carrier');
     case 'object':
-      throw new CAbiPlanningFailure(
+      throw createCAbiPlanningFailure(
         'open-structural-type',
         'structural object values have no named, closed ABI v1 owner',
       );
     case 'unknown':
-      throw new CAbiPlanningFailure('open-structural-type', `${type.source} values have no closed ABI v1 carrier`);
+      throw createCAbiPlanningFailure('open-structural-type', `${type.source} values have no closed ABI v1 carrier`);
     case 'union':
       return planUnionCarrier(type, module, context, readonly, visitedAliases);
     case 'named':
@@ -345,7 +349,7 @@ function planCarrier(
     case 'tuple':
     case 'typeOf':
     case 'undefined':
-      throw new CAbiPlanningFailure('unsupported-carrier', `${type.kind} has no ABI v1 C carrier`);
+      throw createCAbiPlanningFailure('unsupported-carrier', `${type.kind} has no ABI v1 C carrier`);
   }
 }
 
@@ -359,7 +363,7 @@ function planUnionCarrier(
   const hasNull = type.types.some((alternative) => alternative.kind === 'null');
   const hasUndefined = type.types.some((alternative) => alternative.kind === 'undefined');
   if (hasNull && hasUndefined) {
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       'dual-sentinel-union',
       'a C pointer cannot preserve distinct null and undefined alternatives',
     );
@@ -368,14 +372,14 @@ function planUnionCarrier(
   if ((hasNull || hasUndefined) && values.length === 1) {
     const value = planCarrier(values[0]!, module, context, readonly, visitedAliases);
     if (value.kind !== 'reference') {
-      throw new CAbiPlanningFailure(
+      throw createCAbiPlanningFailure(
         'unsupported-carrier',
         'nullable ABI v1 carriers must be opaque references represented by pointers',
       );
     }
     return { ...value, presence: hasNull ? 'nullable-null' : 'nullable-undefined' };
   }
-  throw new CAbiPlanningFailure('unsupported-carrier', 'multi-value unions have no ABI v1 C carrier');
+  throw createCAbiPlanningFailure('unsupported-carrier', 'multi-value unions have no ABI v1 C carrier');
 }
 
 function planNamedCarrier(
@@ -390,29 +394,29 @@ function planNamedCarrier(
       return planCarrier(type.typeArguments[0]!, module, context, true, visitedAliases);
     }
     if (type.reference.name === 'Readonly') {
-      throw new CAbiPlanningFailure('generic-surface', 'Readonly must have exactly one closed type argument');
+      throw createCAbiPlanningFailure('generic-surface', 'Readonly must have exactly one closed type argument');
     }
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       type.reference.name === 'Function' ? 'callable-value' : 'unsupported-carrier',
       `ambient type ${type.reference.name} has no ABI v1 C carrier`,
     );
   }
   if (type.reference.path.length > 0) {
-    throw new CAbiPlanningFailure('ambiguous-owner', 'qualified named types do not identify one ABI v1 owner');
+    throw createCAbiPlanningFailure('ambiguous-owner', 'qualified named types do not identify one ABI v1 owner');
   }
   if (type.reference.binding.kind === 'typeParameter' || type.typeArguments.length > 0) {
-    throw new CAbiPlanningFailure('generic-surface', 'generic types are not monomorphized by ABI v1');
+    throw createCAbiPlanningFailure('generic-surface', 'generic types are not monomorphized by ABI v1');
   }
   const owner = resolveNamedTypeOwner(type, module, context);
   if (!owner) {
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       'ambiguous-owner',
       `named type ${type.reference.binding.name} does not resolve to exactly one declaration owner`,
     );
   }
   const { declaration, module: ownerModule } = owner;
   if (declaration.typeParameters.length > 0) {
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       'generic-surface',
       `named type ${declaration.binding.name} is generic, which ABI v1 does not monomorphize`,
     );
@@ -420,13 +424,13 @@ function planNamedCarrier(
   if (declaration.kind === 'typeAlias') {
     const identity = typeOwnerKey(owner);
     if (visitedAliases.has(identity)) {
-      throw new CAbiPlanningFailure('ambiguous-owner', `type alias ${declaration.binding.name} is cyclic`);
+      throw createCAbiPlanningFailure('ambiguous-owner', `type alias ${declaration.binding.name} is cyclic`);
     }
     const nextVisited = new Set(visitedAliases);
     nextVisited.add(identity);
     const resolved = context.referencePlanner.resolveAlias(type, module);
     if (!resolved) {
-      throw new CAbiPlanningFailure(
+      throw createCAbiPlanningFailure(
         'ambiguous-owner',
         `type alias ${declaration.binding.name} does not resolve to one ABI v1 carrier`,
       );
@@ -434,7 +438,7 @@ function planNamedCarrier(
     return planCarrier(resolved, ownerModule, context, readonly, nextVisited);
   }
   if (declaration.kind === 'interface' && declaration.indexSignature) {
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       'open-structural-type',
       `interface ${declaration.binding.name} admits an open indexed member set`,
     );
@@ -552,7 +556,7 @@ function assertExactCppFunctionTarget(candidate: FunctionCandidate, context: Pla
     });
   });
   if (new Set(owners).size !== 1) {
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       'ambiguous-owner',
       `exported function ${candidate.declaration.binding.name} does not have one unambiguous C++ target`,
     );
@@ -576,7 +580,7 @@ function assertExactCppTypeTarget(owner: NamedTypeOwner, context: PlanningContex
     });
   });
   if (!owners.includes(owner.declaration.binding.id) || new Set(owners).size !== 1) {
-    throw new CAbiPlanningFailure(
+    throw createCAbiPlanningFailure(
       'ambiguous-owner',
       `named type ${owner.declaration.binding.name} does not have one exported C++ target`,
     );
