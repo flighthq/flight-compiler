@@ -5,6 +5,7 @@ import type {
   CompilerRuntimeExternalSymbolSpace,
   CppCompilerExternalBinding,
   CppCompilerExternalBindingConstruction,
+  CppCompilerExternalInstancePropertyAccess,
   CppCompilerExternalMemberBinding,
   CppCompilerExternalObjectConstruction,
   CppCompilerExternalBindingManifest,
@@ -185,7 +186,12 @@ export function getCompilerRuntimeExternalInstanceMemberCallResultTypeCpp(
 // name are ambiguous, and a member only a VALUE-space binding declares is in the wrong space -- each of
 // those refuses at the read rather than falling through to a target the profile never named.
 type CppCompilerExternalInstanceMemberResolution =
-  | Readonly<{ kind: 'resolved'; storageType: string; targetName: string }>
+  | Readonly<{
+      kind: 'resolved';
+      propertyAccess: CppCompilerExternalInstancePropertyAccess;
+      storageType: string;
+      targetName: string;
+    }>
   // A member the profile does not declare as a property read at all: it names a target and no property
   // result, so the read keeps the target spelling it always had and whatever its result evidence is
   // stays the reader's question -- a call's result type, or a downstream refusal.
@@ -230,6 +236,7 @@ export function getCompilerRuntimeExternalInstanceMemberCpp(
     entry.propertyOwnership === 'shared' ? `flight::Ref<${entry.propertyResultType}>` : entry.propertyResultType;
   return {
     kind: 'resolved',
+    propertyAccess: entry.propertyAccess ?? 'field',
     storageType: entry.propertyNullability === 'nullable' ? `std::optional<${storage}>` : storage,
     targetName: entry.targetName,
   };
@@ -428,6 +435,20 @@ function getCppCompilerExternalBindings(
       !cppExternalBindingOwnerships.has(binding.ownership)
     ) {
       throw new TypeError(`${subject} is malformed`);
+    }
+    if (
+      binding.members?.some(
+        (member) =>
+          member !== null &&
+          member !== undefined &&
+          member.propertyAccess !== undefined &&
+          ((member.propertyAccess !== 'field' && member.propertyAccess !== 'zero-argument-method') ||
+            (member.propertyResultType === undefined && member.propertyOwnership === undefined)),
+      )
+    ) {
+      throw Object.assign(new TypeError(`${subject} has malformed instance-property access-shape metadata`), {
+        code: 'cpp-external-instance-property-access-shape-invalid' as const,
+      });
     }
     if (
       binding.members?.some(

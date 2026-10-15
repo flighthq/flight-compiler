@@ -6036,7 +6036,8 @@ function emitExpression(
       const externalInstanceMember = getCppExternalInstanceMemberBindingCpp(expression, context);
       if (externalInstanceMember) {
         addCppExternalBindingHeaders(externalInstanceMember.sourceName, 'type', context);
-        return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${externalInstanceMember.targetName}`;
+        const invocation = externalInstanceMember.propertyAccess === 'zero-argument-method' ? '()' : '';
+        return `${emitExpression(expression.object, context)}${memberOp(expression.object, context)}${externalInstanceMember.targetName}${invocation}`;
       }
       const externalNumericProperty = emitCppExternalNumericPropertyViewPropertyCpp(expression, context);
       if (externalNumericProperty) return externalNumericProperty;
@@ -21861,7 +21862,11 @@ function emitCppExternalObjectConstructionCpp(
 function getCppExternalInstanceMemberBindingCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
-): Readonly<{ sourceName: string; targetName: string }> | undefined {
+): Readonly<{
+  propertyAccess: 'field' | 'zero-argument-method';
+  sourceName: string;
+  targetName: string;
+}> | undefined {
   const sourceName = getCppExternalInstanceReceiverSourceNameCpp(expression.object, context);
   if (!sourceName) return undefined;
   // The read is answered only by a COMPLETE declaration: a member entry that names a target but no
@@ -21873,8 +21878,11 @@ function getCppExternalInstanceMemberBindingCpp(
     getCppRuntimeProfile(context.options),
     context.options.externalBindings,
   );
-  return resolution?.kind === 'resolved' || resolution?.kind === 'callable'
-    ? { sourceName, targetName: resolution.targetName }
+  if (resolution?.kind === 'resolved') {
+    return { propertyAccess: resolution.propertyAccess, sourceName, targetName: resolution.targetName };
+  }
+  return resolution?.kind === 'callable'
+    ? { propertyAccess: 'field', sourceName, targetName: resolution.targetName }
     : undefined;
 }
 

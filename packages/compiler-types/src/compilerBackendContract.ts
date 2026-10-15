@@ -155,11 +155,15 @@ export interface CppCompilerExternalMemberParameterBinding {
   readonly sourceType: string;
 }
 
+export type CppCompilerExternalInstancePropertyAccess = 'field' | 'zero-argument-method';
+
 export interface CppCompilerExternalMemberBinding extends CompilerRuntimeExternalMemberBinding {
   /** The one source sentinel represented by an absent `callResultType` carrier. */
   readonly callResultAbsence?: 'null' | 'undefined' | undefined;
   /** Exact ambient source object types for parameters whose erased call-site IR cannot retain them. */
   readonly parameters?: readonly CppCompilerExternalMemberParameterBinding[] | undefined;
+  /** How a declared instance property reaches its target value. Field access remains the default. */
+  readonly propertyAccess?: CppCompilerExternalInstancePropertyAccess | undefined;
   /** Exact Record conversion capability of this member's external result; requires `callResultType`. */
   readonly recordConversion?: CppCompilerExternalBindingRecordConversion | undefined;
 }

@@ -20,8 +20,8 @@ import { analyzeIrStatementSubtreeTraversal } from '../../compiler-ir-traversal/
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerModuleResolutionPlan,
-  CompilerRuntimeExternalMemberBinding,
   CppCompilerExternalBinding,
+  CppCompilerExternalMemberBinding,
   IrModule,
   IrType,
   IrUnionMemberTestEvidence,
@@ -18400,7 +18400,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
   // type erased to `any`, so the profile's declaration is the whole contract -- it names the member's
   // target, the result type, and how the result is stored. The storage it names is the storage the local
   // gets, and the reference it names is the operator a chain through that local uses.
-  const instancePropertyProfile = (members: readonly Readonly<CompilerRuntimeExternalMemberBinding>[]) => ({
+  const instancePropertyProfile = (members: readonly Readonly<CppCompilerExternalMemberBinding>[]) => ({
     bindings: [
       {
         headers: ['flight/wgpu.hpp'],
@@ -18414,14 +18414,14 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     ],
     schema: 'flight-cpp-external-bindings/1' as const,
   });
-  const featuresMember: Readonly<CompilerRuntimeExternalMemberBinding> = {
+  const featuresMember: Readonly<CppCompilerExternalMemberBinding> = {
     propertyNullability: 'non-null',
     propertyOwnership: 'shared',
     propertyResultType: 'flight::wgpu::GpuSupportedFeatures',
     sourceMember: 'features',
     targetName: 'features',
   };
-  const queueMember: Readonly<CompilerRuntimeExternalMemberBinding> = {
+  const queueMember: Readonly<CppCompilerExternalMemberBinding> = {
     propertyNullability: 'non-null',
     propertyOwnership: 'shared',
     propertyResultType: 'flight::wgpu::GpuQueue',
@@ -18472,11 +18472,37 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     expect(emitted).toContain('std::optional<flight::Ref<flight::wgpu::GpuQueue>> queue = device.queue;');
   });
 
+  it('calls an explicitly method-backed property once without changing source method calls', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'method-backed-instance-property.ts',
+        `export function read(device: GPUDevice): void {
+           const queue = device.queue;
+           device.destroy();
+           void queue;
+         }`,
+      ).module,
+      {
+        externalBindings: instancePropertyProfile([
+          { ...queueMember, propertyAccess: 'zero-argument-method' },
+          { sourceMember: 'destroy', targetName: 'destroy' },
+        ]),
+        runtimeProfile: 'flight-cpp',
+      },
+    ).contents;
+
+    expect(emitted).toContain('flight::Ref<flight::wgpu::GpuQueue> queue = device.queue();');
+    expect(emitted).toContain('device.destroy();');
+    expect(emitted.match(/device\.queue\(\)/gu)).toHaveLength(1);
+    expect(emitted.match(/device\.destroy\(\)/gu)).toHaveLength(1);
+    expect(emitted).not.toContain('()()');
+  });
+
   // The declaration is the opt-in, so a half-declared member and a member declared where the reader
   // cannot reach it both refuse: the result type and the storage are facts only the profile holds, and a
   // declaration that names one without the other is a profile that meant to opt in and did not.
   it('refuses an external instance property declaration that cannot answer the read', () => {
-    const refuse = (members: readonly Readonly<CompilerRuntimeExternalMemberBinding>[]): string | undefined =>
+    const refuse = (members: readonly Readonly<CppCompilerExternalMemberBinding>[]): string | undefined =>
       captureBackendEmissionFailure(() =>
         emitIrModuleCpp(
           lower(

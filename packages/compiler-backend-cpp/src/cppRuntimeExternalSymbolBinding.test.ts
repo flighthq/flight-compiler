@@ -192,6 +192,33 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanCpp', () => {
         schema: 'flight-cpp-external-bindings/1',
       }),
     ).toThrow('malformed static-member mappings');
+
+    let accessShapeFailure: unknown;
+    try {
+      createCompilerRuntimeExternalSymbolBindingPlanCpp('flight-cpp', {
+        bindings: [
+          {
+            ...externalBindings.bindings[0]!,
+            members: [
+              {
+                propertyAccess: 'getter' as never,
+                propertyOwnership: 'value',
+                propertyResultType: 'host::PixelFormat',
+                sourceMember: 'preferredFormat',
+                targetName: 'preferred_format',
+              },
+            ],
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1',
+      });
+    } catch (error: unknown) {
+      accessShapeFailure = error;
+    }
+    expect(accessShapeFailure).toMatchObject({
+      code: 'cpp-external-instance-property-access-shape-invalid',
+      name: 'TypeError',
+    });
   });
 });
 
@@ -1284,6 +1311,31 @@ describe('getCompilerRuntimeExternalInstanceMemberCpp', () => {
   it('answers a declared property read with the storage the declaration names', () => {
     expect(getCompilerRuntimeExternalInstanceMemberCpp('GPUDevice', 'queue', 'flight-cpp', instanceBindings)).toEqual({
       kind: 'resolved',
+      propertyAccess: 'field',
+      storageType: 'flight::Ref<flight::wgpu::GpuQueue>',
+      targetName: 'queue',
+    });
+  });
+
+  it('carries an explicit zero-argument-method property access without changing its storage', () => {
+    const methodBacked = {
+      bindings: [
+        {
+          ...instanceBindings.bindings[0]!,
+          members: [
+            {
+              ...instanceBindings.bindings[0]!.members[0]!,
+              propertyAccess: 'zero-argument-method' as const,
+            },
+          ],
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+
+    expect(getCompilerRuntimeExternalInstanceMemberCpp('GPUDevice', 'queue', 'flight-cpp', methodBacked)).toEqual({
+      kind: 'resolved',
+      propertyAccess: 'zero-argument-method',
       storageType: 'flight::Ref<flight::wgpu::GpuQueue>',
       targetName: 'queue',
     });
