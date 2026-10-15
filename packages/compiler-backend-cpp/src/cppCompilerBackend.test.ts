@@ -26688,6 +26688,40 @@ int main() {
     );
   });
 
+  it('preserves the subject of a direct never assertion used as a call argument', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'never-assertion-argument.ts',
+        `interface RenderProxy2D { readonly visible: boolean }
+         function drawWgpuQuadWithTransform(proxy: RenderProxy2D): void { void proxy; }
+         export function draw(renderProxy: RenderProxy2D): void {
+           drawWgpuQuadWithTransform(renderProxy as never);
+           void renderProxy;
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('draw_wgpu_quad_with_transform(render_proxy);');
+    expect(emitted).not.toContain('draw_wgpu_quad_with_transform(static_cast<void>(render_proxy));');
+    expect(emitted).toContain('(void)render_proxy;');
+  });
+
+  it('keeps an evaluation-only for-in receiver discard as static_cast<void>', () => {
+    const emitted = emitIrModuleCpp(
+      lower(
+        'unused-for-in-receiver.ts',
+        `interface RenderProxy2D { readonly visible: boolean }
+         export function visit(renderProxy: RenderProxy2D): void {
+           for (const key in renderProxy) { void key; }
+         }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+
+    expect(emitted).toContain('static_cast<void>(render_proxy);');
+  });
+
   it('emits tuple types and tuple access with std::get', () => {
     const result = lower('tuple.ts', 'export function first(pair: [number, string]): number { return pair[0]; }');
     const emitted = emitIrModuleCpp(result.module);

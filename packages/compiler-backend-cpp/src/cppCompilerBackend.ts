@@ -4945,6 +4945,11 @@ function emitExpression(
           return `std::static_pointer_cast<${pointerTarget}>(${emitExpression(assertionSourceExpression, context)})`;
         }
       }
+      // `as never` changes only what the source checker permits at the use site. It does not turn the
+      // represented subject into a void value, so the terminal assertion lane preserves that subject.
+      if (expression.type.kind === 'never') {
+        return emitExpression(expression.expression, context, undefined, false);
+      }
       return `static_cast<${emitType(expression.type, context)}>(${emitExpression(assertionSourceExpression, context)})`;
     }
     case 'conditional': {
