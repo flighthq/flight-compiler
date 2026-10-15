@@ -28737,8 +28737,28 @@ function getIrAssignmentTargetTypeCpp(
     structuralProperty?.type ??
     (expression.kind === 'element' ? getCppClosedKeyElementWriteTypeCpp(expression, context) : undefined) ??
     getIrExpressionBindingTypeCpp(expression, context) ??
-    getIrExpressionTypeEvidenceCpp(expression, context)
+    getIrExpressionTypeEvidenceCpp(expression, context) ??
+    getCppTypeParameterReceiverPropertyTypeCpp(expression, context)
   );
+}
+
+// A write through a receiver typed by a type parameter -- `runtime.miss = null` in
+// `function init<R extends Runtime>(runtime: R)` -- has no receiver evidence of its own, because the
+// parameter names no members. Its CONSTRAINT does: the source checker resolves the write against it, and
+// every instantiation must provide that member. Without the destination type, the written value is lowered
+// with nothing to convert against, so a `null` falls back to `nullptr` and engages the member's optional
+// around a null pointer -- while every emitted reader tests that member with `has_value()`, so the two
+// disagree about what was written. This answers only where every other source of target evidence is absent.
+function getCppTypeParameterReceiverPropertyTypeCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.kind !== 'property' || expression.optional) return undefined;
+  const receiverType =
+    getIrExpressionBindingTypeCpp(expression.object, context) ??
+    getIrExpressionTypeEvidenceCpp(expression.object, context);
+  const constraint = receiverType ? getCppTypeParameterConstraintCpp(receiverType, context) : undefined;
+  return constraint ? getIrObjectPropertyTypeCpp(constraint, expression.name, context) : undefined;
 }
 
 // Whether an iterator's element can fill the carrier a set is declared to hold. The element is accepted when

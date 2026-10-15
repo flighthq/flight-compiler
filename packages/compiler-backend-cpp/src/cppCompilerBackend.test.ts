@@ -23155,6 +23155,91 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toContain('an erased assertion hides the represented source carrier');
   });
 
+  // A write through a receiver typed by a TYPE PARAMETER has no receiver evidence of its own -- the
+  // parameter names no members -- so the destination has to come from the CONSTRAINT the source checker
+  // resolved the write against. Without it a written `null` fell back to `nullptr`, which ENGAGES the
+  // member's optional around a null pointer while every emitted reader tests that member with
+  // `has_value()`: a silent miscompile that crashed the render-state lifecycle natively.
+  it('gives a write through a type-parameter receiver its constraint member type', () => {
+    const declarations = `export interface Hooks { clear(): void }
+export interface Runtime {
+  miss: Hooks | null;
+  hook: ((n: number) => void) | null;
+  tag: object | null;
+  count: number;
+  owner: Hooks;
+  flagged?: boolean;
+}
+`;
+    const emitWith = (body: string) =>
+      emitIrModuleCpp(lower('generic-receiver-write.ts', `${declarations}${body}`).module, {
+        runtimeProfile: 'flight-cpp',
+      }).contents;
+    const writes = (contents: string, member: string) =>
+      contents
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith(`(runtime->${member} = `));
+    const genericWithConstraint = emitWith(
+      `export function init<R extends Runtime>(runtime: R, owner: Hooks): R {
+         runtime.miss = null; runtime.hook = null; runtime.tag = null;
+         runtime.count = 1; runtime.owner = owner;
+         return runtime;
+       }`,
+    );
+    const concrete = emitWith(
+      `export function init(runtime: Runtime, owner: Hooks): Runtime {
+         runtime.miss = null; runtime.hook = null; runtime.tag = null;
+         runtime.count = 1; runtime.owner = owner;
+         return runtime;
+       }`,
+    );
+
+    // The absent state of a nullable reference, callable and object member is the optional's absence,
+    // never an engaged optional around a null pointer.
+    for (const member of ['miss', 'hook', 'tag']) {
+      expect(writes(genericWithConstraint, member)).toEqual([`(runtime->${member} = std::nullopt);`]);
+      expect(genericWithConstraint).not.toContain(`(runtime->${member} = nullptr);`);
+    }
+    // The strongest control: every write lowers exactly as the same statement through a concrete receiver.
+    for (const member of ['miss', 'hook', 'tag', 'count', 'owner']) {
+      expect(writes(genericWithConstraint, member)).toEqual(writes(concrete, member));
+    }
+  });
+
+  // The near-neighbours the fallback must not reach: it answers only where every other source of target
+  // evidence is absent, so a non-null write keeps its own lowering and a member the constraint does not
+  // declare still refuses rather than acquiring an invented destination.
+  it('keeps non-null generic writes and undeclared members on their own paths', () => {
+    const declarations = `export interface Hooks { clear(): void }
+export interface Runtime { miss: Hooks | null; flagged?: boolean }
+`;
+    const emitModule = (body: string) =>
+      emitIrModuleCpp(lower('generic-receiver-write-controls.ts', `${declarations}${body}`).module, {
+        runtimeProfile: 'flight-cpp',
+      }).contents;
+
+    const nonNull = emitModule(
+      `export function fill<R extends Runtime>(runtime: R, hooks: Hooks): void { runtime.miss = hooks; }`,
+    );
+    expect(nonNull).toContain('(runtime->miss = std::optional<flight::Ref<Hooks>>{hooks});');
+
+    const optionalMember = emitModule(
+      `export function flags<R extends Runtime>(runtime: R): void { runtime.flagged = true; }`,
+    );
+    expect(optionalMember).toContain('(runtime->flagged = std::optional<bool>{true});');
+
+    // A member the constraint does not declare has no destination type to read, so the write keeps the
+    // path (and the refusal) it had instead of acquiring one.
+    expect(() =>
+      emitModule(
+        `export function stray<R extends Runtime>(runtime: R): void {
+           (runtime as unknown as { other: number | null }).other = null;
+         }`,
+      ),
+    ).toThrow();
+  });
+
   // `x?: T | null` keeps THREE source states: omitted (which IS `undefined`), a present `null`, and a
   // present value. It is stored as an outer optional for the parameter's own presence around the declared
   // `T | null` carrier, so a narrowing that excluded `undefined` and still admits `null` has proven only
