@@ -2346,12 +2346,16 @@ function getTypeScriptKnownAmbientCallResultTypeEvidence(
     node.expression.name.text === 'getContext' &&
     first &&
     ts.isStringLiteralLike(first) &&
-    first.text === 'webgl2'
+    (first.text === '2d' || first.text === 'webgl2')
   ) {
+    // The literal SELECTS the overload, so the result is the context that literal names, or null when the
+    // canvas cannot provide it. Read from the literal rather than from the checker's overload union, which
+    // is a single contradictory callable surface and would widen the result to `any`.
+    const contextName = first.text === '2d' ? 'CanvasRenderingContext2D' : 'WebGL2RenderingContext';
     return {
       kind: 'union',
       types: [
-        { kind: 'named', reference: { kind: 'ambient', name: 'WebGL2RenderingContext' }, typeArguments: [] },
+        { kind: 'named', reference: { kind: 'ambient', name: contextName }, typeArguments: [] },
         { kind: 'null' },
       ],
     };

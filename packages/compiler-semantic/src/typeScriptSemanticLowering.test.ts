@@ -12988,6 +12988,83 @@ it('records ambient callable results only when every resolved overload agrees', 
   ]);
 });
 
+// `getContext` is a single contradictory overload surface to the checker, so the result has to come from
+// the LITERAL that selects the overload: the context that literal names, or null when the canvas cannot
+// provide it. `webgl2` already read this way; `2d` was widening to `any`, which loses both the context type
+// and the absence every caller tests for.
+it('records the literal-selected Canvas context overload result', () => {
+  const results = (source: string): readonly unknown[] => {
+    const result = lower('canvas-context-results.ts', source);
+    const declaration = result.module.declarations.find(
+      (candidate) => candidate.kind === 'function' && candidate.binding.name === 'contexts',
+    );
+    if (declaration?.kind !== 'function') throw new Error('Expected contexts function');
+    return declaration.body.flatMap((statement) =>
+      statement.kind === 'expression' && statement.expression.kind === 'call'
+        ? [statement.expression.semantics.resultType]
+        : [],
+    );
+  };
+
+  const result = lower(
+    'canvas-context-results.ts',
+    `export function contexts(canvas: HTMLCanvasElement): void {
+       canvas.getContext('2d', { alpha: false });
+       canvas.getContext('webgl2', { alpha: false });
+     }`,
+  );
+  const declaration = result.module.declarations.find(
+    (candidate) => candidate.kind === 'function' && candidate.binding.name === 'contexts',
+  );
+  if (declaration?.kind !== 'function') throw new Error('Expected contexts function');
+  const semantics = declaration.body.flatMap((statement) =>
+    statement.kind === 'expression' && statement.expression.kind === 'call'
+      ? [statement.expression.semantics.resultType]
+      : [],
+  );
+
+  expect(result.diagnostics).toEqual([]);
+  expect(semantics).toEqual([
+    {
+      kind: 'union',
+      types: [
+        { kind: 'named', reference: { kind: 'ambient', name: 'CanvasRenderingContext2D' }, typeArguments: [] },
+        { kind: 'null' },
+      ],
+    },
+    {
+      kind: 'union',
+      types: [
+        { kind: 'named', reference: { kind: 'ambient', name: 'WebGL2RenderingContext' }, typeArguments: [] },
+        { kind: 'null' },
+      ],
+    },
+  ]);
+
+  // The literal is the rule's precondition, so a computed key keeps the evidence it had; and the other
+  // literals are not this record's: they still answer `any` rather than being guessed at from their name.
+  expect(
+    results(
+      `declare const key: string;
+       export function contexts(canvas: HTMLCanvasElement): void {
+         canvas.getContext(key);
+         canvas.getContext('bitmaprenderer');
+       }`,
+    ),
+  ).toEqual([
+    { kind: 'unknown', source: 'any' },
+    { kind: 'unknown', source: 'any' },
+  ]);
+
+  // A receiver that is not the ambient canvas is not this lane either.
+  expect(
+    results(
+      `declare const other: { getContext(kind: string): unknown };
+       export function contexts(canvas: HTMLCanvasElement): void { other.getContext('2d'); }`,
+    ),
+  ).toEqual([{ kind: 'unknown', source: 'unknown' }]);
+});
+
 it('infers primitive results from ambient calls for unannotated locals', () => {
   const result = lower(
     'ambient-call-result-local.ts',
