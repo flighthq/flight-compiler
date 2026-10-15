@@ -7,6 +7,8 @@ export type CompilerCppCAbiAdapterConversion =
   | 'borrow-readonly-handle'
   | 'copy-scalar-from-c'
   | 'copy-scalar-to-out'
+  | 'copy-record-from-c'
+  | 'copy-record-to-out'
   | 'create-owned-handle-to-out'
   | 'none';
 
@@ -18,6 +20,7 @@ export type CompilerCppCAbiDiagnosticCode =
   | 'global-symbol-collision'
   | 'open-structural-type'
   | 'overloaded-function'
+  | 'record-member-collision'
   | 'unsupported-carrier'
   | 'unsupported-parameter';
 
@@ -53,6 +56,7 @@ export interface CompilerCppCAbiErrorPlan {
 export interface CompilerCppCAbiEmission {
   readonly functions: readonly CompilerCppCAbiFunctionEmission[];
   readonly handles: readonly CompilerCppCAbiHandleEmission[];
+  readonly records: readonly CompilerCppCAbiRecordEmission[];
   readonly schema: 'flight-compiler-cpp-c-abi-emission/1';
 }
 
@@ -128,6 +132,49 @@ export interface CompilerCppCAbiHandlePlan {
   readonly sourceName: string;
 }
 
+export interface CompilerCppCAbiRecordEmission {
+  readonly bindingId: string;
+  readonly carrier: string;
+  readonly headerContents: string;
+  readonly headerPath: string;
+  readonly packageName: string;
+  readonly source: string;
+  readonly sourceName: string;
+}
+
+export type CompilerCppCAbiRecordMemberPlan =
+  | Readonly<{
+      carrier: 'bool' | 'double';
+      cppName: string;
+      initialization: 'false' | '0.0';
+      name: string;
+      position: number;
+      presence: 'required';
+      sourceName: string;
+    }>
+  | Readonly<{
+      carrier: 'bool' | 'double';
+      cppName: string;
+      hasName: string;
+      initialization: 'false' | '0.0';
+      name: string;
+      position: number;
+      presence: 'explicit-flag';
+      sourceName: string;
+    }>;
+
+export interface CompilerCppCAbiRecordPlan {
+  readonly bindingId: string;
+  readonly carrier: string;
+  readonly construction: 'flight-reference-designated-optional-aggregate';
+  readonly header: string;
+  readonly members: readonly CompilerCppCAbiRecordMemberPlan[];
+  readonly packageName: string;
+  readonly passing: 'borrowed-const-pointer';
+  readonly source: string;
+  readonly sourceName: string;
+}
+
 export type CompilerCppCAbiParameterPlan =
   | Readonly<{
       adapter: 'borrow-handle' | 'borrow-readonly-handle';
@@ -145,6 +192,15 @@ export type CompilerCppCAbiParameterPlan =
       ownership: 'value';
       position: number;
       presence: 'required';
+    }>
+  | Readonly<{
+      adapter: 'copy-record-from-c';
+      carrier: string;
+      name: string;
+      ownership: 'borrowed';
+      position: number;
+      presence: 'required';
+      recordCarrier: string;
     }>;
 
 export type CompilerCppCAbiResultPlan =
@@ -172,17 +228,29 @@ export type CompilerCppCAbiResultPlan =
       name: 'out_result';
       ownership: 'owned';
       presence: Exclude<CompilerCppCAbiPresence, 'not-applicable'>;
+    }>
+  | Readonly<{
+      adapter: 'copy-record-to-out';
+      carrier: string;
+      initialization: 'record-zero';
+      kind: 'out';
+      name: 'out_result';
+      ownership: 'value';
+      presence: 'required';
+      recordCarrier: string;
     }>;
 
 export interface CompilerCppCAbiPlan {
   readonly diagnostics: readonly CompilerCppCAbiDiagnostic[];
   readonly functions: readonly CompilerCppCAbiFunctionPlan[];
   readonly handles: readonly CompilerCppCAbiHandlePlan[];
+  readonly records: readonly CompilerCppCAbiRecordPlan[];
   readonly policy: Readonly<{
     error: 'status-plus-initialized-out-result';
     exportPrefix: 'flight_cpp_';
     lastError: 'none';
     lifecycle: 'type-specific-retain-release';
+    records: 'explicit-member-presence-flags';
     references: 'incomplete-c-struct-pointers';
     visibility: 'FLIGHT_CPP_API';
   }>;

@@ -9,6 +9,8 @@ import type {
   CompilerCppCAbiHandlePlan,
   CompilerCppCAbiParameterPlan,
   CompilerCppCAbiPlan,
+  CompilerCppCAbiRecordEmission,
+  CompilerCppCAbiRecordPlan,
 } from '../../compiler-types/src/index.js';
 
 interface EmissionFailureIdentity {
@@ -29,7 +31,13 @@ interface ScalarParameterPlan {
   readonly parameter: Readonly<CompilerCppCAbiParameterPlan>;
 }
 
-type EmissionParameterPlan = HandleParameterPlan | ScalarParameterPlan;
+interface RecordParameterPlan {
+  readonly kind: 'record';
+  readonly parameter: Readonly<CompilerCppCAbiParameterPlan>;
+  readonly record: Readonly<CompilerCppCAbiRecordPlan>;
+}
+
+type EmissionParameterPlan = HandleParameterPlan | RecordParameterPlan | ScalarParameterPlan;
 
 interface FunctionEmissionPlan {
   readonly function: Readonly<CompilerCppCAbiFunctionPlan>;
@@ -37,7 +45,8 @@ interface FunctionEmissionPlan {
   readonly result:
     | Readonly<{ kind: 'void' }>
     | Readonly<{ carrier: 'bool*' | 'double*'; initialization: 'false' | '0.0'; kind: 'scalar' }>
-    | Readonly<{ handle: Readonly<CompilerCppCAbiHandlePlan>; kind: 'handle' }>;
+    | Readonly<{ handle: Readonly<CompilerCppCAbiHandlePlan>; kind: 'handle' }>
+    | Readonly<{ kind: 'record'; record: Readonly<CompilerCppCAbiRecordPlan> }>;
 }
 
 const cAbiEmissionFailureCodes = {
@@ -52,8 +61,30 @@ export function emitCompilerCppCAbiPlan(sourcePlan: Readonly<CompilerCppCAbiPlan
     throw createCompilerCppCAbiEmissionFailure(undefined, 'invalid-plan', 'unsupported C ABI plan schema');
   }
 
+  const records = validateRecordPlans(plan.records);
+  const recordsByCarrier = new Map(records.map((record) => [record.carrier, record]));
+  const recordEmissions = records.map(
+    (record): CompilerCppCAbiRecordEmission => ({
+      bindingId: record.bindingId,
+      carrier: record.carrier,
+      headerContents: emitRecordHeaderContents(record),
+      headerPath: record.header,
+      packageName: record.packageName,
+      source: record.source,
+      sourceName: record.sourceName,
+    }),
+  );
   const handles = validateHandlePlans(plan.handles);
   const handlesByCarrier = new Map(handles.map((handle) => [handle.carrier, handle]));
+  for (const handle of handles) {
+    if (recordsByCarrier.has(handle.carrier)) {
+      throw createCompilerCppCAbiEmissionFailure(
+        handleIdentity(handle),
+        'invalid-plan',
+        `C ABI tag ${handle.carrier} is both a handle and a record`,
+      );
+    }
+  }
   const publicSymbols = new Set<string>();
   const handleEmissions = handles.map((handle): CompilerCppCAbiHandleEmission => {
     reserveSymbol(publicSymbols, handleIdentity(handle), handle.borrowSymbol);
@@ -76,7 +107,7 @@ export function emitCompilerCppCAbiPlan(sourcePlan: Readonly<CompilerCppCAbiPlan
   const functions = [...plan.functions].sort(compareFunctionPlans);
   const functionEmissions = functions.map((functionPlan): CompilerCppCAbiFunctionEmission => {
     reserveSymbol(publicSymbols, functionPlan, functionPlan.symbol);
-    const emissionPlan = validateFunctionPlan(functionPlan, handlesByCarrier);
+    const emissionPlan = validateFunctionPlan(functionPlan, handlesByCarrier, recordsByCarrier);
     return {
       adapterSourceContents: emitFunctionAdapterSourceContents(emissionPlan),
       bindingId: functionPlan.bindingId,
@@ -91,6 +122,7 @@ export function emitCompilerCppCAbiPlan(sourcePlan: Readonly<CompilerCppCAbiPlan
   return {
     functions: functionEmissions,
     handles: handleEmissions,
+    records: recordEmissions,
     schema: 'flight-compiler-cpp-c-abi-emission/1',
   };
 }
@@ -135,9 +167,29 @@ function validateHandlePlans(
   return handles;
 }
 
+function validateRecordPlans(
+  sourceRecords: readonly Readonly<CompilerCppCAbiRecordPlan>[],
+): readonly Readonly<CompilerCppCAbiRecordPlan>[] {
+  const records = [...sourceRecords].sort((left, right) => compareTextCodeUnits(left.carrier, right.carrier));
+  const carriers = new Set<string>();
+  for (const record of records) {
+    if (carriers.has(record.carrier)) {
+      throw createCompilerCppCAbiEmissionFailure(
+        recordIdentity(record),
+        'invalid-plan',
+        `C ABI plan repeats record carrier ${record.carrier}`,
+      );
+    }
+    carriers.add(record.carrier);
+    assertRecordPlan(record);
+  }
+  return records;
+}
+
 function validateFunctionPlan(
   functionPlan: Readonly<CompilerCppCAbiFunctionPlan>,
   handlesByCarrier: ReadonlyMap<string, Readonly<CompilerCppCAbiHandlePlan>>,
+  recordsByCarrier: ReadonlyMap<string, Readonly<CompilerCppCAbiRecordPlan>>,
 ): FunctionEmissionPlan {
   assertFunctionIdentity(functionPlan);
   assertErrorPlan(functionPlan);
@@ -162,6 +214,23 @@ function validateFunctionPlan(
         );
       }
       emissionParameters.push({ kind: 'scalar', parameter });
+      continue;
+    }
+    if (parameter.adapter === 'copy-record-from-c') {
+      const record = recordsByCarrier.get(parameter.recordCarrier);
+      if (
+        !record ||
+        parameter.carrier !== `const struct ${record.carrier}*` ||
+        parameter.ownership !== 'borrowed' ||
+        parameter.presence !== 'required'
+      ) {
+        throw createCompilerCppCAbiEmissionFailure(
+          functionPlan,
+          'invalid-plan',
+          `C ABI parameter ${parameter.name} of ${functionPlan.symbol} does not identify one required record`,
+        );
+      }
+      emissionParameters.push({ kind: 'record', parameter, record });
       continue;
     }
     if (parameter.adapter !== 'borrow-handle' || parameter.presence !== 'required') {
@@ -219,6 +288,24 @@ function validateFunctionPlan(
         kind: 'scalar',
       },
     };
+  }
+  if (functionPlan.result.adapter === 'copy-record-to-out') {
+    const record = recordsByCarrier.get(functionPlan.result.recordCarrier);
+    if (
+      !record ||
+      functionPlan.result.carrier !== `struct ${record.carrier}*` ||
+      functionPlan.result.initialization !== 'record-zero' ||
+      functionPlan.result.name !== 'out_result' ||
+      functionPlan.result.ownership !== 'value' ||
+      functionPlan.result.presence !== 'required'
+    ) {
+      throw createCompilerCppCAbiEmissionFailure(
+        functionPlan,
+        'invalid-plan',
+        `C ABI result of ${functionPlan.symbol} does not identify one required record`,
+      );
+    }
+    return { function: functionPlan, parameters: emissionParameters, result: { kind: 'record', record } };
   }
   if (
     functionPlan.result.adapter !== 'create-owned-handle-to-out' ||
@@ -278,6 +365,52 @@ function assertHandlePlan(handle: Readonly<CompilerCppCAbiHandlePlan>): void {
   }
 }
 
+function assertRecordPlan(record: Readonly<CompilerCppCAbiRecordPlan>): void {
+  if (
+    record.bindingId.length === 0 ||
+    record.packageName.length === 0 ||
+    record.source.length === 0 ||
+    record.sourceName.length === 0 ||
+    !/^flight_cpp_[a-z_][a-z0-9_]*_record$/u.test(record.carrier) ||
+    record.construction !== 'flight-reference-designated-optional-aggregate' ||
+    record.passing !== 'borrowed-const-pointer' ||
+    !isCHeaderPath(record.header) ||
+    record.members.length === 0 ||
+    !record.members.some((member) => member.presence === 'explicit-flag')
+  ) {
+    throw createCompilerCppCAbiEmissionFailure(
+      recordIdentity(record),
+      'invalid-plan',
+      `C ABI record ${record.carrier || '<unnamed>'} does not carry the complete ABI v1 record strategy`,
+    );
+  }
+  const cFields = new Set<string>();
+  const cppFields = new Set<string>();
+  for (const [position, member] of record.members.entries()) {
+    const expectedInitialization = member.carrier === 'bool' ? 'false' : '0.0';
+    const fields = member.presence === 'explicit-flag' ? [member.hasName, member.name] : [member.name];
+    if (
+      member.position !== position ||
+      !isCIdentifier(member.name) ||
+      !isCIdentifier(member.cppName) ||
+      member.sourceName.length === 0 ||
+      member.initialization !== expectedInitialization ||
+      (member.presence === 'explicit-flag' &&
+        (!isCIdentifier(member.hasName) || member.hasName !== `has_${member.name}`)) ||
+      fields.some((field) => cFields.has(field)) ||
+      cppFields.has(member.cppName)
+    ) {
+      throw createCompilerCppCAbiEmissionFailure(
+        recordIdentity(record),
+        'invalid-plan',
+        `C ABI record ${record.carrier} has invalid or colliding member metadata`,
+      );
+    }
+    for (const field of fields) cFields.add(field);
+    cppFields.add(member.cppName);
+  }
+}
+
 function assertFunctionIdentity(functionPlan: Readonly<CompilerCppCAbiFunctionPlan>): void {
   if (
     functionPlan.bindingId.length === 0 ||
@@ -314,6 +447,19 @@ function assertErrorPlan(functionPlan: Readonly<CompilerCppCAbiFunctionPlan>): v
       `C ABI function ${functionPlan.symbol} does not carry the complete ABI v1 error strategy`,
     );
   }
+}
+
+function emitRecordHeaderContents(record: Readonly<CompilerCppCAbiRecordPlan>): string {
+  return ['#include <stdbool.h>', '', ...emitRecordDefinitionLines(record), ''].join('\n');
+}
+
+function emitRecordDefinitionLines(record: Readonly<CompilerCppCAbiRecordPlan>): readonly string[] {
+  const guard = `FLIGHT_CPP_C_ABI_${record.carrier.toUpperCase()}_DEFINED`;
+  const fields = record.members.flatMap((member): string[] => [
+    ...(member.presence === 'explicit-flag' ? [`  bool ${member.hasName};`] : []),
+    `  ${member.carrier} ${member.name};`,
+  ]);
+  return [`#ifndef ${guard}`, `#define ${guard}`, `struct ${record.carrier} {`, ...fields, '};', '#endif'];
 }
 
 function emitHandleHeaderContents(handle: Readonly<CompilerCppCAbiHandlePlan>): string {
@@ -393,6 +539,7 @@ function emitFunctionHeaderContents(plan: FunctionEmissionPlan): string {
   const { function: functionPlan } = plan;
   const guard = `FLIGHT_CPP_C_ABI_${functionPlan.symbol.toUpperCase()}_H`;
   const handles = collectFunctionHandles(plan);
+  const records = collectFunctionRecords(plan);
   const lines = [
     `#ifndef ${guard}`,
     `#define ${guard}`,
@@ -413,6 +560,7 @@ function emitFunctionHeaderContents(plan: FunctionEmissionPlan): string {
   if (handles.length > 0) {
     lines.push('', ...handles.map((handle) => `struct ${handle.carrier};`));
   }
+  for (const record of records) lines.push('', ...emitRecordDefinitionLines(record));
   lines.push(
     '',
     '#if defined(__cplusplus)',
@@ -434,7 +582,21 @@ function emitFunctionHeaderContents(plan: FunctionEmissionPlan): string {
 function emitFunctionAdapterSourceContents(plan: FunctionEmissionPlan): string {
   const { function: functionPlan } = plan;
   const handles = collectFunctionHandles(plan);
-  const lines = [`#include <${functionPlan.header}>`];
+  const records = collectFunctionRecords(plan);
+  const recordParameters = plan.parameters.filter(
+    (parameter): parameter is RecordParameterPlan => parameter.kind === 'record',
+  );
+  const lines =
+    records.length > 0
+      ? [
+          '#include <cstddef>',
+          '#include <optional>',
+          '#include <tuple>',
+          '#include <type_traits>',
+          '',
+          `#include <${functionPlan.header}>`,
+        ]
+      : [`#include <${functionPlan.header}>`];
   if (handles.length > 0) {
     lines.push('', ...handles.map((handle) => `struct ${handle.carrier};`));
     for (const handle of handles) {
@@ -449,11 +611,35 @@ function emitFunctionAdapterSourceContents(plan: FunctionEmissionPlan): string {
       );
     }
   }
+  for (const record of records) lines.push('', ...emitRecordDefinitionLines(record));
+  if (recordParameters.length > 0) {
+    lines.push(
+      '',
+      'template <std::size_t Position, typename Result, typename... Arguments>',
+      'auto flight_cpp_adapter_argument_type(Result (*)(Arguments...))',
+      '    -> std::tuple_element_t<Position, std::tuple<Arguments...>>;',
+    );
+    for (const parameter of recordParameters) {
+      const position = parameter.parameter.position;
+      lines.push(
+        '',
+        `using flight_cpp_adapter_argument_${position} = std::remove_cvref_t<decltype(flight_cpp_adapter_argument_type<${position}>(&${functionPlan.cppTarget}))>;`,
+        `using flight_cpp_adapter_argument_${position}_element = typename flight_cpp_adapter_argument_${position}::element_type;`,
+      );
+    }
+  }
   lines.push('', `extern "C" ${emitFunctionSignature(plan)} {`);
   if (plan.result.kind !== 'void') {
+    lines.push('  if (out_result != nullptr) {');
+    if (plan.result.kind === 'record') {
+      for (const member of plan.result.record.members) {
+        if (member.presence === 'explicit-flag') lines.push(`    out_result->${member.hasName} = false;`);
+        lines.push(`    out_result->${member.name} = ${member.initialization};`);
+      }
+    } else {
+      lines.push(`    *out_result = ${plan.result.kind === 'scalar' ? plan.result.initialization : 'nullptr'};`);
+    }
     lines.push(
-      '  if (out_result != nullptr) {',
-      `    *out_result = ${plan.result.kind === 'scalar' ? plan.result.initialization : 'nullptr'};`,
       '  }',
       '  if (out_result == nullptr) {',
       `    return ${functionPlan.error.invalidArgumentConstant};`,
@@ -461,25 +647,31 @@ function emitFunctionAdapterSourceContents(plan: FunctionEmissionPlan): string {
     );
   }
   for (const parameter of plan.parameters) {
-    if (parameter.kind !== 'handle') continue;
+    if (parameter.kind === 'scalar') continue;
     lines.push(
       `  if (${parameter.parameter.name} == nullptr) {`,
       `    return ${functionPlan.error.invalidArgumentConstant};`,
       '  }',
     );
   }
-  const arguments_ = plan.parameters
-    .map((parameter) =>
-      parameter.kind === 'handle'
-        ? `${parameter.handle.borrowSymbol}(${parameter.parameter.name})`
-        : parameter.parameter.name,
-    )
-    .join(', ');
+  const arguments_ = plan.parameters.map((parameter) => emitFunctionArgument(parameter)).join(', ');
   lines.push('  try {');
   if (plan.result.kind === 'scalar') {
     lines.push(`    *out_result = ${functionPlan.cppTarget}(${arguments_});`);
   } else if (plan.result.kind === 'handle') {
     lines.push(`    *out_result = ${plan.result.handle.createOwnedSymbol}(${functionPlan.cppTarget}(${arguments_}));`);
+  } else if (plan.result.kind === 'record') {
+    lines.push(`    const auto flight_cpp_adapter_result = ${functionPlan.cppTarget}(${arguments_});`);
+    for (const member of plan.result.record.members) {
+      if (member.presence === 'explicit-flag') {
+        lines.push(
+          `    out_result->${member.hasName} = flight_cpp_adapter_result->${member.cppName}.has_value();`,
+          `    out_result->${member.name} = flight_cpp_adapter_result->${member.cppName}.value_or(${member.initialization});`,
+        );
+      } else {
+        lines.push(`    out_result->${member.name} = flight_cpp_adapter_result->${member.cppName};`);
+      }
+    }
   } else {
     lines.push(`    ${functionPlan.cppTarget}(${arguments_});`);
   }
@@ -498,7 +690,23 @@ function emitFunctionSignature(plan: FunctionEmissionPlan): string {
   const parameters = plan.parameters.map(({ parameter }) => `${parameter.carrier} ${parameter.name}`);
   if (plan.result.kind === 'scalar') parameters.push(`${plan.result.carrier} out_result`);
   if (plan.result.kind === 'handle') parameters.push(`struct ${plan.result.handle.carrier}** out_result`);
+  if (plan.result.kind === 'record') parameters.push(`struct ${plan.result.record.carrier}* out_result`);
   return `${plan.function.visibility} ${plan.function.error.statusCarrier} ${plan.function.symbol}(${parameters.length > 0 ? parameters.join(', ') : 'void'})`;
+}
+
+function emitFunctionArgument(parameter: EmissionParameterPlan): string {
+  if (parameter.kind === 'handle') {
+    return `${parameter.handle.borrowSymbol}(${parameter.parameter.name})`;
+  }
+  if (parameter.kind === 'scalar') return parameter.parameter.name;
+  const members = parameter.record.members.map((member) => {
+    const value = `${parameter.parameter.name}->${member.name}`;
+    return member.presence === 'explicit-flag'
+      ? `.${member.cppName} = ${parameter.parameter.name}->${member.hasName} ? std::optional<${member.carrier}>{${value}} : std::nullopt`
+      : `.${member.cppName} = ${value}`;
+  });
+  const position = parameter.parameter.position;
+  return `flight::make_ref<flight_cpp_adapter_argument_${position}_element>(flight_cpp_adapter_argument_${position}_element{${members.join(', ')}})`;
 }
 
 function collectFunctionHandles(plan: FunctionEmissionPlan): readonly Readonly<CompilerCppCAbiHandlePlan>[] {
@@ -508,6 +716,15 @@ function collectFunctionHandles(plan: FunctionEmissionPlan): readonly Readonly<C
   }
   if (plan.result.kind === 'handle') handles.set(plan.result.handle.carrier, plan.result.handle);
   return [...handles.values()].sort((left, right) => compareTextCodeUnits(left.carrier, right.carrier));
+}
+
+function collectFunctionRecords(plan: FunctionEmissionPlan): readonly Readonly<CompilerCppCAbiRecordPlan>[] {
+  const records = new Map<string, Readonly<CompilerCppCAbiRecordPlan>>();
+  for (const parameter of plan.parameters) {
+    if (parameter.kind === 'record') records.set(parameter.record.carrier, parameter.record);
+  }
+  if (plan.result.kind === 'record') records.set(plan.result.record.carrier, plan.result.record);
+  return [...records.values()].sort((left, right) => compareTextCodeUnits(left.carrier, right.carrier));
 }
 
 function reserveSymbol(symbols: Set<string>, identity: EmissionFailureIdentity, symbol: string): void {
@@ -523,6 +740,15 @@ function handleIdentity(handle: Readonly<CompilerCppCAbiHandlePlan>): EmissionFa
     packageName: handle.packageName,
     source: handle.source,
     symbol: handle.retainSymbol,
+  };
+}
+
+function recordIdentity(record: Readonly<CompilerCppCAbiRecordPlan>): EmissionFailureIdentity {
+  return {
+    bindingId: record.bindingId,
+    packageName: record.packageName,
+    source: record.source,
+    symbol: record.carrier,
   };
 }
 

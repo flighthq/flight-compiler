@@ -29,6 +29,7 @@ describe('createIrModulesCAbiPlanCpp', () => {
       exportPrefix: 'flight_cpp_',
       lastError: 'none',
       lifecycle: 'type-specific-retain-release',
+      records: 'explicit-member-presence-flags',
       references: 'incomplete-c-struct-pointers',
       visibility: 'FLIGHT_CPP_API',
     });
@@ -90,6 +91,118 @@ describe('createIrModulesCAbiPlanCpp', () => {
         result: { adapter: 'none', kind: 'void', ownership: 'none', presence: 'not-applicable' },
         symbol: 'flight_cpp_translate',
       }),
+    ]);
+  });
+
+  it('plans explicit presence fields for Partial and optional scalar records', () => {
+    const module = lower(
+      'options.ts',
+      `
+        interface Options { sampleCount: number; enabled: boolean; }
+        export function apply(options: Partial<Options>): void { void options; }
+        export function snapshot(): { sampleCount?: number; enabled?: boolean } { return {}; }
+      `,
+    );
+
+    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.records).toEqual([
+      expect.objectContaining({
+        carrier: 'flight_cpp_apply_options_record',
+        construction: 'flight-reference-designated-optional-aggregate',
+        members: [
+          {
+            carrier: 'double',
+            cppName: 'sample_count',
+            hasName: 'has_sample_count',
+            initialization: '0.0',
+            name: 'sample_count',
+            position: 0,
+            presence: 'explicit-flag',
+            sourceName: 'sampleCount',
+          },
+          {
+            carrier: 'bool',
+            cppName: 'enabled',
+            hasName: 'has_enabled',
+            initialization: 'false',
+            name: 'enabled',
+            position: 1,
+            presence: 'explicit-flag',
+            sourceName: 'enabled',
+          },
+        ],
+        passing: 'borrowed-const-pointer',
+        sourceName: 'apply.options',
+      }),
+      expect.objectContaining({
+        carrier: 'flight_cpp_snapshot_result_record',
+        sourceName: 'snapshot.result',
+      }),
+    ]);
+    expect(plan.functions).toEqual([
+      expect.objectContaining({
+        parameters: [
+          expect.objectContaining({
+            adapter: 'copy-record-from-c',
+            carrier: 'const struct flight_cpp_apply_options_record*',
+            recordCarrier: 'flight_cpp_apply_options_record',
+          }),
+        ],
+        symbol: 'flight_cpp_apply',
+      }),
+      expect.objectContaining({
+        result: expect.objectContaining({
+          adapter: 'copy-record-to-out',
+          carrier: 'struct flight_cpp_snapshot_result_record*',
+          initialization: 'record-zero',
+          recordCarrier: 'flight_cpp_snapshot_result_record',
+        }),
+        symbol: 'flight_cpp_snapshot',
+      }),
+    ]);
+  });
+
+  it('preserves one nullable pointer sentinel and refuses an optional record member with two sentinels', () => {
+    const module = lower(
+      'presence.ts',
+      `
+        export interface Point { x: number; }
+        export function accept(point: Point | null): void { void point; }
+        export function configure(options: { point?: Point | null }): void { void options; }
+      `,
+    );
+
+    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+
+    expect(plan.functions).toEqual([
+      expect.objectContaining({
+        parameters: [expect.objectContaining({ carrier: 'struct flight_cpp_point*', presence: 'nullable-null' })],
+        symbol: 'flight_cpp_accept',
+      }),
+    ]);
+    expect(plan.diagnostics).toEqual([
+      expect.objectContaining({ code: 'dual-sentinel-union', sourceName: 'configure' }),
+    ]);
+  });
+
+  it('refuses normalized record field and generated-presence collisions deterministically', () => {
+    const module = lower(
+      'collisions.ts',
+      `
+        export function normalized(options: { sampleCount?: number; sample_count?: number }): void {}
+        export function presence(options: { active?: boolean; hasActive?: boolean }): void {}
+      `,
+    );
+
+    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+
+    expect(plan.functions).toEqual([]);
+    expect(plan.records).toEqual([]);
+    expect(plan.diagnostics.map(({ code, sourceName }) => ({ code, sourceName }))).toEqual([
+      { code: 'record-member-collision', sourceName: 'presence' },
+      { code: 'record-member-collision', sourceName: 'normalized' },
     ]);
   });
 
@@ -258,7 +371,7 @@ describe('createIrModulesCAbiPlanCpp', () => {
   it('is deterministic under module reordering and does not mutate inputs', () => {
     const geometry = lower(
       'geometry.ts',
-      'export interface Point { x: number; } export function makePoint(): Point { return { x: 1 }; }',
+      'export interface Point { x: number; } export function makePoint(): Point { return { x: 1 }; } export function configure(options: { count?: number; enabled?: boolean }): void {}',
     );
     const scalar = lower('scalar.ts', 'export function negate(value: boolean): boolean { return !value; }');
     const modules = [geometry, scalar];

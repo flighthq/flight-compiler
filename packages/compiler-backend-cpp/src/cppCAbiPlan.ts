@@ -8,10 +8,13 @@ import type {
   CompilerCppCAbiPlan,
   CompilerCppCAbiPlanningOptions,
   CompilerCppCAbiPresence,
+  CompilerCppCAbiRecordMemberPlan,
+  CompilerCppCAbiRecordPlan,
   CompilerCppCAbiResultPlan,
   IrDeclaration,
   IrFunctionDeclaration,
   IrModule,
+  IrObjectTypeProperty,
   IrType,
 } from '../../compiler-types/src/index.js';
 import { getCppCompilerPackageIncludePrefix, getCppCompilerPackageNamespace } from './cppCompilerIdentity.js';
@@ -28,6 +31,7 @@ interface FunctionDraft {
   readonly handles: readonly HandleDraft[];
   readonly ownerKey: string;
   readonly plan: CompilerCppCAbiFunctionPlan;
+  readonly records: readonly CompilerCppCAbiRecordPlan[];
 }
 
 interface HandleDraft extends CompilerCppCAbiHandlePlan {
@@ -51,7 +55,12 @@ interface ScalarCarrier {
   readonly kind: 'scalar';
 }
 
-type Carrier = ReferenceCarrier | ScalarCarrier | Readonly<{ kind: 'void' }>;
+interface RecordCarrier {
+  readonly kind: 'record';
+  readonly members: readonly CompilerCppCAbiRecordMemberPlan[];
+}
+
+type Carrier = RecordCarrier | ReferenceCarrier | ScalarCarrier | Readonly<{ kind: 'void' }>;
 
 interface PlanningContext {
   readonly candidates: readonly FunctionCandidate[];
@@ -133,6 +142,7 @@ export function createIrModulesCAbiPlanCpp(
 
   const accepted = drafts.filter((draft) => !collidedOwnerKeys.has(draft.ownerKey));
   const handles = new Map<string, CompilerCppCAbiHandlePlan>();
+  const records = new Map<string, CompilerCppCAbiRecordPlan>();
   for (const draft of accepted) {
     for (const handle of draft.handles) {
       handles.set(handle.carrier, {
@@ -152,17 +162,20 @@ export function createIrModulesCAbiPlanCpp(
         sourceName: handle.sourceName,
       });
     }
+    for (const record of draft.records) records.set(record.carrier, record);
   }
 
   return {
     diagnostics: diagnostics.sort(compareDiagnostics),
     functions: accepted.map((draft) => draft.plan).sort(compareFunctions),
     handles: [...handles.values()].sort((left, right) => compareTextCodeUnits(left.carrier, right.carrier)),
+    records: [...records.values()].sort((left, right) => compareTextCodeUnits(left.carrier, right.carrier)),
     policy: {
       error: 'status-plus-initialized-out-result',
       exportPrefix: 'flight_cpp_',
       lastError: 'none',
       lifecycle: 'type-specific-retain-release',
+      records: 'explicit-member-presence-flags',
       references: 'incomplete-c-struct-pointers',
       visibility: 'FLIGHT_CPP_API',
     },
@@ -210,7 +223,12 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
   assertExactCppFunctionTarget(candidate, context);
 
   const handles = new Map<string, HandleDraft>();
+  const records = new Map<string, CompilerCppCAbiRecordPlan>();
   const parameterNames = new Set<string>();
+  const packageNamespace = getCppCompilerPackageNamespace(module.packageName, optionsPackageTargets(context));
+  const sourceName = declaration.binding.name;
+  const symbol = `flight_cpp_${snakeCase(sourceName)}`;
+  const header = getPackageHeader(module.packageName, context);
   const parameters = declaration.parameters.map((parameter, position): CompilerCppCAbiParameterPlan => {
     if (parameter.rest) {
       throw createCAbiPlanningFailure(
@@ -219,7 +237,7 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
       );
     }
     const name = safeCIdentifier(parameter.binding.name);
-    if (parameterNames.has(name) || name === 'out_result') {
+    if (parameterNames.has(name) || name === 'flight_cpp_adapter_result' || name === 'out_result') {
       throw createCAbiPlanningFailure(
         'unsupported-parameter',
         `parameter ${parameter.binding.name} does not have a unique C spelling`,
@@ -246,6 +264,31 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
         presence: 'required',
       };
     }
+    if (carrier.kind === 'record') {
+      if (parameter.optional) {
+        throw createCAbiPlanningFailure(
+          'unsupported-parameter',
+          `optional record parameter ${parameter.binding.name} needs a whole-record presence carrier that ABI v1 does not define`,
+        );
+      }
+      const record = createRecordPlan(
+        carrier,
+        candidate,
+        `${symbol}_${name}_record`,
+        `${sourceName}.${parameter.binding.name}`,
+        header,
+      );
+      records.set(record.carrier, record);
+      return {
+        adapter: 'copy-record-from-c',
+        carrier: `const struct ${record.carrier}*`,
+        name,
+        ownership: 'borrowed',
+        position,
+        presence: 'required',
+        recordCarrier: record.carrier,
+      };
+    }
     let presence = carrier.presence;
     if (parameter.optional) {
       if (presence === 'nullable-null') {
@@ -269,10 +312,7 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
   });
 
   const resultCarrier = planCarrier(declaration.returns, module, context, false, new Set());
-  const result = createResultPlan(resultCarrier, handles);
-  const packageNamespace = getCppCompilerPackageNamespace(module.packageName, optionsPackageTargets(context));
-  const sourceName = declaration.binding.name;
-  const symbol = `flight_cpp_${snakeCase(sourceName)}`;
+  const result = createResultPlan(resultCarrier, handles, records, candidate, symbol, sourceName, header);
   return {
     handles: [...handles.values()],
     ownerKey: functionOwnerKey(candidate),
@@ -280,7 +320,7 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
       bindingId: declaration.binding.id,
       cppTarget: `${packageNamespace}::${safeCppValueName(sourceName)}`,
       error: errorPlan,
-      header: getPackageHeader(module.packageName, context),
+      header,
       packageName: module.packageName,
       parameters,
       result,
@@ -289,10 +329,19 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
       symbol,
       visibility: 'FLIGHT_CPP_API',
     },
+    records: [...records.values()],
   };
 }
 
-function createResultPlan(carrier: Carrier, handles: Map<string, HandleDraft>): CompilerCppCAbiResultPlan {
+function createResultPlan(
+  carrier: Carrier,
+  handles: Map<string, HandleDraft>,
+  records: Map<string, CompilerCppCAbiRecordPlan>,
+  candidate: FunctionCandidate,
+  symbol: string,
+  sourceName: string,
+  header: string,
+): CompilerCppCAbiResultPlan {
   if (carrier.kind === 'void') {
     return { adapter: 'none', kind: 'void', ownership: 'none', presence: 'not-applicable' };
   }
@@ -305,6 +354,20 @@ function createResultPlan(carrier: Carrier, handles: Map<string, HandleDraft>): 
       name: 'out_result',
       ownership: 'value',
       presence: 'required',
+    };
+  }
+  if (carrier.kind === 'record') {
+    const record = createRecordPlan(carrier, candidate, `${symbol}_result_record`, `${sourceName}.result`, header);
+    records.set(record.carrier, record);
+    return {
+      adapter: 'copy-record-to-out',
+      carrier: `struct ${record.carrier}*`,
+      initialization: 'record-zero',
+      kind: 'out',
+      name: 'out_result',
+      ownership: 'value',
+      presence: 'required',
+      recordCarrier: record.carrier,
     };
   }
   handles.set(carrier.handle.identity, carrier.handle);
@@ -340,10 +403,7 @@ function planCarrier(
     case 'function':
       throw createCAbiPlanningFailure('callable-value', 'callable values have no ABI v1 C carrier');
     case 'object':
-      throw createCAbiPlanningFailure(
-        'open-structural-type',
-        'structural object values have no named, closed ABI v1 owner',
-      );
+      return planRecordCarrier(type.properties);
     case 'unknown':
       throw createCAbiPlanningFailure('open-structural-type', `${type.source} values have no closed ABI v1 carrier`);
     case 'union':
@@ -401,8 +461,25 @@ function planNamedCarrier(
   visitedAliases: Set<string>,
 ): Carrier {
   if (type.reference.kind === 'ambient') {
+    if (type.reference.name === 'Partial' && type.typeArguments.length === 1) {
+      const properties = context.referencePlanner.resolveObjectShape(type, module);
+      if (!properties) {
+        throw createCAbiPlanningFailure('open-structural-type', 'Partial does not resolve to one closed ABI v1 record');
+      }
+      return planRecordCarrier(properties);
+    }
+    if (type.reference.name === 'Partial') {
+      throw createCAbiPlanningFailure('generic-surface', 'Partial must have exactly one closed type argument');
+    }
     if (type.reference.name === 'Readonly' && type.typeArguments.length === 1) {
-      return planCarrier(type.typeArguments[0]!, module, context, true, visitedAliases);
+      const carrier = planCarrier(type.typeArguments[0]!, module, context, true, visitedAliases);
+      if (carrier.kind === 'record') {
+        throw createCAbiPlanningFailure(
+          'open-structural-type',
+          'readonly structural record views need owner-preserving ABI evidence outside v1',
+        );
+      }
+      return carrier;
     }
     if (type.reference.name === 'Readonly') {
       throw createCAbiPlanningFailure('generic-surface', 'Readonly must have exactly one closed type argument');
@@ -491,6 +568,120 @@ function planNamedCarrier(
     kind: 'reference',
     presence: 'required',
     readonly,
+  };
+}
+
+function planRecordCarrier(properties: readonly Readonly<IrObjectTypeProperty>[]): RecordCarrier {
+  if (properties.length === 0 || !properties.some((property) => property.optional)) {
+    throw createCAbiPlanningFailure(
+      'open-structural-type',
+      'structural object values without optional members have no elected ABI v1 record carrier',
+    );
+  }
+  const members = properties.map((property, position) => planRecordMember(property, position));
+  const fieldOwners = new Map<string, string>();
+  for (const member of members) {
+    const fields = member.presence === 'explicit-flag' ? [member.hasName, member.name] : [member.name];
+    for (const field of fields) {
+      const previous = fieldOwners.get(field);
+      if (previous) {
+        throw createCAbiPlanningFailure(
+          'record-member-collision',
+          `record members ${previous} and ${member.sourceName} share normalized C field ${field}`,
+        );
+      }
+      fieldOwners.set(field, member.sourceName);
+    }
+  }
+  return { kind: 'record', members };
+}
+
+function planRecordMember(property: Readonly<IrObjectTypeProperty>, position: number): CompilerCppCAbiRecordMemberPlan {
+  if (property.computedKey || property.phantom || property.role) {
+    throw createCAbiPlanningFailure(
+      'unsupported-carrier',
+      `record member ${property.name} needs computed, phantom, or callable ABI semantics outside v1`,
+    );
+  }
+  let type = property.type;
+  let explicitPresence = property.optional;
+  if (type.kind === 'union') {
+    const hasNull = type.types.some((member) => member.kind === 'null');
+    const hasUndefined = type.types.some((member) => member.kind === 'undefined');
+    if (hasNull && (hasUndefined || property.optional)) {
+      throw createCAbiPlanningFailure(
+        'dual-sentinel-union',
+        `optional record member ${property.name} admits both null and undefined, which one presence flag cannot collapse`,
+      );
+    }
+    if (hasNull) {
+      throw createCAbiPlanningFailure(
+        'unsupported-carrier',
+        `nullable record member ${property.name} needs a pointer carrier outside this scalar record slice`,
+      );
+    }
+    const values = type.types.filter((member) => member.kind !== 'undefined');
+    if (!hasUndefined || values.length !== 1) {
+      throw createCAbiPlanningFailure(
+        'unsupported-carrier',
+        `record member ${property.name} does not have one scalar ABI v1 value`,
+      );
+    }
+    explicitPresence = true;
+    type = values[0]!;
+  }
+  if (type.kind === 'null' && property.optional) {
+    throw createCAbiPlanningFailure(
+      'dual-sentinel-union',
+      `optional record member ${property.name} admits both null and undefined, which one presence flag cannot collapse`,
+    );
+  }
+  const scalar = planRecordScalar(type, property.name);
+  const name = safeCIdentifier(property.name);
+  const common = {
+    carrier: scalar.carrier,
+    cppName: safeCppValueName(property.name),
+    initialization: scalar.initialization,
+    name,
+    position,
+    sourceName: property.name,
+  } as const;
+  return explicitPresence
+    ? { ...common, hasName: `has_${name}`, presence: 'explicit-flag' }
+    : { ...common, presence: 'required' };
+}
+
+function planRecordScalar(
+  type: Readonly<IrType>,
+  memberName: string,
+): Readonly<{ carrier: 'bool' | 'double'; initialization: 'false' | '0.0' }> {
+  if (type.kind === 'primitive' && type.name === 'boolean') return { carrier: 'bool', initialization: 'false' };
+  if (type.kind === 'primitive' && type.name === 'number') return { carrier: 'double', initialization: '0.0' };
+  if (type.kind === 'literal' && typeof type.value === 'boolean') return { carrier: 'bool', initialization: 'false' };
+  if (type.kind === 'literal' && typeof type.value === 'number') return { carrier: 'double', initialization: '0.0' };
+  throw createCAbiPlanningFailure(
+    'unsupported-carrier',
+    `record member ${memberName} does not have a boolean or number ABI v1 carrier`,
+  );
+}
+
+function createRecordPlan(
+  carrier: Readonly<RecordCarrier>,
+  candidate: FunctionCandidate,
+  name: string,
+  sourceName: string,
+  header: string,
+): CompilerCppCAbiRecordPlan {
+  return {
+    bindingId: candidate.declaration.binding.id,
+    carrier: name,
+    construction: 'flight-reference-designated-optional-aggregate',
+    header,
+    members: carrier.members,
+    packageName: candidate.module.packageName,
+    passing: 'borrowed-const-pointer',
+    source: candidate.module.source,
+    sourceName,
   };
 }
 
@@ -633,6 +824,9 @@ function collectGlobalNameCollisionOwners(drafts: readonly FunctionDraft[]): Rea
       add(handle.retainSymbol, entity, draft.ownerKey);
       add(handle.releaseSymbol, entity, draft.ownerKey);
     }
+    for (const record of draft.records) {
+      add(`tag:${record.carrier}`, `record:${draft.ownerKey}:${record.sourceName}`, draft.ownerKey);
+    }
   }
   const collided = new Set<string>();
   for (const entities of names.values()) {
@@ -744,6 +938,7 @@ function snakeCase(value: string): string {
 
 const cKeywords = new Set([
   'auto',
+  'bool',
   'break',
   'case',
   'char',
@@ -755,6 +950,7 @@ const cKeywords = new Set([
   'else',
   'enum',
   'extern',
+  'false',
   'float',
   'for',
   'goto',
@@ -772,6 +968,7 @@ const cKeywords = new Set([
   'struct',
   'switch',
   'typedef',
+  'true',
   'union',
   'unsigned',
   'void',

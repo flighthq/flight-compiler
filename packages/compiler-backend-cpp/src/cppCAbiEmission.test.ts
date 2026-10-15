@@ -90,6 +90,7 @@ FLIGHT_CPP_API flight_cpp_status flight_cpp_add(double left, double right, doubl
         },
       ],
       handles: [],
+      records: [],
       schema: 'flight-compiler-cpp-c-abi-emission/1',
     });
   });
@@ -146,6 +147,62 @@ FLIGHT_CPP_API flight_cpp_status flight_cpp_add(double left, double right, doubl
       expect(headerContents).toContain('typedef enum flight_cpp_status');
       expect(headerContents).toContain('#include <stdbool.h>');
     }
+  });
+
+  it('emits explicit presence fields and preserves absent, zero, and false record inputs', () => {
+    const plan = createPlan(`
+      interface Options { sampleCount: number; enabled: boolean; }
+      export function apply(options: Partial<Options>): void { void options; }
+    `);
+    const before = structuredClone(plan);
+
+    const emission = emitCompilerCppCAbiPlan(plan);
+    const record = emission.records[0]!;
+    const apply = emission.functions[0]!;
+
+    expect(record.headerContents).toContain(`struct flight_cpp_apply_options_record {
+  bool has_sample_count;
+  double sample_count;
+  bool has_enabled;
+  bool enabled;
+};`);
+    expect(apply.headerContents).toContain(record.headerContents.trim().split('\n').slice(2).join('\n'));
+    expect(apply.headerContents).toContain('flight_cpp_apply(const struct flight_cpp_apply_options_record* options);');
+    expect(apply.adapterSourceContents).toContain('if (options == nullptr) {');
+    expect(apply.adapterSourceContents).toContain(
+      'using flight_cpp_adapter_argument_0 = std::remove_cvref_t<decltype(flight_cpp_adapter_argument_type<0>(&flight::geometry::apply))>;',
+    );
+    expect(apply.adapterSourceContents).toContain(
+      'flight::make_ref<flight_cpp_adapter_argument_0_element>(flight_cpp_adapter_argument_0_element{',
+    );
+    expect(apply.adapterSourceContents).toContain(
+      '.sample_count = options->has_sample_count ? std::optional<double>{options->sample_count} : std::nullopt',
+    );
+    expect(apply.adapterSourceContents).toContain(
+      '.enabled = options->has_enabled ? std::optional<bool>{options->enabled} : std::nullopt',
+    );
+    expect(apply.adapterSourceContents).not.toMatch(/options->sample_count\s*\?/u);
+    expect(apply.adapterSourceContents).not.toMatch(/options->enabled\s*\?/u);
+    expect(plan).toEqual(before);
+  });
+
+  it('clears optional record outputs before validation and preserves present zero and false', () => {
+    const plan = createPlan(`
+      export function snapshot(): { sampleCount?: number; enabled?: boolean } { return {}; }
+    `);
+
+    const source = emitCompilerCppCAbiPlan(plan).functions[0]!.adapterSourceContents;
+
+    expect(source).toContain('out_result->has_sample_count = false;\n    out_result->sample_count = 0.0;');
+    expect(source).toContain('out_result->has_enabled = false;\n    out_result->enabled = false;');
+    expect(source.indexOf('out_result->has_sample_count = false;')).toBeLessThan(
+      source.indexOf('if (out_result == nullptr)'),
+    );
+    expect(source).toContain('out_result->has_sample_count = flight_cpp_adapter_result->sample_count.has_value();');
+    expect(source).toContain('out_result->sample_count = flight_cpp_adapter_result->sample_count.value_or(0.0);');
+    expect(source).toContain('out_result->has_enabled = flight_cpp_adapter_result->enabled.has_value();');
+    expect(source).toContain('out_result->enabled = flight_cpp_adapter_result->enabled.value_or(false);');
+    expect(source).toContain('} catch (...) {\n    return FLIGHT_CPP_STATUS_EXCEPTION;\n  }');
   });
 
   it('emits one opaque wrapper lifecycle with owned creation and retained identity', () => {
