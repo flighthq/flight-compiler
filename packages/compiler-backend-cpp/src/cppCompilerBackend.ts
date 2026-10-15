@@ -5171,6 +5171,7 @@ function emitExpression(
       return `(${emitCppTruthinessExpression(expression.condition, context)} ? ${emitCppConditionalBranchCpp(expression.whenTrue, getCppConditionBranchContextCpp(expression.condition, true, context), expectedType)} : ${emitCppConditionalBranchCpp(expression.whenFalse, getCppConditionBranchContextCpp(expression.condition, false, context), expectedType)})`;
     }
     case 'element': {
+      refuseCppHostObjectDynamicIndexCpp(expression, context);
       const narrowedPresent = emitCppNarrowedPresentAccessCpp(expression, context, expectedType);
       if (narrowedPresent) return narrowedPresent;
       if (expression.optional) return emitOptionalElementExpressionCpp(expression, context);
@@ -14584,6 +14585,29 @@ function getCppClosedKeyElementWriteTypeCpp(
   }
   const { members } = getCppClosedKeyElementMembersCpp(expression, keys, context);
   return createIrTypeEvidenceUnionCpp(keys.map((key) => members.get(key)!.type));
+}
+
+// A host object supplied by an external binding has only the members that binding names; it has no
+// general C++ subscript or keyed object view. Named member reads use the property lane, and a finite key
+// proven to name bound members is dispatched before its callee element is emitted. Any element access
+// that reaches here would instead index the host carrier after an `any` or Record cast, which neither
+// compiles nor identifies a member target. Refuse that unsupported operation without affecting other
+// indexed values.
+function refuseCppHostObjectDynamicIndexCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): void {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return;
+  let receiver: Readonly<IrExpression> = expression.object;
+  while (receiver.kind === 'cast') receiver = receiver.expression;
+  if (receiver.kind !== 'identifier' || receiver.reference.kind !== 'ambient') return;
+  const name = receiver.reference.name;
+  if (!getCompilerExternalBindingEvidenceCpp(name, 'value', context.options.externalBindings)) return;
+  emissionError(
+    context,
+    `dynamic index on the bound host object ${name} requires a finite key that names declared members: ${name}[key] has no subscript in C++, and an open string or any-typed key cannot be resolved to a member target. Select the member through a closed union of its declared member names, or call the member by name`,
+    'cpp-host-object-dynamic-index',
+  );
 }
 
 // `sink[key](message)` where `key` is a finite set of string literals and `sink` is an ambient value space
