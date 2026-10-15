@@ -361,6 +361,9 @@ interface EmitContext {
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
   exceptionPointerBindingIds: ReadonlySet<string>;
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
+  // A declaration-owner answer depends only on the immutable module graph. Share complete answers across
+  // every module emitted by one session, but never across sessions (whose graph snapshots may differ).
+  exportedTypeOwnerCache: Map<string, readonly CppTypeDeclarationOwner[]>;
   // The bindings whose declaration elected the erased dynamic value as its storage. A presence test
   // asks this rather than the declared type, because the two disagree in both directions and each
   // direction is a shape the SDK writes.
@@ -452,6 +455,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const interfaceInheritancePass = createCompilerLoweringPassInterfaceInheritanceCpp(modules, moduleResolution);
       const directBindingOwners = createCppDirectBindingOwners(modules);
       const importBindingOwners = createCppImportBindingOwners(modules);
+      const exportedTypeOwnerCache = new Map<string, readonly CppTypeDeclarationOwner[]>();
       const targetNameMaps = createCppTargetNameMaps(modules);
       const anonymousStructNaming = createCppAnonymousStructNaming(targetNameMaps);
       const unionArmIdentities = new Map<string, CppUnionArmIdentity[]>();
@@ -461,6 +465,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const refusalPlaceholderGraph: CppRefusalPlaceholderGraph = {
         anonymousStructNaming,
         directBindingOwners,
+        exportedTypeOwnerCache,
         importBindingOwners,
         interfaceInheritancePass,
         moduleImporterIndex,
@@ -483,6 +488,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
               interfaceInheritancePass,
               directBindingOwners,
               importBindingOwners,
+              exportedTypeOwnerCache,
               targetNameMaps,
               anonymousStructNaming,
               unionArmIdentities,
@@ -545,6 +551,7 @@ function emitIrModuleCppWithContext(
   interfaceInheritancePass?: Readonly<CompilerLoweringPass> | undefined,
   directBindingOwners?: ReadonlyMap<string, CppDirectBindingOwner | null> | undefined,
   importBindingOwners?: ReadonlyMap<string, CppImportBindingOwner | null> | undefined,
+  exportedTypeOwnerCache?: Map<string, readonly CppTypeDeclarationOwner[]> | undefined,
   targetNameMaps?: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
   anonymousStructNaming?: AnonymousStructNaming | undefined,
   unionArmIdentities?: Map<string, CppUnionArmIdentity[]> | undefined,
@@ -678,6 +685,7 @@ function emitIrModuleCppWithContext(
     denseArraySequentialAppendPlans,
     dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
+    exportedTypeOwnerCache: exportedTypeOwnerCache ?? new Map(),
     erasedDynamicStorageBindingIds,
     erasedObjectParameterBindingIds,
     exceptionPointerBindingIds: collectCppExceptionPointerBindingIdsCpp(module, bindingTypes),
@@ -16895,8 +16903,23 @@ function getCppExportedTypeDeclarationOwnersCpp(
   context: EmitContext,
   visited: ReadonlySet<string>,
 ): readonly CppTypeDeclarationOwner[] {
+  return lookupCppExportedTypeDeclarationOwnersCpp(module, exportedName, context, visited).owners;
+}
+
+// Which declarations a module exports under one name, following local import-forwarding, `export *`, and
+// named re-exports. The answer is a function of the immutable module graph and can therefore be reused by
+// every query in one emission session. A cycle cuts the current walk short, though, so an answer reached through
+// that cut may be partial: truncation propagates to every ancestor and none of those answers enter the memo.
+function lookupCppExportedTypeDeclarationOwnersCpp(
+  module: Readonly<IrModule>,
+  exportedName: string,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): Readonly<{ owners: readonly CppTypeDeclarationOwner[]; truncated: boolean }> {
   const key = `${getCppModuleIdentityKey(module)}\0${exportedName}`;
-  if (visited.has(key)) return [];
+  if (visited.has(key)) return { owners: [], truncated: true };
+  const cached = context.exportedTypeOwnerCache.get(key);
+  if (cached !== undefined) return { owners: cached, truncated: false };
   const nextVisited = new Set(visited).add(key);
   const bindingIds = new Set([
     ...module.declarations.flatMap((declaration) =>
@@ -16920,6 +16943,7 @@ function getCppExportedTypeDeclarationOwnersCpp(
     }
     return [{ declaration, module }];
   });
+  let truncated = false;
   const localForwarded = module.exports.flatMap((exported): readonly CppTypeDeclarationOwner[] => {
     if (exported.kind !== 'local' || exported.exported !== exportedName) return [];
     const imported = module.imports.flatMap((item) =>
@@ -16929,9 +16953,16 @@ function getCppExportedTypeDeclarationOwnersCpp(
     )[0];
     if (!imported || imported.binding.imported === '*') return [];
     const moduleContext = module === context.module ? context : { ...context, module };
-    return getCppResolvedImportModules(imported.specifier, moduleContext).flatMap((targetModule) =>
-      getCppExportedTypeDeclarationOwnersCpp(targetModule, imported.binding.imported, context, nextVisited),
-    );
+    return getCppResolvedImportModules(imported.specifier, moduleContext).flatMap((targetModule) => {
+      const answer = lookupCppExportedTypeDeclarationOwnersCpp(
+        targetModule,
+        imported.binding.imported,
+        context,
+        nextVisited,
+      );
+      truncated ||= answer.truncated;
+      return answer.owners;
+    });
   });
   const forwarded = module.exports.flatMap((exported): readonly CppTypeDeclarationOwner[] => {
     const importedName =
@@ -16942,11 +16973,15 @@ function getCppExportedTypeDeclarationOwnersCpp(
           : undefined;
     if (!importedName || (exported.kind !== 'all' && exported.kind !== 'reexport')) return [];
     const moduleContext = module === context.module ? context : { ...context, module };
-    return getCppResolvedImportModules(exported.specifier, moduleContext).flatMap((targetModule) =>
-      getCppExportedTypeDeclarationOwnersCpp(targetModule, importedName, context, nextVisited),
-    );
+    return getCppResolvedImportModules(exported.specifier, moduleContext).flatMap((targetModule) => {
+      const answer = lookupCppExportedTypeDeclarationOwnersCpp(targetModule, importedName, context, nextVisited);
+      truncated ||= answer.truncated;
+      return answer.owners;
+    });
   });
-  return [...direct, ...localForwarded, ...forwarded];
+  const owners = [...direct, ...localForwarded, ...forwarded];
+  if (!truncated) context.exportedTypeOwnerCache.set(key, owners);
+  return { owners, truncated };
 }
 
 // Names the alternatives the declaring module minted, qualified by that module's namespace, so a
@@ -29907,6 +29942,7 @@ interface CppSalvageRequest {
 interface CppRefusalPlaceholderGraph {
   readonly anonymousStructNaming: AnonymousStructNaming;
   readonly directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
+  readonly exportedTypeOwnerCache: Map<string, readonly CppTypeDeclarationOwner[]>;
   readonly importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
   readonly interfaceInheritancePass: Readonly<CompilerLoweringPass>;
   readonly moduleImporterIndex: CppModuleImporterIndex;
@@ -29952,6 +29988,7 @@ function emitCppRefusalPlaceholder(
       graph?.interfaceInheritancePass,
       graph?.directBindingOwners,
       graph?.importBindingOwners,
+      graph?.exportedTypeOwnerCache,
       graph?.targetNameMaps,
       graph?.anonymousStructNaming,
       graph?.unionArmIdentities,
