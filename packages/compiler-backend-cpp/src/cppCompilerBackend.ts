@@ -16085,6 +16085,14 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
     return evidence.whenResult ? test : `!(${test})`;
   }
   if (plan.kind === 'dualSentinelVariant') {
+    if (evidence.member.kind === 'null' || evidence.member.kind === 'undefined') {
+      context.includes.add('variant');
+      const sentinels = getCppDualSentinelTargetTypes(context);
+      const selected = evidence.member.kind === 'null' ? sentinels.null : sentinels.undefined;
+      const binding = emitInitializedBindingValueCpp(evidence.binding, context);
+      const test = `std::holds_alternative<${selected}>(${binding})`;
+      return evidence.whenResult ? test : `!(${test})`;
+    }
     const alternatives = plan.valueSlots.filter(
       (slot) =>
         slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, evidence.member)) ||
@@ -17838,24 +17846,48 @@ function emitContextualUnionExpressionInContextCpp(
       // rather than reconstructed source spelling -- is the authority for this call.
       return emitExpression(expression, context, undefined, false);
     }
-    const targetSlots = plan.valueSlots.filter((slot) => slot.targetType === externalValueTarget);
-    const unresolvedTargetSlot =
-      targetSlots.length === 0 &&
-      plan.valueSlots.length === 1 &&
-      plan.valueSlots[0]!.sourceAlternatives.every((alternative) => alternative.kind === 'unknown');
-    if (targetSlots.length !== 1 && !unresolvedTargetSlot) {
-      emissionError(
+    const externalExpressionType = getIrExpressionTypeEvidenceCpp(expression, context);
+    const externalExpressionUnion = externalExpressionType
+      ? getIrUnionTypeCpp(externalExpressionType, context, new Set())
+      : undefined;
+    const externalExpressionPlan = externalExpressionUnion
+      ? getCppUnionRepresentationPlan(externalExpressionUnion, context)
+      : undefined;
+    const externalExpressionCarrier = externalExpressionUnion
+      ? qualifyCppDeclaringModuleTypeCpp(emitUnionTypeCpp(externalExpressionUnion, context), context)
+      : undefined;
+    // A manifest result carrier can itself be a represented SOURCE union. When a wider destination adds a
+    // second sentinel (the current GL shape is a nullable call result stored in an optional property), the
+    // generic union conversion below must unpack that source carrier and reconstruct each sentinel. Treating
+    // the complete optional<T> result as though it were one present destination slot instead either wraps the
+    // optional as a value or rejects it because the destination's value slot is T. Defer only with exact
+    // evidence: immutable provenance, the same complete C++ carrier, and the sentinel the manifest declares.
+    const representedExternalSource = Boolean(
+      externalPresence?.immutable &&
+      externalExpressionPlan &&
+      externalExpressionCarrier === externalValueTarget &&
+      externalExpressionPlan.sentinels[externalPresence.absence] === 'optionalAbsence',
+    );
+    if (!representedExternalSource) {
+      const targetSlots = plan.valueSlots.filter((slot) => slot.targetType === externalValueTarget);
+      const unresolvedTargetSlot =
+        targetSlots.length === 0 &&
+        plan.valueSlots.length === 1 &&
+        plan.valueSlots[0]!.sourceAlternatives.every((alternative) => alternative.kind === 'unknown');
+      if (targetSlots.length !== 1 && !unresolvedTargetSlot) {
+        emissionError(
+          context,
+          `external call result type ${externalValueTarget} is not one represented contextual runtime domain`,
+        );
+      }
+      return emitCppUnionValueConstruction(
+        emitExpression(expression, context, undefined, false),
+        externalValueTarget,
+        union,
+        plan.kind,
         context,
-        `external call result type ${externalValueTarget} is not one represented contextual runtime domain`,
       );
     }
-    return emitCppUnionValueConstruction(
-      emitExpression(expression, context, undefined, false),
-      externalValueTarget,
-      union,
-      plan.kind,
-      context,
-    );
   }
   const inferredExpressionType = getIrExpressionTypeForUnionConstructionCpp(expression, plan.valueSlots, context);
   const expressionType = inferredExpressionType

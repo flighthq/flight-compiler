@@ -21148,14 +21148,15 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
   it('recovers an imported host Pick before resolving its member-result conversion', () => {
     const types = ts.createSourceFile(
       '/flight/packages/types/src/GlContext.ts',
-      `type GlContextMember = 'getExtension';
-       export interface GlContext extends Pick<WebGL2RenderingContext, GlContextMember> {}`,
+      `type GlContextMember = 'getExtension' | 'getUniformLocation';
+       export interface GlContext extends Pick<WebGL2RenderingContext, GlContextMember> {}
+       export interface ProgramLocations { locColor?: WebGLUniformLocation | null }`,
       ts.ScriptTarget.Latest,
       true,
     );
     const render = ts.createSourceFile(
       '/flight/packages/render-gl/src/compressed.ts',
-      `import type { GlContext } from '@flighthq/types/contract';
+      `import type { GlContext, ProgramLocations } from '@flighthq/types/contract';
        export function compressed(gl: GlContext): Record<string, number> | null {
          return gl.getExtension('WEBGL_compressed_texture_s3tc') as Record<string, number> | null;
        }
@@ -21165,6 +21166,29 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
        export function availableLocal(gl: GlContext): boolean {
          const extension = gl.getExtension('EXT_texture_filter_anisotropic');
          return extension !== null;
+       }
+       export function locations(gl: GlContext, program: WebGLProgram): ProgramLocations {
+         const locColor = gl.getUniformLocation(program, 'u_color');
+         return { locColor };
+       }
+       export function resolveLocation(
+         gl: GlContext, program: WebGLProgram, locations: ProgramLocations,
+       ): WebGLUniformLocation | null {
+         if (locations.locColor !== undefined) return locations.locColor;
+         const location: WebGLUniformLocation | null = gl.getUniformLocation(program, 'u_color');
+         locations.locColor = location;
+         return location;
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const incompatible = ts.createSourceFile(
+      '/flight/packages/render-gl/src/incompatible.ts',
+      `import type { GlContext } from '@flighthq/types/contract';
+       interface WrongLocations { locColor?: WebGLProgram | null }
+       export function incompatible(gl: GlContext, program: WebGLProgram): WrongLocations {
+         const locColor = gl.getUniformLocation(program, 'u_wrong');
+         return { locColor };
        }`,
       ts.ScriptTarget.Latest,
       true,
@@ -21182,6 +21206,7 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
       [
         { packageName: '@flighthq/types', sourceFile: types, upstreamDirectory: '/flight' },
         { packageName: '@flighthq/render-gl', sourceFile: render, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/render-gl', sourceFile: incompatible, upstreamDirectory: '/flight' },
       ],
       moduleResolution,
     );
@@ -21209,6 +21234,12 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
                   sourceMember: 'getExtension',
                   targetName: 'get_extension',
                 },
+                {
+                  callResultAbsence: 'null',
+                  callResultType: 'std::optional<flight::host_sdl::WebGlUniformLocation>',
+                  sourceMember: 'getUniformLocation',
+                  targetName: 'get_uniform_location',
+                },
               ],
               nullability: 'non-null',
               ownership: 'shared',
@@ -21233,6 +21264,22 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
               space: 'type',
               targetName: 'flight::host_sdl::GlAnisotropyExtension',
             },
+            {
+              headers: ['flight/host_sdl/webgl.hpp'],
+              nullability: 'non-null',
+              ownership: 'shared',
+              sourceName: 'WebGLProgram',
+              space: 'type',
+              targetName: 'flight::host_sdl::WebGlProgram',
+            },
+            {
+              headers: ['flight/host_sdl/webgl.hpp'],
+              nullability: 'nullable',
+              ownership: 'shared',
+              sourceName: 'WebGLUniformLocation',
+              space: 'type',
+              targetName: 'flight::host_sdl::WebGlUniformLocation',
+            },
           ],
           schema: 'flight-cpp-external-bindings/1',
         },
@@ -21256,6 +21303,23 @@ export function preferred(): number { return NativeSurface.preferredFormat; }`,
     expect(emittedRender).toContain('return gl.get_extension(flight::String("EXT_color_buffer_float")).has_value();');
     expect(emittedRender).toContain('std::optional<flight::host_sdl::GlExtension> extension = gl.get_extension(');
     expect(emittedRender).toContain('return extension.has_value();');
+    expect(emittedRender).toContain(
+      'std::optional<flight::host_sdl::WebGlUniformLocation> loc_color = gl.get_uniform_location',
+    );
+    expect(emittedRender.match(/gl\.get_uniform_location\(program, flight::String\("u_color"\)\)/gu)).toHaveLength(2);
+    expect(emittedRender).toContain(
+      'if (!contextual_union_source.has_value()) return std::variant<flight::host_sdl::WebGlUniformLocation, flight::Null, flight::Undefined>{std::in_place_type<flight::Null>, flight::null}',
+    );
+    expect(emittedRender).toContain(
+      'std::in_place_type<flight::host_sdl::WebGlUniformLocation>, contextual_union_source.value()',
+    );
+    expect(emittedRender).not.toContain('std::in_place_type<flight::Undefined>, flight::undefined');
+    expect(emittedRender).toContain('std::holds_alternative<flight::Undefined>(locations->loc_color)');
+
+    const incompatibleFailure = captureBackendEmissionFailure(() => session.emitModule(modules[2]!));
+    expect(incompatibleFailure.rule).toBe('cpp-contextual-union-inequivalent');
+    expect(incompatibleFailure.message).toContain('WebGlUniformLocation');
+    expect(incompatibleFailure.message).toContain('WebGlProgram');
   });
 
   it.skipIf(!canCompileCpp)('runs present external result locals without rebuilding their shared owner', () => {
