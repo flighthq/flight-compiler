@@ -22028,7 +22028,8 @@ int main() {
     expect(signalSlot.diagnostics).toEqual([]);
     expect(emitted.match(/flight::bind_callable_v1<T>\(/g)).toHaveLength(4);
     expect(emitted).toContain('(signal->emit = flight::bind_callable_v1<T>(null_signal_emit));');
-    expect(emitted).toContain('slot.value()(std::forward<ArgsPack>(args)...);');
+    // The loop reuses the pack for every slot, so forwarding would move an rvalue into the first slot only.
+    expect(emitted).toContain('slot.value()(args...);');
     expect(emitted).toContain('return value;');
     expect(emitted).not.toContain('flight::Any::');
     expect(emitted).not.toContain('static_cast');

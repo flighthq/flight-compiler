@@ -371,6 +371,9 @@ interface EmitContext {
   immediateDenseArrayElementPresence: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   denseArraySequentialAppendPlans: ReadonlyMap<string, Readonly<CppDenseArraySequentialAppendPlan>>;
   dependentCallablePacks: ReadonlyMap<string, Readonly<IrParameter>>;
+  // A dependent callable pack spread more than once, or below a repeating loop statement, must retain each
+  // element for every call rather than perfectly forwarding it into the first call.
+  reusedDependentCallablePackIds: ReadonlySet<string>;
   exceptionPointerBindingIds: ReadonlySet<string>;
   directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
   // A declaration-owner answer depends only on the immutable module graph. Share complete answers across
@@ -682,6 +685,7 @@ function emitIrModuleCppWithContext(
       ([bindingId]) => !denseArrayLengthBindingIds.has(bindingId),
     ),
   );
+  const dependentCallablePacks = collectIrModuleDependentCallablePacksCpp(module);
   const context: EmitContext = {
     activeDependentCallablePackIds: new Set(),
     anonymousStructs: new Map(),
@@ -698,7 +702,11 @@ function emitIrModuleCppWithContext(
     denseArrayLengthBindingIds: new Set([...denseArrayLengthBindingIds, ...denseArraySequentialAppendPlans.keys()]),
     immediateDenseArrayElementPresence: new Set(),
     denseArraySequentialAppendPlans,
-    dependentCallablePacks: collectIrModuleDependentCallablePacksCpp(module),
+    dependentCallablePacks,
+    reusedDependentCallablePackIds: collectIrModuleReusedDependentCallablePackIdsCpp(
+      module,
+      new Set(dependentCallablePacks.keys()),
+    ),
     directBindingOwners: directBindingOwners ?? createCppDirectBindingOwners(sourceModules),
     exportedTypeOwnerCache: exportedTypeOwnerCache ?? new Map(),
     erasedDynamicStorageBindingIds,
@@ -24389,8 +24397,10 @@ function emitCppDependentCallableSpreadArgument(
     emissionError(context, 'dependent callable parameter packs require terminal call expansion');
   }
   const pack = getCppDependentCallablePack(parameter, context);
+  const name = getBindingTargetName(parameter.binding, context);
+  if (context.reusedDependentCallablePackIds.has(parameter.binding.id)) return `${name}...`;
   context.includes.add('utility');
-  return `std::forward<${pack.typeName}>(${getBindingTargetName(parameter.binding, context)})...`;
+  return `std::forward<${pack.typeName}>(${name})...`;
 }
 
 function unwrapCppAnyRestCallableCast(expression: Readonly<IrExpression>): Readonly<IrExpression> {
@@ -31110,6 +31120,52 @@ function collectIrModuleDependentCallablePacksCpp(
     },
   });
   return packs;
+}
+
+// Perfect forwarding consumes an rvalue pack element. JavaScript instead gives every spread call the same
+// rest values, so forwarding is valid only when the binding has one expansion outside repeating control flow.
+// Binding identities are module-unique, and traversal paths let a loop own all expansions in its condition,
+// increment, and body without reinterpreting any expression or changing its order.
+function collectIrModuleReusedDependentCallablePackIdsCpp(
+  module: Readonly<IrModule>,
+  dependentCallablePackIds: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const loopPaths: (readonly (number | string)[])[] = [];
+  const spreadPaths = new Map<string, (readonly (number | string)[])[]>();
+  analyzeIrModuleTraversal(module, {
+    statement(statement, path) {
+      if (
+        statement.kind === 'for' ||
+        statement.kind === 'forOf' ||
+        statement.kind === 'forIn' ||
+        statement.kind === 'while' ||
+        statement.kind === 'do'
+      ) {
+        loopPaths.push(path);
+      }
+    },
+    expression(expression, path) {
+      if (
+        expression.kind !== 'spread' ||
+        expression.expression.kind !== 'identifier' ||
+        expression.expression.reference.kind !== 'binding'
+      ) {
+        return;
+      }
+      const bindingId = expression.expression.reference.binding.id;
+      if (!dependentCallablePackIds.has(bindingId)) return;
+      spreadPaths.set(bindingId, [...(spreadPaths.get(bindingId) ?? []), path]);
+    },
+  });
+  const isBelow = (path: readonly (number | string)[], prefix: readonly (number | string)[]): boolean =>
+    prefix.length < path.length && prefix.every((segment, index) => path[index] === segment);
+  const reused = new Set<string>();
+  for (const [bindingId, paths] of spreadPaths) {
+    if (paths.length > 1 || paths.some((path) => loopPaths.some((loop) => isBelow(path, loop)))) {
+      reused.add(bindingId);
+    }
+  }
+  return reused;
 }
 
 function mergeIrTypeParametersCpp(
