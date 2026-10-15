@@ -74,6 +74,7 @@ import type {
   IrBindingIdentity,
   IrInterfaceDeclaration,
   IrModule,
+  IrNamedVariable,
   IrObjectMember,
   IrObjectTypeProperty,
   IrParameter,
@@ -311,6 +312,9 @@ interface EmitContext {
   anonymousStructs: Map<string, AnonymousStruct>;
   anonymousStructTypeParameters: readonly IrTypeParameter[];
   arrayElementBindingIds: ReadonlySet<string>;
+  // A nullable generic element read at the start of a zero-based `i < array.length` loop has only
+  // the element's null channel. The set is binding-scoped so no other indexed read inherits that proof.
+  lengthProvenNullableArrayElementBindingIds: ReadonlySet<string>;
   async?: boolean | undefined;
   bindingClasses: ReadonlyMap<string, Readonly<IrClassDeclaration>>;
   bindingInitializers: ReadonlyMap<string, Readonly<IrExpression>>;
@@ -601,6 +605,7 @@ function emitIrModuleCppWithContext(
   const erasedDynamicStorageBindingIds = new Set<string>();
   const erasedObjectParameterBindingIds = new Set<string>();
   const arrayElementBindingIds = new Set<string>();
+  const lengthProvenNullableArrayElementBindingIds = new Set<string>();
   const denseArrayLengthBindingIds = collectIrModuleDenseArrayLengthBindingIdsCpp(sourceModule);
   const denseArraySequentialAppendPlans = new Map(
     [...collectIrModuleDenseArraySequentialAppendPlansCpp(sourceModule)].filter(
@@ -612,6 +617,7 @@ function emitIrModuleCppWithContext(
     anonymousStructs: new Map(),
     anonymousStructTypeParameters: [],
     arrayElementBindingIds,
+    lengthProvenNullableArrayElementBindingIds,
     bindingClasses: collectIrModuleBindingClassesCpp(module, bindingTypes),
     bindingInitializers: collectIrModuleBindingInitializersCpp(module),
     immutableInitializerBindingIds: collectIrModuleImmutableInitializerBindingIdsCpp(module),
@@ -668,6 +674,9 @@ function emitIrModuleCppWithContext(
   }
   for (const bindingId of collectIrModuleArrayElementBindingIdsCpp(module, context)) {
     arrayElementBindingIds.add(bindingId);
+  }
+  for (const bindingId of collectIrModuleLengthProvenNullableArrayElementBindingIdsCpp(module, context)) {
+    lengthProvenNullableArrayElementBindingIds.add(bindingId);
   }
   for (const [bindingId, targetType] of collectCppContextualBindingStorageTargetTypesCpp(module, context)) {
     contextualBindingStorageTargetTypes.set(bindingId, targetType);
@@ -2796,6 +2805,9 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   }
   const name = getBindingTargetName(variable.binding, context);
   const arrayElement = context.arrayElementBindingIds.has(variable.binding.id);
+  const lengthProvenNullableArrayElement =
+    arrayElement && context.lengthProvenNullableArrayElementBindingIds.has(variable.binding.id);
+  const indexedAbsence = arrayElement && !lengthProvenNullableArrayElement;
   const weakMapViewInitializer =
     !variable.mutable && variable.initializer?.kind === 'cast' ? variable.initializer : undefined;
   const weakMapViewPlan = weakMapViewInitializer ? getCppWeakMapViewPlan(weakMapViewInitializer, context) : undefined;
@@ -2868,13 +2880,15 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
               isCppDeducibleUnknownStorageCpp(variable.mutable, variable.initializer, variable.type)
             ? 'auto'
             : emitType(variable.type, context));
-  const emittedType = arrayElement && type !== 'auto' ? emitOptionalTypeCpp(type, true, context) : type;
+  const emittedType = indexedAbsence && type !== 'auto' ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
   const initializerValue = variable.initializer
     ? weakMapViewPlan && weakMapViewInitializer
       ? emitCppErasedWeakMapViewAcquisition(weakMapViewInitializer, weakMapViewPlan, context)
       : arrayElement
-        ? emitOptionalExpressionCpp(variable.initializer, context, variable.type)
+        ? lengthProvenNullableArrayElement
+          ? `${emitOptionalExpressionCpp(variable.initializer, context, variable.type)}.value_or(std::nullopt)`
+          : emitOptionalExpressionCpp(variable.initializer, context, variable.type)
         : emitExpression(
             variable.initializer,
             context,
@@ -2911,7 +2925,7 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     // Rebound or mutable bindings never receive this preserved type, so their cell still follows the
     // declaration storage that every later assignment must satisfy.
     const sharedStorageType = preservedInitializerType ? emitType(preservedInitializerType, context) : type;
-    const sharedType = emitOptionalTypeCpp(sharedStorageType, arrayElement, context);
+    const sharedType = emitOptionalTypeCpp(sharedStorageType, indexedAbsence, context);
     const sharedInitializer = initializerValue!;
     const tuple = variable.type ? getIrTupleTypeCpp(variable.type, context, new Set()) : undefined;
     const runtimeArrayInitializer =
@@ -25422,6 +25436,164 @@ function collectIrModuleArrayElementBindingIdsCpp(
     if (absenceObserved.has(id)) result.add(id);
   }
   return result;
+}
+
+// `Array::get` adds index absence outside the element carrier. A loop that starts its numeric index at
+// zero, preserves that nonnegative integer by increments, checks `i < sameArray.length`, and immediately
+// reads `sameArray[i]` proves that outer layer cannot be observed. For `(T | null)[]`, retain exactly the
+// generic element's null optional, and leave every unchecked, differently bounded, non-generic,
+// non-nullable, or dual-sentinel element on the general indexed lane.
+function collectIrModuleLengthProvenNullableArrayElementBindingIdsCpp(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): ReadonlySet<string> {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return new Set();
+  const result = new Set<string>();
+  const inspectStatements = (statements: readonly Readonly<IrStatement>[]): void => {
+    for (const [index, statement] of statements.entries()) {
+      const loop = statements[index + 1];
+      const indexBindingId = getCppZeroInitializedLoopIndexBindingIdCpp(statement);
+      if (indexBindingId && loop?.kind === 'while') {
+        const bindingId = getCppLengthProvenNullableArrayElementBindingIdCpp(loop, indexBindingId, context);
+        if (bindingId && context.arrayElementBindingIds.has(bindingId)) result.add(bindingId);
+      }
+      collectCppNestedStatementListsCpp(statement, inspectStatements);
+    }
+  };
+  for (const declaration of module.declarations) {
+    if (declaration.kind === 'function') inspectStatements(declaration.body);
+    if (declaration.kind !== 'class') continue;
+    if (declaration.classConstructor) inspectStatements(declaration.classConstructor.body);
+    for (const method of declaration.methods) inspectStatements(method.body);
+  }
+  return result;
+}
+
+function getCppZeroInitializedLoopIndexBindingIdCpp(statement: Readonly<IrStatement>): string | undefined {
+  if (statement.kind !== 'variable' || statement.declarations.length !== 1) return undefined;
+  const declaration = statement.declarations[0]!;
+  return 'binding' in declaration &&
+    declaration.mutable &&
+    declaration.initializer?.kind === 'literal' &&
+    declaration.initializer.value === 0
+    ? declaration.binding.id
+    : undefined;
+}
+
+function getCppLengthProvenNullableArrayElementBindingIdCpp(
+  loop: Readonly<Extract<IrStatement, { kind: 'while' }>>,
+  indexBindingId: string,
+  context: EmitContext,
+): string | undefined {
+  const condition = loop.condition;
+  if (
+    condition.kind !== 'binary' ||
+    condition.operator !== '<' ||
+    !isIrBindingIdentifierCpp(condition.left, indexBindingId) ||
+    condition.right.kind !== 'property' ||
+    condition.right.optional ||
+    condition.right.name !== 'length' ||
+    condition.right.member?.receiver !== 'array' ||
+    doesCppLoopLoseNonnegativeIntegerIndexCpp(loop.body, indexBindingId)
+  ) {
+    return undefined;
+  }
+  const declaration = getCppLeadingLoopVariableCpp(loop.body);
+  if (
+    !declaration ||
+    declaration.mutable ||
+    declaration.initializer?.kind !== 'element' ||
+    declaration.initializer.optional ||
+    !declaration.initializer.semantics.receivers.includes('array') ||
+    !isIrBindingIdentifierCpp(declaration.initializer.index, indexBindingId) ||
+    !areCppStableArrayReceiverExpressionsEqualCpp(
+      declaration.initializer.object,
+      condition.right.object,
+      context,
+    )
+  ) {
+    return undefined;
+  }
+  const array = getIrArrayTypeCpp(
+    getIrExpressionTypeEvidenceCpp(declaration.initializer.object, context),
+    context,
+    new Set(),
+  );
+  const union = array ? getIrUnionTypeCpp(array.element, context, new Set()) : undefined;
+  if (!union) return undefined;
+  const plan = getCppUnionRepresentationPlan(union, context);
+  return plan.kind === 'optionalSingle' &&
+    plan.valueSlots.length === 1 &&
+    plan.sentinels.null === 'optionalAbsence' &&
+    plan.sentinels.undefined === 'absent' &&
+    union.types.some((member) => getCppTypeParameterDeclarationCpp(member, context))
+    ? declaration.binding.id
+    : undefined;
+}
+
+function getCppLeadingLoopVariableCpp(body: Readonly<IrStatement>): Readonly<IrNamedVariable> | undefined {
+  if (body.kind === 'block') {
+    const first = body.statements[0];
+    return first ? getCppLeadingLoopVariableCpp(first) : undefined;
+  }
+  if (body.kind !== 'variable' || body.declarations.length !== 1) return undefined;
+  const declaration = body.declarations[0]!;
+  return 'binding' in declaration ? declaration : undefined;
+}
+
+function doesCppLoopLoseNonnegativeIntegerIndexCpp(body: Readonly<IrStatement>, bindingId: string): boolean {
+  let losesProof = false;
+  analyzeIrStatementSubtreeTraversal(body, {
+    expression(expression) {
+      if (
+        expression.kind === 'unary' &&
+        (expression.operator === '++' || expression.operator === '--') &&
+        isIrBindingIdentifierCpp(expression.operand, bindingId)
+      ) {
+        if (expression.operator !== '++') losesProof = true;
+      }
+      if (expression.kind === 'assignment' && isIrBindingIdentifierCpp(expression.left, bindingId)) {
+        const increment =
+          expression.operator === '+=' &&
+          expression.right.kind === 'literal' &&
+          typeof expression.right.value === 'number' &&
+          Number.isSafeInteger(expression.right.value) &&
+          expression.right.value >= 0;
+        if (!increment) losesProof = true;
+      }
+      return losesProof ? false : undefined;
+    },
+  });
+  return losesProof;
+}
+
+function areCppStableArrayReceiverExpressionsEqualCpp(
+  left: Readonly<IrExpression>,
+  right: Readonly<IrExpression>,
+  context: EmitContext,
+): boolean {
+  if (
+    left.kind === 'identifier' &&
+    left.reference.kind === 'binding' &&
+    right.kind === 'identifier' &&
+    right.reference.kind === 'binding'
+  ) {
+    return left.reference.binding.id === right.reference.binding.id;
+  }
+  if (
+    left.kind !== 'property' ||
+    right.kind !== 'property' ||
+    left.optional ||
+    right.optional ||
+    left.absent ||
+    right.absent ||
+    left.name !== right.name ||
+    getIrExpressionClassAccessorCpp(left.object, left.name, 'get', context) ||
+    getIrExpressionClassAccessorCpp(right.object, right.name, 'get', context)
+  ) {
+    return false;
+  }
+  return areCppStableArrayReceiverExpressionsEqualCpp(left.object, right.object, context);
 }
 
 // A sized JavaScript Array begins sparse, while flight::Array is dense. One sound bridge is an
