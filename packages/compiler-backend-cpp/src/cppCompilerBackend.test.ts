@@ -49644,11 +49644,10 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
 
     expect(result.diagnostics).toEqual([]);
-    // A type parameter has no shape to resolve, so the member's type has to be spelled directly. The
-    // construct is not new -- the runtime writes `remove_cvref_t<decltype(declval<Object&>().member)>`
-    // in generated_row_member -- and without it a generic alias reading a member's type cannot be
-    // emitted at all, even though nothing instantiates it.
-    expect(emitted.contents).toContain('std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>');
+    // The source interface value is represented by a reference carrier, so the unevaluated read
+    // reaches the member through that carrier. Without a dependent spelling, a generic alias reading
+    // a member's type cannot be emitted at all, even though nothing instantiates it here.
+    expect(emitted.contents).toContain('std::remove_cvref_t<decltype(std::declval<Type&>()->dimension)>');
   });
 
   it('proves a dependent member read on every inhabited constraint branch', () => {
@@ -49672,21 +49671,21 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // may be written, an inherited one through the base an interface extends, and a union member through
     // every branch the alias expands to. All five spell the same construct, because the proof decides
     // whether the construct may be written and never what it says.
-    expect(emitted.contents.match(/std::remove_cvref_t<decltype\(std::declval<Type&>\(\)\./gu)).toHaveLength(5);
+    expect(emitted.contents.match(/std::remove_cvref_t<decltype\(std::declval<Type&>\(\)->/gu)).toHaveLength(5);
     expect(emitted.contents).toContain(
-      'using RequiredMember = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+      'using RequiredMember = std::remove_cvref_t<decltype(std::declval<Type&>()->dimension)>;',
     );
     expect(emitted.contents).toContain(
-      'using OptionalMember = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+      'using OptionalMember = std::remove_cvref_t<decltype(std::declval<Type&>()->dimension)>;',
     );
     expect(emitted.contents).toContain(
-      'using ReadonlyMember = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+      'using ReadonlyMember = std::remove_cvref_t<decltype(std::declval<Type&>()->dimension)>;',
     );
     expect(emitted.contents).toContain(
-      'using InheritedMember = std::remove_cvref_t<decltype(std::declval<Type&>().label)>;',
+      'using InheritedMember = std::remove_cvref_t<decltype(std::declval<Type&>()->label)>;',
     );
     expect(emitted.contents).toContain(
-      'using CommonMember = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+      'using CommonMember = std::remove_cvref_t<decltype(std::declval<Type&>()->dimension)>;',
     );
   });
 
@@ -49705,7 +49704,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     // refuse, because `T extends { k: string }` says the member exists and not what it is. Both
     // instantiations reach the one template below, each carrying its own member.
     expect(emitted.contents).toContain(
-      'using MemberOf = std::remove_cvref_t<decltype(std::declval<Type&>().dimension)>;',
+      'using MemberOf = std::remove_cvref_t<decltype(std::declval<Type&>()->dimension)>;',
     );
     expect(emitted.contents.match(/using (Numeric|Textual)Dimension = MemberOf</gu)).toHaveLength(2);
     expect(emitted.contents).toContain('double dimension;');

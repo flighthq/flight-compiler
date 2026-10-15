@@ -9802,9 +9802,9 @@ function emitCppStructuralRowReferenceTypeCpp(
   return `flight::StructuralRef<${emitCppStructuralRowSchemaTypeCpp(representation, context)}>`;
 }
 
-// The member type of a dependent parameter, spelled the way the runtime already spells it. `remove_cvref_t`
-// makes an optional member and a plain one agree, because an optional member's C++ storage is the target's
-// spelling of `U | undefined` rather than `U`.
+// The member type of a dependent parameter, read through the reference carrier selected for generated
+// interfaces. `remove_cvref_t` makes an optional member and a plain one agree, because an optional member's
+// C++ storage is the target's spelling of `U | undefined` rather than `U`.
 //
 // The dependent form is emitted only where the member is PROVEN on every inhabited branch of the
 // parameter's constraint, because the instantiation is not visible here. An unproven key does not fail
@@ -9839,7 +9839,7 @@ function emitCppDependentIndexedAccessCpp(
   const objectType = emitType(type.object, context);
   context.includes.add('type_traits');
   context.includes.add('utility');
-  return `std::remove_cvref_t<decltype(std::declval<${objectType}&>().${safeCppName(key)})>`;
+  return `std::remove_cvref_t<decltype(std::declval<${objectType}&>()->${safeCppName(key)})>`;
 }
 
 // Whether every value the constraint admits has the literal member `key`, so that a dependent member read
