@@ -18116,6 +18116,15 @@ function emitContextualUnionExpressionInContextCpp(
       context,
     );
     if (widenedOptional) return widenedOptional;
+    const readonlyStructuralViews = emitCppStructuralReferenceMultiVariantConversionCpp(
+      expression,
+      expressionType,
+      expressionPlan,
+      union,
+      plan,
+      context,
+    );
+    if (readonlyStructuralViews) return readonlyStructuralViews;
     // `std::optional` erases which single sentinel caused absence, while the source plan retains it.
     // When widening into a dual-sentinel variant, branch before extracting the value and reconstruct
     // that exact sentinel. An explicit assertion may change the present structural view, but its
@@ -18417,15 +18426,7 @@ function emitContextualUnionExpressionInContextCpp(
       );
     }
     const structuralSlots = plan.valueSlots.flatMap((slot) => {
-      const alternatives = slot.sourceAlternatives.filter((alternative) => {
-        const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
-        return (
-          (context.referenceRepresentationPlanner.resolveStructuralRow(alternative, context.module) === undefined ||
-            getCppStructuralRowObjectWideningProofCpp(runtimeType, alternative, isolatedContext) === 'proven') &&
-          emitCppStructuralReferenceValueConversionCpp('source', runtimeType, alternative, isolatedContext) !==
-            undefined
-        );
-      });
+      const alternatives = getCppProvenStructuralUnionConversionAlternativesCpp(runtimeType, slot, context);
       return alternatives.length === 1 ? [{ alternative: alternatives[0]!, slot }] : [];
     });
     if (structuralSlots.length === 1) {
@@ -18752,6 +18753,111 @@ function getCppContextualUnionSubsetSlotsCpp(
 
 function admitsCppUnionAbsenceCpp(kind: ReturnType<typeof getCppUnionRepresentationPlan>['kind']): boolean {
   return kind === 'optionalSingle' || kind === 'optionalVariant';
+}
+
+// The canonical proof that one source value can enter one union slot through a structural-reference
+// conversion. A row target must prove that every target cell already exists with the same C++ storage in
+// the source object; a nominal target retains the established exact-owner recovery from a source row.
+// Returning every proven alternative leaves ambiguity and capability policy to the caller.
+function getCppProvenStructuralUnionConversionAlternativesCpp(
+  sourceType: Readonly<IrType>,
+  targetSlot: Readonly<{
+    readonly runtimeType: IrType;
+    readonly sourceAlternatives: readonly IrType[];
+    readonly targetType: string;
+  }>,
+  context: EmitContext,
+): readonly Readonly<IrType>[] {
+  return targetSlot.sourceAlternatives.flatMap((alternative) => {
+    const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(alternative, context.module);
+    const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+    if (
+      (targetRow && getCppStructuralRowObjectWideningProofCpp(sourceType, alternative, isolatedContext) !== 'proven') ||
+      emitCppStructuralReferenceValueConversionCpp('source', sourceType, alternative, isolatedContext) === undefined
+    ) {
+      return [];
+    }
+    return [alternative];
+  });
+}
+
+// Rebuild a readonly structural-view union from a nominal-owner union after proving one destination for
+// every source arm. An exact row owner outranks a wider compatible view; otherwise the widening must be
+// unique, and no two source owners may claim the same destination slot. The visitor receives the source
+// expression once and each branch constructs only a view over that held owner -- never a native-owner
+// recovery, copied row, materialized object, or writable capability.
+function emitCppStructuralReferenceMultiVariantConversionCpp(
+  expression: Readonly<IrExpression>,
+  expressionType: Readonly<IrType>,
+  sourcePlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  targetUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  targetPlan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (
+    sourcePlan.kind !== 'multiVariant' ||
+    targetPlan.kind !== 'multiVariant' ||
+    sourcePlan.valueSlots.length === 0 ||
+    sourcePlan.valueSlots.some(
+      (slot) =>
+        getCppReferenceElementTypeNameCpp(slot.targetType) === undefined ||
+        context.referenceRepresentationPlanner.resolveStructuralRow(slot.runtimeType, context.module) !== undefined,
+    )
+  ) {
+    return undefined;
+  }
+  const mapped = sourcePlan.valueSlots.map((sourceSlot) => {
+    const candidates = targetPlan.valueSlots.flatMap((targetSlot, targetIndex) =>
+      getCppProvenStructuralUnionConversionAlternativesCpp(sourceSlot.runtimeType, targetSlot, context).flatMap(
+        (alternative) => {
+          const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(alternative, context.module);
+          const targetObject = targetRow ? getCppStructuralRowObjectTypeCpp(targetRow) : undefined;
+          if (!targetRow || !targetObject || !isCppStructuralRowReadonlyCpp(targetRow)) return [];
+          const isolatedContext: EmitContext = {
+            ...context,
+            anonymousStructs: new Map(),
+            includes: new Set<string>(),
+          };
+          return [
+            {
+              alternative,
+              exactOwner: sourceSlot.targetType === emitType(targetObject, isolatedContext),
+              source: sourceSlot,
+              target: targetSlot,
+              targetIndex,
+            },
+          ];
+        },
+      ),
+    );
+    const exact = candidates.filter((candidate) => candidate.exactOwner);
+    if (exact.length === 1) return exact[0];
+    return exact.length === 0 && candidates.length === 1 ? candidates[0] : undefined;
+  });
+  if (mapped.some((mapping) => mapping === undefined)) return undefined;
+  const mappings = mapped.filter((mapping) => mapping !== undefined);
+  if (new Set(mappings.map((mapping) => mapping.targetIndex)).size !== mappings.length) return undefined;
+
+  const carrier = qualifyCppDeclaringModuleTypeCpp(emitUnionTypeCpp(targetUnion, context), context);
+  const value = getGeneratedTargetName('contextualUnionValue', context);
+  const valueType = getGeneratedTargetName('contextualUnionValueType', context);
+  const branches = mappings.map((mapping, index) => {
+    const converted = emitCppStructuralReferenceValueConversionCpp(
+      value,
+      mapping.source.runtimeType,
+      mapping.alternative,
+      context,
+    );
+    if (!converted) return undefined;
+    const targetType = qualifyCppDeclaringModuleTypeCpp(mapping.target.targetType, context);
+    const result = emitCppUnionValueConstruction(converted, targetType, targetUnion, targetPlan.kind, context, carrier);
+    if (index === mappings.length - 1) return `else return ${result};`;
+    return `${index === 0 ? 'if' : 'else if'} constexpr (std::is_same_v<${valueType}, ${mapping.source.targetType}>) return ${result};`;
+  });
+  if (branches.some((branch) => branch === undefined)) return undefined;
+  context.includes.add('type_traits');
+  context.includes.add('variant');
+  return `std::visit([&](const auto& ${value}) -> ${carrier} { using ${valueType} = std::decay_t<decltype(${value})>; ${branches.join(' ')} }, ${emitExpression(expression, context, expressionType, false)})`;
 }
 
 function emitCppContextualUnionSubsetCpp(
