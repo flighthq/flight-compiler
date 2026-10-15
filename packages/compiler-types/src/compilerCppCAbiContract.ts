@@ -10,7 +10,8 @@ export type CompilerCppCAbiAdapterConversion =
   | 'copy-record-from-c'
   | 'copy-record-to-out'
   | 'create-owned-handle-to-out'
-  | 'none';
+  | 'none'
+  | 'recover-readonly-owner-handle-to-out';
 
 export type CompilerCppCAbiDiagnosticCode =
   | 'ambiguous-owner'
@@ -21,6 +22,7 @@ export type CompilerCppCAbiDiagnosticCode =
   | 'open-structural-type'
   | 'overloaded-function'
   | 'record-member-collision'
+  | 'structural-owner-unproven'
   | 'unsupported-carrier'
   | 'unsupported-parameter';
 
@@ -220,7 +222,7 @@ export type CompilerCppCAbiResultPlan =
       presence: Exclude<CompilerCppCAbiPresence, 'not-applicable'>;
     }>
   | Readonly<{
-      adapter: 'create-owned-handle-to-out';
+      adapter: 'create-owned-handle-to-out' | 'recover-readonly-owner-handle-to-out';
       carrier: string;
       handleCarrier: string;
       initialization: 'null';

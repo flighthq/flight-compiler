@@ -313,32 +313,45 @@ FLIGHT_CPP_API flight_cpp_status flight_cpp_add(double left, double right, doubl
     expect(isCompilerCppCAbiEmissionFailure(failure)).toBe(true);
   });
 
-  it('refuses non-scalar carriers without emitting C++ type spelling', () => {
-    const module = lower(
-      'handle.ts',
-      `
-        export interface Point { x: number; }
-        export function inspect(point: Readonly<Point>): Point { return { x: point.x }; }
-      `,
-    );
-    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+  it('bridges readonly views through one exact owner and keeps Pick aliases opaque in C', () => {
+    const plan = createPlan(`
+      export interface Vector { x: number; y: number; }
+      type VectorPosition<Key extends keyof Vector> = Pick<Vector, Key>;
+      type VectorPositionAlias = VectorPosition<'x' | 'y'>;
+      export function inspect(vector: Readonly<Vector>): Readonly<Vector> { return vector; }
+      export function project(vector: VectorPositionAlias): VectorPositionAlias { return vector; }
+    `);
     const before = structuredClone(plan);
-    let failure: unknown;
+    const emission = emitCompilerCppCAbiPlan(plan);
+    const inspect = emission.functions.find((item) => item.symbol === 'flight_cpp_inspect')!;
+    const project = emission.functions.find((item) => item.symbol === 'flight_cpp_project')!;
 
-    try {
-      emitCompilerCppCAbiPlan(plan);
-    } catch (error) {
-      failure = error;
-    }
-
-    expect(failure).toEqual(
-      expect.objectContaining({
-        code: 'unsupported-carrier',
-        kind: 'cpp-c-abi-emission',
-        symbol: 'flight_cpp_inspect',
-      }),
+    expect(inspect.headerContents).toContain(
+      'flight_cpp_inspect(const struct flight_cpp_vector* vector, struct flight_cpp_vector** out_result);',
     );
-    expect((failure as Error).message).not.toMatch(/::|\bstd\b|[<>&]/u);
+    expect(inspect.headerContents).not.toMatch(/StructuralRef|RowReadonly|flight::|\bstd\b|\btemplate\b/u);
+    expect(inspect.headerContents).not.toContain('struct flight_cpp_vector {');
+    expect(inspect.adapterSourceContents).toContain(
+      'using flight_cpp_adapter_argument_0 = std::remove_cvref_t<decltype(flight_cpp_adapter_argument_type<0>(&flight::geometry::inspect))>;',
+    );
+    expect(inspect.adapterSourceContents).toContain(
+      'flight_cpp_adapter_argument_0{flight_cpp_vector_borrow_owner(vector)}',
+    );
+    expect(inspect.adapterSourceContents).toContain(
+      'flight_cpp_vector_create_owned(flight::structural_ref_cast<flight::Ref<flight::geometry::Vector>>(flight_cpp_adapter_result))',
+    );
+    expect(inspect.adapterSourceContents.match(/flight::structural_ref_cast/gu)).toHaveLength(1);
+    expect(inspect.adapterSourceContents).not.toContain('flight_cpp_vector_retain(vector)');
+    expect(inspect.adapterSourceContents).not.toContain('make_structural_ref');
+
+    expect(project.headerContents).toContain(
+      'flight_cpp_project(struct flight_cpp_vector* vector, struct flight_cpp_vector** out_result);',
+    );
+    expect(project.headerContents).not.toMatch(/VectorPosition|StructuralRef|flight::|\bstd\b|\btemplate\b/u);
+    expect(project.adapterSourceContents).toContain(
+      'flight_cpp_vector_create_owned(flight::geometry::project(flight_cpp_vector_borrow_owner(vector)))',
+    );
+    expect(project.adapterSourceContents).not.toContain('structural_ref_cast');
     expect(plan).toEqual(before);
   });
 });

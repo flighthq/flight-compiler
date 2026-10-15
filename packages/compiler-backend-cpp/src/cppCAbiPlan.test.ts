@@ -273,6 +273,102 @@ describe('createIrModulesCAbiPlanCpp', () => {
     ]);
   });
 
+  it('reuses only the exact named owner for readonly projections and Pick aliases', () => {
+    const module = lower(
+      'vectors.ts',
+      `
+        export interface Vector { x: number; y: number; }
+        export interface Point { x: number; y: number; }
+        type VectorPosition<Key extends keyof Vector> = Pick<Vector, Key>;
+        type VectorPositionAlias = VectorPosition<'x' | 'y'>;
+        export function inspect(vector: Readonly<Vector>): Readonly<Vector> { return vector; }
+        export function project(vector: VectorPositionAlias): VectorPositionAlias { return vector; }
+        export function inspectPoint(point: Readonly<Point>): number { return point.x; }
+      `,
+    );
+
+    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+    const inspect = plan.functions.find((item) => item.symbol === 'flight_cpp_inspect');
+    const project = plan.functions.find((item) => item.symbol === 'flight_cpp_project');
+    const inspectPoint = plan.functions.find((item) => item.symbol === 'flight_cpp_inspect_point');
+
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.handles.map((handle) => handle.carrier)).toEqual(['flight_cpp_point', 'flight_cpp_vector']);
+    expect(inspect).toMatchObject({
+      parameters: [
+        {
+          adapter: 'borrow-readonly-handle',
+          carrier: 'const struct flight_cpp_vector*',
+          handleCarrier: 'flight_cpp_vector',
+        },
+      ],
+      result: {
+        adapter: 'recover-readonly-owner-handle-to-out',
+        carrier: 'struct flight_cpp_vector**',
+        handleCarrier: 'flight_cpp_vector',
+      },
+    });
+    expect(project).toMatchObject({
+      parameters: [
+        {
+          adapter: 'borrow-handle',
+          carrier: 'struct flight_cpp_vector*',
+          handleCarrier: 'flight_cpp_vector',
+        },
+      ],
+      result: {
+        adapter: 'create-owned-handle-to-out',
+        carrier: 'struct flight_cpp_vector**',
+        handleCarrier: 'flight_cpp_vector',
+      },
+    });
+    expect(inspectPoint).toMatchObject({
+      parameters: [expect.objectContaining({ handleCarrier: 'flight_cpp_point' })],
+    });
+    expect(JSON.stringify(plan)).not.toContain('vector_position');
+  });
+
+  it('refuses ambiguous and ownerless structural projections with one target-owned rule', () => {
+    const module = lower(
+      'structural-owners.ts',
+      `
+        interface Vector { x: number; y: number; }
+        interface Point { x: number; y: number; }
+        export function ambiguous(value: Readonly<Pick<Vector | Point, 'x'>>): void { void value; }
+        export function materialized(value: Pick<Vector, 'x'>): void { void value; }
+        export function ownerless(value: Readonly<{ x: number; y: number }>): void { void value; }
+      `,
+    );
+
+    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+
+    expect(plan.functions).toEqual([]);
+    expect(plan.handles).toEqual([]);
+    expect(plan.diagnostics).toEqual([
+      expect.objectContaining({
+        classification: 'compiler-restriction',
+        code: 'structural-owner-unproven',
+        message: 'structural projection does not prove one exact canonical owner for every admitted source value',
+        sourceName: 'ambiguous',
+        target: 'cpp',
+      }),
+      expect.objectContaining({
+        classification: 'compiler-restriction',
+        code: 'structural-owner-unproven',
+        message: 'structural projection does not prove one exact canonical owner for every admitted source value',
+        sourceName: 'materialized',
+        target: 'cpp',
+      }),
+      expect.objectContaining({
+        classification: 'compiler-restriction',
+        code: 'structural-owner-unproven',
+        message: 'structural projection does not prove one exact canonical owner for every admitted source value',
+        sourceName: 'ownerless',
+        target: 'cpp',
+      }),
+    ]);
+  });
+
   it('refuses dual sentinels and other unsupported surfaces with stable target-owned diagnostics', () => {
     const module = lower(
       'unsupported.ts',
@@ -371,7 +467,7 @@ describe('createIrModulesCAbiPlanCpp', () => {
   it('is deterministic under module reordering and does not mutate inputs', () => {
     const geometry = lower(
       'geometry.ts',
-      'export interface Point { x: number; } export function makePoint(): Point { return { x: 1 }; } export function configure(options: { count?: number; enabled?: boolean }): void {}',
+      "export interface Point { x: number; } export type PointX<Key extends keyof Point> = Pick<Point, Key>; export function makePoint(): Point { return { x: 1 }; } export function inspect(point: Readonly<Point>): Readonly<Point> { return point; } export function project(point: PointX<'x'>): PointX<'x'> { return point; } export function configure(options: { count?: number; enabled?: boolean }): void {}",
     );
     const scalar = lower('scalar.ts', 'export function negate(value: boolean): boolean { return !value; }');
     const modules = [geometry, scalar];

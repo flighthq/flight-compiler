@@ -46,6 +46,7 @@ interface NamedTypeOwner {
 interface ReferenceCarrier {
   readonly handle: HandleDraft;
   readonly kind: 'reference';
+  readonly ownerProjection: boolean;
   readonly presence: Exclude<CompilerCppCAbiPresence, 'not-applicable'>;
   readonly readonly: boolean;
 }
@@ -372,7 +373,7 @@ function createResultPlan(
   }
   handles.set(carrier.handle.identity, carrier.handle);
   return {
-    adapter: 'create-owned-handle-to-out',
+    adapter: carrier.ownerProjection ? 'recover-readonly-owner-handle-to-out' : 'create-owned-handle-to-out',
     carrier: `struct ${carrier.handle.carrier}**`,
     handleCarrier: carrier.handle.carrier,
     initialization: 'null',
@@ -472,17 +473,16 @@ function planNamedCarrier(
       throw createCAbiPlanningFailure('generic-surface', 'Partial must have exactly one closed type argument');
     }
     if (type.reference.name === 'Readonly' && type.typeArguments.length === 1) {
-      const carrier = planCarrier(type.typeArguments[0]!, module, context, true, visitedAliases);
-      if (carrier.kind === 'record') {
-        throw createCAbiPlanningFailure(
-          'open-structural-type',
-          'readonly structural record views need owner-preserving ABI evidence outside v1',
-        );
-      }
-      return carrier;
+      return planOwnerPreservingProjectionCarrier(type, module, context, true, visitedAliases);
     }
     if (type.reference.name === 'Readonly') {
       throw createCAbiPlanningFailure('generic-surface', 'Readonly must have exactly one closed type argument');
+    }
+    if (type.reference.name === 'Pick' && type.typeArguments.length === 2) {
+      return planOwnerPreservingProjectionCarrier(type, module, context, readonly, visitedAliases);
+    }
+    if (type.reference.name === 'Pick') {
+      throw createCAbiPlanningFailure('generic-surface', 'Pick must have one owner and one closed key argument');
     }
     throw createCAbiPlanningFailure(
       type.reference.name === 'Function' ? 'callable-value' : 'unsupported-carrier',
@@ -492,7 +492,7 @@ function planNamedCarrier(
   if (type.reference.path.length > 0) {
     throw createCAbiPlanningFailure('ambiguous-owner', 'qualified named types do not identify one ABI v1 owner');
   }
-  if (type.reference.binding.kind === 'typeParameter' || type.typeArguments.length > 0) {
+  if (type.reference.binding.kind === 'typeParameter') {
     throw createCAbiPlanningFailure('generic-surface', 'generic types are not monomorphized by ABI v1');
   }
   const owner = resolveNamedTypeOwner(type, module, context);
@@ -503,12 +503,6 @@ function planNamedCarrier(
     );
   }
   const { declaration, module: ownerModule } = owner;
-  if (declaration.typeParameters.length > 0) {
-    throw createCAbiPlanningFailure(
-      'generic-surface',
-      `named type ${declaration.binding.name} is generic, which ABI v1 does not monomorphize`,
-    );
-  }
   if (declaration.kind === 'typeAlias') {
     const identity = typeOwnerKey(owner);
     if (visitedAliases.has(identity)) {
@@ -523,7 +517,19 @@ function planNamedCarrier(
         `type alias ${declaration.binding.name} does not resolve to one ABI v1 carrier`,
       );
     }
+    if (type.typeArguments.length > 0 && !isOwnerPreservingProjectionType(resolved)) {
+      throw createCAbiPlanningFailure(
+        'generic-surface',
+        `generic alias ${declaration.binding.name} does not resolve directly to an owner-preserving projection`,
+      );
+    }
     return planCarrier(resolved, ownerModule, context, readonly, nextVisited);
+  }
+  if (declaration.typeParameters.length > 0 || type.typeArguments.length > 0) {
+    throw createCAbiPlanningFailure(
+      'generic-surface',
+      `named type ${declaration.binding.name} is generic, which ABI v1 does not monomorphize`,
+    );
   }
   if (declaration.kind === 'interface' && declaration.indexSignature) {
     throw createCAbiPlanningFailure(
@@ -566,17 +572,59 @@ function planNamedCarrier(
       sourceName: declaration.binding.name,
     },
     kind: 'reference',
+    ownerProjection: false,
     presence: 'required',
     readonly,
   };
 }
 
+function isOwnerPreservingProjectionType(type: Readonly<IrType>): boolean {
+  return (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    (type.reference.name === 'Pick' || type.reference.name === 'Readonly')
+  );
+}
+
+function planOwnerPreservingProjectionCarrier(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  module: Readonly<IrModule>,
+  context: PlanningContext,
+  readonly: boolean,
+  visitedAliases: Set<string>,
+): ReferenceCarrier {
+  const subject = type.typeArguments[0];
+  const validProjection =
+    subject &&
+    (type.reference.kind !== 'ambient' ||
+      type.reference.name !== 'Pick' ||
+      context.referencePlanner.resolveObjectShape(type, module) !== undefined);
+  if (!validProjection) throwStructuralOwnerUnproven();
+  let carrier: Carrier;
+  try {
+    carrier = planCarrier(subject, module, context, readonly, visitedAliases);
+  } catch (error) {
+    if (!isCAbiPlanningFailure(error)) throw error;
+    throwStructuralOwnerUnproven();
+  }
+  if (carrier.kind !== 'reference') throwStructuralOwnerUnproven();
+  return {
+    ...carrier,
+    ownerProjection: carrier.ownerProjection || Boolean(context.referencePlanner.resolveStructuralRow(type, module)),
+    readonly,
+  };
+}
+
+function throwStructuralOwnerUnproven(): never {
+  throw createCAbiPlanningFailure(
+    'structural-owner-unproven',
+    'structural projection does not prove one exact canonical owner for every admitted source value',
+  );
+}
+
 function planRecordCarrier(properties: readonly Readonly<IrObjectTypeProperty>[]): RecordCarrier {
   if (properties.length === 0 || !properties.some((property) => property.optional)) {
-    throw createCAbiPlanningFailure(
-      'open-structural-type',
-      'structural object values without optional members have no elected ABI v1 record carrier',
-    );
+    throwStructuralOwnerUnproven();
   }
   const members = properties.map((property, position) => planRecordMember(property, position));
   const fieldOwners = new Map<string, string>();

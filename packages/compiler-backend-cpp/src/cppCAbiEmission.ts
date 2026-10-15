@@ -45,7 +45,11 @@ interface FunctionEmissionPlan {
   readonly result:
     | Readonly<{ kind: 'void' }>
     | Readonly<{ carrier: 'bool*' | 'double*'; initialization: 'false' | '0.0'; kind: 'scalar' }>
-    | Readonly<{ handle: Readonly<CompilerCppCAbiHandlePlan>; kind: 'handle' }>
+    | Readonly<{
+        adapter: 'create-owned-handle-to-out' | 'recover-readonly-owner-handle-to-out';
+        handle: Readonly<CompilerCppCAbiHandlePlan>;
+        kind: 'handle';
+      }>
     | Readonly<{ kind: 'record'; record: Readonly<CompilerCppCAbiRecordPlan> }>;
 }
 
@@ -233,7 +237,10 @@ function validateFunctionPlan(
       emissionParameters.push({ kind: 'record', parameter, record });
       continue;
     }
-    if (parameter.adapter !== 'borrow-handle' || parameter.presence !== 'required') {
+    if (
+      (parameter.adapter !== 'borrow-handle' && parameter.adapter !== 'borrow-readonly-handle') ||
+      parameter.presence !== 'required'
+    ) {
       throw createCompilerCppCAbiEmissionFailure(
         functionPlan,
         'unsupported-carrier',
@@ -241,7 +248,8 @@ function validateFunctionPlan(
       );
     }
     const handle = handlesByCarrier.get(parameter.handleCarrier);
-    if (!handle || parameter.carrier !== `struct ${handle.carrier}*` || parameter.ownership !== 'borrowed') {
+    const expectedCarrier = `${parameter.adapter === 'borrow-readonly-handle' ? 'const ' : ''}struct ${handle?.carrier ?? ''}*`;
+    if (!handle || parameter.carrier !== expectedCarrier || parameter.ownership !== 'borrowed') {
       throw createCompilerCppCAbiEmissionFailure(
         functionPlan,
         'ambiguous-lifecycle',
@@ -308,7 +316,8 @@ function validateFunctionPlan(
     return { function: functionPlan, parameters: emissionParameters, result: { kind: 'record', record } };
   }
   if (
-    functionPlan.result.adapter !== 'create-owned-handle-to-out' ||
+    (functionPlan.result.adapter !== 'create-owned-handle-to-out' &&
+      functionPlan.result.adapter !== 'recover-readonly-owner-handle-to-out') ||
     functionPlan.result.initialization !== 'null' ||
     functionPlan.result.name !== 'out_result' ||
     functionPlan.result.ownership !== 'owned' ||
@@ -328,7 +337,11 @@ function validateFunctionPlan(
       `C ABI result of ${functionPlan.symbol} does not identify one handle lifecycle`,
     );
   }
-  return { function: functionPlan, parameters: emissionParameters, result: { handle, kind: 'handle' } };
+  return {
+    function: functionPlan,
+    parameters: emissionParameters,
+    result: { adapter: functionPlan.result.adapter, handle, kind: 'handle' },
+  };
 }
 
 function assertHandlePlan(handle: Readonly<CompilerCppCAbiHandlePlan>): void {
@@ -583,20 +596,21 @@ function emitFunctionAdapterSourceContents(plan: FunctionEmissionPlan): string {
   const { function: functionPlan } = plan;
   const handles = collectFunctionHandles(plan);
   const records = collectFunctionRecords(plan);
-  const recordParameters = plan.parameters.filter(
-    (parameter): parameter is RecordParameterPlan => parameter.kind === 'record',
+  const inferredParameters = plan.parameters.filter(
+    (parameter): parameter is HandleParameterPlan | RecordParameterPlan =>
+      parameter.kind === 'record' ||
+      (parameter.kind === 'handle' && parameter.parameter.adapter === 'borrow-readonly-handle'),
   );
-  const lines =
-    records.length > 0
-      ? [
-          '#include <cstddef>',
-          '#include <optional>',
-          '#include <tuple>',
-          '#include <type_traits>',
-          '',
-          `#include <${functionPlan.header}>`,
-        ]
-      : [`#include <${functionPlan.header}>`];
+  const standardHeaders = [
+    ...(inferredParameters.length > 0 ? ['cstddef'] : []),
+    ...(records.length > 0 ? ['optional'] : []),
+    ...(inferredParameters.length > 0 ? ['tuple', 'type_traits'] : []),
+  ];
+  const lines = [
+    ...standardHeaders.map((header) => `#include <${header}>`),
+    ...(standardHeaders.length > 0 ? [''] : []),
+    `#include <${functionPlan.header}>`,
+  ];
   if (handles.length > 0) {
     lines.push('', ...handles.map((handle) => `struct ${handle.carrier};`));
     for (const handle of handles) {
@@ -612,20 +626,24 @@ function emitFunctionAdapterSourceContents(plan: FunctionEmissionPlan): string {
     }
   }
   for (const record of records) lines.push('', ...emitRecordDefinitionLines(record));
-  if (recordParameters.length > 0) {
+  if (inferredParameters.length > 0) {
     lines.push(
       '',
       'template <std::size_t Position, typename Result, typename... Arguments>',
       'auto flight_cpp_adapter_argument_type(Result (*)(Arguments...))',
       '    -> std::tuple_element_t<Position, std::tuple<Arguments...>>;',
     );
-    for (const parameter of recordParameters) {
+    for (const parameter of inferredParameters) {
       const position = parameter.parameter.position;
       lines.push(
         '',
         `using flight_cpp_adapter_argument_${position} = std::remove_cvref_t<decltype(flight_cpp_adapter_argument_type<${position}>(&${functionPlan.cppTarget}))>;`,
-        `using flight_cpp_adapter_argument_${position}_element = typename flight_cpp_adapter_argument_${position}::element_type;`,
       );
+      if (parameter.kind === 'record') {
+        lines.push(
+          `using flight_cpp_adapter_argument_${position}_element = typename flight_cpp_adapter_argument_${position}::element_type;`,
+        );
+      }
     }
   }
   lines.push('', `extern "C" ${emitFunctionSignature(plan)} {`);
@@ -659,7 +677,16 @@ function emitFunctionAdapterSourceContents(plan: FunctionEmissionPlan): string {
   if (plan.result.kind === 'scalar') {
     lines.push(`    *out_result = ${functionPlan.cppTarget}(${arguments_});`);
   } else if (plan.result.kind === 'handle') {
-    lines.push(`    *out_result = ${plan.result.handle.createOwnedSymbol}(${functionPlan.cppTarget}(${arguments_}));`);
+    if (plan.result.adapter === 'recover-readonly-owner-handle-to-out') {
+      lines.push(
+        `    const auto flight_cpp_adapter_result = ${functionPlan.cppTarget}(${arguments_});`,
+        `    *out_result = ${plan.result.handle.createOwnedSymbol}(flight::structural_ref_cast<${plan.result.handle.cppOwnerCarrier}>(flight_cpp_adapter_result));`,
+      );
+    } else {
+      lines.push(
+        `    *out_result = ${plan.result.handle.createOwnedSymbol}(${functionPlan.cppTarget}(${arguments_}));`,
+      );
+    }
   } else if (plan.result.kind === 'record') {
     lines.push(`    const auto flight_cpp_adapter_result = ${functionPlan.cppTarget}(${arguments_});`);
     for (const member of plan.result.record.members) {
@@ -696,7 +723,10 @@ function emitFunctionSignature(plan: FunctionEmissionPlan): string {
 
 function emitFunctionArgument(parameter: EmissionParameterPlan): string {
   if (parameter.kind === 'handle') {
-    return `${parameter.handle.borrowSymbol}(${parameter.parameter.name})`;
+    const borrowed = `${parameter.handle.borrowSymbol}(${parameter.parameter.name})`;
+    return parameter.parameter.adapter === 'borrow-readonly-handle'
+      ? `flight_cpp_adapter_argument_${parameter.parameter.position}{${borrowed}}`
+      : borrowed;
   }
   if (parameter.kind === 'scalar') return parameter.parameter.name;
   const members = parameter.record.members.map((member) => {
