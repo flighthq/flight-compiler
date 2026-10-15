@@ -4667,6 +4667,12 @@ function emitExpression(
         if (expression.expression.kind === 'object') {
           return emitExpression(expression.expression, context, expression.type);
         }
+        const unionStructuralAssertion = emitUnionMemberAssertionCpp(
+          structuralSourceExpression,
+          expression.type,
+          context,
+        );
+        if (unionStructuralAssertion) return unionStructuralAssertion;
         if (!structuralSource && isCppErasedDynamicValueTypeCpp(structuralSourceType)) {
           if (representedErasedStructuralSource && representedErasedStructuralProjection) {
             const sourceName = describeDeclaredIrTypeForDiagnosticCpp(representedErasedStructuralSource.type);
@@ -15264,6 +15270,39 @@ function emitUnionMemberAssertionCpp(
   // refuses rather than emitting something that cannot compile.
   const assertedUnion = getIrUnionTypeCpp(assertedType, context, new Set());
   const assertedPlan = assertedUnion ? getCppUnionRepresentationPlan(assertedUnion, context) : undefined;
+  // Keep identity-preserving utilities such as Readonly around the present type: resolving them while
+  // removing absence would turn the structural assertion back into its nominal reference and hide the
+  // row whose exact owner we need to select.
+  const assertedPresentTypes = assertedUnion?.types.filter(
+    (member) => member.kind !== 'null' && member.kind !== 'undefined',
+  );
+  const assertedStructuralType = assertedPresentTypes?.length === 1 ? assertedPresentTypes[0]! : assertedType;
+  const assertedStructuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(
+    assertedStructuralType,
+    context.module,
+  );
+  const assertedStructuralOwner = assertedStructuralRow
+    ? getCppStructuralRowObjectTypeCpp(assertedStructuralRow)
+    : undefined;
+  const assertedStructuralOwnerTarget = assertedStructuralOwner
+    ? emitType(assertedStructuralOwner, assertionContext)
+    : undefined;
+  const exactStructuralOwnerSlots = assertedStructuralOwnerTarget
+    ? plan.valueSlots.filter((slot) => {
+        if (slot.targetType === assertedStructuralOwnerTarget) return true;
+        // A union written as Readonly<A> | Readonly<B> stores structural views rather than the
+        // nominal references themselves. The view still records its exact underlying owner.
+        const slotStructuralRow = context.referenceRepresentationPlanner.resolveStructuralRow(
+          slot.runtimeType,
+          context.module,
+        );
+        const slotStructuralOwner = slotStructuralRow ? getCppStructuralRowObjectTypeCpp(slotStructuralRow) : undefined;
+        return slotStructuralOwner
+          ? emitType(slotStructuralOwner, assertionContext) === assertedStructuralOwnerTarget
+          : false;
+      })
+    : [];
+  const exactStructuralOwnerSlot = exactStructuralOwnerSlots.length === 1 ? exactStructuralOwnerSlots[0] : undefined;
   const structuralAlternative = getCppStructuralUnionAssertionAlternativeCpp(plan, assertedPlan, assertedType, context);
   if (structuralAlternative) {
     emissionError(
@@ -15308,6 +15347,7 @@ function emitUnionMemberAssertionCpp(
       narrowing !== undefined ||
       structuralNarrowing ||
       partialStructuralNarrowing !== undefined ||
+      slot === exactStructuralOwnerSlot ||
       slot.targetType === assertedTarget ||
       slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, assertedType)) ||
       isCppNominalHeritageUnionSlotCpp(slot, assertedType, context),
@@ -15427,12 +15467,9 @@ function emitUnionMemberAssertionCpp(
     // lowered yet when what actually blocks it is identity the carrier never held.
     const projectedImplementor =
       !namesSourceUnion && isCppProjectedInterfaceImplementorAssertionCpp(assertedType, assertedPlan, plan, context);
-    const missingStructuralOwner = getCppStructuralAssertionMissingOwnerPairCpp(
-      plan,
-      assertedPlan,
-      assertedType,
-      context,
-    );
+    const missingStructuralOwner = exactStructuralOwnerSlot
+      ? undefined
+      : getCppStructuralAssertionMissingOwnerPairCpp(plan, assertedPlan, assertedType, context);
     if (missingStructuralOwner) {
       refuseCppStructuralAssertionOwnerUnprovenCpp(
         context,
@@ -15491,6 +15528,18 @@ function emitUnionMemberAssertionCpp(
       const target = getCppSingleStructuralAliasUnionTargetTypeCpp(assertedPlan!, context);
       return `flight::structural_ref_cast<${target ?? assertedPlan!.valueSlots[0]!.targetType}>(${inner})`;
     }
+    // The selected slot retains the asserted row's exact concrete owner. Project the requested readonly
+    // structural view from that same shared owner instead of returning the nominal reference and relying
+    // on a later contextual conversion that no longer knows which variant alternative was selected.
+    if (exactStructuralOwnerSlot && alternatives[0] === exactStructuralOwnerSlot && assertedStructuralRow) {
+      const projected = emitCppStructuralReferenceValueConversionCpp(
+        inner,
+        exactStructuralOwnerSlot.runtimeType,
+        assertedStructuralType,
+        context,
+      );
+      if (projected) return projected;
+    }
     if (cast === undefined) return inner;
     context.includes.add('memory');
     return `std::static_pointer_cast<${cast}>(${inner})`;
@@ -15499,6 +15548,20 @@ function emitUnionMemberAssertionCpp(
     const source = getGeneratedTargetName('partialStructuralSource', context);
     context.includes.add('optional');
     return `([&]() -> ${emitType(assertedType, context)} { auto ${source} = ${value}; if (!${source}.has_value()) return std::nullopt; return ${narrowed(`${source}.value()`)}; }())`;
+  }
+  // A nullable assertion narrows only the present alternative; it does not assert that a value is
+  // present. Carry source absence into the asserted optional while projecting an exact present owner.
+  const preservesOptionalAbsence =
+    (plan.kind === 'optionalSingle' || plan.kind === 'optionalVariant') &&
+    (assertedPlan?.kind === 'optionalSingle' || assertedPlan?.kind === 'optionalVariant');
+  if (preservesOptionalAbsence && exactStructuralOwnerSlot && alternatives[0] === exactStructuralOwnerSlot) {
+    const source = getGeneratedTargetName('exactStructuralSource', context);
+    const present =
+      plan.kind === 'optionalVariant'
+        ? `std::get<${exactStructuralOwnerSlot.targetType}>(${source}.value())`
+        : `${source}.value()`;
+    context.includes.add('optional');
+    return `([&]() -> ${emitType(assertedType, context)} { const auto& ${source} = ${value}; if (!${source}.has_value()) return std::nullopt; return ${narrowed(present)}; }())`;
   }
   if (plan.kind === 'optionalSingle') return narrowed(`${value}.value()`);
   if (plan.kind === 'optionalVariant') return narrowed(`std::get<${alternatives[0]!.targetType}>(${value}.value())`);

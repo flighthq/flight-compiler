@@ -53978,4 +53978,131 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       ),
     ).toHaveLength(3);
   });
+
+  it('keeps an imported exact row owner qualified and evaluates its union source once', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/extensions',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/extensions.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/extensions.ts',
+            `export interface Extension { readonly kind: string }
+             export interface Anisotropy extends Extension { readonly kind: 'anisotropy'; strength: number }
+             export interface Clearcoat extends Extension { readonly kind: 'clearcoat'; factor: number }
+             export type ExtensionValue =
+               | Readonly<Extension>
+               | Readonly<Anisotropy>
+               | Readonly<Clearcoat>;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/scene3d-gl',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/scene3d-gl/src/extensions.ts',
+            `import type { Anisotropy, ExtensionValue } from '@flighthq/types/extensions';
+             export function strength(value: ExtensionValue): number {
+               return (value as Readonly<Anisotropy>).strength;
+             }
+             export function nextStrength(next: () => ExtensionValue): number {
+               return (next() as Readonly<Anisotropy>).strength;
+             }
+             export function nullableStrength(value: ExtensionValue | null): number {
+               const extension = value as Readonly<Anisotropy> | null;
+               return extension === null ? 0 : extension.strength;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/scene3d-gl': { includePrefix: 'flight/scene3d_gl', namespace: 'flight::scene3d_gl' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(
+      emitted.match(
+        /std::get<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flight::types::Anisotropy>>>>>\(/gu,
+      ),
+    ).toHaveLength(3);
+    expect(emitted.match(/next\(\)/gu)).toHaveLength(1);
+    expect(emitted).not.toContain('std::static_pointer_cast');
+    expect(emitted).not.toContain('flight::Any');
+    expect(emitted).not.toContain('flight::make_ref<flight::types::Anisotropy>');
+    expect(emitted).not.toContain('flight::materialize_row');
+  });
+
+  it('refuses ambiguous, sibling, writable, or inequivalent union row owners', () => {
+    const failure = (body: string) =>
+      captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower('open-reference-union-cast-refusal.ts', body).module, {
+          runtimeProfile: 'flight-cpp',
+        }),
+      );
+
+    const ambiguous = failure(
+      `interface Left { readonly kind: 'shared'; strength: number; left: boolean }
+       interface Right { readonly kind: 'shared'; strength: number; right: boolean }
+       interface Strength { readonly kind: 'shared'; strength: number }
+       type Value = Readonly<Left> | Readonly<Right>;
+       export function read(value: Value): number {
+         return (value as Readonly<Strength>).strength;
+       }`,
+    );
+    const sibling = failure(
+      `interface Stored { readonly kind: 'stored'; strength: number }
+       interface Sibling { readonly kind: 'stored'; strength: number }
+       interface Other { readonly kind: 'other'; factor: number }
+       type Value = Readonly<Stored> | Readonly<Other>;
+       export function read(value: Value): number {
+         return (value as Readonly<Sibling>).strength;
+       }`,
+    );
+    const writable = failure(
+      `interface Anisotropy { readonly kind: 'anisotropy'; strength: number }
+       interface Clearcoat { readonly kind: 'clearcoat'; factor: number }
+       type Value = Readonly<Anisotropy> | Readonly<Clearcoat>;
+       export function read(value: Value): number {
+         return (value as Anisotropy).strength;
+       }`,
+    );
+    const inequivalent = failure(
+      `interface Stored { readonly kind: 'stored'; strength: number }
+       interface Other { readonly kind: 'other'; factor: number }
+       interface Wrong { readonly kind: 'wrong'; strength: number }
+       type Value = Readonly<Stored> | Readonly<Other>;
+       export function read(value: Value): number {
+         return (value as Readonly<Wrong>).strength;
+       }`,
+    );
+
+    expect(ambiguous.rule).toBe('cpp-type-assertion-unidentified');
+    expect(sibling.rule).toBe('cpp-type-assertion-unidentified');
+    expect(writable.rule).toBe('cpp-structural-variant-assertion-without-nominal-storage');
+    expect(inequivalent.rule).toBe('cpp-type-assertion-unidentified');
+  });
 });
