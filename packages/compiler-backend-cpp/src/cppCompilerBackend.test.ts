@@ -26744,8 +26744,88 @@ int main() {
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('flight::Map<flight::String, flight::ErasedRef> cache;');
     expect(emitted).toContain('flight::erased_ref_as<typename T::element_type>');
     expect(emitted).toContain('flight::erased_ref_as<Base>');
+    expect(emitted.match(/runtime->cache\.get\(key\)/gu)).toHaveLength(1);
+    expect(emitted).not.toContain('static_cast<T>');
+    expect(emitted).not.toContain('static_cast<flight::Ref<Base>>');
+  });
+
+  it('qualifies exact erased Map owners and refuses ambiguous, non-reference, or multi-owner targets', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/cache',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/cache.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/cache.ts',
+            `export interface Program { handle: number }
+             export interface Runtime { cache: Map<string, object> }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/scene3d-gl',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/scene3d-gl/src/cache.ts',
+            `import type { Program, Runtime } from '@flighthq/types/cache';
+             export function read(runtime: Runtime, key: string): Program | undefined {
+               return runtime.cache.get(key) as Program | undefined;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/scene3d-gl': { includePrefix: 'flight/scene3d_gl', namespace: 'flight::scene3d_gl' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[1]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('flight::erased_ref_as<flight::types::Program>(runtime->cache.get(key))');
+    expect(emitted.match(/runtime->cache\.get\(key\)/gu)).toHaveLength(1);
+
+    const refusal = (target: string) => {
+      const result = lower(
+        'erased-map-target-refusal.ts',
+        `interface First { first: number }
+         interface Second { second: string }
+         interface FirstLookalike { id: number }
+         interface SecondLookalike { id: number }
+         interface Runtime { cache: Map<string, object> }
+         export function read(runtime: Runtime, key: string): ${target} {
+           return runtime.cache.get(key) as ${target};
+         }`,
+      );
+      return captureBackendEmissionFailure(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }));
+    };
+
+    expect(refusal('number | undefined').rule).toBe('cpp-type-assertion-unidentified');
+    expect(refusal('First | Second | undefined').rule).toBe('cpp-type-assertion-unidentified');
+    expect(refusal('FirstLookalike | SecondLookalike | undefined').rule).toBe('cpp-type-assertion-unidentified');
   });
 
   it('refuses invalid ErasedRef WeakMap view keys, values, and open generic values before runtime acquisition', () => {

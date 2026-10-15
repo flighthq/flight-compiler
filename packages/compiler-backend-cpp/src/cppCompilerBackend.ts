@@ -15075,33 +15075,31 @@ function emitCppErasedRefAssertionCpp(
 ): string | undefined {
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
   const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
-  const sourceUnion = sourceType ? getIrUnionTypeCpp(sourceType, context, new Set()) : undefined;
-  const assertedUnion = getIrUnionTypeCpp(assertedType, context, new Set());
-  if (!sourceUnion || !assertedUnion) return undefined;
-  const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, context);
-  const assertedPlan = getCppUnionRepresentationPlan(assertedUnion, context);
+  const sourcePlan = sourceType ? getCppSingleValueTypePlanCpp(sourceType, context) : undefined;
+  const assertedPlan = getCppSingleValueTypePlanCpp(assertedType, context);
   if (
-    sourcePlan.kind !== 'optionalSingle' ||
-    sourcePlan.valueSlots.length !== 1 ||
-    sourcePlan.valueSlots[0]!.targetType !== 'flight::ErasedRef' ||
-    assertedPlan.kind !== 'optionalSingle' ||
-    assertedPlan.valueSlots.length !== 1
+    !sourcePlan ||
+    !assertedPlan ||
+    (sourcePlan.targetType !== 'flight::ErasedRef' && !isCppBareObjectTypeCpp(sourcePlan.presentType)) ||
+    (!sourcePlan.hasNull && !sourcePlan.hasUndefined && (assertedPlan.hasNull || assertedPlan.hasUndefined))
   ) {
     return undefined;
   }
-  const assertedSlot = assertedPlan.valueSlots[0]!;
-  const concreteObject = getCppReferenceElementTypeNameCpp(assertedSlot.targetType);
-  const genericReference = assertedSlot.sourceAlternatives.some(
-    (alternative) =>
-      alternative.kind === 'named' &&
-      alternative.reference.kind === 'binding' &&
-      alternative.reference.binding.kind === 'typeParameter' &&
-      alternative.typeArguments.length === 0,
-  );
+  const concreteObject = getCppReferenceElementTypeNameCpp(assertedPlan.targetType);
+  const genericReference =
+    assertedPlan.presentType.kind === 'named' &&
+    assertedPlan.presentType.reference.kind === 'binding' &&
+    assertedPlan.presentType.reference.binding.kind === 'typeParameter' &&
+    assertedPlan.presentType.typeArguments.length === 0
+      ? assertedPlan.presentType
+      : undefined;
   const objectType =
-    concreteObject ?? (genericReference ? `typename ${assertedSlot.targetType}::element_type` : undefined);
+    genericReference !== undefined ? `typename ${emitType(genericReference, context)}::element_type` : concreteObject;
   if (!objectType) return undefined;
   context.includes.add('flight/erased_ref.hpp');
+  if (!assertedPlan.hasNull && !assertedPlan.hasUndefined) {
+    return `flight::erased_ref_as<${objectType}>(${emitExpression(expression, context)})`;
+  }
   context.includes.add('optional');
   const recovered = getGeneratedTargetName('erasedReference', context);
   return `([&]() -> ${emitType(assertedType, context)} { auto ${recovered} = flight::erased_ref_as<${objectType}>(${emitExpression(expression, context)}); if (!${recovered}) return std::nullopt; return ${recovered}; }())`;
@@ -22245,7 +22243,9 @@ function getCppConcreteMapGetResultTypeEvidenceCpp(
     strongCollection && ['Map', 'ReadonlyMap'].includes(strongCollection.reference.name) ? strongCollection : undefined;
   const collection = weakMap ?? strongMap;
   const value = collection?.typeArguments.length === 2 ? collection.typeArguments[1] : undefined;
-  return value && value.kind !== 'unknown' ? createIrTypeEvidenceUnionCpp([value, { kind: 'undefined' }]) : undefined;
+  return value && (value.kind !== 'unknown' || value.source === 'object')
+    ? createIrTypeEvidenceUnionCpp([value, { kind: 'undefined' }])
+    : undefined;
 }
 
 // The package-graph source program deliberately does not make a host TypeScript library part of
