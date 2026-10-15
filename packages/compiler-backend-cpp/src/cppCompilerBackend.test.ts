@@ -20600,6 +20600,15 @@ const hostTimerBinding = {
       targetName: 'host::now_milliseconds',
     },
     {
+      callResultType: 'flight::String',
+      headers: ['host/clock.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'value' as const,
+      sourceName: 'label',
+      space: 'value' as const,
+      targetName: 'host::label',
+    },
+    {
       headers: ['host/timer.hpp'],
       nullability: 'non-null' as const,
       ownership: 'borrowed' as const,
@@ -23146,6 +23155,111 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toContain('an erased assertion hides the represented source carrier');
   });
 
+  // The same identity rule in the position the field lane does not cover: a LOCAL initialized straight from
+  // a bound host call. A local with no annotation has only the library's own result as its type evidence --
+  // the DOM answers `number` for `setInterval` -- and the emitted call actually answers whatever the
+  // binding's `callResultType` names. The library token is substituted by the carrier only when it IS the
+  // call's answer; any other declared type is a disagreement.
+  it('declares a local initialized from a bound host call as the binding carrier', () => {
+    const emitLocal = (body: string) =>
+      emitIrModuleCpp(
+        lower(
+          'host-timer-local.ts',
+          `type ReturnType<T extends (...args: any) => any> = T extends (...args: any) => infer R ? R : any;
+           declare function setInterval(handler: () => void, timeout?: number): number;
+           declare function clearInterval(id: number | undefined): void;
+           declare function now(): number;
+           declare function label(): string;
+           ${body}`,
+        ).module,
+        { externalBindings: hostTimerBinding, runtimeProfile: 'flight-cpp' },
+      ).contents;
+
+    // The handle the host returned is what the local holds, and cancellation receives that same handle.
+    const inferred = emitLocal(
+      `export function every(tick: () => void, ms: number): void {
+         const id = setInterval(tick, ms);
+         clearInterval(id);
+       }`,
+    );
+    expect(inferred).toContain('const host::TimerHandle id = host::set_interval(tick, ms);');
+    expect(inferred).toContain('host::clear_interval(id);');
+    expect(inferred).not.toContain('double id');
+
+    // An explicit annotation the source wrote for the same reason -- the library says so -- is the call's
+    // own answer, so it takes the same carrier; and the authored ReturnType keeps working.
+    expect(
+      emitLocal(
+        `export function every(tick: () => void, ms: number): void {
+           const id: number = setInterval(tick, ms);
+           void id;
+         }`,
+      ),
+    ).toContain('const host::TimerHandle id = host::set_interval(tick, ms);');
+    expect(
+      emitLocal(
+        `export function every(tick: () => void, ms: number): void {
+           const id: ReturnType<typeof setInterval> = setInterval(tick, ms);
+           void id;
+         }`,
+      ),
+    ).toContain('host::TimerHandle id = host::set_interval(tick, ms);');
+
+    // Near-neighbours, each unchanged: a bound call whose binding names no carrier keeps the library's own
+    // result; a bound call with another carrier keeps that carrier; an ignored result and a non-bound call
+    // are not this lane at all.
+    const controls = emitLocal(
+      `export function elapsed(): number {
+         const started = now();
+         return started;
+       }
+       export function name(): string {
+         const text = label();
+         return text;
+       }
+       export function fire(tick: () => void, ms: number): void { setInterval(tick, ms); }
+       export function math(): number {
+         const floored = Math.floor(1.5);
+         return floored + 1;
+       }`,
+    );
+    expect(controls).toContain('const double started = host::now_milliseconds();');
+    expect(controls).toContain('const flight::String text = host::label();');
+    expect(controls).toContain('host::set_interval(tick, ms);');
+    expect(controls).toContain('const double floored = std::floor(1.5);');
+    expect(controls).not.toContain('TimerHandle');
+  });
+
+  // A declared local the bound call cannot fill still refuses: the carrier is substituted for the library's
+  // own answer, never for a type the source stated that disagrees with the binding.
+  it('refuses a local whose declared type the bound host call cannot fill', () => {
+    const refusal = (body: string): string => {
+      try {
+        emitIrModuleCpp(
+          lower(
+            'host-timer-local-refusal.ts',
+            `declare function setInterval(handler: () => void, timeout?: number): number;
+             ${body}`,
+          ).module,
+          { externalBindings: hostTimerBinding, runtimeProfile: 'flight-cpp' },
+        );
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      return '(emitted)';
+    };
+
+    // A union the binding does not represent still refuses rather than being narrowed to the carrier.
+    expect(
+      refusal(
+        `export function every(tick: () => void, ms: number): void {
+           const id: number | undefined = setInterval(tick, ms);
+           void id;
+         }`,
+      ),
+    ).toContain('is not one represented contextual runtime domain');
+  });
+
   // A host timer handle is an IDENTITY, not a number. The DOM library declares `setInterval` and
   // `setTimeout` as returning `number`, and that number is a token the host never issued -- storing it
   // would make a later cancellation name a timer that does not exist. `ReturnType<typeof setInterval>` is
@@ -23212,7 +23326,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     );
     expect(others).toContain('std::optional<double> id;');
     expect(others).toContain('return host::now_milliseconds();');
-    expect(others).toContain('const double id = host::set_interval(tick, 10.0);');
+    expect(others).toContain('const host::TimerHandle id = host::set_interval(tick, 10.0);');
   });
 
   // No carrier declared is no carrier to store: the lane refuses rather than falling back to the library's

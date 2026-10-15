@@ -22820,14 +22820,44 @@ function collectCppExternalBindingStorageTargetTypesCpp(
   context: EmitContext,
 ): ReadonlyMap<string, string> {
   const candidates = new Map<string, Set<string>>();
-  const recordCandidate = (bindingId: string, expression: Readonly<IrExpression>): void => {
+  const recordCandidate = (
+    bindingId: string,
+    expression: Readonly<IrExpression>,
+    fromDeclarationInitializer: boolean,
+  ): void => {
     const declaredType = context.bindingTypes.get(bindingId);
     const declaredCallResultAbsence = getCppExternalCallResultAbsenceCpp(expression, context);
-    if (!declaredType || (!declaredCallResultAbsence && !isCppUnresolvedExternalStorageTypeCpp(declaredType))) return;
+    const libraryResultToken = isCppLibraryResultTokenStorageTypeCpp(declaredType);
+    if (
+      !declaredType ||
+      (!declaredCallResultAbsence && !libraryResultToken && !isCppUnresolvedExternalStorageTypeCpp(declaredType))
+    ) {
+      return;
+    }
     const targetType =
       getCppExternalCallResultTargetCpp(expression, context) ??
       getCppExternalInstanceMemberStorageTypeCpp(expression, context);
     if (!targetType) return;
+    // A bare primitive is what the LIBRARY declared the call returns -- the DOM answers `number` for
+    // `setInterval` while the bound target answers a handle -- so a local holding it takes the binding's
+    // carrier instead. That substitution is made only when the token IS the call's own answer: the same
+    // `number` an inferred local carries and the library's signature states. A token the call does not
+    // produce (a `string` local over a call that answers `number`) is the source stating something else,
+    // and it refuses rather than being rewritten into a carrier the source never named.
+    if (libraryResultToken && !declaredCallResultAbsence) {
+      // Only the declaration's OWN initializer can make the local hold this call's result. A later
+      // assignment into a local that was declared and initialized as a number (`let id: number = 0`) says
+      // nothing about what that declaration holds, and the pre-existing rules keep answering it.
+      if (!fromDeclarationInitializer) return;
+      const callResult = getIrExpressionTypeEvidenceCpp(expression, context);
+      if (callResult === undefined || !areCppTypesRepresentationEquivalent(declaredType, callResult, context)) {
+        emissionError(
+          context,
+          `external call result is declared ${describeIrTypeForDiagnosticCpp(declaredType)} here, but the call itself answers ${callResult ? describeIrTypeForDiagnosticCpp(callResult) : 'nothing this emitter can name'}; declare the local as the call's own result or as the binding's carrier`,
+          'cpp-external-binding-source-result-disagreement',
+        );
+      }
+    }
     const targets = candidates.get(bindingId) ?? new Set<string>();
     targets.add(targetType);
     candidates.set(bindingId, targets);
@@ -22842,11 +22872,11 @@ function collectCppExternalBindingStorageTargetTypesCpp(
       ) {
         return;
       }
-      recordCandidate(expression.left.reference.binding.id, expression.right);
+      recordCandidate(expression.left.reference.binding.id, expression.right, false);
     },
     variable(variable) {
       if ('binding' in variable && variable.initializer) {
-        recordCandidate(variable.binding.id, variable.initializer);
+        recordCandidate(variable.binding.id, variable.initializer, true);
       }
     },
   });
@@ -23445,6 +23475,14 @@ function getCppRuntimeMemberStorageTypeCpp(
     : undefined;
 }
 
+// A bare primitive is what a LIBRARY declaration answers for a call -- the DOM's `setInterval` returns
+// `number` -- and it is not the carrier a bound target returns. It is recognizable as a library answer
+// rather than a source statement by its shape alone; whether the source wrote it is a separate question the
+// caller answers (`declaredBySource`).
+function isCppLibraryResultTokenStorageTypeCpp(type: Readonly<IrType> | undefined): boolean {
+  return type?.kind === 'primitive' && (type.name === 'number' || type.name === 'string' || type.name === 'boolean');
+}
+
 function isCppUnresolvedExternalStorageTypeCpp(type: Readonly<IrType>): boolean {
   if (type.kind === 'unknown') return true;
   if (type.kind !== 'union') return false;
@@ -23457,7 +23495,10 @@ function emitCppExternalBindingStorageTypeCpp(
   targetType: string,
   context: EmitContext,
 ): string {
-  if (!type || type.kind === 'unknown') return targetType;
+  // The library's own bare primitive is what an inferred local carries, and the collector has already
+  // checked that it IS the call's answer before recording this binding as an external storage target, so
+  // the carrier is the answer here. Any other declared type is a disagreement and refuses below.
+  if (!type || type.kind === 'unknown' || isCppLibraryResultTokenStorageTypeCpp(type)) return targetType;
   if (type.kind !== 'union') {
     emissionError(
       context,
