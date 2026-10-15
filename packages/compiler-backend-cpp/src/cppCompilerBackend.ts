@@ -2220,7 +2220,7 @@ function emitStringEnumCpp(declaration: Readonly<IrEnumDeclaration>, context: Em
     '};',
     ...declaration.members.map(
       (member) =>
-        `inline const ${name} ${name}::${safeCppTypeName(member.name)}{${stringType}(${JSON.stringify(member.value)})};`,
+        `inline const ${name} ${name}::${safeCppTypeName(member.name)}{${emitCppStringLiteralCpp(member.value, stringType, context)}};`,
     ),
   ];
 }
@@ -6306,7 +6306,7 @@ function emitExpression(
       const parts = expression.parts.map((part) =>
         typeof part === 'string'
           ? flightRuntime
-            ? `flight::String(${JSON.stringify(part)})`
+            ? emitCppStringLiteralCpp(part, 'flight::String', context)
             : `std::string(${JSON.stringify(part)})`
           : flightRuntime
             ? emitCppExplicitStringConversionCpp(part, context)
@@ -30611,8 +30611,27 @@ function emitLiteral(value: boolean | null | number | string, context: EmitConte
     const text = String(value);
     return /[.eE]/u.test(text) ? text : `${text}.0`;
   }
+  return getCppRuntimeProfile(context.options) === 'flight-cpp'
+    ? emitCppStringLiteralCpp(value, 'flight::String', context)
+    : JSON.stringify(value);
+}
+
+// A narrow string literal has an extent even when its data contains U+0000, while the runtime's
+// const-char constructor obtains no extent and stops there. Preserve that extent in a string_view;
+// the runtime decodes every byte in the view into owned UTF-16 storage. JSON's fixed-width
+// `\u0000` spelling keeps adjacent source characters out of the escape and sizeof measures the
+// decoded literal bytes, so embedded NULs and other escapes cannot make a separately written count drift.
+function emitCppStringLiteralCpp(value: string | number, stringType: string, context: EmitContext): string {
   const literal = JSON.stringify(value);
-  return getCppRuntimeProfile(context.options) === 'flight-cpp' ? `flight::String(${literal})` : literal;
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    typeof value !== 'string' ||
+    !value.includes('\u0000')
+  ) {
+    return `${stringType}(${literal})`;
+  }
+  context.includes.add('string_view');
+  return `${stringType}(std::string_view(${literal}, sizeof(${literal}) - 1))`;
 }
 
 function emitUndefinedWithExpectedTypeCpp(expectedType: Readonly<IrType> | undefined, context: EmitContext): string {
