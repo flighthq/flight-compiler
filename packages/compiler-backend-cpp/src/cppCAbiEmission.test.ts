@@ -30,7 +30,7 @@ describe('emitCompilerCppCAbiPlan', () => {
     expect(emission).toEqual({
       functions: [
         {
-          adapterSourceContents: `#include <flight/geometry.h>
+          adapterSourceContents: `#include <flight/geometry/geometry.hpp>
 
 extern "C" FLIGHT_CPP_API flight_cpp_status flight_cpp_add(double left, double right, double* out_result) {
   if (out_result != nullptr) {
@@ -88,7 +88,7 @@ FLIGHT_CPP_API flight_cpp_status flight_cpp_add(double left, double right, doubl
 
 #endif /* FLIGHT_CPP_C_ABI_FLIGHT_CPP_ADD_H */
 `,
-          headerPath: 'flight/geometry.h',
+          headerPath: 'flight/geometry/geometry.hpp',
           packageName: '@flight/geometry',
           source: plan.functions[0]?.source,
           symbol: 'flight_cpp_add',
@@ -280,6 +280,26 @@ FLIGHT_CPP_API flight_cpp_status flight_cpp_add(double left, double right, doubl
     expect(source).not.toMatch(/\bthrow\b/u);
   });
 
+  it('maps a single nullable handle sentinel to a null C pointer in both directions', () => {
+    const plan = createPlan(`
+      export interface Point { x: number; }
+      export function findPoint(source: Point | null): Point | undefined { return source ?? undefined; }
+    `);
+
+    const findPoint = emitCompilerCppCAbiPlan(plan).functions[0]!;
+
+    expect(findPoint.headerContents).toContain(
+      'flight_cpp_find_point(struct flight_cpp_point* source, struct flight_cpp_point** out_result);',
+    );
+    expect(findPoint.adapterSourceContents).not.toContain('if (source == nullptr)');
+    expect(findPoint.adapterSourceContents).toContain(
+      'source == nullptr ? flight_cpp_adapter_argument_0{std::nullopt} : flight_cpp_adapter_argument_0{flight_cpp_point_borrow_owner(source)}',
+    );
+    expect(findPoint.adapterSourceContents).toContain(
+      'if (flight_cpp_adapter_result.has_value()) {\n      *out_result = flight_cpp_point_create_owned(flight_cpp_adapter_result.value());\n    }',
+    );
+  });
+
   it('refuses two otherwise valid lifecycle records for one C++ owner', () => {
     const plan = createPlan(`
       export interface Point { x: number; }
@@ -391,7 +411,7 @@ describe('emitCompilerCppCAbiPackage', () => {
     expect(header.contents).toContain('struct flight_cpp_configure_options_record {');
     expect(header.contents).toContain('flight_cpp_status flight_cpp_scale(double value, double* out_result);');
     expect(header.contents).not.toMatch(/StructuralRef|flight::|\bstd\b|\btemplate\b/u);
-    expect(adapter.dependencies).toEqual(['flight/geometry.h', 'include/geometry_c.h']);
+    expect(adapter.dependencies).toEqual(['flight/geometry/geometry.hpp', 'include/geometry_c.h']);
     expect(adapter.contents).toContain('#include <include/geometry_c.h>');
     expect(adapter.contents).toContain('flight_cpp_configure_adapter_argument_type');
     expect(adapter.contents).toContain('flight_cpp_inspect_adapter_argument_type');

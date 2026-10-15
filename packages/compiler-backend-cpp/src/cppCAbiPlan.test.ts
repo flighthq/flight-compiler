@@ -43,7 +43,7 @@ describe('createIrModulesCAbiPlanCpp', () => {
           statusCarrier: 'flight_cpp_status',
           strategy: 'status-return',
         }),
-        header: 'flight/geometry.h',
+        header: 'flight/geometry/geometry.hpp',
         parameters: [
           {
             adapter: 'copy-scalar-from-c',
@@ -226,7 +226,7 @@ describe('createIrModulesCAbiPlanCpp', () => {
         cppOwnerCarrier: 'flight::Ref<flight::geometry::Point>',
         cppTarget: 'flight::geometry::Point',
         createOwnedSymbol: 'flight_cpp_point_create_owned',
-        header: 'flight/geometry.h',
+        header: 'flight/geometry/point.hpp',
         lifecycle: {
           borrowedInput: 'const-owner-reference',
           counter: 'atomic-wrapper-reference-count',

@@ -10,6 +10,7 @@ import type {
   CompilerCppCAbiHandlePlan,
   CompilerCppCAbiParameterPlan,
   CompilerCppCAbiPlan,
+  CompilerCppCAbiPresence,
   CompilerCppCAbiRecordEmission,
   CompilerCppCAbiRecordPlan,
   CppCompilerCAbiOutput,
@@ -52,6 +53,7 @@ interface FunctionEmissionPlan {
         adapter: 'create-owned-handle-to-out' | 'recover-readonly-owner-handle-to-out';
         handle: Readonly<CompilerCppCAbiHandlePlan>;
         kind: 'handle';
+        presence: Exclude<CompilerCppCAbiPresence, 'not-applicable'>;
       }>
     | Readonly<{ kind: 'record'; record: Readonly<CompilerCppCAbiRecordPlan> }>;
 }
@@ -306,14 +308,11 @@ function validateFunctionPlan(
       emissionParameters.push({ kind: 'record', parameter, record });
       continue;
     }
-    if (
-      (parameter.adapter !== 'borrow-handle' && parameter.adapter !== 'borrow-readonly-handle') ||
-      parameter.presence !== 'required'
-    ) {
+    if (parameter.adapter !== 'borrow-handle' && parameter.adapter !== 'borrow-readonly-handle') {
       throw createCompilerCppCAbiEmissionFailure(
         functionPlan,
         'unsupported-carrier',
-        `C ABI parameter ${parameter.name} of ${functionPlan.symbol} is not a required borrowed handle`,
+        `C ABI parameter ${parameter.name} of ${functionPlan.symbol} is not a borrowed handle`,
       );
     }
     const handle = handlesByCarrier.get(parameter.handleCarrier);
@@ -389,13 +388,12 @@ function validateFunctionPlan(
       functionPlan.result.adapter !== 'recover-readonly-owner-handle-to-out') ||
     functionPlan.result.initialization !== 'null' ||
     functionPlan.result.name !== 'out_result' ||
-    functionPlan.result.ownership !== 'owned' ||
-    functionPlan.result.presence !== 'required'
+    functionPlan.result.ownership !== 'owned'
   ) {
     throw createCompilerCppCAbiEmissionFailure(
       functionPlan,
       'unsupported-carrier',
-      `C ABI result of ${functionPlan.symbol} is not a required owned handle`,
+      `C ABI result of ${functionPlan.symbol} is not an owned handle output`,
     );
   }
   const handle = handlesByCarrier.get(functionPlan.result.handleCarrier);
@@ -409,7 +407,12 @@ function validateFunctionPlan(
   return {
     function: functionPlan,
     parameters: emissionParameters,
-    result: { adapter: functionPlan.result.adapter, handle, kind: 'handle' },
+    result: {
+      adapter: functionPlan.result.adapter,
+      handle,
+      kind: 'handle',
+      presence: functionPlan.result.presence,
+    },
   };
 }
 
@@ -426,7 +429,7 @@ function assertHandlePlan(handle: Readonly<CompilerCppCAbiHandlePlan>): void {
     handle.createOwnedSymbol !== `${handle.carrier}_create_owned` ||
     handle.releaseSymbol !== `${handle.carrier}_release` ||
     handle.retainSymbol !== `${handle.carrier}_retain` ||
-    !isCHeaderPath(handle.header) ||
+    !isCppHeaderPath(handle.header) ||
     handle.ownership !== 'opaque-reference' ||
     !lifecycle ||
     lifecycle.borrowedInput !== 'const-owner-reference' ||
@@ -456,7 +459,7 @@ function assertRecordPlan(record: Readonly<CompilerCppCAbiRecordPlan>): void {
     !/^flight_cpp_[a-z_][a-z0-9_]*_record$/u.test(record.carrier) ||
     record.construction !== 'flight-reference-designated-optional-aggregate' ||
     record.passing !== 'borrowed-const-pointer' ||
-    !isCHeaderPath(record.header) ||
+    !isCppHeaderPath(record.header) ||
     record.members.length === 0 ||
     !record.members.some((member) => member.presence === 'explicit-flag')
   ) {
@@ -501,7 +504,7 @@ function assertFunctionIdentity(functionPlan: Readonly<CompilerCppCAbiFunctionPl
     functionPlan.visibility !== 'FLIGHT_CPP_API' ||
     !/^flight_cpp_[a-z_][a-z0-9_]*$/u.test(functionPlan.symbol) ||
     !/^[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+$/u.test(functionPlan.cppTarget) ||
-    !isCHeaderPath(functionPlan.header)
+    !isCppHeaderPath(functionPlan.header)
   ) {
     throw createCompilerCppCAbiEmissionFailure(
       functionPlan,
@@ -668,11 +671,16 @@ function emitFunctionAdapterSourceContents(plan: FunctionEmissionPlan): string {
   const inferredParameters = plan.parameters.filter(
     (parameter): parameter is HandleParameterPlan | RecordParameterPlan =>
       parameter.kind === 'record' ||
-      (parameter.kind === 'handle' && parameter.parameter.adapter === 'borrow-readonly-handle'),
+      (parameter.kind === 'handle' &&
+        (parameter.parameter.adapter === 'borrow-readonly-handle' || parameter.parameter.presence !== 'required')),
   );
+  const usesOptional =
+    records.length > 0 ||
+    plan.parameters.some((parameter) => parameter.kind === 'handle' && parameter.parameter.presence !== 'required') ||
+    (plan.result.kind === 'handle' && plan.result.presence !== 'required');
   const standardHeaders = [
     ...(inferredParameters.length > 0 ? ['cstddef'] : []),
-    ...(records.length > 0 ? ['optional'] : []),
+    ...(usesOptional ? ['optional'] : []),
     ...(inferredParameters.length > 0 ? ['tuple', 'type_traits'] : []),
   ];
   const lines = [
@@ -735,6 +743,7 @@ function emitFunctionAdapterSourceContents(plan: FunctionEmissionPlan): string {
   }
   for (const parameter of plan.parameters) {
     if (parameter.kind === 'scalar') continue;
+    if (parameter.kind === 'handle' && parameter.parameter.presence !== 'required') continue;
     lines.push(
       `  if (${parameter.parameter.name} == nullptr) {`,
       `    return ${functionPlan.error.invalidArgumentConstant};`,
@@ -746,7 +755,19 @@ function emitFunctionAdapterSourceContents(plan: FunctionEmissionPlan): string {
   if (plan.result.kind === 'scalar') {
     lines.push(`    *out_result = ${functionPlan.cppTarget}(${arguments_});`);
   } else if (plan.result.kind === 'handle') {
-    if (plan.result.adapter === 'recover-readonly-owner-handle-to-out') {
+    if (plan.result.presence !== 'required') {
+      const result = 'flight_cpp_adapter_result.value()';
+      const owner =
+        plan.result.adapter === 'recover-readonly-owner-handle-to-out'
+          ? `flight::structural_ref_cast<${plan.result.handle.cppOwnerCarrier}>(${result})`
+          : result;
+      lines.push(
+        `    const auto flight_cpp_adapter_result = ${functionPlan.cppTarget}(${arguments_});`,
+        '    if (flight_cpp_adapter_result.has_value()) {',
+        `      *out_result = ${plan.result.handle.createOwnedSymbol}(${owner});`,
+        '    }',
+      );
+    } else if (plan.result.adapter === 'recover-readonly-owner-handle-to-out') {
       lines.push(
         `    const auto flight_cpp_adapter_result = ${functionPlan.cppTarget}(${arguments_});`,
         `    *out_result = ${plan.result.handle.createOwnedSymbol}(flight::structural_ref_cast<${plan.result.handle.cppOwnerCarrier}>(flight_cpp_adapter_result));`,
@@ -793,9 +814,13 @@ function emitFunctionSignature(plan: FunctionEmissionPlan): string {
 function emitFunctionArgument(parameter: EmissionParameterPlan): string {
   if (parameter.kind === 'handle') {
     const borrowed = `${parameter.handle.borrowSymbol}(${parameter.parameter.name})`;
-    return parameter.parameter.adapter === 'borrow-readonly-handle'
-      ? `flight_cpp_adapter_argument_${parameter.parameter.position}{${borrowed}}`
-      : borrowed;
+    const present =
+      parameter.parameter.adapter === 'borrow-readonly-handle'
+        ? `flight_cpp_adapter_argument_${parameter.parameter.position}{${borrowed}}`
+        : borrowed;
+    return parameter.parameter.presence === 'required'
+      ? present
+      : `${parameter.parameter.name} == nullptr ? flight_cpp_adapter_argument_${parameter.parameter.position}{std::nullopt} : flight_cpp_adapter_argument_${parameter.parameter.position}{${borrowed}}`;
   }
   if (parameter.kind === 'scalar') return parameter.parameter.name;
   const members = parameter.record.members.map((member) => {
@@ -878,10 +903,10 @@ function compareFunctionPlans(
   );
 }
 
-function isCHeaderPath(value: string): boolean {
+function isCppHeaderPath(value: string): boolean {
   return (
     value.length > 2 &&
-    value.endsWith('.h') &&
+    (value.endsWith('.h') || value.endsWith('.hpp')) &&
     !value.startsWith('/') &&
     !value.includes('\\') &&
     !/[<>"\r\n]/u.test(value) &&

@@ -17,7 +17,12 @@ import type {
   IrObjectTypeProperty,
   IrType,
 } from '../../compiler-types/src/index.js';
-import { getCppCompilerPackageIncludePrefix, getCppCompilerPackageNamespace } from './cppCompilerIdentity.js';
+import {
+  convertCppIdentifierToSnakeCase,
+  convertSourcePathToCppFileName,
+  getCppCompilerPackageIncludePrefix,
+  getCppCompilerPackageNamespace,
+} from './cppCompilerIdentity.js';
 import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
 
 type TypeDeclaration = Readonly<Extract<IrDeclaration, { kind: 'class' | 'interface' | 'typeAlias' }>>;
@@ -237,7 +242,7 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
   const packageNamespace = getCppCompilerPackageNamespace(module.packageName, optionsPackageTargets(context));
   const sourceName = declaration.binding.name;
   const symbol = `flight_cpp_${snakeCase(sourceName)}`;
-  const header = getPackageHeader(module.packageName, context);
+  const header = getModuleHeader(module, context);
   const parameters = declaration.parameters.map((parameter, position): CompilerCppCAbiParameterPlan => {
     if (parameter.rest) {
       throw createCAbiPlanningFailure(
@@ -547,7 +552,7 @@ function planNamedCarrier(
   }
   assertExactCppTypeTarget(owner, context);
   const carrier = `flight_cpp_${snakeCase(declaration.binding.name)}`;
-  const header = getPackageHeader(ownerModule.packageName, context);
+  const header = getModuleHeader(ownerModule, context);
   const namespace = getCppCompilerPackageNamespace(ownerModule.packageName, optionsPackageTargets(context));
   const typeName = safeCppTypeName(declaration.binding.name);
   const cppTarget = `${namespace}::${typeName}`;
@@ -894,22 +899,11 @@ function collectGlobalNameCollisionOwners(drafts: readonly FunctionDraft[]): Rea
   return collided;
 }
 
-function getPackageHeader(packageName: string, context: PlanningContext): string {
-  const configured = getCppCompilerPackageIncludePrefix(packageName, optionsPackageTargets(context));
-  const prefix =
-    configured ??
-    `flight/${getBarePackageName(packageName)
-      .replace(/[^A-Za-z0-9]+/gu, '_')
-      .toLowerCase()}`;
-  return `${prefix}.h`;
-}
-
-function getBarePackageName(packageName: string): string {
-  const separator = packageName.indexOf('/');
-  const bare = packageName.startsWith('@') && separator > 1 ? packageName.slice(separator + 1) : packageName;
-  if (bare.length === 0 || bare.includes('/'))
-    throw new TypeError(`Cannot map invalid npm package name: ${packageName}`);
-  return bare;
+function getModuleHeader(module: Readonly<IrModule>, context: PlanningContext): string {
+  const fileName =
+    convertSourcePathToCppFileName(module.source) ?? `_internal_${convertCppIdentifierToSnakeCase(module.name)}`;
+  const prefix = getCppCompilerPackageIncludePrefix(module.packageName, optionsPackageTargets(context));
+  return `${prefix ? `${prefix}/` : ''}${fileName}.hpp`;
 }
 
 function optionsPackageTargets(
