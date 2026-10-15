@@ -3686,6 +3686,13 @@ function emitExpression(
     if (voidValueConversion) return voidValueConversion;
     const erasedDynamicConversion = emitCppContextualErasedDynamicValueCpp(expression, expectedType, context);
     if (erasedDynamicConversion) return erasedDynamicConversion;
+    // A union construction recurses with its selected callable slot and constructExpectedUnion=false.
+    // Leave that nested emission to the union adapter so its established capture and carrier semantics
+    // remain authoritative; this lane is only for a position that declared a plain callable itself.
+    if (constructExpectedUnion) {
+      const callableArityAdaptation = emitCppContextualCallableArityAdaptationCpp(expression, expectedType, context);
+      if (callableArityAdaptation) return callableArityAdaptation;
+    }
     refuseCppContextualStructuralArrayNominalRecoveryCpp(expression, expectedType, context);
     refuseCppContextualArrayElementUnionNarrowingCpp(expression, expectedType, context);
     const optionalPropertyConversion = emitCppOptionalPropertyDualSentinelConversionCpp(
@@ -19779,7 +19786,20 @@ function emitCppContextualCallableUnionValueCpp(
     );
     return `${type} ${parameterNames[index]!}`;
   });
+  const sourceRestIndex = sourceType.parameters.findIndex((parameter) => parameter.rest);
   const arguments_ = sourceType.parameters.map((parameter, index) => {
+    // A final rest parameter receives every remaining contextual argument in the one array the source
+    // language constructs. Compatibility is proven before a plain callable reaches this adapter; the
+    // union path keeps its own slot-selection proof and does not admit rest signatures.
+    if (parameter.rest && sourceRestIndex === sourceType.parameters.length - 1) {
+      const element = getIrArrayTypeCpp(parameter.type, context, new Set())?.element;
+      if (!element) return 'std::nullopt';
+      const values = target.parameters.slice(index).map((targetParameter, offset) => {
+        const name = parameterNames[index + offset]!;
+        return emitCppCallableParameterValueConversionCpp(name, targetParameter.type, element, false, context) ?? name;
+      });
+      return `flight::Array<${emitType(element, context)}>{${values.join(', ')}}`;
+    }
     const targetParameter = target.parameters[index];
     if (!targetParameter) return 'std::nullopt';
     return (
@@ -21806,6 +21826,126 @@ function isIrNumberTypeEvidenceCpp(type: Readonly<IrType> | undefined): boolean 
 
 function isIrStringTypeEvidenceCpp(type: Readonly<IrType> | undefined): boolean {
   return type?.kind === 'primitive' && type.name === 'string';
+}
+
+// The callable a position declares directly. Aliases and typeof references keep that same callable;
+// optional and union carriers deliberately do not, because their own contextual lane constructs the
+// carrier around any adapter.
+function getCppPlainCallableTypeCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+  resolvingAliases: ReadonlySet<string> = new Set(),
+): Readonly<Extract<IrType, { kind: 'function' }>> | undefined {
+  if (type.kind === 'function') return type;
+  if (type.kind === 'typeOf') {
+    const valueType = getCppTypeOfValueType(type, context);
+    return valueType ? getCppPlainCallableTypeCpp(valueType, context, resolvingAliases) : undefined;
+  }
+  if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
+  const bindingId = type.reference.binding.id;
+  if (resolvingAliases.has(bindingId)) return undefined;
+  const alias = resolveCppTypeAliasTarget(type, context);
+  if (!alias) return undefined;
+  const nextResolvingAliases = new Set(resolvingAliases);
+  nextResolvingAliases.add(bindingId);
+  return getCppPlainCallableTypeCpp(alias, context, nextResolvingAliases);
+}
+
+// TypeScript adapts a callable value to the parameter list promised by its storage position: extra
+// contextual arguments are ignored, source-only optional parameters receive absence, and a final rest
+// parameter receives the remaining arguments as an array. C++ std::function requires one exact signature,
+// so plain callable positions use the same owner-preserving wrapper already proven for callable union slots.
+function emitCppContextualCallableArityAdaptationCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || expectedType === undefined) return undefined;
+  // Function literals already pad their own emitted parameter list and must not be wrapped twice.
+  if (expression.kind === 'function') return undefined;
+  const target = getCppPlainCallableTypeCpp(expectedType, context);
+  if (!target || target.typeParameters.length > 0 || target.parameters.some((parameter) => parameter.rest)) {
+    return undefined;
+  }
+  const declaration =
+    expression.kind === 'identifier' && expression.reference.kind === 'binding'
+      ? getCppFunctionDeclarationForBindingCpp(expression.reference.binding.id, context)
+      : undefined;
+  const sourceEvidence =
+    getIrExpressionTypeEvidenceCpp(expression, context) ??
+    (declaration ? getIrFunctionDeclarationTypeCpp(declaration) : undefined);
+  const source = sourceEvidence ? getCppPlainCallableTypeCpp(sourceEvidence, context) : undefined;
+  if (!source || source.typeParameters.length > 0) return undefined;
+  const restIndex = source.parameters.findIndex((parameter) => parameter.rest);
+  if (restIndex !== -1 && restIndex !== source.parameters.length - 1) return undefined;
+  const arityDiffers = source.parameters.length !== target.parameters.length || restIndex !== -1;
+  if (!arityDiffers) return undefined;
+
+  // Optional and rest parameters are callable without a value; only fixed, non-optional parameters are
+  // requirements the target must promise to supply. Check this before indexing shared parameters, because
+  // a required fixed prefix can itself extend beyond the target before a final rest parameter begins.
+  const requiredSourceParameters = source.parameters.filter(
+    (parameter) => !parameter.optional && !parameter.rest,
+  ).length;
+  if (requiredSourceParameters > target.parameters.length) {
+    emissionError(
+      context,
+      `a callable requiring ${String(requiredSourceParameters)} parameters cannot be stored where ${String(target.parameters.length)} are promised: it would be called with fewer arguments than it declares, and no adapter can supply them. Widen the source, or declare the target's callable with the parameters it needs`,
+      'cpp-callable-arity-narrowing-unrepresented',
+    );
+  }
+
+  // Every parameter the source actually receives must accept the contextual value in the same position.
+  // A rest element is checked against every remaining fixed contextual parameter before they are collected.
+  const fixedCount = restIndex === -1 ? Math.min(source.parameters.length, target.parameters.length) : restIndex;
+  const incompatibleParameter = source.parameters
+    .slice(0, fixedCount)
+    .findIndex(
+      (parameter, index) => !acceptsCppContextualCallableParameterCpp(parameter, target.parameters[index]!, context),
+    );
+  if (incompatibleParameter !== -1) {
+    emissionError(
+      context,
+      `callable arity adaptation cannot preserve parameter ${String(incompatibleParameter + 1)}: the contextual signature supplies a value outside the source parameter's represented domain`,
+      'cpp-callable-arity-adaptation-unrepresented',
+    );
+  }
+  if (restIndex !== -1) {
+    const rest = source.parameters[restIndex]!;
+    const element = getIrArrayTypeCpp(rest.type, context, new Set())?.element;
+    const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+    if (
+      !element ||
+      target.parameters
+        .slice(restIndex)
+        .some(
+          (parameter) =>
+            parameter.optional ||
+            emitCppCallableParameterValueConversionCpp('argument', parameter.type, element, false, isolatedContext) ===
+              undefined,
+        )
+    ) {
+      emissionError(
+        context,
+        'callable arity adaptation cannot collect the contextual arguments into the source rest parameter without changing a represented argument domain',
+        'cpp-callable-arity-adaptation-unrepresented',
+      );
+    }
+  }
+
+  // Return adaptation is admitted only where the existing callable-union proof admits it. In particular,
+  // a different Task, owner, or ambiguous union carrier stays on its prior refusal path.
+  const returnCompatible =
+    (target.returns.kind === 'primitive' && target.returns.name === 'void') ||
+    hasCppCompatibleCallableReturnRepresentationCpp(source.returns, target.returns, context, declaration !== undefined);
+  if (!returnCompatible) {
+    emissionError(
+      context,
+      'callable arity adaptation cannot preserve the source result in the contextual callable return carrier',
+      'cpp-callable-arity-adaptation-unrepresented',
+    );
+  }
+  return emitCppContextualCallableUnionValueCpp(expression, source, expectedType, context);
 }
 
 // C++ cannot infer a function template parameter which appears only in the return type, nor reconcile
