@@ -21259,7 +21259,29 @@ function getIrNullishCoalesceTypeEvidenceCpp(
   return createIrTypeEvidenceUnionCpp([
     ...(leftUnion?.types ?? [left]).filter((member) => member.kind !== 'null' && member.kind !== 'undefined'),
     ...(rightUnion?.types ?? [right]),
+    ...getCppConditionalAbsentArmTypesCpp(expression.right),
   ]);
+}
+
+// A conditional reports the first arm that carries value evidence, so a literal absent arm can vanish
+// from `a ?? (condition ? value : null)`. Preserve only those literal sentinels at this coalesce boundary:
+// the result must not become an engaged optional containing a null reference, while other conditional
+// expressions still need their existing proof before the backend chooses a carrier.
+function getCppConditionalAbsentArmTypesCpp(expression: Readonly<IrExpression>): readonly IrType[] {
+  if (expression.kind !== 'conditional') return [];
+  const arms = [expression.whenTrue, expression.whenFalse];
+  const types: IrType[] = [];
+  if (arms.some((arm) => arm.kind === 'literal' && arm.value === null)) types.push({ kind: 'null' });
+  if (
+    arms.some(
+      (arm) =>
+        arm.kind === 'undefinedValue' ||
+        (arm.kind === 'identifier' && arm.reference.kind === 'ambient' && arm.reference.name === 'undefined'),
+    )
+  ) {
+    types.push({ kind: 'undefined' });
+  }
+  return types;
 }
 
 // A value logical OR returns the first truthy operand or its final operand. Null and undefined from
