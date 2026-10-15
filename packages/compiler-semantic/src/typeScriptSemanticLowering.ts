@@ -4123,6 +4123,28 @@ function lowerTypeScriptFunctionLocalTypeReference(
   };
 }
 
+// Whether a `typeof <name>` names the AMBIENT host timer function -- a library declaration or a `declare`d
+// one -- rather than a local binding that happens to share the name. The distinction is the whole reason the
+// handle can be lowered at all: the library's own declaration types the result as a number, and that number
+// is a token the host never issues.
+function getTypeScriptAmbientHostTimerTypeQueryName(
+  argument: ts.TypeNode,
+  context: LoweringContext,
+): string | undefined {
+  if (!ts.isTypeQueryNode(argument) || !ts.isIdentifier(argument.exprName)) return undefined;
+  const name = argument.exprName.text;
+  if (name !== 'setInterval' && name !== 'setTimeout') return undefined;
+  const declarations = context.checker.getSymbolAtLocation(argument.exprName)?.declarations ?? [];
+  return declarations.length > 0 &&
+    declarations.every(
+      (declaration) =>
+        declaration.getSourceFile().isDeclarationFile ||
+        (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Ambient) !== 0,
+    )
+    ? name
+    : undefined;
+}
+
 function lowerConcreteTypeScriptCallableUtilityReference(
   node: ts.TypeReferenceNode,
   context: LoweringContext,
@@ -4140,6 +4162,21 @@ function lowerConcreteTypeScriptCallableUtilityReference(
   if (node.typeName.text === 'Parameters' && ts.isTypeReferenceNode(argument)) {
     const symbol = context.checker.getSymbolAtLocation(argument.typeName);
     if (symbol?.declarations?.some(ts.isTypeParameterDeclaration)) return undefined;
+  }
+  // A host timer handle is an IDENTITY, not a number. The DOM library declares `setInterval` and `setTimeout`
+  // as returning `number`, and taking that evidence would store the handle as a numeric token the host never
+  // issued -- so a later cancellation would hand back a number that names no timer. Lowering the authored
+  // `ReturnType<typeof setInterval>` as written, over the ambient function, lets a backend answer it from the
+  // external binding's declared result carrier and refuse when no binding names one. Falling through instead
+  // would hand the reference to the conditional-alias lowering, which has no host to resolve it against.
+  const hostTimer =
+    node.typeName.text === 'ReturnType' ? getTypeScriptAmbientHostTimerTypeQueryName(argument, context) : undefined;
+  if (hostTimer !== undefined) {
+    return {
+      kind: 'named',
+      reference: { kind: 'ambient', name: 'ReturnType' },
+      typeArguments: [{ kind: 'typeOf', reference: { kind: 'ambient', name: hostTimer } }],
+    };
   }
   const evidence = getTypeScriptCheckerTypeEvidence(context.checker.getTypeFromTypeNode(node), context, 0, true);
   // A deliberately minimal source program may not include a host library declaration for these

@@ -20576,6 +20576,49 @@ consteval auto generated_row_member_type_identity<
 // An ambient value-space symbol the profile binds with declared members. Deliberately not a console: the
 // closed-key lane reads the BINDING, so a symbol with this name and these members proves the lane is not
 // keyed on any known host object.
+// The host timer the profile binds: a handle carrier for the interval, and the cancellation that takes
+// that same handle back. Deliberately not keyed on the callee's name -- the lane resolves the authored
+// `ReturnType<typeof setInterval>` through THIS binding's declared carrier.
+const hostTimerBinding = {
+  bindings: [
+    {
+      callResultType: 'host::TimerHandle',
+      headers: ['host/timer.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'borrowed' as const,
+      sourceName: 'setInterval',
+      space: 'value' as const,
+      targetName: 'host::set_interval',
+    },
+    {
+      callResultType: 'double',
+      headers: ['host/clock.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'value' as const,
+      sourceName: 'now',
+      space: 'value' as const,
+      targetName: 'host::now_milliseconds',
+    },
+    {
+      headers: ['host/timer.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'borrowed' as const,
+      sourceName: 'clearInterval',
+      space: 'value' as const,
+      targetName: 'host::clear_interval',
+    },
+    {
+      headers: ['host/frame.hpp'],
+      nullability: 'non-null' as const,
+      ownership: 'borrowed' as const,
+      sourceName: 'requestAnimationFrame',
+      space: 'value' as const,
+      targetName: 'host::request_animation_frame',
+    },
+  ],
+  schema: 'flight-cpp-external-bindings/1' as const,
+};
+
 const hostSinkBinding = {
   bindings: [
     {
@@ -23101,6 +23144,112 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
          }`,
       ),
     ).toContain('an erased assertion hides the represented source carrier');
+  });
+
+  // A host timer handle is an IDENTITY, not a number. The DOM library declares `setInterval` and
+  // `setTimeout` as returning `number`, and that number is a token the host never issued -- storing it
+  // would make a later cancellation name a timer that does not exist. `ReturnType<typeof setInterval>` is
+  // kept as the authored utility over the ambient function, so the profile's declared result carrier
+  // answers it, and the C++ target's own signature (not the library's optional and rest positions) decides
+  // the call's arguments.
+  it('stores a host timer handle as the carrier its binding declares', () => {
+    const emitTimer = (body: string, bindings?: typeof hostTimerBinding) =>
+      emitIrModuleCpp(
+        lower(
+          'host-timer.ts',
+          `type ReturnType<T extends (...args: any) => any> = T extends (...args: any) => infer R ? R : any;
+           declare function setInterval(handler: () => void, timeout?: number, ...rest: unknown[]): number;
+           declare function clearInterval(id: number | undefined): void;
+           declare function requestAnimationFrame(callback: (time: number) => void): number;
+           declare function now(): number;
+           ${body}`,
+        ).module,
+        { ...(bindings === undefined ? {} : { externalBindings: bindings }), runtimeProfile: 'flight-cpp' },
+      ).contents;
+
+    const interval = emitTimer(
+      `export interface State { timer: ReturnType<typeof setInterval> | null }
+       export function start(state: State, tick: () => void, ms: number): void { state.timer = setInterval(tick, ms); }
+       export function stop(state: State): void {
+         if (state.timer !== null) clearInterval(state.timer);
+         state.timer = null;
+       }`,
+      hostTimerBinding,
+    );
+    // The declared carrier, its absence, its presence test, and the cancellation round trip: the handle
+    // stored is the handle handed back, which is what `clearInterval` has to receive.
+    expect(interval).toContain('std::optional<host::TimerHandle> timer;');
+    expect(interval).toContain('std::optional<host::TimerHandle>{host::set_interval(tick, ms)}');
+    expect(interval).toContain('if (state->timer.has_value())');
+    expect(interval).toContain('host::clear_interval(state->timer.value());');
+    expect(interval).toContain('= std::nullopt');
+    expect(interval).not.toContain('std::optional<double> timer');
+    expect(interval).toContain('#include <host/timer.hpp>');
+
+    // The C++ target's own signature is authoritative: the library's optional `timeout` and its rest
+    // parameter are not the target's ABI, so a call that omits them is not padded.
+    const omitted = emitTimer(
+      `export function every(tick: () => void): ReturnType<typeof setInterval> { return setInterval(tick); }`,
+      hostTimerBinding,
+    );
+    expect(omitted).toContain('return host::set_interval(tick);');
+    expect(omitted).not.toContain('set_interval(tick, std::nullopt');
+
+    // An ignored result is still the bound call.
+    expect(
+      emitTimer(`export function fire(tick: () => void): void { setInterval(tick, 10); }`, hostTimerBinding),
+    ).toContain('host::set_interval(tick, 10.0);');
+
+    // The controls: an unrelated ambient ReturnType keeps its library evidence, a non-timer bound call
+    // keeps the carrier its own binding declares, and the local-storage carrier is the SUBJECT OF ITS OWN
+    // RECORD -- this lane deliberately does not change it, so the library's numeric token still appears.
+    const others = emitTimer(
+      `export interface Frame { id: ReturnType<typeof requestAnimationFrame> | null }
+       export function schedule(frame: Frame, draw: (time: number) => void): void { frame.id = requestAnimationFrame(draw); }
+       export function read(): number { return now(); }
+       export function local(tick: () => void): void { const id = setInterval(tick, 10); clearInterval(id); }`,
+      hostTimerBinding,
+    );
+    expect(others).toContain('std::optional<double> id;');
+    expect(others).toContain('return host::now_milliseconds();');
+    expect(others).toContain('const double id = host::set_interval(tick, 10.0);');
+  });
+
+  // No carrier declared is no carrier to store: the lane refuses rather than falling back to the library's
+  // number. An absent binding and an incomplete one (declared target, no result carrier) both refuse.
+  it('refuses a host timer handle whose profile declares no result carrier', () => {
+    const emitTimer = (bindings?: typeof hostTimerBinding) => {
+      try {
+        return emitIrModuleCpp(
+          lower(
+            'host-timer-refusal.ts',
+            `type ReturnType<T extends (...args: any) => any> = T extends (...args: any) => infer R ? R : any;
+             declare function setInterval(handler: () => void, timeout?: number, ...rest: unknown[]): number;
+             export interface State { timer: ReturnType<typeof setInterval> | null }`,
+          ).module,
+          { ...(bindings === undefined ? {} : { externalBindings: bindings }), runtimeProfile: 'flight-cpp' },
+        ).contents;
+      } catch (error) {
+        return `refused: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    };
+
+    expect(emitTimer()).toContain('refused:');
+    expect(
+      emitTimer({
+        bindings: [
+          {
+            headers: ['host/timer.hpp'],
+            nullability: 'non-null' as const,
+            ownership: 'borrowed' as const,
+            sourceName: 'setInterval',
+            space: 'value' as const,
+            targetName: 'host::set_interval',
+          },
+        ],
+        schema: 'flight-cpp-external-bindings/1' as const,
+      }),
+    ).toContain('refused:');
   });
 
   // `sink[key](message)` where `key` is a finite set of string literals and `sink` is an ambient value the

@@ -23806,6 +23806,19 @@ function appendCppOmittedInvocationArguments(
     return [...emitted, ...omitted.map(() => 'std::nullopt')];
   }
   if (emitted.length >= plan.parameterCount) return emitted;
+  // A host function bound through externalBindings is called at its C++ TARGET, whose own signature --
+  // including its own defaults -- is authoritative. The source plan here comes from the library declaration
+  // (`setInterval(handler, timeout?, ...rest)`), whose optional and rest positions are not the target's ABI,
+  // so the provided arguments are passed as written and nothing is padded. Padding would send `std::nullopt`
+  // for a parameter the target does not take, which is how `setInterval(tick)` became a call with an argument
+  // the host has no position for.
+  if (
+    expression.callee.kind === 'identifier' &&
+    expression.callee.reference.kind === 'ambient' &&
+    getCompilerExternalBindingEvidenceCpp(expression.callee.reference.name, 'value', context.options.externalBindings)
+  ) {
+    return emitted;
+  }
   if (expression.callee.kind === 'property') {
     const receiverType = getIrExpressionTypeEvidenceCpp(expression.callee.object, context);
     const structuralReceiver = receiverType
