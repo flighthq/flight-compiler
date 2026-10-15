@@ -4828,7 +4828,12 @@ function emitExpression(
         assertedGenericFactory ??
         (representedErasedFlightSource
           ? undefined
-          : getCppErasedValueAssertionCpp(expression.type, sourceEvidence, expression.expression, context));
+          : getCppErasedValueAssertionCpp(
+              expression.type,
+              sourceEvidence ?? getCppDependentErasedPropertyEvidenceCpp(expression.expression, context),
+              expression.expression,
+              context,
+            ));
       if (assertedExpression) return assertedExpression;
       if (representedErasedFlightSource) {
         if (areCppTypesRepresentationEquivalent(representedErasedFlightSource.type, expression.type, context)) {
@@ -24662,6 +24667,65 @@ function isCppTypeDependentReceiverCpp(receiver: string, typeParameterNames: Rea
   return receiver.split(/[^A-Za-z0-9_]+/u).some((token) => typeParameterNames.has(token));
 }
 
+// Whether the emitted receiver is a MEMBER OF AN UNKNOWN SPECIALIZATION, which C++ treats as
+// type-dependent even though the member's own type is written down. `box->value` for `box: Type` is the
+// case: the emitted C++ carries no constraint the compiler could read, so `Type::value` is resolved at
+// instantiation and the member template call below it needs the disambiguator. This is asked of the IR,
+// where the receiver's evidence names a type parameter, rather than of the spelling -- the spelling says
+// `box->value` and never mentions the parameter.
+//
+// The walk stops at a value-producing node. A CALL ends the dependency: `erased(box->value)` reads the
+// parameter at the argument, but the call's own type is the callee's return type, so a member access on
+// it is a plain member of a known type. A cast is not walked either, for the same reason in the other
+// direction: `(box as Box).value` names a concrete target, and only a cast whose EMITTED spelling still
+// names the parameter keeps the dependency -- which the spelling test above already answers.
+function isCppUnknownSpecializationMemberCpp(expression: Readonly<IrExpression>, context: EmitContext): boolean {
+  let current: Readonly<IrExpression> = expression;
+  while (current.kind === 'property') {
+    const receiver = getIrExpressionTypeEvidenceCpp(current.object, context);
+    if (
+      receiver?.kind === 'named' &&
+      receiver.reference.kind === 'binding' &&
+      receiver.reference.binding.kind === 'typeParameter'
+    ) {
+      return true;
+    }
+    current = current.object;
+  }
+  return false;
+}
+
+// A property read through a type-parameter-typed receiver is the one read the generic evidence cannot
+// answer: `Type` has no declaration in this module, and the member is declared on the receiver's
+// CONSTRAINT, which every instantiation must satisfy. The read is therefore still exact, and when that
+// constraint declares the member's carrier as the erased dynamic value the assertion about it is the
+// runtime's checked recovery rather than a cast an erased value cannot support.
+//
+// Only the erased carrier is answered here. A member whose constraint-declared carrier is anything else
+// keeps the (absent) evidence it had, so ordinary dependent member assertions, the dependent
+// indexed-access carrier and refusal lanes, and a member an inhabited constraint branch does not declare
+// all reach exactly the code they reached before.
+function getCppDependentErasedPropertyEvidenceCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.kind !== 'property') return undefined;
+  const receiver = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  if (
+    receiver?.kind !== 'named' ||
+    receiver.reference.kind !== 'binding' ||
+    receiver.reference.binding.kind !== 'typeParameter'
+  ) {
+    return undefined;
+  }
+  const constraint = getCppDependentTypeParameterConstraintCpp(receiver.reference.binding.id, context);
+  const carrier = constraint ? getIrObjectPropertyTypeCpp(constraint, expression.name, context) : undefined;
+  if (carrier === undefined) return undefined;
+  return isCppErasedDynamicValueTypeCpp(carrier) || isCppOptionalErasedDynamicValueTypeCpp(carrier, context)
+    ? carrier
+    : undefined;
+}
+
 // `source as string` on a position TypeScript states as unconstrained is an assertion about a value
 // the source cannot check. Once that position holds the erased dynamic value, no `static_cast` reaches
 // its alternative — the erased value has no conversion operator — so the assertion becomes the runtime's
@@ -24717,9 +24781,11 @@ function getCppErasedValueAssertionCpp(
     // is dependent exactly when the receiver it produced is: C++ defers the local's type to instantiation
     // and then requires the disambiguator. A receiver of any concrete type keeps the plain spelling the
     // emitted text has always had.
-    const recovery = isCppTypeDependentReceiverCpp(erasedValue, context.typeParameterNames)
-      ? '.template object_if'
-      : '.object_if';
+    const recovery =
+      isCppTypeDependentReceiverCpp(erasedValue, context.typeParameterNames) ||
+      isCppUnknownSpecializationMemberCpp(expression, context)
+        ? '.template object_if'
+        : '.object_if';
     return `([&]() -> ${emitType(target, context)} { const auto& ${erased} = ${erasedValue}; auto ${recovered} = ${erased}${recovery}<${referenceElement}>(); if (!${recovered}) throw std::logic_error("erased value does not hold the asserted object type"); return ${recovered}; }())`;
   }
   // A union target is several alternatives, so the assertion is the same checked selection the contextual

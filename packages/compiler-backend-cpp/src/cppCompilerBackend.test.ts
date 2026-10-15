@@ -14652,6 +14652,74 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(concrete).not.toContain('template object_if');
   });
 
+  // The read the generic evidence cannot answer, and the defect the carried downstream patch records: a
+  // property of a type-parameter-typed receiver has no declaration in this module, so nothing reported a
+  // type for it and the assertion fell to the UNCHECKED `static_cast` lane. The constraint is the
+  // declaration evidence for exactly that read -- every instantiation satisfies it -- so when it fixes the
+  // member's carrier as the erased dynamic value, the assertion is the runtime's own checked recovery.
+  it('routes a dependent property read whose constraint carrier is erased into the checked recovery', () => {
+    const emitRecovery = (body: string) =>
+      emitIrModuleCpp(
+        lower(
+          'dependentErasedProperty.ts',
+          `interface Payload { readonly id: string }
+           ${body}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+
+    // The downstream shape, character for character. Before this the module emitted
+    // `static_cast<flight::Ref<Payload>>(box->value)`, which is a cast an erased value cannot support --
+    // it has no conversion operator -- and which nothing at the pin instantiates to find out.
+    const routed = emitRecovery(
+      `interface Box { readonly value: unknown }
+       export function recover<Type extends Box>(box: Type): Payload {
+         return box.value as Payload;
+       }`,
+    );
+    expect(routed).toContain('const auto& erased_value = box->value;');
+    expect(routed).toContain('erased_value.template object_if<Payload>()');
+    expect(routed).toContain('erased value does not hold the asserted object type');
+    expect(routed).not.toContain('static_cast<flight::Ref<Payload>>');
+
+    // Near-neighbour: the same receiver with a member whose constraint carrier is NOT erased keeps the
+    // assertion it had. Nothing about the receiver changed, so nothing about the lane may.
+    const nonErased = emitRecovery(
+      `interface Box { readonly label: string }
+       export function recover<Type extends Box>(box: Type): Payload {
+         return box.label as Payload;
+       }`,
+    );
+    expect(nonErased).toContain('static_cast<flight::Ref<Payload>>(box->label)');
+    expect(nonErased).not.toContain('object_if');
+
+    // Near-neighbour: a concrete receiver was already exact, and its recovery is not dependent, so it
+    // keeps the plain spelling.
+    const concreteReceiver = emitRecovery(
+      `interface Box { readonly value: unknown }
+       export function recover(box: Box): Payload {
+         return box.value as Payload;
+       }`,
+    );
+    expect(concreteReceiver).toContain('const auto& erased_value = box->value;');
+    expect(concreteReceiver).toContain('erased_value.object_if<Payload>()');
+    expect(concreteReceiver).not.toContain('template object_if');
+
+    // Near-neighbour: a member an inhabited constraint branch does not declare has no constraint evidence
+    // to route, and the read stays the refusal it was. `Type extends WithValue | WithoutValue` admits
+    // values without the member, so the guarded read is a variant member access the emitter cannot prove.
+    expect(() =>
+      emitRecovery(
+        `interface WithValue { readonly value: unknown }
+         interface WithoutValue { readonly other: number }
+         export function pick<Type extends WithValue | WithoutValue>(box: Type): Payload | null {
+           if ('value' in box) return box.value as Payload;
+           return null;
+         }`,
+      ),
+    ).toThrow('requires proven union member access');
+  });
+
   // Red before the fix, green after, and the only thing that can say so is the compiler: both shapes below
   // were handed to g++ as failing output and are handed to it as passing output now.
   it.skipIf(!cppSyntaxGate.available)('compiles the open-lookup recovery through its carrier', () => {
