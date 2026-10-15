@@ -23155,6 +23155,97 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toContain('an erased assertion hides the represented source carrier');
   });
 
+  // `x?: T | null` keeps THREE source states: omitted (which IS `undefined`), a present `null`, and a
+  // present value. It is stored as an outer optional for the parameter's own presence around the declared
+  // `T | null` carrier, so a narrowing that excluded `undefined` and still admits `null` has proven only
+  // the OUTER optional present: the narrowed value is the inner carrier, unchanged.
+  it('reads a narrowed nullable optional parameter as its inner carrier', () => {
+    const emitChannel = (body: string) =>
+      emitIrModuleCpp(
+        lower(
+          'nullable-optional.ts',
+          `export interface Ctx { channel: string | null }
+           ${body}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+
+    // The SDK shape: the presence test asks the outer optional and the present branch is the declared
+    // `string | null` carrier -- neither the omitted state nor a second unpack of the inner one.
+    const child = emitChannel(
+      `export function child(parent: Readonly<Ctx>, channel?: string | null): string | null {
+         return channel !== undefined ? channel : parent.channel;
+       }`,
+    );
+    expect(child).toContain('std::optional<std::optional<flight::String>> channel = std::nullopt');
+    expect(child).toContain('presence_operand.has_value()');
+    expect(child).toContain('? channel.value() :');
+    expect(child).not.toContain('channel.value().value()');
+
+    // `null` stays null and a value stays the value in the narrowed branch.
+    const described = emitChannel(
+      `export function describeChannel(channel?: string | null): string {
+         const value = channel !== undefined ? channel : 'omitted';
+         return value === null ? 'null' : value;
+       }`,
+    );
+    expect(described).toContain('const std::optional<flight::String> value =');
+    expect(described).toContain('? channel.value() : std::optional<flight::String>{flight::String("omitted")}');
+    expect(described).toContain('!value.has_value() ? flight::String("null") : value.value()');
+
+    // Near-neighbours that keep their own paths: a parameter with no declared `null` has one absence
+    // channel, and a required nullable parameter has none of its own.
+    const singleAbsence = emitChannel(
+      `export function name(channel?: string): string { return channel !== undefined ? channel : 'none'; }`,
+    );
+    expect(singleAbsence).toContain('std::optional<flight::String> channel = std::nullopt');
+    expect(singleAbsence).toContain('channel.has_value() ? channel.value() : flight::String("none")');
+    expect(
+      emitChannel(
+        `export function label(channel: string | null): string { return channel !== null ? channel : 'none'; }`,
+      ),
+    ).toContain('channel.has_value() ? channel.value() : flight::String("none")');
+  });
+
+  // The refusals that stay: a narrowing which leaves the parameter possibly OMITTED has not proven the
+  // outer optional present, and an optional nullable MEMBER is a different carrier with one absence
+  // channel rather than two.
+  it('refuses a nullable optional projection that has not proven the parameter present', () => {
+    const failure = (body: string): { rule?: string } => {
+      try {
+        emitIrModuleCpp(
+          lower(
+            'nullable-optional-refusal.ts',
+            `export interface Ctx { channel: string | null }
+           ${body}`,
+          ).module,
+          { runtimeProfile: 'flight-cpp' },
+        );
+      } catch (error) {
+        return error as { rule?: string };
+      }
+      return {};
+    };
+
+    expect(
+      failure(
+        `export function pick(channel?: string | null): string | undefined {
+           return channel !== null ? channel : 'none';
+         }`,
+      ).rule,
+    ).toBe('cpp-member-projection-without-present-storage');
+    expect(
+      failure(
+        `interface NodeData { runtime: object | null }
+         export function state(value: Readonly<Partial<NodeData>>): number {
+           if (value.runtime === undefined) return 0;
+           if (value.runtime === null) return 1;
+           return 2;
+         }`,
+      ).rule,
+    ).toBe('cpp-dual-sentinel-comparison-unrepresented');
+  });
+
   // The same identity rule in the position the field lane does not cover: a LOCAL initialized straight from
   // a bound host call. A local with no annotation has only the library's own result as its type evidence --
   // the DOM answers `number` for `setInterval` -- and the emitted call actually answers whatever the

@@ -16779,7 +16779,38 @@ function emitNarrowedUnionMemberCpp(
   const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
   if (!union) return undefined;
   const binding = emitInitializedBindingValueCpp(expression.reference.binding, context);
+  // `x?: T | null` keeps THREE source states: omitted (which is `undefined`), a present `null`, and a
+  // present value. The parameter is stored as an outer optional for its own presence around the declared
+  // `T | null` carrier, so this narrowing -- one that excluded `undefined` and still admits `null` -- has
+  // proven the OUTER optional present and nothing more. The narrowed value is therefore the inner `T | null`
+  // carrier exactly as declared: `null` still null, a value still the value. Reading it is the outer
+  // `value()`; unpacking the inner optional here would collapse `null` into the value that is not there.
+  if (
+    narrowedType &&
+    !expression.narrowedMember &&
+    getCppOptionalParameterNullishStorageCpp(expression, context) === 'nestedNullable' &&
+    !isCppTypeAdmittingUndefinedCpp(narrowedType, context) &&
+    isCppTypeAdmittingNullCpp(narrowedType, context)
+  ) {
+    context.includes.add('optional');
+    return `${binding}.value()`;
+  }
   return emitCppNarrowedUnionValueCpp(binding, union, narrowedType, expression.narrowedMember, context);
+}
+
+// Whether a narrowed type still admits the `undefined` or the `null` the storage distinguishes. The
+// question is asked of the narrowed TYPE rather than of the storage, because it is the type that says
+// which source states the flow analysis has left.
+function isCppTypeAdmittingUndefinedCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind === 'undefined') return true;
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  return union !== undefined && union.types.some((member) => member.kind === 'undefined');
+}
+
+function isCppTypeAdmittingNullCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind === 'null') return true;
+  const union = getIrUnionTypeCpp(type, context, new Set());
+  return union !== undefined && union.types.some((member) => member.kind === 'null');
 }
 
 // A recursive union alias is emitted as a named derived carrier, so narrowing a surrounding union back
