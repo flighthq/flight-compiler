@@ -9373,12 +9373,54 @@ function emitStatement(statement: Readonly<IrStatement>, context: EmitContext): 
   }
 }
 
+// A handler whose binding is used only to record an already-elected exception slot does not need a
+// named caught value: that record lowers to `std::current_exception()` and never mentions the binding.
+// Catching everything makes the attempt-all pattern faithful for non-class throws too -- the pointer
+// reifies the original value and `std::rethrow_exception` later restores it. Any real read of the caught
+// value keeps the narrow std::exception binding because C++ cannot name an arbitrary non-class value.
+function isCppReifyOnlyCatchBindingCpp(
+  binding: Readonly<IrBindingIdentity>,
+  body: Readonly<IrStatement>,
+  context: EmitContext,
+): boolean {
+  let references = 0;
+  let records = 0;
+  analyzeIrStatementSubtreeTraversal(body, {
+    expression(expression) {
+      if (
+        expression.kind === 'identifier' &&
+        expression.reference.kind === 'binding' &&
+        expression.reference.binding.id === binding.id
+      ) {
+        references += 1;
+      }
+      if (
+        expression.kind === 'assignment' &&
+        (expression.operator === '=' || expression.operator === '??=') &&
+        expression.left.kind === 'identifier' &&
+        expression.left.reference.kind === 'binding' &&
+        context.exceptionPointerBindingIds.has(expression.left.reference.binding.id) &&
+        expression.right.kind === 'identifier' &&
+        expression.right.reference.kind === 'binding' &&
+        expression.right.reference.binding.id === binding.id
+      ) {
+        records += 1;
+      }
+    },
+  });
+  return references === records;
+}
+
 function emitCatchClauseCpp(
   catchClause: NonNullable<Extract<IrStatement, { kind: 'try' }>['catchClause']>,
   context: EmitContext,
 ): string[] {
-  if (catchClause.binding) context.includes.add('stdexcept');
-  const catchVar = catchClause.binding ? `const std::exception& ${safeCppName(catchClause.binding.name)}` : '...';
+  const reifyOnly = catchClause.binding
+    ? isCppReifyOnlyCatchBindingCpp(catchClause.binding, catchClause.body, context)
+    : false;
+  if (catchClause.binding && !reifyOnly) context.includes.add('stdexcept');
+  const catchVar =
+    catchClause.binding && !reifyOnly ? `const std::exception& ${safeCppName(catchClause.binding.name)}` : '...';
   return [`catch (${catchVar}) {`, ...indentSourceLines(emitStatementBody(catchClause.body, context)), '}'];
 }
 

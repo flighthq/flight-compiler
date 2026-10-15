@@ -55,7 +55,7 @@ describe('C++ catch-recorded exception slot carrier', () => {
 
       expect(contents).toContain('std::exception_ptr failure = nullptr;');
       expect(contents).not.toContain('flight::Any failure');
-      expect(contents).toContain('catch (const std::exception& error)');
+      expect(contents).toContain('catch (...)');
       expect(contents).toContain('if (!failure) failure = std::current_exception();');
       expect(contents.match(/std::current_exception\(\)/gu)).toHaveLength(1);
       expect(contents).toContain('return presence_operand;');
