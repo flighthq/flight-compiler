@@ -22807,6 +22807,92 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('static_cast<size_t>');
   });
 
+  // `new Map(map)` is a COPY: the source says the new map holds that map's records in that map's order,
+  // and says nothing about the two sharing storage. The runtime's Map has a storage-sharing copy
+  // constructor, and C++ prefers it to the explicit range constructor whenever the argument already has
+  // the constructed type -- so the plain spelling handed back the caller's map, and every write through
+  // the "new" one mutated the source. Map::clone() copies every record into new storage.
+  it('copies a Map source into new storage instead of sharing the caller map', () => {
+    const emitConstruction = (body: string) =>
+      emitIrModuleCpp(lower('new-map-copy.ts', body).module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // Every spelling of "a map value": a ReadonlyMap parameter, an explicitly typed Map, a property read,
+    // and a carrier whose values are the dual-sentinel variant. The clone is the same in all of them -- it
+    // copies whatever records the source holds -- and the element carriers are the ones the source stated.
+    expect(
+      emitConstruction(
+        `export function copy(map: ReadonlyMap<string, number>): Map<string, number> { return new Map(map); }`,
+      ),
+    ).toContain('return flight::Map<flight::String, double>(map).clone();');
+    expect(
+      emitConstruction(
+        `export function copy(map: Map<string, number>): Map<string, number> { return new Map<string, number>(map); }`,
+      ),
+    ).toContain('return flight::Map<flight::String, double>(map).clone();');
+    expect(
+      emitConstruction(
+        `export function copy(holder: { m: Map<string, number> }): Map<string, number> { return new Map(holder.m); }`,
+      ),
+    ).toContain('return flight::Map<flight::String, double>(holder->m).clone();');
+    expect(
+      emitConstruction(
+        `export function copy(map: ReadonlyMap<string, number | null | undefined>): Map<string, number | null | undefined> {
+           return new Map(map);
+         }`,
+      ),
+    ).toContain(
+      'return flight::Map<flight::String, std::variant<double, flight::Null, flight::Undefined>>(map).clone();',
+    );
+
+    // The controls that keep this about a MAP source: every source that already reaches a constructor
+    // filling fresh storage is emitted exactly as it was, because cloning one of those would copy a map
+    // nobody else holds.
+    const sources = emitConstruction(
+      `export function fromEntries(entries: [string, number][]): Map<string, number> { return new Map(entries); }
+       export function fromIterator(map: Map<string, number>): Map<string, number> { return new Map(map.entries()); }
+       export function fromSet(pairs: Set<[string, number]>): Map<string, number> { return new Map(pairs); }
+       export function fromLiteral(): Map<string, number> { return new Map([['a', 1]]); }
+       export function empty(): Map<string, number> { return new Map<string, number>(); }`,
+    );
+    expect(sources).toContain('return flight::Map<flight::String, double>(entries);');
+    expect(sources).toContain('return flight::Map<flight::String, double>(map.entries());');
+    expect(sources).toContain('return flight::Map<flight::String, double>(pairs);');
+    expect(sources).toContain('return flight::Map<flight::String, double>({{flight::String("a"), 1.0}});');
+    expect(sources).toContain('return flight::Map<flight::String, double>();');
+    expect(sources).not.toContain('.clone()');
+  });
+
+  // The sources a Map construction cannot read. The runtime's constructors take an initializer list, a
+  // range with begin/end, or nothing, so a call naming none of those has no C++ form -- an erased value
+  // carries no records, and a second argument has nowhere to go.
+  it('refuses a Map construction whose source cannot be read as entries', () => {
+    const refusal = (body: string): string => {
+      try {
+        emitIrModuleCpp(lower('new-map-refusal.ts', body).module, { runtimeProfile: 'flight-cpp' });
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      return '(emitted)';
+    };
+
+    expect(refusal(`export function fromAny(source: any): Map<string, number> { return new Map(source); }`)).toContain(
+      'new Map requires an entries source the target can read',
+    );
+    expect(
+      refusal(
+        `export function fromTwo(entries: [string, number][], extra: [string, number][]): Map<string, number> { return new Map(entries, extra as never); }`,
+      ),
+    ).toContain('new Map takes one entries source and nothing else, and this call passes 2');
+    // An array-like object is not a range, and the assertion that hides it is already refused on its own.
+    expect(
+      refusal(
+        `export function fromArrayLike(source: { readonly 0: readonly [string, number]; readonly length: number }): Map<string, number> {
+           return new Map(source as unknown as [string, number][]);
+         }`,
+      ),
+    ).toContain('an erased assertion hides the represented source carrier');
+  });
+
   // `Array.from` copies a runtime sequence into a new array, which is what the runtime's `array_from`
   // does: it iterates the source and returns an `Array` of its elements. The member is declared in the
   // profile (see the binding tests), so the emitter names the runtime function and keeps the element

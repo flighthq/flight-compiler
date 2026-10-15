@@ -5461,6 +5461,7 @@ function emitExpression(
         getCppRuntimeProfile(context.options) === 'flight-cpp' && ambientConstructorName === 'Map'
           ? getIrAmbientCollectionTypeCpp(constructedType, context, new Set())
           : undefined;
+      if (mapType?.reference.name === 'Map') assertCppMapConstructionSourceCpp(expression, context);
       const args = expression.arguments.map((argument, index) => {
         const mapEntries =
           index === 0 && mapType?.reference.name === 'Map'
@@ -5595,6 +5596,19 @@ function emitExpression(
         args.length > 0
       ) {
         return `${typeName}(${args[0]}.to_utf8())`;
+      }
+      // `new Map(map)` builds a NEW map holding that map's records in that map's order, so the copy has to
+      // own its storage. The runtime's Map::clone() copies every record into new storage, and the plain
+      // constructor would share the caller's. Every other source -- an entries array, an iterator, an
+      // entries literal, an empty construction -- already reaches a constructor that fills fresh storage,
+      // and cloning one of those again would copy a map nobody else holds.
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        ambientConstructorName === 'Map' &&
+        expression.arguments.length === 1 &&
+        isCppMapCopySourceCpp(expression.arguments[0]!, context)
+      ) {
+        return `${typeName}${typeArguments}(${args[0]}).clone()`;
       }
       if (
         constructedType &&
@@ -28116,6 +28130,44 @@ function getIrAssignmentTargetTypeCpp(
     getIrExpressionBindingTypeCpp(expression, context) ??
     getIrExpressionTypeEvidenceCpp(expression, context)
   );
+}
+
+// Whether a `new Map(argument)` argument is itself a Map: a Map or ReadonlyMap value whose entries the new
+// map has to COPY. The runtime's Map has a storage-sharing copy constructor, and C++ prefers it to the
+// explicit range constructor whenever the argument already has the constructed type, so the plain spelling
+// would hand back the caller's map and every write through the "new" one would mutate the source.
+function isCppMapCopySourceCpp(argument: Readonly<IrExpression>, context: EmitContext): boolean {
+  const type = getIrExpressionBindingTypeCpp(argument, context) ?? getIrExpressionTypeEvidenceCpp(argument, context);
+  const collection = type ? getIrAmbientCollectionTypeCpp(type, context, new Set()) : undefined;
+  return collection?.reference.name === 'Map' || collection?.reference.name === 'ReadonlyMap';
+}
+
+// `new Map(source)` is either a copy of a map or a read of an entries sequence, and there is no third
+// reading: the runtime's constructors take an initializer list, a range that has `begin`/`end`, or nothing.
+// A call naming none of those has no C++ form at all -- an erased value is not a range, and a second
+// argument has nowhere to go -- so the emitter refuses rather than writing a construction that cannot
+// compile or, worse, one that silently shares storage.
+function assertCppMapConstructionSourceCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  context: EmitContext,
+): void {
+  if (expression.arguments.length > 1) {
+    emissionError(
+      context,
+      `new Map takes one entries source and nothing else, and this call passes ${expression.arguments.length}`,
+      'cpp-map-construction-arity',
+    );
+  }
+  const source = expression.arguments[0];
+  if (source === undefined) return;
+  const type = getIrExpressionBindingTypeCpp(source, context) ?? getIrExpressionTypeEvidenceCpp(source, context);
+  if (type !== undefined && isCppErasedDynamicValueTypeCpp(type)) {
+    emissionError(
+      context,
+      'new Map requires an entries source the target can read: an erased value carries no key/value records, so declare the source as a Map, a ReadonlyMap, or an array of readonly key/value pairs',
+      'cpp-map-construction-erased-source',
+    );
+  }
 }
 
 function getIrExpressionBindingTypeCpp(
