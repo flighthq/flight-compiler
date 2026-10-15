@@ -5463,7 +5463,17 @@ function emitExpression(
         getCppRuntimeProfile(context.options) === 'flight-cpp' && ambientConstructorName === 'Map'
           ? getIrAmbientCollectionTypeCpp(constructedType, context, new Set())
           : undefined;
-      if (mapType?.reference.name === 'Map') assertCppMapConstructionSourceCpp(expression, context);
+      const constructedCollection =
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        (ambientConstructorName === 'Map' || ambientConstructorName === 'Set')
+          ? getIrAmbientCollectionTypeCpp(constructedType, context, new Set())
+          : undefined;
+      if (constructedCollection?.reference.name === 'Map') {
+        assertCppCollectionConstructionSourceCpp(expression, 'Map', context);
+      }
+      if (constructedCollection?.reference.name === 'Set') {
+        assertCppCollectionConstructionSourceCpp(expression, 'Set', context);
+      }
       const args = expression.arguments.map((argument, index) => {
         const mapEntries =
           index === 0 && mapType?.reference.name === 'Map'
@@ -5609,6 +5619,17 @@ function emitExpression(
         ambientConstructorName === 'Map' &&
         expression.arguments.length === 1 &&
         isCppMapCopySourceCpp(expression.arguments[0]!, context)
+      ) {
+        return `${typeName}${typeArguments}(${args[0]}).clone()`;
+      }
+      // `new Set(set)` is the same construction for a Set: a NEW set holding that set's values in that set's
+      // order, so the copy has to own its storage. Set::clone() copies every record into new storage and
+      // leaves the contained values themselves shared, which is what copying a set of references means.
+      if (
+        getCppRuntimeProfile(context.options) === 'flight-cpp' &&
+        ambientConstructorName === 'Set' &&
+        expression.arguments.length === 1 &&
+        isCppSetCopySourceCpp(expression.arguments[0]!, context)
       ) {
         return `${typeName}${typeArguments}(${args[0]}).clone()`;
       }
@@ -28134,6 +28155,17 @@ function getIrAssignmentTargetTypeCpp(
   );
 }
 
+// Whether a `new Set(argument)` argument is itself a Set: a Set or ReadonlySet value whose values the new set
+// has to COPY. The runtime's Set shares the same storage-sharing copy constructor Map has, and C++ prefers it
+// to the explicit range constructor whenever the argument already has the constructed type, so the plain
+// spelling would hand back the caller's set and every add or delete through the "new" one would mutate the
+// source.
+function isCppSetCopySourceCpp(argument: Readonly<IrExpression>, context: EmitContext): boolean {
+  const type = getIrExpressionBindingTypeCpp(argument, context) ?? getIrExpressionTypeEvidenceCpp(argument, context);
+  const collection = type ? getIrAmbientCollectionTypeCpp(type, context, new Set()) : undefined;
+  return collection?.reference.name === 'Set' || collection?.reference.name === 'ReadonlySet';
+}
+
 // Whether a `new Map(argument)` argument is itself a Map: a Map or ReadonlyMap value whose entries the new
 // map has to COPY. The runtime's Map has a storage-sharing copy constructor, and C++ prefers it to the
 // explicit range constructor whenever the argument already has the constructed type, so the plain spelling
@@ -28144,20 +28176,23 @@ function isCppMapCopySourceCpp(argument: Readonly<IrExpression>, context: EmitCo
   return collection?.reference.name === 'Map' || collection?.reference.name === 'ReadonlyMap';
 }
 
-// `new Map(source)` is either a copy of a map or a read of an entries sequence, and there is no third
-// reading: the runtime's constructors take an initializer list, a range that has `begin`/`end`, or nothing.
+// `new Map(source)` reads an entries sequence and `new Set(source)` reads a values sequence, and neither has
+// a third reading: the runtime's constructors take an initializer list, a range that has `begin`/`end`, or
+// nothing.
 // A call naming none of those has no C++ form at all -- an erased value is not a range, and a second
 // argument has nowhere to go -- so the emitter refuses rather than writing a construction that cannot
 // compile or, worse, one that silently shares storage.
-function assertCppMapConstructionSourceCpp(
+function assertCppCollectionConstructionSourceCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'new' }>>,
+  collection: 'Map' | 'Set',
   context: EmitContext,
 ): void {
+  const reads = collection === 'Map' ? 'entries' : 'values';
   if (expression.arguments.length > 1) {
     emissionError(
       context,
-      `new Map takes one entries source and nothing else, and this call passes ${expression.arguments.length}`,
-      'cpp-map-construction-arity',
+      `new ${collection} takes one ${reads} source and nothing else, and this call passes ${expression.arguments.length}`,
+      'cpp-collection-construction-arity',
     );
   }
   const source = expression.arguments[0];
@@ -28166,8 +28201,8 @@ function assertCppMapConstructionSourceCpp(
   if (type !== undefined && isCppErasedDynamicValueTypeCpp(type)) {
     emissionError(
       context,
-      'new Map requires an entries source the target can read: an erased value carries no key/value records, so declare the source as a Map, a ReadonlyMap, or an array of readonly key/value pairs',
-      'cpp-map-construction-erased-source',
+      `new ${collection} requires a source the target can read as ${reads}: an erased value carries none, so declare the source as a ${collection}, a Readonly${collection}, or a range the runtime can iterate`,
+      'cpp-collection-construction-erased-source',
     );
   }
 }

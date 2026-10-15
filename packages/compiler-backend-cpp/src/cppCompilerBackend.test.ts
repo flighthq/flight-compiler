@@ -22862,6 +22862,78 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(sources).not.toContain('.clone()');
   });
 
+  // The Set twin of the Map copy, and the same defect: `new Set(set)` creates a NEW set holding that set's
+  // values in that set's order, while the runtime's Set copy constructor shares storage and C++ prefers it
+  // to the explicit range constructor for a same-type argument. Set::clone() copies every record into new
+  // storage and leaves the contained values themselves shared, which is what copying a set of references is.
+  it('copies a Set source into new storage instead of sharing the caller set', () => {
+    const emitConstruction = (body: string) =>
+      emitIrModuleCpp(lower('new-set-copy.ts', body).module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(
+      emitConstruction(`export function copy(set: ReadonlySet<string>): Set<string> { return new Set(set); }`),
+    ).toContain('return flight::Set<flight::String>(set).clone();');
+    expect(
+      emitConstruction(`export function copy(set: Set<string>): Set<string> { return new Set<string>(set); }`),
+    ).toContain('return flight::Set<flight::String>(set).clone();');
+    expect(
+      emitConstruction(`export function copy(holder: { s: Set<string> }): Set<string> { return new Set(holder.s); }`),
+    ).toContain('return flight::Set<flight::String>(holder->s).clone();');
+    // A variant element carrier is copied the same way: clone() copies whatever records the source holds.
+    expect(
+      emitConstruction(
+        `export function copy(set: ReadonlySet<string | null | undefined>): Set<string | null | undefined> {
+           return new Set(set);
+         }`,
+      ),
+    ).toContain('return flight::Set<std::variant<flight::String, flight::Null, flight::Undefined>>(set).clone();');
+
+    // The controls: a values array, a literal and an empty construction already build fresh storage, so they
+    // are emitted exactly as before, and the Map copy this lane sits beside is unchanged.
+    const fresh = emitConstruction(
+      `export function fromArray(values: string[]): Set<string> { return new Set(values); }
+       export function fromLiteral(): Set<string> { return new Set(['a', 'b']); }
+       export function empty(): Set<string> { return new Set<string>(); }`,
+    );
+    expect(fresh).toContain('return flight::Set<flight::String>(values);');
+    expect(fresh).toContain(
+      'return flight::Set<flight::String>(flight::Array<flight::String>{flight::String("a"), flight::String("b")});',
+    );
+    expect(fresh).toContain('return flight::Set<flight::String>();');
+    expect(fresh).not.toContain('.clone()');
+    expect(
+      emitConstruction(
+        `export function copy(map: ReadonlyMap<string, number>): Map<string, number> { return new Map(map); }`,
+      ),
+    ).toContain('return flight::Map<flight::String, double>(map).clone();');
+  });
+
+  // The Set constructions whose source cannot be read as values, and the values-iterator form that belongs
+  // to the other record: none of them changed here.
+  it('refuses a Set construction whose source cannot be read as values', () => {
+    const refusal = (body: string): string => {
+      try {
+        emitIrModuleCpp(lower('new-set-refusal.ts', body).module, { runtimeProfile: 'flight-cpp' });
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      return '(emitted)';
+    };
+
+    expect(refusal(`export function fromAny(source: any): Set<string> { return new Set(source); }`)).toContain(
+      'new Set requires a source the target can read as values',
+    );
+    expect(
+      refusal(
+        `export function fromTwo(values: string[], extra: string[]): Set<string> { return new Set(values, extra as never); }`,
+      ),
+    ).toContain('new Set takes one values source and nothing else, and this call passes 2');
+    // `new Set(set.values())` is compiler-new-set-from-iterator's shape and keeps its own refusal.
+    expect(
+      refusal(`export function fromIterator(set: Set<string>): Set<string> { return new Set(set.values()); }`),
+    ).toContain('contextual optionalSingle construction requires expression type evidence');
+  });
+
   // The sources a Map construction cannot read. The runtime's constructors take an initializer list, a
   // range with begin/end, or nothing, so a call naming none of those has no C++ form -- an erased value
   // carries no records, and a second argument has nowhere to go.
@@ -22876,7 +22948,7 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     };
 
     expect(refusal(`export function fromAny(source: any): Map<string, number> { return new Map(source); }`)).toContain(
-      'new Map requires an entries source the target can read',
+      'new Map requires a source the target can read as entries',
     );
     expect(
       refusal(
