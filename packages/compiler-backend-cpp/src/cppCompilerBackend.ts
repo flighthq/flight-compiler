@@ -301,6 +301,18 @@ interface CppExternalCallResultPresencePlan {
   readonly immutable: boolean;
 }
 
+interface CppIndexedElementPresencePlan {
+  readonly elementStorage:
+    | 'dualSentinel'
+    | 'erasedDynamic'
+    | 'none'
+    | 'optionalNull'
+    | 'optionalUndefined'
+    | 'taggedNull'
+    | 'taggedUndefined';
+  readonly value: string;
+}
+
 interface CppGeneratedSymbolBindingMember {
   readonly key: string;
   readonly member: string;
@@ -13533,6 +13545,99 @@ function getCppNullTaggedStoragePresencePlanCpp(
   return nullPredicate ? { nullPredicate } : undefined;
 }
 
+// A numeric read through a checker-resolved Array has two independent storage questions. The runtime's
+// `get` answers whether the index exists, which JavaScript observes as `undefined`; the Array element's
+// own carrier may then represent null, undefined, or both. Keep this plan on the semantic collection and
+// key evidence so a Map call, typed array, Record, structural row, or same-named target method cannot
+// acquire Array behavior from its emitted spelling.
+function getCppIndexedElementPresencePlanCpp(
+  operand: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<CppIndexedElementPresencePlan> | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  let element: Readonly<Extract<IrExpression, { kind: 'element' }>> | undefined;
+  let retainedBindingId: string | undefined;
+  if (operand.kind === 'element') {
+    element = operand;
+  } else if (operand.kind === 'identifier' && operand.reference.kind === 'binding') {
+    const bindingId = operand.reference.binding.id;
+    const initializer = context.bindingInitializers.get(bindingId);
+    if (
+      context.arrayElementBindingIds.has(bindingId) &&
+      !context.lengthProvenNullableArrayElementBindingIds.has(bindingId) &&
+      initializer?.kind === 'element'
+    ) {
+      element = initializer;
+      retainedBindingId = bindingId;
+    }
+  }
+  if (
+    !element ||
+    element.optional ||
+    element.semantics.key !== 'number' ||
+    element.semantics.receivers.some((receiver) => receiver !== 'array')
+  ) {
+    return undefined;
+  }
+  if (retainedBindingId && !context.immutableInitializerBindingIds.has(retainedBindingId)) {
+    emissionError(
+      context,
+      'indexed element presence retained by a mutable binding requires nested-sentinel assignment lowering: the initializer preserves index absence outside the element carrier, but a later assignment may replace either layer, so the compiler will not keep using initializer provenance after mutation',
+      'cpp-indexed-element-presence-mutable-binding',
+    );
+  }
+  const receiverType = getIrExpressionTypeEvidenceCpp(element.object, context);
+  const array = receiverType ? getIrArrayTypeCpp(receiverType, context, new Set()) : undefined;
+  if (!array) return undefined;
+  const runtimeElement = getIrTypeRuntimeDomainCpp(array.element, context, new Set());
+  const union = getIrUnionTypeCpp(array.element, context, new Set());
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  const openNullishElement = [
+    array.element,
+    ...(plan?.valueSlots.map((slot) => slot.runtimeType) ?? [runtimeElement ?? array.element]),
+  ]
+    .filter(
+      (type): type is Extract<IrType, { kind: 'named' }> =>
+        type.kind === 'named' && type.reference.kind === 'binding' && type.reference.binding.kind === 'typeParameter',
+    )
+    .find((type) => {
+      const constraint = getCppTypeParameterConstraintCpp(type, context);
+      return (
+        !constraint ||
+        admitsCppNullishSentinelCpp(constraint, 'null', context) ||
+        admitsCppNullishSentinelCpp(constraint, 'undefined', context)
+      );
+    });
+  if (openNullishElement) {
+    emissionError(
+      context,
+      `indexed element presence through ${getCppOpenTypeParameterName(openNullishElement) ?? 'an open type parameter'} requires a constraint that excludes null and undefined: the runtime lookup preserves an index miss, but the open element carrier does not say which source sentinel a later optional instantiation represents`,
+      'cpp-indexed-element-presence-open-sentinel-domain',
+    );
+  }
+  const elementStorage = isCppAliasResolvedErasedDynamicValueTypeCpp(array.element, context)
+    ? 'erasedDynamic'
+    : runtimeElement?.kind === 'null'
+      ? 'taggedNull'
+      : runtimeElement?.kind === 'undefined'
+        ? 'taggedUndefined'
+        : plan?.kind === 'dualSentinelVariant'
+          ? 'dualSentinel'
+          : plan?.sentinels.null === 'optionalAbsence'
+            ? 'optionalNull'
+            : plan?.sentinels.undefined === 'optionalAbsence'
+              ? 'optionalUndefined'
+              : 'none';
+  const value =
+    operand.kind === 'element'
+      ? emitOptionalExpressionCpp(operand, context, undefined)
+      : operand.kind === 'identifier'
+        ? emitIdentifierReference(operand.reference, context)
+        : undefined;
+  if (!value) return undefined;
+  return { elementStorage, value };
+}
+
 // A source member is projected from the payload, never from `std::optional` itself. The storage fact
 // and the source type are deliberately separate: Record and indexed Array reads may elect optional
 // storage even when their TypeScript annotation names only the payload. Require control-flow evidence
@@ -13696,6 +13801,69 @@ function emitCppPresenceTestCpp(
         : 'presence_operand.has_value() && !presence_operand.value().has_value()';
     }
     return `([&]() { const auto& presence_operand = ${value}; return ${test}; }())`;
+  }
+  const indexedElement = getCppIndexedElementPresencePlanCpp(operand, context);
+  if (indexedElement) {
+    context.includes.add('optional');
+    const valueName = getGeneratedTargetName('indexedPresence', context);
+    const outerPresent = `${valueName}.has_value()`;
+    let test: string;
+    if (indexedElement.elementStorage === 'erasedDynamic') {
+      context.includes.add('flight/any.hpp');
+      const predicate = strict ? (sentinel === 'null' ? 'is_null' : 'is_undefined') : 'is_nullish';
+      const match = `${valueName}.value().${predicate}()`;
+      test = present ? `${outerPresent} && !${match}` : `!${outerPresent} || ${match}`;
+    } else if (indexedElement.elementStorage === 'dualSentinel') {
+      context.includes.add('variant');
+      const sentinels = getCppDualSentinelTargetTypes(context);
+      const nullMatch = `std::holds_alternative<${sentinels.null}>(${valueName}.value())`;
+      const undefinedMatch = `std::holds_alternative<${sentinels.undefined}>(${valueName}.value())`;
+      test = strict
+        ? sentinel === 'null'
+          ? present
+            ? `!${outerPresent} || !${nullMatch}`
+            : `${outerPresent} && ${nullMatch}`
+          : present
+            ? `${outerPresent} && !${undefinedMatch}`
+            : `!${outerPresent} || ${undefinedMatch}`
+        : present
+          ? `${outerPresent} && !${nullMatch} && !${undefinedMatch}`
+          : `!${outerPresent} || ${nullMatch} || ${undefinedMatch}`;
+    } else if (indexedElement.elementStorage === 'optionalNull') {
+      const innerPresent = `${valueName}.value().has_value()`;
+      test = strict
+        ? sentinel === 'null'
+          ? present
+            ? `!${outerPresent} || ${innerPresent}`
+            : `${outerPresent} && !${innerPresent}`
+          : `${present ? '' : '!'}${outerPresent}`
+        : present
+          ? `${outerPresent} && ${innerPresent}`
+          : `!${outerPresent} || !${innerPresent}`;
+    } else if (indexedElement.elementStorage === 'optionalUndefined') {
+      const innerPresent = `${valueName}.value().has_value()`;
+      test =
+        strict && sentinel === 'null'
+          ? present
+            ? 'true'
+            : 'false'
+          : present
+            ? `${outerPresent} && ${innerPresent}`
+            : `!${outerPresent} || !${innerPresent}`;
+    } else if (indexedElement.elementStorage === 'taggedNull') {
+      test = strict
+        ? sentinel === 'null'
+          ? `${present ? '!' : ''}${outerPresent}`
+          : `${present ? '' : '!'}${outerPresent}`
+        : present
+          ? 'false'
+          : 'true';
+    } else if (indexedElement.elementStorage === 'taggedUndefined') {
+      test = strict && sentinel === 'null' ? (present ? 'true' : 'false') : present ? 'false' : 'true';
+    } else {
+      test = strict && sentinel === 'null' ? (present ? 'true' : 'false') : `${present ? '' : '!'}${outerPresent}`;
+    }
+    return `([&]() { const auto& ${valueName} = ${indexedElement.value}; return ${test}; }())`;
   }
   if (plan?.kind === 'dualSentinelVariant') {
     context.includes.add('variant');
