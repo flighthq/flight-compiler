@@ -62,6 +62,11 @@ describe('compiler backend contracts', () => {
       upstreamCommit: 'a'.repeat(40),
     });
     const cppOptions: CppCompilerBackendOptions = {
+      cAbi: {
+        adapterSourcePath: 'generated/types_c.cpp',
+        headerPath: 'include/types_c.h',
+        packageName: '@flighthq/types',
+      },
       externalBindings: {
         bindings: [
           {
@@ -109,6 +114,11 @@ describe('compiler backend contracts', () => {
       upstreamCommit: 'a'.repeat(40),
     };
     expect(cppOptions).toEqual({
+      cAbi: {
+        adapterSourcePath: 'generated/types_c.cpp',
+        headerPath: 'include/types_c.h',
+        packageName: '@flighthq/types',
+      },
       externalBindings: {
         bindings: [
           {

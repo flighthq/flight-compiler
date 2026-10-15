@@ -443,6 +443,38 @@ describe('createIrModulesCAbiPlanCpp', () => {
     ]);
   });
 
+  it('elects one package without hiding imported owner evidence from the full module context', () => {
+    const shared = lower('point.ts', 'export interface Point { x: number; }', '@flight/shared');
+    const consumer = lower(
+      'consumer.ts',
+      "import type { Point } from '@flight/shared'; export function inspect(value: Readonly<Point>): Readonly<Point> { return value; }",
+      '@flight/consumer',
+    );
+    const plan = createIrModulesCAbiPlanCpp([consumer, shared], {
+      moduleResolution: {
+        edges: [{ specifier: '@flight/shared', target: { packageName: shared.packageName, source: shared.source } }],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+      packageName: '@flight/consumer',
+      packageTargets: {
+        '@flight/consumer': { includePrefix: 'flight/consumer', namespace: 'flight::consumer' },
+        '@flight/shared': { includePrefix: 'flight/shared', namespace: 'flight::shared' },
+      },
+    });
+
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.functions).toEqual([
+      expect.objectContaining({ packageName: '@flight/consumer', symbol: 'flight_cpp_inspect' }),
+    ]);
+    expect(plan.handles).toEqual([
+      expect.objectContaining({
+        carrier: 'flight_cpp_point',
+        cppTarget: 'flight::shared::Point',
+        packageName: '@flight/shared',
+      }),
+    ]);
+  });
+
   it('refuses flat global C symbol collisions across packages', () => {
     const geometry = lower(
       'geometry.ts',

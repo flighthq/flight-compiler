@@ -2,7 +2,7 @@ import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
 import type { CompilerRuntimeAbiManifest, CompilerRuntimeExternalMemberBinding } from './compilerRuntimeContract.js';
-import type { CompilerSourceIdentity } from './compilerSourceIdentity.js';
+import type { CompilerModuleIdentity, CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 export interface EmittedFileIdentity {
   readonly path: string;
@@ -12,6 +12,17 @@ export interface EmittedFile extends EmittedFileIdentity {
   readonly contents: string;
   /** Target dependency spellings required to compile this file, such as C++ include paths. */
   readonly dependencies?: readonly string[] | undefined;
+}
+
+/** A graph-finalized file owned by a package rather than by one arbitrarily chosen module. */
+export interface CompilerBackendPackageFile {
+  readonly file: EmittedFile;
+  readonly owner: Readonly<{
+    readonly kind: 'package';
+    readonly packageName: string;
+  }>;
+  /** Every semantic module the backend consulted to derive this package file. */
+  readonly provenance: readonly CompilerModuleIdentity[];
 }
 
 export interface BackendEmitContext<Options> {
@@ -82,6 +93,12 @@ export interface CompilerBackend<Options = Record<string, never>> {
 
 export interface CompilerBackendEmissionSession {
   readonly emitModule: (module: Readonly<IrModule>) => readonly EmittedFile[];
+  /**
+   * Finalizes package-owned output once, after every selected module has had its ordinary emission attempt.
+   * The session retains the complete semantic context from `BackendEmitContext.modules`; callers must not invoke
+   * this once per module or narrow that context with an output-path filter.
+   */
+  readonly finalizePackageGraph?: (() => readonly CompilerBackendPackageFile[]) | undefined;
 }
 
 export interface BackendCompilation {
@@ -223,7 +240,15 @@ export interface CppCompilerPackageTarget {
   readonly namespace: string;
 }
 
+export interface CppCompilerCAbiOutput {
+  readonly adapterSourcePath: string;
+  readonly headerPath: string;
+  readonly packageName: string;
+}
+
 export interface CppCompilerBackendOptions {
+  /** Explicitly elects one package-owned C ABI header and adapter translation unit. */
+  readonly cAbi?: Readonly<CppCompilerCAbiOutput> | undefined;
   /** Target-native bindings supplied by the embedding package rather than the compiler runtime. */
   readonly externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined;
   /** Installed include and public namespace identity for each source package. */

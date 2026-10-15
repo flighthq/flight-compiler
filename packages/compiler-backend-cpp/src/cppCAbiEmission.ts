@@ -1,4 +1,5 @@
 import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { createCompilerGeneratedPackageFileHeader } from '../../compiler-emission/src/index.js';
 import type {
   CompilerCppCAbiEmission,
   CompilerCppCAbiEmissionFailure,
@@ -11,6 +12,8 @@ import type {
   CompilerCppCAbiPlan,
   CompilerCppCAbiRecordEmission,
   CompilerCppCAbiRecordPlan,
+  CppCompilerCAbiOutput,
+  EmittedFile,
 } from '../../compiler-types/src/index.js';
 
 interface EmissionFailureIdentity {
@@ -55,9 +58,70 @@ interface FunctionEmissionPlan {
 
 const cAbiEmissionFailureCodes = {
   'ambiguous-lifecycle': true,
+  'global-symbol-collision': true,
   'invalid-plan': true,
   'unsupported-carrier': true,
 } as const satisfies Readonly<Record<CompilerCppCAbiEmissionFailureCode, true>>;
+
+export function emitCompilerCppCAbiPackage(
+  sourcePlan: Readonly<CompilerCppCAbiPlan>,
+  output: Readonly<CppCompilerCAbiOutput>,
+  upstreamCommit?: string,
+): readonly EmittedFile[] {
+  const collision = sourcePlan.diagnostics.find((diagnostic) => diagnostic.code === 'global-symbol-collision');
+  if (collision) {
+    throw createCompilerCppCAbiEmissionFailure(
+      {
+        bindingId: collision.bindingId,
+        packageName: collision.packageName,
+        source: collision.source,
+        symbol: collision.sourceName,
+      },
+      'global-symbol-collision',
+      collision.message,
+    );
+  }
+  if (
+    output.packageName.length === 0 ||
+    !output.headerPath.endsWith('.h') ||
+    !output.adapterSourcePath.endsWith('.cpp') ||
+    sourcePlan.functions.some((functionPlan) => functionPlan.packageName !== output.packageName)
+  ) {
+    throw createCompilerCppCAbiEmissionFailure(
+      undefined,
+      'invalid-plan',
+      `C ABI package output for ${output.packageName || '<unnamed>'} has inconsistent package or file metadata`,
+    );
+  }
+  const emission = emitCompilerCppCAbiPlan(sourcePlan);
+  const provenance = createCompilerGeneratedPackageFileHeader(output.packageName, '//', upstreamCommit);
+  const headerFragments = [
+    ...emission.records.map((record) => record.headerContents),
+    ...emission.handles.map((handle) => handle.headerContents),
+    ...emission.functions.map((function_) => function_.headerContents),
+  ];
+  const adapterFragments = [
+    `#include <${output.headerPath}>`,
+    ...emission.handles.map((handle) => handle.adapterSourceContents),
+    ...emission.functions.map((function_) =>
+      function_.adapterSourceContents.replaceAll('flight_cpp_adapter_', `${function_.symbol}_adapter_`),
+    ),
+  ];
+  const dependencies = [
+    ...new Set([output.headerPath, ...[...sourcePlan.handles, ...sourcePlan.functions].map((item) => item.header)]),
+  ].sort(compareTextCodeUnits);
+  return [
+    {
+      contents: combineCompilerCppCAbiPackageFragments(provenance, headerFragments),
+      path: output.headerPath,
+    },
+    {
+      contents: combineCompilerCppCAbiPackageFragments(provenance, adapterFragments),
+      ...(dependencies.length === 0 ? {} : { dependencies }),
+      path: output.adapterSourcePath,
+    },
+  ].sort((left, right) => compareTextCodeUnits(left.path, right.path));
+}
 
 export function emitCompilerCppCAbiPlan(sourcePlan: Readonly<CompilerCppCAbiPlan>): CompilerCppCAbiEmission {
   const plan = structuredClone(sourcePlan);
@@ -148,6 +212,11 @@ export function isCompilerCppCAbiEmissionFailure(value: unknown): value is Compi
     'symbol' in value &&
     typeof value.symbol === 'string'
   );
+}
+
+function combineCompilerCppCAbiPackageFragments(provenance: string, fragments: readonly string[]): string {
+  const bodies = fragments.map((fragment) => fragment.trim()).filter((fragment) => fragment.length > 0);
+  return `${[provenance, ...bodies].join('\n\n')}\n`;
 }
 
 function validateHandlePlans(

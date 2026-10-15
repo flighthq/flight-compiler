@@ -378,6 +378,136 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(filtered.report.bestEffort?.modules.map((module) => module.module.name)).toEqual(['Holder']);
   });
 
+  it('finalizes package-owned output once from full context despite module filtering and source reorder', () => {
+    const owner = source('@local/source', 'source', 'owner.ts', 'export interface Owner { value: number }');
+    const consumer = source(
+      '@local/source',
+      'source',
+      'consumer.ts',
+      "import type { Owner } from './owner.js'; export function inspect(value: Owner): Owner { return value; }",
+    );
+    const ownerIdentity = identity(owner, 'Owner');
+    const consumerIdentity = identity(consumer, 'Consumer');
+    const compile = (
+      sources: readonly TypeScriptPackageGraphSource[],
+      emitPathPrefixes?: readonly string[],
+    ): Readonly<{ finalizations: number; result: ReturnType<typeof compileTypeScriptPackageGraph> }> => {
+      let finalizations = 0;
+      const backend: CompilerBackend = {
+        createEmissionSession: ({ modules }) => ({
+          emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+          finalizePackageGraph() {
+            finalizations += 1;
+            const provenance = [...modules]
+              .reverse()
+              .map(({ name, packageName, source: sourcePath }) => ({ name, packageName, source: sourcePath }));
+            return [
+              {
+                file: { contents: modules.map((module) => module.name).join(','), path: 'abi/source.cpp' },
+                owner: { kind: 'package', packageName: '@local/source' },
+                provenance,
+              },
+              {
+                file: { contents: 'package header', path: 'abi/source.h' },
+                owner: { kind: 'package', packageName: '@local/source' },
+                provenance,
+              },
+            ];
+          },
+        }),
+        emitModule: () => {
+          throw new Error('compatibility entry point must not be used');
+        },
+        name: 'fixture',
+      };
+      const result = compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        ...(emitPathPrefixes === undefined ? {} : { emitPathPrefixes }),
+        graph: graph(
+          [consumerIdentity],
+          [{ importer: consumerIdentity, specifier: './owner.js', target: ownerIdentity }],
+          [{ dependencies: [], name: '@local/source', root: owner.packageRoot }],
+        ),
+        sources,
+      });
+      return { finalizations, result };
+    };
+
+    const all = compile([owner, consumer]);
+    const filtered = compile([consumer, owner], ['packages/source/src/consumer.ts']);
+    const packageFiles = filtered.result.report.files.filter((file) => 'owner' in file);
+
+    expect(all.finalizations).toBe(1);
+    expect(filtered.finalizations).toBe(1);
+    expect(all.result.compilation.files.filter((file) => file.path.startsWith('abi/'))).toEqual(
+      filtered.result.compilation.files.filter((file) => file.path.startsWith('abi/')),
+    );
+    expect(filtered.result.compilation.files.map((file) => file.path)).toEqual([
+      'Consumer.txt',
+      'abi/source.cpp',
+      'abi/source.h',
+    ]);
+    expect(packageFiles).toEqual([
+      {
+        dependencies: [],
+        owner: { kind: 'package', packageName: '@local/source' },
+        path: 'abi/source.cpp',
+        provenance: [consumerIdentity, ownerIdentity],
+      },
+      {
+        dependencies: [],
+        owner: { kind: 'package', packageName: '@local/source' },
+        path: 'abi/source.h',
+        provenance: [consumerIdentity, ownerIdentity],
+      },
+    ]);
+    expect(filtered.result.report.packages[0]?.outputFiles).toEqual(['Consumer.txt', 'abi/source.cpp', 'abi/source.h']);
+    expect(filtered.result.report.modules.find((module) => module.module.name === 'Owner')).toMatchObject({
+      outputFiles: [],
+      status: 'skipped',
+    });
+  });
+
+  it('fails package-finalized output on unsafe paths and package-local path collisions', () => {
+    const input = source('@local/source', 'source', 'input.ts', 'export const value = 1;');
+    const compile = (path: string) =>
+      compileTypeScriptPackageGraph({
+        backend: {
+          createEmissionSession: ({ modules }) => ({
+            emitModule: (module) => [{ contents: module.name, path: 'Input.txt' }],
+            finalizePackageGraph: () => [
+              {
+                file: { contents: 'package output', path },
+                owner: { kind: 'package', packageName: '@local/source' },
+                provenance: modules.map(({ name, packageName, source: sourcePath }) => ({
+                  name,
+                  packageName,
+                  source: sourcePath,
+                })),
+              },
+            ],
+          }),
+          emitModule: () => [],
+          name: 'fixture',
+        } satisfies CompilerBackend,
+        backendOptions: {},
+        graph: graph(
+          [identity(input, 'Input')],
+          [],
+          [{ dependencies: [], name: '@local/source', root: input.packageRoot }],
+        ),
+        sources: [input],
+      });
+
+    expect(() => compile('../unsafe.h')).toThrow(
+      expect.objectContaining({ code: 'unsafe-emitted-path', kind: 'compiler-invariant' }),
+    );
+    expect(() => compile('input.TXT')).toThrow(
+      expect.objectContaining({ code: 'duplicate-emitted-path', kind: 'compiler-invariant' }),
+    );
+  });
+
   // Best-effort is one predicate wide: a module refused only because a DEPENDENCY refused still emits its own
   // real output, and a module refused for its own reasons gets a replaceable placeholder at its path instead of
   // nothing. Strict mode is untouched, which is the whole reason the mode is opt-in.

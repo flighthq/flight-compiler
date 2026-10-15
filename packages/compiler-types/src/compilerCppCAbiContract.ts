@@ -26,7 +26,11 @@ export type CompilerCppCAbiDiagnosticCode =
   | 'unsupported-carrier'
   | 'unsupported-parameter';
 
-export type CompilerCppCAbiEmissionFailureCode = 'ambiguous-lifecycle' | 'invalid-plan' | 'unsupported-carrier';
+export type CompilerCppCAbiEmissionFailureCode =
+  | 'ambiguous-lifecycle'
+  | 'global-symbol-collision'
+  | 'invalid-plan'
+  | 'unsupported-carrier';
 
 export type CompilerCppCAbiOwnership = 'borrowed' | 'none' | 'owned' | 'value';
 
@@ -261,5 +265,7 @@ export interface CompilerCppCAbiPlan {
 
 export interface CompilerCppCAbiPlanningOptions {
   readonly moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined;
+  /** Restricts exported function candidates without narrowing the semantic owner-resolution context. */
+  readonly packageName?: string | undefined;
   readonly packageTargets?: Readonly<Record<string, Readonly<CppCompilerPackageTarget>>> | undefined;
 }

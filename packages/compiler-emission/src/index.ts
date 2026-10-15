@@ -1,6 +1,9 @@
 export { getIrUnionTypeStringLiteralValues } from './compilerLiteralUnion.js';
 export { collectIrModuleNullableBindingIds, hasIrTypeAbsentMember } from './compilerNullableFlowGuard.js';
-export { createCompilerGeneratedFileHeader } from './compilerGeneratedFileProvenance.js';
+export {
+  createCompilerGeneratedFileHeader,
+  createCompilerGeneratedPackageFileHeader,
+} from './compilerGeneratedFileProvenance.js';
 export {
   isCompilerEmittedSourceSyntaxFailure,
   validateCompilerEmittedSourceSyntax,

@@ -121,7 +121,9 @@ export function createIrModulesCAbiPlanCpp(
       drafts.push(createFunctionDraft(candidate, context));
     } catch (error) {
       if (!isCAbiPlanningFailure(error)) throw error;
-      diagnostics.push(createDiagnostic(candidate, error.code, error.message));
+      if (options.packageName === undefined || candidate.module.packageName === options.packageName) {
+        diagnostics.push(createDiagnostic(candidate, error.code, error.message));
+      }
     }
   }
 
@@ -132,16 +134,22 @@ export function createIrModulesCAbiPlanCpp(
       (entry) => entry.declaration.binding.id === draft.plan.bindingId && entry.module.source === draft.plan.source,
     );
     if (!candidate) throw new TypeError(`missing C ABI candidate ${draft.plan.bindingId}`);
-    diagnostics.push(
-      createDiagnostic(
-        candidate,
-        'global-symbol-collision',
-        `exported function ${draft.plan.sourceName} cannot enter the flat C ABI because one of its C names is shared by another owner`,
-      ),
-    );
+    if (options.packageName === undefined || candidate.module.packageName === options.packageName) {
+      diagnostics.push(
+        createDiagnostic(
+          candidate,
+          'global-symbol-collision',
+          `exported function ${draft.plan.sourceName} cannot enter the flat C ABI because one of its C names is shared by another owner`,
+        ),
+      );
+    }
   }
 
-  const accepted = drafts.filter((draft) => !collidedOwnerKeys.has(draft.ownerKey));
+  const accepted = drafts.filter(
+    (draft) =>
+      !collidedOwnerKeys.has(draft.ownerKey) &&
+      (options.packageName === undefined || draft.plan.packageName === options.packageName),
+  );
   const handles = new Map<string, CompilerCppCAbiHandlePlan>();
   const records = new Map<string, CompilerCppCAbiRecordPlan>();
   for (const draft of accepted) {

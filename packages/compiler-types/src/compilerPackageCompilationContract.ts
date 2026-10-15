@@ -157,11 +157,25 @@ export interface CompilerPackageCompilationRefusal {
   readonly stage: 'dependency' | 'emission' | 'initialization' | 'lowering';
 }
 
-export interface CompilerPackageCompilationFileReport {
+export interface CompilerPackageCompilationModuleFileReport {
   readonly dependencies: readonly string[];
   readonly module: CompilerModuleIdentity;
   readonly path: string;
 }
+
+export interface CompilerPackageCompilationPackageFileReport {
+  readonly dependencies: readonly string[];
+  readonly owner: Readonly<{
+    readonly kind: 'package';
+    readonly packageName: string;
+  }>;
+  readonly path: string;
+  readonly provenance: readonly CompilerModuleIdentity[];
+}
+
+export type CompilerPackageCompilationFileReport =
+  | CompilerPackageCompilationModuleFileReport
+  | CompilerPackageCompilationPackageFileReport;
 
 export interface CompilerPackageCompilationModuleReport {
   readonly module: CompilerModuleIdentity;

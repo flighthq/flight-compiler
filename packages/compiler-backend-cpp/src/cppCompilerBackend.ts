@@ -92,6 +92,8 @@ import type {
 } from '../../compiler-types/src/index.js';
 import { getCompilerCppAmbientMemberBinding } from './cppAmbientMemberBinding.js';
 import { collectIrModuleBindingTypesCpp } from './cppBindingTypeInference.js';
+import { emitCompilerCppCAbiPackage } from './cppCAbiEmission.js';
+import { createIrModulesCAbiPlanCpp } from './cppCAbiPlan.js';
 import { getCompilerCallableSignatureAbiCpp } from './cppCallableSignatureAbi.js';
 import { createIrModuleClosureCapturePlanCpp } from './cppClosureCapturePlan.js';
 import {
@@ -454,6 +456,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       // Built once for the emission rather than rebuilt for each module: it is a property of the whole
       // graph, and every module asks it the same question about its own imports.
       const moduleImporterIndex = createCppModuleImporterIndex(modules, referenceRepresentationPlanner);
+      const cAbi = options.cAbi;
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
@@ -473,6 +476,30 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
             ),
           ];
         },
+        ...(cAbi
+          ? {
+              finalizePackageGraph() {
+                const plan = createIrModulesCAbiPlanCpp(modules, {
+                  ...(moduleResolution ? { moduleResolution } : {}),
+                  packageName: cAbi.packageName,
+                  ...(options.packageTargets ? { packageTargets: options.packageTargets } : {}),
+                });
+                const provenance = modules
+                  .map(({ name, packageName, source }) => ({ name, packageName, source }))
+                  .sort((left, right) =>
+                    compareTextCodeUnits(
+                      `${left.packageName}\0${left.source}\0${left.name}`,
+                      `${right.packageName}\0${right.source}\0${right.name}`,
+                    ),
+                  );
+                return emitCompilerCppCAbiPackage(plan, cAbi, options.upstreamCommit).map((file) => ({
+                  file,
+                  owner: { kind: 'package' as const, packageName: cAbi.packageName },
+                  provenance,
+                }));
+              },
+            }
+          : {}),
       });
     },
     emitModule(module, { moduleResolution, modules, options }) {

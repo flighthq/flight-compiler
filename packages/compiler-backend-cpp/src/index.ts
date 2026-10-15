@@ -1,5 +1,9 @@
 export { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
-export { emitCompilerCppCAbiPlan, isCompilerCppCAbiEmissionFailure } from './cppCAbiEmission.js';
+export {
+  emitCompilerCppCAbiPackage,
+  emitCompilerCppCAbiPlan,
+  isCompilerCppCAbiEmissionFailure,
+} from './cppCAbiEmission.js';
 export { createIrModulesCAbiPlanCpp } from './cppCAbiPlan.js';
 export { createIrModuleClosureCapturePlanCpp } from './cppClosureCapturePlan.js';
 export {

@@ -17,6 +17,7 @@ import { applySemanticPatchSet } from '../../compiler-patch/src/index.js';
 import { createCompilerTypeScriptAnalysisIdentity, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompileTypeScriptPackageGraphOptions,
+  CompilerBackendPackageFile,
   CompilerDiagnostic,
   CompilerModuleIdentity,
   CompilerModuleLinkDependency,
@@ -39,6 +40,10 @@ interface ModuleEmissionRecord {
   readonly files: EmittedFile[];
   readonly module: IrModule;
   readonly refusals: CompilerPackageCompilationRefusal[];
+}
+
+interface PackageEmissionRecord extends Omit<CompilerBackendPackageFile, 'file'> {
+  readonly file: EmittedFile;
 }
 
 type CompilerPackageGraphExportResolution =
@@ -196,6 +201,14 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
       state: 'completed',
     });
   }
+  const packageFiles = (emissionSession?.finalizePackageGraph?.() ?? []).map(
+    (artifact): PackageEmissionRecord => ({
+      file: normalizeEmittedFile(artifact.file),
+      owner: { kind: 'package', packageName: artifact.owner.packageName },
+      provenance: artifact.provenance.map(cloneCompilerPackageGraphIdentity).sort(compareCompilerPackageGraphModules),
+    }),
+  );
+  validateCompilerPackageGraphPackageFiles(packageFiles, packages, modules);
   refuseCompilerPackageGraphOutputCollisions(records);
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
   const initialization = createCompilerPackageGraphInitialization(
@@ -244,6 +257,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     }
   }
   const placeholderFiles: EmittedFile[] = [];
+  const placeholderFileOwners: { file: EmittedFile; packageName: string }[] = [];
   const placeholderPaths = new Map<string, string>();
   if (bestEffort && options.backend.emitRefusalPlaceholder) {
     const emitPlaceholder = options.backend.emitRefusalPlaceholder;
@@ -269,10 +283,15 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
       );
       if (!placeholder) continue;
       placeholderFiles.push(placeholder);
+      placeholderFileOwners.push({
+        file: placeholder,
+        packageName: record.module.packageName,
+      });
       placeholderPaths.set(key, placeholder.path);
     }
   }
 
+  validateCompilerPackageGraphPackageFileCollisions(records, placeholderFileOwners, packageFiles);
   const files = [...records.values()]
     .filter(
       (record) =>
@@ -281,6 +300,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     )
     .flatMap((record) => record.files)
     .concat(placeholderFiles)
+    .concat(packageFiles.map((artifact) => artifact.file))
     .sort(compareCompilerPackageGraphFiles);
   validateCompilerPackageGraphOutput(files, options);
   const moduleReports = createCompilerPackageGraphModuleReports(
@@ -289,7 +309,7 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
     bestEffort,
     emitPathPrefixes,
   );
-  const fileReports = createCompilerPackageGraphFileReports(records, bestEffort, emitPathPrefixes);
+  const fileReports = createCompilerPackageGraphFileReports(records, packageFiles, bestEffort, emitPathPrefixes);
   const bestEffortManifest: CompilerPackageCompilationBestEffortManifest | undefined = bestEffort
     ? {
         modules: [...records.values()]
@@ -344,11 +364,17 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
       modules: moduleReports,
       packages: [...packages.values()].sort(compareCompilerPackageGraphPackages).map((package_) => {
         const packageModules = moduleReports.filter((report) => report.module.packageName === package_.name);
+        const packageOwnedFiles = packageFiles
+          .filter((artifact) => artifact.owner.packageName === package_.name)
+          .map((artifact) => artifact.file.path);
         return {
           dependencies: [...package_.dependencies].sort(compareTextCodeUnits),
           modules: packageModules,
           name: package_.name,
-          outputFiles: packageModules.flatMap((module) => module.outputFiles).sort(compareTextCodeUnits),
+          outputFiles: packageModules
+            .flatMap((module) => module.outputFiles)
+            .concat(packageOwnedFiles)
+            .sort(compareTextCodeUnits),
         };
       }),
       ...(options.backend.runtimeAbi ? { runtimeAbi: options.backend.runtimeAbi() } : {}),
@@ -496,10 +522,11 @@ function createCompilerPackageGraphFailure(
 
 function createCompilerPackageGraphFileReports(
   records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
+  packageFiles: readonly Readonly<PackageEmissionRecord>[],
   bestEffort: boolean,
   emitPathPrefixes: readonly string[] | undefined,
 ): CompilerPackageCompilationFileReport[] {
-  return [...records.values()]
+  const moduleFiles: CompilerPackageCompilationFileReport[] = [...records.values()]
     .filter(
       (record) =>
         isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes) &&
@@ -513,6 +540,20 @@ function createCompilerPackageGraphFileReports(
       })),
     )
     .sort((left, right) => compareTextCodeUnits(left.path, right.path));
+  const packageFileReports: CompilerPackageCompilationFileReport[] = packageFiles.map((artifact) => ({
+    dependencies: [...(artifact.file.dependencies ?? [])],
+    owner: { kind: 'package', packageName: artifact.owner.packageName },
+    path: artifact.file.path,
+    provenance: artifact.provenance.map(cloneCompilerPackageGraphIdentity),
+  }));
+  if (packageFileReports.length === 0) return moduleFiles;
+  return moduleFiles.concat(packageFileReports).sort((left, right) => {
+    const pathOrder = compareTextCodeUnits(left.path, right.path);
+    if (pathOrder !== 0) return pathOrder;
+    const leftOwner = 'module' in left ? getCompilerPackageGraphModuleKey(left.module) : left.owner.packageName;
+    const rightOwner = 'module' in right ? getCompilerPackageGraphModuleKey(right.module) : right.owner.packageName;
+    return compareTextCodeUnits(leftOwner, rightOwner);
+  });
 }
 
 function createCompilerPackageGraphInitialization(
@@ -1010,6 +1051,62 @@ function refuseCompilerPackageGraphOutputCollisions(records: Map<string, ModuleE
         stage: 'emission',
       });
       record.files.splice(0);
+    }
+  }
+}
+
+function validateCompilerPackageGraphPackageFileCollisions(
+  records: ReadonlyMap<string, Readonly<ModuleEmissionRecord>>,
+  placeholderFiles: readonly Readonly<{ file: EmittedFile; packageName: string }>[],
+  packageFiles: readonly Readonly<PackageEmissionRecord>[],
+): void {
+  if (packageFiles.length === 0) return;
+  const paths = new Map<string, string>();
+  const reserve = (packageName: string, filePath: string): void => {
+    const label = `${packageName}/${filePath}`;
+    const key = label.normalize('NFC').toLowerCase();
+    const existing = paths.get(key);
+    if (existing !== undefined) {
+      throw createCompilerInvariantFailure(
+        'duplicate-emitted-path',
+        label,
+        `Backend emitted colliding package file paths: ${existing}, ${label}`,
+      );
+    }
+    paths.set(key, label);
+  };
+  for (const record of records.values()) {
+    for (const file of record.files) reserve(record.module.packageName, file.path);
+  }
+  for (const { file, packageName } of placeholderFiles) reserve(packageName, file.path);
+  for (const artifact of packageFiles) reserve(artifact.owner.packageName, artifact.file.path);
+}
+
+function validateCompilerPackageGraphPackageFiles(
+  packageFiles: readonly Readonly<PackageEmissionRecord>[],
+  packages: ReadonlyMap<string, Readonly<CompilerPackageGraphPackage>>,
+  modules: readonly Readonly<IrModule>[],
+): void {
+  const moduleKeys = new Set(modules.map(getCompilerPackageGraphModuleKey));
+  for (const artifact of packageFiles) {
+    if (artifact.owner.kind !== 'package' || !packages.has(artifact.owner.packageName)) {
+      throw createCompilerPackageGraphFailure(
+        'unknown-package',
+        artifact.owner.packageName,
+        `Backend package output names unknown package ${artifact.owner.packageName}`,
+      );
+    }
+    const provenance = new Set<string>();
+    for (const module of artifact.provenance) {
+      const key = getCompilerPackageGraphModuleKey(module);
+      if (!moduleKeys.has(key) || provenance.has(key)) {
+        throw createCompilerPackageGraphFailure(
+          'invalid-entry',
+          key,
+          `Backend package output carries invalid module provenance: ${key}`,
+        );
+      }
+      provenance.add(key);
     }
   }
 }
