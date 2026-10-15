@@ -51563,6 +51563,33 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     }
   });
 
+  it('separates Skeleton2D import draw-order omission from the required nullable timeline owner', () => {
+    const result = lower(
+      'Skeleton2DImport.ts',
+      `export interface Skeleton2DDrawOrderTimeline {
+         orderings: number[];
+         times: number[];
+       }
+       export interface CurrentSkeleton2DImportAnimation {
+         drawOrder?: Skeleton2DDrawOrderTimeline | null;
+       }
+       export interface PortableSkeleton2DImportAnimation {
+         drawOrder: Skeleton2DDrawOrderTimeline | null;
+       }`,
+    );
+    const output = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(output).toContain(
+      'std::variant<flight::Ref<Skeleton2DDrawOrderTimeline>, flight::Null, flight::Undefined> draw_order =',
+    );
+    expect(output).toContain('std::optional<flight::Ref<Skeleton2DDrawOrderTimeline>> draw_order;');
+    expect(output).not.toContain('flight::Any');
+    expect(output).not.toContain('static_cast');
+    expect(output).not.toContain('reinterpret_cast');
+    expect(output).not.toContain('host::');
+  });
+
   it('represents the current Skeleton2D collection sentinels and required-nullable rewrite', () => {
     const result = lower(
       'skeleton2d-collections.ts',

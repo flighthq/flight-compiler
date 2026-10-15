@@ -395,6 +395,32 @@ describe('emitIrModuleHaxeExtern', () => {
     expect(findFile(files, 'flight/_js/PortableSkin.hx').contents).not.toContain('@:optional var skeletonRoot');
   });
 
+  it('separates Skeleton2D import draw-order omission from the required nullable timeline owner', () => {
+    const module = lower(
+      '@flighthq/types',
+      'Skeleton2DImport.ts',
+      `export interface Skeleton2DDrawOrderTimeline {
+         orderings: number[];
+         times: number[];
+       }
+       export interface CurrentSkeleton2DImportAnimation {
+         drawOrder?: Skeleton2DDrawOrderTimeline | null;
+       }
+       export interface PortableSkeleton2DImportAnimation {
+         drawOrder: Skeleton2DDrawOrderTimeline | null;
+       }`,
+    );
+    const files = emitIrModuleHaxeExtern(module, { rootPackage: 'flight' });
+    const current = findFile(files, 'flight/_js/CurrentSkeleton2DImportAnimation.hx').contents;
+    const portable = findFile(files, 'flight/_js/PortableSkeleton2DImportAnimation.hx').contents;
+
+    expect(current).toContain('@:optional var drawOrder:Null<flight.Skeleton2DDrawOrderTimeline>;');
+    expect(portable).toContain('var drawOrder:Null<flight.Skeleton2DDrawOrderTimeline>;');
+    expect(portable).not.toContain('@:optional');
+    expect(current + portable).not.toContain('Dynamic');
+    expect(current + portable).not.toContain('cast ');
+  });
+
   it('removes only omission from both persisted FlightDocument interaction owners', () => {
     const module = lower(
       '@flighthq/types',

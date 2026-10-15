@@ -2598,17 +2598,28 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
     expect(sourcePortability.acceptedExceptions).toEqual([]);
     expect(sourcePortability.findings).toHaveLength(1);
     expect(sourcePortability.findings[0]).toMatchObject({ rule: 'mixed-absence', subject });
-    expect(sourcePortability.findings[0]?.message).toContain(
-      'Spine JSON and binary animation importers now always assign drawOrder',
-    );
-    expect(sourcePortability.findings[0]?.message).toContain('DragonBones recognizes zOrder as unsupported');
-    expect(sourcePortability.findings[0]?.message).toContain('createSkeleton2DDrawOrderChannel');
-    expect(sourcePortability.findings[0]?.message).toContain('retains the exact times and orderings arrays');
-    expect(sourcePortability.findings[0]?.message).toContain(
+    const message = sourcePortability.findings[0]!.message;
+    expect(message).toContain('build fresh bone, slot, skin, and animation arrays');
+    expect(message).toContain('animation loops always assign drawOrder');
+    expect(message).toContain('recognizes zOrder as unsupported');
+    expect(message).toContain('same Attachment2D owners created for those skins');
+    expect(message).toContain('no production mutator writes, clears, or deletes it after construction');
+    expect(message).toContain('createSkeleton2DDrawOrderChannel');
+    expect(message).toContain('times and values retain the exact timeline arrays');
+    expect(message).toContain('cloneSkeleton2D is independent of the import record');
+    expect(message).toContain('disposeSkeleton2D clears bones and slots but deliberately retains skins');
+    expect(message).toContain(
       'Make Skeleton2DImportAnimation.drawOrder a required Skeleton2DDrawOrderTimeline | null field',
     );
-    expect(sourcePortability.findings[0]?.message).toContain('empty timeline as a third no-draw-order sentinel');
-    expect(sourcePortability.findings[0]?.message).toContain('Do not whitelist the redundant import-result spelling');
+    expect(message).toContain('empty timeline as a third no-draw-order sentinel');
+    expect(message).toContain(
+      'std::variant<flight::Ref<Skeleton2DDrawOrderTimeline>, flight::Null, flight::Undefined>',
+    );
+    expect(message).toContain('std::optional<flight::Ref<Skeleton2DDrawOrderTimeline>>');
+    expect(message).toContain('@:optional var drawOrder:Null<flight.Skeleton2DDrawOrderTimeline>');
+    expect(message).toContain('required var drawOrder:Null<flight.Skeleton2DDrawOrderTimeline>');
+    expect(message).toContain('source contract rather than a representation or host-binding gap');
+    expect(message).toContain('Do not whitelist the redundant import-result spelling');
     expect(report.directFindings).toMatchObject([
       {
         policyClass: 'source-portability',
@@ -2638,9 +2649,42 @@ describe('@flighthq/tool-compiler programmatic check composition', () => {
       source: portableSource,
       upstreamDirectory: '/flight',
     });
-    expect(analyzeTypeScriptSourcePortability(portableInput.sources)).toMatchObject({
+    const portableSourcePortability = analyzeTypeScriptSourcePortability(portableInput.sources);
+    const portableCompilation = compileTypeScriptPackageGraph({
+      backend: {
+        emitModule: (module) => [{ contents: module.name, path: `${module.name}.txt` }],
+        name: 'acceptance',
+      },
+      backendOptions: {},
+      ...portableInput,
+    });
+    const portableReport = createCompilerPackageCheckReport(portableCompilation.report, {
+      provenance: {
+        compiler: { name: 'flight-compiler', revision: 'compiler-revision' },
+        target: { name: 'fixture-target', revision: 'target-revision' },
+        upstream: { name: 'flight', revision: 'upstream-revision' },
+      },
+      sourcePortability: portableSourcePortability,
+    });
+
+    expect(portableCompilation.report.modules).toHaveLength(2);
+    expect(
+      portableCompilation.report.modules.every(({ refusals, status }) => refusals.length === 0 && status === 'emitted'),
+    ).toBe(true);
+    expect(portableSourcePortability).toMatchObject({
       acceptedExceptions: [],
       findings: [],
+    });
+    expect(portableReport.directFindings).toEqual([]);
+    const portableIntroduced = compareCompilerPackageCheckBaseline(portableReport, {
+      findingIdentities: [],
+      schema: 'flight-compiler-check-baseline/1',
+    });
+    expect(
+      createCompilerPackageCheckPolicyResult(portableIntroduced, createCompilerPackageCheckPolicyStrict()),
+    ).toMatchObject({
+      failingFindingIdentities: [],
+      passed: true,
     });
   });
 

@@ -7338,7 +7338,7 @@ describe('analyzeTypeScriptSourcePortability', () => {
     }
   });
 
-  it('explains the required-nullable contract for imported Skeleton2D draw order', () => {
+  it('explains the required-nullable contract and ownership lifetime for imported Skeleton2D draw order', () => {
     const source = input(
       'packages/types/src/Skeleton2DImport.ts',
       `interface Skeleton2DDrawOrderTimeline { orderings: number[]; times: number[] }
@@ -7357,29 +7357,45 @@ describe('analyzeTypeScriptSourcePortability', () => {
     });
     const message = findings[0]!.message;
     expect(message).toContain('deferred draw-order timeline both omission and explicit null');
-    expect(message).toContain('Spine JSON and binary animation importers now always assign drawOrder');
-    expect(message).toContain('at least one resolved whole-ordering frame');
-    expect(message).toContain('DragonBones recognizes zOrder as unsupported');
+    expect(message).toContain('build fresh bone, slot, skin, and animation arrays');
+    expect(message).toContain('animation loops always assign drawOrder');
+    expect(message).toContain('retain only resolved whole-ordering frames');
+    expect(message).toContain('when at least one frame survives');
+    expect(message).toContain('parseDragonBonesSkeleton follows the same fresh import construction');
+    expect(message).toContain('recognizes zOrder as unsupported');
     expect(message).toContain('sole production producer that omits drawOrder');
     expect(message).toContain('source comment saying parsers do not emit the property is therefore stale');
-    expect(message).toContain('No production code reads Skeleton2DImportAnimation.drawOrder directly');
-    expect(message).toContain('there is no import-record clone or serializer');
-    expect(message).toContain('cloneSkeleton2D copies only the setup rig');
-    expect(message).toContain('cloneAnimationClip copies only channels, tracks, and events');
+    expect(message).toContain('retains its exact Skeleton2D and animation-record array');
+    expect(message).toContain('same Attachment2D owners created for those skins');
+    expect(message).toContain('owns no skeleton, slot, skin, attachment, display node, NodeOrderList');
+    expect(message).toContain('no production mutator writes, clears, or deletes it after construction');
+    expect(message).toContain('no production consumer reads it directly');
     expect(message).toContain('createSkeleton2DDrawOrderChannel is the explicit later boundary');
-    expect(message).toContain('retains the exact times and orderings arrays as its track buffers');
-    expect(message).toContain("binder rebuilds the caller's NodeOrderList without mutating the timeline");
-    expect(message).toContain('cloning that augmented clip later deep-copies both track buffers');
+    expect(message).toContain('times and values retain the exact timeline arrays');
+    expect(message).toContain('caller-owned NodeOrderList through its caller-owned display-node table');
+    expect(message).toContain('copies slot records while sharing their exact Attachment2D owners');
+    expect(message).toContain('shares the exact skins array and its attachment owners');
+    expect(message).toContain('cloning a clip after the draw-order channel is added detaches its times and orderings');
+    expect(message).toContain("still shares the caller's draw-order target");
+    expect(message).toContain('disposeSkeleton2D clears bones and slots but deliberately retains skins');
+    expect(message).toContain('There is no Skeleton2DImport clone, serializer, or disposer');
     expect(message).toContain(
       'Make Skeleton2DImportAnimation.drawOrder a required Skeleton2DDrawOrderTimeline | null field',
     );
-    expect(message).toContain('make DragonBones plus every future producer write null');
+    expect(message).toContain('make DragonBones and every future producer write null');
+    expect(message).toContain('update the stale source comment');
     expect(message).toContain('do not introduce an empty timeline as a third no-draw-order sentinel');
     expect(message).toContain('setup-pose-only import');
-    expect(message).toContain('@:optional Null<Skeleton2DDrawOrderTimeline>');
-    expect(message).toContain('without a second presence bit or Any carrier');
+    expect(message).toContain(
+      'std::variant<flight::Ref<Skeleton2DDrawOrderTimeline>, flight::Null, flight::Undefined>',
+    );
+    expect(message).toContain('std::optional<flight::Ref<Skeleton2DDrawOrderTimeline>>');
+    expect(message).toContain('@:optional var drawOrder:Null<flight.Skeleton2DDrawOrderTimeline>');
+    expect(message).toContain('required var drawOrder:Null<flight.Skeleton2DDrawOrderTimeline>');
+    expect(message).toContain('source contract rather than a representation or host-binding gap');
     expect(message).toContain('Do not whitelist the redundant import-result spelling');
     expect(message).toContain('will not choose or collapse an absence sentinel');
+    expect(message).toContain('fabricate a host binding');
   });
 
   it('requires the exact Skeleton2D import draw-order shape and accepts one sentinel', () => {
