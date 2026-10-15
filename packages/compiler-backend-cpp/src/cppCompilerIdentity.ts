@@ -3,6 +3,17 @@ import path from 'node:path';
 import { normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import type { CppCompilerPackageTarget } from '../../compiler-types/src/index.js';
 
+export function convertCppIdentifierToSnakeCase(value: string): string {
+  return value
+    .normalize('NFC')
+    .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
+    .replace(/([A-Za-z])([0-9]+)_D(?=$|[^a-z])/gu, '$1_$2D')
+    .replace(/([0-9]+D)([A-Z][a-z])/gu, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/gu, '_')
+    .replace(/^_+|_+$/gu, '')
+    .toLowerCase();
+}
+
 export function convertPackageNameToCppNamespace(packageName: string): string {
   const scopeSeparator = packageName.indexOf('/');
   const bareName = packageName.startsWith('@')
@@ -36,7 +47,7 @@ export function convertSourcePathToCppFileName(sourcePath: string): string | und
   ) {
     return undefined;
   }
-  const moduleName = snakeCase(filename);
+  const moduleName = convertCppIdentifierToSnakeCase(filename);
   if (moduleName.length === 0) throw new Error(`Cannot map empty TypeScript source name: ${sourcePath}`);
   if (/^\d/u.test(moduleName)) return `_${moduleName}`;
   return isCppCompilerKeyword(moduleName) ? `${moduleName}_` : moduleName;
@@ -72,14 +83,6 @@ export function getCppCompilerPackageNamespace(
 
 export function isCppCompilerKeyword(value: string): boolean {
   return cppCompilerKeywords.has(value);
-}
-
-function snakeCase(value: string): string {
-  return value
-    .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
-    .replace(/[^A-Za-z0-9]+/gu, '_')
-    .replace(/^_+|_+$/gu, '')
-    .toLowerCase();
 }
 
 function isCppCompilerIncludePrefix(value: string): boolean {

@@ -1,10 +1,26 @@
 import {
+  convertCppIdentifierToSnakeCase,
   convertPackageNameToCppNamespace,
   convertSourcePathToCppFileName,
   getCppCompilerPackageIncludePrefix,
   getCppCompilerPackageNamespace,
   isCppCompilerKeyword,
 } from './cppCompilerIdentity.js';
+
+describe('convertCppIdentifierToSnakeCase', () => {
+  it('keeps dimensional suffixes together while retaining terminal numeric suffixes', () => {
+    expect(convertCppIdentifierToSnakeCase('Camera2D')).toBe('camera_2d');
+    expect(convertCppIdentifierToSnakeCase('Node3D')).toBe('node_3d');
+    expect(convertCppIdentifierToSnakeCase('Scene3DGlPipeline')).toBe('scene_3d_gl_pipeline');
+    expect(convertCppIdentifierToSnakeCase('Vector2')).toBe('vector2');
+  });
+
+  it('normalizes canonical spelling and cleans punctuation deterministically', () => {
+    expect(convertCppIdentifierToSnakeCase('caf\u00e9.Camera2D-pipeline')).toBe('caf_camera_2d_pipeline');
+    expect(convertCppIdentifierToSnakeCase('cafe\u0301.Camera2D-pipeline')).toBe('caf_camera_2d_pipeline');
+    expect(convertCppIdentifierToSnakeCase('S3TC_DXT5_EXT')).toBe('s3_tc_dxt5_ext');
+  });
+});
 
 describe('convertPackageNameToCppNamespace', () => {
   it('maps scoped and punctuated npm package identities deterministically', () => {
@@ -28,6 +44,9 @@ describe('convertSourcePathToCppFileName', () => {
     expect(convertSourcePathToCppFileName('packages/render-gl/src/glShader.ts')).toBe('gl_shader');
     expect(convertSourcePathToCppFileName('packages\\render-gl\\src\\glShader.ts')).toBe('gl_shader');
     expect(convertSourcePathToCppFileName('packages/render-gl/src/3dPoint.tsx')).toBe('_3d_point');
+    expect(convertSourcePathToCppFileName('packages/render-gl/src/Camera2D.ts')).toBe('camera_2d');
+    expect(convertSourcePathToCppFileName('packages/render-gl/src/Scene3DGlPipeline.ts')).toBe('scene_3d_gl_pipeline');
+    expect(convertSourcePathToCppFileName('packages/render-gl/src/Vector2.ts')).toBe('vector2');
   });
 
   it('reserves routine source identities and rejects non-TypeScript paths', () => {

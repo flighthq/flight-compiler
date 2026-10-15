@@ -94,6 +94,7 @@ import { collectIrModuleBindingTypesCpp } from './cppBindingTypeInference.js';
 import { getCompilerCallableSignatureAbiCpp } from './cppCallableSignatureAbi.js';
 import { createIrModuleClosureCapturePlanCpp } from './cppClosureCapturePlan.js';
 import {
+  convertCppIdentifierToSnakeCase,
   convertSourcePathToCppFileName,
   getCppCompilerPackageIncludePrefix,
   getCppCompilerPackageNamespace,
@@ -29068,7 +29069,7 @@ function emitImports(module: Readonly<IrModule>, context: EmitContext): string[]
 }
 
 function getCppModuleFileName(module: Readonly<IrModule>): string {
-  return convertSourcePathToCppFileName(module.source) ?? `_internal_${snakeCase(module.name)}`;
+  return convertSourcePathToCppFileName(module.source) ?? `_internal_${convertCppIdentifierToSnakeCase(module.name)}`;
 }
 
 function getCppModuleFilePath(module: Readonly<IrModule>, options: Readonly<CppCompilerBackendOptions>): string {
@@ -31543,7 +31544,8 @@ function getCppAnonymousStructBaseName(
   properties: readonly { readonly name: string }[],
   structuralHash: string,
 ): string {
-  const propertyStem = properties.map((property) => snakeCase(property.name)).join('_') || 'anonymous';
+  const propertyStem =
+    properties.map((property) => convertCppIdentifierToSnakeCase(property.name)).join('_') || 'anonymous';
   return `${propertyStem}_${structuralHash}`;
 }
 
@@ -31602,20 +31604,12 @@ function safeCppName(name: string): string {
   // TypeScript permits bindings made entirely from underscores. Trimming punctuation is useful
   // for ordinary source names, but it must not leave the target-name allocator with an empty C++
   // identifier. Allocation will deterministically suffix multiple fallback names in one scope.
-  const snake = snakeCase(name) || 'value';
+  const snake = convertCppIdentifierToSnakeCase(name) || 'value';
   return isCppCompilerKeyword(snake) ? `${snake}_` : snake;
 }
 
 function safeCppTypeName(name: string): string {
   return pascalCase(name) || 'Type';
-}
-
-function snakeCase(value: string): string {
-  return value
-    .replace(/([a-z0-9])([A-Z])/gu, '$1_$2')
-    .replace(/[^A-Za-z0-9]+/gu, '_')
-    .replace(/^_+|_+$/gu, '')
-    .toLowerCase();
 }
 
 function pascalCase(value: string): string {

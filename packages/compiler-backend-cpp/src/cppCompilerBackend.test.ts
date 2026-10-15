@@ -4847,7 +4847,7 @@ describe('createCppCompilerBackend', () => {
     expect(refused.message).toContain(
       'a RUNTIME OWNER that the mutating paths must write needs a mutable-source accessor',
     );
-    expect(emitted).toContain('get_transform2_druntime<Traits>(target)');
+    expect(emitted).toContain('get_transform_2d_runtime<Traits>(target)');
     expect(emitted).toContain('(runtime->rotation_angle = target->rotation)');
     expect(emitted).toContain('(runtime->local_matrix = std::optional<double>{1.0})');
     expect(emitted).toContain('(runtime->local_transform_using_local_transform_id = runtime->local_transform_id)');
@@ -4969,7 +4969,7 @@ describe('createCppCompilerBackend', () => {
     expect(refused.message).toContain(
       'a RUNTIME OWNER that the mutating paths must write needs a mutable-source accessor',
     );
-    expect(emitted).toContain('get_transform3_druntime<Traits>(target)');
+    expect(emitted).toContain('get_transform_3d_runtime<Traits>(target)');
     expect(emitted).toContain('(runtime->local_matrix4 = std::optional<double>{1.0})');
     expect(emitted).toContain('(runtime->local_transform_using_local_transform_id = runtime->local_transform_id)');
     expect(emitted).toContain('(runtime->local_matrix4_detached = true)');
@@ -7794,7 +7794,7 @@ describe('createCppCompilerBackend', () => {
     }).emitModule(modules[3]!)[0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-    expect(emitted).toContain('get_scene3_dtexture_resource_reference(texture)');
+    expect(emitted).toContain('get_scene_3d_texture_resource_reference(texture)');
     expect(emitted).toContain('if ((!ref.has_value() || reset.has(ref.value()))) {');
     expect(emitted).toContain('.value()(texture, ref.value())');
     expect(emitted).toContain('reset_failed_image_resource_reference(ref.value())');
@@ -22802,10 +22802,10 @@ int main() {
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(emitted).toContain('struct GeneratedSymbolBindings<flight::types::Scene3DResourceResolverWithRuntime>');
-    expect(emitted).toContain('flight::types::scene3_dresource_resolver_runtime_key,');
+    expect(emitted).toContain('flight::types::scene_3d_resource_resolver_runtime_key,');
     expect(emitted).not.toContain('flight::types::entity_runtime_key,');
     expect(emitted).toContain(
-      '[object]() -> decltype(auto) { return (object->scene3_dresource_resolver_runtime_key); }',
+      '[object]() -> decltype(auto) { return (object->scene_3d_resource_resolver_runtime_key); }',
     );
   });
 
@@ -26262,6 +26262,22 @@ int main() {
     expect(emitted.contents).not.toContain('value unwrap');
   });
 
+  it('keeps dimensional tokens together in emitted snake_case names', () => {
+    const result = lower(
+      'numeric-identifiers.ts',
+      `export function Camera2D(): number { return 2; }
+       export function Node3D(): number { return 3; }
+       export function Scene3DGlPipeline(): number { return 4; }
+       export function Vector2(): number { return 2; }`,
+    );
+    const emitted = emitIrModuleCpp(result.module).contents;
+
+    expect(emitted).toContain('double camera_2d()');
+    expect(emitted).toContain('double node_3d()');
+    expect(emitted).toContain('double scene_3d_gl_pipeline()');
+    expect(emitted).toContain('double vector2()');
+  });
+
   it('allocates valid deterministic names for underscore-only bindings', () => {
     const result = lower(
       'underscore.ts',
@@ -28237,8 +28253,8 @@ int main() {
     expect(emittedTypes).not.toContain('struct GlContext;');
     expect(emittedRender).toContain('void upload(host::WebGl2Context gl');
     expect(emittedRender).toContain('gl.compile_shader(shader);');
-    expect(emittedRender).toContain('gl.tex_image2_d(1.0, 0.0, 2.0, 3.0, 4.0, 0.0, 5.0, 6.0, bytes);');
-    expect(emittedRender).toContain('gl.tex_image2_d(1.0, 0.0, 2.0, 5.0, 6.0, image);');
+    expect(emittedRender).toContain('gl.tex_image_2d(1.0, 0.0, 2.0, 3.0, 4.0, 0.0, 5.0, 6.0, bytes);');
+    expect(emittedRender).toContain('gl.tex_image_2d(1.0, 0.0, 2.0, 5.0, 6.0, image);');
     expect(emittedRender).not.toContain('struct GlContext;');
     expect(emittedRender).not.toContain('gl->');
   });
@@ -31039,7 +31055,7 @@ Resolver make_resolver(TextureRef texture) {
     // The phantom trait brand has exactly the Symbol runtime domain, while the optional factory keeps
     // the named Node3DRuntime owner inferred through the generic call. Its adapter accepts and ignores
     // the optional Partial view, then forwards to the zero-argument factory; no row is copied or cast.
-    expect(contents).toContain('(out->traits = std::optional<flight::Symbol>{flight::types::node3_dtraits_key})');
+    expect(contents).toContain('(out->traits = std::optional<flight::Symbol>{flight::types::node_3d_traits_key})');
     expect(contents).toContain(
       'flight::node::initialize_node<flight::Ref<flight::types::Node3DTraits>, flight::Ref<flight::types::NodeData>, flight::Ref<flight::types::Node3DRuntime>>',
     );
@@ -31047,9 +31063,9 @@ Resolver make_resolver(TextureRef texture) {
       'std::optional<std::function<flight::Ref<flight::types::Node3DRuntime>(std::optional<flight::StructuralRef<',
     );
     expect(contents).toMatch(
-      /\[\]\([^)]*contextual_callable_argument0\) -> flight::Ref<flight::types::Node3DRuntime> \{ return create_node3_druntime\(\); \}/u,
+      /\[\]\([^)]*contextual_callable_argument0\) -> flight::Ref<flight::types::Node3DRuntime> \{ return create_node_3d_runtime\(\); \}/u,
     );
-    expect(contents).not.toContain('create_node3_druntime(contextual_callable_argument0)');
+    expect(contents).not.toContain('create_node_3d_runtime(contextual_callable_argument0)');
     expect(contents).not.toContain('static_cast');
     expect(contents).not.toContain('structural_ref_cast');
     expect(contents).not.toContain('materialize_row');
@@ -39245,7 +39261,7 @@ int main() {
     // Readonly is only a row view of the imported hit owner. Its node property retains the nullable
     // Mesh owner, and the source null guard unwraps exactly that carrier. The selected array element is
     // already Material | null, so `?? null` changes no represented domain and can return it directly.
-    expect(emitted).toContain('std::optional<flight::Ref<flight::types::Material>> get_scene3_dhit_material');
+    expect(emitted).toContain('std::optional<flight::Ref<flight::types::Material>> get_scene_3d_hit_material');
     expect(emitted).toContain('auto node = flight::row_get<flight::RowKey<"node">>(hit);');
     expect(emitted).toContain('node.value()->materials.element(subset_index)');
     expect(emitted).not.toContain('flight::materialize_row');
@@ -43637,6 +43653,15 @@ int main() {
     );
     expect(emitted.contents).toContain('value_flight_value_variable_value');
     expect(emitted.contents).toContain('value_flight_value_variable__u000056_alue');
+  });
+
+  it('deconflicts numeric-token names with explicit snake_case names', () => {
+    const emitted = emitIrModuleCpp(
+      lower('numeric-collide.ts', 'export const camera2D = 2; export const camera_2d = 3;').module,
+    ).contents;
+
+    expect(emitted).toContain('camera_2d_flight_value_variable_camera2_u000044_');
+    expect(emitted).toContain('camera_2d_flight_value_variable_camera_u00005f_2d');
   });
 
   it('refuses variable declaration with injected pattern via lowering-plan validation', () => {
@@ -49434,7 +49459,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
 
     const outputs = [modules[0]!, modules[1]!, modules[3]!].flatMap((module) => session.emitModule(module));
     const emitted = outputs.at(-1)!.contents;
-    expect(emitted).toContain('test_collision_support_overlap3_dportable(');
+    expect(emitted).toContain('test_collision_support_overlap_3d_portable(');
     expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::CollisionConvexShape3D>>');
     expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::CollisionSphereShape3D>>');
     expect(emitted).not.toContain('structural_ref_cast');
