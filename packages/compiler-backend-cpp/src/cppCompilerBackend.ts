@@ -26493,14 +26493,36 @@ function getCppLengthProvenNullableArrayElementBindingIdCpp(
   );
   const union = array ? getIrUnionTypeCpp(array.element, context, new Set()) : undefined;
   if (!union) return undefined;
+  const genericMembers = union.types.filter((member) => getCppTypeParameterDeclarationCpp(member, context));
+  const hasNull = union.types.some((member) => member.kind === 'null');
+  const hasUndefined = union.types.some((member) => member.kind === 'undefined');
+  if (genericMembers.length === 0 || !hasNull || hasUndefined) return undefined;
   const plan = getCppUnionRepresentationPlan(union, context);
-  return plan.kind === 'optionalSingle' &&
-    plan.valueSlots.length === 1 &&
-    plan.sentinels.null === 'optionalAbsence' &&
-    plan.sentinels.undefined === 'absent' &&
-    union.types.some((member) => getCppTypeParameterDeclarationCpp(member, context))
-    ? declaration.binding.id
-    : undefined;
+  if (plan.kind !== 'optionalSingle' || plan.valueSlots.length !== 1) {
+    emissionError(
+      context,
+      `a length-proven read from a nullable generic array requires one exact value carrier, but the element type has ${String(plan.valueSlots.length)} runtime domains. Flattening the bounds absence into one nullable slot cannot choose, erase, or reconstruct a generic owner; narrow the element to one represented domain before this read`,
+      'cpp-length-proven-nullable-generic-array-read-multi-domain',
+    );
+  }
+  if (plan.sentinels.null !== 'optionalAbsence' || plan.sentinels.undefined !== 'absent') return undefined;
+  const bindingUnion = declaration.type ? getIrUnionTypeCpp(declaration.type, context, new Set()) : undefined;
+  const bindingPlan = bindingUnion ? getCppUnionRepresentationPlan(bindingUnion, context) : undefined;
+  if (
+    !bindingPlan ||
+    bindingPlan.kind !== 'optionalSingle' ||
+    bindingPlan.valueSlots.length !== 1 ||
+    bindingPlan.sentinels.null !== 'optionalAbsence' ||
+    bindingPlan.sentinels.undefined !== 'absent' ||
+    bindingPlan.valueSlots[0]!.representationKey !== plan.valueSlots[0]!.representationKey
+  ) {
+    emissionError(
+      context,
+      `a length-proven nullable generic array read can discard only its outer bounds carrier when the binding retains the element's exact owner, null sentinel, and optional payload. This binding changes that carrier, so flattening would erase or convert the generic owner and keeping both optional layers would misstate the declared local; keep the exact element type at the read or perform an explicit conversion after a present-value guard`,
+      'cpp-length-proven-nullable-generic-array-read-carrier-mismatch',
+    );
+  }
+  return declaration.binding.id;
 }
 
 function getCppLeadingLoopVariableCpp(body: Readonly<IrStatement>): Readonly<IrNamedVariable> | undefined {
