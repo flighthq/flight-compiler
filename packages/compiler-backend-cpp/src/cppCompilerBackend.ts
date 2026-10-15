@@ -4330,7 +4330,13 @@ function emitExpression(
               getCppContextualArrayCallbackTypeCpp(expression, expectedType, index, context) ??
               getIrCallArgumentExpectedTypeCpp(expression, index, context);
             assertCppPresentOptionalCollectionArgumentCpp(expression, argument, index, argumentExpectedType, context);
-            return emitExpression(argument, context, argumentExpectedType);
+            return emitExpression(
+              argument,
+              context,
+              argumentExpectedType && isCppExactImportedAliasCarrierArgumentCpp(argument, argumentExpectedType, context)
+                ? undefined
+                : argumentExpectedType,
+            );
           });
           const call = `${receiver}${memberOp(expression.callee.object, context)}${binding.targetName}${emitCppTypeArguments(expression.typeArguments, context)}(${args.join(', ')})`;
           if (
@@ -4457,7 +4463,13 @@ function emitExpression(
                 'cpp-receiver-reference-unavailable',
               );
             }
-            return emitExpression(argument, context, argumentExpectedType);
+            return emitExpression(
+              argument,
+              context,
+              argumentExpectedType && isCppExactImportedAliasCarrierArgumentCpp(argument, argumentExpectedType, context)
+                ? undefined
+                : argumentExpectedType,
+            );
           }),
         context,
       );
@@ -10189,7 +10201,8 @@ function emitType(type: Readonly<IrType>, context: EmitContext, representation: 
     representation === 'value' &&
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
     hasFlightReferenceRepresentationCpp(type, context) &&
-    !isCppReferenceValueAliasCpp(type, context)
+    !isCppReferenceValueAliasCpp(type, context) &&
+    !isCppImportedUnionAliasAbiCarrierTypeCpp(type, context)
   ) {
     return `flight::Ref<${emitType(type, context, 'storage')}>`;
   }
@@ -17700,6 +17713,47 @@ function getCppCarrierProbeTargetTypeCpp(type: Readonly<IrType>, context: EmitCo
     if (!isBackendEmissionFailure(error)) throw error;
     return `unnameable:${normalizeCompilerStructuralValueCanonical(type)}`;
   }
+}
+
+// Whether a type is an imported alias the foundation probe keeps as one exact ABI carrier.
+function isCppImportedUnionAliasAbiCarrierTypeCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind !== 'import') {
+    return false;
+  }
+  const alias = resolveCppTypeAliasTarget(type, context);
+  return alias !== undefined && isCppImportedUnionAliasAbiCarrierCpp(type, alias, context);
+}
+
+// An imported alias can deliberately preserve one host ABI carrier for a source union whose web
+// alternatives collapse at the native boundary. When that exact alias is passed back to the same source
+// union (Canvas drawImage/createPattern are the motivating APIs), contextual union construction must
+// not reopen the alias and try to reconstruct alternatives the host carrier cannot distinguish. Both
+// sides are required to expand to the identical source union, so this is an alias erasure rather than a
+// widening or an unchecked selection.
+function isCppExactImportedAliasCarrierArgumentCpp(
+  expression: Readonly<IrExpression>,
+  expectedType: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  const sourceType = getIrExpressionTypeEvidenceCpp(expression, context);
+  const source = sourceType ? (getCppIdentityPreservingUtilityArgument(sourceType) ?? sourceType) : undefined;
+  if (
+    !source ||
+    source.kind !== 'named' ||
+    source.reference.kind !== 'binding' ||
+    source.reference.binding.kind !== 'import'
+  ) {
+    return false;
+  }
+  const alias = resolveCppTypeAliasTarget(source, context);
+  if (!alias || !isCppImportedUnionAliasAbiCarrierCpp(source, alias, context)) return false;
+  const aliasUnion = getIrUnionTypeCpp(alias, context, new Set());
+  const expectedUnion = getIrUnionTypeCpp(expectedType, context, new Set());
+  return Boolean(
+    aliasUnion &&
+    expectedUnion &&
+    normalizeCompilerStructuralValueCanonical(aliasUnion) === normalizeCompilerStructuralValueCanonical(expectedUnion),
+  );
 }
 
 // The module that declares the alias an expected union is reached through, when that module is not

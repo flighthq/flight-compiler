@@ -13391,6 +13391,12 @@ export interface CanvasTextureResolvers extends Entity {
              texture: Readonly<Texture>,
            ): HostImageSource | null {
              return resolver(resolvers, texture);
+           }
+           export function drawCanvasImage(
+             context: CanvasRenderingContext2D,
+             image: HostImageSource,
+           ): void {
+             context.drawImage(image, 0, 0);
            }`,
         ),
       ],
@@ -13419,6 +13425,14 @@ export interface CanvasTextureResolvers extends Entity {
           headers: ['host/canvas.hpp'],
           nullability: 'non-null' as const,
           ownership: 'shared' as const,
+          sourceName: 'CanvasRenderingContext2D',
+          space: 'type' as const,
+          targetName: 'host::CanvasContext',
+        },
+        {
+          headers: ['host/canvas.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
           sourceName: 'HTMLCanvasElement',
           space: 'type' as const,
           targetName: 'host::CanvasSurface',
@@ -13436,7 +13450,10 @@ export interface CanvasTextureResolvers extends Entity {
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
     expect(contents).toContain('return resolver(resolvers,');
-    expect(contents).toContain('std::optional<flight::Ref<flighthq_types::HostImageSource>>');
+    expect(contents).toContain('std::optional<flighthq_types::HostImageSource>');
+    expect(contents).toContain('flighthq_types::HostImageSource image');
+    expect(contents).toContain('draw_image(image, 0.0, 0.0)');
+    expect(contents).not.toContain('flight::Ref<flighthq_types::HostImageSource>');
     expect(contents).not.toContain('std::variant');
     expect(contents).not.toContain('HTMLImageElement');
     expect(contents).not.toContain('flight::Any');
