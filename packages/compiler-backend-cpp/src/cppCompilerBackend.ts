@@ -11756,12 +11756,56 @@ function getWeakMapKeyRepresentationCpp(
   }
   const plan = context.referenceRepresentationPlanner.plan(type, context.module);
   if (plan.kind === 'represented' && plan.valueRepresentation === 'flightReference') return {};
+  if (plan.kind === 'represented' && plan.category === 'structuralRow') {
+    return getCppStructuralRowWeakKeyOwnerIdentityCpp(type, context) !== undefined ? {} : undefined;
+  }
   if (type.kind !== 'named' || type.reference.kind !== 'binding') return undefined;
   const key = `${type.reference.binding.id}\0${JSON.stringify(type.typeArguments)}`;
   if (resolvingAliases.has(key)) return undefined;
   const alias = context.referenceRepresentationPlanner.resolveAlias(type, context.module);
   if (!alias) return undefined;
   return getWeakMapKeyRepresentationCpp(alias, context, new Set(resolvingAliases).add(key));
+}
+
+// A structural reference is a valid weak key only when every row component is a view of the same named
+// runtime owner. Its runtime policy weakens that shared RowOwner and recovers the same identity. An anonymous
+// row, a writable construction bag, or a merge of different owners can also be represented as StructuralRef,
+// but none proves which source object WeakMap identity is meant to follow, so this deliberately refuses them.
+function getCppStructuralRowWeakKeyOwnerIdentityCpp(type: Readonly<IrType>, context: EmitContext): string | undefined {
+  const row = context.referenceRepresentationPlanner.resolveStructuralRow(type, context.module);
+  return row ? getCppStructuralRowPlanWeakKeyOwnerIdentityCpp(row, context) : undefined;
+}
+
+function getCppStructuralRowPlanWeakKeyOwnerIdentityCpp(
+  row: Readonly<CompilerCppStructuralRowPlan>,
+  context: EmitContext,
+): string | undefined {
+  if (row.kind === 'rowOf') {
+    return getCppStructuralRowNamedWeakKeyOwnerIdentityCpp(row.type, context.module, context, new Set());
+  }
+  if (row.kind === 'writable') return undefined;
+  if (row.kind !== 'merge') return getCppStructuralRowPlanWeakKeyOwnerIdentityCpp(row.row, context);
+  const identities = row.rows.map((member) => getCppStructuralRowPlanWeakKeyOwnerIdentityCpp(member, context));
+  if (identities.some((identity) => identity === undefined)) return undefined;
+  const unique = new Set(identities);
+  return unique.size === 1 ? identities[0] : undefined;
+}
+
+function getCppStructuralRowNamedWeakKeyOwnerIdentityCpp(
+  type: Readonly<IrType>,
+  module: Readonly<IrModule>,
+  context: EmitContext,
+  visited: ReadonlySet<string>,
+): string | undefined {
+  const owner = getCppNamedTypeDeclarationOwnerCpp(type, module, context);
+  if (!owner || !('binding' in owner.declaration)) return undefined;
+  const identity = `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}`;
+  if (owner.declaration.kind === 'class' || owner.declaration.kind === 'interface') return identity;
+  if (owner.declaration.kind !== 'typeAlias' || visited.has(identity)) return undefined;
+  const alias = context.referenceRepresentationPlanner.resolveAlias(type, module);
+  return alias
+    ? getCppStructuralRowNamedWeakKeyOwnerIdentityCpp(alias, owner.module, context, new Set(visited).add(identity))
+    : undefined;
 }
 
 function getCppNonNullableType(
