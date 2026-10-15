@@ -53910,4 +53910,72 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
       expect(refusal.rule).toBe('cpp-contextual-union-value-type-unrepresented');
     }
   });
+
+  it('selects a redundant concrete reference arm beside an open base arm', () => {
+    const result = lower(
+      'open-reference-union-cast.ts',
+      `interface Extension { readonly kind: string; }
+       interface Anisotropy extends Extension { readonly kind: 'anisotropy'; strength: number; }
+       interface Clearcoat extends Extension { readonly kind: 'clearcoat'; factor: number; }
+       interface Dissolve extends Extension { readonly kind: 'dissolve'; threshold: number; }
+       interface Emissive extends Extension { readonly kind: 'emissive'; intensity: number; }
+       interface Fog extends Extension { readonly kind: 'fog'; density: number; }
+       interface Rim extends Extension { readonly kind: 'rim'; power: number; }
+       interface Toon extends Extension { readonly kind: 'toon'; steps: number; }
+       interface VertexDisplace extends Extension { readonly kind: 'vertexDisplace'; amplitude: number; }
+       type ExtensionValue =
+         | Extension
+         | Anisotropy
+         | Clearcoat
+         | Dissolve
+         | Emissive
+         | Fog
+         | Rim
+         | Toon
+         | VertexDisplace;
+       type ReadonlyExtensionValue =
+         | Readonly<Extension>
+         | Readonly<Anisotropy>
+         | Readonly<Clearcoat>
+         | Readonly<Dissolve>
+         | Readonly<Emissive>
+         | Readonly<Fog>
+         | Readonly<Rim>
+         | Readonly<Toon>
+         | Readonly<VertexDisplace>;
+       interface Definition {
+         kind: string;
+         getDefineSignature(value: ReadonlyExtensionValue): string;
+       }
+       interface Registration extends Definition {
+         bind(value: ReadonlyExtensionValue): number;
+         bindNullable(value: ReadonlyExtensionValue | null): number;
+       }
+       const definition: Definition = {
+         kind: 'anisotropy',
+         getDefineSignature(value): string {
+           return (value as Readonly<Anisotropy>).kind;
+         },
+       };
+       export const registration: Registration = {
+         ...definition,
+         bind(value): number {
+           const extension = value as Readonly<Anisotropy>;
+           return extension.strength;
+         },
+         bindNullable(value): number {
+           const extension = value as Readonly<Anisotropy> | null;
+           if (extension === null) return 0;
+           return extension.strength;
+         },
+       };`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });
+
+    expect(
+      emitted.contents.match(
+        /std::get<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<Anisotropy>>>>>\(/gu,
+      ),
+    ).toHaveLength(3);
+  });
 });
