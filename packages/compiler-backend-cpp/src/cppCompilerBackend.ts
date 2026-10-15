@@ -13627,7 +13627,15 @@ function emitCppPresenceTestCpp(
   }
   if (hasCppNestedNullableOptionalPropertyStorageCpp(operand, context)) {
     context.includes.add('optional');
-    const value = emitExpression(operand, context);
+    // This test asks the declared property STORAGE for one of its two absence channels. Checker flow can
+    // narrow the exact dotted access after a preceding short-circuit guard, but projecting that narrowed
+    // value would skip the outer carrier and test the payload. Re-emit that same property path without its
+    // value projection; binding and property declaration identities remain on the expression, so no other
+    // receiver or same-named member inherits the proof, and checker flow removes it across mutation.
+    const value =
+      operand.kind === 'property' && operand.narrowedType
+        ? emitExpression({ ...operand, narrowedType: undefined, presence: undefined }, context)
+        : emitExpression(operand, context);
     let test: string;
     if (!strict) {
       test = present
