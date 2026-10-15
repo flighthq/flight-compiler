@@ -326,6 +326,10 @@ interface EmitContext {
   // rather than a lookup at the use site because the constraint is what proves a dependent member read,
   // and the parameter being read belongs to a declaration that may be nowhere near the read.
   typeParameterConstraints: ReadonlyMap<string, Readonly<IrType>>;
+  // The C++ names of every type parameter this module declares, in any declaration. A spelling that names
+  // one of them is dependent C++, which is what decides whether a member template call needs its
+  // `template` disambiguator. See `isCppTypeDependentReceiverCpp`.
+  typeParameterNames: ReadonlySet<string>;
   currentClass?: Readonly<IrClassDeclaration> | undefined;
   // An interface is emitted as a struct of its own, so a `this` type inside one has a declaring type
   // exactly as a class member does. Kept apart from `currentClass` because the two name that type
@@ -664,6 +668,7 @@ function emitIrModuleCppWithContext(
     targetNameMaps: resolvedTargetNameMaps,
     targetNames,
     typeParameterConstraints,
+    typeParameterNames: collectCppTypeParameterNamesCpp(module, targetNames),
     uninitializedCaptureStorageBindingIds,
     generatedNames: new Set(targetNames.values()),
     anonymousStructNaming: anonymousStructNaming ?? createCppAnonymousStructNaming(resolvedTargetNameMaps),
@@ -24592,6 +24597,44 @@ function refuseCppContextualStructuralArrayNominalRecoveryCpp(
   );
 }
 
+// The C++ names of every type parameter the module declares, which is the vocabulary a dependent
+// spelling is written in. Collected from the declaration itself rather than from a naming convention, so
+// the test below asks about THIS module's parameters wherever they are declared -- a class parameter, a
+// function parameter, a parameter of a callable the module exports.
+function collectCppTypeParameterNamesCpp(
+  module: Readonly<IrModule>,
+  targetNames: ReadonlyMap<string, string>,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  analyzeIrModuleTraversal(module, {
+    typeParameter(parameter) {
+      names.add(targetNames.get(parameter.binding.id) ?? pascalCase(parameter.binding.name));
+    },
+  });
+  return names;
+}
+
+// Whether an emitted receiver expression is written in terms of a template parameter, which is the
+// question C++ itself asks before a member template call needs its `template` disambiguator:
+// `value.object_if<T>()` parses `object_if` as a member NAME unless `value` is type-dependent, where the
+// keyword is required -- and the keyword is ILL-FORMED on an object that is not dependent, so a receiver
+// that cannot be shown dependent must keep the plain spelling.
+//
+// The question is asked of the SPELLING, because the spelling is what C++ parses and because the type
+// behind it does not settle the answer. Both of these erase the same way in the IR -- `unknown`, so both
+// emit the checked recovery -- while only one of them is dependent C++:
+//
+//   const auto& erased_value = erased(box->value);                        // a concrete call, concrete type
+//   const auto& erased_value = static_cast<flight::Ref<Shape<Type>>>(box)->value;   // dependent on Type
+//
+// so the test reads the receiver the emitter produced and asks whether it names one of the module's type
+// parameters as a whole token. A generic declaration that never mentions its parameter in THIS expression
+// answers no and keeps the plain form; a receiver built on a parameter answers yes.
+function isCppTypeDependentReceiverCpp(receiver: string, typeParameterNames: ReadonlySet<string>): boolean {
+  if (typeParameterNames.size === 0) return false;
+  return receiver.split(/[^A-Za-z0-9_]+/u).some((token) => typeParameterNames.has(token));
+}
+
 // `source as string` on a position TypeScript states as unconstrained is an assertion about a value
 // the source cannot check. Once that position holds the erased dynamic value, no `static_cast` reaches
 // its alternative — the erased value has no conversion operator — so the assertion becomes the runtime's
@@ -24643,7 +24686,14 @@ function getCppErasedValueAssertionCpp(
       expression.kind !== 'element' && hasCppAbsenceStorageCpp(expression, context)
         ? `${emitExpression(expression, context)}.value()`
         : emitExpression(expression, context);
-    return `([&]() -> ${emitType(target, context)} { const auto& ${erased} = ${erasedValue}; auto ${recovered} = ${erased}.object_if<${referenceElement}>(); if (!${recovered}) throw std::logic_error("erased value does not hold the asserted object type"); return ${recovered}; }())`;
+    // The local that carries the erased value is deduced from this expression, so the member template call
+    // is dependent exactly when the receiver it produced is: C++ defers the local's type to instantiation
+    // and then requires the disambiguator. A receiver of any concrete type keeps the plain spelling the
+    // emitted text has always had.
+    const recovery = isCppTypeDependentReceiverCpp(erasedValue, context.typeParameterNames)
+      ? '.template object_if'
+      : '.object_if';
+    return `([&]() -> ${emitType(target, context)} { const auto& ${erased} = ${erasedValue}; auto ${recovered} = ${erased}${recovery}<${referenceElement}>(); if (!${recovered}) throw std::logic_error("erased value does not hold the asserted object type"); return ${recovered}; }())`;
   }
   // A union target is several alternatives, so the assertion is the same checked selection the contextual
   // lane builds: each alternative asks the runtime for the kind it needs. Without this the assertion fell
@@ -25506,11 +25556,7 @@ function getCppLengthProvenNullableArrayElementBindingIdCpp(
     declaration.initializer.optional ||
     !declaration.initializer.semantics.receivers.includes('array') ||
     !isIrBindingIdentifierCpp(declaration.initializer.index, indexBindingId) ||
-    !areCppStableArrayReceiverExpressionsEqualCpp(
-      declaration.initializer.object,
-      condition.right.object,
-      context,
-    )
+    !areCppStableArrayReceiverExpressionsEqualCpp(declaration.initializer.object, condition.right.object, context)
   ) {
     return undefined;
   }

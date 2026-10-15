@@ -14587,6 +14587,71 @@ export function connectSignalTracked2<T extends (...args: any[]) => void>(
     expect(direct).not.toContain('.value().value()');
   });
 
+  // A member template call on a type-dependent object needs C++'s `template` disambiguator, and the same
+  // keyword on a concrete object is ill-formed -- so the recovery has to know which one it emitted. The
+  // receiver is a local deduced from the asserted expression, so the question is whether the RECEIVER is
+  // written in terms of a template parameter, not whether the declaration has one.
+  it('disambiguates the erased-object recovery the receiver is type-dependent', () => {
+    const emitRecovery = (body: string) =>
+      emitIrModuleCpp(
+        lower(
+          'dependentErasedRecovery.ts',
+          `interface Payload { readonly id: string }
+           interface Box { readonly value: unknown }
+           ${body}`,
+        ).module,
+        { runtimeProfile: 'flight-cpp' },
+      ).contents;
+
+    // A STRUCTURAL assertion through a type-parameter-typed receiver is built on the parameter -- the row
+    // it casts to is parameterized by `Type` -- so the receiver names it and the recovery is dependent.
+    const dependent = emitRecovery(
+      `export function recover<Type>(box: Type): Payload {
+         return (box as { value: unknown }).value as Payload;
+       }`,
+    );
+    expect(dependent).toMatch(/const auto& erased_value = static_cast<flight::Ref<value_\w+<Type>>>\(box\)->value;/u);
+    expect(dependent).toContain('erased_value.template object_if<Payload>()');
+    expect(dependent).not.toContain('erased_value.object_if<Payload>()');
+
+    // The near-neighbour on the other side of that line: the same cast to a NAMED interface answers a
+    // concrete `flight::Ref<Box>`, whose member type is known, so the access is not dependent and the
+    // keyword would not compile.
+    const namedCast = emitRecovery(
+      `export function recover<Type>(box: Type): Payload {
+         return (box as Box).value as Payload;
+       }`,
+    );
+    expect(namedCast).toContain('const auto& erased_value = static_cast<flight::Ref<Box>>(box)->value;');
+    expect(namedCast).toContain('erased_value.object_if<Payload>()');
+    expect(namedCast).not.toContain('template object_if');
+
+    // The control that keeps this about the receiver rather than about the declaration's name: this function
+    // IS a template, and its argument IS read off a type-parameter-typed value, but the call it feeds the
+    // read into answers a concrete `flight::Any`. The receiver is therefore not dependent, and the keyword
+    // there would not compile. A guard keyed on "the declaration has a type parameter" emits it anyway.
+    const concreteReceiver = emitRecovery(
+      `function erased(value: unknown): unknown { return value; }
+       export function recover<Type extends Box>(box: Type): Payload {
+         return erased(box.value) as Payload;
+       }`,
+    );
+    expect(concreteReceiver).toContain('template <typename Type>\ninline flight::Ref<Payload> recover(Type box)');
+    expect(concreteReceiver).toContain('const auto& erased_value = erased(box->value);');
+    expect(concreteReceiver).toContain('erased_value.object_if<Payload>()');
+    expect(concreteReceiver).not.toContain('template object_if');
+
+    // The near-neighbour with no type parameter anywhere: unchanged, and byte-identical to what the lane
+    // emitted before the disambiguator existed.
+    const concrete = emitRecovery(
+      `export function read(value: unknown): Payload {
+         return value as Payload;
+       }`,
+    );
+    expect(concrete).toContain('erased_value.object_if<Payload>()');
+    expect(concrete).not.toContain('template object_if');
+  });
+
   // Red before the fix, green after, and the only thing that can say so is the compiler: both shapes below
   // were handed to g++ as failing output and are handed to it as passing output now.
   it.skipIf(!cppSyntaxGate.available)('compiles the open-lookup recovery through its carrier', () => {
