@@ -25,9 +25,13 @@ type CppUnionRepresentationPlan =
     }>;
 
 interface CppUnionRepresentationPlanningCapabilities {
+  readonly isExactAbiCarrier?: (type: Readonly<IrType>) => boolean;
   readonly resolveAliasTarget: (type: Readonly<IrTypeReference>) => Readonly<IrType> | undefined;
   readonly resolveRuntimeDomain: (type: Readonly<IrType>) => Readonly<IrType> | undefined;
   readonly resolveTargetType: (type: Readonly<IrType>) => string;
+  // Walk state rather than a capability, and deliberately optional because no caller supplies it: a
+  // collision walk carries the unions it is already evaluating into the nested plan call it makes.
+  readonly unionsUnderEvaluation?: ReadonlySet<string>;
 }
 
 interface CppUnionRepresentationSuccess {
@@ -176,7 +180,11 @@ function collectRuntimeAlternativeCpp(
   if (type.kind === 'named' && type.reference.kind === 'binding' && type.typeArguments.length === 0) {
     const bindingId = type.reference.binding.id;
     const aliasTarget = capabilities.resolveAliasTarget(type);
-    if (aliasTarget && !resolvingAliases.has(bindingId)) {
+    const importedCollisionCarrier =
+      type.reference.binding.kind === 'import' &&
+      aliasTarget !== undefined &&
+      hasCppUnionTargetCollisionInType(aliasTarget, capabilities, new Set(resolvingAliases).add(bindingId));
+    if (aliasTarget && !importedCollisionCarrier && !resolvingAliases.has(bindingId)) {
       const nextResolvingAliases = new Set(resolvingAliases);
       nextResolvingAliases.add(bindingId);
       collectRuntimeAlternativeCpp(aliasTarget, sourceAlternative, capabilities, inventory, nextResolvingAliases);
@@ -298,6 +306,53 @@ function freezeCppUnionRepresentationPlan(value: unknown, seen: WeakSet<object>)
   seen.add(value);
   for (const child of Object.values(value)) freezeCppUnionRepresentationPlan(child, seen);
   Object.freeze(value);
+}
+
+// Whether resolving this alias reaches, anywhere inside it, an exact ABI carrier or a union whose
+// distinct source domains collide at one C++ target. A self-referential callable alias reaches its own
+// return union again, so the walk records the unions it is evaluating and answers "not a collision" for
+// one it is still deciding rather than descending through it forever. The record travels with the
+// capabilities because a nested plan call is the only way further down, and the alias set that plan
+// collects with stays untouched: an alias merely on the way down still flattens exactly as it does when
+// this walk never runs.
+function hasCppUnionTargetCollisionInType(
+  type: Readonly<IrType>,
+  capabilities: Readonly<CppUnionRepresentationPlanningCapabilities>,
+  resolvingAliases: ReadonlySet<string>,
+  insideUnion = false,
+): boolean {
+  if (type.kind === 'union') {
+    const unionKey = normalizeCompilerStructuralValueCanonical(type);
+    if (capabilities.unionsUnderEvaluation?.has(unionKey)) return false;
+    const nestedCapabilities = {
+      ...capabilities,
+      unionsUnderEvaluation: new Set(capabilities.unionsUnderEvaluation ?? []).add(unionKey),
+    };
+    return (
+      createCppUnionRepresentationPlan(type, nestedCapabilities).kind === 'refused' ||
+      type.types.some((member) => hasCppUnionTargetCollisionInType(member, nestedCapabilities, resolvingAliases, true))
+    );
+  }
+  if (type.kind === 'function') {
+    return (
+      hasCppUnionTargetCollisionInType(type.returns, capabilities, resolvingAliases, insideUnion) ||
+      type.parameters.some((parameter) =>
+        hasCppUnionTargetCollisionInType(parameter.type, capabilities, resolvingAliases, insideUnion),
+      )
+    );
+  }
+  if (type.kind !== 'named') return false;
+  // An exact carrier this alias reaches directly is the alias's own published ABI. The same type as one
+  // alternative of a union is one alternative among several, and that union answers for itself: a
+  // representable union of carriers expands, and one whose alternatives collide is already the refusal
+  // this walk looks for. Reading a carrier out of a union member instead would keep an alias whose
+  // expansion the target represents perfectly well.
+  if (!insideUnion && capabilities.isExactAbiCarrier?.(type)) return true;
+  const aliasKey =
+    type.reference.kind === 'binding' ? type.reference.binding.id : normalizeCompilerStructuralValueCanonical(type);
+  if (resolvingAliases.has(aliasKey)) return false;
+  const alias = capabilities.resolveAliasTarget(type);
+  return alias ? hasCppUnionTargetCollisionInType(alias, capabilities, new Set(resolvingAliases).add(aliasKey)) : false;
 }
 
 function widenIrLiteralTypeCpp(type: Readonly<IrType>): Readonly<IrType> {

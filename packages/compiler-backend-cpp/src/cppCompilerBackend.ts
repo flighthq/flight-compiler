@@ -4490,7 +4490,10 @@ function emitExpression(
       const invocation = `${invocationTarget}${emitCppTypeArguments(invocationTypeArguments, context)}(${args.join(', ')})`;
       const returnType = getIrCallReturnTypeCpp(expression, context);
       const returnUnion = returnType ? getIrUnionTypeCpp(returnType, context, new Set()) : undefined;
-      const returnPlan = returnUnion ? getCppUnionRepresentationPlan(returnUnion, context) : undefined;
+      const returnPlan =
+        expression.presence === 'narrowedPresent' && returnUnion
+          ? getCppUnionRepresentationPlan(returnUnion, context)
+          : undefined;
       return expression.presence === 'narrowedPresent' && returnPlan?.kind === 'optionalSingle'
         ? `${invocation}.value()`
         : invocation;
@@ -12034,6 +12037,7 @@ function getCppNonNullableType(
   if (resolvingAliases.has(bindingId)) return type;
   const alias = resolveCppTypeAliasTarget(type, context);
   if (!alias) return type;
+  if (isCppImportedUnionAliasAbiCarrierCpp(type, alias, context)) return type;
   const nextResolvingAliases = new Set(resolvingAliases);
   nextResolvingAliases.add(bindingId);
   return getCppNonNullableType(alias, context, nextResolvingAliases);
@@ -17526,6 +17530,14 @@ function getCppUnionRepresentationPlan(
   context: EmitContext,
 ): Exclude<ReturnType<typeof createCppUnionRepresentationPlan>, { kind: 'refused' }> {
   const plan = createCppUnionRepresentationPlan(type, {
+    isExactAbiCarrier(runtimeType) {
+      return (
+        runtimeType.kind === 'named' &&
+        runtimeType.reference.kind === 'ambient' &&
+        getCompilerExternalBindingEvidenceCpp(runtimeType.reference.name, 'type', context.options.externalBindings) !==
+          undefined
+      );
+    },
     resolveAliasTarget(typeReference) {
       return resolveCppTypeAliasTarget(typeReference, context);
     },
@@ -17556,6 +17568,93 @@ function getCppUnionRepresentationPlan(
   return plan;
 }
 
+// Whether an imported alias must survive as its defining header's runtime carrier rather than being
+// flattened into its alias target.
+//
+// `HostImageSource = CanvasImageSource` publishes one host handle, but the ambient union behind
+// `CanvasImageSource` names several DOM element types that a truthful external binding table maps to
+// one C++ carrier. Recursively flattening the alias -- through its callable parameters and results too
+// -- reaches either an exactly bound ambient carrier or a union whose distinct source domains collide
+// at one target, and in both cases the alias is the only spelling that still describes the value.
+// Aliases that resolve to a representable union or a scalar keep the existing planning.
+//
+// The probe plans with an isolated context, so nothing it records survives the question, and it hands
+// the aliases it is already resolving to the runtime-domain resolver: a self-referential alias reaches
+// itself again there, and that resolver already treats an alias under resolution as its own domain.
+function isCppImportedUnionAliasAbiCarrierCpp(
+  type: Readonly<Extract<IrType, { kind: 'named' }>>,
+  alias: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (type.reference.kind !== 'binding' || type.reference.binding.kind !== 'import') return false;
+  const entryKey = type.reference.binding.id;
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const visit = (candidate: Readonly<IrType>, resolvingAliases: ReadonlySet<string>, insideUnion = false): boolean => {
+    if (candidate.kind === 'union') {
+      const unionKey = normalizeCompilerStructuralValueCanonical(candidate);
+      if (resolvingAliases.has(unionKey)) return false;
+      return (
+        createCppUnionRepresentationPlan(candidate, {
+          resolveAliasTarget(typeReference) {
+            return resolveCppTypeAliasTarget(typeReference, isolatedContext);
+          },
+          resolveRuntimeDomain(runtimeType) {
+            return getIrTypeRuntimeDomainCpp(runtimeType, isolatedContext, new Set([entryKey, ...resolvingAliases]));
+          },
+          resolveTargetType(runtimeType) {
+            return getCppCarrierProbeTargetTypeCpp(runtimeType, isolatedContext);
+          },
+        }).kind === 'refused' ||
+        candidate.types.some((member) => visit(member, new Set(resolvingAliases).add(unionKey), true))
+      );
+    }
+    if (candidate.kind === 'function') {
+      return (
+        visit(candidate.returns, resolvingAliases, insideUnion) ||
+        candidate.parameters.some((parameter) => visit(parameter.type, resolvingAliases, insideUnion))
+      );
+    }
+    if (candidate.kind !== 'named') return false;
+    // An exact carrier this alias reaches directly is the alias's own published ABI. The same type as
+    // one alternative of a union is one alternative among several, and that union answers for itself --
+    // a representable union of carriers expands, and one whose alternatives collide is the refusal this
+    // probe already reads out of the plan. Taking a carrier out of a union member instead would keep an
+    // alias whose expansion the target represents perfectly well.
+    if (
+      !insideUnion &&
+      candidate.reference.kind === 'ambient' &&
+      getCompilerExternalBindingEvidenceCpp(candidate.reference.name, 'type', context.options.externalBindings) !==
+        undefined
+    ) {
+      return true;
+    }
+    const aliasKey =
+      candidate.reference.kind === 'binding'
+        ? candidate.reference.binding.id
+        : normalizeCompilerStructuralValueCanonical(candidate);
+    if (resolvingAliases.has(aliasKey)) return false;
+    const nested = resolveCppTypeAliasTarget(candidate, isolatedContext);
+    // An alias step clears the union-member reading: the carrier an alias resolves to is its own
+    // published ABI, whenever the walk reached the alias from.
+    return nested ? visit(nested, new Set(resolvingAliases).add(aliasKey)) : false;
+  };
+  return visit(alias, new Set([entryKey]));
+}
+
+// The target a carrier probe compares. Naming a target can refuse -- a declaration this module reaches
+// only as a foreign binding under no exact owner has no name here -- and a question that cannot be
+// answered must not answer for the emission, so the probe names that type by its own canonical form:
+// alternatives it cannot name stay distinct from each other and from every name a target really has,
+// and the alias keeps the planning it already had.
+function getCppCarrierProbeTargetTypeCpp(type: Readonly<IrType>, context: EmitContext): string {
+  try {
+    return emitType(type, context);
+  } catch (error) {
+    if (!isBackendEmissionFailure(error)) throw error;
+    return `unnameable:${normalizeCompilerStructuralValueCanonical(type)}`;
+  }
+}
+
 // The module that declares the alias an expected union is reached through, when that module is not
 // this one.
 //
@@ -17579,6 +17678,8 @@ function getCppUnionAliasDeclarationOwnerCpp(
   const alias =
     expectedType.kind === 'union' ? getCppOptionalImportedUnionValueAliasCpp(expectedType, context) : expectedType;
   if (!alias || alias.kind !== 'named' || alias.reference.kind !== 'binding') return undefined;
+  const aliasTarget = resolveCppTypeAliasTarget(alias, context);
+  if (aliasTarget && isCppImportedUnionAliasAbiCarrierCpp(alias, aliasTarget, context)) return undefined;
   const reference = alias.reference;
   // Only an import crosses a module boundary. A local alias and an inline union keep their own
   // ownership, which is what they already had.
@@ -17812,7 +17913,9 @@ function emitContextualUnionExpressionInContextCpp(
   expectedType: Readonly<IrType>,
   context: EmitContext,
 ): string | undefined {
-  const union = getIrUnionTypeCpp(expectedType, context, new Set());
+  const union =
+    getCppOptionalImportedAliasCarrierUnionCpp(expectedType, context) ??
+    getIrUnionTypeCpp(expectedType, context, new Set());
   if (!union || expression.kind === 'conditional') return undefined;
   const plan = getCppUnionRepresentationPlan(union, context);
   if (
@@ -17927,6 +18030,9 @@ function emitContextualUnionExpressionInContextCpp(
     }
   }
   assertIrExpressionHasNoDualSentinelOptionalChainCpp(expression, context);
+  if (expression.kind === 'call' && isCppExactImportedCarrierCallResultCpp(expression, union, context)) {
+    return emitExpression(expression, context, undefined, false);
+  }
   if (
     (expression.kind === 'call' && (expression.optional || expression.semantics.optionalChain)) ||
     (expression.kind === 'element' && (expression.optional || expression.semantics.optionalChain)) ||
@@ -18074,7 +18180,9 @@ function emitContextualUnionExpressionInContextCpp(
       `cpp-contextual-union-missing-expression-type:${plan.kind}`,
     );
   }
-  const expressionUnion = getIrUnionTypeCpp(expressionType, context, new Set());
+  const expressionUnion =
+    getCppOptionalImportedAliasCarrierUnionCpp(expressionType, context) ??
+    getIrUnionTypeCpp(expressionType, context, new Set());
   if (expressionUnion) {
     const expressionPlan = getCppUnionRepresentationPlan(expressionUnion, context);
     if (
@@ -21692,6 +21800,7 @@ function getIrTypeRuntimeDomainCpp(
   }
   const alias = resolveCppTypeAliasTarget(type, context);
   if (!alias) return type;
+  if (isCppImportedUnionAliasAbiCarrierCpp(type, alias, context)) return type;
   const nextResolvingAliases = new Set(resolvingAliases);
   nextResolvingAliases.add(bindingId);
   return getIrTypeRuntimeDomainCpp(alias, context, nextResolvingAliases);
@@ -30788,15 +30897,81 @@ function getCppOptionalImportedUnionValueAliasCpp(
   const values = type.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
   if (sentinels.length !== 1 || values.length !== 1) return undefined;
   const value = getCppIdentityPreservingUtilityArgument(values[0]!) ?? values[0];
+  const alias = value?.kind === 'named' ? resolveCppTypeAliasTarget(value, context) : undefined;
   if (
     value?.kind !== 'named' ||
     value.reference.kind !== 'binding' ||
     value.reference.binding.kind !== 'import' ||
-    resolveCppTypeAliasTarget(value, context)?.kind !== 'union'
+    !alias ||
+    (alias.kind !== 'union' && !isCppImportedUnionAliasAbiCarrierCpp(value, alias, context))
   ) {
     return undefined;
   }
   return value;
+}
+
+// The outer optional of an imported carrier, viewed as one value alternative plus the absence the
+// source declared, so planning keeps the alias instead of the flattened union it collides inside.
+function getCppOptionalImportedAliasCarrierUnionCpp(
+  type: Readonly<IrType>,
+  context: EmitContext,
+): Readonly<Extract<IrType, { kind: 'union' }>> | undefined {
+  if (type.kind !== 'union') return undefined;
+  const alias = getCppOptionalImportedUnionValueAliasCpp(type, context);
+  const aliasTarget = alias ? resolveCppTypeAliasTarget(alias, context) : undefined;
+  if (!alias || !aliasTarget || !isCppImportedUnionAliasAbiCarrierCpp(alias, aliasTarget, context)) return undefined;
+  const absentMembers = type.types.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  if (!absentMembers[0]) return undefined;
+  return { kind: 'union', types: [alias, absentMembers[0], ...absentMembers.slice(1)] };
+}
+
+// A call whose callee's declared result is the expected carrier alias itself, with the same absence,
+// already returns exactly what the destination stores: reconstructing the source union around it would
+// plan a union the call never produces.
+function isCppExactImportedCarrierCallResultCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  expectedUnion: Readonly<Extract<IrType, { kind: 'union' }>>,
+  context: EmitContext,
+): boolean {
+  const expectedAlias = getCppOptionalImportedUnionValueAliasCpp(expectedUnion, context);
+  const expectedTarget = expectedAlias ? resolveCppTypeAliasTarget(expectedAlias, context) : undefined;
+  if (
+    !expectedAlias ||
+    !expectedTarget ||
+    !isCppImportedUnionAliasAbiCarrierCpp(expectedAlias, expectedTarget, context)
+  ) {
+    return false;
+  }
+  const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
+  const returns = calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined;
+  if (!returns || returns.kind !== 'union') return false;
+  const expectedSentinels = expectedUnion.types.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const returnSentinels = returns.types.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const returnValues = returns.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  if (
+    expectedSentinels.length !== 1 ||
+    returnSentinels.length !== 1 ||
+    expectedSentinels[0]!.kind !== returnSentinels[0]!.kind ||
+    returnValues.length !== 1 ||
+    returnValues[0]!.kind !== 'named'
+  ) {
+    return false;
+  }
+  const returnTarget = resolveCppTypeAliasTarget(returnValues[0], context);
+  return (
+    returnTarget !== undefined &&
+    normalizeCompilerStructuralValueCanonical(returnTarget) ===
+      normalizeCompilerStructuralValueCanonical(expectedTarget)
+  );
 }
 
 function hasIndexedRuntimeReceiverCpp(

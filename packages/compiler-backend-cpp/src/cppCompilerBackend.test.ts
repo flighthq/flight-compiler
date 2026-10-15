@@ -13350,6 +13350,100 @@ export interface CanvasTextureResolvers extends Entity {
     expect(resolved).not.toContain('reinterpret_cast');
   });
 
+  it('keeps an imported host-image alias intact for a contextual callable result', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './host-image',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/host-image.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, body: string) => ({
+      packageName: '@flighthq/types',
+      sourceFile: ts.createSourceFile(`/flight/packages/types/src/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          'host-image.ts',
+          `export type HostImageSource = CanvasImageSource;
+           export interface CanvasTextureResolvers { readonly marker: string; }
+           export interface Texture { readonly dimension: string; }
+           export type CanvasTextureResolver = (
+             resolvers: CanvasTextureResolvers,
+             texture: Readonly<Texture>,
+           ) => HostImageSource | null;`,
+        ),
+        source(
+          'consumer.ts',
+          `import type {
+             CanvasTextureResolver,
+             CanvasTextureResolvers,
+             HostImageSource,
+             Texture,
+           } from './host-image';
+           export function resolveCanvasTexture(
+             resolver: CanvasTextureResolver,
+             resolvers: CanvasTextureResolvers,
+             texture: Readonly<Texture>,
+           ): HostImageSource | null {
+             return resolver(resolvers, texture);
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+    const imageSources = [
+      'CanvasImageSource',
+      'HTMLImageElement',
+      'HTMLVideoElement',
+      'ImageBitmap',
+      'OffscreenCanvas',
+      'SVGImageElement',
+      'VideoFrame',
+    ];
+    const externalBindings = {
+      bindings: [
+        ...imageSources.map((sourceName) => ({
+          headers: ['host/image.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName,
+          space: 'type' as const,
+          targetName: 'host::ImageSource',
+        })),
+        {
+          headers: ['host/canvas.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'HTMLCanvasElement',
+          space: 'type' as const,
+          targetName: 'host::CanvasSurface',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: { externalBindings, runtimeProfile: 'flight-cpp' },
+    });
+    const consumer = results.find((result) => result.module.source.endsWith('consumer.ts'))!;
+    const contents = session.emitModule(consumer.module)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(contents).toContain('return resolver(resolvers,');
+    expect(contents).toContain('std::optional<flight::Ref<flighthq_types::HostImageSource>>');
+    expect(contents).not.toContain('std::variant');
+    expect(contents).not.toContain('HTMLImageElement');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('static_cast');
+    expect(contents).not.toContain('reinterpret_cast');
+  });
+
   it('separates MeshGeometry index input absence from required nullable live storage', () => {
     // The two typed-array widths are runtime-native value alternatives. Required null and optional
     // undefined each need one outer absence, while the current optional-nullable construction input needs

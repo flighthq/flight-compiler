@@ -167,6 +167,103 @@ describe('createCppUnionRepresentationPlan', () => {
     expect(unproven).toMatchObject({ kind: 'refused', reason: 'distinctRuntimeDomainsShareTargetType' });
   });
 
+  it('preserves only imported aliases that contain a same-target union collision', () => {
+    const resolver = namedImportedAlias('CanvasTextureResolver');
+    const hostImage = namedImportedAlias('HostImageSource');
+    const canvasImage = namedAmbient('CanvasImageSource');
+    const textureSource = namedImportedAlias('TextureSourceValue');
+    const kind = namedImportedAlias('TextureSourceKind');
+    if (
+      resolver.reference.kind !== 'binding' ||
+      hostImage.reference.kind !== 'binding' ||
+      textureSource.reference.kind !== 'binding' ||
+      kind.reference.kind !== 'binding'
+    ) {
+      throw new Error('Expected imported aliases');
+    }
+    const aliases = new Map<string, Readonly<IrType>>([
+      [
+        resolver.reference.binding.id,
+        {
+          kind: 'function',
+          parameters: [],
+          returns: union(hostImage, { kind: 'null' }),
+          typeParameters: [],
+        },
+      ],
+      [hostImage.reference.binding.id, canvasImage],
+      [textureSource.reference.binding.id, union(namedAmbient('Bitmap'), namedAmbient('ImageResource'))],
+      [kind.reference.binding.id, primitive('string')],
+    ]);
+    const target = (type: Readonly<IrType>): string => {
+      if (type === resolver) return 'flighthq_types::CanvasTextureResolver';
+      if (type === textureSource) return 'flighthq_types::TextureSourceValue';
+      if (type.kind === 'named' && type.reference.kind === 'ambient') {
+        return type.reference.name === 'Bitmap' || type.reference.name === 'ImageResource'
+          ? `flighthq_types::${type.reference.name}`
+          : 'host::ImageSource';
+      }
+      return getTargetType(type);
+    };
+
+    expect(
+      createPlan(
+        union(resolver, { kind: 'undefined' }),
+        aliases,
+        target,
+        () => undefined,
+        (type) =>
+          type.kind === 'named' && type.reference.kind === 'ambient' && type.reference.name === 'CanvasImageSource',
+      ),
+    ).toMatchObject({
+      kind: 'optionalSingle',
+      valueSlots: [{ runtimeType: resolver, targetType: 'flighthq_types::CanvasTextureResolver' }],
+    });
+    expect(createPlan(union(textureSource, { kind: 'null' }), aliases, target)).toMatchObject({
+      kind: 'optionalVariant',
+      valueSlots: [
+        { runtimeType: namedAmbient('Bitmap'), targetType: 'flighthq_types::Bitmap' },
+        { runtimeType: namedAmbient('ImageResource'), targetType: 'flighthq_types::ImageResource' },
+      ],
+    });
+    expect(createPlan(union(kind, primitive('string')), aliases, target)).toMatchObject({
+      kind: 'singleValue',
+      valueSlots: [{ runtimeType: primitive('string'), targetType: 'std::string' }],
+    });
+  });
+
+  it('terminates on a self-referential imported callable alias it cannot keep as a carrier', () => {
+    const self = namedImportedAlias('SelfRecursive');
+    if (self.reference.kind !== 'binding') throw new Error('Expected an imported alias');
+    const aliases = new Map<string, Readonly<IrType>>([
+      [
+        self.reference.binding.id,
+        {
+          kind: 'function',
+          parameters: [],
+          returns: union(self, { kind: 'null' }),
+          typeParameters: [],
+        },
+      ],
+    ]);
+
+    // The walk reaches its own return union again, and answers "no collision" for the shape it is
+    // already deciding rather than recursing through it. Nothing here is an ABI carrier, so the
+    // callable still flattens to the one value alternative the outer optional stores.
+    expect(
+      createPlan(
+        union(self, { kind: 'null' }),
+        aliases,
+        () => 'Carrier',
+        () => undefined,
+        () => false,
+      ),
+    ).toMatchObject({
+      kind: 'optionalSingle',
+      valueSlots: [{ runtimeType: { kind: 'function' }, targetType: 'Carrier' }],
+    });
+  });
+
   it('returns order-independent deeply immutable evidence without changing caller input', () => {
     const firstInput = union(primitive('string'), { kind: 'undefined' }, primitive('number'));
     const secondInput = union(primitive('number'), primitive('string'), { kind: 'undefined' });
@@ -191,10 +288,16 @@ function createPlan(
   aliases: ReadonlyMap<string, Readonly<IrType>> = new Map(),
   resolveTargetType: (type: Readonly<IrType>) => string = getTargetType,
   resolveRuntimeDomain: (type: Readonly<IrType>) => Readonly<IrType> | undefined = () => undefined,
+  isExactAbiCarrier?: (type: Readonly<IrType>) => boolean,
 ) {
   return createCppUnionRepresentationPlan(type, {
+    ...(isExactAbiCarrier ? { isExactAbiCarrier } : {}),
     resolveAliasTarget(typeReference) {
-      return typeReference.reference.kind === 'binding' ? aliases.get(typeReference.reference.binding.id) : undefined;
+      return aliases.get(
+        typeReference.reference.kind === 'binding'
+          ? typeReference.reference.binding.id
+          : `ambient:${typeReference.reference.name}`,
+      );
     },
     resolveRuntimeDomain,
     resolveTargetType,
@@ -236,6 +339,29 @@ function namedAlias(name: string): IrTypeReference {
         packageName: '@flighthq/example',
         scope: 'module',
         source: 'types.ts',
+        space: 'type',
+      },
+      kind: 'binding',
+      path: [],
+    },
+    typeArguments: [],
+  };
+}
+
+function namedImportedAlias(name: string): IrTypeReference {
+  return {
+    kind: 'named',
+    reference: {
+      binding: {
+        column: 1,
+        fingerprint: `sha256:${name}`,
+        id: `import:${name}`,
+        kind: 'import',
+        line: 1,
+        name,
+        packageName: '@flighthq/consumer',
+        scope: 'module',
+        source: 'consumer.ts',
         space: 'type',
       },
       kind: 'binding',
