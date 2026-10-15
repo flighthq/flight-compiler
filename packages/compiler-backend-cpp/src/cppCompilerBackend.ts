@@ -1573,9 +1573,14 @@ function collectCppEarlyForwardDeclarationCpp(
     default:
       return;
   }
-  // `getCppDirectBindingOwner` deliberately excludes import bindings, and an imported alias is
-  // exactly the case this walk exists for, so an import resolves through its own owner index.
-  const owner = getCppDirectBindingOwner(type, context) ?? getCppImportedBindingDeclarationCpp(type, context);
+  // `getCppDirectBindingOwner` deliberately excludes import bindings. A direct import resolves from
+  // the current module, while an alias expansion can expose the import bindings owned by the alias's
+  // declaring module. Those nested bindings use the session-wide owner index: the current module never
+  // wrote their import specifiers, but the emitted early alias still names their exact owners.
+  const owner =
+    getCppDirectBindingOwner(type, context) ??
+    getCppImportedBindingDeclarationCpp(type, context) ??
+    getCppReexportedImportedBindingDeclarationCpp(type, context);
   if (owner && getCppModuleIdentityKey(owner.module) !== getCppModuleIdentityKey(context.module)) {
     if (owner.declaration.kind === 'typeAlias') {
       const key = `${getCppModuleIdentityKey(owner.module)}\0${owner.declaration.binding.id}`;

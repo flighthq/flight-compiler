@@ -33828,6 +33828,225 @@ Resolver make_resolver(TextureRef texture) {
     expect(a.indexOf(forward)).toBeLessThan(a.indexOf(include));
   });
 
+  // This is an acyclic source graph: early publication, rather than an import cycle, is what moves
+  // Faces above its include. The nested import bindings belong to sourceValue.ts, not texture.ts.
+  it('forward declares nested imported union owners across an acyclic three-module chain', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './sources.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/sources.ts' },
+        },
+        {
+          specifier: './sourceValue.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/sourceValue.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/sources.ts',
+            `export interface Source { readonly kind: string }
+             export interface Bitmap extends Source { readonly bytes: Uint8Array }
+             export interface Image extends Source { readonly url: string }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/sourceValue.ts',
+            `import type { Bitmap, Image, Source } from './sources.js';
+             export type SourceValue = Source | Bitmap | Image;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/texture.ts',
+            `import type { SourceValue } from './sourceValue.js';
+             export type Faces = readonly [
+               SourceValue | null,
+               SourceValue | null,
+               SourceValue | null,
+               SourceValue | null,
+               SourceValue | null,
+               SourceValue | null
+             ];`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const texture = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    }).emitModule(modules[2]!)[0]!.contents;
+    const include = texture.indexOf('#include "source_value.hpp"');
+
+    expect(include).toBeGreaterThan(-1);
+    expect(texture.indexOf('using Faces =')).toBeLessThan(include);
+    for (const name of ['Bitmap', 'Image', 'Source']) {
+      const forward = `namespace flighthq_types { struct ${name}; }`;
+      expect(texture.indexOf(forward)).toBeGreaterThan(-1);
+      expect(texture.indexOf(forward)).toBeLessThan(include);
+      // Six tuple slots reach the same union, but exact declaration identity publishes each owner once.
+      expect(texture.split(forward)).toHaveLength(2);
+    }
+  });
+
+  it('does not guess a nested imported owner when module identity is indeterminate', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './sources-a.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/sources-a.ts' },
+        },
+        {
+          specifier: './sources-b.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/sources-b.ts' },
+        },
+        {
+          specifier: './barrel.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/barrel.ts' },
+        },
+        {
+          specifier: './sourceValue.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/sourceValue.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/sources-a.ts',
+            'export interface Source { readonly first: number }',
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/sources-b.ts',
+            'export interface Source { readonly second: number }',
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/barrel.ts',
+            `export type { Source } from './sources-a.js';
+             export type { Source } from './sources-b.js';`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/sourceValue.ts',
+            `import type { Source } from './barrel.js';
+             export type SourceValue = Source | null;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/texture.ts',
+            `import type { SourceValue } from './sourceValue.js';
+             export type Faces = readonly [SourceValue, SourceValue];`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[4]!));
+
+    expect(failure.rule).toBe('cpp-imported-binding-no-export-target');
+    expect(failure.message).toContain('requires one exact exported declaration owner');
+  });
+
+  it('does not invent a forward declaration for an unresolved nested import', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './sourceValue.js',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/sourceValue.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/sourceValue.ts',
+            `import type { Source } from './missing.js';
+             export type SourceValue = Source | null;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/texture.ts',
+            `import type { SourceValue } from './sourceValue.js';
+             export type Faces = readonly [SourceValue, SourceValue];`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const failure = captureBackendEmissionFailure(() => session.emitModule(modules[1]!));
+
+    expect(failure.rule).toBe('cpp-imported-binding-no-export-target');
+    expect(failure.message).toContain('requires one exact exported declaration owner');
+  });
+
   it('publishes a cyclic alias after opening an imported alias chain', () => {
     const moduleResolution: CompilerModuleResolutionPlan = {
       edges: [
