@@ -29486,6 +29486,43 @@ function emitCppOptionalVariantCommonPropertyExpressionCpp(
   return `([&]() -> std::optional<${evidence.payloadTargetType}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver.has_value()) return std::nullopt; return std::visit([](const auto& value) { return ${projected}; }, optional_chain_receiver.value()); }())`;
 }
 
+// A syntactic optional chain still tests its receiver at run time when the checker proves the declared type
+// present. A Flight reference can nevertheless be null when a hand-built owner omits that reference. Preserve
+// the test only when the member's existing undefined carrier can also carry the chain's missing-receiver result;
+// a required or null-only member would need a wider result representation instead.
+function emitCppDeclaredPresentReferenceChainCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  const receiverType = getIrExpressionTypeEvidenceCpp(expression.object, context);
+  if (
+    !receiverType ||
+    hasIrTypeAbsentMember(receiverType) ||
+    !hasFlightReferenceRepresentationCpp(receiverType, context)
+  ) {
+    return undefined;
+  }
+  const memberType = getIrObjectPropertyTypeCpp(receiverType, expression.name, context);
+  const memberUnion = memberType ? getIrUnionTypeCpp(memberType, context, new Set()) : undefined;
+  const memberPlan = memberUnion ? getCppUnionRepresentationPlan(memberUnion, context) : undefined;
+  if (
+    memberPlan?.kind !== 'optionalSingle' ||
+    memberPlan.valueSlots.length !== 1 ||
+    memberPlan.sentinels.null !== 'absent' ||
+    memberPlan.sentinels.undefined !== 'optionalAbsence'
+  ) {
+    return undefined;
+  }
+  const receiver = emitExpression(expression.object, context);
+  const member = getCppProjectedMemberNameCpp(expression, context);
+  // Requiring the ordinary access to have this exact spelling excludes structural rows, variant projections,
+  // accessors, and every other lane whose owner or operation is not this same reference member read.
+  if (emitExpression({ ...expression, optional: false }, context) !== `${receiver}->${member}`) return undefined;
+  context.includes.add('optional');
+  return `([&]() -> std::optional<${memberPlan.valueSlots[0]!.targetType}> { auto optional_chain_receiver = ${receiver}; if (!optional_chain_receiver) return std::nullopt; return optional_chain_receiver->${member}; }())`;
+}
+
 function emitOptionalPropertyExpressionCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
@@ -29498,6 +29535,8 @@ function emitOptionalPropertyExpressionCpp(
     getCppRuntimeProfile(context.options) === 'flight-cpp' &&
     hasIndexedRuntimeReceiverCpp(expression.object, context);
   if (semantics.receiverNullish === 'excluded' && !indexesRuntimeCollection) {
+    const declaredPresentReference = emitCppDeclaredPresentReferenceChainCpp(expression, context);
+    if (declaredPresentReference) return declaredPresentReference;
     return emitExpression({ ...expression, optional: false }, context);
   }
   const commonVariantProperty = emitCppOptionalVariantCommonPropertyExpressionCpp(expression, context);
