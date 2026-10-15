@@ -396,6 +396,174 @@ describe('compileCompilerCommandLineRequest', () => {
   });
 });
 
+describe('compileCompilerCommandLineRequest C ABI output', () => {
+  it('leaves ordinary C++ output unchanged when disabled and emits one elected package header and adapter', () => {
+    const input = [source('scale.ts', 'export function scale(value: number): number { return value * 2; }')];
+    const ordinaryFiles = new Map<string, string>();
+    const ordinaryOut: string[] = [];
+    const cAbiFiles = new Map<string, string>();
+    const cAbiOut: string[] = [];
+
+    const ordinary = compileCompilerCommandLineRequest(
+      { argv: ['/src', '--target', 'cpp', '--out', '/ordinary'] },
+      capabilities(input, ordinaryFiles, ordinaryOut),
+    );
+    const cAbi = compileCompilerCommandLineRequest(
+      {
+        argv: [
+          '/src',
+          '--target',
+          'cpp',
+          '--out',
+          '/c-abi',
+          '--package',
+          '@flight/geometry',
+          '--c-abi',
+          'include/geometry_c.h',
+        ],
+      },
+      capabilities(input, cAbiFiles, cAbiOut),
+    );
+
+    expect(ordinary).toEqual({ emitted: 1, exitCode: 0, refusals: [] });
+    expect([...ordinaryFiles.keys()]).toEqual(['/ordinary/scale.hpp']);
+    expect(ordinaryOut).toEqual(['1 module(s) emitted, 0 refused.\n']);
+    expect(cAbi).toEqual(ordinary);
+    expect(cAbiOut).toEqual(ordinaryOut);
+    expect([...cAbiFiles.keys()].sort()).toEqual([
+      '/c-abi/include/geometry_c.cpp',
+      '/c-abi/include/geometry_c.h',
+      '/c-abi/scale.hpp',
+    ]);
+    expect(cAbiFiles.get('/c-abi/include/geometry_c.h')).toContain(
+      'flight_cpp_status flight_cpp_scale(double value, double* out_result);',
+    );
+    expect(cAbiFiles.get('/c-abi/include/geometry_c.cpp')).toContain('#include <include/geometry_c.h>');
+  });
+
+  it('accepts one explicit package-local adapter identity', () => {
+    const written = new Map<string, string>();
+
+    const result = compileCompilerCommandLineRequest(
+      {
+        argv: [
+          '/src',
+          '--target',
+          'cpp',
+          '--out',
+          '/out',
+          '--c-abi',
+          'include/source_c.h',
+          '--c-abi-adapter',
+          'generated/source_c.cpp',
+        ],
+      },
+      capabilities([source('value.ts', 'export function value(): number { return 1; }')], written, []),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect([...written.keys()].sort()).toEqual([
+      '/out/generated/source_c.cpp',
+      '/out/include/source_c.h',
+      '/out/value.hpp',
+    ]);
+  });
+
+  it('rejects non-C++ selection, missing values, and an adapter without its selector', () => {
+    const errors: string[] = [];
+    const invalidRequests = [
+      ['/src', '--target', 'haxe', '--out', '/out', '--c-abi', 'include/source_c.h'],
+      ['/src', '--target', 'rust', '--out', '/out', '--c-abi', 'include/source_c.h'],
+      ['/src', '--target', 'cpp', '--out', '/out', '--c-abi'],
+      ['/src', '--target', 'cpp', '--out', '/out', '--c-abi-adapter'],
+      ['/src', '--target', 'cpp', '--out', '/out', '--c-abi-adapter', 'generated/source_c.cpp'],
+    ];
+
+    for (const argv of invalidRequests) {
+      const result = compileCompilerCommandLineRequest(
+        { argv },
+        { ...capabilities([], new Map(), []), writeError: (text) => errors.push(text) },
+      );
+      expect(result.exitCode).toBe(2);
+    }
+
+    expect(errors.filter((error) => error.includes('require --target cpp'))).toHaveLength(2);
+    expect(errors.join('')).toContain('--c-abi requires a value');
+    expect(errors.join('')).toContain('--c-abi-adapter requires a value');
+    expect(errors.join('')).toContain('--c-abi-adapter requires --c-abi');
+  });
+
+  it('rejects unsafe, wrongly suffixed, and conflicting package output identities before compiling', () => {
+    const cases: readonly (readonly [readonly string[], string])[] = [
+      [['--c-abi', '../source_c.h'], '--c-abi must name a safe package-local .h path'],
+      [['--c-abi', '/source_c.h'], '--c-abi must name a safe package-local .h path'],
+      [['--c-abi', 'generated\\source_c.h'], '--c-abi must name a safe package-local .h path'],
+      [['--c-abi', 'generated/source_c.hpp'], '--c-abi must name a safe package-local .h path'],
+      [
+        ['--c-abi', 'include/source_c.h', '--c-abi-adapter', '../source_c.cpp'],
+        '--c-abi-adapter must name a safe package-local .cpp path',
+      ],
+      [
+        ['--c-abi', 'include/source_c.h', '--c-abi-adapter', 'generated/source_c.cc'],
+        '--c-abi-adapter must name a safe package-local .cpp path',
+      ],
+      [
+        ['--c-abi', 'include/SOURCE_C.h', '--c-abi-adapter', 'include/source_c.h'],
+        '--c-abi and --c-abi-adapter must name different output paths',
+      ],
+    ];
+
+    for (const [options, expected] of cases) {
+      const errors: string[] = [];
+      const result = compileCompilerCommandLineRequest(
+        { argv: ['/src', '--target', 'cpp', '--out', '/out', ...options] },
+        { ...capabilities([], new Map(), []), writeError: (text) => errors.push(text) },
+      );
+
+      expect(result.exitCode).toBe(2);
+      expect(errors.join('')).toContain(expected);
+    }
+  });
+
+  it('keeps the full semantic package in C ABI finalization when emit-path narrows module output', () => {
+    const written = new Map<string, string>();
+    const result = compileCompilerCommandLineRequest(
+      {
+        argv: [
+          '/src',
+          '--target',
+          'cpp',
+          '--out',
+          '/out',
+          '--emit-path',
+          'Selected.ts',
+          '--c-abi',
+          'include/source_c.h',
+        ],
+      },
+      capabilities(
+        [
+          source('Selected.ts', 'export function selected(value: number): number { return value; }'),
+          source('Unselected.ts', 'export function unselected(value: boolean): boolean { return value; }'),
+        ],
+        written,
+        [],
+      ),
+    );
+
+    expect(result).toMatchObject({ emitted: 1, exitCode: 0, refusals: [] });
+    expect([...written.keys()].sort()).toEqual([
+      '/out/include/source_c.cpp',
+      '/out/include/source_c.h',
+      '/out/selected.hpp',
+    ]);
+    expect(written.get('/out/include/source_c.h')).toContain('flight_cpp_selected');
+    expect(written.get('/out/include/source_c.h')).toContain('flight_cpp_unselected');
+    expect(written.get('/out/include/source_c.cpp')).toContain('flighthq_source::selected');
+    expect(written.get('/out/include/source_c.cpp')).toContain('flighthq_source::unselected');
+  });
+});
+
 describe('createCompilerCommandLineReport', () => {
   it('groups modules by the reason they were refused, most-blocking first', () => {
     const report = createCompilerCommandLineReport(1, [
@@ -555,6 +723,8 @@ describe('getCompilerCommandLineUsage', () => {
     expect(usage).toContain('--package');
     expect(usage).toContain('--runtime-header');
     expect(usage).toContain('--runtime-profile');
+    expect(usage).toContain('--c-abi');
+    expect(usage).toContain('--c-abi-adapter');
     expect(usage).toContain('--best-effort');
     expect(usage).toContain('--emit-path');
     expect(usage).toContain('--progress');

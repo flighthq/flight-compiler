@@ -6,7 +6,7 @@ import {
 } from '../../compiler-backend-cpp/src/index.js';
 import { createHaxeCompilerBackend } from '../../compiler-backend-hx/src/index.js';
 import { createRustCompilerBackend } from '../../compiler-backend-rs/src/index.js';
-import { compareTextCodeUnits } from '../../compiler-canonical-form/src/index.js';
+import { compareTextCodeUnits, normalizePathPortable } from '../../compiler-canonical-form/src/index.js';
 import {
   compareCompilerPackageCheckBaseline,
   createCompilerPackageCheckPolicyResult,
@@ -38,6 +38,7 @@ import type {
   CompilerPackageCheckBaseline,
   CompilerPackageCheckProvenance,
   CompilerPackageCheckReport,
+  CppCompilerCAbiOutput,
   CppCompilerExternalBinding,
   CppCompilerExternalBindingManifest,
   FlightPackageEligibilitySubsetExcludedRoot,
@@ -72,6 +73,7 @@ export function compileCompilerCommandLineRequest(
         }
       : parsed.target === 'cpp'
         ? {
+            ...(parsed.cAbi === undefined ? {} : { cAbi: parsed.cAbi }),
             runtimeProfile: parsed.runtimeProfile,
             ...(parsed.runtimeHeader === undefined ? {} : { runtimeHeader: parsed.runtimeHeader }),
           }
@@ -413,6 +415,8 @@ const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp
   --root-package <name>   Root package for Haxe output (default: the target's own)
   --runtime-profile <id>  C++ runtime profile: flight-cpp or standard-library (default: flight-cpp)
   --runtime-header <path> Override the flight-cpp runtime include spelling
+  --c-abi <header>        Emit a package C ABI header and C++ adapter
+  --c-abi-adapter <path>  Override the adapter path (default: the C ABI header stem plus .cpp)
   --best-effort           Emit every module that lowered, plus a replaceable stub where one refused
   --emit-path <prefixes>  Emit only modules under these source-path prefixes (comma separated)
   --progress              Write bounded package-compilation progress as JSON Lines to stderr
@@ -420,6 +424,7 @@ const commandLineUsage = `Usage: flight-compile <source-directory> --target <cpp
 
 interface ParsedCompilerCommandLineRequest {
   readonly bestEffort: boolean;
+  readonly cAbi?: Readonly<CppCompilerCAbiOutput> | undefined;
   readonly emitPathPrefixes?: readonly string[] | undefined;
   readonly emissionMode: HaxeCompilerEmissionMode;
   readonly outputDirectory: string;
@@ -504,12 +509,47 @@ function parseCompilerCommandLineRequest(
           : '--runtime-header must be a portable quoted-include path',
     };
   }
+  const cAbiHeaderPath = named.get('c-abi');
+  const configuredCAbiAdapterPath = named.get('c-abi-adapter');
+  if ((cAbiHeaderPath !== undefined || configuredCAbiAdapterPath !== undefined) && target !== 'cpp') {
+    return { failure: '--c-abi and --c-abi-adapter require --target cpp' };
+  }
+  if (configuredCAbiAdapterPath !== undefined && cAbiHeaderPath === undefined) {
+    return { failure: '--c-abi-adapter requires --c-abi' };
+  }
+  const cAbiAdapterPath =
+    cAbiHeaderPath === undefined
+      ? undefined
+      : (configuredCAbiAdapterPath ?? `${cAbiHeaderPath.slice(0, -'.h'.length)}.cpp`);
+  if (
+    cAbiHeaderPath !== undefined &&
+    cAbiAdapterPath !== undefined &&
+    getCompilerCommandLineOutputIdentity(cAbiHeaderPath) === getCompilerCommandLineOutputIdentity(cAbiAdapterPath)
+  ) {
+    return { failure: '--c-abi and --c-abi-adapter must name different output paths' };
+  }
+  if (cAbiHeaderPath !== undefined && !isPortablePackageOutputPath(cAbiHeaderPath, '.h')) {
+    return { failure: '--c-abi must name a safe package-local .h path' };
+  }
+  if (cAbiAdapterPath !== undefined && !isPortablePackageOutputPath(cAbiAdapterPath, '.cpp')) {
+    return { failure: '--c-abi-adapter must name a safe package-local .cpp path' };
+  }
+  const packageName = named.get('package') ?? '@local/source';
   return {
     bestEffort,
+    ...(cAbiHeaderPath === undefined || cAbiAdapterPath === undefined
+      ? {}
+      : {
+          cAbi: {
+            adapterSourcePath: cAbiAdapterPath,
+            headerPath: cAbiHeaderPath,
+            packageName,
+          },
+        }),
     ...(emitPathPrefixes.length === 0 ? {} : { emitPathPrefixes }),
     emissionMode,
     outputDirectory,
-    packageName: named.get('package') ?? '@local/source',
+    packageName,
     progress,
     reportOnly,
     ...(rootPackage === undefined ? {} : { rootPackage }),
@@ -524,7 +564,34 @@ function isPortableIncludePath(value: string): boolean {
   return value.length > 0 && !value.includes('\\') && !/["<>\r\n]/u.test(value);
 }
 
+function isPortablePackageOutputPath(value: string, extension: '.cpp' | '.h'): boolean {
+  const normalized = normalizePathPortable(value).normalize('NFC');
+  return (
+    value === normalized &&
+    normalized.endsWith(extension) &&
+    normalized.split('/').every((segment) => !isUnsafePackageOutputPathSegment(segment))
+  );
+}
+
+function isUnsafePackageOutputPathSegment(segment: string): boolean {
+  return (
+    segment.length === 0 ||
+    segment === '.' ||
+    segment === '..' ||
+    [...segment].some((character) => character.codePointAt(0)! <= 0x1f) ||
+    /[<>:"|?*]/u.test(segment) ||
+    /[ .]$/u.test(segment) ||
+    /^(?:AUX|COM[1-9]|CON|LPT[1-9]|NUL|PRN)(?:\..*)?$/iu.test(segment)
+  );
+}
+
+function getCompilerCommandLineOutputIdentity(value: string): string {
+  return normalizePathPortable(value).normalize('NFC').toLowerCase();
+}
+
 const commandLineValueOptions = new Set([
+  '--c-abi',
+  '--c-abi-adapter',
   '--emission-mode',
   '--emit-path',
   '--out',
