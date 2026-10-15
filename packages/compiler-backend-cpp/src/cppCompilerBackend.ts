@@ -4083,6 +4083,8 @@ function emitExpression(
     case 'call': {
       const objectCreated = emitCppObjectCreateCpp(expression, expectedType, context);
       if (objectCreated) return objectCreated;
+      const closedKeyMemberCall = emitCppClosedKeyExternalMemberCallCpp(expression, context);
+      if (closedKeyMemberCall) return closedKeyMemberCall;
       const variantArrayPredicate = emitCppVariantArrayPredicateCpp(expression, context);
       if (variantArrayPredicate) return variantArrayPredicate;
       const variantPropertyArrayPredicate = emitCppVariantPropertyArrayPredicateCpp(expression, context);
@@ -14352,6 +14354,107 @@ function getCppClosedKeyElementWriteTypeCpp(
   }
   const { members } = getCppClosedKeyElementMembersCpp(expression, keys, context);
   return createIrTypeEvidenceUnionCpp(keys.map((key) => members.get(key)!.type));
+}
+
+// `sink[key](message)` where `key` is a finite set of string literals and `sink` is an ambient value space
+// the profile binds with declared members: each key names one C++ member target, so the call dispatches to
+// it. Nothing here knows which ambient value it is -- the binding decides that -- and no dynamic property
+// access is emitted: the key selects among the members the profile already names.
+//
+// The lane is narrow on purpose, and each narrowing is a fact it cannot prove:
+//  - the key set must be CLOSED. An open `string` proves no member set at all, so it keeps the path and the
+//    refusal it had.
+//  - every key must name a DECLARED member target. A key that reaches an undeclared member would decide at
+//    runtime what this lane has to decide while emitting.
+//  - the call's result must be void, which is what makes the targets interchangeable: a non-void result
+//    would need one C++ type every selected member returns.
+//  - the call must pass exactly one message argument that is provably a string (or a template literal,
+//    which always is). A member binding states a target and, at most, a result type -- it cannot state a
+//    parameter contract -- so the lane forwards the one argument shape a bound value-space member is
+//    declared to take and refuses every other arity or type rather than emitting a call the target may not
+//    accept.
+// What it does preserve is evaluation: the receiver is not re-evaluated (it is the ambient symbol), and the
+// key and the argument are each evaluated once, in source order, before the dispatch. A key outside the
+// proven set can only arrive through unsound typing; it calls no target and throws the TypeError JavaScript
+// raises when a value is not a function.
+function emitCppClosedKeyExternalMemberCallCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  const callee = expression.callee;
+  if (
+    getCppRuntimeProfile(context.options) !== 'flight-cpp' ||
+    expression.optional ||
+    callee.kind !== 'element' ||
+    callee.object.kind !== 'identifier' ||
+    callee.object.reference.kind !== 'ambient'
+  ) {
+    return undefined;
+  }
+  const sourceName = callee.object.reference.name;
+  const profile = getCppRuntimeProfile(context.options);
+  if (!getCompilerExternalBindingEvidenceCpp(sourceName, 'value', context.options.externalBindings)) return undefined;
+  const keys = getCppClosedElementKeyNamesCpp(callee, context);
+  if (!keys || keys.length === 0) return undefined;
+  const targets = keys.map((key) =>
+    getCompilerRuntimeExternalMemberTargetCpp(sourceName, key, profile, context.options.externalBindings),
+  );
+  const unbound = keys.filter((_, index) => targets[index] === undefined);
+  if (unbound.length > 0) {
+    emissionError(
+      context,
+      `finite-key call ${sourceName}[key](...) selects ${unbound.join(', ')}, which the external binding for ${sourceName} does not declare as members; every key in the proven set must name a bound member target`,
+      'cpp-closed-key-external-member-unbound',
+    );
+  }
+  const result = getIrExpressionTypeEvidenceCpp(expression, context);
+  if (result === undefined || !(result.kind === 'primitive' && result.name === 'void')) {
+    emissionError(
+      context,
+      `finite-key call ${sourceName}[key](...) is lowered only when its result is void; a non-void result would need one C++ type every selected member returns`,
+      'cpp-closed-key-external-member-result',
+    );
+  }
+  if (expression.typeArguments.length > 0) {
+    emissionError(
+      context,
+      `finite-key call ${sourceName}[key](...) is lowered from the selected members' own targets and takes no type arguments; this call passes ${expression.typeArguments.length}`,
+      'cpp-closed-key-external-member-type-arguments',
+    );
+  }
+  if (expression.arguments.some((argument) => argument.kind === 'spread')) {
+    emissionError(
+      context,
+      `finite-key call ${sourceName}[key](...) with a spread argument requires argument-pack lowering`,
+      'cpp-closed-key-external-member-spread',
+    );
+  }
+  const [message] = expression.arguments;
+  const messageType =
+    message && message.kind !== 'spread' ? getIrExpressionTypeEvidenceCpp(message, context) : undefined;
+  // A template literal always evaluates to a string, whatever its parts, and carries no separate evidence.
+  const isStringMessage =
+    message?.kind === 'template' ||
+    (messageType !== undefined && isCppStringValueTypeCpp(messageType, context, new Set()));
+  if (expression.arguments.length !== 1 || !isStringMessage) {
+    emissionError(
+      context,
+      `finite-key call ${sourceName}[key](...) forwards exactly one string message to its bound members; this call passes ${String(expression.arguments.length)} argument(s)${expression.arguments.length === 1 ? ' of a non-string type' : ''}, which no bound member target accepts`,
+      'cpp-closed-key-external-member-arguments',
+    );
+  }
+  addCppExternalBindingHeaders(sourceName, 'value', context);
+  context.includes.add('flight/error.hpp');
+  const key = getGeneratedTargetName('memberKey', context);
+  const argumentNames = expression.arguments.map(() => getGeneratedTargetName('memberArgument', context));
+  const bindings = expression.arguments.map(
+    (argument, index) => `const auto ${argumentNames[index]} = ${emitExpression(argument, context)};`,
+  );
+  const branches = keys.map(
+    (member, index) =>
+      `if (${key} == ${emitLiteral(member, context)}) { ${targets[index]}(${argumentNames.join(', ')}); return; }`,
+  );
+  return `([&]() -> void { const auto ${key} = ${emitExpression(callee.index, context)}; ${bindings.join(' ')} ${branches.join(' ')} throw flight::TypeError(flight::String("${sourceName}[key] is not a function")); }())`;
 }
 
 function emitCppClosedKeyElementSelectionCpp(

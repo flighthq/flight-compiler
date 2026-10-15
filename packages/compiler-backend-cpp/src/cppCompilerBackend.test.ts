@@ -20573,6 +20573,29 @@ consteval auto generated_row_member_type_identity<
   });
 });
 
+// An ambient value-space symbol the profile binds with declared members. Deliberately not a console: the
+// closed-key lane reads the BINDING, so a symbol with this name and these members proves the lane is not
+// keyed on any known host object.
+const hostSinkBinding = {
+  bindings: [
+    {
+      headers: ['host/sink.hpp'],
+      members: [
+        { sourceMember: 'emit', targetName: 'host::sink_emit' },
+        { sourceMember: 'note', targetName: 'host::sink_note' },
+        { sourceMember: 'probe', targetName: 'host::sink_probe' },
+        { sourceMember: 'warn', targetName: 'host::sink_warn' },
+      ],
+      nullability: 'non-null' as const,
+      ownership: 'borrowed' as const,
+      sourceName: 'hostSink',
+      space: 'value' as const,
+      targetName: 'host::sink',
+    },
+  ],
+  schema: 'flight-cpp-external-bindings/1' as const,
+};
+
 describe('emitIrModuleCpp', () => {
   it('places an emission refusal at the declaration being emitted', () => {
     const result = lower(
@@ -23078,6 +23101,114 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
          }`,
       ),
     ).toContain('an erased assertion hides the represented source carrier');
+  });
+
+  // `sink[key](message)` where `key` is a finite set of string literals and `sink` is an ambient value the
+  // profile binds with declared members: the key selects among the members the profile already names, so
+  // the call dispatches to their targets with no dynamic property access anywhere. The symbol below is NOT
+  // a console: the lane reads the binding, so its name and its shape are irrelevant to it.
+  it('dispatches a computed member call over a closed key set to its bound targets', () => {
+    const emitSink = (body: string) =>
+      emitIrModuleCpp(
+        lower(
+          'closed-key-sink.ts',
+          `declare const hostSink: {
+             emit(...data: unknown[]): void; note(...data: unknown[]): void; warn(...data: unknown[]): void;
+             probe(label: string): number;
+           };
+           ${body}`,
+        ).module,
+        { externalBindings: hostSinkBinding, runtimeProfile: 'flight-cpp' },
+      ).contents;
+
+    const family = emitSink(
+      `type Level = 'emit' | 'note' | 'warn';
+       function levelFor(index: number): Level { return index === 0 ? 'emit' : index === 1 ? 'note' : 'warn'; }
+       export function write(index: number, line: string): void { hostSink[levelFor(index)](line); }`,
+    );
+    // Key order is the proven set's order, and every member of it has a branch.
+    for (const member of ['emit', 'note', 'warn'] as const) {
+      expect(family).toContain(`== flight::String("${member}")) { host::sink_${member}(`);
+    }
+    expect(family.indexOf('host::sink_emit(')).toBeLessThan(family.indexOf('host::sink_note('));
+    expect(family.indexOf('host::sink_note(')).toBeLessThan(family.indexOf('host::sink_warn('));
+    // The key is evaluated ONCE, before the argument, and the argument once: JavaScript's own order.
+    expect(family).toMatch(/const auto member_key[^;]*= level_for\(index\); const auto member_argument[^;]*= line;/u);
+    // A key outside the proven set can only come from unsound typing; it calls nothing and throws what
+    // JavaScript throws for calling a value that is not a function.
+    expect(family).toContain('throw flight::TypeError(flight::String("hostSink[key] is not a function"))');
+
+    // A subset selected by a conditional key dispatches only the members it can reach.
+    const subset = emitSink(
+      `export function report(severe: boolean, line: string): void { hostSink[severe ? 'note' : 'warn'](line); }`,
+    );
+    expect(subset).toContain('host::sink_note(');
+    expect(subset).toContain('host::sink_warn(');
+    expect(subset).not.toContain('host::sink_emit(');
+
+    // A template literal is always a string, so it forwards like any other message.
+    expect(
+      emitSink(
+        "export function tagged(level: 'note' | 'warn', tag: string, n: number): void { hostSink[level](`[${tag}] ${n}`); }",
+      ),
+    ).toContain('host::sink_note(member_argument');
+
+    // The control: a DIRECT member call is not this lane and stays what it was.
+    expect(emitSink(`export function direct(line: string): void { hostSink.note(line); }`)).toContain(
+      'host::sink_note(line);',
+    );
+  });
+
+  // Every shape the lane cannot prove, each refused by name rather than guessed at.
+  it('refuses a closed-key member call whose members or arguments are not proven', () => {
+    const refusal = (body: string): string => {
+      try {
+        emitIrModuleCpp(
+          lower(
+            'closed-key-sink-refusal.ts',
+            `declare const hostSink: {
+               emit(...data: unknown[]): void; note(...data: unknown[]): void; warn(...data: unknown[]): void;
+               probe(label: string): number;
+             };
+             ${body}`,
+          ).module,
+          { externalBindings: hostSinkBinding, runtimeProfile: 'flight-cpp' },
+        );
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      return '(emitted)';
+    };
+
+    // A key the profile does not declare as a member has no target to dispatch to.
+    expect(refusal(`export function t(k: 'note' | 'missing', line: string): void { hostSink[k](line); }`)).toContain(
+      'selects missing, which the external binding for hostSink does not declare as members',
+    );
+    // A non-void result would need one C++ type every selected member returns.
+    expect(refusal(`export function p(k: 'probe', label: string): number { return hostSink[k](label); }`)).toContain(
+      'is lowered only when its result is void',
+    );
+    // The bound members take one message; any other arity or type is refused rather than forwarded.
+    expect(
+      refusal(`export function two(k: 'note' | 'warn', a: string, b: string): void { hostSink[k](a, b); }`),
+    ).toContain('forwards exactly one string message');
+    expect(refusal(`export function num(k: 'note' | 'warn', value: number): void { hostSink[k](value); }`)).toContain(
+      'of a non-string type',
+    );
+    expect(
+      refusal(`export function spread(k: 'note' | 'warn', lines: [string]): void { hostSink[k](...lines); }`),
+    ).toContain('with a spread argument requires argument-pack lowering');
+    // An OPEN key proves no member set, so the lane never dispatches it -- the ordinary path answers.
+    expect(() =>
+      emitIrModuleCpp(
+        lower(
+          'closed-key-open.ts',
+          `declare const hostSink: { note(line: string): void };
+           export function open(name: keyof typeof hostSink, line: string): void { hostSink[name](line); }`,
+        ).module,
+        { externalBindings: hostSinkBinding, runtimeProfile: 'flight-cpp' },
+      ),
+    ).toThrow();
   });
 
   // `Array.from` copies a runtime sequence into a new array, which is what the runtime's `array_from`
