@@ -2954,9 +2954,14 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
     getCppVariantArrayPredicateEvidenceCpp(variable.initializer.condition, context)
       ? getIrExpressionTypeEvidenceCpp(variable.initializer, context)
       : undefined;
+  const importedAliasCarrierInitializerType =
+    !arrayElement && !variable.mutable && variable.initializer?.kind === 'call'
+      ? getCppImportedAliasCarrierCallResultTypeCpp(variable.initializer, context)
+      : undefined;
   const preservedInitializerType = arrayElement
     ? undefined
     : (context.preservedInitializerTypes.get(variable.binding.id) ??
+      importedAliasCarrierInitializerType ??
       invariantCollectionInitializerType ??
       guardedVariantInitializerType ??
       getCppStructurallyEquivalentInitializerTypeCpp(variable, context) ??
@@ -13451,6 +13456,10 @@ function emitCppPresentBindingStorageValueCpp(
     return `${binding}.value()`;
   }
   const bindingType = getCppBindingTypeCpp(bindingId, context);
+  if (bindingType && getCppOptionalImportedAliasCarrierUnionCpp(bindingType, context)) {
+    context.includes.add('optional');
+    return `${binding}.value()`;
+  }
   const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
   const narrowedType =
@@ -17646,7 +17655,16 @@ function isCppImportedUnionAliasAbiCarrierCpp(
   alias: Readonly<IrType>,
   context: EmitContext,
 ): boolean {
-  if (type.reference.kind !== 'binding' || type.reference.binding.kind !== 'import') return false;
+  if (type.reference.kind !== 'binding') return false;
+  const directOwner = getCppDirectBindingOwner(type, context);
+  if (
+    type.reference.binding.kind !== 'import' &&
+    (!directOwner ||
+      (directOwner.module.packageName === context.module.packageName &&
+        directOwner.module.source === context.module.source))
+  ) {
+    return false;
+  }
   const entryKey = type.reference.binding.id;
   const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
   const visit = (candidate: Readonly<IrType>, resolvingAliases: ReadonlySet<string>, insideUnion = false): boolean => {
@@ -26546,6 +26564,12 @@ function getIrIdentifierTypeEvidenceCpp(
   const bindingId = expression.reference.binding.id;
   const declaredType = getCppBindingTypeCpp(bindingId, context);
   const narrowedType = context.narrowedBindingTypes.get(bindingId) ?? expression.narrowedType;
+  const importedAliasCarrierUnion = declaredType
+    ? getCppOptionalImportedAliasCarrierUnionCpp(declaredType, context)
+    : undefined;
+  if (narrowedType && expression.presence === 'narrowedPresent' && importedAliasCarrierUnion) {
+    return getCppOptionalImportedUnionValueAliasCpp(importedAliasCarrierUnion, context);
+  }
   if (narrowedType) return narrowedType;
   const narrowedPrimitive = getCppNarrowedPrimitiveTypeCpp(expression.narrowedMember);
   if (narrowedPrimitive && isCppErasedDynamicValueTypeCpp(declaredType)) return narrowedPrimitive;
@@ -31002,7 +31026,7 @@ function getCppOptionalImportedUnionValueAliasCpp(
   if (
     value?.kind !== 'named' ||
     value.reference.kind !== 'binding' ||
-    value.reference.binding.kind !== 'import' ||
+    value.reference.binding.kind === 'typeParameter' ||
     !alias ||
     (alias.kind !== 'union' && !isCppImportedUnionAliasAbiCarrierCpp(value, alias, context))
   ) {
@@ -31027,6 +31051,36 @@ function getCppOptionalImportedAliasCarrierUnionCpp(
   );
   if (!absentMembers[0]) return undefined;
   return { kind: 'union', types: [alias, absentMembers[0], ...absentMembers.slice(1)] };
+}
+
+// The immutable storage type an inferred local takes from a call whose declared result is the exact
+// published carrier: the same optional-of-alias the call already returns, so the local stores that
+// value once instead of expanding the source union the carrier replaced.
+function getCppImportedAliasCarrierCallResultTypeCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
+  const returns = calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined;
+  if (!returns) return undefined;
+  const optionalCarrier = getCppOptionalImportedAliasCarrierUnionCpp(returns, context);
+  if (optionalCarrier) return optionalCarrier;
+  if (returns.kind === 'named') {
+    const target = resolveCppTypeAliasTarget(returns, context);
+    return target && isCppImportedUnionAliasAbiCarrierCpp(returns, target, context) ? returns : undefined;
+  }
+  if (returns.kind !== 'union') return undefined;
+  const sentinels = returns.types.filter(
+    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+      member.kind === 'null' || member.kind === 'undefined',
+  );
+  const values = returns.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+  const value = values[0];
+  if (sentinels.length !== 1 || values.length !== 1 || value?.kind !== 'named') return undefined;
+  const target = resolveCppTypeAliasTarget(value, context);
+  return target && isCppImportedUnionAliasAbiCarrierCpp(value, target, context)
+    ? { kind: 'union', types: [value, sentinels[0]!] }
+    : undefined;
 }
 
 // A call whose callee's declared result is the expected carrier alias itself, with the same absence,
