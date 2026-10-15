@@ -13812,7 +13812,14 @@ function emitCppPresenceTestCpp(
       context.includes.add('flight/any.hpp');
       const predicate = strict ? (sentinel === 'null' ? 'is_null' : 'is_undefined') : 'is_nullish';
       const match = `${valueName}.value().${predicate}()`;
-      test = present ? `${outerPresent} && !${match}` : `!${outerPresent} || ${match}`;
+      test =
+        strict && sentinel === 'null'
+          ? present
+            ? `!${outerPresent} || !${match}`
+            : `${outerPresent} && ${match}`
+          : present
+            ? `${outerPresent} && !${match}`
+            : `!${outerPresent} || ${match}`;
     } else if (indexedElement.elementStorage === 'dualSentinel') {
       context.includes.add('variant');
       const sentinels = getCppDualSentinelTargetTypes(context);
