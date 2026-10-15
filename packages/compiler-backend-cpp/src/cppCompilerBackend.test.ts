@@ -54,7 +54,7 @@ function captureBackendEmissionFailure(run: () => unknown) {
 
 // A consumer module that returns something read from a provider package, which is the shape of every
 // record whose declared type is not the one the value arrives as.
-function emitRecordShapeConversionFiles(consumerSource: string) {
+function emitRecordShapeConversionFiles(consumerSource: string, providerDeclarations = '') {
   const moduleResolution: CompilerModuleResolutionPlan = {
     edges: [
       {
@@ -87,7 +87,8 @@ function emitRecordShapeConversionFiles(consumerSource: string) {
            export interface HostBitmapReadbackCapability {
              readBitmap(source: string, width: number, height: number, mode: 'bitmap' | 'probe'): BitmapReadbackOutcome;
            }
-           export function readBitmap(): BitmapReadbackOutcome { return { bitmap: null, reason: 'ok' }; }`,
+           export function readBitmap(): BitmapReadbackOutcome { return { bitmap: null, reason: 'ok' }; }
+           ${providerDeclarations}`,
           ts.ScriptTarget.Latest,
           true,
         ),
@@ -123,8 +124,8 @@ function emitRecordShapeConversionFiles(consumerSource: string) {
   };
 }
 
-function emitRecordShapeConversion(consumerSource: string): string {
-  return emitRecordShapeConversionFiles(consumerSource).consumer.contents;
+function emitRecordShapeConversion(consumerSource: string, providerDeclarations = ''): string {
+  return emitRecordShapeConversionFiles(consumerSource, providerDeclarations).consumer.contents;
 }
 
 function emitCppModuleCppSession(
@@ -20234,6 +20235,46 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     expect(emitted).toContain(
       'return flight::make_ref<BitmapReadbackResolution>(BitmapReadbackResolution{.bitmap = structural_record_source->bitmap, .reason = structural_record_source->reason});',
     );
+  });
+
+  it('normalizes camelCase members when converting between record declarations', () => {
+    const emitted = emitRecordShapeConversion(
+      `import { readCamelRecord } from '@flighthq/types/readback';
+       import type { CamelRecordSource } from '@flighthq/types/readback';
+       interface CamelRecordTarget { readonly firstValue: number; readonly secondValue: string; }
+       export function resolve(source: CamelRecordSource): CamelRecordTarget {
+         return readCamelRecord(source);
+       }`,
+      `export interface CamelRecordSource { readonly firstValue: number; readonly secondValue: string; }
+       export function readCamelRecord(source: CamelRecordSource): CamelRecordSource { return source; }`,
+    );
+
+    expect(emitted).toContain(
+      'CamelRecordTarget{.first_value = structural_record_source->first_value, .second_value = structural_record_source->second_value}',
+    );
+    expect(emitted.match(/flight::types::read_camel_record\(source\)/gu)).toHaveLength(1);
+    expect(emitted).not.toContain('.firstValue');
+    expect(emitted).not.toContain('->firstValue');
+    expect(emitted).not.toContain('.secondValue');
+    expect(emitted).not.toContain('->secondValue');
+  });
+
+  it('normalizes a computed symbol member when converting between record declarations', () => {
+    const emitted = emitRecordShapeConversion(
+      `import { EntityRuntimeKey } from '@flighthq/types/readback';
+       import type { EntityRuntime, EntitySource } from '@flighthq/types/readback';
+       interface EntityTarget { readonly [EntityRuntimeKey]: EntityRuntime | undefined; }
+       export function resolve(source: EntitySource): EntityTarget { return source; }`,
+      `export const EntityRuntimeKey = Symbol.for('EntityRuntime');
+       export interface EntityRuntime { readonly binding: object | null; }
+       export interface EntitySource { readonly [EntityRuntimeKey]: EntityRuntime | undefined; }`,
+    );
+
+    expect(emitted).toContain(
+      'EntityTarget{.entity_runtime_key = structural_record_source->entity_runtime_key}',
+    );
+    expect(emitted).not.toContain('.EntityRuntimeKey');
+    expect(emitted).not.toContain('->EntityRuntimeKey');
   });
 
   it('converts a capability method result to a wider record declaration', () => {

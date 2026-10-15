@@ -7150,7 +7150,10 @@ function createCppStructuralRecordConversionCpp(
   const element = getCppReferenceElementTypeNameCpp(target);
   if (!element) return undefined;
   const sourceName = getGeneratedTargetName('structural_record_source', context);
-  const initializers = members.map((member) => `.${member} = ${sourceName}->${member}`).join(', ');
+  const initializers = members
+    .map((member) => safeCppName(member))
+    .map((member) => `.${member} = ${sourceName}->${member}`)
+    .join(', ');
   return `([&]() -> ${target} { const auto ${sourceName} = ${source}; return flight::make_ref<${element}>(${element}{${initializers}}); }())`;
 }
 
