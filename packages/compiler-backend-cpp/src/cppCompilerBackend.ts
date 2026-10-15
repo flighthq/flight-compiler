@@ -4404,6 +4404,8 @@ function emitExpression(
           ? expression.typeArguments
           : (getCppContextualCallTypeArgumentsCpp(expression, expectedType, context) ?? []);
       const typeArguments = getCppValueRepresentedCallTypeArgumentsCpp(expression, sourceTypeArguments, context);
+      const resolveDomain = getCppPromiseResolveDomainTypeArgumentCpp(expression, expectedType, context);
+      const invocationTypeArguments = resolveDomain ? [...typeArguments, resolveDomain] : typeArguments;
       const args = appendCppOmittedInvocationArguments(
         expression,
         emitCppClosedRestCallArguments(expression, context) ??
@@ -4478,7 +4480,7 @@ function emitExpression(
         : optionalCallable
           ? `${callee}.value()`
           : callee;
-      const invocation = `${invocationTarget}${emitCppTypeArguments(typeArguments, context)}(${args.join(', ')})`;
+      const invocation = `${invocationTarget}${emitCppTypeArguments(invocationTypeArguments, context)}(${args.join(', ')})`;
       const returnType = getIrCallReturnTypeCpp(expression, context);
       const returnUnion = returnType ? getIrUnionTypeCpp(returnType, context, new Set()) : undefined;
       const returnPlan = returnUnion ? getCppUnionRepresentationPlan(returnUnion, context) : undefined;
@@ -23882,6 +23884,59 @@ function emitCppExternalBindingStorageTypeCpp(
 // the members it happens to spell: `Promise.resolve({ reason: 'blocked-scheme' })` returned from a
 // function declared `Promise<ShellExternalOutcome>` built a fresh one-member record and a task over
 // that, which is a different task type from the one the declaration names.
+// The domain a `Promise.resolve(literal)` settlement must carry, where deduction would answer with the
+// literal's own domain instead.
+//
+// The runtime resolver deduces its task type from the value it is handed, so `Promise.resolve(undefined)` in
+// a function that declares `Promise<unknown>` would settle a `Task<flight::Undefined>` -- and the `return`
+// then has no conversion to the `Task<flight::Any>` the declaration states. The settlement must carry the
+// declared domain, so the resolver is given it explicitly, exactly as the source's own
+// `Promise.resolve<T>(x)` already is. Only a literal whose own domain differs from the declared one is
+// affected: a value already written in the declared domain (including a task, which the resolver adopts)
+// keeps the deduction it already has.
+function getCppPromiseResolveDomainTypeArgumentCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  expectedType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (getCppRuntimeProfile(context.options) !== 'flight-cpp') return undefined;
+  if (expression.typeArguments.length > 0) return undefined;
+  const domain = getCppResolvedPromiseArgumentExpectedTypeCpp(expression, 0, expectedType);
+  if (!domain) return undefined;
+  const argument = expression.arguments[0];
+  if (!argument) return undefined;
+  // These written literals are the domains for which deduction can be narrower than the surrounding task.
+  // Other values already arrive in the contextual domain, or are tasks the resolver must adopt unchanged.
+  const nullish = getCppNullishLiteralKind(argument);
+  const ambientUndefined =
+    argument.kind === 'identifier' && argument.reference.kind === 'ambient' && argument.reference.name === 'undefined';
+  if (argument.kind !== 'literal' && nullish === undefined && !ambientUndefined) return undefined;
+  const argumentType = getIrExpressionTypeEvidenceCpp(argument, context);
+  const isolated = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const target = emitType(domain, isolated);
+  // Compare runtime domains rather than source spelling. Primitive literals carry their domain in the value
+  // itself, while nullish literals use the runtime sentinel carriers.
+  const literalDomain =
+    argument.kind === 'literal'
+      ? typeof argument.value === 'number'
+        ? ({ kind: 'primitive', name: 'number' } as const)
+        : typeof argument.value === 'string'
+          ? ({ kind: 'primitive', name: 'string' } as const)
+          : typeof argument.value === 'boolean'
+            ? ({ kind: 'primitive', name: 'boolean' } as const)
+            : undefined
+      : undefined;
+  const argumentDomain = argumentType ? getIrTypeRuntimeDomainCpp(argumentType, context, new Set()) : literalDomain;
+  const argumentEmitted = argumentDomain
+    ? emitType(argumentDomain, isolated)
+    : nullish === 'undefined'
+      ? 'flight::Undefined'
+      : nullish === 'null'
+        ? 'flight::Null'
+        : undefined;
+  return argumentEmitted === undefined || argumentEmitted === target ? undefined : domain;
+}
+
 function getCppResolvedPromiseArgumentExpectedTypeCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
   index: number,
