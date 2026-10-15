@@ -13402,10 +13402,12 @@ function hasCppPresentExpressionStorageProofCpp(expression: Readonly<IrExpressio
   );
 }
 
-// Project the value a presence proof names from the binding's existing carrier. This never rebuilds the
-// owner: optional storage yields its `value()`, while a dual-sentinel variant yields its one proven value
-// alternative. Runtime-owned result locals deliberately need no source union -- their external profile
-// chose the optional carrier, and the guard or explicit non-null assertion supplies the missing proof.
+// Project the value a presence proof names from the binding's existing carrier. Optional storage yields its
+// `value()`, while a dual-sentinel variant either yields one proven value alternative or rebuilds the exact
+// remaining alternatives as a present-only variant. The latter copies only the same represented handles into
+// one-to-one target slots; it never changes their owners. Runtime-owned result locals deliberately need no
+// source union -- their external profile chose the optional carrier, and the guard or explicit non-null
+// assertion supplies the missing proof.
 function emitCppPresentBindingStorageValueCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'identifier' }>>,
   context: EmitContext,
@@ -13421,7 +13423,14 @@ function emitCppPresentBindingStorageValueCpp(
   const bindingType = getCppBindingTypeCpp(bindingId, context);
   const union = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
-  const narrowedType = context.narrowedBindingTypes.get(bindingId) ?? expression.narrowedType;
+  const narrowedType =
+    context.narrowedBindingTypes.get(bindingId) ??
+    expression.narrowedType ??
+    (expression.presence === 'narrowedPresent' && union
+      ? createIrTypeEvidenceUnionCpp(
+          union.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined'),
+        )
+      : undefined);
   const nestedOptionalMember =
     plan && narrowedType ? emitCppNarrowedNestedUnionMemberCpp(binding, plan, narrowedType, context) : undefined;
   if (nestedOptionalMember) return nestedOptionalMember;
@@ -13431,9 +13440,37 @@ function emitCppPresentBindingStorageValueCpp(
       ? plan.valueSlots.filter((slot) => slot.representationKey === narrowedSlot.representationKey)
       : plan.valueSlots;
     if (matchingSlots.length !== 1) {
+      const narrowedUnion =
+        narrowedType && !hasIrTypeAbsentMember(narrowedType)
+          ? getIrUnionTypeCpp(narrowedType, context, new Set())
+          : undefined;
+      const narrowedPlan = narrowedUnion ? getCppUnionRepresentationPlan(narrowedUnion, context) : undefined;
+      const mappings =
+        narrowedPlan?.kind === 'multiVariant'
+          ? narrowedPlan.valueSlots.map((target) => {
+              const sources = plan.valueSlots.filter((source) => source.targetType === target.targetType);
+              return sources.length === 1 ? { source: sources[0]!, target } : undefined;
+            })
+          : [];
+      if (
+        narrowedUnion &&
+        narrowedPlan?.kind === 'multiVariant' &&
+        mappings.length > 1 &&
+        mappings.every((mapping) => mapping !== undefined)
+      ) {
+        const carrier = emitUnionTypeCpp(narrowedUnion, context);
+        const source = getGeneratedTargetName('presentUnionSource', context);
+        const branches = mappings.map(
+          (mapping) =>
+            `if (const auto* alternative = std::get_if<${mapping!.source.targetType}>(&${source})) return ${carrier}{std::in_place_type<${mapping!.target.targetType}>, *alternative};`,
+        );
+        context.includes.add('stdexcept');
+        context.includes.add('variant');
+        return `([&]() -> ${carrier} { const auto& ${source} = ${binding}; ${branches.join(' ')} throw std::logic_error("present union holds an absent or excluded alternative"); }())`;
+      }
       emissionError(
         context,
-        'dual-sentinel presence narrowing requires one remaining C++ value domain: the storage carries both null and undefined beside SEVERAL value alternatives, so a presence test leaves more than one possible value and the emitter has no single read to emit for it. Declare the member with one concrete representation -- `readonly number[]` rather than `readonly number[] | Uint16Array | Uint32Array` -- and read it through a coalesce whose result is declared; that shape lowers, which the control beside this rule shows',
+        'dual-sentinel presence narrowing requires every remaining value domain to map one-to-one into an exact present-only C++ carrier: the narrowed union has ambiguous, missing, or inequivalent represented owners. Narrow or convert the source expression to a union whose alternatives preserve the declaration owners and storage types',
         'cpp-dual-sentinel-multi-alternative-narrowing-unrepresented',
       );
     }
@@ -33587,9 +33624,8 @@ const cppNullTaggedStoragePredicates: ReadonlyMap<string, string> = new Map([['f
 // the value the source wrote discards identity or type evidence the target representation needs, so the
 // fix is an explicit source conversion and the check report says which one.
 const cppSourcePortabilityRefusalRules: ReadonlySet<string> = new Set([
-  // A dual-sentinel storage holding SEVERAL value alternatives has no single read or single receiver for a
-  // presence test to reach. The declaration is where that comes from and where the remedy is: one concrete
-  // representation, read through a coalesce whose result is declared.
+  // A present-only projection can rebuild several value alternatives only when every slot has one exact
+  // owner-preserving match. Ambiguous or inequivalent alternatives need a source-level narrowing or conversion.
   'cpp-dual-sentinel-multi-alternative-narrowing-unrepresented',
   'cpp-optional-chain-multi-alternative-receiver-unrepresented',
   // A dependent callable parameter pack the source buffers instead of forwarding. The pack forwards

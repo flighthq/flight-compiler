@@ -16646,7 +16646,7 @@ export function setKind(dst: Material, kind: string): void { dst.kind = kind; }`
     ).toContain('dst->kind');
   });
 
-  it('names the representation a multi-alternative mixed-absence member needs', () => {
+  it('projects guarded multi-alternative mixed-absence members and keeps unselected chains refused', () => {
     // MeshGeometryFromAttributesOptions is the SDK's shape. Its current declaration preserves both
     // absence spellings, while the recommended construction contract removes exactly the Null arm and
     // keeps each collection owner. All of these are runtime-native carriers; no host binding, Any route,
@@ -16682,19 +16682,27 @@ export function setKind(dst: Material, kind: string): void { dst.kind = kind; }`
       expect(contents).not.toContain('reinterpret_cast');
     }
 
-    // Every current consumer read of the multi-alternative index member refuses -- and both of those
-    // refusals used to be unruled, so the ledger could not attribute them. The discriminator is the
-    // NUMBER of value alternatives, which the control beside them shows.
+    // A terminating guard proves every remaining present alternative and rebuilds them in a present-only
+    // carrier. Optional chaining still asks for one receiver operation without selecting a value domain, so
+    // that separate case keeps its existing refusal.
     const refusal = (source: string) =>
       captureBackendEmissionFailure(() =>
         emitIrModuleCpp(lower('mesh-options.ts', source).module, { runtimeProfile: 'flight-cpp' }),
       );
 
-    const narrowed = refusal(`${options}
-export function f(o: Opts): number { const i = o.indices; if (i == null) return 0; return i.length; }`);
-    expect(narrowed.rule).toBe('cpp-dual-sentinel-multi-alternative-narrowing-unrepresented');
-    expect(narrowed.classification).toBe('source-portability');
-    expect(narrowed.message).toContain('one concrete representation');
+    const narrowed = emitIrModuleCpp(
+      lower(
+        'mesh-options.ts',
+        `${options}
+export function f(o: Opts): number { const i = o.indices; if (i == null) return 0; return i.length; }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(narrowed).toContain('present union holds an absent or excluded alternative');
+    expect(narrowed).toContain('std::get_if<flight::Array<double>>');
+    expect(narrowed).toContain('std::get_if<flight::Uint16Array>');
+    expect(narrowed).toContain('std::get_if<flight::Uint32Array>');
+    expect(narrowed).toContain('std::visit');
 
     const chained = refusal(`${options}
 export function f2(o: Opts): number { return o.indices?.length ?? 0; }`);
@@ -19940,6 +19948,36 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
 
     expect(emitted).toContain('std::optional<flight::String>{std::visit(');
+  });
+
+  it('projects a common property after both sentinels are excluded from a heterogeneous carrier', () => {
+    const module = lower(
+      'nullable-variant-property-evidence.ts',
+      `type Source =
+         | { readonly kind: 'image'; readonly source: string; readonly width: number }
+         | { readonly depth: number; readonly kind: 'voxel'; readonly width: number };
+       export function sourceWidth(source: Source | null | undefined): number {
+         if (source === null) return -1;
+         if (source === undefined) return -1;
+         return source.width;
+       }`,
+    ).module;
+
+    const emitted = emitIrModuleCpp(module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(emitted).toContain('std::holds_alternative<flight::Null>(source)');
+    expect(emitted).toContain('std::holds_alternative<flight::Undefined>(source)');
+    expect(emitted).toContain('const auto& present_union_source = source;');
+    expect(emitted.match(/const auto& present_union_source = source;/gu)).toHaveLength(1);
+    expect(emitted).toContain('std::get_if<flight::Ref<depth_kind_width_');
+    expect(emitted).toContain('std::get_if<flight::Ref<kind_source_width_');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<depth_kind_width_');
+    expect(emitted).toContain('std::in_place_type<flight::Ref<kind_source_width_');
+    expect(emitted).toContain('present union holds an absent or excluded alternative');
+    expect(emitted).toContain('std::visit');
+    expect(emitted).toContain('return value->width;');
+    expect(emitted).not.toContain('static_cast');
+    expect(emitted).not.toContain('reinterpret_cast');
   });
 
   it('selects the current imported sprite texture arm before reading its source', () => {

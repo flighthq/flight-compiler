@@ -119,6 +119,78 @@ describe('C++ imported variant owner qualification', () => {
     expect(emitted).not.toContain('flight::types::ImageTexture2D');
   });
 
+  it('projects every present owner through direct imports and re-export facades', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: './textures',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/textures.ts' },
+        },
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/types/textures',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/textures.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          '@flighthq/types',
+          'packages/types/src/textures.ts',
+          `export interface ImageSource { readonly kind: 'image'; readonly width: number }
+           export interface VoxelSource { readonly depth: number; readonly kind: 'voxel'; readonly width: number }
+           export type Source = ImageSource | VoxelSource;`,
+        ),
+        source(
+          '@flighthq/types',
+          'packages/types/src/contract.ts',
+          "export type { ImageSource, Source as ReexportedSource, VoxelSource } from './textures';",
+        ),
+        source(
+          '@flighthq/scene3d-gl',
+          'packages/scene3d-gl/src/directSource.ts',
+          `import type { Source } from '@flighthq/types/textures';
+           export function sourceWidth(source: Source | null | undefined): number {
+             if (source === null) return -1;
+             if (source === undefined) return -1;
+             return source.width;
+           }`,
+        ),
+        source(
+          '@flighthq/scene3d-gl',
+          'packages/scene3d-gl/src/reexportedSource.ts',
+          `import type { ReexportedSource as Source } from '@flighthq/types/contract';
+           export function sourceWidth(source: Source | null | undefined): number {
+             if (source === null) return -1;
+             if (source === undefined) return -1;
+             return source.width;
+           }`,
+        ),
+      ],
+      moduleResolution,
+    );
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    for (const index of [2, 3]) {
+      const emitted = emitConsumer(results, moduleResolution, index);
+      expect(emitted).toContain('std::holds_alternative<flight::Null>(source)');
+      expect(emitted).toContain('std::holds_alternative<flight::Undefined>(source)');
+      expect(emitted).toContain('const auto& present_union_source = source;');
+      expect(emitted).toContain('std::get_if<flight::Ref<flight::types::ImageSource>>');
+      expect(emitted).toContain('std::get_if<flight::Ref<flight::types::VoxelSource>>');
+      expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::ImageSource>>');
+      expect(emitted).toContain('std::in_place_type<flight::Ref<flight::types::VoxelSource>>');
+      expect(emitted).toContain('return value->width;');
+      expect(emitted).not.toContain('flight::scene3d_gl::ImageSource');
+      expect(emitted).not.toContain('flight::scene3d_gl::VoxelSource');
+    }
+  });
+
   it('keeps local variant owners local', () => {
     const results = lowerTypeScriptSources([
       source(
