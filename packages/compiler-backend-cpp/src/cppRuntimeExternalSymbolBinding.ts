@@ -274,6 +274,20 @@ export function getCompilerRuntimeExternalInstanceMemberTargetCpp(
   return binding.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.targetName;
 }
 
+export function getCompilerRuntimeExternalMemberCallArityCpp(
+  sourceName: string,
+  member: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): number | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
+    runtimeProfile,
+    externalBindings,
+  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'value');
+  return binding?.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.callArity;
+}
+
 export function getCompilerRuntimeExternalMemberCallResultAbsenceCpp(
   sourceName: string,
   member: string,
@@ -336,20 +350,6 @@ export function getCompilerRuntimeExternalMemberRecordConversionCpp(
     kind: 'resolved',
     resultType: declaration.callResultType,
   });
-}
-
-export function getCompilerRuntimeExternalMemberCallArityCpp(
-  sourceName: string,
-  member: string,
-  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
-  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
-): number | undefined {
-  const normalized = sourceName.normalize('NFC');
-  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
-    runtimeProfile,
-    externalBindings,
-  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'value');
-  return binding?.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.callArity;
 }
 
 export function getCompilerRuntimeExternalMemberTargetCpp(
