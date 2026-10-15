@@ -18301,6 +18301,16 @@ function emitContextualUnionExpressionInContextCpp(
       : undefined;
   const representedValueSlot = constrainedValueSlot ?? callableValueSlot ?? matchedValueSlot;
   if (representedValueSlot < 0) {
+    const coalescedNarrowedSlot = getCppCoalescedNarrowedMemberValueSlotCpp(expression, runtimeType, plan, context);
+    if (coalescedNarrowedSlot !== undefined) {
+      return emitCppUnionValueConstruction(
+        emitExpression(expression, context, runtimeType, false),
+        plan.valueSlots[coalescedNarrowedSlot]!.targetType,
+        union,
+        plan.kind,
+        context,
+      );
+    }
     if (targetType.startsWith('std::variant<')) {
       emissionError(
         context,
@@ -18609,6 +18619,42 @@ function haveSameCppUnionValueSlotTypesCpp(
     remaining.delete(matches[0]!);
   }
   return remaining.size === 0;
+}
+
+// A binding narrowed to one member of its own union is still stored in the slot that owns that member.
+// Coalesced structural arms can make that carrier differ from the type freshly spelled from the narrowed
+// member: both `{ outcome: 'destroyed' }` and `{ outcome: 'already-destroyed' }` may use the same `{ outcome }`
+// shape. Preserve the stored carrier only when both sides prove one exact slot; otherwise the existing
+// owner-conversion refusal remains responsible.
+function getCppCoalescedNarrowedMemberValueSlotCpp(
+  expression: Readonly<IrExpression>,
+  runtimeType: Readonly<IrType>,
+  plan: ReturnType<typeof getCppUnionRepresentationPlan>,
+  context: EmitContext,
+): number | undefined {
+  if (expression.kind !== 'identifier' || expression.reference.kind !== 'binding') return undefined;
+  const bindingId = expression.reference.binding.id;
+  const narrowedType = context.narrowedBindingTypes.get(bindingId) ?? expression.narrowedType;
+  if (!narrowedType || getIrUnionTypeCpp(narrowedType, context, new Set())) return undefined;
+  const bindingType = getCppBindingTypeCpp(bindingId, context);
+  const sourceUnion = bindingType ? getIrUnionTypeCpp(bindingType, context, new Set()) : undefined;
+  if (!sourceUnion) return undefined;
+  const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
+  const sourcePlan = getCppUnionRepresentationPlan(sourceUnion, isolatedContext);
+  const holding = sourcePlan.valueSlots.filter((slot) =>
+    slot.sourceAlternatives.some(
+      (member) => isDeepStrictEqual(member, narrowedType) || isDeepStrictEqual(member, runtimeType),
+    ),
+  );
+  if (holding.length !== 1) return undefined;
+  const carrier = qualifyCppDeclaringModuleTypeCpp(holding[0]!.targetType, context);
+  // A carrier spelled the same as the member itself would have matched by spelling already. This lane is
+  // only for a coalesced storage slot whose carrier is shared by multiple source arms.
+  if (carrier === qualifyCppDeclaringModuleTypeCpp(emitType(runtimeType, isolatedContext), context)) return undefined;
+  const destinations = plan.valueSlots.flatMap((slot, index) =>
+    qualifyCppDeclaringModuleTypeCpp(slot.targetType, context) === carrier ? [index] : [],
+  );
+  return destinations.length === 1 ? destinations[0] : undefined;
 }
 
 // The destination slot each source alternative takes, when the source union holds fewer alternatives than
