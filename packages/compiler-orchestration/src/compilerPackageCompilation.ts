@@ -260,7 +260,14 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   const placeholderFileOwners: { file: EmittedFile; packageName: string }[] = [];
   const placeholderPaths = new Map<string, string>();
   if (bestEffort && options.backend.emitRefusalPlaceholder) {
-    const emitPlaceholder = options.backend.emitRefusalPlaceholder;
+    const sessionPlaceholder = emissionSession?.emitRefusalPlaceholder;
+    const backendPlaceholder = options.backend.emitRefusalPlaceholder;
+    const emitPlaceholder = (
+      module: Parameters<typeof backendPlaceholder>[0],
+      failure: Parameters<typeof backendPlaceholder>[1],
+      backendOptions: Parameters<typeof backendPlaceholder>[2],
+    ) =>
+      sessionPlaceholder ? sessionPlaceholder(module, failure) : backendPlaceholder(module, failure, backendOptions);
     for (const key of [...records.keys()].sort(compareTextCodeUnits)) {
       const record = records.get(key)!;
       if (!isCompilerPackageGraphModuleSelectedByEmitPaths(record.module, emitPathPrefixes)) continue;

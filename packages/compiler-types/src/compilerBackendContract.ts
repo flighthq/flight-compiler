@@ -94,6 +94,13 @@ export interface CompilerBackend<Options = Record<string, never>> {
 export interface CompilerBackendEmissionSession {
   readonly emitModule: (module: Readonly<IrModule>) => readonly EmittedFile[];
   /**
+   * Writes a refusal placeholder with the same graph-wide analysis as ordinary session emission. Backends that
+   * omit this keep using `CompilerBackend.emitRefusalPlaceholder` as the compatibility fallback.
+   */
+  readonly emitRefusalPlaceholder?:
+    | ((module: Readonly<IrModule>, failure: Readonly<CompilerRefusalPlaceholderRequest>) => EmittedFile | undefined)
+    | undefined;
+  /**
    * Finalizes package-owned output once, after every selected module has had its ordinary emission attempt.
    * The session retains the complete semantic context from `BackendEmitContext.modules`; callers must not invoke
    * this once per module or narrow that context with an output-path filter.

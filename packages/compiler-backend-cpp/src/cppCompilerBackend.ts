@@ -458,6 +458,18 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       // Built once for the emission rather than rebuilt for each module: it is a property of the whole
       // graph, and every module asks it the same question about its own imports.
       const moduleImporterIndex = createCppModuleImporterIndex(modules, referenceRepresentationPlanner);
+      const refusalPlaceholderGraph: CppRefusalPlaceholderGraph = {
+        anonymousStructNaming,
+        directBindingOwners,
+        importBindingOwners,
+        interfaceInheritancePass,
+        moduleImporterIndex,
+        moduleResolution,
+        modules,
+        referenceRepresentationPlanner,
+        targetNameMaps,
+        unionArmIdentities,
+      };
       const cAbi = options.cAbi;
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
@@ -477,6 +489,9 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
               moduleImporterIndex,
             ),
           ];
+        },
+        emitRefusalPlaceholder(module: Readonly<IrModule>, refusal: Readonly<CompilerRefusalPlaceholderRequest>) {
+          return emitCppRefusalPlaceholder(module, refusal, options, refusalPlaceholderGraph);
         },
         ...(cAbi
           ? {
@@ -816,6 +831,7 @@ function emitIrModuleCppWithContext(
     .map((declaration) => {
       const existingAnonymousStructs = new Set(context.anonymousStructs.keys());
       const earlyPublicationMaterializedOwners = new Set<string>();
+      const includesBefore = salvage === undefined ? undefined : new Set(context.includes);
       const lines = (() => {
         try {
           return emitDeclaration(declaration, {
@@ -840,6 +856,13 @@ function emitIrModuleCppWithContext(
               : { sourceLines: sliceCppSalvagedDeclarationSourceCpp(module, declaration, salvage.sourceText) }),
           };
           salvage.failures.push(failure);
+          if (includesBefore !== undefined) {
+            context.includes.clear();
+            for (const include of includesBefore) context.includes.add(include);
+          }
+          for (const key of [...context.anonymousStructs.keys()]) {
+            if (!existingAnonymousStructs.has(key)) context.anonymousStructs.delete(key);
+          }
           return renderCppSalvagedDeclarationCpp(failure);
         }
       })();
@@ -861,7 +884,13 @@ function emitIrModuleCppWithContext(
   // out, and that names a type whose module has to be included. Collected any later and the include
   // is dropped on the floor while the declaration that needed it is still emitted.
   const forwardDeclarations = emitCppForwardDeclarations(module, context);
-  const imports = emitImports(module, context);
+  const imports = emitImports(
+    module,
+    context,
+    salvage !== undefined && salvage.failures.length > 0
+      ? collectCppRetainedBindingReferencesCpp(module, new Set(salvage.failures.map((failure) => failure.declaration)))
+      : undefined,
+  );
   const importedFunctionForwardDeclarations = emitCppImportedFunctionForwardDeclarations(context);
   const reexports = emitReexportsCpp(module, context);
   const namespaceName = getCppCompilerPackageNamespace(module.packageName, options.packageTargets);
@@ -25318,6 +25347,30 @@ function collectIrModuleDeclarationDependenciesCpp(
   return dependencies;
 }
 
+// The imports a partial module still needs are decided from the declarations that survived salvage, not from
+// placeholder text and not from source paths. Binding identity is the same evidence ordinary emission uses, so
+// an import referenced only by a refused declaration cannot leak its header into the retained surface.
+function collectCppRetainedBindingReferencesCpp(
+  module: Readonly<IrModule>,
+  excluded: ReadonlySet<Readonly<IrDeclaration>>,
+): ReadonlySet<string> {
+  const referenced = new Set<string>();
+  analyzeIrModuleTraversal(
+    { ...module, declarations: module.declarations.filter((declaration) => !excluded.has(declaration)), exports: [] },
+    {
+      expression(expression) {
+        if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
+          referenced.add(expression.reference.binding.id);
+        }
+      },
+      type(type) {
+        if (type.kind === 'named' && type.reference.kind === 'binding') referenced.add(type.reference.binding.id);
+      },
+    },
+  );
+  return referenced;
+}
+
 function collectCppMutuallyRecursiveFunctionGroups(
   module: Readonly<IrModule>,
   dependencies: ReadonlyMap<Readonly<IrDeclaration>, ReadonlySet<Readonly<IrDeclaration>>>,
@@ -29640,9 +29693,20 @@ function isCppGenericStructuralSequenceParameterCpp(parameter: Readonly<IrParame
   return Boolean(array?.readonly && array.element.kind === 'object');
 }
 
-function emitImports(module: Readonly<IrModule>, context: EmitContext): string[] {
+function emitImports(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+  retainedReferences?: ReadonlySet<string>,
+): string[] {
   const specifiers = [
-    ...module.imports.map((item) => item.specifier),
+    ...module.imports
+      .filter(
+        (item) =>
+          retainedReferences === undefined ||
+          item.bindings.length === 0 ||
+          item.bindings.some((binding) => retainedReferences.has(binding.binding.id)),
+      )
+      .map((item) => item.specifier),
     ...module.exports.flatMap((item) =>
       item.kind === 'all' || item.kind === 'namespace' || item.kind === 'reexport' ? [item.specifier] : [],
     ),
@@ -29760,6 +29824,22 @@ interface CppSalvageRequest {
   readonly sourceText?: string | undefined;
 }
 
+// A refusal placeholder created by an emission session retains the exact semantic graph ordinary emission
+// already prepared. Reusing these analyses is what gives salvaged declarations their real declaration owners,
+// qualified spellings, include edges, and representation decisions.
+interface CppRefusalPlaceholderGraph {
+  readonly anonymousStructNaming: AnonymousStructNaming;
+  readonly directBindingOwners: ReadonlyMap<string, CppDirectBindingOwner | null>;
+  readonly importBindingOwners: ReadonlyMap<string, CppImportBindingOwner | null>;
+  readonly interfaceInheritancePass: Readonly<CompilerLoweringPass>;
+  readonly moduleImporterIndex: CppModuleImporterIndex;
+  readonly moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
+  readonly modules: readonly Readonly<IrModule>[];
+  readonly referenceRepresentationPlanner: CompilerCppReferenceRepresentationPlanner;
+  readonly targetNameMaps: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  readonly unionArmIdentities: Map<string, CppUnionArmIdentity[]>;
+}
+
 // The replaceable stub a best-effort run writes where a refused module would have gone.
 //
 // It exists so the path is present and a hand edit has somewhere to land, and it is the closest thing to working
@@ -29775,6 +29855,7 @@ function emitCppRefusalPlaceholder(
   module: Readonly<IrModule>,
   refusal: Readonly<CompilerRefusalPlaceholderRequest>,
   options: Readonly<CppCompilerBackendOptions>,
+  graph?: Readonly<CppRefusalPlaceholderGraph>,
 ): EmittedFile {
   // SALVAGE FIRST. The module usually lowered fine and failed on one declaration, so the useful answer is the
   // module with that declaration marked missing rather than a file that carries only a description of it. A
@@ -29788,16 +29869,16 @@ function emitCppRefusalPlaceholder(
     return emitIrModuleCppWithContext(
       module,
       options,
-      [module],
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
+      graph?.modules ?? [module],
+      graph?.moduleResolution,
+      graph?.referenceRepresentationPlanner,
+      graph?.interfaceInheritancePass,
+      graph?.directBindingOwners,
+      graph?.importBindingOwners,
+      graph?.targetNameMaps,
+      graph?.anonymousStructNaming,
+      graph?.unionArmIdentities,
+      graph?.moduleImporterIndex,
       salvage,
     );
   } catch {

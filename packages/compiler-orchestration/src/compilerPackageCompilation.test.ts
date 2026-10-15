@@ -521,20 +521,40 @@ describe('compileTypeScriptPackageGraph', () => {
     );
     const badAIdentity = identity(badA, 'BadA');
     const dependentIdentity = identity(dependent, 'Dependent');
+    let sessionPlaceholderCalls = 0;
+    let backendPlaceholderCalls = 0;
     const backend: CompilerBackend = {
-      emitModule(module) {
-        if (module.name !== 'Dependent') {
-          throw createBackendEmissionFailure('fixture', module, `unsupported ${module.name}`);
-        }
-        return [{ contents: module.name, path: `${module.name}.txt` }];
-      },
-      emitRefusalPlaceholder: (module) => ({
-        contents: `// placeholder for ${module.name}`,
-        path: `placeholder/${module.name}.txt`,
+      createEmissionSession: () => ({
+        emitModule(module) {
+          if (module.name !== 'Dependent') {
+            throw createBackendEmissionFailure(
+              'fixture',
+              module,
+              `unsupported ${module.name}`,
+              'fixture-session-placeholder',
+            );
+          }
+          return [{ contents: module.name, path: `${module.name}.txt` }];
+        },
+        emitRefusalPlaceholder(module, failure) {
+          sessionPlaceholderCalls += 1;
+          expect(failure.rule).toBe('fixture-session-placeholder');
+          return {
+            contents: `// session placeholder for ${module.name}: ${failure.rule}`,
+            path: `placeholder/${module.name}.txt`,
+          };
+        },
       }),
+      emitModule: () => {
+        throw new Error('compatibility entry point must not be used');
+      },
+      emitRefusalPlaceholder: () => {
+        backendPlaceholderCalls += 1;
+        throw new Error('backend placeholder must not replace the session-scoped form');
+      },
       name: 'fixture',
     };
-    const compile = (bestEffort: boolean) =>
+    const compile = (bestEffort: boolean, sources: readonly TypeScriptPackageGraphSource[] = [dependent, badA]) =>
       compileTypeScriptPackageGraph({
         backend,
         backendOptions: {},
@@ -544,13 +564,15 @@ describe('compileTypeScriptPackageGraph', () => {
           [{ importer: dependentIdentity, specifier: './badA.js', target: badAIdentity }],
           [{ dependencies: [], name: '@local/source', root: dependent.packageRoot }],
         ),
-        sources: [dependent, badA],
+        sources,
       });
 
     // Strict: exactly what it always was -- the refusal closes the dependency and nothing is written.
     const strict = compile(false);
     expect(strict.compilation.files).toEqual([]);
     expect(strict.report.bestEffort).toBeUndefined();
+    expect(sessionPlaceholderCalls).toBe(0);
+    expect(backendPlaceholderCalls).toBe(0);
 
     const best = compile(true);
     // The dependency-incomplete module keeps its real output; the refused one leaves a replaceable path.
@@ -584,6 +606,17 @@ describe('compileTypeScriptPackageGraph', () => {
     const refusedReport = best.report.modules.find((module) => module.module.name === 'BadA');
     expect(refusedReport?.status).toBe('refused');
     expect(refusedReport?.outputFiles).toEqual([]);
+    expect(refusedReport?.refusals).toEqual([
+      expect.objectContaining({ rule: 'fixture-session-placeholder', stage: 'emission' }),
+    ]);
+    expect(sessionPlaceholderCalls).toBe(1);
+    expect(backendPlaceholderCalls).toBe(0);
+
+    const reordered = compile(true, [badA, dependent]);
+    expect(reordered.compilation.files).toEqual(best.compilation.files);
+    expect(reordered.report.bestEffort).toEqual(best.report.bestEffort);
+    expect(sessionPlaceholderCalls).toBe(2);
+    expect(backendPlaceholderCalls).toBe(0);
   });
 
   it('reports bounded lowering and per-module emission progress without changing the compilation', () => {
