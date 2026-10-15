@@ -34339,6 +34339,47 @@ Resolver make_resolver(TextureRef texture) {
     expect(failure.message).toContain('narrow or assert an erased operand');
   });
 
+  it('refuses an Error member the runtime does not represent instead of emitting raw access', () => {
+    const cases = [
+      [
+        'erased-error-stack.ts',
+        `export function f(cause: unknown): unknown {
+           if (cause instanceof Error) return cause.stack;
+           return null;
+         }`,
+      ],
+      [
+        'erased-error-cause.ts',
+        `export function f(cause: unknown): unknown {
+           if (cause instanceof Error) return cause.cause;
+           return null;
+         }`,
+      ],
+      ['typed-error-stack.ts', 'export function f(error: Error): unknown { return error.stack; }'],
+    ] as const;
+    for (const [file, source] of cases) {
+      const failure = captureBackendEmissionFailure(() =>
+        emitIrModuleCpp(lower(file, source).module, { runtimeProfile: 'flight-cpp' }),
+      );
+      expect(failure.rule).toBe('cpp-error-member-unrepresented');
+      expect(failure.classification).toBe('target-runtime');
+      expect(failure.message).toContain('requires a runtime Error member this profile does not represent');
+    }
+
+    const message = emitIrModuleCpp(
+      lower('typed-error-message.ts', 'export function f(error: Error): string { return error.message; }').module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(message).toContain('return error.message();');
+    const name = captureBackendEmissionFailure(() =>
+      emitIrModuleCpp(
+        lower('typed-error-name.ts', 'export function f(error: Error): string { return error.name; }').module,
+        { runtimeProfile: 'flight-cpp' },
+      ),
+    );
+    expect(name.rule).toBe('cpp-error-name-runtime-required');
+  });
+
   it('attributes Error properties with missing runtime views to the runtime contract', () => {
     const name = captureBackendEmissionFailure(() =>
       emitIrModuleCpp(

@@ -25850,6 +25850,17 @@ function refuseCppUnsupportedErrorPropertyReadCpp(
   if (getCppRuntimeProfile(context.options) !== 'flight-cpp' || expression.member?.receiver !== 'error') {
     return;
   }
+  // `flight::Error` declares only `name` and `message` at this runtime pin. A source `stack`, `cause`,
+  // or other Error member therefore has no carrier on either a typed Error or an erased value narrowed
+  // to Error. Refuse it here instead of emitting raw member access that cannot compile. The two declared
+  // members continue into their existing lowering/runtime-contract paths below.
+  if (expression.name !== 'name' && expression.name !== 'message') {
+    emissionError(
+      context,
+      `reading Error.${expression.name} requires a runtime Error member this profile does not represent; flight::Error declares name and message, and the checked Error view reads only those`,
+      'cpp-error-member-unrepresented',
+    );
+  }
   const requiresErasedView =
     expression.structuralAccess === 'narrowed' &&
     isCppErasedDynamicValueTypeCpp(getIrExpressionTypeEvidenceCpp(expression.object, context));
@@ -33433,6 +33444,7 @@ const cppTargetRuntimeRefusalRules: ReadonlySet<string> = new Set([
   'cpp-erased-structural-row-construction-unrepresented',
   'cpp-erased-tag-unreportable',
   'cpp-erased-value-assertion-unrepresented',
+  'cpp-error-member-unrepresented',
   'cpp-error-name-runtime-required',
   'cpp-external-object-field-contract-missing',
   'cpp-external-record-conversion-incomplete',
