@@ -31,6 +31,7 @@ import {
   createCompilerLoweringPassSwitchFallthrough,
   createCompilerLoweringPassSwitchSuspension,
   createCompilerLoweringPassVariableHoisting,
+  createIrClassInitializationPlan,
   isCompilerLoweringFailure,
   lowerIrModuleWithCompilerPasses,
 } from '../../compiler-lowering/src/index.js';
@@ -2040,6 +2041,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
       ...indentSourceLines(
         [
           ...emitParameterInitializersCpp(declaration.classConstructor.parameters, constructorContext),
+          ...emitParameterPropertyAssignmentsCpp(declaration, constructorContext),
           ...emitStatements(body, constructorContext),
         ],
         2,
@@ -29450,6 +29452,26 @@ function collectCppOptionalParameterBindingIds(module: Readonly<IrModule>): Read
     },
   });
   return bindingIds;
+}
+
+// A parameter property declares storage and initializes it from the resolved constructor parameter.
+// The shared initialization plan distinguishes that storage from an ordinary same-named field and
+// places the write after instance field initialization (and, for derived classes, after the base call).
+function emitParameterPropertyAssignmentsCpp(
+  declaration: Readonly<IrClassDeclaration>,
+  context: EmitContext,
+): string[] {
+  const constructor = declaration.classConstructor;
+  if (!constructor) return [];
+  const initialization = createIrClassInitializationPlan(declaration);
+  return initialization.fields.flatMap((fieldInitialization) => {
+    if (fieldInitialization.value !== 'parameter') return [];
+    const field = declaration.fields[fieldInitialization.fieldIndex]!;
+    const parameter = constructor.parameters[fieldInitialization.parameterIndex]!;
+    const parameterTargetName = getBindingTargetName(parameter.binding, context);
+    const value = parameter.initializer ? `${parameterTargetName}.value()` : parameterTargetName;
+    return [`this->${safeCppName(field.name)} = ${value};`];
+  });
 }
 
 function emitParameterInitializersCpp(parameters: readonly IrParameter[], context: EmitContext): string[] {
