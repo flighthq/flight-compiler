@@ -26718,6 +26718,36 @@ int main() {
     ).toContain('refused:');
   });
 
+  it('recovers a generic reference from a tagged object cache entry', () => {
+    const result = lower(
+      'generic-erased-reference-cache.ts',
+      `interface Base { program: number }
+       interface Runtime { cache: Map<string, object>; handles: number[] }
+       export function ensure<T extends Base>(
+         runtime: Runtime,
+         key: string,
+         compile: () => T,
+       ): T {
+         if (runtime.cache.has(key)) return runtime.cache.get(key) as T;
+         const value = compile();
+         runtime.cache.set(key, value);
+         runtime.handles.push(value.program);
+         return value;
+       }
+       export function destroy(runtime: Runtime): void {
+         for (const value of runtime.cache.values()) {
+           const program = value as Base;
+           runtime.handles.push(program.program);
+         }
+       }`,
+    );
+    const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    expect(result.diagnostics).toEqual([]);
+    expect(emitted).toContain('flight::erased_ref_as<typename T::element_type>');
+    expect(emitted).toContain('flight::erased_ref_as<Base>');
+  });
+
   it('refuses invalid ErasedRef WeakMap view keys, values, and open generic values before runtime acquisition', () => {
     const wrongKey = lower(
       'erased-ref-weak-map-wrong-key.ts',
