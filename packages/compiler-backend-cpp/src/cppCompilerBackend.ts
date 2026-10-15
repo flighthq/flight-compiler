@@ -31061,26 +31061,33 @@ function getCppImportedAliasCarrierCallResultTypeCpp(
   context: EmitContext,
 ): Readonly<IrType> | undefined {
   const calleeType = getIrExpressionTypeEvidenceCpp(expression.callee, context);
-  const returns = calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined;
-  if (!returns) return undefined;
-  const optionalCarrier = getCppOptionalImportedAliasCarrierUnionCpp(returns, context);
-  if (optionalCarrier) return optionalCarrier;
-  if (returns.kind === 'named') {
-    const target = resolveCppTypeAliasTarget(returns, context);
-    return target && isCppImportedUnionAliasAbiCarrierCpp(returns, target, context) ? returns : undefined;
+  const candidates = [
+    calleeType ? getCppCallableReturnType(calleeType, context, new Set()) : undefined,
+    getIrCallReturnTypeCpp(expression, context),
+  ];
+  for (const returns of candidates) {
+    if (!returns) continue;
+    const optionalCarrier = getCppOptionalImportedAliasCarrierUnionCpp(returns, context);
+    if (optionalCarrier) return optionalCarrier;
+    if (returns.kind === 'named') {
+      const target = resolveCppTypeAliasTarget(returns, context);
+      if (target && isCppImportedUnionAliasAbiCarrierCpp(returns, target, context)) return returns;
+      continue;
+    }
+    if (returns.kind !== 'union') continue;
+    const sentinels = returns.types.filter(
+      (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
+        member.kind === 'null' || member.kind === 'undefined',
+    );
+    const values = returns.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
+    const value = values[0];
+    if (sentinels.length !== 1 || values.length !== 1 || value?.kind !== 'named') continue;
+    const target = resolveCppTypeAliasTarget(value, context);
+    if (target && isCppImportedUnionAliasAbiCarrierCpp(value, target, context)) {
+      return { kind: 'union', types: [value, sentinels[0]!] };
+    }
   }
-  if (returns.kind !== 'union') return undefined;
-  const sentinels = returns.types.filter(
-    (member): member is Extract<IrType, { kind: 'null' | 'undefined' }> =>
-      member.kind === 'null' || member.kind === 'undefined',
-  );
-  const values = returns.types.filter((member) => member.kind !== 'null' && member.kind !== 'undefined');
-  const value = values[0];
-  if (sentinels.length !== 1 || values.length !== 1 || value?.kind !== 'named') return undefined;
-  const target = resolveCppTypeAliasTarget(value, context);
-  return target && isCppImportedUnionAliasAbiCarrierCpp(value, target, context)
-    ? { kind: 'union', types: [value, sentinels[0]!] }
-    : undefined;
+  return undefined;
 }
 
 // A call whose callee's declared result is the expected carrier alias itself, with the same absence,

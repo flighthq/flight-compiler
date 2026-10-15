@@ -13473,6 +13473,119 @@ export interface CanvasTextureResolvers extends Entity {
     expect(contents).not.toContain('reinterpret_cast');
   });
 
+  it('stores a cross-package imported carrier call result through its own optional', () => {
+    // The callable's own spelling and the checker's selected result are two evidence lanes over one
+    // call: an imported provider declaration can retain the published alias in either of them. This
+    // fixture calls the provider function across a package boundary and stores the result, so the
+    // declaration lane has to be consulted as well as the callable's return type.
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/host-image',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/host-image.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const source = (file: string, body: string, packageName: string) => ({
+      packageName,
+      sourceFile: ts.createSourceFile(`/flight/${file}`, body, ts.ScriptTarget.Latest, true),
+      upstreamDirectory: '/flight',
+    });
+    const results = lowerTypeScriptSources(
+      [
+        source(
+          'packages/types/src/host-image.ts',
+          `export type HostImageSource = CanvasImageSource;
+           export interface CanvasTextureResolvers { readonly marker: string; }
+           export interface Texture { readonly dimension: string; }
+           export type CanvasTextureResolver = (
+             resolvers: CanvasTextureResolvers,
+             texture: Readonly<Texture>,
+           ) => HostImageSource | null;
+           export function resolveCanvasTexture(
+             resolver: CanvasTextureResolver,
+             resolvers: CanvasTextureResolvers,
+             texture: Readonly<Texture>,
+           ): HostImageSource | null {
+             return resolver(resolvers, texture);
+           }`,
+          '@flighthq/types',
+        ),
+        source(
+          'packages/scene2d/src/canvas.ts',
+          `import type { CanvasTextureResolver, CanvasTextureResolvers, Texture } from '@flighthq/types/host-image';
+           import { resolveCanvasTexture } from '@flighthq/types/host-image';
+           export function drawResolvedCanvasImage(
+             context: CanvasRenderingContext2D,
+             resolver: CanvasTextureResolver,
+             resolvers: CanvasTextureResolvers,
+             texture: Readonly<Texture>,
+           ): void {
+             const image = resolveCanvasTexture(resolver, resolvers, texture);
+             if (image === null) return;
+             context.drawImage(image, 0, 0);
+           }`,
+          '@flighthq/scene2d',
+        ),
+      ],
+      moduleResolution,
+    );
+    const imageSources = [
+      'CanvasImageSource',
+      'HTMLImageElement',
+      'HTMLVideoElement',
+      'ImageBitmap',
+      'OffscreenCanvas',
+      'SVGImageElement',
+      'VideoFrame',
+    ];
+    const externalBindings = {
+      bindings: [
+        ...imageSources.map((sourceName) => ({
+          headers: ['host/image.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName,
+          space: 'type' as const,
+          targetName: 'host::ImageSource',
+        })),
+        {
+          headers: ['host/canvas.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'CanvasRenderingContext2D',
+          space: 'type' as const,
+          targetName: 'host::CanvasContext',
+        },
+        {
+          headers: ['host/canvas.hpp'],
+          nullability: 'non-null' as const,
+          ownership: 'shared' as const,
+          sourceName: 'HTMLCanvasElement',
+          space: 'type' as const,
+          targetName: 'host::CanvasSurface',
+        },
+      ],
+      schema: 'flight-cpp-external-bindings/1' as const,
+    };
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: results.map((result) => result.module),
+      options: { externalBindings, runtimeProfile: 'flight-cpp' },
+    });
+    const consumer = results.find((result) => result.module.source.endsWith('canvas.ts'))!;
+    const contents = session.emitModule(consumer.module)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(contents).toContain('auto image = flighthq_types::resolve_canvas_texture(');
+    expect(contents).toContain('draw_image(image.value(), 0.0, 0.0)');
+    expect(contents).not.toContain('std::variant');
+    expect(contents).not.toContain('flight::Any');
+    expect(contents).not.toContain('HTMLImageElement');
+    expect(contents).not.toContain('flight::Ref<flighthq_types::HostImageSource>');
+  });
+
   it('separates MeshGeometry index input absence from required nullable live storage', () => {
     // The two typed-array widths are runtime-native value alternatives. Required null and optional
     // undefined each need one outer absence, while the current optional-nullable construction input needs
