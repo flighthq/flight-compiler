@@ -7,8 +7,8 @@ export type CompilerCppCAbiAdapterConversion =
   | 'borrow-readonly-handle'
   | 'copy-scalar-from-c'
   | 'copy-scalar-to-out'
-  | 'none'
-  | 'transfer-owned-handle-to-out';
+  | 'create-owned-handle-to-out'
+  | 'none';
 
 export type CompilerCppCAbiDiagnosticCode =
   | 'ambiguous-owner'
@@ -21,7 +21,7 @@ export type CompilerCppCAbiDiagnosticCode =
   | 'unsupported-carrier'
   | 'unsupported-parameter';
 
-export type CompilerCppCAbiEmissionFailureCode = 'invalid-plan' | 'unsupported-carrier';
+export type CompilerCppCAbiEmissionFailureCode = 'ambiguous-lifecycle' | 'invalid-plan' | 'unsupported-carrier';
 
 export type CompilerCppCAbiOwnership = 'borrowed' | 'none' | 'owned' | 'value';
 
@@ -52,6 +52,7 @@ export interface CompilerCppCAbiErrorPlan {
 
 export interface CompilerCppCAbiEmission {
   readonly functions: readonly CompilerCppCAbiFunctionEmission[];
+  readonly handles: readonly CompilerCppCAbiHandleEmission[];
   readonly schema: 'flight-compiler-cpp-c-abi-emission/1';
 }
 
@@ -88,24 +89,63 @@ export interface CompilerCppCAbiFunctionEmission {
   readonly symbol: string;
 }
 
-export interface CompilerCppCAbiHandlePlan {
+export interface CompilerCppCAbiHandleEmission {
+  readonly adapterSourceContents: string;
+  readonly bindingId: string;
   readonly carrier: string;
-  readonly cppTarget: string;
-  readonly header: string;
-  readonly ownership: 'opaque-reference';
+  readonly headerContents: string;
+  readonly headerPath: string;
+  readonly packageName: string;
   readonly releaseSymbol: string;
   readonly retainSymbol: string;
+  readonly source: string;
+}
+
+export interface CompilerCppCAbiHandlePlan {
+  readonly bindingId: string;
+  readonly borrowSymbol: string;
+  readonly carrier: string;
+  readonly cppOwnerCarrier: string;
+  readonly cppTarget: string;
+  readonly createOwnedSymbol: string;
+  readonly header: string;
+  readonly lifecycle: Readonly<{
+    borrowedInput: 'const-owner-reference';
+    counter: 'atomic-wrapper-reference-count';
+    initialReferences: 1;
+    nullOwnedOutput: 'null-handle';
+    nullRelease: 'no-op';
+    nullRetain: 'return-null';
+    ownedOutput: 'move-owner-into-new-wrapper';
+    retainedResult: 'same-handle';
+    zeroReferences: 'delete-wrapper';
+  }>;
+  readonly ownership: 'opaque-reference';
+  readonly packageName: string;
+  readonly releaseSymbol: string;
+  readonly retainSymbol: string;
+  readonly source: string;
   readonly sourceName: string;
 }
 
-export interface CompilerCppCAbiParameterPlan {
-  readonly adapter: CompilerCppCAbiAdapterConversion;
-  readonly carrier: string;
-  readonly name: string;
-  readonly ownership: CompilerCppCAbiOwnership;
-  readonly position: number;
-  readonly presence: CompilerCppCAbiPresence;
-}
+export type CompilerCppCAbiParameterPlan =
+  | Readonly<{
+      adapter: 'borrow-handle' | 'borrow-readonly-handle';
+      carrier: string;
+      handleCarrier: string;
+      name: string;
+      ownership: 'borrowed';
+      position: number;
+      presence: Exclude<CompilerCppCAbiPresence, 'not-applicable'>;
+    }>
+  | Readonly<{
+      adapter: 'copy-scalar-from-c';
+      carrier: string;
+      name: string;
+      ownership: 'value';
+      position: number;
+      presence: 'required';
+    }>;
 
 export type CompilerCppCAbiResultPlan =
   | Readonly<{
@@ -115,12 +155,22 @@ export type CompilerCppCAbiResultPlan =
       presence: 'not-applicable';
     }>
   | Readonly<{
-      adapter: 'copy-scalar-to-out' | 'transfer-owned-handle-to-out';
+      adapter: 'copy-scalar-to-out';
       carrier: string;
-      initialization: 'null' | 'zero';
+      initialization: 'zero';
       kind: 'out';
       name: 'out_result';
-      ownership: 'owned' | 'value';
+      ownership: 'value';
+      presence: Exclude<CompilerCppCAbiPresence, 'not-applicable'>;
+    }>
+  | Readonly<{
+      adapter: 'create-owned-handle-to-out';
+      carrier: string;
+      handleCarrier: string;
+      initialization: 'null';
+      kind: 'out';
+      name: 'out_result';
+      ownership: 'owned';
       presence: Exclude<CompilerCppCAbiPresence, 'not-applicable'>;
     }>;
 

@@ -136,12 +136,19 @@ export function createIrModulesCAbiPlanCpp(
   for (const draft of accepted) {
     for (const handle of draft.handles) {
       handles.set(handle.carrier, {
+        bindingId: handle.bindingId,
+        borrowSymbol: handle.borrowSymbol,
         carrier: handle.carrier,
+        cppOwnerCarrier: handle.cppOwnerCarrier,
         cppTarget: handle.cppTarget,
+        createOwnedSymbol: handle.createOwnedSymbol,
         header: handle.header,
+        lifecycle: handle.lifecycle,
         ownership: handle.ownership,
+        packageName: handle.packageName,
         releaseSymbol: handle.releaseSymbol,
         retainSymbol: handle.retainSymbol,
+        source: handle.source,
         sourceName: handle.sourceName,
       });
     }
@@ -252,7 +259,8 @@ function createFunctionDraft(candidate: FunctionCandidate, context: PlanningCont
     handles.set(carrier.handle.identity, carrier.handle);
     return {
       adapter: carrier.readonly ? 'borrow-readonly-handle' : 'borrow-handle',
-      carrier: `${carrier.readonly ? 'const ' : ''}${carrier.handle.carrier}*`,
+      carrier: `${carrier.readonly ? 'const ' : ''}struct ${carrier.handle.carrier}*`,
+      handleCarrier: carrier.handle.carrier,
       name,
       ownership: 'borrowed',
       position,
@@ -301,8 +309,9 @@ function createResultPlan(carrier: Carrier, handles: Map<string, HandleDraft>): 
   }
   handles.set(carrier.handle.identity, carrier.handle);
   return {
-    adapter: 'transfer-owned-handle-to-out',
-    carrier: `${carrier.handle.carrier}**`,
+    adapter: 'create-owned-handle-to-out',
+    carrier: `struct ${carrier.handle.carrier}**`,
+    handleCarrier: carrier.handle.carrier,
     initialization: 'null',
     kind: 'out',
     name: 'out_result',
@@ -450,15 +459,33 @@ function planNamedCarrier(
   const header = getPackageHeader(ownerModule.packageName, context);
   const namespace = getCppCompilerPackageNamespace(ownerModule.packageName, optionsPackageTargets(context));
   const typeName = safeCppTypeName(declaration.binding.name);
+  const cppTarget = `${namespace}::${typeName}`;
   return {
     handle: {
+      bindingId: declaration.binding.id,
+      borrowSymbol: `${carrier}_borrow_owner`,
       carrier,
-      cppTarget: `${namespace}::${typeName}`,
+      cppOwnerCarrier: `flight::Ref<${cppTarget}>`,
+      cppTarget,
+      createOwnedSymbol: `${carrier}_create_owned`,
       header,
       identity: typeOwnerKey(owner),
+      lifecycle: {
+        borrowedInput: 'const-owner-reference',
+        counter: 'atomic-wrapper-reference-count',
+        initialReferences: 1,
+        nullOwnedOutput: 'null-handle',
+        nullRelease: 'no-op',
+        nullRetain: 'return-null',
+        ownedOutput: 'move-owner-into-new-wrapper',
+        retainedResult: 'same-handle',
+        zeroReferences: 'delete-wrapper',
+      },
       ownership: 'opaque-reference',
+      packageName: ownerModule.packageName,
       releaseSymbol: `${carrier}_release`,
       retainSymbol: `${carrier}_retain`,
+      source: ownerModule.source,
       sourceName: declaration.binding.name,
     },
     kind: 'reference',

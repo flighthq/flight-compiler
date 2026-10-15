@@ -78,7 +78,8 @@ describe('createIrModulesCAbiPlanCpp', () => {
         parameters: [
           {
             adapter: 'borrow-handle',
-            carrier: 'flight_cpp_point*',
+            carrier: 'struct flight_cpp_point*',
+            handleCarrier: 'flight_cpp_point',
             name: 'target',
             ownership: 'borrowed',
             position: 0,
@@ -106,28 +107,45 @@ describe('createIrModulesCAbiPlanCpp', () => {
 
     expect(plan.diagnostics).toEqual([]);
     expect(plan.handles).toEqual([
-      {
+      expect.objectContaining({
+        borrowSymbol: 'flight_cpp_point_borrow_owner',
         carrier: 'flight_cpp_point',
+        cppOwnerCarrier: 'flight::Ref<flight::geometry::Point>',
         cppTarget: 'flight::geometry::Point',
+        createOwnedSymbol: 'flight_cpp_point_create_owned',
         header: 'flight/geometry.h',
+        lifecycle: {
+          borrowedInput: 'const-owner-reference',
+          counter: 'atomic-wrapper-reference-count',
+          initialReferences: 1,
+          nullOwnedOutput: 'null-handle',
+          nullRelease: 'no-op',
+          nullRetain: 'return-null',
+          ownedOutput: 'move-owner-into-new-wrapper',
+          retainedResult: 'same-handle',
+          zeroReferences: 'delete-wrapper',
+        },
         ownership: 'opaque-reference',
+        packageName: '@flight/geometry',
         releaseSymbol: 'flight_cpp_point_release',
         retainSymbol: 'flight_cpp_point_retain',
         sourceName: 'Point',
-      },
+      }),
     ]);
     expect(plan.functions).toEqual([
       expect.objectContaining({
         parameters: [
           expect.objectContaining({
             adapter: 'borrow-readonly-handle',
-            carrier: 'const flight_cpp_point*',
+            carrier: 'const struct flight_cpp_point*',
+            handleCarrier: 'flight_cpp_point',
             presence: 'required',
           }),
         ],
         result: expect.objectContaining({
-          adapter: 'transfer-owned-handle-to-out',
-          carrier: 'flight_cpp_point**',
+          adapter: 'create-owned-handle-to-out',
+          carrier: 'struct flight_cpp_point**',
+          handleCarrier: 'flight_cpp_point',
           initialization: 'null',
           ownership: 'owned',
           presence: 'required',
@@ -135,8 +153,8 @@ describe('createIrModulesCAbiPlanCpp', () => {
         symbol: 'flight_cpp_clone_point',
       }),
       expect.objectContaining({
-        parameters: [expect.objectContaining({ carrier: 'flight_cpp_point*', presence: 'nullable-null' })],
-        result: expect.objectContaining({ carrier: 'flight_cpp_point**', presence: 'nullable-undefined' }),
+        parameters: [expect.objectContaining({ carrier: 'struct flight_cpp_point*', presence: 'nullable-null' })],
+        result: expect.objectContaining({ carrier: 'struct flight_cpp_point**', presence: 'nullable-undefined' }),
         symbol: 'flight_cpp_find_point',
       }),
     ]);
