@@ -764,7 +764,7 @@ describe('analyzeFlightWorkspace', () => {
     }
   });
 
-  it('fails when SDK re-exports a relative module specifier', () => {
+  it('retains an SDK-local relative re-export without adding it as a package exposure', () => {
     const upstream = createUpstreamFixture();
     try {
       write(upstream, 'packages/sdk/src/helper.ts', 'export const helper = 1;\n');
@@ -772,10 +772,16 @@ describe('analyzeFlightWorkspace', () => {
       git(upstream, 'add', '.');
       git(upstream, 'commit', '-m', 'sdk relative re-export');
 
-      expectInventoryFailure(
-        () => analyzeFlightWorkspace({ upstreamDirectory: upstream }),
-        'unsupported-package-specifier',
-      );
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const sdk = inventory.packages.find((item) => item.name === '@flighthq/sdk');
+      const types = inventory.packages.find((item) => item.name === '@flighthq/types');
+
+      expect(sdk?.exportLanes[0]?.exports.find((record) => record.name === 'helper')).toMatchObject({
+        kind: 'variable',
+        runtime: true,
+        source: 'packages/sdk/src/helper.ts',
+      });
+      expect(types?.sdkExposures).toEqual([{ sdkLane: '@flighthq/sdk', target: '@flighthq/types' }]);
     } finally {
       rmSync(upstream, { force: true, recursive: true });
     }

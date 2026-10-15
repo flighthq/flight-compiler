@@ -432,6 +432,9 @@ function readSdkExposures(
     for (const declaration of parsed.exportDeclarations) {
       if (!declaration.moduleSpecifier || !ts.isStringLiteral(declaration.moduleSpecifier)) continue;
       const target = declaration.moduleSpecifier.text;
+      // A relative re-export stays inside the SDK package. Its public symbols were already resolved as
+      // part of this export lane, but it contributes no SDK-to-package exposure.
+      if (target.startsWith('./') || target.startsWith('../')) continue;
       if (!target.startsWith(`${packageScope}/`)) {
         throw createCompilerInventoryFailure(
           'unsupported-package-specifier',

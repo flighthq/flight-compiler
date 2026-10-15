@@ -80,6 +80,105 @@ describe('inventory export graph regressions', () => {
     }
   });
 
+  it('keeps SDK-local star exports in the SDK lane without inventing a package exposure', () => {
+    const upstream = createFixture({
+      'packages/sdk/src/index.ts': "export * from './sdkHost.js'; export * from '@flighthq/types';",
+      'packages/sdk/src/sdkHost.ts':
+        'export interface HostArchive { readonly bytes: number; }\n' +
+        'export function compress(value: string): string { return value; }',
+    });
+    try {
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const sdk = inventory.packages.find((item) => item.name === '@flighthq/sdk');
+      const types = inventory.packages.find((item) => item.name === '@flighthq/types');
+      const localExports = sdk?.exportLanes[0]?.exports.map((record) => ({
+        kind: record.kind,
+        name: record.name,
+        runtime: record.runtime,
+        runtimeBinding: record.runtimeBinding,
+        source: record.source,
+      }));
+
+      expect(localExports).toEqual([
+        {
+          kind: 'interface',
+          name: 'HostArchive',
+          runtime: false,
+          runtimeBinding: undefined,
+          source: 'packages/sdk/src/sdkHost.ts',
+        },
+        {
+          kind: 'function',
+          name: 'compress',
+          runtime: true,
+          runtimeBinding: undefined,
+          source: 'packages/sdk/src/sdkHost.ts',
+        },
+      ]);
+      expect(types?.sdkExposures).toEqual([{ sdkLane: '@flighthq/sdk', target: '@flighthq/types' }]);
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps external SDK star targets on the unsupported-specifier boundary', () => {
+    const upstream = createFixture({
+      'packages/sdk/src/index.ts': "export * from 'external-package';",
+    });
+    try {
+      expectInventoryFailure(
+        () => analyzeFlightWorkspace({ upstreamDirectory: upstream }),
+        'unsupported-package-specifier',
+      );
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('reports an SDK-local star collision without selecting either identity', () => {
+    const upstream = createFixture({
+      'packages/sdk/src/index.ts': "export * from './left.js'; export * from './right.js';",
+      'packages/sdk/src/left.ts': 'export const collide = 1;',
+      'packages/sdk/src/right.ts': 'export const collide = 2;',
+    });
+    try {
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const root = inventory.packages.find((item) => item.name === '@flighthq/sdk')?.exportLanes[0];
+
+      expect(root?.exports.map((record) => record.name)).not.toContain('collide');
+      expect(root?.exportConflicts).toEqual([
+        {
+          name: 'collide',
+          sources: ['packages/sdk/src/left.ts', 'packages/sdk/src/right.ts'],
+        },
+      ]);
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
+  it('keeps a direct SDK-local named export on its declaration identity', () => {
+    const upstream = createFixture({
+      'packages/sdk/src/index.ts': "export { directHost } from './sdkHost.js';",
+      'packages/sdk/src/sdkHost.ts': 'export const directHost = 1;',
+    });
+    try {
+      const inventory = analyzeFlightWorkspace({ upstreamDirectory: upstream });
+      const root = inventory.packages.find((item) => item.name === '@flighthq/sdk')?.exportLanes[0];
+
+      expect(root?.exports).toHaveLength(1);
+      expect(root?.exports[0]).toMatchObject({
+        kind: 'variable',
+        name: 'directHost',
+        runtime: true,
+        source: 'packages/sdk/src/sdkHost.ts',
+      });
+      expect(root?.exports[0]?.runtimeBinding).toBeUndefined();
+    } finally {
+      rmSync(upstream, { force: true, recursive: true });
+    }
+  });
+
   it('rejects unresolved named exports with a stable failure identity', () => {
     const upstream = createFixture({
       'packages/types/src/index.ts': "export { missing } from './value.js';",
