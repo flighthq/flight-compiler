@@ -289,6 +289,95 @@ describe('compileTypeScriptPackageGraph', () => {
     expect(compile([]).compilation.files.map((file) => file.path)).toEqual(['Dependent.txt', 'placeholder/BadA.txt']);
   });
 
+  // The other half of that invariant: the filter scopes OUTPUT and not the SEMANTIC CONTEXT the backend
+  // resolves against. A backend names an imported type by looking its owner up among the modules it was given,
+  // so an unselected dependency missing from that list does not refuse the selected module -- the emitter falls
+  // back to a spelling of its own and the same module emits DIFFERENT code for the same source. The emitted
+  // bytes of a selected module must not depend on which prefixes the run happened to name.
+  it('emits a selected module identically when the dependency it imports owner evidence from is unselected', () => {
+    const owner = source(
+      '@local/source',
+      'source',
+      'owner.ts',
+      'export interface Owner { readonly value: number }\nexport type OwnerAlias = Owner;',
+    );
+    const holder = source(
+      '@local/source',
+      'source',
+      'holder.ts',
+      "import type { OwnerAlias } from './owner.js';\nexport interface Holder { readonly owner: OwnerAlias }",
+    );
+    const ownerIdentity = identity(owner, 'Owner');
+    const holderIdentity = identity(holder, 'Holder');
+    const backend: CompilerBackend = {
+      createEmissionSession: ({ modules }) => {
+        // What a target backend does with this list: index the declarations each module owns, so a reference
+        // from another module resolves to the module that declares it. An owner this list does not hold is not
+        // refused -- the reference resolves to nothing and the emitter falls back.
+        const ownerSources = new Map<string, string>();
+        for (const module of modules) {
+          for (const exported of module.exports) {
+            if (exported.kind === 'local') {
+              ownerSources.set(`${module.packageName} ${exported.exported}`, module.source);
+            }
+          }
+        }
+        return {
+          emitModule(module) {
+            return [
+              {
+                contents: module.imports
+                  .flatMap((imported) =>
+                    imported.bindings.map(
+                      (binding) =>
+                        `${binding.imported} = ${ownerSources.get(`${module.packageName} ${binding.imported}`) ?? 'unresolved'}`,
+                    ),
+                  )
+                  .join('\n'),
+                path: `${module.name}.txt`,
+              },
+            ];
+          },
+        };
+      },
+      emitModule: () => {
+        throw new Error('compatibility entry point must not be used');
+      },
+      emitRefusalPlaceholder: (module) => ({ contents: '// placeholder', path: `placeholder/${module.name}.txt` }),
+      name: 'fixture',
+    };
+    const compile = (emitPathPrefixes: readonly string[] | undefined) =>
+      compileTypeScriptPackageGraph({
+        backend,
+        backendOptions: {},
+        bestEffort: true,
+        ...(emitPathPrefixes === undefined ? {} : { emitPathPrefixes }),
+        graph: graph(
+          [],
+          [{ importer: holderIdentity, specifier: './owner.js', target: ownerIdentity }],
+          [{ dependencies: [], name: '@local/source', root: holder.packageRoot }],
+        ),
+        sources: [holder, owner],
+      });
+
+    // The importing module named the alias by the module that declares it, so `owner.ts` is in the context the
+    // emitter resolved against. Spelled with the newline the emitted-file normalizer guarantees.
+    const holderFile = { contents: 'OwnerAlias = packages/source/src/owner.ts\n', path: 'Holder.txt' };
+    const all = compile(undefined);
+    expect(all.compilation.files).toEqual([holderFile, { contents: '\n', path: 'Owner.txt' }]);
+
+    // Only the selected module is emitted, and its bytes are the ones the unfiltered run produced.
+    const filtered = compile(['packages/source/src/holder.ts']);
+    expect(filtered.compilation.files).toEqual([holderFile]);
+    expect(filtered.report.modules.map((module) => [module.module.name, module.status])).toEqual([
+      ['Holder', 'emitted'],
+      ['Owner', 'skipped'],
+    ]);
+    // A skipped module is not a refused one: it gets no file and no placeholder either.
+    expect(filtered.report.modules.find((module) => module.module.name === 'Owner')?.outputFiles).toEqual([]);
+    expect(filtered.report.bestEffort?.modules.map((module) => module.module.name)).toEqual(['Holder']);
+  });
+
   // Best-effort is one predicate wide: a module refused only because a DEPENDENCY refused still emits its own
   // real output, and a module refused for its own reasons gets a replaceable placeholder at its path instead of
   // nothing. Strict mode is untouched, which is the whole reason the mode is opt-in.

@@ -486,6 +486,31 @@ describe('compileCompilerCommandLineRequest emit-path filter', () => {
     expect(none.written.size).toBe(0);
     expect(none.result.exitCode).toBe(0);
   });
+
+  // The filter scopes OUTPUT, not the semantic context a backend resolves against. The emitted module names an
+  // alias it imports by the module that declares it, and a real backend only knows where that declaration lives
+  // because the unselected module is still in the context it was given. Drop it and the module does not refuse --
+  // it wraps the alias in a reference the declaring module never wrote, which is how a scoped run comes to emit
+  // different C++ for the same source than an unfiltered one.
+  it('resolves an imported owner through an unselected dependency', () => {
+    const sources = [
+      source('Owner.ts', 'export interface Owner { readonly value: number }\nexport type OwnerAlias = Owner;\n'),
+      source(
+        'Holder.ts',
+        "import type { OwnerAlias } from './Owner.js';\nexport interface Holder { readonly owner: OwnerAlias }\n",
+      ),
+    ];
+    const run = (argv: readonly string[]) => {
+      const written = new Map<string, string>();
+      return { result: compileCompilerCommandLineRequest({ argv }, capabilities(sources, written, [])), written };
+    };
+
+    const all = run(['/src', '--target', 'cpp', '--out', '/out']);
+    const filtered = run(['/src', '--target', 'cpp', '--out', '/out', '--emit-path', 'Holder.ts']);
+    expect([...filtered.written.keys()]).toEqual(['/out/holder.hpp']);
+    expect(filtered.written.get('/out/holder.hpp')).toBe(all.written.get('/out/holder.hpp'));
+    expect(filtered.written.get('/out/holder.hpp')).toContain('flighthq_source::OwnerAlias owner;');
+  });
 });
 
 describe('compileCompilerCommandLineRequest best-effort', () => {

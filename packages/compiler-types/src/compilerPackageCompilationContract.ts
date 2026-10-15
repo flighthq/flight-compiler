@@ -68,9 +68,11 @@ export interface CompileTypeScriptPackageGraphOptions<BackendOptions> {
    * Restrict which modules are EMITTED, by portable source-path prefix; every module is still lowered, so a
    * selected module resolves the types it imports from an unselected one. Absent or empty emits everything.
    *
-   * This scopes a run's OUTPUT, not its analysis: a module outside the prefixes produces no file and no
-   * placeholder, and is reported as `skipped` rather than as a failure. It is the way to generate a subtree at a
-   * time -- useful on a corpus large enough that one run is hard to watch.
+   * This scopes a run's OUTPUT, not its analysis or the context its backends resolve against: a module outside
+   * the prefixes produces no file and no placeholder, and is reported as `skipped` rather than as a failure, but
+   * it stays in the emission session's module list so a selected module still finds the owners and aliases it
+   * imports there. An emitted module's bytes therefore do not depend on which prefixes the run named. It is the
+   * way to generate a subtree at a time -- useful on a corpus large enough that one run is hard to watch.
    */
   readonly emitPathPrefixes?: readonly string[] | undefined;
   readonly backendOptions: Readonly<BackendOptions>;

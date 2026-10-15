@@ -16,6 +16,16 @@ export interface EmittedFile extends EmittedFileIdentity {
 
 export interface BackendEmitContext<Options> {
   readonly moduleResolution?: Readonly<CompilerModuleResolutionPlan> | undefined;
+  /**
+   * Every module of the compilation a backend may CONSULT while emitting, which is not the same set as the
+   * modules it will be asked to WRITE. A backend resolves an imported owner, alias, or target name by looking the
+   * declaration up here, so a module this list omits is silently indistinguishable from one that declares
+   * nothing: the reference resolves elsewhere and the emitter spells it differently.
+   *
+   * It is therefore not narrowed by which modules the run emits. Only the `emitModule` call is: orchestration
+   * calls it once per module the run emits, and a backend must return no file for a module it was not asked
+   * about.
+   */
   readonly modules: readonly IrModule[];
   readonly options: Readonly<Options>;
 }
@@ -42,8 +52,10 @@ export interface CompilerRefusalPlaceholderRequest {
 
 export interface CompilerBackend<Options = Record<string, never>> {
   /**
-   * Optionally prepares graph-wide analysis once. Orchestration uses this session for every module
-   * in the request, while `emitModule` remains the single-module compatibility entry point.
+   * Optionally prepares graph-wide analysis once. Orchestration calls the returned session's `emitModule` for
+   * each module the run emits, while `emitModule` on this record remains the single-module compatibility entry
+   * point. The session's context is the whole compilation -- see `BackendEmitContext.modules` -- so the analysis
+   * it builds here is what makes an emitted module resolve a dependency this run does not emit.
    */
   readonly createEmissionSession?:
     | ((context: BackendEmitContext<Options>) => CompilerBackendEmissionSession)

@@ -132,14 +132,22 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   const emitPathPrefixes = options.emitPathPrefixes;
   propagateCompilerPackageGraphRefusals(records, moduleDependencies, bestEffort);
 
-  const emissionModules = modules.filter((module) => {
-    if (!isCompilerPackageGraphModuleSelectedByEmitPaths(module, emitPathPrefixes)) return false;
-    return isCompilerPackageGraphModuleEmittable(records.get(getCompilerPackageGraphModuleKey(module))!, bestEffort);
-  });
+  // The emission context is what the backend may CONSULT, and the emission scope is what it must WRITE. Two
+  // different sets, and conflating them is silent: the backend resolves an imported owner or alias by looking the
+  // declaration up here, so a module missing from the context does not refuse -- it resolves to a different owner
+  // and spells the reference differently. The emit-path filter therefore does not narrow this set. A backend asked
+  // to emit a selected module must see the unselected modules it imports from, or the same module emits different
+  // code depending on which prefixes the run happened to name.
+  const emissionContextModules = modules.filter((module) =>
+    isCompilerPackageGraphModuleEmittable(records.get(getCompilerPackageGraphModuleKey(module))!, bestEffort),
+  );
+  const emissionModules = emissionContextModules.filter((module) =>
+    isCompilerPackageGraphModuleSelectedByEmitPaths(module, emitPathPrefixes),
+  );
   const moduleResolution = createCompilerPackageGraphModuleResolution(moduleDependencies, options.moduleResolution);
   const emitContext = {
     moduleResolution,
-    modules: emissionModules,
+    modules: emissionContextModules,
     options: options.backendOptions,
   };
   observeCompilerPackageCompilationProgress(options.observeProgress, {
