@@ -21779,6 +21779,7 @@ function getCppContextualCallTypeArgumentsCpp(
   if (!declaration || declaration.typeParameters.length === 0) return undefined;
   const parameterIds = new Set(declaration.typeParameters.map((parameter) => parameter.binding.id));
   let argumentSubstitutions = new Map<string, Readonly<IrType>>();
+  let readonlyArgumentWouldWrite = false;
   expression.arguments.forEach((argument, index) => {
     const parameter = declaration.parameters[index];
     if (!parameter?.type) return;
@@ -21802,6 +21803,17 @@ function getCppContextualCallTypeArgumentsCpp(
     const expressionType = functionDeclaration
       ? getIrFunctionDeclarationTypeCpp(functionDeclaration)
       : (initializerType ?? directExpressionType);
+    // A readonly source can contribute substitutions only to a readonly parameter. The checker-provided
+    // argument type may already spell the instantiated writable parameter, but using that spelling here
+    // would discard the source's capability before the structural conversion can refuse the write.
+    if (
+      expressionType &&
+      getCppReadonlyViewArgumentCpp(expressionType) &&
+      !getCppReadonlyViewArgumentCpp(parameter.type)
+    ) {
+      readonlyArgumentWouldWrite = true;
+      return;
+    }
     const providedType = getIrInvocationProvidedArgumentTypeCpp(expression, index);
     // A checker-instantiated optional parameter can expand a named callable result into its structural
     // shape. The callable expression still names the owner it returns, which is the evidence template
@@ -21828,6 +21840,7 @@ function getCppContextualCallTypeArgumentsCpp(
       }
     }
   });
+  if (readonlyArgumentWouldWrite) return undefined;
   const fromCandidate = (candidate: Readonly<IrType> | undefined): readonly Readonly<IrType>[] | undefined => {
     if (!candidate || candidate.kind === 'unknown') return undefined;
     const substitutions = new Map(argumentSubstitutions);
@@ -21886,6 +21899,7 @@ function getCppContextualResultConstrainedCallTypeArgumentsCpp(
       if (!parameter || parameter.rest) return false;
       const argumentType = getIrExpressionTypeEvidenceCpp(argument, context);
       if (!argumentType) return false;
+      if (getCppReadonlyViewArgumentCpp(argumentType) && !getCppReadonlyViewArgumentCpp(parameter.type)) return false;
       const verified = new Map(substitutions);
       if (collectCppResultTypeSubstitutionsCpp(parameter.type, argumentType, parameterIds, verified, context)) {
         return true;
@@ -21971,6 +21985,21 @@ function getCppProvidedOptionalArgumentTypeCpp(type: Readonly<IrType>): Readonly
   return { kind: 'union', types: [present[0]!, present[1]!, ...present.slice(2)] };
 }
 
+// The single type argument of an ambient `Readonly<T>`, which names the same value under a readonly
+// view. Deduction has to see through it; the representation already does, and comparing the wrapper's
+// own target name against a concrete owner name finds nothing in common.
+function getCppReadonlyViewArgumentCpp(type: Readonly<IrType>): Readonly<IrType> | undefined {
+  if (
+    type.kind === 'named' &&
+    type.reference.kind === 'ambient' &&
+    type.reference.name === 'Readonly' &&
+    type.typeArguments.length === 1
+  ) {
+    return type.typeArguments[0];
+  }
+  return undefined;
+}
+
 function collectCppResultTypeSubstitutionsCpp(
   pattern: Readonly<IrType>,
   candidate: Readonly<IrType>,
@@ -21992,6 +22021,23 @@ function collectCppResultTypeSubstitutionsCpp(
       return true;
     }
     return normalizeCompilerStructuralValueCanonical(previous) === normalizeCompilerStructuralValueCanonical(candidate);
+  }
+  // `Readonly<T>` is a view over the same value, not a second owner: a readonly structural parameter
+  // receives the concrete reference itself, which is exactly what `getCppStructuralProjectionRowCpp`
+  // records when it answers a `readonly` row for `Readonly`. Comparing the two target names instead
+  // finds `Readonly` against `Signal` and gives up, which leaves a callee's own type parameter
+  // unsubstituted and emits it into the row (`Signal<T>` at the call site). Look through the wrapper --
+  // on either side -- before the nominal comparison, so the type argument is deduced from the value.
+  const unwrappedPatternReadonly = getCppReadonlyViewArgumentCpp(pattern);
+  const unwrappedCandidateReadonly = getCppReadonlyViewArgumentCpp(candidate);
+  if (unwrappedPatternReadonly || unwrappedCandidateReadonly) {
+    return collectCppResultTypeSubstitutionsCpp(
+      unwrappedPatternReadonly ?? pattern,
+      unwrappedCandidateReadonly ?? candidate,
+      parameterIds,
+      substitutions,
+      context,
+    );
   }
   // A generic parameter can sit below a closed union alias while the supplied value names one arm:
   // `RegistryTable<T>` receiving `KeyedTable<Schema>` is the canonical case. Template deduction cannot
