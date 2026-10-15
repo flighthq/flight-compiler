@@ -53829,6 +53829,7 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
              import { resolve } from '@flighthq/render-gl/contract';
              export interface Runtime { active: Texture2D | null }
              export function draw(texture: Texture2D): void { resolve(texture); }
+             export function drawNext(next: () => Texture2D): void { resolve(next()); }
              export function remember(runtime: Runtime, texture: Readonly<Texture2D>): void { runtime.active = texture; }`,
             ts.ScriptTarget.Latest,
             true,
@@ -53853,6 +53854,60 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     }).emitModule(modules[2]!)[0]!.contents;
 
     expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
-    expect(emitted).toContain('flight::structural_ref_cast<');
+    expect(emitted).toContain(
+      'flight::structural_ref_cast<flight::StructuralRef<flight::RowReadonly<flight::RowOf<flight::Ref<flight::types::Texture2DLike>>>>>(flight::StructuralRef<flight::RowWritable<flight::RowOf<flight::Ref<flight::types::Texture2D>>>>(texture))',
+    );
+    expect(emitted).toContain('flight::structural_ref_cast<flight::Ref<flight::types::Texture2D>>(texture)');
+    expect(emitted.match(/next\(\)/gu)).toHaveLength(1);
+    expect(emitted).not.toContain('flight::Any');
+    expect(emitted).not.toContain('flight::make_ref<flight::types::Texture2DLike>');
+    expect(emitted).not.toContain('flight::materialize_row');
+  });
+
+  it('refuses ambiguous, writable, sibling, or inequivalent structural union views', () => {
+    const failure = (body: string) => {
+      const result = lower('concrete-structural-union-view-refusal.ts', body);
+      return captureBackendEmissionFailure(() => emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }));
+    };
+
+    const ambiguous = failure(
+      `interface Concrete { common: number; left: number; right: number; hidden: boolean }
+       interface LeftView { common: number; left: number }
+       interface RightView { common: number; right: number }
+       interface OtherView { kind: 'other' }
+       type Views = Readonly<LeftView> | Readonly<RightView> | Readonly<OtherView>;
+       function use(_value: Views): void {}
+       export function test(value: Concrete): void { use(value); }`,
+    );
+    const writable = failure(
+      `interface Concrete { kind: 'exact'; value: number; hidden: boolean }
+       type WritableView = Omit<Concrete, 'hidden'>;
+       interface OtherView { kind: 'other'; value: number }
+       type Views = WritableView | Readonly<OtherView>;
+       function use(_value: Views): void {}
+       export function test(value: Concrete): void { use(value); }`,
+    );
+    const siblings = failure(
+      `interface LeftOwner { kind: 'shared'; value: number; left: boolean }
+       interface RightOwner { kind: 'shared'; value: number; right: boolean }
+       type LeftView = Readonly<Omit<LeftOwner, 'left'>>;
+       type RightView = Readonly<Omit<RightOwner, 'right'>>;
+       interface OtherView { kind: 'other'; value: number }
+       type Views = LeftView | RightView | Readonly<OtherView>;
+       function use(_value: Views): void {}
+       export function test(value: LeftOwner): void { use(value); }`,
+    );
+    const inequivalent = failure(
+      `interface Concrete { kind: 'wrong'; value: number }
+       interface ExactView { kind: 'exact'; value: number }
+       interface OtherView { kind: 'other'; value: number }
+       type Views = Readonly<ExactView> | Readonly<OtherView>;
+       function use(_value: Views): void {}
+       export function test(value: Concrete): void { use(value); }`,
+    );
+
+    for (const refusal of [ambiguous, writable, siblings, inequivalent]) {
+      expect(refusal.rule).toBe('cpp-contextual-union-value-type-unrepresented');
+    }
   });
 });

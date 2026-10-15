@@ -18357,8 +18357,10 @@ function emitContextualUnionExpressionInContextCpp(
       const alternatives = slot.sourceAlternatives.filter((alternative) => {
         const isolatedContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
         return (
+          (context.referenceRepresentationPlanner.resolveStructuralRow(alternative, context.module) === undefined ||
+            getCppStructuralRowObjectWideningProofCpp(runtimeType, alternative, isolatedContext) === 'proven') &&
           emitCppStructuralReferenceValueConversionCpp('source', runtimeType, alternative, isolatedContext) !==
-          undefined
+            undefined
         );
       });
       return alternatives.length === 1 ? [{ alternative: alternatives[0]!, slot }] : [];
