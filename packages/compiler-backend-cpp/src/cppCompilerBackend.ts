@@ -445,6 +445,9 @@ interface AnonymousStructNaming {
 
 export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOptions> {
   return {
+    createTypeScriptProfileTypeNameEvidence(options) {
+      return createCompilerRuntimeExternalSymbolBindingPlanCpp(getCppRuntimeProfile(options), options.externalBindings);
+    },
     createEmissionSession({ moduleResolution, modules, options }) {
       const referenceRepresentationPlanner = createIrTypeReferenceRepresentationPlannerCpp(
         modules,

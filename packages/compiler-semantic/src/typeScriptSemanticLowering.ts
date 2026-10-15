@@ -113,6 +113,7 @@ interface LoweringContext {
   moduleSourceFile: ts.SourceFile;
   options: Readonly<LowerTypeScriptSourceOptions>;
   origins: WeakMap<ts.Node, CompilerSourceOrigin>;
+  profileTypeNameEvidence: ReadonlySet<string>;
   returnTargetTypes: IrType[];
   returnTypes: IrType[];
   sourceFile: ts.SourceFile;
@@ -176,6 +177,7 @@ export function lowerTypeScriptSource(
     analysis.checker,
     new Map([[sourceFile.fileName, options]]),
     analysis.symbolReferenceStatements,
+    options.profileTypeNameEvidence,
   );
 }
 
@@ -207,6 +209,7 @@ export function lowerTypeScriptSources(
       analysis.checker,
       analysisModuleOptions,
       analysis.symbolReferenceStatements,
+      options.profileTypeNameEvidence,
     );
     if (module) {
       observeTypeScriptModuleLoweringProgress(options.observeProgress, {
@@ -245,6 +248,7 @@ function lowerTypeScriptSourceWithAnalysis(
   checker: ts.TypeChecker,
   analysisModuleOptions: ReadonlyMap<string, Readonly<LowerTypeScriptSourceOptions>>,
   symbolReferenceStatements: () => ReadonlyMap<ts.Symbol, ReadonlySet<ts.Statement>>,
+  profileTypeNameEvidence: LowerTypeScriptSourcesOptions['profileTypeNameEvidence'],
 ): TypeScriptLoweringResult {
   const context: LoweringContext = {
     analysisModuleOptions,
@@ -256,6 +260,7 @@ function lowerTypeScriptSourceWithAnalysis(
     moduleSourceFile: sourceFile,
     options,
     origins: new WeakMap(),
+    profileTypeNameEvidence: createTypeScriptProfileTypeNameEvidenceIndex(profileTypeNameEvidence),
     returnTargetTypes: [],
     returnTypes: [],
     sourceFile,
@@ -998,7 +1003,8 @@ function lowerExpression(
     }
     const constructionShape = targetShape?.kind === 'array' ? targetShape : contextualShape;
     const constructionType =
-      constructionShape?.kind === 'array' && isIrExpressionValueTypeEvidence(constructionShape)
+      constructionShape?.kind === 'array' &&
+      isIrExpressionValueTypeEvidence(constructionShape, context.profileTypeNameEvidence)
         ? constructionShape
         : undefined;
     return {
@@ -1090,7 +1096,10 @@ function lowerExpression(
         ? getTypeScriptCheckerTypeEvidence(context.checker.getTypeAtLocation(node), context, 0, true, node)
         : undefined;
     const candidateType = declaredCandidateType ?? initializerCandidateType;
-    const type = candidateType && isIrExpressionValueTypeEvidence(candidateType) ? candidateType : undefined;
+    const type =
+      candidateType && isIrExpressionValueTypeEvidence(candidateType, context.profileTypeNameEvidence)
+        ? candidateType
+        : undefined;
     const resolved =
       getIrResolvedMemberReceiver(receiver) ??
       getIrResolvedMemberReceiver(receiverShape) ??
@@ -1296,29 +1305,38 @@ function lowerExpression(
 // introduce generic binders, while arbitrary library ambient names can be checker-local parameters;
 // replaying either at every property access would manufacture duplicate declarations or runtime ABI
 // requirements. Calls and declared storage continue to carry their full authoritative types.
-function isIrExpressionValueTypeEvidence(type: Readonly<IrType>): boolean {
+function isIrExpressionValueTypeEvidence(
+  type: Readonly<IrType>,
+  profileTypeNameEvidence: ReadonlySet<string>,
+): boolean {
   switch (type.kind) {
     case 'array':
-      return isIrExpressionValueTypeEvidence(type.element);
+      return isIrExpressionValueTypeEvidence(type.element, profileTypeNameEvidence);
     case 'intersection':
     case 'union':
-      return type.types.every(isIrExpressionValueTypeEvidence);
+      return type.types.every((member) => isIrExpressionValueTypeEvidence(member, profileTypeNameEvidence));
     case 'tuple':
-      return type.elements.every((element) => isIrExpressionValueTypeEvidence(element.type));
+      return type.elements.every((element) => isIrExpressionValueTypeEvidence(element.type, profileTypeNameEvidence));
     case 'named':
       return (
-        (type.reference.kind === 'binding' || getIrResolvedMemberReceiver(type) !== undefined) &&
-        type.typeArguments.every(isIrExpressionValueTypeEvidence)
+        (type.reference.kind === 'binding' ||
+          getIrResolvedMemberReceiver(type) !== undefined ||
+          hasTypeScriptProfileTypeNameEvidence(type.reference, profileTypeNameEvidence)) &&
+        type.typeArguments.every((argument) => isIrExpressionValueTypeEvidence(argument, profileTypeNameEvidence))
       );
     case 'function':
       return (
         type.typeParameters.length === 0 &&
-        type.parameters.every((parameter) => isIrExpressionValueTypeEvidence(parameter.type)) &&
-        isIrExpressionValueTypeEvidence(type.returns)
+        type.parameters.every((parameter) =>
+          isIrExpressionValueTypeEvidence(parameter.type, profileTypeNameEvidence),
+        ) &&
+        isIrExpressionValueTypeEvidence(type.returns, profileTypeNameEvidence)
       );
     case 'object':
       return type.properties.every(
-        (property) => property.computedKey?.kind !== 'ambient' && isIrExpressionValueTypeEvidence(property.type),
+        (property) =>
+          property.computedKey?.kind !== 'ambient' &&
+          isIrExpressionValueTypeEvidence(property.type, profileTypeNameEvidence),
       );
     case 'literal':
     case 'never':
@@ -1333,6 +1351,38 @@ function isIrExpressionValueTypeEvidence(type: Readonly<IrType>): boolean {
     case 'typeOf':
       return false;
   }
+}
+
+function createTypeScriptProfileTypeNameEvidenceIndex(
+  evidence: LowerTypeScriptSourcesOptions['profileTypeNameEvidence'],
+): ReadonlySet<string> {
+  if (!evidence || evidence.contract !== 'flight-runtime-contract/2') return new Set();
+  const counts = new Map<string, Readonly<{ count: number; native: boolean }>>();
+  for (const binding of evidence.bindings) {
+    const key = getTypeScriptProfileTypeNameEvidenceKey(
+      binding.externalSymbol.sourceName,
+      binding.externalSymbol.space,
+    );
+    const existing = counts.get(key);
+    counts.set(key, {
+      count: (existing?.count ?? 0) + 1,
+      native: (existing?.native ?? false) || binding.kind === 'native',
+    });
+  }
+  return new Set(
+    [...counts].flatMap(([key, entry]) => (entry.count === 1 && entry.native && key.startsWith('type\0') ? [key] : [])),
+  );
+}
+
+function getTypeScriptProfileTypeNameEvidenceKey(sourceName: string, space: 'type' | 'value'): string {
+  return `${space}\0${sourceName.normalize('NFC')}`;
+}
+
+function hasTypeScriptProfileTypeNameEvidence(
+  reference: Readonly<IrTypeNameReference>,
+  evidence: ReadonlySet<string>,
+): boolean {
+  return reference.kind === 'ambient' && evidence.has(getTypeScriptProfileTypeNameEvidenceKey(reference.name, 'type'));
 }
 
 function markIrExpressionPresent(expression: IrExpression): IrExpression {
@@ -5224,8 +5274,24 @@ function lowerTypeNameNodeReference(
   const parts = getTypeNameNodeParts(node);
   if (!parts) return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
   const symbol = context.checker.getSymbolAtLocation(parts.root);
-  if (isTypeScriptAmbientSymbol(symbol, context)) {
-    return { kind: 'ambient', name: getTypeScriptNodeText(node, context) };
+  const referenced = context.checker.getSymbolAtLocation(node);
+  const resolved =
+    referenced?.flags && referenced.flags & ts.SymbolFlags.Alias
+      ? context.checker.getAliasedSymbol(referenced)
+      : referenced;
+  const rootIsProjectBinding =
+    symbol?.declarations?.some((declaration) =>
+      context.analysisModuleOptions.has(declaration.getSourceFile().fileName),
+    ) === true;
+  if (
+    isTypeScriptAmbientSymbol(symbol, context) ||
+    (!rootIsProjectBinding && isTypeScriptAmbientSymbol(resolved, context))
+  ) {
+    // The profile binds the checker symbol, not one spelling of it. `Blob`, `globalThis.Blob`, and a
+    // qualified ambient namespace route therefore share one source identity, while a project import or
+    // re-export keeps the binding identity introduced by its root and never enters this branch.
+    const ambient = isTypeScriptAmbientSymbol(resolved, context) ? resolved : symbol;
+    return { kind: 'ambient', name: getTypeScriptAmbientSymbolName(ambient!, context) };
   }
   // A normal import can introduce both sides of a merged TypeScript declaration. The authored
   // ImportSpecifier is value-space, but its aliased target may also own a type alias, interface,

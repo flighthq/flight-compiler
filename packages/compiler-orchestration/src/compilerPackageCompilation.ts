@@ -72,18 +72,25 @@ export function compileTypeScriptPackageGraph<BackendOptions>(
   const lowered = lowerTypeScriptSources(
     options.sources.map(({ packageRoot: _packageRoot, ...source }) => source),
     semanticResolution,
-    options.observeProgress
-      ? {
-          observeProgress(progress) {
-            observeCompilerPackageCompilationProgress(options.observeProgress, {
-              ...progress,
-              module: cloneCompilerPackageGraphIdentity(progress.module),
-              phase: 'module-lowering',
-              schema: 'flight-compiler-package-compilation-progress/1',
-            });
-          },
-        }
-      : {},
+    {
+      ...(options.observeProgress
+        ? {
+            observeProgress(progress) {
+              observeCompilerPackageCompilationProgress(options.observeProgress, {
+                ...progress,
+                module: cloneCompilerPackageGraphIdentity(progress.module),
+                phase: 'module-lowering',
+                schema: 'flight-compiler-package-compilation-progress/1',
+              });
+            },
+          }
+        : {}),
+      ...(options.backend.createTypeScriptProfileTypeNameEvidence
+        ? {
+            profileTypeNameEvidence: options.backend.createTypeScriptProfileTypeNameEvidence(options.backendOptions),
+          }
+        : {}),
+    },
   );
   observeCompilerPackageCompilationProgress(options.observeProgress, {
     moduleCount: lowered.length,

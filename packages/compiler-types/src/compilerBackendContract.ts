@@ -1,7 +1,11 @@
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
-import type { CompilerRuntimeAbiManifest, CompilerRuntimeExternalMemberBinding } from './compilerRuntimeContract.js';
+import type {
+  CompilerRuntimeAbiManifest,
+  CompilerRuntimeExternalMemberBinding,
+  CompilerRuntimeExternalSymbolBindingPlan,
+} from './compilerRuntimeContract.js';
 import type { CompilerModuleIdentity, CompilerSourceIdentity } from './compilerSourceIdentity.js';
 
 export interface EmittedFileIdentity {
@@ -62,6 +66,14 @@ export interface CompilerRefusalPlaceholderRequest {
 }
 
 export interface CompilerBackend<Options = Record<string, never>> {
+  /**
+   * Exact external-symbol identities supplied by the target profile for this run. Semantic lowering uses
+   * native type-space entries only as evidence that an ambient name has a target representation; it never
+   * derives that fact from a target spelling or a downstream file path.
+   */
+  readonly createTypeScriptProfileTypeNameEvidence?:
+    | ((options: Readonly<Options>) => CompilerRuntimeExternalSymbolBindingPlan)
+    | undefined;
   /**
    * Optionally prepares graph-wide analysis once. Orchestration calls the returned session's `emitModule` for
    * each module the run emits, while `emitModule` on this record remains the single-module compatibility entry

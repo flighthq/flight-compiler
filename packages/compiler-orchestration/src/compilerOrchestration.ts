@@ -75,7 +75,10 @@ export function compileIrModules<BackendOptions>(
 export function compileTypeScriptModules<BackendOptions>(
   options: Readonly<CompileTypeScriptModulesOptions<BackendOptions>>,
 ): CompileIrModulesResult {
-  const lowered = lowerTypeScriptSources(options.sources, options.moduleResolution);
+  const profileTypeNameEvidence = options.backend.createTypeScriptProfileTypeNameEvidence?.(options.backendOptions);
+  const lowered = lowerTypeScriptSources(options.sources, options.moduleResolution, {
+    ...(profileTypeNameEvidence ? { profileTypeNameEvidence } : {}),
+  });
   const diagnostics = lowered.flatMap((result) => result.diagnostics);
   const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error');
   if (errors.length > 0) throw createCompilerDiagnosticsFailure(errors);
