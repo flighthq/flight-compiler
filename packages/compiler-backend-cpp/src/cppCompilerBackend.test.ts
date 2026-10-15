@@ -20296,9 +20296,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
        export interface EntitySource { readonly [EntityRuntimeKey]: EntityRuntime | undefined; }`,
     );
 
-    expect(emitted).toContain(
-      'EntityTarget{.entity_runtime_key = structural_record_source->entity_runtime_key}',
-    );
+    expect(emitted).toContain('EntityTarget{.entity_runtime_key = structural_record_source->entity_runtime_key}');
     expect(emitted).not.toContain('.EntityRuntimeKey');
     expect(emitted).not.toContain('->EntityRuntimeKey');
   });
@@ -33826,6 +33824,250 @@ Resolver make_resolver(TextureRef texture) {
     expect(b.indexOf('inline double create(std::optional<double> value);')).toBeLessThan(
       b.indexOf('inline double acquire()'),
     );
+  });
+
+  // The two-module case above works because the module importing the callee is also the module the
+  // callee imports. One hop further out that is false: the module closing a three-module cycle calls
+  // back into a module the include stack has already passed, and nothing had declared the call. Which
+  // modules can be above which is a property of the graph, so the decision walks the graph rather than
+  // counting hops -- a direct import is only the shortest cycle, not the shape.
+  it('publishes the callable each module reaches across a three-module cycle', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        { specifier: './b.js', target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/b.ts' } },
+        { specifier: './c.js', target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/c.ts' } },
+        { specifier: './a.js', target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/a.ts' } },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const emitThreeModules = (bodies: readonly string[]): readonly string[] => {
+      const modules = lowerTypeScriptSources(
+        ['a', 'b', 'c'].map((name, index) => ({
+          packageName: '@flighthq/geometry',
+          sourceFile: ts.createSourceFile(
+            `/flight/packages/geometry/src/${name}.ts`,
+            bodies[index]!,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        })),
+        moduleResolution,
+      ).map((result) => result.module);
+      const session = createCppCompilerBackend().createEmissionSession!({
+        moduleResolution,
+        modules,
+        options: { runtimeProfile: 'flight-cpp' },
+      });
+      return modules.map((module) => session.emitModule(module)[0]!.contents);
+    };
+    const [a, b, c] = emitThreeModules([
+      `import { step } from './b.js';
+       import type { Notice } from './c.js';
+       export interface Ask { readonly notice: Notice | null }
+       export function start(): number { return step(); }`,
+      `import { finish } from './c.js';
+       import type { Ask } from './a.js';
+       export interface Reply { readonly ask: Ask | null }
+       export function step(): number { return finish(); }`,
+      `import { start } from './a.js';
+       import type { Reply } from './b.js';
+       export interface Notice { readonly reply: Reply | null }
+       export function finish(): number { return start(); }`,
+    ]);
+
+    // Every module of the cycle declares what it reaches, and declares it before whatever consumes it:
+    // the imported TYPE before the include that brings its module -- an incomplete type is enough for a
+    // reference, and the include is what a cycle cannot rely on -- and the reached CALLABLE before the
+    // definition that calls it. Any one of the three headers can be the one a consumer includes first.
+    for (const [contents, [declaration, definition, importedType, include]] of [
+      [a, ['inline double step();', 'inline double start()', 'struct Notice;', '#include "c.hpp"']],
+      [b, ['inline double finish();', 'inline double step()', 'struct Ask;', '#include "a.hpp"']],
+      [c, ['inline double start();', 'inline double finish()', 'struct Reply;', '#include "b.hpp"']],
+    ] as const) {
+      expect(contents).toContain(`namespace flighthq_geometry { ${declaration} }`);
+      expect(contents!.indexOf(declaration)).toBeLessThan(contents!.indexOf(definition));
+      expect(contents).toContain(`namespace flighthq_geometry { ${importedType} }`);
+      expect(contents!.indexOf(importedType)).toBeLessThan(contents!.indexOf(include));
+    }
+
+    // The control that keeps this about a cycle and not about having three modules: the same three
+    // sources in a CHAIN publish nothing early, because no include stack passes back through them.
+    const chain = emitThreeModules([
+      "import { step } from './b.js';\nexport function start(): number { return step(); }",
+      "import { finish } from './c.js';\nexport function step(): number { return finish(); }",
+      'export function finish(): number { return 1; }',
+    ]);
+    for (const contents of chain) expect(contents).not.toContain('{ inline double');
+  });
+
+  it('spells a defaulted template argument exactly once across a module cycle', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        { specifier: './b.js', target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/b.ts' } },
+        { specifier: './a.js', target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/a.ts' } },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/geometry',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/geometry/src/a.ts',
+            "import { peek } from './b.js';\nexport function box<T = number>(value: T): T { return peek(value); }",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/geometry',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/geometry/src/b.ts',
+            "import { box } from './a.js';\nexport function peek<T>(value: T): T { return box(value); }",
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: { runtimeProfile: 'flight-cpp' },
+    });
+    const a = session.emitModule(modules[0]!)[0]!.contents;
+    const b = session.emitModule(modules[1]!)[0]!.contents;
+
+    // The defining module owns the default. The reached declaration is a second spelling of the same
+    // signature, and C++ admits a default template argument once per translation unit -- repeating it
+    // here is ill-formed rather than merely redundant.
+    expect(a).toContain('template <typename T = double>');
+    expect(a).toContain('template <typename T> inline T peek(T value);');
+    expect(b).toContain('namespace flighthq_geometry { template <typename T> inline T box(T value); }');
+    expect(`${a}\n${b}`.match(/= double/gu)).toHaveLength(1);
+  });
+
+  // The near-neighbor the publication must not swallow: two modules whose exported aliases name each
+  // other have no C++ form at any declaration depth. An incomplete type is not the obstacle here -- no
+  // finite type exists to complete -- so the honest answer stays a refusal that says which source
+  // change would make the type nameable.
+  it('refuses a cycle whose exported aliases name each other', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        { specifier: './b.js', target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/b.ts' } },
+        { specifier: './a.js', target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/a.ts' } },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const modules = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/geometry',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/geometry/src/a.ts',
+            `import type { Back } from './b.js';
+             export type Front = Readonly<Back>;
+             export function use(value: Front): number { return 1; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/geometry',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/geometry/src/b.ts',
+            `import type { Front } from './a.js';
+             export type Back = Readonly<Front>;
+             export function peek(value: Back): number { return 2; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    ).map((result) => result.module);
+    const failure = captureBackendEmissionFailure(() =>
+      emitCppModuleCppSession(
+        modules.map((module) => ({ module })),
+        moduleResolution,
+        0,
+      ),
+    );
+
+    expect(failure.rule).toBe('cpp-imported-type-unsupported:indeterminateIdentity');
+    expect(failure.message).toContain('one exact, terminating declaration application');
+  });
+
+  // The near-neighbor no publication can rescue, and the reason the rule above is about declarations
+  // rather than about types in general: a base class must be COMPLETE where the derivation is written.
+  // A declaration makes a name usable and stops there, and in a cycle the include that would supply the
+  // definition is always the one the preprocessor has already passed. Emitting it anyway produces a
+  // header that compiles only when the consumer happens to name the derived module first.
+  it('refuses a class whose base class is declared in a module that imports it back', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        { specifier: './b.js', target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/b.ts' } },
+        { specifier: './a.js', target: { packageName: '@flighthq/geometry', source: 'packages/geometry/src/a.ts' } },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const lowerBase = (baseText: string) =>
+      lowerTypeScriptSources(
+        [
+          {
+            packageName: '@flighthq/geometry',
+            sourceFile: ts.createSourceFile(
+              '/flight/packages/geometry/src/a.ts',
+              `import { Base } from './b.js';
+               export class A extends Base { readonly a: number = 1; }`,
+              ts.ScriptTarget.Latest,
+              true,
+            ),
+            upstreamDirectory: '/flight',
+          },
+          {
+            packageName: '@flighthq/geometry',
+            sourceFile: ts.createSourceFile(
+              '/flight/packages/geometry/src/b.ts',
+              baseText,
+              ts.ScriptTarget.Latest,
+              true,
+            ),
+            upstreamDirectory: '/flight',
+          },
+        ],
+        moduleResolution,
+      ).map((result) => result.module);
+    const cyclic = lowerBase(`import { A } from './a.js';
+       export class Base { readonly owner: A | null = null; }`);
+    const failure = captureBackendEmissionFailure(() =>
+      emitCppModuleCppSession(
+        cyclic.map((module) => ({ module })),
+        moduleResolution,
+        0,
+      ),
+    );
+
+    expect(failure.rule).toBe('cpp-class-base-in-import-cycle');
+    expect(failure.message).toContain('a C++ base class must be complete');
+    expect(failure.message).toContain('Move the base into a module outside the cycle');
+
+    // The control that keeps the rule about the cycle rather than about imported bases: the same class
+    // over the same base emits when the base's module does not import back.
+    const acyclic = lowerBase('export class Base { readonly b: number = 2; }');
+    const emitted = emitCppModuleCppSession(
+      acyclic.map((module) => ({ module })),
+      moduleResolution,
+      0,
+    );
+    expect(emitted).toContain('#include "b.hpp"');
+    expect(emitted).toContain('struct A : public flighthq_geometry::Base');
   });
 
   it('falls back to _internal_ output path when source path does not resolve to a file name', () => {

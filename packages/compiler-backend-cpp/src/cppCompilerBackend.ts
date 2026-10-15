@@ -367,6 +367,13 @@ interface EmitContext {
   facetTagNames: Map<string, string>;
   includes: Set<string>;
   module: Readonly<IrModule>;
+  // Which modules import each module, so a declaration a cycle can reach is published rather than left
+  // to an include that the preprocessor has already passed. See `collectCppModuleKeysReachingCpp`.
+  moduleImporterIndex: CppModuleImporterIndex;
+  // Every module whose imports reach this one, which is the question each cycle decides on: a header a
+  // consumer has already entered cannot define anything for the module it is still above. Computed once
+  // per module, because every declaration of the module asks it the same thing.
+  moduleReachability: ReadonlySet<string>;
   namespaceScope: boolean;
   nullableBindingIds: ReadonlySet<string>;
   narrowedBindingTypes: ReadonlyMap<string, Readonly<IrType>>;
@@ -436,6 +443,9 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
       const targetNameMaps = createCppTargetNameMaps(modules);
       const anonymousStructNaming = createCppAnonymousStructNaming(targetNameMaps);
       const unionArmIdentities = new Map<string, CppUnionArmIdentity[]>();
+      // Built once for the emission rather than rebuilt for each module: it is a property of the whole
+      // graph, and every module asks it the same question about its own imports.
+      const moduleImporterIndex = createCppModuleImporterIndex(modules, referenceRepresentationPlanner);
       return Object.freeze({
         emitModule(module: Readonly<IrModule>) {
           return [
@@ -451,6 +461,7 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
               targetNameMaps,
               anonymousStructNaming,
               unionArmIdentities,
+              moduleImporterIndex,
             ),
           ];
         },
@@ -485,6 +496,7 @@ function emitIrModuleCppWithContext(
   targetNameMaps?: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
   anonymousStructNaming?: AnonymousStructNaming | undefined,
   unionArmIdentities?: Map<string, CppUnionArmIdentity[]> | undefined,
+  moduleImporterIndex?: CppModuleImporterIndex | undefined,
   // Present only when a caller is willing to receive a module with declarations missing. Every declaration
   // that fails is recorded here instead of ending the emission, and the file says so in a banner.
   salvage?: CppSalvageRequest | undefined,
@@ -534,6 +546,16 @@ function emitIrModuleCppWithContext(
     throw error;
   }
   assertRuntimeExternalSymbolBindingsCpp(module, options);
+  const resolvedReferenceRepresentationPlanner =
+    referenceRepresentationPlanner ??
+    createIrTypeReferenceRepresentationPlannerCpp(
+      sourceModules,
+      moduleResolution,
+      options.externalBindings,
+      options.runtimeProfile ?? 'standard-library',
+    );
+  const resolvedModuleImporterIndex =
+    moduleImporterIndex ?? createCppModuleImporterIndex(sourceModules, resolvedReferenceRepresentationPlanner);
   const resolvedTargetNameMaps = targetNameMaps ?? createCppTargetNameMaps(sourceModules);
   let targetNames: Map<string, string>;
   try {
@@ -617,16 +639,11 @@ function emitIrModuleCppWithContext(
     namespaceScope: true,
     nullableBindingIds,
     narrowedBindingTypes: new Map(),
+    moduleImporterIndex: resolvedModuleImporterIndex,
+    moduleReachability: collectCppModuleKeysReachingCpp(module, resolvedModuleImporterIndex),
     options,
     preservedInitializerTypes,
-    referenceRepresentationPlanner:
-      referenceRepresentationPlanner ??
-      createIrTypeReferenceRepresentationPlannerCpp(
-        sourceModules,
-        moduleResolution,
-        options.externalBindings,
-        options.runtimeProfile ?? 'standard-library',
-      ),
+    referenceRepresentationPlanner: resolvedReferenceRepresentationPlanner,
     recursiveTypeAliasBindingIds,
     resolvingInitializerBindingIds: new Set(),
     returnsAbsent: false,
@@ -1605,21 +1622,88 @@ function emitCppImportedForwardDeclarations(context: EmitContext): string[] {
     .map(({ declaration, namespace }) => `namespace ${namespace} { ${declaration} }`);
 }
 
-// A mutually importing header can reach a call before the imported header resumes far enough to
-// define the callee. Declare only functions on a proven back edge; doing this for every import would
-// expose arbitrary private signature dependencies and anonymous structural parameter types.
+// The reverse of the import graph, indexed once for one emission: which modules import each module.
+// Every emitted module asks a cycle question about its own imports, so the answer has to be reached by
+// walking these edges rather than by re-resolving the graph for each question.
+type CppModuleImporterIndex = ReadonlyMap<string, readonly Readonly<IrModule>[]>;
+
+function createCppModuleImporterIndex(
+  modules: readonly Readonly<IrModule>[],
+  planner: CompilerCppReferenceRepresentationPlanner,
+): CppModuleImporterIndex {
+  const importers = new Map<string, Readonly<IrModule>[]>();
+  for (const module of modules) {
+    for (const importItem of module.imports) {
+      for (const resolved of planner.resolveModules(importItem.specifier, module)) {
+        const key = getCppModuleIdentityKey(resolved);
+        const existing = importers.get(key);
+        if (existing) existing.push(module);
+        else importers.set(key, [module]);
+      }
+    }
+  }
+  return importers;
+}
+
+// Every module whose imports reach `target`, by however many hops. The question this answers belongs to
+// the C++ preprocessor rather than to source layout: a header already being read is never re-entered, so
+// a module the include stack passed through cannot supply a definition to a module further down that
+// same stack, and `target` being reachable from another module is exactly that condition.
+//
+// A direct import is only the two-module case. A three-module cycle closes the same way one hop further
+// out, and a longer one further still, so the answer comes from the graph rather than from a fixed
+// number of hops. Each module is visited once, which is what makes a cycle terminate the walk rather
+// than extend it.
+function collectCppModuleKeysReachingCpp(
+  target: Readonly<IrModule>,
+  importers: CppModuleImporterIndex,
+): ReadonlySet<string> {
+  const reaching = new Set<string>();
+  const pending = [...(importers.get(getCppModuleIdentityKey(target)) ?? [])];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    const key = getCppModuleIdentityKey(current);
+    if (reaching.has(key)) continue;
+    reaching.add(key);
+    pending.push(...(importers.get(key) ?? []));
+  }
+  return reaching;
+}
+
+// The near-neighbor of every publication above: there the missing thing is a NAME, and a declaration
+// supplies it, while here it is a DEFINITION and only the source can. A derived struct needs its base
+// COMPLETE where the derivation is written -- C++ requires that, and no forward declaration stands in
+// for one -- and an import cycle leaves no header order that supplies it: whichever header a consumer
+// names first, the other is read while its own include of the first has already been suppressed. So a
+// class whose base lives in a module that reaches this one has no valid C++ form at any declaration
+// depth, and emitting it anyway produces a header that compiles only when the consumer happens to
+// include the other one first.
+function assertCppClassBaseCompletenessCpp(declaration: Readonly<IrClassDeclaration>, context: EmitContext): void {
+  const extendsType = declaration.extends;
+  if (extendsType === undefined || extendsType.kind !== 'named' || extendsType.reference.kind !== 'binding') return;
+  const owner =
+    getCppDirectBindingOwner(extendsType, context) ??
+    getCppImportedBindingDeclarationCpp(extendsType, context) ??
+    getCppReexportedImportedBindingDeclarationCpp(extendsType, context);
+  if (owner === undefined) return;
+  const ownerKey = getCppModuleIdentityKey(owner.module);
+  if (ownerKey === getCppModuleIdentityKey(context.module) || !context.moduleReachability.has(ownerKey)) return;
+  emissionError(
+    context,
+    `${getBindingTargetName(declaration.binding, context)} extends ${extendsType.reference.binding.name}, declared by ${owner.module.packageName}/${owner.module.source}, which imports this module back: a C++ base class must be complete where the derived struct is defined, and in that cycle the include that would supply it is always the one the preprocessor has already passed. Move the base into a module outside the cycle, or hold the other type in a member rather than deriving from it`,
+    'cpp-class-base-in-import-cycle',
+  );
+}
+
+// A header a cycle can be entered through can reach a call before the imported header resumes far
+// enough to define the callee. Declare only functions on a proven back edge; doing this for every
+// import would expose arbitrary private signature dependencies and anonymous structural parameter
+// types.
 function emitCppImportedFunctionForwardDeclarations(context: EmitContext): string[] {
   const declarations = new Map<string, { namespace: string; declaration: string }>();
   for (const importItem of context.module.imports) {
     const targetModules = getCppResolvedImportModules(importItem.specifier, context).filter((targetModule) =>
-      targetModule.imports.some((targetImport) =>
-        context.referenceRepresentationPlanner
-          .resolveModules(targetImport.specifier, targetModule)
-          .some(
-            (resolved) =>
-              resolved.packageName === context.module.packageName && resolved.source === context.module.source,
-          ),
-      ),
+      context.moduleReachability.has(getCppModuleIdentityKey(targetModule)),
     );
     for (const binding of importItem.bindings) {
       if (binding.imported === '*') continue;
@@ -1649,7 +1733,16 @@ function emitCppImportedFunctionForwardDeclarations(context: EmitContext): strin
           declaration.typeParameters,
         ),
       };
-      const template = emitCppFunctionTemplate(declaration.typeParameters, declaration.parameters, functionContext);
+      // Neither a template nor a function default belongs here: the declaration is a second spelling of
+      // a signature the defining module owns, and C++ admits each default exactly once per translation
+      // unit. `emitCppForwardParameterCpp` already withholds the parameter default for that reason, and
+      // the template argument list has to withhold its own.
+      const template = emitCppFunctionTemplate(
+        declaration.typeParameters,
+        declaration.parameters,
+        functionContext,
+        false,
+      );
       const parameters = declaration.parameters
         .map((parameter) => emitCppForwardParameterCpp(parameter, functionContext))
         .join(', ');
@@ -1826,6 +1919,7 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, outer: EmitContext
   };
   const name = getBindingTargetName(declaration.binding, context);
   const typeParams = emitTypeParameters(declaration.typeParameters, context);
+  assertCppClassBaseCompletenessCpp(declaration, context);
   const extendsClause = declaration.extends
     ? ` : public ${emitType(declaration.extends, context, 'storage')}`
     : getCppRuntimeProfile(context.options) === 'flight-cpp'
@@ -21862,11 +21956,13 @@ function emitCppExternalObjectConstructionCpp(
 function getCppExternalInstanceMemberBindingCpp(
   expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
   context: EmitContext,
-): Readonly<{
-  propertyAccess: 'field' | 'zero-argument-method';
-  sourceName: string;
-  targetName: string;
-}> | undefined {
+):
+  | Readonly<{
+      propertyAccess: 'field' | 'zero-argument-method';
+      sourceName: string;
+      targetName: string;
+    }>
+  | undefined {
   const sourceName = getCppExternalInstanceReceiverSourceNameCpp(expression.object, context);
   if (!sourceName) return undefined;
   // The read is answered only by a COMPLETE declaration: a member entry that names a target but no
@@ -29223,6 +29319,7 @@ function emitCppRefusalPlaceholder(
       module,
       options,
       [module],
+      undefined,
       undefined,
       undefined,
       undefined,
