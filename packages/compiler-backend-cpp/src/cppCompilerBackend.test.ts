@@ -53768,4 +53768,91 @@ export function omitKeys<Key extends keyof Provider>(): Omit<Provider, Key> {
     expect(contents).not.toMatch(/guards\.(collision|interaction)\b/u);
     expect(contents).not.toContain('flight::Any');
   });
+
+  it('selects structural union views without breaking exact nominal owner recovery', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types/contract',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/contract.ts' },
+        },
+        {
+          specifier: '@flighthq/render-gl/contract',
+          target: { packageName: '@flighthq/render-gl', source: 'packages/render-gl/src/contract.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const results = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/contract.ts',
+            `interface TextureCommon { version: number; runtime: object | undefined }
+             export interface Texture2D extends TextureCommon { readonly dimension: '2d'; source: number | null }
+             export interface Texture2DArray extends TextureCommon { readonly dimension: '2d-array'; sources: readonly (number | null)[] }
+             export interface Texture3D extends TextureCommon { readonly dimension: '3d'; source: number | null }
+             export interface TextureCube extends TextureCommon { readonly dimension: 'cube'; sources: readonly (number | null)[] }
+             export interface RenderTexture extends Texture2D { readonly target: number }
+             export type Texture2DLike = Omit<Texture2D, 'runtime'>;
+             export type Texture2DArrayLike = Omit<Texture2DArray, 'runtime'>;
+             export type Texture3DLike = Omit<Texture3D, 'runtime'>;
+             export type TextureCubeLike = Omit<TextureCube, 'runtime'>;
+             export type GlTextureValue =
+               | Readonly<Texture2DLike>
+               | Readonly<Texture2DArrayLike>
+               | Readonly<Texture3DLike>
+               | Readonly<TextureCubeLike>
+               | Readonly<RenderTexture>;`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/render-gl',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/render-gl/src/contract.ts',
+            `import type { GlTextureValue } from '@flighthq/types/contract';
+             export function resolve(_texture: GlTextureValue): void {}`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/scene3d-gl',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/scene3d-gl/src/particle.ts',
+            `import type { Texture2D } from '@flighthq/types/contract';
+             import { resolve } from '@flighthq/render-gl/contract';
+             export interface Runtime { active: Texture2D | null }
+             export function draw(texture: Texture2D): void { resolve(texture); }
+             export function remember(runtime: Runtime, texture: Readonly<Texture2D>): void { runtime.active = texture; }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    const modules = results.map((result) => result.module);
+    const emitted = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules,
+      options: {
+        packageTargets: {
+          '@flighthq/render-gl': { includePrefix: 'flight/render_gl', namespace: 'flight::render_gl' },
+          '@flighthq/scene3d-gl': { includePrefix: 'flight/scene3d_gl', namespace: 'flight::scene3d_gl' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    }).emitModule(modules[2]!)[0]!.contents;
+
+    expect(results.flatMap((result) => result.diagnostics)).toEqual([]);
+    expect(emitted).toContain('flight::structural_ref_cast<');
+  });
 });
