@@ -18777,7 +18777,7 @@ function getCppProvenStructuralUnionConversionAlternativesCpp(
   }>,
   context: EmitContext,
 ): readonly Readonly<IrType>[] {
-  return targetSlot.sourceAlternatives.flatMap((alternative) => {
+  const proven = (alternative: Readonly<IrType>): readonly Readonly<IrType>[] => {
     const targetRow = context.referenceRepresentationPlanner.resolveStructuralRow(alternative, context.module);
     const isolatedContext: EmitContext = { ...context, anonymousStructs: new Map(), includes: new Set<string>() };
     if (
@@ -18787,7 +18787,12 @@ function getCppProvenStructuralUnionConversionAlternativesCpp(
       return [];
     }
     return [alternative];
-  });
+  };
+  const alternatives = targetSlot.sourceAlternatives.flatMap(proven);
+  // A nested union alias is recorded as the source alternative of every slot it expands into. Its slot's
+  // runtime type is still the exact resolved arm, so use that arm only when the outer alias proves no
+  // conversion itself. The same checked row proof applies; this does not turn a broad alias into a guess.
+  return alternatives.length > 0 ? alternatives : proven(targetSlot.runtimeType);
 }
 
 // Rebuild a readonly structural-view union from a nominal-owner union after proving one destination for
@@ -18805,7 +18810,7 @@ function emitCppStructuralReferenceMultiVariantConversionCpp(
 ): string | undefined {
   if (
     sourcePlan.kind !== 'multiVariant' ||
-    targetPlan.kind !== 'multiVariant' ||
+    (targetPlan.kind !== 'multiVariant' && targetPlan.kind !== 'optionalVariant') ||
     sourcePlan.valueSlots.length === 0 ||
     sourcePlan.valueSlots.some(
       (slot) =>
