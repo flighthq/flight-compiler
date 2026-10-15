@@ -22908,8 +22908,117 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     ).toContain('return flight::Map<flight::String, double>(map).clone();');
   });
 
-  // The Set constructions whose source cannot be read as values, and the values-iterator form that belongs
-  // to the other record: none of them changed here.
+  // `new Set(collection.values())` -- and keys() -- passes an iterator that is never null or undefined.
+  // Lowering it against the constructor's `Iterable<T> | null | undefined` parameter asked for a contextual
+  // optional construction the iterator call carries no evidence for, so the whole construction refused. The
+  // iterator is now emitted as itself and reaches the range constructor, which reads every element in order
+  // into new storage -- but only when the receiver's declaration proves the element carrier and that carrier
+  // can hold it.
+  it('fills a Set from a proven collection iterator', () => {
+    const emitIterator = (body: string) =>
+      emitIrModuleCpp(lower('new-set-iterator.ts', body).module, { runtimeProfile: 'flight-cpp' }).contents;
+
+    // The SDK shape: a table of resources reduced to the set of its names. Each carrier below comes from the
+    // RECEIVER's declared type arguments, and the emitted set is the one the source declared.
+    const sdk = emitIterator(
+      `export function resourceNames(table: ReadonlyMap<string, number>): Set<string> {
+         return new Set(table.keys());
+       }
+       export function sizes(table: ReadonlyMap<string, number>): Set<number> {
+         return new Set(table.values());
+       }`,
+    );
+    expect(sdk).toContain('return flight::Set<flight::String>(table.keys());');
+    expect(sdk).toContain('return flight::Set<double>(table.values());');
+
+    const shapes = emitIterator(
+      `export function fromSet(set: Set<string>): Set<string> { return new Set(set.values()); }
+       export function fromReadonlyKeys(set: ReadonlySet<string>): Set<string> { return new Set(set.keys()); }
+       export function fromMapKeys(map: Map<string, number>): Set<string> { return new Set(map.keys()); }
+       export function fromArray(values: string[]): Set<string> { return new Set(values.values()); }
+       export function fromArrayIndices(values: string[]): Set<number> { return new Set(values.keys()); }
+       export function typed(set: Set<string>): Set<string> { return new Set<string>(set.values()); }
+       export function generic<Type>(set: ReadonlySet<Type>): Set<Type> { return new Set(set.values()); }`,
+    );
+    expect(shapes).toContain('return flight::Set<flight::String>(set.values());');
+    expect(shapes).toContain('return flight::Set<flight::String>(set.keys());');
+    expect(shapes).toContain('return flight::Set<flight::String>(map.keys());');
+    expect(shapes).toContain('return flight::Set<flight::String>(values.values());');
+    // Array.keys() yields the indices, which is the numeric element of the set it fills.
+    expect(shapes).toContain('return flight::Set<double>(values.keys());');
+    expect(shapes).toContain('return flight::Set<Type>(set.values());');
+
+    // A declared carrier WIDER than the iterator's element is filled with what the iterator yields, which is
+    // what the declaration allows -- including the dual-sentinel variant.
+    expect(
+      emitIterator(
+        `export function widen(set: Set<string>): Set<string | number> { return new Set<string | number>(set.values()); }`,
+      ),
+    ).toContain('return flight::Set<std::variant<double, flight::String>>(set.values());');
+    expect(
+      emitIterator(
+        `export function nullable(set: Set<string>): Set<string | null | undefined> {
+           return new Set<string | null | undefined>(set.values());
+         }`,
+      ),
+    ).toContain('return flight::Set<std::variant<flight::String, flight::Null, flight::Undefined>>(set.values());');
+  });
+
+  // The iterator shapes that are not proven, and the ones whose element the declared carrier cannot hold:
+  // each keeps a refusal rather than being guessed at.
+  it('refuses the iterator shapes whose element carrier it cannot prove', () => {
+    const refusal = (body: string): string => {
+      try {
+        emitIrModuleCpp(lower('new-set-iterator-refusal.ts', body).module, { runtimeProfile: 'flight-cpp' });
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      return '(emitted)';
+    };
+
+    // The declared carrier cannot hold what the iterator may yield.
+    expect(
+      refusal(
+        `export function narrow(set: Set<string | number>): Set<string> { return new Set<string>(set.values()); }`,
+      ),
+    ).toContain('new Set cannot be filled from an iterator of');
+    // A receiver whose type is erased has no element to prove.
+    expect(refusal(`export function erased(source: any): Set<string> { return new Set(source.values()); }`)).toContain(
+      'contextual optionalSingle construction requires expression type evidence',
+    );
+    // An optional call may answer undefined, so it is not the never-null iterator this lowering is about.
+    expect(
+      refusal(`export function optional(set: Set<string> | undefined): Set<string> { return new Set(set?.values()); }`),
+    ).toContain('contextual optionalSingle construction requires expression type evidence');
+    // A STORED iterator is a one-shot cursor: the runtime's iterator shares its cursor with copies and stays
+    // exhausted, so only a fresh inline call is lowered.
+    expect(
+      refusal(
+        `export function stored(set: Set<string>): Set<string> { const iterator = set.values(); return new Set(iterator); }`,
+      ),
+    ).toContain('new Set requires a source the target can read as values');
+    // `entries()` is a different construction (a set of fresh pairs, and flight::Set has none).
+    expect(
+      refusal(`export function entries(set: Set<string>): Set<[string, string]> { return new Set(set.entries()); }`),
+    ).toContain('contextual optionalSingle construction requires expression type evidence');
+
+    // The ordinary constructor forms and the Set copy this lane sits beside are untouched.
+    const controls = emitIrModuleCpp(
+      lower(
+        'new-set-iterator-controls.ts',
+        `export function fromArray(values: string[]): Set<string> { return new Set(values); }
+         export function copy(set: ReadonlySet<string>): Set<string> { return new Set(set); }
+         export function empty(): Set<string> { return new Set<string>(); }`,
+      ).module,
+      { runtimeProfile: 'flight-cpp' },
+    ).contents;
+    expect(controls).toContain('return flight::Set<flight::String>(values);');
+    expect(controls).toContain('return flight::Set<flight::String>(set).clone();');
+    expect(controls).toContain('return flight::Set<flight::String>();');
+  });
+
+  // The Set constructions whose source cannot be read as values, and the iterator forms that no proof
+  // covers: none of them is guessed at.
   it('refuses a Set construction whose source cannot be read as values', () => {
     const refusal = (body: string): string => {
       try {
@@ -22928,9 +23037,15 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
         `export function fromTwo(values: string[], extra: string[]): Set<string> { return new Set(values, extra as never); }`,
       ),
     ).toContain('new Set takes one values source and nothing else, and this call passes 2');
-    // `new Set(set.values())` is compiler-new-set-from-iterator's shape and keeps its own refusal.
+    // The iterator shapes are their own lane now: a STORED iterator is a one-shot cursor, and `entries()`
+    // builds a set of fresh pairs rather than of the collection's elements, so both still refuse.
     expect(
-      refusal(`export function fromIterator(set: Set<string>): Set<string> { return new Set(set.values()); }`),
+      refusal(
+        `export function stored(set: Set<string>): Set<string> { const iterator = set.values(); return new Set(iterator); }`,
+      ),
+    ).toContain('new Set requires a source the target can read as values');
+    expect(
+      refusal(`export function entries(set: Set<string>): Set<[string, string]> { return new Set(set.entries()); }`),
     ).toContain('contextual optionalSingle construction requires expression type evidence');
   });
 

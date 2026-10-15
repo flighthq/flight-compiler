@@ -5503,7 +5503,30 @@ function emitExpression(
       if (constructedCollection?.reference.name === 'Set') {
         assertCppCollectionConstructionSourceCpp(expression, 'Set', context);
       }
+      const constructedSetElement =
+        constructedCollection?.reference.name === 'Set' ? constructedCollection.typeArguments[0] : undefined;
       const args = expression.arguments.map((argument, index) => {
+        // `new Set(collection.values())` -- and keys() -- passes an iterator that is never null or undefined,
+        // so lowering it against the constructor's `Iterable<T> | null | undefined` parameter asks for a
+        // contextual optional construction the iterator call carries no evidence for. The iterator is emitted
+        // as itself and reaches the range constructor, which reads every element in order into new storage.
+        // It is lowered that way only when the receiver's declaration proves the element carrier AND that
+        // carrier is the one the new set is declared to hold: an iterator of a different element type, an
+        // erased receiver, a stored (one-shot) iterator and an optional call all keep their refusals rather
+        // than being guessed at here.
+        if (index === 0 && constructedSetElement !== undefined) {
+          const iteratorElement = getCppCollectionIteratorElementTypeCpp(argument, context);
+          if (iteratorElement !== undefined) {
+            if (!canCppIteratorElementFillCarrierCpp(iteratorElement, constructedSetElement, context)) {
+              emissionError(
+                context,
+                `new Set cannot be filled from an iterator of ${describeIrTypeForDiagnosticCpp(iteratorElement)}: the set is declared to hold ${describeIrTypeForDiagnosticCpp(constructedSetElement)}`,
+                'cpp-set-construction-iterator-element-mismatch',
+              );
+            }
+            return emitExpression(argument, context);
+          }
+        }
         const mapEntries =
           index === 0 && mapType?.reference.name === 'Map'
             ? emitCppMapLiteralConstructorEntriesCpp(argument, mapType, context)
@@ -28206,6 +28229,60 @@ function getIrAssignmentTargetTypeCpp(
     getIrExpressionBindingTypeCpp(expression, context) ??
     getIrExpressionTypeEvidenceCpp(expression, context)
   );
+}
+
+// Whether an iterator's element can fill the carrier a set is declared to hold. The element is accepted when
+// it IS that carrier, or when the carrier is a wider represented union one of whose alternatives the element
+// is: filling `Set<string | number>` from an iterator of strings stores only strings, which the declaration
+// allows, while filling `Set<string>` from an iterator that may yield a number does not hold what the
+// declaration promises, and the runtime's own `add(Value)` would refuse it at instantiation instead.
+function canCppIteratorElementFillCarrierCpp(
+  element: Readonly<IrType>,
+  carrier: Readonly<IrType>,
+  context: EmitContext,
+): boolean {
+  if (areCppTypesRepresentationEquivalent(element, carrier, context)) return true;
+  const union = getIrUnionTypeCpp(carrier, context, new Set());
+  return (
+    union !== undefined &&
+    union.types.some((alternative) => areCppTypesRepresentationEquivalent(element, alternative, context))
+  );
+}
+
+// The element carrier an iterator call yields, when the receiver's type proves it. `values()` and `keys()`
+// on a Set, Map or Array are the iterator shapes whose carrier is a property of the RECEIVER's declaration
+// rather than of the call site, so the answer is read from the collection's own type arguments -- never
+// guessed from the accessor's name or from where the result is used.
+//
+// Only shapes the runtime can consume are answered: `entries()` is left out (a Set built from entries holds
+// a fresh pair per element, and flight::Set has no entries() at all), an optional call is left out (its
+// result may be undefined), and a receiver whose type is erased, generic-unproven or not one of these three
+// collections has no carrier to prove, which keeps its existing refusal.
+function getCppCollectionIteratorElementTypeCpp(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (expression.kind !== 'call' || expression.optional || expression.arguments.length !== 0) return undefined;
+  const callee = expression.callee;
+  if (callee.kind !== 'property' || callee.optional) return undefined;
+  const readsElement = callee.name === 'values' || callee.name === 'keys';
+  if (!readsElement) return undefined;
+  const receiverType =
+    getIrExpressionBindingTypeCpp(callee.object, context) ?? getIrExpressionTypeEvidenceCpp(callee.object, context);
+  if (receiverType === undefined) return undefined;
+  // `Array.keys()` yields indices, which is the numeric element of the set it builds, not the array's own
+  // element type.
+  if (receiverType.kind === 'array') {
+    return callee.name === 'values' ? receiverType.element : { kind: 'primitive', name: 'number' };
+  }
+  const collection = getIrAmbientCollectionTypeCpp(receiverType, context, new Set());
+  if (collection === undefined) return undefined;
+  const name = collection.reference.name;
+  if (name === 'Set' || name === 'ReadonlySet') return collection.typeArguments[0];
+  if (name === 'Map' || name === 'ReadonlyMap') {
+    return callee.name === 'keys' ? collection.typeArguments[0] : collection.typeArguments[1];
+  }
+  return undefined;
 }
 
 // Whether a `new Set(argument)` argument is itself a Set: a Set or ReadonlySet value whose values the new set
