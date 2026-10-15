@@ -26551,9 +26551,21 @@ int main() {
     );
   });
 
-  it('plans an ErasedRef WeakMap view with get, set, has, and delete up to its exact runtime overload', () => {
-    const result = lower(
-      'erased-ref-weak-map-view.ts',
+  // An immutable local typed view over an erased-reference WeakMap whose key and value the planner has
+  // ALREADY proved are exact Flight reference carriers acquires the runtime view. The pinned runtime answers
+  // that pair, so the terminal refusal that used to stand here is no longer what the runtime requires: the
+  // assertion stays a view over the same WeakMap referent, and set/has/delete/get go through it.
+  it('acquires an ErasedRef WeakMap view with get, set, has, and delete', () => {
+    const emitView = (body: string) => {
+      const result = lower('erased-ref-weak-map-view.ts', body);
+      try {
+        return emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }).contents;
+      } catch (error) {
+        return `refused: ${(error as { rule?: string }).rule ?? String(error)}`;
+      }
+    };
+
+    const view = emitView(
       `interface Key { id: number }
        interface Value { version: number }
        export function exercise(values: WeakMap<object, object>, key: Key, value: Value): Value | undefined {
@@ -26564,15 +26576,44 @@ int main() {
          return typed.get(key);
        }`,
     );
-    const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' }),
-    );
+    expect(view).toContain('auto typed = flight::checked_weak_map_view<flight::Ref<Key>, flight::Ref<Value>>(values);');
+    expect(view).toContain('typed.set(key, value);');
+    expect(view).toContain('typed.has(key);');
+    expect(view).toContain('typed.erase(key);');
+    expect(view).toContain('return typed.get(key);');
 
-    expect(result.diagnostics).toEqual([]);
-    expect(failure.message).toContain(
-      'flight::checked_weak_map_view<Key, Value>(flight::WeakMap<flight::Ref<void>, flight::ErasedRef>&)',
-    );
-    expect(failure.rule).toBe('cpp-weak-map-erased-ref-view-unsupported');
+    // The refusals that stay, each because the planner's proof is what gates the acquisition: an element
+    // carrier the planner has NOT proved is a Flight reference (primitives here), a view that never binds to
+    // a local, and a MUTABLE local -- the record's scope is the immutable typed view.
+    expect(
+      emitView(
+        `export function exercise(values: WeakMap<object, object>, key: string, value: number): number | undefined {
+           const typed = values as WeakMap<string, number>;
+           typed.set(key, value);
+           return typed.get(key);
+         }`,
+      ),
+    ).toContain('refused:');
+    expect(
+      emitView(
+        `interface Key { id: number }
+         interface Value { version: number }
+         export function exercise(values: WeakMap<object, object>, key: Key): number {
+           return (values as WeakMap<Key, Value>).size;
+         }`,
+      ),
+    ).toContain('refused:');
+    expect(
+      emitView(
+        `interface Key { id: number }
+         interface Value { version: number }
+         export function exercise(values: WeakMap<object, object>, key: Key, value: Value): Value | undefined {
+           let typed = values as WeakMap<Key, Value>;
+           typed.set(key, value);
+           return typed.get(key);
+         }`,
+      ),
+    ).toContain('refused:');
   });
 
   it('refuses invalid ErasedRef WeakMap view keys, values, and open generic values before runtime acquisition', () => {

@@ -11834,7 +11834,14 @@ function emitCppErasedWeakMapViewAcquisition(
   plan: Readonly<CppWeakMapViewPlan>,
   context: EmitContext,
 ): string {
-  if (plan.erasedValue === 'reference') refuseCppErasedRefWeakMapView(context);
+  // The planner has already proved this view's key and value are EXACT Flight reference carriers -- a closed
+  // key, and a value whose identity is determinate and whose representation is `flightReference` -- and the
+  // pinned runtime answers that pair with `checked_weak_map_view<Key, Value>(WeakMap<Ref<void>, ErasedValue>&)`.
+  // Acquiring the view keeps the source assertion a view over the SAME WeakMap referent: keys keep weak
+  // reference identity, `set` stores the same reference owner, `has`/`delete` operate on the shared key
+  // identity, and `get` asks the runtime to validate the exact recorded owner before returning it. No cast,
+  // copied object, replacement map or side table is involved, which is why the read-only terminal refusal that
+  // used to stand here is no longer what the pinned runtime requires.
   context.includes.add('flight/weak_map.hpp');
   return `flight::checked_weak_map_view<${emitType(plan.key, context)}, ${emitType(plan.value, context)}>(${emitExpression(expression.expression, context)})`;
 }
