@@ -75,7 +75,9 @@ function isCAbiPlanningFailure(error: unknown): error is CAbiPlanningFailure {
 
 const errorPlan = {
   catchesCppExceptions: true,
+  exceptionConstant: 'FLIGHT_CPP_STATUS_EXCEPTION',
   initializesOutResultBeforeValidation: true,
+  invalidArgumentConstant: 'FLIGHT_CPP_STATUS_INVALID_ARGUMENT',
   lastError: 'none',
   statusCarrier: 'flight_cpp_status',
   strategy: 'status-return',

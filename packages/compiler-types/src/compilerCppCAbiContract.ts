@@ -21,6 +21,8 @@ export type CompilerCppCAbiDiagnosticCode =
   | 'unsupported-carrier'
   | 'unsupported-parameter';
 
+export type CompilerCppCAbiEmissionFailureCode = 'invalid-plan' | 'unsupported-carrier';
+
 export type CompilerCppCAbiOwnership = 'borrowed' | 'none' | 'owned' | 'value';
 
 export type CompilerCppCAbiPresence = 'nullable-null' | 'nullable-undefined' | 'not-applicable' | 'required';
@@ -39,11 +41,27 @@ export interface CompilerCppCAbiDiagnostic {
 
 export interface CompilerCppCAbiErrorPlan {
   readonly catchesCppExceptions: true;
+  readonly exceptionConstant: 'FLIGHT_CPP_STATUS_EXCEPTION';
   readonly initializesOutResultBeforeValidation: true;
+  readonly invalidArgumentConstant: 'FLIGHT_CPP_STATUS_INVALID_ARGUMENT';
   readonly lastError: 'none';
   readonly statusCarrier: 'flight_cpp_status';
   readonly strategy: 'status-return';
   readonly successConstant: 'FLIGHT_CPP_STATUS_OK';
+}
+
+export interface CompilerCppCAbiEmission {
+  readonly functions: readonly CompilerCppCAbiFunctionEmission[];
+  readonly schema: 'flight-compiler-cpp-c-abi-emission/1';
+}
+
+export interface CompilerCppCAbiEmissionFailure extends Error {
+  readonly bindingId: string;
+  readonly code: CompilerCppCAbiEmissionFailureCode;
+  readonly kind: 'cpp-c-abi-emission';
+  readonly packageName: string;
+  readonly source: string;
+  readonly symbol: string;
 }
 
 export interface CompilerCppCAbiFunctionPlan {
@@ -58,6 +76,16 @@ export interface CompilerCppCAbiFunctionPlan {
   readonly sourceName: string;
   readonly symbol: string;
   readonly visibility: 'FLIGHT_CPP_API';
+}
+
+export interface CompilerCppCAbiFunctionEmission {
+  readonly adapterSourceContents: string;
+  readonly bindingId: string;
+  readonly headerContents: string;
+  readonly headerPath: string;
+  readonly packageName: string;
+  readonly source: string;
+  readonly symbol: string;
 }
 
 export interface CompilerCppCAbiHandlePlan {
