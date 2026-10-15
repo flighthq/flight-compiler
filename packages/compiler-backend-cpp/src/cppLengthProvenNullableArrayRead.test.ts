@@ -39,12 +39,8 @@ it('keeps only the nullable element carrier for length-proven generic reads', ()
     }
   `);
 
-  expect(output).toContain(
-    'std::optional<std::function<void()>> slot = data->slots.get(i).value_or(std::nullopt);',
-  );
-  expect(output).toContain(
-    'std::optional<std::function<void()>> slot = slots.get(i).value_or(std::nullopt);',
-  );
+  expect(output).toContain('std::optional<std::function<void()>> slot = data->slots.get(i).value_or(std::nullopt);');
+  expect(output).toContain('std::optional<std::function<void()>> slot = slots.get(i).value_or(std::nullopt);');
   expect(output.match(/slot\.value\(\)\(\);/g)).toHaveLength(2);
   expect(output).not.toContain('std::optional<std::optional<std::function<void()>>> slot');
 });
@@ -83,13 +79,9 @@ it('retains the existing carrier for every unproven or distinct absence shape', 
     }
   `);
 
-  expect(output).toContain(
-    'std::optional<std::optional<std::function<void()>>> unchecked_slot = slots.get(i);',
-  );
+  expect(output).toContain('std::optional<std::optional<std::function<void()>>> unchecked_slot = slots.get(i);');
   expect(output).toContain('unchecked_slot.value()();');
-  expect(output).toContain(
-    'std::optional<std::optional<std::function<void()>>> unproven_slot = slots.get(i);',
-  );
+  expect(output).toContain('std::optional<std::optional<std::function<void()>>> unproven_slot = slots.get(i);');
   expect(output).toContain('unproven_slot.value()();');
   expect(output).toContain('std::optional<T> required_slot = slots.get(i);');
   expect(output).toContain('required_slot.value()();');
