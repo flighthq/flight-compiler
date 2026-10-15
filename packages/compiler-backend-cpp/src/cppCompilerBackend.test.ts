@@ -19374,9 +19374,7 @@ export function pick(s: S3): Bias | null { return s.b ?? null; }`,
     ).toHaveLength(2);
     expect(emitted).toContain('optional_chain_receiver.value()->state');
     expect(emitted).toContain('std::holds_alternative<flight::Ref<flight::types::Single>>');
-    expect(emitted).toMatch(
-      /return \(entry\.index\(\) == \d+ && \(std::get<flight::Ref<state_value_[0-9a-f]+>>\(entry\)->value == expected\)\);/u,
-    );
+    expect(emitted).toMatch(/return \(entry\.index\(\) == 0 && \(std::get<0>\(entry\)->value == expected\)\);/u);
   });
 
   it('keeps incompatible optional-variant and dual-sentinel receiver refusals', () => {

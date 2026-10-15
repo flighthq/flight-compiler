@@ -16237,8 +16237,10 @@ function emitUnionMemberTestCpp(evidence: Readonly<IrUnionMemberTestEvidence>, c
     return evidence.whenResult ? test : `!(${test})`;
   }
   const representation = getCppVariantRepresentationForInspection(union, context);
-  const alternatives = representation.alternatives.filter((alternative) =>
-    doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(alternative, evidence.member, context),
+  const alternatives = getCppVariantAlternativesMatchingUnionMemberEvidenceCpp(
+    representation,
+    evidence.member,
+    context,
   );
   if (alternatives.length !== 1) {
     emissionError(context, 'union member test must identify exactly one C++ variant alternative');
@@ -16271,8 +16273,10 @@ function emitCppNestedUnionMemberTestCpp(
   const nestedUnion = slot ? getIrVariantUnionTypeCpp(slot.runtimeType, context, new Set()) : undefined;
   if (!nestedUnion) return undefined;
   const representation = getCppVariantRepresentationForInspection(nestedUnion, context);
-  const alternatives = representation.alternatives.filter((alternative) =>
-    doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(alternative, evidence.member, context),
+  const alternatives = getCppVariantAlternativesMatchingUnionMemberEvidenceCpp(
+    representation,
+    evidence.member,
+    context,
   );
   if (alternatives.length !== 1) {
     emissionError(context, 'union member test must identify exactly one nested C++ optional value alternative');
@@ -16642,15 +16646,21 @@ function doesCppVariantAlternativeMatchType(
   );
 }
 
-function doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(
-  alternative: CppVariantRepresentation['alternatives'][number],
+function getCppVariantAlternativesMatchingUnionMemberEvidenceCpp(
+  representation: Readonly<CppVariantRepresentation>,
   member: Readonly<IrType>,
   context: EmitContext,
-): boolean {
-  return (
-    doesCppVariantAlternativeMatchType(alternative, member, context) ||
-    areCppUnionMemberDiscriminantsEquivalent(alternative.runtimeType, member, context) ||
-    areCppUnionMemberObjectRepresentationsEquivalent(alternative.runtimeType, member, context)
+): readonly CppVariantRepresentation['alternatives'][number][] {
+  const exact = representation.alternatives.filter((alternative) =>
+    doesCppVariantAlternativeMatchType(alternative, member, context),
+  );
+  if (exact.length > 0) return exact;
+  const discriminated = representation.alternatives.filter((alternative) =>
+    areCppUnionMemberDiscriminantsEquivalent(alternative.runtimeType, member, context),
+  );
+  if (discriminated.length > 0) return discriminated;
+  return representation.alternatives.filter((alternative) =>
+    areCppUnionMemberObjectRepresentationsEquivalent(alternative.runtimeType, member, context),
   );
 }
 
@@ -16798,11 +16808,10 @@ function emitCppNarrowedVariantCommonPropertyExpressionCpp(
   const declaredRepresentation = getCppVariantRepresentationForInspection(declaredUnion, context);
   if (declaredRepresentation.direct) return undefined;
   const selected = narrowedUnion.types.map((narrowedAlternative) => {
-    const matches = declaredRepresentation.alternatives.filter(
-      (declaredAlternative) =>
-        declaredAlternative.members.some((member) => isDeepStrictEqual(member, narrowedAlternative)) ||
-        areCppUnionMemberDiscriminantsEquivalent(declaredAlternative.runtimeType, narrowedAlternative, context) ||
-        areCppUnionMemberObjectRepresentationsEquivalent(declaredAlternative.runtimeType, narrowedAlternative, context),
+    const matches = getCppVariantAlternativesMatchingUnionMemberEvidenceCpp(
+      declaredRepresentation,
+      narrowedAlternative,
+      context,
     );
     return matches.length === 1 ? matches[0] : undefined;
   });
@@ -16882,10 +16891,17 @@ function getCppVariantCommonPropertyEvidenceCpp(
     const mergedUnion = mergedType ? getIrUnionTypeCpp(mergedType, context, new Set()) : undefined;
     if (!mergedUnion) return undefined;
     const mergedPlan = getCppUnionRepresentationPlan(mergedUnion, context);
-    // A sentinel or optionality difference can widen into one shared payload slot. Distinct present
-    // payloads still require a selected alternative; accepting them here would turn an unguarded
-    // `string | number` member into a second variant and hide the missing receiver proof.
-    if (mergedPlan.valueSlots.length !== 1) return undefined;
+    // Each receiver alternative names the member, and each member carrier must still map exactly into
+    // the merged result below. That proof also admits a closed heterogeneous result: the visitor keeps
+    // the selected member owner in the result variant rather than copying or erasing it. Keep unrelated
+    // primitive and collection properties on the guarded-read path: unlike a reference owner, their
+    // common spelling would introduce a second value carrier without proving which receiver owns it.
+    if (
+      mergedPlan.valueSlots.length !== 1 &&
+      mergedPlan.valueSlots.some((slot) => getCppReferenceElementTypeNameCpp(slot.targetType) === undefined)
+    ) {
+      return undefined;
+    }
     const projected = `${referenceModes.has('reference') ? 'value->' : 'value.'}${memberAccess}`;
     const branches = propertyTypes.flatMap((propertyType, index) => {
       const result = emitCppVariantCommonPropertyWideningCpp(
@@ -17291,12 +17307,7 @@ function emitCppNarrowedUnionValueCpp(
   if (representation.direct && narrowedType) return binding;
   if (narrowedUnion) {
     const selectedAlternatives = narrowedUnion.types.map((member) => {
-      const matches = representation.alternatives.filter(
-        (alternative) =>
-          alternative.members.some((candidate) => isDeepStrictEqual(candidate, member)) ||
-          areCppUnionMemberDiscriminantsEquivalent(alternative.runtimeType, member, context) ||
-          areCppUnionMemberObjectRepresentationsEquivalent(alternative.runtimeType, member, context),
-      );
+      const matches = getCppVariantAlternativesMatchingUnionMemberEvidenceCpp(representation, member, context);
       return matches.length === 1 ? matches[0] : undefined;
     });
     const uniqueAlternatives = new Set(selectedAlternatives);
@@ -17415,9 +17426,7 @@ function emitCppNarrowedNestedUnionMemberCpp(
   const nestedUnion = slot ? getIrVariantUnionTypeCpp(slot.runtimeType, context, new Set()) : undefined;
   if (!nestedUnion) return undefined;
   const representation = getCppVariantRepresentationForInspection(nestedUnion, context);
-  const matches = representation.alternatives.filter((alternative) =>
-    doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(alternative, narrowedType, context),
-  );
+  const matches = getCppVariantAlternativesMatchingUnionMemberEvidenceCpp(representation, narrowedType, context);
   if (matches.length !== 1) return undefined;
   const nested =
     plan.kind === 'optionalSingle'
@@ -30673,8 +30682,10 @@ function emitCppNarrowedPresentAccessCpp(
   const presentUnion = recordedNarrowedType ? getIrVariantUnionTypeCpp(presentType, context, new Set()) : undefined;
   if (recordedNarrowedType && presentUnion) {
     const representation = getCppVariantRepresentationForInspection(presentUnion, context);
-    const matches = representation.alternatives.filter((alternative) =>
-      doesCppVariantAlternativeMatchUnionMemberEvidenceCpp(alternative, recordedNarrowedType, context),
+    const matches = getCppVariantAlternativesMatchingUnionMemberEvidenceCpp(
+      representation,
+      recordedNarrowedType,
+      context,
     );
     if (matches.length === 1 && !representation.direct) {
       context.includes.add('variant');
