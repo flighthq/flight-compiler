@@ -17142,6 +17142,22 @@ function getCppVariantRepresentationForInspection(
   });
 }
 
+// A type parameter whose constraint is one runtime domain (a callable, an object, a primitive) is one value
+// alternative of a union that names it, and that alternative is stored as the parameter, not as its
+// constraint. Opening it to the constraint would declare `(T | null)[]` as an array of the constraint's
+// carrier, which the instantiated `T` the values actually have does not convert to. A constraint that is
+// itself a union of several domains still opens, because those domains are the alternatives the union
+// stores. An unconstrained parameter already stays itself.
+function isCppSingleDomainTypeParameterCpp(type: Readonly<IrType>, context: EmitContext): boolean {
+  if (type.kind !== 'named' || type.reference.kind !== 'binding' || type.reference.binding.kind !== 'typeParameter') {
+    return false;
+  }
+  const constraint = getCppDependentTypeParameterConstraintCpp(type.reference.binding.id, context);
+  if (!constraint) return false;
+  const domain = getIrTypeRuntimeDomainCpp(constraint, context, new Set([type.reference.binding.id]));
+  return domain !== undefined && getIrUnionTypeCpp(domain, context, new Set()) === undefined;
+}
+
 function getCppUnionRepresentationPlan(
   type: Readonly<Extract<IrType, { kind: 'union' }>>,
   context: EmitContext,
@@ -17151,7 +17167,9 @@ function getCppUnionRepresentationPlan(
       return resolveCppTypeAliasTarget(typeReference, context);
     },
     resolveRuntimeDomain(runtimeType) {
-      return getIrTypeRuntimeDomainCpp(runtimeType, context, new Set());
+      return isCppSingleDomainTypeParameterCpp(runtimeType, context)
+        ? runtimeType
+        : getIrTypeRuntimeDomainCpp(runtimeType, context, new Set());
     },
     resolveTargetType(runtimeType) {
       return emitType(runtimeType, context);
@@ -17901,6 +17919,23 @@ function emitContextualUnionExpressionInContextCpp(
     const absence = emitCppUnionSentinelConstruction(sentinel, union, plan.kind, context);
     const unionType = emitUnionTypeCpp(union, context);
     return `([&]() -> ${unionType} { (void)${emitted}; return ${absence}; }())`;
+  }
+  // A single-domain type parameter is its own alternative in a union that names it (see
+  // isCppSingleDomainTypeParameterCpp), so a value of that parameter enters that alternative unchanged.
+  // Without that alternative -- a destination spelled with the constraint itself -- the domain lanes below
+  // decide, as they always have.
+  if (isCppSingleDomainTypeParameterCpp(expressionType, context)) {
+    const parameterTarget = emitType(expressionType, context);
+    const parameterSlot = plan.valueSlots.find((slot) => slot.targetType === parameterTarget);
+    if (parameterSlot) {
+      return emitCppUnionValueConstruction(
+        emitExpression(expression, context, expressionType, false),
+        parameterSlot.targetType,
+        union,
+        plan.kind,
+        context,
+      );
+    }
   }
   const runtimeType = getIrTypeRuntimeDomainCpp(expressionType, context, new Set());
   if (!runtimeType) {
