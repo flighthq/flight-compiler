@@ -338,6 +338,20 @@ export function getCompilerRuntimeExternalMemberRecordConversionCpp(
   });
 }
 
+export function getCompilerRuntimeExternalMemberCallArityCpp(
+  sourceName: string,
+  member: string,
+  runtimeProfile: CppCompilerRuntimeProfile = 'standard-library',
+  externalBindings?: Readonly<CppCompilerExternalBindingManifest> | undefined,
+): number | undefined {
+  const normalized = sourceName.normalize('NFC');
+  const binding: CppRuntimeExternalSymbolBinding | undefined = getCppRuntimeExternalSymbolBindings(
+    runtimeProfile,
+    externalBindings,
+  ).find((candidate) => candidate.sourceName === normalized && candidate.space === 'value');
+  return binding?.members?.find((candidate) => candidate.sourceMember === member.normalize('NFC'))?.callArity;
+}
+
 export function getCompilerRuntimeExternalMemberTargetCpp(
   sourceName: string,
   member: string,
@@ -460,6 +474,7 @@ function getCppCompilerExternalBindings(
           member.targetName.length === 0 ||
           (member.callResultType !== undefined &&
             (typeof member.callResultType !== 'string' || member.callResultType.length === 0)) ||
+          (member.callArity !== undefined && (!Number.isSafeInteger(member.callArity) || member.callArity < 0)) ||
           (member.callResultAbsence !== undefined &&
             member.callResultAbsence !== 'null' &&
             member.callResultAbsence !== 'undefined') ||
@@ -729,8 +744,17 @@ const cppFlightRuntimeExternalSymbolBindings = [
   { capability: 'array', kind: 'runtime', sourceName: 'Array', space: 'type', targetName: 'flight::Array' },
   {
     capability: 'array',
+    headers: ['flight/array.hpp'],
     kind: 'runtime',
-    members: [{ sourceMember: 'isArray', targetName: 'flight::is_array' }],
+    members: [
+      // `Array.from` copies a runtime sequence into a new array. The target takes the source and nothing
+      // else; the mapper and thisArg overloads have no equivalent here (the target's transform overload
+      // passes no receiver, so a bound `this` would be silently dropped), so the member declares the
+      // arity it represents and the emitter refuses the rest rather than calling a target that cannot
+      // answer them.
+      { callArity: 1, sourceMember: 'from', targetName: 'flight::array_from' },
+      { sourceMember: 'isArray', targetName: 'flight::is_array' },
+    ],
     sourceName: 'Array',
     space: 'value',
     targetName: 'flight::Array',

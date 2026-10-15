@@ -13,6 +13,7 @@ import {
   getCompilerRuntimeExternalInstanceMemberCpp,
   getCompilerRuntimeExternalInstanceMemberCallResultAbsenceCpp,
   getCompilerRuntimeExternalInstanceMemberTargetCpp,
+  getCompilerRuntimeExternalMemberCallArityCpp,
   getCompilerRuntimeExternalMemberCallResultAbsenceCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberRecordConversionCpp,
@@ -1259,8 +1260,26 @@ describe('getCompilerRuntimeExternalMemberTargetCpp', () => {
     );
   });
 
+  // The profile represents the ONE Array.from shape the runtime answers -- a source sequence copied into a
+  // new array -- and declares the arity it represents, because the target takes the sequence and nothing
+  // else. The mapper and thisArg forms have no declared target, which the emitter refuses rather than
+  // calling an overload that would answer different semantics.
+  it('represents Array.from as the runtime sequence copy, with the arity it represents', () => {
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Array', 'from', 'flight-cpp')).toBe('flight::array_from');
+    expect(getCompilerRuntimeExternalMemberCallArityCpp('Array', 'from', 'flight-cpp')).toBe(1);
+    expect(getCompilerRuntimeExternalMemberCallArityCpp('Array', 'isArray', 'flight-cpp')).toBeUndefined();
+    expect(getCompilerExternalBindingHeadersCpp('Array', 'value', undefined, 'flight-cpp')).toContain(
+      'flight/array.hpp',
+    );
+    // `isArray` keeps the target it had, and the portable profile still claims nothing for a member that
+    // only the flight-cpp runtime answers.
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Array', 'isArray', 'flight-cpp')).toBe('flight::is_array');
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Array', 'from', 'standard-library')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberCallArityCpp('Array', 'from')).toBeUndefined();
+  });
+
   it('claims nothing for an unbound member or an unbound symbol', () => {
-    expect(getCompilerRuntimeExternalMemberTargetCpp('Array', 'from')).toBeUndefined();
+    expect(getCompilerRuntimeExternalMemberTargetCpp('Array', 'of')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('Date', 'now')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('console', 'log')).toBeUndefined();
     expect(getCompilerRuntimeExternalMemberTargetCpp('JSON', 'parse')).toBeUndefined();

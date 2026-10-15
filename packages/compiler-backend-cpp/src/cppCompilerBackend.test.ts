@@ -22807,6 +22807,76 @@ export function bufferByteLength(data: ArrayBuffer): number { return data.byteLe
     expect(emitted.contents).not.toContain('static_cast<size_t>');
   });
 
+  // `Array.from` copies a runtime sequence into a new array, which is what the runtime's `array_from`
+  // does: it iterates the source and returns an `Array` of its elements. The member is declared in the
+  // profile (see the binding tests), so the emitter names the runtime function and keeps the element
+  // carrier the source stated -- the target deduces it from the sequence.
+  it('emits Array.from as the runtime sequence copy with the declared element carrier', () => {
+    const emitFrom = (body: string) =>
+      emitIrModuleCpp(lower('array-from.ts', body).module, { runtimeProfile: 'flight-cpp' });
+
+    const fromArray = emitFrom(`export function copy(values: number[]): number[] { return Array.from(values); }`);
+    expect(fromArray.contents).toContain('#include <flight/array.hpp>');
+    expect(fromArray.contents).toContain('inline flight::Array<double> copy(flight::Array<double> values)');
+    expect(fromArray.contents).toContain('return flight::array_from(values);');
+    expect(fromArray.dependencies).toContain('flight/array.hpp');
+
+    // A readonly view and a runtime iterable are the same copy: the target reads the source range, so
+    // the element carrier is the only thing that differs, and it comes from the source.
+    expect(
+      emitFrom(`export function copy(values: ReadonlyArray<number>): number[] { return Array.from(values); }`).contents,
+    ).toContain('return flight::array_from(values);');
+    expect(
+      emitFrom(`export function copy(values: Set<unknown>): unknown[] { return Array.from(values); }`).contents,
+    ).toContain('return flight::array_from(values);');
+
+    // The near-neighbor controls: `isArray` keeps the target it had, and the Array construction that is
+    // outside the dense profile keeps its refusal rather than becoming a copy.
+    expect(
+      emitFrom(`export function check(values: unknown): boolean { return Array.isArray(values); }`).contents,
+    ).toContain('return flight::is_array(values);');
+    expect(() => emitFrom(`export function make(size: number): number[] { return new Array<number>(size); }`)).toThrow(
+      'Array length construction',
+    );
+  });
+
+  // The forms the profile does not represent. Each has a target with either no overload or an unrelated
+  // one, so naming it would emit C++ that answers different semantics or does not compile at all.
+  it('refuses the Array.from forms the runtime target does not represent', () => {
+    const fromMessage = (body: string): string => {
+      try {
+        emitIrModuleCpp(lower('array-from-unsupported.ts', body).module, { runtimeProfile: 'flight-cpp' });
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+      return '(emitted)';
+    };
+
+    // A mapper is a different operation, and a thisArg binds a receiver the target's transform overload
+    // has none for.
+    expect(
+      fromMessage(
+        `export function copy(values: number[]): string[] { return Array.from(values, (value) => String(value)); }`,
+      ),
+    ).toContain('Array.from is represented for exactly 1 argument(s), and this call passes 2');
+    expect(
+      fromMessage(
+        `export function copy(values: number[]): string[] { return Array.from(values, (value) => String(value), undefined); }`,
+      ),
+    ).toContain('Array.from is represented for exactly 1 argument(s), and this call passes 3');
+
+    // A spread cannot be shown to pass the represented count.
+    expect(
+      fromMessage(`export function copy(values: number[]): number[] { return Array.from(...[values]); }`),
+    ).toContain('a spread argument cannot be shown to pass that many');
+
+    // An explicit type argument selects the target's own template parameter, which is the SEQUENCE, so
+    // the call would fail to substitute rather than narrow the elements.
+    expect(
+      fromMessage(`export function copy(values: number[]): number[] { return Array.from<number>(values); }`),
+    ).toContain('no explicit type arguments');
+  });
+
   it('emits interned symbols through the semantic runtime contract', () => {
     const result = lower('symbol-for.ts', "export const key = Symbol.for('key');");
     const emitted = emitIrModuleCpp(result.module, { runtimeProfile: 'flight-cpp' });

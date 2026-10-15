@@ -175,6 +175,14 @@ export interface CppCompilerExternalMemberParameterBinding {
 export type CppCompilerExternalInstancePropertyAccess = 'field' | 'zero-argument-method';
 
 export interface CppCompilerExternalMemberBinding extends CompilerRuntimeExternalMemberBinding {
+  /**
+   * The number of source arguments this member's target represents. A call passing any other number has no
+   * equivalent in the target -- a target with an unrelated overload would silently answer different
+   * semantics, and one without would not compile at all -- so the emitter refuses it. Absent means the
+   * profile constrains no count, which is the ordinary case for a member whose target is the whole
+   * function.
+   */
+  readonly callArity?: number | undefined;
   /** The one source sentinel represented by an absent `callResultType` carrier. */
   readonly callResultAbsence?: 'null' | 'undefined' | undefined;
   /** Exact ambient source object types for parameters whose erased call-site IR cannot retain them. */

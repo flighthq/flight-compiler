@@ -123,6 +123,7 @@ import {
   getCompilerRuntimeExternalMemberCallResultAbsenceCpp,
   getCompilerRuntimeExternalMemberCallResultTypeCpp,
   getCompilerRuntimeExternalMemberRecordConversionCpp,
+  getCompilerRuntimeExternalMemberCallArityCpp,
   getCompilerRuntimeExternalMemberTargetCpp,
   getCompilerRuntimeExternalSymbolCallResultAbsenceCpp,
   getCompilerRuntimeExternalSymbolCallResultTypeCpp,
@@ -4273,6 +4274,7 @@ function emitExpression(
         context.includes.add('string');
         return `std::to_string(${emitExpression(argument, context)})`;
       }
+      assertCppAmbientMemberCallArityCpp(expression, context);
       const hasDependentCallableSpread = expression.arguments.some(
         (argument) => getCppDependentCallableSpreadParameter(argument, context) !== undefined,
       );
@@ -24724,6 +24726,49 @@ function getCppDependentErasedPropertyEvidenceCpp(
   return isCppErasedDynamicValueTypeCpp(carrier) || isCppOptionalErasedDynamicValueTypeCpp(carrier, context)
     ? carrier
     : undefined;
+}
+
+// A profile may declare how many arguments a member's target represents. A call passing a different number
+// has no equivalent in C++: a target carrying an unrelated overload would silently answer different
+// semantics, and one without any would not compile at all. The declaration lives on the binding, so the
+// refusal is a fact the profile states about its own member rather than a rule about a name here.
+function assertCppAmbientMemberCallArityCpp(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): void {
+  const callee = expression.callee;
+  if (callee.kind !== 'property' || callee.object.kind !== 'identifier' || callee.object.reference.kind !== 'ambient') {
+    return;
+  }
+  const sourceName = callee.object.reference.name;
+  const arity = getCompilerRuntimeExternalMemberCallArityCpp(
+    sourceName,
+    callee.name,
+    getCppRuntimeProfile(context.options),
+    context.options.externalBindings,
+  );
+  if (arity === undefined) return;
+  // The represented call carries no explicit type arguments: the target's own template parameter is the
+  // SOURCE SEQUENCE, not the element, so an explicit list would select a different template argument and
+  // fail to substitute rather than narrow the elements. The source's element type is already the evidence
+  // the argument carries.
+  if (expression.typeArguments.length > 0) {
+    emissionError(
+      context,
+      `${sourceName}.${callee.name} is represented by one call passing exactly ${arity} argument(s) and no explicit type arguments: the target deduces its element type from the sequence, so name the element type on the argument instead of on the call`,
+      'cpp-external-member-call-type-arguments',
+    );
+  }
+  // A spread cannot be counted, so it cannot be shown to pass the represented number either.
+  const counted = expression.arguments.every((argument) => argument.kind !== 'spread')
+    ? expression.arguments.length
+    : undefined;
+  if (counted === arity) return;
+  emissionError(
+    context,
+    `${sourceName}.${callee.name} is represented for exactly ${arity} argument(s)${counted === undefined ? ', and a spread argument cannot be shown to pass that many' : `, and this call passes ${counted}`}; the mapper and thisArg forms have no declared target, so pass only the source sequence`,
+    'cpp-external-member-call-arity',
+  );
 }
 
 // `source as string` on a position TypeScript states as unconstrained is an assertion about a value
