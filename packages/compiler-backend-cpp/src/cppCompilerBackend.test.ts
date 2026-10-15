@@ -47140,6 +47140,71 @@ int main() {
     expect(emitted.contents).toContain('.x');
   });
 
+  it('coalesces a multi-arm nullable Partial row through its emitted optional variant carrier', () => {
+    const moduleResolution: CompilerModuleResolutionPlan = {
+      edges: [
+        {
+          specifier: '@flighthq/types',
+          target: { packageName: '@flighthq/types', source: 'packages/types/src/material.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    };
+    const [provider, consumer] = lowerTypeScriptSources(
+      [
+        {
+          packageName: '@flighthq/types',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/types/src/material.ts',
+            `export interface Texture2D { readonly width: number }
+             export interface TextureCube { readonly size: number }
+             export type Texture = Texture2D | TextureCube;
+             export interface Material { map: Texture | null }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+        {
+          packageName: '@flighthq/material',
+          sourceFile: ts.createSourceFile(
+            '/flight/packages/material/src/apply.ts',
+            `import type { Material } from '@flighthq/types';
+             export function apply(target: Material, opts?: Readonly<Partial<Material>>): void {
+               target.map = opts?.map ?? null;
+             }`,
+            ts.ScriptTarget.Latest,
+            true,
+          ),
+          upstreamDirectory: '/flight',
+        },
+      ],
+      moduleResolution,
+    );
+    expect(provider?.diagnostics).toEqual([]);
+    expect(consumer?.diagnostics).toEqual([]);
+    const session = createCppCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer!.module, provider!.module],
+      options: {
+        packageTargets: {
+          '@flighthq/material': { includePrefix: 'flight/material', namespace: 'flight::material' },
+          '@flighthq/types': { includePrefix: 'flight/types', namespace: 'flight::types' },
+        },
+        runtimeProfile: 'flight-cpp',
+      },
+    });
+    const emitted = session.emitModule(consumer!.module)[0]!.contents;
+
+    // For this immediate `?? null`, the optional chain physically stores the collapsed nullish state
+    // outside the member's two-value-arm payload. Contextual coalescing must retain that carrier,
+    // never ask std::get_if to inspect the optional itself.
+    expect(emitted).toContain('(target->map = ([&]() -> std::optional<flight::types::Texture>');
+    expect(emitted).toContain('return flight::row_get<flight::RowKey<"map">>(optional_chain_receiver.value());');
+    expect(emitted.match(/row_get</gu)).toHaveLength(1);
+    expect(emitted).not.toMatch(/std::get_if<.*>\(&nullish_coalesce_left\)/u);
+  });
+
   it('flattens optional-chain reads of nullable optional properties', () => {
     const result = lower(
       'optional-nullable-prop.ts',

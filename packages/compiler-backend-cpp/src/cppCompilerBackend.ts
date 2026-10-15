@@ -17755,10 +17755,15 @@ function emitContextualUnionExpressionInContextCpp(
     const declaredLeftStoragePlan = leftStorageUnion
       ? getCppUnionRepresentationPlan(leftStorageUnion, context)
       : undefined;
+    const flattenedOptionalChainStoragePlan = leftType
+      ? getCppFlattenedOptionalChainStoragePlanCpp(expression.left, leftType, context)
+      : undefined;
     const implicitLeftStoragePlan =
-      leftStorageType && hasCppAbsenceStorageCpp(expression.left, context)
-        ? getCppImplicitAbsenceStoragePlanCpp(leftStorageType, context)
-        : undefined;
+      flattenedOptionalChainStoragePlan ??
+      (leftStorageType && hasCppAbsenceStorageCpp(expression.left, context)
+        ? (getCppImplicitAbsenceStoragePlanCpp(leftStorageType, context) ??
+          getCppFlattenedOptionalChainStoragePlanCpp(expression.left, leftStorageType, context))
+        : undefined);
     const leftStoragePlan = implicitLeftStoragePlan ?? declaredLeftStoragePlan;
     const leftPlan = leftUnion ? getCppUnionRepresentationPlan(leftUnion, context) : undefined;
     const representedLeftPlan = implicitLeftStoragePlan ?? leftPlan;
@@ -20603,6 +20608,26 @@ function getCppImplicitAbsenceStoragePlanCpp(
     return undefined;
   }
   return getCppUnionRepresentationPlan({ kind: 'union', types: [valueType, { kind: 'undefined' }] }, context);
+}
+
+// A nullable member with multiple represented value alternatives is emitted for an immediate nullish
+// coalesce as `optional<payload-variant>`: the outer optional is the collapsed nullish state, while the
+// payload variant keeps the value owners distinct. Contextual coalescing must plan that actual carrier
+// rather than the flattened source union, or its variant projection will apply `std::get_if` to the optional.
+//
+// The single-value case deliberately stays on the existing path so this helper cannot change its
+// null-versus-undefined accounting or introduce an unnecessary payload variant.
+function getCppFlattenedOptionalChainStoragePlanCpp(
+  expression: Readonly<IrExpression>,
+  valueType: Readonly<IrType>,
+  context: EmitContext,
+): ReturnType<typeof getCppUnionRepresentationPlan> | undefined {
+  if (expression.kind !== 'property' || !expression.optional || !expression.optionalChain) return undefined;
+  const union = getIrUnionTypeCpp(valueType, context, new Set());
+  const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
+  if (!plan || plan.valueSlots.length < 2) return undefined;
+  const payload = getCppNonNullableType(valueType, context, new Set());
+  return payload ? getCppImplicitAbsenceStoragePlanCpp(payload, context) : undefined;
 }
 
 // `std::optional::value_or` is a function call, so its fallback argument is evaluated even when the
