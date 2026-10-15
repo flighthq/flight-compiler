@@ -16399,9 +16399,19 @@ function getCppUnionMemberComplementTypeCpp(
       slot.sourceAlternatives.some((member) => isDeepStrictEqual(member, evidence.member)),
   );
   if (selected.length !== 1) return undefined;
-  const remaining: Readonly<IrType>[] = plan.valueSlots
-    .filter((slot) => slot !== selected[0])
-    .flatMap((slot) => slot.sourceAlternatives);
+  // A slot can hold several source members that share one C++ type -- `{ outcome: 'created' }` and
+  // `{ outcome: 'cancelled' }` are one struct. A test that excluded one of them excluded only that member,
+  // not the slot: the others stay reachable and must stay in the complement.
+  const siblings = selected[0]!.sourceAlternatives.filter((member) => !isDeepStrictEqual(member, evidence.member));
+  // Nothing was subtracted, so the test could not be tied to one of the slot's own members. That happens when
+  // the test's member is the same C++ type by another node: an imported reference to a declared member is not
+  // the declaration's own node, so deep equality does not hold. Subtracting nothing would leave the excluded
+  // member IN the complement -- a false narrowing that claims the test excluded nothing, and would hand the
+  // emitter a union still holding the member the test proved absent. Decline rather than claim a complement.
+  if (siblings.length === selected[0]!.sourceAlternatives.length) return undefined;
+  const remaining: Readonly<IrType>[] = plan.valueSlots.flatMap((slot) =>
+    slot === selected[0] ? siblings : slot.sourceAlternatives,
+  );
   return createIrTypeEvidenceUnionCpp([
     ...remaining,
     ...union.types.filter((member) => member.kind === 'null' || member.kind === 'undefined'),
@@ -16828,8 +16838,20 @@ function emitCppNarrowedVariantCommonPropertyExpressionCpp(
     })),
     direct: false,
   };
-  const evidence = getCppVariantCommonPropertyEvidenceCpp(narrowedRepresentation, expression.name, context);
-  if (!evidence || evidence.widened) return undefined;
+  const evidence = getCppVariantCommonPropertyEvidenceCpp(narrowedRepresentation, expression.name, context, true);
+  if (!evidence) return undefined;
+  if (evidence.widened) {
+    const branches = evidence.widened.branches
+      .map(
+        (branch, index) =>
+          `${index === 0 ? 'if' : 'else if'} constexpr (std::is_same_v<Value, ${selected[index]!.targetType}>) return ${branch.result};`,
+      )
+      .join(' ');
+    context.includes.add('stdexcept');
+    context.includes.add('type_traits');
+    context.includes.add('variant');
+    return `std::visit([](const auto& value) -> ${evidence.widened.targetType} { using Value = std::remove_cvref_t<decltype(value)>; ${branches} else throw std::logic_error("control-flow-excluded variant property alternative"); }, ${emitInitializedBindingValueCpp(receiver.reference.binding, context)})`;
+  }
   const projection = emitCppVariantCommonPropertyProjectionCpp(evidence, 'value');
   const conditions = selected.map((alternative) => `std::is_same_v<Value, ${alternative!.targetType}>`).join(' || ');
   context.includes.add('stdexcept');
@@ -16842,6 +16864,7 @@ function getCppVariantCommonPropertyEvidenceCpp(
   representation: Readonly<CppVariantRepresentation>,
   propertyName: string,
   context: EmitContext,
+  allowGuardedHeterogeneousValueSlots = false,
 ): Readonly<CppVariantCommonPropertyEvidence> | undefined {
   const propertyTypes = representation.alternatives.map((alternative) =>
     getIrObjectPropertyTypeCpp(alternative.runtimeType, propertyName, context),
@@ -16901,6 +16924,7 @@ function getCppVariantCommonPropertyEvidenceCpp(
     // primitive and collection properties on the guarded-read path: unlike a reference owner, their
     // common spelling would introduce a second value carrier without proving which receiver owns it.
     if (
+      !allowGuardedHeterogeneousValueSlots &&
       mergedPlan.valueSlots.length !== 1 &&
       mergedPlan.valueSlots.some((slot) => getCppReferenceElementTypeNameCpp(slot.targetType) === undefined)
     ) {
@@ -17315,6 +17339,29 @@ function emitCppNarrowedUnionValueCpp(
       return matches.length === 1 ? matches[0] : undefined;
     });
     const uniqueAlternatives = new Set(selectedAlternatives);
+    // Several narrowed source members can share one C++ alternative, because members that differ only in a
+    // string discriminant are stored as one struct. Each member was matched to exactly one alternative above;
+    // what remains is how many distinct alternatives they name. A narrowed member that matched none, or
+    // more than one, leaves an `undefined` here and keeps the refusal below.
+    if (
+      selectedAlternatives.every((alternative) => alternative !== undefined) &&
+      !hasIrTypeAbsentMember(narrowedUnion)
+    ) {
+      const narrowedPlan = getCppUnionRepresentationPlan(narrowedUnion, context);
+      // Every alternative still reachable: the narrowing removed source members, not C++ alternatives, so the
+      // value is the binding itself -- provided the narrowed union is planned as the very same variant, slot
+      // for slot, so nothing is converted or copied.
+      if (
+        uniqueAlternatives.size === representation.alternatives.length &&
+        narrowedPlan.kind === 'multiVariant' &&
+        narrowedPlan.valueSlots.length === representation.alternatives.length &&
+        narrowedPlan.valueSlots.every(
+          (slot, index) => slot.targetType === representation.alternatives[index]!.targetType,
+        )
+      ) {
+        return binding;
+      }
+    }
     if (
       selectedAlternatives.every(
         (alternative): alternative is CppVariantRepresentation['alternatives'][number] => alternative !== undefined,
