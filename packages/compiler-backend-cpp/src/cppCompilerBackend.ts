@@ -2879,7 +2879,17 @@ function emitVariableDeclaration(declaration: Readonly<IrVariableDeclaration>, c
   const emittedType = arrayElement && type !== 'auto' ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(declaration.mutable, declaration.type);
   const initializer = declaration.initializer
-    ? ` = ${arrayElement ? emitOptionalExpressionCpp(declaration.initializer, context, declaration.type) : emitExpression(declaration.initializer, context, contextualStorageTarget ?? preservedInitializerType ?? declaration.type)}`
+    ? ` = ${
+        exceptionPointer && getCppNullishLiteralKind(declaration.initializer)
+          ? 'nullptr'
+          : arrayElement
+            ? emitOptionalExpressionCpp(declaration.initializer, context, declaration.type)
+            : emitExpression(
+                declaration.initializer,
+                context,
+                contextualStorageTarget ?? preservedInitializerType ?? declaration.type,
+              )
+      }`
     : '';
   return [`inline ${constness}${emittedType} ${name}${initializer};`];
 }
@@ -2975,19 +2985,21 @@ function emitVariable(variable: Readonly<IrVariable>, context: EmitContext): str
   const emittedType = indexedAbsence && type !== 'auto' ? emitOptionalTypeCpp(type, true, context) : type;
   const constness = emitBindingConstnessCpp(variable.mutable, variable.type);
   const initializerValue = variable.initializer
-    ? weakMapViewPlan && weakMapViewInitializer
-      ? emitCppErasedWeakMapViewAcquisition(weakMapViewInitializer, weakMapViewPlan, context)
-      : arrayElement
-        ? lengthProvenNullableArrayElement
-          ? `${emitOptionalExpressionCpp(variable.initializer, context, variable.type)}.value_or(std::nullopt)`
-          : emitOptionalExpressionCpp(variable.initializer, context, variable.type)
-        : emitExpression(
-            variable.initializer,
-            context,
-            contextualStorageTarget ?? preservedInitializerType ?? variable.type,
-            true,
-            context.denseArrayLengthBindingIds.has(variable.binding.id),
-          )
+    ? exceptionPointer && getCppNullishLiteralKind(variable.initializer)
+      ? 'nullptr'
+      : weakMapViewPlan && weakMapViewInitializer
+        ? emitCppErasedWeakMapViewAcquisition(weakMapViewInitializer, weakMapViewPlan, context)
+        : arrayElement
+          ? lengthProvenNullableArrayElement
+            ? `${emitOptionalExpressionCpp(variable.initializer, context, variable.type)}.value_or(std::nullopt)`
+            : emitOptionalExpressionCpp(variable.initializer, context, variable.type)
+          : emitExpression(
+              variable.initializer,
+              context,
+              contextualStorageTarget ?? preservedInitializerType ?? variable.type,
+              true,
+              context.denseArrayLengthBindingIds.has(variable.binding.id),
+            )
     : undefined;
   const initializer = initializerValue
     ? ` = ${
@@ -3729,7 +3741,7 @@ function emitExpression(
         );
       }
       if (
-        expression.operator === '=' &&
+        (expression.operator === '=' || expression.operator === '??=') &&
         expression.left.kind === 'identifier' &&
         expression.left.reference.kind === 'binding' &&
         context.exceptionPointerBindingIds.has(expression.left.reference.binding.id) &&
@@ -3738,9 +3750,27 @@ function emitExpression(
         expression.right.reference.binding.kind === 'catch'
       ) {
         context.includes.add('exception');
-        return `${emitExpression(expression.left, context)} = std::current_exception()`;
+        const target = emitExpression(expression.left, context);
+        // `??=` keeps the first failure: an empty pointer is this slot's nullish state, so a later
+        // caught error does not overwrite the one already recorded.
+        return expression.operator === '='
+          ? `${target} = std::current_exception()`
+          : `([&]() { if (!${target}) ${target} = std::current_exception(); return ${target}; }())`;
       }
       const assignmentType = getIrAssignmentTargetTypeCpp(expression.left, context);
+      if (
+        (expression.operator === '=' || expression.operator === '??=') &&
+        expression.right.kind === 'identifier' &&
+        expression.right.reference.kind === 'binding' &&
+        expression.right.reference.binding.kind === 'catch' &&
+        isCppAliasResolvedErasedDynamicValueTypeCpp(assignmentType, context)
+      ) {
+        emissionError(
+          context,
+          `a caught exception cannot be recorded in erased flight::Any storage: preserving the original exception owner requires the closed catch-record-and-rethrow slot pattern, but this target is also observed, never rethrown, or otherwise escapes that pattern. Keep the slot's references to nullish initialization, catch assignment, nullish presence tests, and rethrow, or handle the caught value without storing it`,
+          'cpp-catch-recording-slot-carrier-unrepresented',
+        );
+      }
       const rightType = getIrExpressionTypeEvidenceCpp(expression.right, context);
       const erasedIndexNamedPropertyTarget = expression.left.kind === 'property' ? expression.left : undefined;
       const erasedIndexNamedProperty = erasedIndexNamedPropertyTarget
@@ -3907,7 +3937,17 @@ function emitExpression(
         );
       }
       if (expression.operator === '&&=' || expression.operator === '||=' || expression.operator === '??=') {
-        if (expression.operator === '??=' && assignmentType && !hasIrTypeAbsentMember(assignmentType)) return left;
+        if (expression.operator === '??=' && assignmentType && !hasIrTypeAbsentMember(assignmentType)) {
+          // A declared type with no absent member can still reach a carrier that holds a nullish value.
+          // An unknown target is emitted as the erased `flight::Any`, whose nullishness is a runtime
+          // property of the value rather than of the type. Returning the target alone would drop the
+          // assignment in expression and statement positions alike. Other carriers cannot hold either
+          // sentinel and keep the existing no-op.
+          if (assignmentType.kind === 'unknown') {
+            return `([&]() { auto&& assignment_target = ${left}; if (assignment_target.is_nullish()) assignment_target = ${right}; return assignment_target; }())`;
+          }
+          return left;
+        }
         return emitLogicalAssignmentCpp(left, expression.operator, right);
       }
       return `(${left} ${emitAssignmentOperator(expression.operator)} ${right})`;
@@ -12567,7 +12607,11 @@ function emitNullishComparisonCpp(
     expression.left.kind === 'identifier' && expression.left.reference.kind === 'ambient'
       ? expression.right
       : expression.left;
-  if (evidence.admitsNull && evidence.admitsUndefined) {
+  const exceptionPointerOperand =
+    operand.kind === 'identifier' &&
+    operand.reference.kind === 'binding' &&
+    context.exceptionPointerBindingIds.has(operand.reference.binding.id);
+  if (evidence.admitsNull && evidence.admitsUndefined && !exceptionPointerOperand) {
     const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
     const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
     const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
@@ -13701,6 +13745,16 @@ function emitCppPresenceTestCpp(
   strict: boolean,
   context: EmitContext,
 ): string {
+  // A slot carried as `std::exception_ptr` answers "was a failure recorded" as pointer emptiness, and
+  // for either sentinel: there, source null and undefined are the same "nothing recorded yet" state.
+  if (
+    operand.kind === 'identifier' &&
+    operand.reference.kind === 'binding' &&
+    context.exceptionPointerBindingIds.has(operand.reference.binding.id)
+  ) {
+    const value = emitExpression(operand, context);
+    return `([&]() { const auto& presence_operand = ${value}; return ${present ? '' : '!'}presence_operand; }())`;
+  }
   const operandType = getCppNullishComparisonOperandTypeCpp(operand, context);
   const union = operandType ? getIrUnionTypeCpp(operandType, context, new Set()) : undefined;
   const plan = union ? getCppUnionRepresentationPlan(union, context) : undefined;
@@ -23007,15 +23061,24 @@ function collectCppExceptionPointerBindingIdsCpp(
   // every reference keeps ordinary unknown storage on the dynamic-value path as soon as it is read,
   // initialized, or assigned from anything other than a catch binding.
   const candidates = new Set<string>();
+  const initialAbsences = new Map<string, 'null' | 'undefined'>();
   analyzeIrModuleTraversal(module, {
     variable(variable) {
+      // A nullish literal says "no failure recorded yet", which an empty exception pointer already
+      // represents. Any other initializer is a value and must remain on its ordinary storage path.
+      const initializerIsNullish =
+        variable.initializer !== undefined && getCppNullishLiteralKind(variable.initializer) !== undefined;
       if (
         'binding' in variable &&
         variable.mutable &&
-        !variable.initializer &&
+        (variable.initializer === undefined || initializerIsNullish) &&
         bindingTypes.get(variable.binding.id)?.kind === 'unknown'
       ) {
         candidates.add(variable.binding.id);
+        initialAbsences.set(
+          variable.binding.id,
+          variable.initializer ? getCppNullishLiteralKind(variable.initializer)! : 'undefined',
+        );
       }
     },
   });
@@ -23023,11 +23086,30 @@ function collectCppExceptionPointerBindingIdsCpp(
   const invalidAssignments = new Set<string>();
   const referenceCounts = new Map<string, number>();
   const throwCounts = new Map<string, number>();
+  const nullishTestCounts = new Map<string, number>();
+  const invalidPresenceTests = new Set<string>();
   analyzeIrModuleTraversal(module, {
     expression(expression) {
       if (expression.kind === 'identifier' && expression.reference.kind === 'binding') {
         const bindingId = expression.reference.binding.id;
         if (candidates.has(bindingId)) referenceCounts.set(bindingId, (referenceCounts.get(bindingId) ?? 0) + 1);
+      }
+      // The slot's own nullish comparison asks only whether a failure was recorded; unlike any value
+      // read, it does not require recovering the caught exception from its owning exception pointer.
+      if (expression.kind === 'binary' && expression.semantics.nullishComparison) {
+        const referenced = (candidate: Readonly<IrExpression>): string | undefined =>
+          candidate.kind === 'identifier' && candidate.reference.kind === 'binding'
+            ? candidate.reference.binding.id
+            : undefined;
+        for (const bindingId of [referenced(expression.left), referenced(expression.right)]) {
+          if (bindingId !== undefined && candidates.has(bindingId)) {
+            nullishTestCounts.set(bindingId, (nullishTestCounts.get(bindingId) ?? 0) + 1);
+            const strict = expression.operator === '===' || expression.operator === '!==';
+            if (strict && expression.semantics.nullishComparison.literal !== initialAbsences.get(bindingId)) {
+              invalidPresenceTests.add(bindingId);
+            }
+          }
+        }
       }
       if (
         expression.kind !== 'assignment' ||
@@ -23040,7 +23122,7 @@ function collectCppExceptionPointerBindingIdsCpp(
       const bindingId = expression.left.reference.binding.id;
       assignmentCounts.set(bindingId, (assignmentCounts.get(bindingId) ?? 0) + 1);
       if (
-        expression.operator !== '=' ||
+        (expression.operator !== '=' && expression.operator !== '??=') ||
         expression.right.kind !== 'identifier' ||
         expression.right.reference.kind !== 'binding' ||
         expression.right.reference.binding.kind !== 'catch'
@@ -23064,11 +23146,13 @@ function collectCppExceptionPointerBindingIdsCpp(
     [...candidates].filter((bindingId) => {
       const assignments = assignmentCounts.get(bindingId) ?? 0;
       const throws = throwCounts.get(bindingId) ?? 0;
+      const nullishTests = nullishTestCounts.get(bindingId) ?? 0;
       return (
         assignments > 0 &&
         throws > 0 &&
         !invalidAssignments.has(bindingId) &&
-        referenceCounts.get(bindingId) === assignments + throws
+        !invalidPresenceTests.has(bindingId) &&
+        referenceCounts.get(bindingId) === assignments + throws + nullishTests
       );
     }),
   );
