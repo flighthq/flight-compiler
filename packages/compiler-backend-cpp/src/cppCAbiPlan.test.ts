@@ -1,0 +1,287 @@
+import ts from 'typescript';
+import { describe, expect, it } from 'vitest';
+
+import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
+import type { CompilerCppCAbiPlanningOptions, IrModule } from '../../compiler-types/src/index.js';
+import { createIrModulesCAbiPlanCpp } from './cppCAbiPlan.js';
+
+const geometryTarget = {
+  packageTargets: {
+    '@flight/geometry': { includePrefix: 'flight/geometry', namespace: 'flight::geometry' },
+  },
+} as const satisfies CompilerCppCAbiPlanningOptions;
+
+describe('createIrModulesCAbiPlanCpp', () => {
+  it('plans scalar functions and source out-parameter functions under ABI v1 policy', () => {
+    const module = lower(
+      'geometry.ts',
+      `
+        export interface Point { x: number; y: number; }
+        export function add(left: number, right: number): number { return left + right; }
+        export function translate(target: Point, dx: number): void { target.x += dx; }
+      `,
+    );
+
+    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+
+    expect(plan.policy).toEqual({
+      error: 'status-plus-initialized-out-result',
+      exportPrefix: 'flight_cpp_',
+      lastError: 'none',
+      lifecycle: 'type-specific-retain-release',
+      references: 'incomplete-c-struct-pointers',
+      visibility: 'FLIGHT_CPP_API',
+    });
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.functions).toEqual([
+      expect.objectContaining({
+        cppTarget: 'flight::geometry::add',
+        error: expect.objectContaining({
+          initializesOutResultBeforeValidation: true,
+          lastError: 'none',
+          statusCarrier: 'flight_cpp_status',
+          strategy: 'status-return',
+        }),
+        header: 'flight/geometry.h',
+        parameters: [
+          {
+            adapter: 'copy-scalar-from-c',
+            carrier: 'double',
+            name: 'left',
+            ownership: 'value',
+            position: 0,
+            presence: 'required',
+          },
+          {
+            adapter: 'copy-scalar-from-c',
+            carrier: 'double',
+            name: 'right',
+            ownership: 'value',
+            position: 1,
+            presence: 'required',
+          },
+        ],
+        result: {
+          adapter: 'copy-scalar-to-out',
+          carrier: 'double*',
+          initialization: 'zero',
+          kind: 'out',
+          name: 'out_result',
+          ownership: 'value',
+          presence: 'required',
+        },
+        sourceName: 'add',
+        symbol: 'flight_cpp_add',
+      }),
+      expect.objectContaining({
+        cppTarget: 'flight::geometry::translate',
+        parameters: [
+          {
+            adapter: 'borrow-handle',
+            carrier: 'flight_cpp_point*',
+            name: 'target',
+            ownership: 'borrowed',
+            position: 0,
+            presence: 'required',
+          },
+          expect.objectContaining({ carrier: 'double', name: 'dx' }),
+        ],
+        result: { adapter: 'none', kind: 'void', ownership: 'none', presence: 'not-applicable' },
+        symbol: 'flight_cpp_translate',
+      }),
+    ]);
+  });
+
+  it('plans opaque references, readonly borrows, nullable references, and type-specific lifecycle', () => {
+    const module = lower(
+      'point.ts',
+      `
+        export interface Point { x: number; y: number; }
+        export function clonePoint(source: Readonly<Point>): Point { return { x: source.x, y: source.y }; }
+        export function findPoint(source: Point | null): Point | undefined { return source ?? undefined; }
+      `,
+    );
+
+    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+
+    expect(plan.diagnostics).toEqual([]);
+    expect(plan.handles).toEqual([
+      {
+        carrier: 'flight_cpp_point',
+        cppTarget: 'flight::geometry::Point',
+        header: 'flight/geometry.h',
+        ownership: 'opaque-reference',
+        releaseSymbol: 'flight_cpp_point_release',
+        retainSymbol: 'flight_cpp_point_retain',
+        sourceName: 'Point',
+      },
+    ]);
+    expect(plan.functions).toEqual([
+      expect.objectContaining({
+        parameters: [
+          expect.objectContaining({
+            adapter: 'borrow-readonly-handle',
+            carrier: 'const flight_cpp_point*',
+            presence: 'required',
+          }),
+        ],
+        result: expect.objectContaining({
+          adapter: 'transfer-owned-handle-to-out',
+          carrier: 'flight_cpp_point**',
+          initialization: 'null',
+          ownership: 'owned',
+          presence: 'required',
+        }),
+        symbol: 'flight_cpp_clone_point',
+      }),
+      expect.objectContaining({
+        parameters: [expect.objectContaining({ carrier: 'flight_cpp_point*', presence: 'nullable-null' })],
+        result: expect.objectContaining({ carrier: 'flight_cpp_point**', presence: 'nullable-undefined' }),
+        symbol: 'flight_cpp_find_point',
+      }),
+    ]);
+  });
+
+  it('refuses dual sentinels and other unsupported surfaces with stable target-owned diagnostics', () => {
+    const module = lower(
+      'unsupported.ts',
+      `
+        export interface Point { x: number; }
+        export interface Dictionary { [key: string]: number; }
+        export function dual(value: Point | null | undefined): Point { return value!; }
+        export function generic<Value>(value: Value): Value { return value; }
+        export function invoke(callback: (value: number) => number): number { return callback(1); }
+        export function lookup(value: Dictionary): number { return value.answer ?? 0; }
+        export function overloaded(value: number): number;
+        export function overloaded(value: boolean): boolean;
+        export function overloaded(value: number | boolean): number | boolean { return value; }
+      `,
+    );
+
+    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+
+    expect(plan.functions).toEqual([]);
+    expect(
+      plan.diagnostics.map(({ classification, code, sourceName, target }) => ({
+        classification,
+        code,
+        sourceName,
+        target,
+      })),
+    ).toEqual([
+      { classification: 'compiler-restriction', code: 'dual-sentinel-union', sourceName: 'dual', target: 'cpp' },
+      { classification: 'compiler-restriction', code: 'generic-surface', sourceName: 'generic', target: 'cpp' },
+      { classification: 'compiler-restriction', code: 'callable-value', sourceName: 'invoke', target: 'cpp' },
+      { classification: 'compiler-restriction', code: 'open-structural-type', sourceName: 'lookup', target: 'cpp' },
+      {
+        classification: 'compiler-restriction',
+        code: 'overloaded-function',
+        sourceName: 'overloaded',
+        target: 'cpp',
+      },
+    ]);
+  });
+
+  it('refuses ambiguous imported owners instead of selecting a carrier', () => {
+    const first = lower('first.ts', 'export interface Point { x: number; }', '@flight/shared');
+    const second = lower('second.ts', 'export interface Point { y: number; }', '@flight/shared');
+    const shared = lower('index.ts', "export * from './first'; export * from './second';", '@flight/shared');
+    const consumer = lower(
+      'consumer.ts',
+      "import type { Point } from '@flight/shared'; export function usePoint(value: Point): void {}",
+      '@flight/consumer',
+    );
+    const plan = createIrModulesCAbiPlanCpp([first, consumer, shared, second], {
+      moduleResolution: {
+        edges: [
+          { specifier: '@flight/shared', target: { packageName: shared.packageName, source: shared.source } },
+          {
+            importer: { name: shared.name, packageName: shared.packageName, source: shared.source },
+            specifier: './first',
+            target: { packageName: first.packageName, source: first.source },
+          },
+          {
+            importer: { name: shared.name, packageName: shared.packageName, source: shared.source },
+            specifier: './second',
+            target: { packageName: second.packageName, source: second.source },
+          },
+        ],
+        schema: 'flight-compiler-module-resolution/1',
+      },
+    });
+
+    expect(plan.functions).toEqual([]);
+    expect(plan.diagnostics).toEqual([
+      expect.objectContaining({ code: 'ambiguous-owner', sourceName: 'usePoint', target: 'cpp' }),
+    ]);
+  });
+
+  it('refuses flat global C symbol collisions across packages', () => {
+    const geometry = lower(
+      'geometry.ts',
+      'export function create(value: number): number { return value; }',
+      '@flight/geometry',
+    );
+    const image = lower(
+      'image.ts',
+      'export function create(value: boolean): boolean { return value; }',
+      '@flight/image',
+    );
+
+    const plan = createIrModulesCAbiPlanCpp([geometry, image]);
+
+    expect(plan.functions).toEqual([]);
+    expect(plan.diagnostics.map(({ code, packageName, sourceName }) => ({ code, packageName, sourceName }))).toEqual([
+      { code: 'global-symbol-collision', packageName: '@flight/geometry', sourceName: 'create' },
+      { code: 'global-symbol-collision', packageName: '@flight/image', sourceName: 'create' },
+    ]);
+  });
+
+  it('is deterministic under module reordering and does not mutate inputs', () => {
+    const geometry = lower(
+      'geometry.ts',
+      'export interface Point { x: number; } export function makePoint(): Point { return { x: 1 }; }',
+    );
+    const scalar = lower('scalar.ts', 'export function negate(value: boolean): boolean { return !value; }');
+    const modules = [geometry, scalar];
+    const options = structuredClone(geometryTarget);
+    const modulesBefore = structuredClone(modules);
+    const optionsBefore = structuredClone(options);
+
+    const forward = createIrModulesCAbiPlanCpp(modules, options);
+    const reverse = createIrModulesCAbiPlanCpp([...modules].reverse(), options);
+
+    expect(reverse).toEqual(forward);
+    expect(modules).toEqual(modulesBefore);
+    expect(options).toEqual(optionsBefore);
+  });
+
+  it('keeps all planned carriers valid C spellings without C++ syntax', () => {
+    const module = lower(
+      'carriers.ts',
+      `
+        export interface Point { x: number; }
+        export function inspect(point: Readonly<Point>, enabled: boolean): Point | null {
+          return enabled ? { x: point.x } : null;
+        }
+      `,
+    );
+    const plan = createIrModulesCAbiPlanCpp([module], geometryTarget);
+    const carriers = [
+      ...plan.handles.map((handle) => handle.carrier),
+      ...plan.functions.flatMap((fn) => fn.parameters.map((parameter) => parameter.carrier)),
+      ...plan.functions.flatMap((fn) => (fn.result.kind === 'out' ? [fn.result.carrier] : [])),
+      ...plan.functions.map((fn) => fn.error.statusCarrier),
+    ];
+
+    expect(carriers).not.toEqual([]);
+    expect(carriers).toSatisfy((values: readonly string[]) =>
+      values.every((carrier) => !/::|[<>&]|\bstd\b|\bflight::/u.test(carrier)),
+    );
+  });
+});
+
+function lower(file: string, source: string, packageName = '@flight/geometry'): IrModule {
+  const sourceFile = ts.createSourceFile(`/flight/packages/${file}`, source, ts.ScriptTarget.Latest, true);
+  return lowerTypeScriptSource(sourceFile, { packageName, upstreamDirectory: '/flight' }).module;
+}

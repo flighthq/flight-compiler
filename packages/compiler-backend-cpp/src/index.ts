@@ -1,4 +1,5 @@
 export { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
+export { createIrModulesCAbiPlanCpp } from './cppCAbiPlan.js';
 export { createIrModuleClosureCapturePlanCpp } from './cppClosureCapturePlan.js';
 export {
   createIrTypeReferenceRepresentationPlanCpp,
