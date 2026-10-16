@@ -1,3 +1,4 @@
+import type { CompilerHaxeDualBindingPlan } from './compilerHaxeDualBindingContract.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
@@ -155,6 +156,8 @@ export interface BackendEmissionFailure extends Error, CompilerSourceIdentity {
 export type HaxeCompilerEmissionMode = 'extern' | 'transpile';
 
 export interface HaxeCompilerBackendOptions {
+  /** Canonical public Haxe identities and target availability consumed by extern selector emission. */
+  readonly dualBindingPlan?: Readonly<CompilerHaxeDualBindingPlan> | undefined;
   /** Whether Haxe binds JavaScript exports or transpiles their implementations. Defaults to `transpile`. */
   readonly emissionMode?: HaxeCompilerEmissionMode | undefined;
   readonly rootPackage?: string | undefined;

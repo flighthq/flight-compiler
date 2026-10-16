@@ -1380,6 +1380,8 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       '@fixture/geometry',
       'contract.ts',
       `export interface Vector { x: number }
+       export enum Axis { X, Y }
+       export class Model { public value: number; public constructor(value: number) { this.value = value; } }
        export function scale(value: Vector, factor: number): Vector { return { x: value.x * factor }; }
        export const ORIGIN: Vector = { x: 0 };`,
     );
@@ -1387,6 +1389,10 @@ describe('emitIrModuleHaxeExternWithContext', () => {
       packageSpecifier: '@fixture/geometry/esm',
       slots: [
         ['Vector', 'Vector', 'type'],
+        ['Axis', 'Axis', 'type'],
+        ['Axis', 'Axis', 'value'],
+        ['Model', 'Model', 'type'],
+        ['Model', 'Model', 'value'],
         ['scale', 'scale', 'value'],
         ['ORIGIN', 'ORIGIN', 'value'],
       ],
@@ -1400,10 +1406,18 @@ describe('emitIrModuleHaxeExternWithContext', () => {
     const selector = findFile(files, 'flight/Vector.hx');
     const holder = findFile(files, 'flight/_js/_fn/Geometry.hx');
     const publicModule = findFile(files, 'flight/Geometry.hx');
+    const enumBacking = findFile(files, 'flight/_js/Axis.hx');
+    const classBacking = findFile(files, 'flight/_js/Model.hx');
 
     expect(files).toEqual(repeated);
     expect(backing.contents).toContain('package flight._js;');
     expect(backing.contents).toContain('typedef Vector = {');
+    expect(enumBacking.contents).toContain('@:jsImport("@fixture/geometry/esm", "Axis")');
+    expect(enumBacking.contents).toContain('enum abstract Axis(Int)');
+    expect(classBacking.contents).toContain('@:jsImport("@fixture/geometry/esm", "Model")');
+    expect(classBacking.contents).toContain('extern class Model {');
+    expect(findFile(files, 'flight/Axis.hx').contents).toContain('typedef Axis = flight._js.Axis;');
+    expect(findFile(files, 'flight/Model.hx').contents).toContain('typedef Model = flight._cpp.Model;');
     expect(selector.contents).toContain('#if (js && flight_esm)');
     expect(selector.contents).toContain('typedef Vector = flight._js.Vector;');
     expect(selector.contents).toContain('#elseif cpp');
@@ -1432,12 +1446,13 @@ describe('emitIrModuleHaxeExternWithContext', () => {
         }),
       ),
     ).toEqual({ checkedFiles: files.length, parser: 'haxe', skippedFiles: [] });
-    expect(parsed).toEqual(files.map((file) => file.path).sort());
+    expect(parsed).toEqual(files.map((file) => file.path));
     expect(
       validateCompilerTargetCompilationSmoke(
         files,
         createHaxeCompilerTargetCompilationSmoke((emitted) => {
-          expect(emitted).toEqual(files);
+          expect(emitted.map((file) => file.path)).toEqual(files.map((file) => file.path));
+          expect(emitted.every((file) => file.contents.endsWith('\n'))).toBe(true);
           return [];
         }),
       ),
