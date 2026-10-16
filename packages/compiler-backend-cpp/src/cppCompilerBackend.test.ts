@@ -26,7 +26,7 @@ import type {
   IrType,
   IrUnionMemberTestEvidence,
 } from '../../compiler-types/src/index.js';
-import { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
+import { createCppCompilerBackend, createCppCompilerPublicBindingPlan, emitIrModuleCpp } from './cppCompilerBackend.js';
 import { createIrTypeReferenceRepresentationPlannerCpp } from './cppReferenceRepresentationPlan.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -2801,6 +2801,17 @@ function lowerImportedPhysicsShapeAssertionModules() {
   );
   return { moduleResolution, results };
 }
+
+describe('createCppCompilerPublicBindingPlan', () => {
+  it('requires the versioned module-facade contract', () => {
+    expect(() =>
+      createCppCompilerPublicBindingPlan({
+        facade: { schema: 'wrong' } as never,
+        modules: [],
+      }),
+    ).toThrow('flight-compiler-module-facade/1');
+  });
+});
 
 describe('createCppCompilerBackend', () => {
   it('creates independent stateless backend records with C++ identity', () => {

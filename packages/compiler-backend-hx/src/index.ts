@@ -2,6 +2,7 @@ export { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBacke
 export { createHaxeCompilerEmittedSourceParser } from './haxeCompilerEmittedSourceSyntax.js';
 export { convertPackageNameToHaxePackageName, convertSourcePathToHaxeModuleName } from './haxeCompilerIdentity.js';
 export { createHaxeCompilerTargetCompilationSmoke } from './haxeCompilerTargetCompilationSmoke.js';
+export { createCompilerHaxeDualBindingPlan } from './haxeDualBindingPlan.js';
 export { emitIrModuleHaxeExtern } from './haxeExternEmission.js';
 export { createCompilerHaxeAmbientMemberBindingPlan } from './haxeAmbientMemberBinding.js';
 export { createCompilerHaxeRuntimeAbiManifest } from './haxeRuntimeAbiManifest.js';

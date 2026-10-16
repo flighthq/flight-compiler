@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   compareTextCodeUnits,
   normalizeCompilerStructuralValueCanonical,
+  normalizePathPortable,
 } from '../../compiler-canonical-form/src/index.js';
 import {
   collectIrModuleNullableBindingIds,
@@ -48,10 +49,16 @@ import type {
   CompilerBackend,
   CompilerCppAmbientMemberBinding,
   CompilerCppConditionalFacetReferencePlan,
+  CompilerCppPublicBinding,
+  CompilerCppPublicBindingCarrier,
+  CompilerCppPublicBindingPlan,
+  CompilerCppPublicBindingPlanInput,
   CompilerCppReferenceRepresentationPlanner,
   CompilerCppStructuralRowPlan,
   CompilerLoweringPass,
   CompilerModuleResolutionPlan,
+  CompilerModuleFacadeSlot,
+  CompilerPublicBindingModuleRefusal,
   CompilerTypeValueIdentityAnalysis,
   IrTypeReference,
   IrResolvedMemberReceiver,
@@ -556,6 +563,159 @@ export function createCppCompilerBackend(): CompilerBackend<CppCompilerBackendOp
     },
     name: 'cpp',
   };
+}
+
+export function createCppCompilerPublicBindingPlan(
+  input: Readonly<CompilerCppPublicBindingPlanInput>,
+): CompilerCppPublicBindingPlan {
+  if (input.facade.schema !== 'flight-compiler-module-facade/1') {
+    throw new TypeError('C++ public binding planning requires flight-compiler-module-facade/1');
+  }
+  const options = input.options ?? {};
+  const targetNameMaps = createCppTargetNameMaps(input.modules);
+  const bindings = input.facade.modules
+    .flatMap((facadeModule) =>
+      facadeModule.slots.flatMap((slot) => {
+        if (slot.route.kind !== 'binding') return [];
+        const identity = createCppPublicBindingSourceExportIdentity(slot);
+        const key = `source-export:${normalizeCompilerStructuralValueCanonical(identity)}`;
+        const publicModule = getCppPublicBindingModule(input.modules, facadeModule.module);
+        const declarationModule = getCppPublicBindingModule(input.modules, slot.route.module);
+        const declaration = declarationModule
+          ? getCppPublicBindingDeclaration(declarationModule, slot.route.binding.id)
+          : undefined;
+        const moduleRefusal = getCppPublicBindingModuleRefusal(
+          input.refusals ?? [],
+          facadeModule.module,
+          slot.route.module,
+        );
+        let binding: CompilerCppPublicBinding['binding'];
+        if (moduleRefusal) {
+          binding = {
+            availability: 'refused',
+            refusal: {
+              code: 'cpp-module-refused',
+              detailCode: moduleRefusal.code,
+              message: moduleRefusal.message,
+              subject: key,
+            },
+          };
+        } else if (!publicModule || !declarationModule || !declaration) {
+          binding = {
+            availability: 'refused',
+            refusal: {
+              code: 'cpp-declaration-missing',
+              message: `C++ public binding declaration is absent for ${slot.exportName}`,
+              subject: key,
+            },
+          };
+        } else if (
+          slot.lane === 'value' &&
+          slot.source.kind === 'module-binding' &&
+          slot.source.imported !== slot.exportName
+        ) {
+          binding = {
+            availability: 'refused',
+            refusal: {
+              code: 'cpp-renamed-value-reexport-unsupported',
+              message: `C++ cannot publish renamed value re-export ${slot.source.imported} as ${slot.exportName}`,
+              subject: key,
+            },
+          };
+        } else {
+          const allocated = targetNameMaps.get(getCppModuleIdentityKey(declarationModule))?.get(slot.route.binding.id);
+          const renamedType =
+            slot.lane === 'type' && slot.source.kind === 'module-binding' && slot.source.imported !== slot.exportName;
+          binding = {
+            availability: 'available',
+            locator: {
+              carrier: getCppPublicBindingCarrier(declaration),
+              include: getCppModuleFilePath(publicModule, options),
+              namespace: getCppCompilerPackageNamespace(publicModule.packageName, options.packageTargets),
+              spelling: renamedType
+                ? safeCppTypeName(slot.exportName)
+                : (allocated ?? getCppPreferredBindingName(slot.route.binding)),
+            },
+          };
+        }
+        return [{ binding, facadeIdentity: slot.identity, identity, key } satisfies CompilerCppPublicBinding];
+      }),
+    )
+    .sort((left, right) => compareTextCodeUnits(left.key, right.key));
+  return cloneAndFreezeCppPublicBindingPlan({ bindings, schema: 'flight-cpp-public-binding-plan/1' });
+}
+
+function createCppPublicBindingSourceExportIdentity(
+  slot: Readonly<CompilerModuleFacadeSlot>,
+): CompilerCppPublicBinding['identity'] {
+  if (slot.route.kind !== 'binding') throw new TypeError('C++ public binding identity requires a binding route');
+  return {
+    declarationIdentity: normalizeCompilerStructuralValueCanonical(slot.route.binding),
+    exportRoute: normalizeCompilerStructuralValueCanonical({
+      exportName: slot.exportName,
+      source: slot.source,
+      via: slot.via,
+    }),
+    packageName: slot.module.packageName,
+    source: normalizePathPortable(slot.module.source),
+    space: slot.lane,
+  };
+}
+
+function getCppPublicBindingModule(
+  modules: readonly Readonly<IrModule>[],
+  identity: Readonly<{ name: string; packageName: string; source: string }>,
+): Readonly<IrModule> | undefined {
+  const source = normalizePathPortable(identity.source);
+  return modules.find(
+    (module) =>
+      module.name === identity.name &&
+      module.packageName === identity.packageName &&
+      normalizePathPortable(module.source) === source,
+  );
+}
+
+function getCppPublicBindingDeclaration(
+  module: Readonly<IrModule>,
+  bindingId: string,
+): Readonly<IrDeclaration> | undefined {
+  return module.declarations.find((declaration) =>
+    collectCppPublicDeclarationBindings(declaration).some((binding) => binding.id === bindingId),
+  );
+}
+
+function getCppPublicBindingCarrier(declaration: Readonly<IrDeclaration>): CompilerCppPublicBindingCarrier {
+  if (declaration.kind === 'typeAlias') return 'type-alias';
+  if (declaration.kind === 'variable') return 'value';
+  return declaration.kind;
+}
+
+function getCppPublicBindingModuleRefusal(
+  refusals: readonly Readonly<CompilerPublicBindingModuleRefusal>[],
+  publicModule: Readonly<{ name: string; packageName: string; source: string }>,
+  declarationModule: Readonly<{ name: string; packageName: string; source: string }>,
+): Readonly<CompilerPublicBindingModuleRefusal> | undefined {
+  return [publicModule, declarationModule].flatMap((module) =>
+    refusals.filter(
+      (refusal) =>
+        refusal.module.name === module.name &&
+        refusal.module.packageName === module.packageName &&
+        normalizePathPortable(refusal.module.source) === normalizePathPortable(module.source),
+    ),
+  )[0];
+}
+
+function cloneAndFreezeCppPublicBindingPlan(plan: CompilerCppPublicBindingPlan): CompilerCppPublicBindingPlan {
+  const clone = structuredClone(plan);
+  freezeCppPublicBindingPlanValue(clone, new WeakSet());
+  return clone;
+}
+
+function freezeCppPublicBindingPlanValue(value: unknown, seen: WeakSet<object>): void {
+  if (!value || typeof value !== 'object' || seen.has(value)) return;
+  seen.add(value);
+  for (const child of Object.values(value)) freezeCppPublicBindingPlanValue(child, seen);
+  Object.freeze(value);
 }
 
 export function emitIrModuleCpp(

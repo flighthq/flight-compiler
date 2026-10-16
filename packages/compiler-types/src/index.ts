@@ -41,6 +41,7 @@ export type * from './compilerEmittedSourceSyntaxContract.js';
 export type * from './compilerFlightWorkspaceContract.js';
 export type * from './compilerHaxeTaskEmissionContract.js';
 export type * from './compilerHaxeTaskLoweringContract.js';
+export type * from './compilerHaxeDualBindingContract.js';
 export type * from './compilerHostEndpointContract.js';
 export type * from './compilerInventoryContract.js';
 export type * from './compilerInvariantContract.js';

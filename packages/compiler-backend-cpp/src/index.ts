@@ -1,4 +1,4 @@
-export { createCppCompilerBackend, emitIrModuleCpp } from './cppCompilerBackend.js';
+export { createCppCompilerBackend, createCppCompilerPublicBindingPlan, emitIrModuleCpp } from './cppCompilerBackend.js';
 export {
   emitCompilerCppCAbiPackage,
   emitCompilerCppCAbiPlan,
