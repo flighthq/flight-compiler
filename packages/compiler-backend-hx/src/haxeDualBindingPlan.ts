@@ -51,7 +51,7 @@ export function createCompilerHaxeDualBindingPlan(
   if (absentCppSlot) {
     throw new TypeError(`C++ public binding plan references absent facade slot ${absentCppSlot.facadeIdentity}`);
   }
-  const records = slots.map((slot): HaxeDualBindingRecord => {
+  const allRecords = slots.map((slot): HaxeDualBindingRecord => {
     const binding = cppBindings.get(slot.identity) ?? createHaxeDualBindingMissingCppInput(slot);
     const declarationModule = getHaxeDualBindingModule(input.modules, slot.route.module);
     const declaration = declarationModule
@@ -62,6 +62,20 @@ export function createCompilerHaxeDualBindingPlan(
     }
     return { binding, declaration, declarationModule, slot };
   });
+  const records = allRecords.filter(
+    (record) =>
+      record.slot.lane === 'type' ||
+      (record.declaration.kind !== 'class' && record.declaration.kind !== 'enum') ||
+      !allRecords.some(
+        (candidate) =>
+          candidate.slot.lane === 'type' &&
+          candidate.slot.exportName === record.slot.exportName &&
+          candidate.slot.module.name === record.slot.module.name &&
+          candidate.slot.module.packageName === record.slot.module.packageName &&
+          normalizePathPortable(candidate.slot.module.source) === normalizePathPortable(record.slot.module.source) &&
+          candidate.slot.route.binding.id === record.slot.route.binding.id,
+      ),
+  );
   const options = input.options ?? {};
   const typeNames = allocateHaxeDualBindingNames(
     records.filter((record) => record.slot.lane === 'type'),
@@ -177,7 +191,8 @@ function createHaxeDualBindingPublicIdentity(
   if (record.slot.lane === 'type') {
     const name = typeNames.get(record.binding.key)!;
     const qualifiedName = `${root}.${name}`;
-    return { kind: 'type', name, owner: root, qualifiedName, typeIdentity: qualifiedName };
+    const kind = record.declaration.kind === 'class' || record.declaration.kind === 'enum' ? 'type-value' : 'type';
+    return { kind, name, owner: root, qualifiedName, typeIdentity: qualifiedName };
   }
   if (record.declaration.kind === 'class' || record.declaration.kind === 'enum') {
     const qualifiedName =

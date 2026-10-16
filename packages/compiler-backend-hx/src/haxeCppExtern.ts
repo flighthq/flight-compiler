@@ -261,7 +261,7 @@ function createHaxeCppExternFunctionPlan(
   return {
     ...(adapter ? { adapter } : {}),
     haxeName: record.binding.publicHaxe.name,
-    haxeOwner: getHaxeCppExternHiddenOwner(record.binding.publicHaxe.owner),
+    haxeOwner: getHaxeCppExternHiddenFunctionOwner(record.binding.publicHaxe.owner),
     include: locator.include,
     key: record.binding.key,
     kind: 'function',
@@ -528,6 +528,11 @@ function isHaxeCppExternIdentifier(value: string): boolean {
 function getHaxeCppExternHiddenOwner(owner: string): string {
   const segments = owner.split('.');
   return [segments[0]!, '_cpp', ...segments.slice(1)].join('.');
+}
+
+function getHaxeCppExternHiddenFunctionOwner(owner: string): string {
+  const segments = owner.split('.');
+  return [segments[0]!, '_cpp', '_fn', ...segments.slice(1)].join('.');
 }
 
 function getSafeHaxeCppExternName(name: string): string {

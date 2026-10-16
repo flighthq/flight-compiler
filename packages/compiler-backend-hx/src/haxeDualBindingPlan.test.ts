@@ -22,6 +22,7 @@ describe('createCompilerHaxeDualBindingPlan', () => {
         export interface fooBar { right: number }
         export interface café { third: number }
         export interface cafè { fourth: number }
+        export enum Choice { First }
         export const classValue = 2;
       `,
     );
@@ -36,7 +37,7 @@ describe('createCompilerHaxeDualBindingPlan', () => {
       `
         export interface Direct { local: number }
         export type { Token as PublicToken, foo_bar, fooBar, café, cafè } from '@fixture/native';
-        export { Token, classValue as class } from '@fixture/native';
+        export { Token, Choice, classValue as class } from '@fixture/native';
         export { browserOnly } from '@fixture/browser';
       `,
     );
@@ -83,6 +84,12 @@ describe('createCompilerHaxeDualBindingPlan', () => {
       owner: 'flight.Api',
       qualifiedName: 'flight.Api.Token',
       typeIdentity: 'Dynamic',
+    });
+    const choiceBindings = first.bindings.filter((binding) => binding.publicHaxe.qualifiedName === 'flight.Choice');
+    expect(choiceBindings).toHaveLength(1);
+    expect(choiceBindings[0]).toMatchObject({
+      identity: { space: 'type' },
+      publicHaxe: { kind: 'type-value', typeIdentity: 'flight.Choice' },
     });
     expect(byExport('class', 'value').publicHaxe.name).toBe('class_');
     const collisionNames = [byExport('foo_bar', 'type'), byExport('fooBar', 'type')].map(
@@ -147,6 +154,8 @@ function createFacade(
     ['Token', 'Token', 'type', native],
     ['PublicToken', 'Token', 'type', native],
     ['Token', 'Token', 'value', native],
+    ['Choice', 'Choice', 'type', native],
+    ['Choice', 'Choice', 'value', native],
     ['foo_bar', 'foo_bar', 'type', native],
     ['fooBar', 'fooBar', 'type', native],
     ['café', 'café', 'type', native],

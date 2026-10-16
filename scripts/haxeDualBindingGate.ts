@@ -74,10 +74,10 @@ export function evaluateHaxeDualBindingGates(
 
   for (const binding of plan.bindings) {
     const subject = `binding:${binding.key}`;
-    // One public name is one public signature. The plan parser already refuses two bindings that disagree
-    // about it, so what is left to prove here is that a callable publishes its signature at all: without
-    // one, the two backings cannot be said to present the same call.
-    if (isHaxeDualBindingCallable(binding.publicHaxe.kind) && binding.publicHaxe.signature === undefined) {
+    // One public function is one public signature. Runtime values and type-values (notably TypeScript
+    // enums) have locators to verify but are not calls, so inventing a function signature for them would
+    // make a real dual-backed value impossible to publish.
+    if (binding.publicHaxe.kind === 'function' && binding.publicHaxe.signature === undefined) {
       failures.push(
         createHaxeDualBindingGateFailure(
           'haxe-dual-binding-gate-signature-parity',

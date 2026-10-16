@@ -113,6 +113,30 @@ describe('evaluateHaxeDualBindingGates', () => {
     expect(report.failures[0]?.detail).toContain('with no published signature');
   });
 
+  it('accepts a runtime type-value without inventing a function signature for it', () => {
+    const typeValue = typeBinding();
+    const report = evaluateHaxeDualBindingGates(
+      plan([
+        callableBinding(),
+        {
+          ...typeValue,
+          cpp: {
+            availability: 'available',
+            locator: { carrier: 'enum', include: 'tiny.hpp', namespace: 'flight::dual', spelling: 'Surface' },
+          },
+          publicHaxe: { ...(typeValue['publicHaxe'] as object), kind: 'type-value' },
+        },
+      ]),
+      presentHooks(),
+    );
+
+    expect(report.failures).toEqual([]);
+    expect(report.lanes).toEqual([
+      { kind: 'cpp', skipped: [], verified: { callables: 2, types: 1 } },
+      { kind: 'javascript', skipped: [], verified: { callables: 2, types: 1 } },
+    ]);
+  });
+
   it('refuses a refused backing and quotes the producer refusal', () => {
     const refusedCpp = plan([
       callableBinding({

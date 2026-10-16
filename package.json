@@ -33,6 +33,7 @@
     "golden": "npm run _scripts:build --silent && node ./.script-build/goldenUpdate.js",
     "golden:check": "vitest run golden",
     "haxe-binding:check": "npm run _scripts:build --silent && node ./.script-build/haxeDualBindingCheck.js",
+    "haxe-binding:checkpoint": "npm run build --silent && npm run _scripts:build --silent && node ./.script-build/haxeBindingCheckpointCommand.js",
     "compile:check": "npm run _scripts:build --silent && node ./.script-build/emittedSourceCompile.js",
     "cpp:conformance:update": "npm run _scripts:build --silent && node ./.script-build/cppSemanticRuntimeUpdate.js",
     "cpp:exceptions:check": "npm run _scripts:build --silent && node ./.script-build/cppExceptionLedger.js",
