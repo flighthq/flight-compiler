@@ -1,8 +1,28 @@
 import ts from 'typescript';
 
+import {
+  normalizeCompilerStructuralValueCanonical,
+  normalizePathPortable,
+} from '../../compiler-canonical-form/src/index.js';
+import {
+  validateCompilerEmittedSourceSyntax,
+  validateCompilerTargetCompilationSmoke,
+} from '../../compiler-emission/src/index.js';
 import { lowerTypeScriptSource } from '../../compiler-semantic/src/index.js';
-import type { CompilerModuleResolutionPlan, EmittedFile } from '../../compiler-types/src/index.js';
+import type {
+  CompilerCppPublicBindingPlan,
+  CompilerHaxeDualBindingPlan,
+  CompilerModuleFacadePlan,
+  CompilerModuleFacadeSlot,
+  CompilerModuleIdentity,
+  CompilerModuleResolutionPlan,
+  EmittedFile,
+  IrModule,
+} from '../../compiler-types/src/index.js';
 import { createHaxeCompilerBackend, emitIrModuleHaxe } from './haxeCompilerBackend.js';
+import { createHaxeCompilerEmittedSourceParser } from './haxeCompilerEmittedSourceSyntax.js';
+import { createHaxeCompilerTargetCompilationSmoke } from './haxeCompilerTargetCompilationSmoke.js';
+import { createCompilerHaxeDualBindingPlan } from './haxeDualBindingPlan.js';
 import {
   createHaxeExternEmissionIndex,
   emitIrModuleHaxeExtern,
@@ -1355,6 +1375,143 @@ describe('emitIrModuleHaxeExtern', () => {
 });
 
 describe('emitIrModuleHaxeExternWithContext', () => {
+  it('emits plan-owned public selectors and module forwarders over the mature JavaScript backing', () => {
+    const module = lower(
+      '@fixture/geometry',
+      'contract.ts',
+      `export interface Vector { x: number }
+       export function scale(value: Vector, factor: number): Vector { return { x: value.x * factor }; }
+       export const ORIGIN: Vector = { x: 0 };`,
+    );
+    const plan = createDirectDualBindingPlan(module, {
+      packageSpecifier: '@fixture/geometry/esm',
+      slots: [
+        ['Vector', 'Vector', 'type'],
+        ['scale', 'scale', 'value'],
+        ['ORIGIN', 'ORIGIN', 'value'],
+      ],
+    });
+    const options = { dualBindingPlan: plan, emissionMode: 'extern' as const, rootPackage: 'flight' };
+    const first = createHaxeCompilerBackend().createEmissionSession!({ modules: [module], options });
+    const second = createHaxeCompilerBackend().createEmissionSession!({ modules: [module], options });
+    const files = first.emitModule(module);
+    const repeated = second.emitModule(module);
+    const backing = findFile(files, 'flight/_js/Vector.hx');
+    const selector = findFile(files, 'flight/Vector.hx');
+    const holder = findFile(files, 'flight/_js/_fn/Geometry.hx');
+    const publicModule = findFile(files, 'flight/Geometry.hx');
+
+    expect(files).toEqual(repeated);
+    expect(backing.contents).toContain('package flight._js;');
+    expect(backing.contents).toContain('typedef Vector = {');
+    expect(selector.contents).toContain('#if (js && flight_esm)');
+    expect(selector.contents).toContain('typedef Vector = flight._js.Vector;');
+    expect(selector.contents).toContain('#elseif cpp');
+    expect(selector.contents).toContain('typedef Vector = flight._cpp.Vector;');
+    expect(selector.contents).toContain('requires the flight_esm JavaScript or cpp binding pipeline');
+    expect(holder.contents).toContain('@:jsImport("@fixture/geometry/esm")');
+    expect(holder.contents).not.toContain('@:jsRequire');
+    expect(holder.contents).toContain('static function scale(value:flight.Vector, factor:Float):flight.Vector;');
+    expect(holder.contents).toContain('static var ORIGIN:flight.Vector;');
+    expect(publicModule.contents).toContain(
+      'inline function scale(value:flight.Vector, factor:Float):flight.Vector return flight._js._fn.Geometry.scale(value, factor);',
+    );
+    expect(publicModule.contents).toContain('var ORIGIN(get, never):flight.Vector;');
+    expect(publicModule.contents).toContain(
+      'inline function get_ORIGIN():flight.Vector return flight._js._fn.Geometry.ORIGIN;',
+    );
+    expect(publicModule.contents).toContain('return flight._cpp._fn.Geometry.scale(value, factor);');
+
+    const parsed: string[] = [];
+    expect(
+      validateCompilerEmittedSourceSyntax(
+        files,
+        createHaxeCompilerEmittedSourceParser((file) => {
+          parsed.push(file.path);
+          return [];
+        }),
+      ),
+    ).toEqual({ checkedFiles: files.length, parser: 'haxe', skippedFiles: [] });
+    expect(parsed).toEqual(files.map((file) => file.path).sort());
+    expect(
+      validateCompilerTargetCompilationSmoke(
+        files,
+        createHaxeCompilerTargetCompilationSmoke((emitted) => {
+          expect(emitted).toEqual(files);
+          return [];
+        }),
+      ),
+    ).toEqual({ checkedFiles: files.length, compiler: 'haxe', skippedFiles: [] });
+  });
+
+  it('uses facade plan identities and locators for renamed re-exports without reallocating their names', () => {
+    const implementation = lower(
+      '@fixture/geometry',
+      'implementation.ts',
+      'export interface InternalVector { x: number } export function internalScale(value: InternalVector): InternalVector { return value; }',
+    );
+    const contract = lower(
+      '@fixture/geometry',
+      'contract.ts',
+      "export type { InternalVector as Vector } from './implementation.js'; export { internalScale as class } from './implementation.js';",
+    );
+    const plan = createDirectDualBindingPlan(contract, {
+      modules: [contract, implementation],
+      packageSpecifier: '@fixture/geometry/public-esm',
+      slots: [
+        ['Vector', 'InternalVector', 'type', implementation],
+        ['class', 'internalScale', 'value', implementation],
+      ],
+    });
+    const session = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [implementation, contract],
+      options: { dualBindingPlan: plan, emissionMode: 'extern', rootPackage: 'flight' },
+    });
+    const files = [contract, implementation].flatMap((module) => session.emitModule(module));
+
+    expect(findFile(files, 'flight/Vector.hx').contents).toContain('typedef Vector = flight._js.Vector;');
+    expect(findFile(files, 'flight/_js/Vector.hx').contents).toContain('typedef Vector = {');
+    expect(findFile(files, 'flight/_js/_fn/Geometry.hx').contents).toContain(
+      '@:jsImport("@fixture/geometry/public-esm")',
+    );
+    expect(findFile(files, 'flight/_js/_fn/Geometry.hx').contents).toContain('@:native("class")');
+    expect(findFile(files, 'flight/Geometry.hx').contents).toContain('inline function class_(');
+    expect(files.every((file) => !file.contents.includes('InternalVector'))).toBe(true);
+    expect(files.every((file) => !file.contents.includes('internalScale'))).toBe(true);
+  });
+
+  it('selects one available backend and fails unsupported or bare JavaScript targets at the public selector', () => {
+    const module = lower('@fixture/model', 'contract.ts', 'export interface Model { value: number }');
+    const slots = [['Model', 'Model', 'type']] as const;
+    const jsOnly = createDirectDualBindingPlan(module, {
+      cppRefused: true,
+      slots,
+    });
+    const cppOnly = createDirectDualBindingPlan(module, {
+      javascriptRefused: true,
+      slots,
+    });
+    const jsFiles = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [module],
+      options: { dualBindingPlan: jsOnly, emissionMode: 'extern', rootPackage: 'flight' },
+    }).emitModule(module);
+    const cppFiles = createHaxeCompilerBackend().createEmissionSession!({
+      modules: [module],
+      options: { dualBindingPlan: cppOnly, emissionMode: 'extern', rootPackage: 'flight' },
+    }).emitModule(module);
+    const jsSelector = findFile(jsFiles, 'flight/Model.hx').contents;
+    const cppSelector = findFile(cppFiles, 'flight/Model.hx').contents;
+
+    expect(jsFiles.some((file) => file.path === 'flight/_js/Model.hx')).toBe(true);
+    expect(jsSelector).toContain('typedef Model = flight._js.Model;');
+    expect(jsSelector).toContain('Model has no cpp binding');
+    expect(cppFiles.some((file) => file.path === 'flight/_js/Model.hx')).toBe(false);
+    expect(cppSelector).toContain('Model has no flight_esm JavaScript binding');
+    expect(cppSelector).toContain('typedef Model = flight._cpp.Model;');
+    expect(cppSelector).toContain('#else');
+    expect(cppSelector).toContain('requires the flight_esm JavaScript or cpp binding pipeline');
+  });
+
   it('places the source package contract specifier in custom ESM import metadata', () => {
     const module = lower('@flighthq/geometry', 'value.ts', 'export function value(): number { return 1; }');
 
@@ -1566,6 +1723,117 @@ function findFile(files: readonly EmittedFile[], path: string): EmittedFile {
   const file = files.find((candidate) => candidate.path === path);
   if (!file) throw new Error(`Missing emitted file ${path}`);
   return file;
+}
+
+function createDirectDualBindingPlan(
+  entry: Readonly<IrModule>,
+  input: Readonly<{
+    cppRefused?: boolean;
+    javascriptRefused?: boolean;
+    modules?: readonly Readonly<IrModule>[];
+    packageSpecifier?: string;
+    slots: readonly (readonly [string, string, 'type' | 'value', Readonly<IrModule>?])[];
+  }>,
+): CompilerHaxeDualBindingPlan {
+  const modules = input.modules ?? [entry];
+  const slots: CompilerModuleFacadeSlot[] = input.slots.map(([exportName, declarationName, lane, owner = entry]) => {
+    const declaration = owner.declarations.find(
+      (candidate) => 'binding' in candidate && candidate.binding.name === declarationName,
+    );
+    if (!declaration || !('binding' in declaration)) throw new Error(`Missing declaration ${declarationName}`);
+    const local = owner === entry && exportName === declarationName;
+    return {
+      exportName,
+      identity: `fixture:${lane}:${exportName}`,
+      lane,
+      module: moduleIdentity(entry),
+      route: { binding: declaration.binding, kind: 'binding', module: moduleIdentity(owner) },
+      source: local
+        ? { bindingId: declaration.binding.id, kind: 'local-binding' }
+        : { imported: declarationName, kind: 'module-binding', specifier: './implementation.js' },
+      via: local
+        ? []
+        : [
+            {
+              kind: 'named-reexport',
+              module: moduleIdentity(entry),
+              specifier: './implementation.js',
+              target: moduleIdentity(owner),
+            },
+          ],
+    };
+  });
+  const facade: CompilerModuleFacadePlan = {
+    modules: [{ module: moduleIdentity(entry), slots }],
+    schema: 'flight-compiler-module-facade/1',
+    semantics: {
+      bindingAccess: 'live',
+      explicitPrecedence: 'named-over-star',
+      starAmbiguity: 'refuse-distinct-resolutions',
+      starDefault: 'excluded',
+      typeValueLanes: 'independent',
+    },
+  };
+  const cpp: CompilerCppPublicBindingPlan = {
+    bindings: slots.map((slot) => {
+      if (slot.route.kind !== 'binding') throw new Error('Expected a binding route');
+      const identity = {
+        declarationIdentity: normalizeCompilerStructuralValueCanonical(slot.route.binding),
+        exportRoute: normalizeCompilerStructuralValueCanonical({
+          exportName: slot.exportName,
+          source: slot.source,
+          via: slot.via,
+        }),
+        packageName: slot.module.packageName,
+        source: normalizePathPortable(slot.module.source),
+        space: slot.lane,
+      } as const;
+      const key = `source-export:${normalizeCompilerStructuralValueCanonical(identity)}`;
+      return {
+        binding: input.cppRefused
+          ? {
+              availability: 'refused' as const,
+              refusal: {
+                code: 'cpp-module-refused' as const,
+                detailCode: 'cpp-test-refusal',
+                message: 'cpp pipeline omitted',
+                subject: key,
+              },
+            }
+          : {
+              availability: 'available' as const,
+              locator: {
+                carrier: slot.lane === 'type' ? ('interface' as const) : ('function' as const),
+                include: 'flight/fixture/contract.hpp',
+                namespace: 'flight::fixture',
+                spelling: slot.exportName,
+              },
+            },
+        facadeIdentity: slot.identity,
+        identity,
+        key,
+      };
+    }),
+    schema: 'flight-cpp-public-binding-plan/1',
+  };
+  return createCompilerHaxeDualBindingPlan({
+    cpp,
+    facade,
+    ...(input.javascriptRefused
+      ? {
+          javascriptRefusals: [
+            { code: 'js-test-refusal', message: 'JavaScript pipeline omitted', module: moduleIdentity(entry) },
+          ],
+        }
+      : {}),
+    modules,
+    options: { rootPackage: 'flight' },
+    ...(input.packageSpecifier ? { packageSpecifiers: { [entry.packageName]: input.packageSpecifier } } : {}),
+  });
+}
+
+function moduleIdentity(module: Readonly<IrModule>): CompilerModuleIdentity {
+  return { name: module.name, packageName: module.packageName, source: module.source };
 }
 
 function lower(packageName: string, file: string, source: string) {
