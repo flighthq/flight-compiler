@@ -1220,7 +1220,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         ) {
           return `{ if ${left}.is_none() { ${left} = Some(${right}); } ${left}.clone().unwrap() }`;
         }
-        emissionError(context, 'operator ??= requires a nullable Rust target');
+        emissionError(
+          context,
+          'operator ??= requires a nullable Rust target',
+          'rust-nullish-assignment-target-unsupported',
+        );
       }
       if (
         expression.operator === '=' &&

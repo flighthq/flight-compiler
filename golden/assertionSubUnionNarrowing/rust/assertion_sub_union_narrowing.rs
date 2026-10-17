@@ -5,13 +5,13 @@
 pub enum AnonymousUnion {
   Alpha(Alpha),
   Beta(Beta),
-  Gamma(Gamma),
 }
 
 #[derive(Clone)]
 pub enum AnonymousUnion2 {
   Alpha(Alpha),
   Beta(Beta),
+  Gamma(Gamma),
 }
 
 #[derive(Clone)]
@@ -35,18 +35,18 @@ pub struct Gamma {
   pub c: f64,
 }
 
-pub fn read(value: AnonymousUnion) -> AnonymousUnion2 {
-  return match value { AnonymousUnion::Alpha(value) => AnonymousUnion2::Alpha(value), AnonymousUnion::Beta(value) => AnonymousUnion2::Beta(value), _ => panic!("asserted union alternative is not present in the value"), };
+pub fn read(value: AnonymousUnion2) -> AnonymousUnion {
+  return match value { AnonymousUnion2::Alpha(value) => AnonymousUnion::Alpha(value), AnonymousUnion2::Beta(value) => AnonymousUnion::Beta(value), _ => panic!("asserted union alternative is not present in the value"), };
 }
 
-pub fn nullable(value: Option<AnonymousUnion>) -> Option<AnonymousUnion2> {
-  return match value { Some(value) => Some(match value { AnonymousUnion::Alpha(value) => AnonymousUnion2::Alpha(value), AnonymousUnion::Beta(value) => AnonymousUnion2::Beta(value), _ => panic!("asserted union alternative is not present in the value"), }), None => None, };
+pub fn nullable(value: Option<AnonymousUnion2>) -> Option<AnonymousUnion> {
+  return match value { Some(value) => Some(match value { AnonymousUnion2::Alpha(value) => AnonymousUnion::Alpha(value), AnonymousUnion2::Beta(value) => AnonymousUnion::Beta(value), _ => panic!("asserted union alternative is not present in the value"), }), None => None, };
 }
 
-pub fn present(value: Option<AnonymousUnion>) -> AnonymousUnion2 {
-  return match value { Some(value) => match value { AnonymousUnion::Alpha(value) => AnonymousUnion2::Alpha(value), AnonymousUnion::Beta(value) => AnonymousUnion2::Beta(value), _ => panic!("asserted union alternative is not present in the value"), }, None => panic!("asserted union alternative is not present in the value"), };
+pub fn present(value: Option<AnonymousUnion2>) -> AnonymousUnion {
+  return match value { Some(value) => match value { AnonymousUnion2::Alpha(value) => AnonymousUnion::Alpha(value), AnonymousUnion2::Beta(value) => AnonymousUnion::Beta(value), _ => panic!("asserted union alternative is not present in the value"), }, None => panic!("asserted union alternative is not present in the value"), };
 }
 
-pub fn overlapping(value: AnonymousUnion2) -> AnonymousUnion3 {
-  return match value { AnonymousUnion2::Alpha(value) => AnonymousUnion3::Alpha(value), _ => panic!("asserted union alternative is not present in the value"), };
+pub fn overlapping(value: AnonymousUnion) -> AnonymousUnion3 {
+  return match value { AnonymousUnion::Alpha(value) => AnonymousUnion3::Alpha(value), _ => panic!("asserted union alternative is not present in the value"), };
 }

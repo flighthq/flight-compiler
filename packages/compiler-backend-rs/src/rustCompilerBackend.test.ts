@@ -16917,8 +16917,7 @@ describe('emitIrModuleRust assertion recovery', () => {
       ).module,
     ).contents;
 
-    expect(output).toContain('match value {');
-    expect(output).toContain('(value) => AnonymousUnion2::Alpha(value)');
+    expect(output).toMatch(/match value \{ AnonymousUnion\d*::Alpha\(value\) => AnonymousUnion\d*::Alpha\(value\)/u);
     expect(output).toContain('_ => panic!("asserted union alternative is not present in the value"),');
   });
 
@@ -17336,5 +17335,49 @@ describe('emitIrModuleRust control-flow refusal diagnostics', () => {
     expect(failure.rule).toBe('rust-object-key-iteration-unproven');
     expect(failure.rule).not.toBe('rust-c-style-for-lowering-required');
     expect(failure.rule).not.toBe('rust-statement-value-call-unsupported');
+  });
+});
+
+describe('emitIrModuleRust nullish assignment refusal', () => {
+  it('names the nullish assignment rule for a non-nullable target and keeps message and origin', () => {
+    const module = lower('nullish-assign.ts', 'export function f(): number { let x = 1; x ??= 2; return x; }').module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-nullish-assignment-target-unsupported');
+    expect(failure.message).toContain('operator ??= requires a nullable Rust target');
+    expect(failure.line).toBe(1);
+    expect(failure.column).toBe(1);
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('emits the same assignment against a nullable target', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'nullish-assign-supported.ts',
+        'export function f(value: number | undefined): number { let x = value; x ??= 2; return x; }',
+      ).module,
+    ).contents;
+
+    expect(output).toContain('pub fn f(');
+    expect(output).not.toContain('operator ??= requires a nullable Rust target');
+  });
+
+  it('leaves neighbouring operator and cast families on their own diagnostics', () => {
+    const symbol = lower(
+      'nullish-assign-neighbour-symbol.ts',
+      'export function f(a: symbol, b: symbol): boolean { return a === b; }',
+    ).module;
+    const symbolFailure = captureBackendEmissionFailure(() => emitIrModuleRust(symbol));
+    expect(symbolFailure.rule).toBeUndefined();
+    expect(symbolFailure.message).toContain('requires Rust type-directed lowering');
+    expect(symbolFailure.message).not.toContain('operator ??= requires a nullable Rust target');
+
+    const cast = lower(
+      'nullish-assign-neighbour-cast.ts',
+      'export function f(s: string): number { return -s as unknown as number; }',
+    ).module;
+    const castFailure = captureBackendEmissionFailure(() => emitIrModuleRust(cast));
+    expect(castFailure.rule).toBe('rust-cast-requires-type-directed-lowering');
+    expect(castFailure.rule).not.toBe('rust-nullish-assignment-target-unsupported');
   });
 });
