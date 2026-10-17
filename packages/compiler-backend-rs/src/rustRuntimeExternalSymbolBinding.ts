@@ -27,6 +27,42 @@ type RustRuntimeExternalSymbolBinding =
       targetName: string;
     }>;
 
+interface RustCompilerExternalBindingRepresentationRefusal {
+  readonly message: string;
+  readonly rule: 'rust-host-binding-nullability-unrepresented' | 'rust-host-binding-ownership-unrepresented';
+}
+
+// A direct Rust type in a parameter or return position represents a present value transferred by
+// value. It can truthfully describe either an owned carrier or a value-semantic carrier. Borrowed
+// and shared ownership need reference/wrapper lowering, and nullable values need an Option carrier;
+// targetName alone elects none of those representations.
+export function collectCompilerRustExternalBindingRepresentationRefusals(
+  externalBindings?: Readonly<RustCompilerExternalBindingManifest> | undefined,
+): readonly Readonly<RustCompilerExternalBindingRepresentationRefusal>[] {
+  return getRustCompilerExternalBindings(externalBindings)
+    .flatMap((binding): readonly Readonly<RustCompilerExternalBindingRepresentationRefusal>[] => [
+      ...(binding.nullability === 'nullable'
+        ? [
+            {
+              message: `downstream Rust host binding ${binding.sourceName} (${binding.space}) declares nullable, but direct target carrier ${binding.targetName} is non-null`,
+              rule: 'rust-host-binding-nullability-unrepresented' as const,
+            },
+          ]
+        : []),
+      ...(binding.ownership === 'borrowed' || binding.ownership === 'shared'
+        ? [
+            {
+              message: `downstream Rust host binding ${binding.sourceName} (${binding.space}) declares ${binding.ownership} ownership, but direct target carrier ${binding.targetName} is passed by value`,
+              rule: 'rust-host-binding-ownership-unrepresented' as const,
+            },
+          ]
+        : []),
+    ])
+    .sort((left, right) =>
+      compareTextCodeUnits(`${left.rule}\u0000${left.message}`, `${right.rule}\u0000${right.message}`),
+    );
+}
+
 export function createCompilerRuntimeExternalSymbolBindingPlanRust(
   externalBindings?: Readonly<RustCompilerExternalBindingManifest> | undefined,
 ): CompilerRuntimeExternalSymbolBindingPlan {

@@ -1,4 +1,5 @@
 import {
+  collectCompilerRustExternalBindingRepresentationRefusals,
   createCompilerRuntimeExternalSymbolBindingPlanRust,
   createCompilerRustRuntimeExternalSymbolBindingPlan,
   getCompilerRuntimeExternalMemberTargetRust,
@@ -62,7 +63,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
       bindings: [
         {
           nullability: 'non-null' as const,
-          ownership: 'shared' as const,
+          ownership: 'owned' as const,
           sourceName: 'HTMLImageElement',
           space: 'type' as const,
           targetName: 'host::Image',
@@ -70,7 +71,7 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
         {
           members: [{ sourceMember: 'create', targetName: 'host::Image::create' }],
           nullability: 'non-null' as const,
-          ownership: 'shared' as const,
+          ownership: 'owned' as const,
           sourceName: 'HTMLImageElement',
           space: 'value' as const,
           targetName: 'host::Image',
@@ -110,6 +111,82 @@ describe('createCompilerRuntimeExternalSymbolBindingPlanRust', () => {
         schema: 'flight-rust-external-bindings/1',
       }),
     ).toThrow('Rust external binding 0 is malformed');
+  });
+});
+
+describe('collectCompilerRustExternalBindingRepresentationRefusals', () => {
+  it.each(['owned', 'value'] as const)('accepts direct non-null %s host carriers', (ownership) => {
+    expect(
+      collectCompilerRustExternalBindingRepresentationRefusals({
+        bindings: [
+          {
+            nullability: 'non-null',
+            ownership,
+            sourceName: 'Blob',
+            space: 'type',
+            targetName: 'host::Blob',
+          },
+        ],
+        schema: 'flight-rust-external-bindings/1',
+      }),
+    ).toEqual([]);
+  });
+
+  it.each(['borrowed', 'shared'] as const)('refuses unrepresented %s host ownership', (ownership) => {
+    expect(
+      collectCompilerRustExternalBindingRepresentationRefusals({
+        bindings: [
+          {
+            nullability: 'non-null',
+            ownership,
+            sourceName: 'Blob',
+            space: 'type',
+            targetName: 'host::Blob',
+          },
+        ],
+        schema: 'flight-rust-external-bindings/1',
+      }),
+    ).toEqual([
+      {
+        message: `downstream Rust host binding Blob (type) declares ${ownership} ownership, but direct target carrier host::Blob is passed by value`,
+        rule: 'rust-host-binding-ownership-unrepresented',
+      },
+    ]);
+  });
+
+  it('refuses unrepresented nullable host carriers in deterministic order', () => {
+    const bindings = [
+      {
+        nullability: 'nullable' as const,
+        ownership: 'owned' as const,
+        sourceName: 'VideoFrame',
+        space: 'type' as const,
+        targetName: 'host::VideoFrame',
+      },
+      {
+        nullability: 'nullable' as const,
+        ownership: 'value' as const,
+        sourceName: 'Blob',
+        space: 'type' as const,
+        targetName: 'host::Blob',
+      },
+    ];
+    const manifest = (orderedBindings: typeof bindings) => ({
+      bindings: orderedBindings,
+      schema: 'flight-rust-external-bindings/1' as const,
+    });
+    const forward = collectCompilerRustExternalBindingRepresentationRefusals(manifest(bindings));
+    const reverse = collectCompilerRustExternalBindingRepresentationRefusals(manifest([...bindings].reverse()));
+
+    expect(forward).toEqual(reverse);
+    expect(forward.map(({ rule }) => rule)).toEqual([
+      'rust-host-binding-nullability-unrepresented',
+      'rust-host-binding-nullability-unrepresented',
+    ]);
+    expect(forward.map(({ message }) => message)).toEqual([
+      expect.stringContaining('Blob (type)'),
+      expect.stringContaining('VideoFrame (type)'),
+    ]);
   });
 });
 

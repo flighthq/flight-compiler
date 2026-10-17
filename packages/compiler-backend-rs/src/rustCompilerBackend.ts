@@ -107,6 +107,7 @@ import { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRe
 import { createCompilerRustRuntimeAbiManifest } from './rustRuntimeAbiManifest.js';
 import { createCompilerRuntimeExternalConstructorAbiPlanRust } from './rustRuntimeExternalConstructorAbi.js';
 import {
+  collectCompilerRustExternalBindingRepresentationRefusals,
   createCompilerRuntimeExternalSymbolBindingPlanRust,
   getCompilerRuntimeExternalMemberTargetRust,
   getCompilerRuntimeExternalSymbolTargetRust,
@@ -282,6 +283,7 @@ function emitIrModuleRustWithContext(
     replaceIrModuleBackendContext(sourceModules, module),
     moduleResolution,
   );
+  assertRuntimeExternalBindingRepresentationsRust(module, options);
   assertRuntimeExternalSymbolBindingsRust(module, options);
   assertRuntimeExternalConstructorAbiRust(module);
   const asyncAnalysis = analyzeIrModuleAsyncStateMachines(module);
@@ -4802,6 +4804,17 @@ function assertRuntimeExternalSymbolBindingsRust(
     'rust-runtime-external-symbol-binding-incomplete',
     { classification: 'target-runtime' },
   );
+}
+
+function assertRuntimeExternalBindingRepresentationsRust(
+  module: Readonly<IrModule>,
+  options: Readonly<RustCompilerBackendOptions>,
+): void {
+  const refusal = collectCompilerRustExternalBindingRepresentationRefusals(options.hostBindings)[0];
+  if (!refusal) return;
+  throw createBackendEmissionFailure('rust', module, refusal.message, refusal.rule, {
+    classification: 'target-runtime',
+  });
 }
 
 function assertRuntimeExternalConstructorAbiRust(module: Readonly<IrModule>): void {

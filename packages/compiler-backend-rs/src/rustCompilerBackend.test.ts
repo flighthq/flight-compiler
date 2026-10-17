@@ -621,7 +621,7 @@ describe('emitIrModuleRust', () => {
       bindings: [
         {
           nullability: 'non-null' as const,
-          ownership: 'shared' as const,
+          ownership: 'owned' as const,
           sourceName: 'Blob',
           space: 'type' as const,
           targetName: 'flight_host::Blob',
@@ -634,6 +634,49 @@ describe('emitIrModuleRust', () => {
     expect(
       backend.emitModule(module, { modules: [module], options: { hostBindings: externalBindings } })[0]!.contents,
     ).toContain('value: flight_host::Blob');
+  });
+
+  it.each([
+    {
+      nullability: 'non-null' as const,
+      ownership: 'borrowed' as const,
+      rule: 'rust-host-binding-ownership-unrepresented',
+    },
+    {
+      nullability: 'non-null' as const,
+      ownership: 'shared' as const,
+      rule: 'rust-host-binding-ownership-unrepresented',
+    },
+    {
+      nullability: 'nullable' as const,
+      ownership: 'owned' as const,
+      rule: 'rust-host-binding-nullability-unrepresented',
+    },
+  ])('preflight-refuses unsupported downstream host metadata %#', ({ nullability, ownership, rule }) => {
+    const module = lower('host-preflight.ts', 'export const answer = 42;').module;
+    const backend = createRustCompilerBackend();
+    const failure = captureBackendEmissionFailure(() =>
+      backend.emitModule(module, {
+        modules: [module],
+        options: {
+          hostBindings: {
+            bindings: [
+              {
+                nullability,
+                ownership,
+                sourceName: 'Blob',
+                space: 'type',
+                targetName: 'flight_host::Blob',
+              },
+            ],
+            schema: 'flight-rust-external-bindings/1',
+          },
+        },
+      }),
+    );
+
+    expect(failure.classification).toBe('target-runtime');
+    expect(failure.rule).toBe(rule);
   });
 
   it('elects C-style for lowering and default-parameter declaration expansion', () => {
