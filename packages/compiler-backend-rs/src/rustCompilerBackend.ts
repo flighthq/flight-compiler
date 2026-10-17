@@ -433,6 +433,7 @@ interface EmitContext {
   moduleResolution: Readonly<CompilerModuleResolutionPlan> | undefined;
   nativeAsyncFunction: boolean;
   adaptedNativeFutureLocalBindingIds: ReadonlySet<string>;
+  adaptedNativeFutureReturnCalls: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'call' }>>>;
   sourceModules: readonly Readonly<IrModule>[];
   sourceTreeReferences: readonly Readonly<CompilerRustSourceTreeReferencePlan>[];
   needsCellImport: Set<'Cell'>;
@@ -836,6 +837,7 @@ function emitIrModuleRustWithContext(
   );
   const moduleExportBindingIds = collectRustModuleExportBindingIds(module);
   const adaptedNativeFutureLocalBindingIds = new Set<string>();
+  const adaptedNativeFutureReturnCalls = new Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>();
   const context: EmitContext = {
     abstractFieldNames: new Set(),
     activeTypeParameters: [],
@@ -908,6 +910,7 @@ function emitIrModuleRustWithContext(
     moduleResolution,
     nativeAsyncFunction: false,
     adaptedNativeFutureLocalBindingIds,
+    adaptedNativeFutureReturnCalls,
     sourceModules: replaceIrModuleBackendContext(sourceModules, module),
     sourceTreeReferences: sourceTree?.references ?? [],
     needsCellImport: new Set(),
@@ -1021,6 +1024,9 @@ function emitIrModuleRustWithContext(
   }
   for (const bindingId of collectIrModuleAdaptedNativeFutureLocalBindingIdsRust(module, context)) {
     adaptedNativeFutureLocalBindingIds.add(bindingId);
+  }
+  for (const call of collectIrModuleAdaptedNativeFutureReturnCallsRust(module, context)) {
+    adaptedNativeFutureReturnCalls.add(call);
   }
   collectPrimitiveUnionBindingsRust(module, context);
   assertArrayConstructorSemanticsRust(module, context);
@@ -3325,6 +3331,56 @@ function collectIrModuleAdaptedNativeFutureLocalBindingIdsRust(
   return bindings;
 }
 
+function collectIrModuleAdaptedNativeFutureReturnCallsRust(
+  module: Readonly<IrModule>,
+  context: EmitContext,
+): ReadonlySet<Readonly<Extract<IrExpression, { kind: 'call' }>>> {
+  // A synchronous source wrapper returning Promise<T> must still start the source async call when
+  // invoked. Elect only the closed one-return form so the runtime adapter restores that eager start
+  // without creating a general native-future-to-FlightTask conversion path.
+  const calls = new Set<Readonly<Extract<IrExpression, { kind: 'call' }>>>();
+  for (const declaration of module.declarations) {
+    if (
+      declaration.kind !== 'function' ||
+      declaration.async ||
+      declaration.typeParameters.length > 0 ||
+      declaration.overloads.length > 0 ||
+      declaration.parameters.some((parameter) => parameter.optional || parameter.rest || parameter.initializer) ||
+      !isIrTaskTypeRust(declaration.returns) ||
+      declaration.body.length !== 1
+    ) {
+      continue;
+    }
+    const statement = declaration.body[0]!;
+    if (
+      statement.kind !== 'return' ||
+      statement.expression?.kind !== 'call' ||
+      !isIrExactNamedNativeFutureCallRust(statement.expression, declaration.typeParameters, context) ||
+      !getIrExactNativeFutureTaskAdapterAwaitedTypeRust(statement.expression, declaration.returns, context)
+    ) {
+      continue;
+    }
+    calls.add(statement.expression);
+  }
+  return calls;
+}
+
+function getIrExactNativeFutureTaskAdapterAwaitedTypeRust(
+  call: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  taskType: Readonly<IrType> | undefined,
+  context: EmitContext,
+): Readonly<IrType> | undefined {
+  if (call.callee.kind !== 'identifier' || call.callee.reference.kind !== 'binding') return undefined;
+  const sourceType = getIrReferencedFunctionRust(call.callee.reference, context)?.returns;
+  if (!isIrTaskTypeRust(taskType) || !isIrTaskTypeRust(sourceType)) return undefined;
+  const awaitedType = taskType.typeArguments[0]!;
+  const sourceAwaitedType = sourceType.typeArguments[0]!;
+  return isIrFlightTaskCloneInsensitiveValueTypeRust(awaitedType) &&
+    hasSameIrFlightTaskCloneInsensitiveValueTypeRust(awaitedType, sourceAwaitedType)
+    ? awaitedType
+    : undefined;
+}
+
 function getIrAdaptedNativeFutureLocalAwaitedTypeRust(
   variable: Readonly<IrVariable> & Readonly<{ binding: IrBindingIdentity }>,
   context: EmitContext,
@@ -3336,15 +3392,11 @@ function getIrAdaptedNativeFutureLocalAwaitedTypeRust(
   ) {
     return undefined;
   }
-  const bindingType = variable.type ?? context.bindingTypes.get(variable.binding.id);
-  const initializerType = getIrReferencedFunctionRust(variable.initializer.callee.reference, context)?.returns;
-  if (!isIrTaskTypeRust(bindingType) || !isIrTaskTypeRust(initializerType)) return undefined;
-  const awaitedType = bindingType.typeArguments[0]!;
-  const initializerAwaitedType = initializerType.typeArguments[0]!;
-  return isIrFlightTaskCloneInsensitiveValueTypeRust(awaitedType) &&
-    hasSameIrFlightTaskCloneInsensitiveValueTypeRust(awaitedType, initializerAwaitedType)
-    ? awaitedType
-    : undefined;
+  return getIrExactNativeFutureTaskAdapterAwaitedTypeRust(
+    variable.initializer,
+    variable.type ?? context.bindingTypes.get(variable.binding.id),
+    context,
+  );
 }
 
 function hasSameIrFlightTaskCloneInsensitiveValueTypeRust(left: Readonly<IrType>, right: Readonly<IrType>): boolean {
@@ -6649,6 +6701,13 @@ function emitContextualReturnValueRust(
     context.nullableBindingIds.has(expression.reference.binding.id)
   ) {
     emissionError(context, 'returning a nullable binding requires Rust narrowing evidence');
+  }
+  if (
+    !context.nativeAsyncFunction &&
+    expression.kind === 'call' &&
+    context.adaptedNativeFutureReturnCalls.has(expression)
+  ) {
+    return emitExactNativeFutureTaskAdapterRust(expression, context);
   }
   if (context.enclosingReturnType) {
     assertIrAsyncReturnedExpressionCarrierRust(expression, context);
