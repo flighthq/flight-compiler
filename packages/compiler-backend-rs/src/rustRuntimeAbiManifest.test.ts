@@ -83,6 +83,22 @@ describe('createCompilerRustRuntimeAbiManifest', () => {
     expect(unboundTaskMember.rule).toBe('rust-runtime-external-member-binding-incomplete');
     expect(unboundTaskMember.classification).toBe('target-runtime');
 
+    const unboundConstructor = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('export function create(): number[] { return new Array<number>(3); }')),
+    );
+    expect(unboundConstructor.rule).toBe('rust-runtime-external-constructor-abi-incomplete');
+    expect(unboundConstructor.classification).toBe('target-runtime');
+
+    const unboundSymbol = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'export function view(bytes: Uint8Array<SharedArrayBuffer>): Uint8Array<SharedArrayBuffer> { return bytes.subarray(1); }',
+        ),
+      ),
+    );
+    expect(unboundSymbol.rule).toBe('rust-runtime-external-symbol-binding-incomplete');
+    expect(unboundSymbol.classification).toBe('target-runtime');
+
     expect(() =>
       emitIrModuleRust(lower('export function order(values: number[]): number[] { return values.sort(); }')),
     ).toThrow('array member sort has no Rust binding');
