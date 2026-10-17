@@ -1,0 +1,1 @@
+rust emission failed for @flighthq/golden/packages/golden/src/repeatedArgument.ts: binding values requires a deep Rust clone that would split source shared identity
