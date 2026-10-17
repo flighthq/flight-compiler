@@ -7,13 +7,14 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 import { isBackendEmissionFailure } from '../../compiler-emission/src/index.js';
-import { createCompilerModuleEvaluationPlan } from '../../compiler-module/src/index.js';
+import { createCompilerModuleEvaluationPlan, createCompilerModuleFacadePlan } from '../../compiler-module/src/index.js';
 import { lowerTypeScriptSource, lowerTypeScriptSources } from '../../compiler-semantic/src/index.js';
 import type {
   CompilerBackendEmissionSession,
   CompilerBackendPackageGraphFinalization,
   CompilerModuleFacadePlan,
   CompilerModuleIdentity,
+  CompilerModuleLinkDependency,
   CompilerModuleResolutionPlan,
   EmittedFile,
   IrFunctionDeclaration,
@@ -297,10 +298,12 @@ function createRustSourceTreeFinalization(
   session: Readonly<CompilerBackendEmissionSession>,
   retainedModules: readonly Readonly<IrModule>[],
   facadeModules: readonly Readonly<IrModule>[],
+  moduleEvaluation: Readonly<ReturnType<typeof createCompilerModuleEvaluationPlan>> = emptyModuleEvaluation,
+  facade: Readonly<CompilerModuleFacadePlan> = createRustSourceTreeFacade(facadeModules),
 ): CompilerBackendPackageGraphFinalization {
   return {
-    facade: createRustSourceTreeFacade(facadeModules),
-    moduleEvaluation: emptyModuleEvaluation,
+    facade,
+    moduleEvaluation,
     moduleFiles: retainedModules.map((module) => ({
       file: session.emitModule(module)[0]!,
       module: getRustTestModuleIdentity(module),
@@ -342,41 +345,54 @@ describe('createRustCompilerBackend', () => {
     const secret = lowerPackage('@alpha/math', 'internal/secret.ts', 'export const secret = 2;').module;
     const value = lowerPackage('@beta/types', 'deep/value.ts', 'export interface Value { size: number }').module;
     const filtered = lowerPackage('@alpha/math', 'filtered.ts', 'export const filtered = 3;').module;
+    const dependencies: readonly CompilerModuleLinkDependency[] = [
+      {
+        importer: getRustTestModuleIdentity(root),
+        specifier: './geometry/shapes/point.js',
+        target: getRustTestModuleIdentity(point),
+      },
+      {
+        importer: getRustTestModuleIdentity(root),
+        specifier: '@beta/types/value',
+        target: getRustTestModuleIdentity(value),
+      },
+    ];
     const moduleResolution: CompilerModuleResolutionPlan = {
-      edges: [
-        {
-          importer: getRustTestModuleIdentity(root),
-          specifier: './geometry/shapes/point.js',
-          target: getRustTestModuleIdentity(point),
-        },
-        {
-          importer: getRustTestModuleIdentity(root),
-          specifier: '@beta/types/value',
-          target: getRustTestModuleIdentity(value),
-        },
-      ],
+      edges: dependencies,
       schema: 'flight-compiler-module-resolution/1',
     };
     const modules = [filtered, value, secret, point, root];
     const retainedModules = [secret, root, value, point];
     const facadeModules = [point, root, value];
+    const moduleEvaluation = createCompilerModuleEvaluationPlan({
+      dependencies,
+      entries: [getRustTestModuleIdentity(root)],
+      modules: facadeModules,
+    });
+    const facade = createCompilerModuleFacadePlan({ evaluation: moduleEvaluation, modules: facadeModules });
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleResolution,
       modules,
       options: {},
     });
     const first = session.finalizePackageGraph!(
-      createRustSourceTreeFinalization(session, retainedModules, facadeModules),
+      createRustSourceTreeFinalization(session, retainedModules, facadeModules, moduleEvaluation, facade),
     );
     const reversedSession = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
+      moduleEvaluation,
       moduleResolution: { ...moduleResolution, edges: [...moduleResolution.edges].reverse() },
       modules: [...modules].reverse(),
       options: {},
     });
     const second = reversedSession.finalizePackageGraph!(
-      createRustSourceTreeFinalization(reversedSession, [...retainedModules].reverse(), [...facadeModules].reverse()),
+      createRustSourceTreeFinalization(
+        reversedSession,
+        [...retainedModules].reverse(),
+        [...facadeModules].reverse(),
+        moduleEvaluation,
+        facade,
+      ),
     );
 
     expect(second).toEqual(first);
@@ -32283,13 +32299,19 @@ describe('createRustCompilerBackend provisional module paths', () => {
   it('agrees provisional and finalized paths for root and nested indexes', () => {
     const rootIndex = lower('index.ts', 'export const rootValue = 1;').module;
     const nestedIndex = lower('nested/index.ts', 'export const nestedValue = 2;').module;
+    const modules = [rootIndex, nestedIndex];
+    const moduleEvaluation = createCompilerModuleEvaluationPlan({
+      dependencies: [],
+      entries: modules.map(getRustTestModuleIdentity),
+      modules,
+    });
     const session = createRustCompilerBackend().createEmissionSession!({
-      moduleEvaluation: emptyModuleEvaluation,
-      modules: [rootIndex, nestedIndex],
+      moduleEvaluation,
+      modules,
       options: {},
     });
     const finalized = session.finalizePackageGraph!(
-      createRustSourceTreeFinalization(session, [rootIndex, nestedIndex], [rootIndex, nestedIndex]),
+      createRustSourceTreeFinalization(session, modules, modules, moduleEvaluation),
     );
     const provisional = [session.emitModule(rootIndex)[0]!.path, session.emitModule(nestedIndex)[0]!.path];
 
