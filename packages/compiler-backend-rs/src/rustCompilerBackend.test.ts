@@ -2557,25 +2557,202 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(output.match(/\.await/gu)).toHaveLength(2);
   });
 
+  it('emits an exact async instance method as one owned-receiver FlightTask wrapper', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'async-method-carrier.ts',
+        `class Counter {
+           value: number;
+           constructor(value: number) { this.value = value; }
+           async advance(task: Promise<number>, amount: number): Promise<number> {
+             this.value += amount;
+             const waited = await task;
+             this.value++;
+             return this.value + waited;
+           }
+         }
+         export async function run(task: Promise<number>): Promise<number> {
+           const counter = new Counter(1);
+           const pending = counter.advance(task, 2);
+           const first = await pending;
+           const second = await pending;
+           return first + second + counter.value;
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      'fn advance(async_receiver: Rc<RefCell<Self>>, task: FlightTask<f64>, amount: f64) -> FlightTask<f64> {',
+    );
+    expect(output.match(/FlightTask::from_future\(async move \{/gu)).toHaveLength(1);
+    expect(output).toContain('Counter::advance(Rc::clone(&counter), task, 2.0)');
+    expect(output).toContain('async_receiver.borrow().value');
+    expect(output).toContain('async_receiver.borrow_mut().value');
+    expect(output).toContain('pending.clone().await');
+    expect(output).not.toContain('.borrow().advance');
+  });
+
+  it('settles an exact async method task directly in a protected region', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'async-method-protected.ts',
+        `class Counter {
+           value = 1;
+           async read(task: Promise<number>): Promise<number> { const value = await task; return this.value + value; }
+         }
+         export async function attempt(task: Promise<number>): Promise<number> {
+           const counter = new Counter();
+           try { return await counter.read(task); } catch { return 7; }
+         }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('match Counter::read(Rc::clone(&counter), task).settle() {');
+    expect(output).not.toContain('FlightTask::from_future(Counter::read');
+  });
+
+  it('resolves an imported async method owner to the provider class identity', () => {
+    const providerSource = ts.createSourceFile(
+      '/flight/packages/math/src/async-method-provider.ts',
+      `export class Counter {
+         value: number;
+         constructor(value: number) { this.value = value; }
+         async advance(task: Promise<number>): Promise<number> {
+           this.value += 1;
+           const amount = await task;
+           return this.value + amount;
+         }
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const consumerSource = ts.createSourceFile(
+      '/flight/packages/math/src/async-method-consumer.ts',
+      `import { Counter } from './async-method-provider.js';
+       export async function run(task: Promise<number>): Promise<number> {
+         const counter = new Counter(1);
+         return await counter.advance(task);
+       }`,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const moduleResolution = {
+      edges: [
+        {
+          importer: {
+            name: 'Async-method-consumer',
+            packageName: '@flighthq/math',
+            source: 'packages/math/src/async-method-consumer.ts',
+          },
+          specifier: './async-method-provider.js',
+          target: { packageName: '@flighthq/math', source: 'packages/math/src/async-method-provider.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const [providerResult, consumerResult] = lowerTypeScriptSources(
+      [
+        { packageName: '@flighthq/math', sourceFile: providerSource, upstreamDirectory: '/flight' },
+        { packageName: '@flighthq/math', sourceFile: consumerSource, upstreamDirectory: '/flight' },
+      ],
+      moduleResolution,
+    );
+    expect(providerResult!.diagnostics).toEqual([]);
+    expect(consumerResult!.diagnostics).toEqual([]);
+    const provider = providerResult!.module;
+    const consumer = consumerResult!.module;
+    const session = createRustCompilerBackend().createEmissionSession!({
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    });
+    const providerOutput = session.emitModule(provider)[0]!.contents;
+    const consumerOutput = session.emitModule(consumer)[0]!.contents;
+
+    expect(providerOutput).toContain('fn advance(async_receiver: Rc<RefCell<Self>>');
+    expect(providerOutput.match(/FlightTask::from_future\(async move \{/gu)).toHaveLength(1);
+    expect(consumerOutput).toContain('Counter::advance(Rc::clone(&counter), task).await');
+    expect(consumerOutput).not.toContain('.borrow().advance');
+  });
+
+  it.each([
+    ['a generic method', 'class Counter { value = 0; async read<T>(value: T): Promise<number> { return 1; } }'],
+    [
+      'an optional parameter',
+      'class Counter { value = 0; async read(value?: number): Promise<number> { return value ?? 0; } }',
+    ],
+    ['a nonprimitive result', 'class Counter { value = 0; async read(): Promise<number[]> { return [this.value]; } }'],
+    [
+      'an inherited owner',
+      'class Base { value = 0; } class Counter extends Base { async read(): Promise<number> { return this.value; } }',
+    ],
+  ])('refuses an async method owner with %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('async-method-owner-refusal.ts', source).module),
+    );
+    expect(failure.rule).toBe('rust-async-method-owner-carrier-unrepresented');
+  });
+
   it.each([
     [
-      'an instance method',
-      '\nexport class Fetcher { async fetch(): Promise<number> { return 1; } }',
-      'async method Fetcher.fetch',
+      'a receiver borrow in an awaiting statement',
+      'class Counter { value = 0; async read(task: Promise<number>): Promise<number> { return this.value + await task; } }',
     ],
     [
-      'a static method',
-      '\nexport class Fetcher { static async fetch(): Promise<number> { return 1; } }',
-      'async method Fetcher.fetch',
+      'a receiver escape',
+      'function consume(value: unknown): void {} class Counter { value = 0; async read(): Promise<number> { consume(this); return 1; } }',
     ],
-  ])('refuses %s before a synchronous Rust method can claim a task carrier', (_name, source, message) => {
+    [
+      'a receiver capture',
+      'class Counter { value = 0; async read(): Promise<number> { const nested = (): number => this.value; return nested(); } }',
+    ],
+    [
+      'another instance method call',
+      'class Counter { value = 0; current(): number { return this.value; } async read(): Promise<number> { return this.current(); } }',
+    ],
+  ])('refuses an async method body with %s', (_name, source) => {
     const failure = captureBackendEmissionFailure(() =>
-      emitIrModuleRust(lower('async-method-carrier.ts', source).module),
+      emitIrModuleRust(lower('async-method-body-refusal.ts', source).module),
+    );
+    expect(failure.rule).toBe('rust-async-method-body-unrepresented');
+  });
+
+  it.each([
+    [
+      'an optional invocation',
+      `class Counter { value = 0; async read(task: Promise<number>): Promise<number> { return await task; } }
+       export function run(task: Promise<number>): void { const counter = new Counter(); counter.read?.(task); }`,
+    ],
+    [
+      'a constructed receiver',
+      `class Counter { value = 0; async read(task: Promise<number>): Promise<number> { return await task; } }
+       export async function run(task: Promise<number>): Promise<number> { return await new Counter().read(task); }`,
+    ],
+    [
+      'an unbound method value',
+      `class Counter { value = 0; async read(task: Promise<number>): Promise<number> { return await task; } }
+       export function run(): number { const counter = new Counter(); const read = counter.read; return 0; }`,
+    ],
+  ])('refuses an async method call with %s', (_name, source) => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(lower('async-method-call-refusal.ts', source).module),
+    );
+    expect(failure.rule).toBe('rust-async-method-call-unrepresented');
+  });
+
+  it('refuses a static async method before a synchronous Rust method can claim a task carrier', () => {
+    const failure = captureBackendEmissionFailure(() =>
+      emitIrModuleRust(
+        lower(
+          'async-static-method-carrier.ts',
+          '\nexport class Fetcher { value = 0; static async fetch(): Promise<number> { return 1; } }',
+        ).module,
+      ),
     );
 
-    expect(failure.rule).toBe('rust-async-task-carrier-unrepresented');
+    expect(failure.rule).toBe('rust-async-method-owner-carrier-unrepresented');
     expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.message).toContain(message);
+    expect(failure.message).toContain('async method Fetcher.fetch');
     expect(failure.line).toBe(2);
     expect(failure.column).toBe(1);
   });
@@ -2952,7 +3129,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     expect(failure.rule).toBe('rust-native-future-task-adapter-unavailable');
   });
 
-  it('keeps one-shot native-future local syntax inside an async method on the method carrier refusal', () => {
+  it('keeps an async method without a simple owned class on the owner-carrier refusal', () => {
     const failure = captureBackendEmissionFailure(() =>
       emitIrModuleRust(
         lower(
@@ -2963,7 +3140,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     );
 
     expect(failure.classification).toBe('compiler-restriction');
-    expect(failure.rule).toBe('rust-async-task-carrier-unrepresented');
+    expect(failure.rule).toBe('rust-async-method-owner-carrier-unrepresented');
   });
 
   it('settles terminal protected bare FlightTask adoption through a synchronous catch', () => {
@@ -3252,8 +3429,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     ],
     [
       'an async method context',
-      'export class Worker { async run(value: number): Promise<number> { return await (async (input: number): Promise<number> => input)(value); } }',
-      'rust-async-task-carrier-unrepresented',
+      'export class Worker { value = 0; async run(value: number): Promise<number> { return await (async (input: number): Promise<number> => input)(value); } }',
+      'rust-async-method-body-unrepresented',
       'compiler-restriction',
     ],
     [
@@ -5114,6 +5291,28 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            function observeError(error: string, task: Promise<void>, log: string[]): Promise<void> { mark(error, log); return task; }
            async function nativeValue(value: number): Promise<number> { return value + 1; }
            async function nativePrimary(task: Promise<number>): Promise<number> { return await task; }
+           class AsyncCounter {
+             value: number;
+             constructor(value: number) { this.value = value; }
+             async advance(task: Promise<number>): Promise<number> {
+               this.value += 1;
+               const amount = await task;
+               this.value += amount;
+               return this.value;
+             }
+           }
+           export async function asyncMethodRepeated(task: Promise<number>): Promise<number> {
+             const counter = new AsyncCounter(1);
+             const pending = counter.advance(task);
+             const first = await pending;
+             const second = await pending;
+             return first + second + counter.value;
+           }
+           export async function asyncMethodCaught(task: Promise<number>): Promise<number> {
+             const counter = new AsyncCounter(1);
+             try { return await counter.advance(task); }
+             catch { return counter.value; }
+           }
            export async function localNative(log: string[]): Promise<number> {
              mark("local-start", log);
              const pending = nativeValue(4);
@@ -5163,6 +5362,10 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
       expect(output).toContain('let pending = native_value(4.0);');
       expect(output).toContain('let value: f64 = pending.await;');
+      expect(output).toContain(
+        'fn advance(async_receiver: Rc<RefCell<Self>>, task: FlightTask<f64>) -> FlightTask<f64>',
+      );
+      expect(output).toContain('match AsyncCounter::advance(Rc::clone(&counter), task).settle() {');
       expect(output).toContain('FlightTask::from_future(native_primary(primary)).settle()');
       expect(output).toContain('Err(finally_error) => Err(finally_error),');
       expect(output).toContain('Err(finally_first_error) => Err(finally_first_error),');
@@ -5182,6 +5385,8 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
            assert_eq!(adapted.settle(), Ok(3.0));
            assert_eq!(adapted_clone.settle(), Ok(3.0));
            assert_eq!(adapter_polls.get(), 2, "task clones must share one consumed future and settlement");
+           assert_eq!(flight_runtime::block_on(async_method_repeated(flight_runtime::FlightTask::ready(3.0))), 15.0);
+           assert_eq!(flight_runtime::block_on(async_method_caught(flight_runtime::FlightTask::<f64>::reject("async-method-error"))), 2.0);
            let mut native_log = Vec::new();
            assert_eq!(flight_runtime::block_on(local_native(&mut native_log)), 5.0);
            assert_eq!(native_log, vec!["local-start".to_owned(), "local-created".to_owned(), "local-awaited".to_owned()]);
@@ -13829,7 +14034,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
   it('keeps unsupported and overlapping shared-class method calls as stable refusals', () => {
     const unsupported = lower(
       'shared-class-method-unsupported.ts',
-      `class Counter { value = 0; async current(): Promise<number> { return this.value; } }
+      `class Counter { value = 0; async current(): Promise<number> { return this.value + await Promise.resolve(1); } }
        export function run(): number {
          const values = new Counter(); const alias = values;
          alias.value = 1;
@@ -13848,7 +14053,7 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
 
     const unsupportedFailure = captureBackendEmissionFailure(() => emitIrModuleRust(unsupported));
     const overlapFailure = captureBackendEmissionFailure(() => emitIrModuleRust(overlapping));
-    expect(unsupportedFailure.rule).toBe('rust-reference-shared-class-member-unrepresented');
+    expect(unsupportedFailure.rule).toBe('rust-async-method-body-unrepresented');
     expect(unsupportedFailure.classification).toBe('compiler-restriction');
     expect(overlapFailure.rule).toBe('rust-reference-shared-class-borrow-conflict');
     expect(overlapFailure.classification).toBe('compiler-restriction');

@@ -360,6 +360,8 @@ interface RustAsyncTryTwoAwaitPlan {
 interface EmitContext {
   abstractFieldNames: ReadonlySet<string>;
   allowedNativeFutureCall?: Readonly<Extract<IrExpression, { kind: 'call' }>> | undefined;
+  asyncMethodOwner?: Readonly<IrClassDeclaration> | undefined;
+  asyncMethodReceiver?: string | undefined;
   assignableBindingIds: ReadonlySet<string>;
   // The declaration currently being emitted. A refusal names where in the source to look, and the
   // declaration is the granularity the IR retains an origin at.
@@ -638,6 +640,12 @@ function emitIrModuleRustWithContext(
   );
   const referenceRefusal = referenceModulePlan?.refusals[0];
   if (referenceRefusal) {
+    if (
+      referenceRefusal.code === 'rust-async-method-body-unrepresented' ||
+      referenceRefusal.code === 'rust-async-method-owner-carrier-unrepresented'
+    ) {
+      assertIrAsyncMethodCarriersRust(module);
+    }
     throw createBackendEmissionFailure('rust', module, referenceRefusal.message, referenceRefusal.code);
   }
   assertIrAsyncMethodCarriersRust(module);
@@ -1258,6 +1266,38 @@ function emitClass(declaration: Readonly<IrClassDeclaration>, context: EmitConte
   }
   const inherentMethods = declaration.methods.filter((method) => !traitMethodNames.has(method.name));
   const emitMethodLines = (method: (typeof declaration.methods)[number]): string[] => {
+    if (method.async) {
+      const receiver = getGeneratedTargetNameRust('async_receiver', context);
+      const awaitedType = getIrTaskAwaitedTypeRust(method.returns, context);
+      const methodContext: EmitContext = {
+        ...context,
+        activeTypeParameters: method.typeParameters,
+        allowedNativeFutureCall: undefined,
+        asyncMethodOwner: declaration,
+        asyncMethodReceiver: receiver,
+        enclosingReturnType: awaitedType,
+        insideProtectedTry: false,
+        nativeAsyncFunction: true,
+        returnsAbsent: hasIrTypeAbsentMember(awaitedType),
+        returnsSharedClass: false,
+        sharedClassReturnRepresentation: undefined,
+      };
+      methodContext.needsRcImport.add('Rc');
+      methodContext.needsRefCellImport.add('RefCell');
+      methodContext.runtimeTypeNames.add('FlightTask');
+      const parameters = [
+        `${receiver}: Rc<RefCell<Self>>`,
+        ...method.parameters.map((parameter) => emitParameter(parameter, methodContext)),
+      ].join(', ');
+      const target = getIrClassMethodTargetNameRust(method);
+      return [
+        `  ${method.visibility === 'public' ? 'pub ' : ''}fn ${target}(${parameters}) -> ${emitType(method.returns, methodContext)} {`,
+        '    FlightTask::from_future(async move {',
+        ...indentSourceLines(emitStatements(method.body, methodContext), 3),
+        '    })',
+        '  }',
+      ];
+    }
     // Rust has no properties, so an accessor is a method. A setter takes the receiver mutably and is
     // named apart from the getter, because Rust has one namespace for both and the source had two.
     const target = getIrClassMethodTargetNameRust(method);
@@ -1491,6 +1531,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         )
         .join(', ')}]`;
     case 'assignment': {
+      const asyncMethodSelfAssignment = emitAsyncMethodSelfFieldAssignmentRust(expression, context);
+      if (asyncMethodSelfAssignment) return asyncMethodSelfAssignment;
       const typedArrayAssignment = emitTypedArrayElementAssignmentRust(expression, context);
       if (typedArrayAssignment) return typedArrayAssignment;
       const sharedArrayAssignment = emitSharedArrayElementAssignmentRust(expression, context);
@@ -1859,6 +1901,10 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (immediateAsyncClosure) return immediateAsyncClosure;
       }
       if (expression.semantics.statementValue) return emitStatementValueExpressionRust(expression, context);
+      {
+        const asyncClassMethod = emitAsyncSharedClassMethodCallRust(expression, context);
+        if (asyncClassMethod) return asyncClassMethod;
+      }
       if (expression.optional) return emitOptionalCallExpressionRust(expression, context);
       {
         const sharedClassMethod = emitSharedClassMethodCallRust(expression, context);
@@ -2190,6 +2236,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return emitObjectRestExpressionRust(expression, context);
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionRust(expression, context);
+      const asyncMethodSelfField = emitAsyncMethodSelfFieldReadRust(expression, context);
+      if (asyncMethodSelfField) return asyncMethodSelfField;
       const sharedClassField = emitSharedClassFieldRust(expression, context);
       if (sharedClassField) return sharedClassField;
       const namespaceImportMember = getRustNamespaceImportMemberRust(expression.object, expression.name, context);
@@ -2388,6 +2436,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
     }
     case 'unary': {
       if (expression.operator === '++' || expression.operator === '--') {
+        const asyncMethodSelfUpdate = emitAsyncMethodSelfFieldUpdateRust(expression, context);
+        if (asyncMethodSelfUpdate) return asyncMethodSelfUpdate;
         return emitNumericUpdateUnaryRust(expression, context);
       }
       if (expression.operator === 'void') {
@@ -2468,6 +2518,102 @@ function emitAssignmentTargetRust(expression: Readonly<IrExpression>, context: E
     return emitted;
   }
   return emitted.slice(0, -'.clone()'.length);
+}
+
+function getIrAsyncMethodSelfFieldRust(
+  expression: Readonly<IrExpression>,
+  context: EmitContext,
+): Readonly<IrClassField> | undefined {
+  if (!context.asyncMethodOwner || !context.asyncMethodReceiver || !isIrSimpleAsyncMethodThisFieldRust(expression)) {
+    return undefined;
+  }
+  return expression.kind === 'property'
+    ? context.asyncMethodOwner.fields.find((field) => !field.static && field.name === expression.name)
+    : undefined;
+}
+
+function emitAsyncMethodSelfFieldReadRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'property' }>>,
+  context: EmitContext,
+): string | undefined {
+  const field = getIrAsyncMethodSelfFieldRust(expression, context);
+  if (!field || !context.asyncMethodReceiver) return undefined;
+  const owned = field.type.kind === 'primitive' && field.type.name === 'string' ? '.clone()' : '';
+  return `${context.asyncMethodReceiver}.borrow().${safeRustValueName(field.name)}${owned}`;
+}
+
+function emitAsyncMethodSelfFieldAssignmentRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  const field = getIrAsyncMethodSelfFieldRust(expression.left, context);
+  const receiver = context.asyncMethodReceiver;
+  if (!field || !receiver) return undefined;
+  const fieldName = safeRustValueName(field.name);
+  const rightName = getGeneratedTargetNameRust('async_field_right', context);
+  const right = emitOwnedOperandRust(expression.right, context);
+  const clone = field.type.kind === 'primitive' && field.type.name === 'string' ? '.clone()' : '';
+  if (expression.operator === '=') {
+    return `{ let ${rightName} = ${normalizeSourceTextGrouping(right)}; ${receiver}.borrow_mut().${fieldName} = ${rightName}${clone}; ${rightName} }`;
+  }
+  if (field.type.kind !== 'primitive') return undefined;
+  const currentName = getGeneratedTargetNameRust('async_field_current', context);
+  if (field.type.name === 'boolean' && (expression.operator === '||=' || expression.operator === '&&=')) {
+    const condition = expression.operator === '||=' ? `!${currentName}` : currentName;
+    return `{ let ${currentName} = ${receiver}.borrow().${fieldName}; if ${condition} { let ${rightName} = ${right}; ${receiver}.borrow_mut().${fieldName} = ${rightName}; ${rightName} } else { ${currentName} } }`;
+  }
+  const updatedName = getGeneratedTargetNameRust('async_field_updated', context);
+  if (field.type.name === 'string' && expression.operator === '+=') {
+    return `{ let ${currentName} = ${receiver}.borrow().${fieldName}.clone(); let ${rightName} = ${right}; let mut ${updatedName} = ${currentName}; ${updatedName}.push_str(&${rightName}); ${receiver}.borrow_mut().${fieldName} = ${updatedName}.clone(); ${updatedName} }`;
+  }
+  if (field.type.name !== 'number') return undefined;
+  let update: string;
+  if (expression.operator === '**=') {
+    update = `f64::powf(${currentName}, ${rightName})`;
+  } else if (expression.operator === '>>>=') {
+    update = `(((((${currentName} as i32) as u32) >> (${rightName} as u32)) as f64))`;
+  } else if (
+    expression.operator === '&=' ||
+    expression.operator === '|=' ||
+    expression.operator === '^=' ||
+    expression.operator === '<<=' ||
+    expression.operator === '>>='
+  ) {
+    update = `(((${currentName} as i32) ${expression.operator.slice(0, -1)} (${rightName} as i32)) as f64)`;
+  } else if (
+    expression.operator === '+=' ||
+    expression.operator === '-=' ||
+    expression.operator === '*=' ||
+    expression.operator === '/=' ||
+    expression.operator === '%='
+  ) {
+    update = `${currentName} ${expression.operator.slice(0, -1)} ${rightName}`;
+  } else {
+    return undefined;
+  }
+  return `{ let ${currentName} = ${receiver}.borrow().${fieldName}; let ${rightName} = ${right}; let ${updatedName} = ${update}; ${receiver}.borrow_mut().${fieldName} = ${updatedName}; ${updatedName} }`;
+}
+
+function emitAsyncMethodSelfFieldUpdateRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'unary' }>>,
+  context: EmitContext,
+): string | undefined {
+  const field = getIrAsyncMethodSelfFieldRust(expression.operand, context);
+  const receiver = context.asyncMethodReceiver;
+  if (
+    !field ||
+    !receiver ||
+    field.type.kind !== 'primitive' ||
+    field.type.name !== 'number' ||
+    (expression.operator !== '++' && expression.operator !== '--')
+  ) {
+    return undefined;
+  }
+  const previous = getGeneratedTargetNameRust('async_field_previous', context);
+  const updated = getGeneratedTargetNameRust('async_field_updated', context);
+  const arithmetic = expression.operator === '++' ? '+' : '-';
+  const fieldName = safeRustValueName(field.name);
+  return `{ let ${previous} = ${receiver}.borrow().${fieldName}; let ${updated} = ${previous} ${arithmetic} 1.0; ${receiver}.borrow_mut().${fieldName} = ${updated}; ${expression.postfix ? previous : updated} }`;
 }
 
 function emitTypedArrayElementAssignmentRust(
@@ -2804,18 +2950,177 @@ function isIrTaskTypeRust(type: Readonly<IrType> | undefined): type is Readonly<
 }
 
 function assertIrAsyncMethodCarriersRust(module: Readonly<IrModule>): void {
-  const declaration = module.declarations.find(
-    (candidate): candidate is Readonly<IrClassDeclaration> =>
-      candidate.kind === 'class' && candidate.methods.some((method) => method.async),
+  for (const declaration of module.declarations) {
+    if (declaration.kind !== 'class') continue;
+    for (const method of declaration.methods) {
+      if (!method.async) continue;
+      const ownerSupported = isIrSimpleAsyncMethodOwnerSupportedRust(method, declaration);
+      if (ownerSupported && isIrSimpleAsyncMethodBodySupportedRust(method, declaration)) continue;
+      throw createBackendEmissionFailure(
+        'rust',
+        module,
+        ownerSupported
+          ? `async method ${declaration.binding.name}.${method.name} uses a body outside the short receiver-field borrow carrier`
+          : `async method ${declaration.binding.name}.${method.name} lacks the exact owned Rc<RefCell<Self>> simple-class carrier`,
+        ownerSupported ? 'rust-async-method-body-unrepresented' : 'rust-async-method-owner-carrier-unrepresented',
+        { column: declaration.origin.column, line: declaration.origin.line },
+      );
+    }
+  }
+}
+
+function isIrSimpleAsyncMethodOwnerSupportedRust(
+  method: Readonly<IrClassMethod>,
+  declaration: Readonly<IrClassDeclaration>,
+): boolean {
+  const awaited =
+    method.returns.kind === 'named' &&
+    method.returns.reference.kind === 'ambient' &&
+    method.returns.reference.name === 'Promise' &&
+    method.returns.typeArguments.length === 1
+      ? method.returns.typeArguments[0]
+      : undefined;
+  const constructor = declaration.classConstructor;
+  const constructionSupported = constructor
+    ? constructor.parameters.every(
+        (parameter) =>
+          parameter.initializer === undefined &&
+          !parameter.optional &&
+          !parameter.rest &&
+          isIrRequiredPrimitiveTypeRust(parameter.type),
+      ) && getIrClassConstructorFieldAssignmentsRust(declaration, false) !== undefined
+    : declaration.fields.every((field) => field.initializer !== undefined);
+  return (
+    !declaration.abstract &&
+    declaration.extends === undefined &&
+    declaration.implements.length === 0 &&
+    declaration.typeParameters.length === 0 &&
+    declaration.fields.length > 0 &&
+    declaration.fields.every(isIrSimpleAsyncMethodFieldRust) &&
+    constructionSupported &&
+    !method.abstract &&
+    method.accessor === undefined &&
+    method.async &&
+    !method.branded &&
+    method.overloads.length === 0 &&
+    !method.static &&
+    method.typeParameters.length === 0 &&
+    awaited !== undefined &&
+    isIrSimpleAsyncMethodAwaitedTypeRust(awaited) &&
+    method.parameters.every(
+      (parameter) =>
+        parameter.initializer === undefined &&
+        !parameter.optional &&
+        !parameter.rest &&
+        (isIrRequiredPrimitiveTypeRust(parameter.type) || isIrSimpleAsyncMethodTaskTypeRust(parameter.type)),
+    )
   );
-  if (!declaration) return;
-  const method = declaration.methods.find((candidate) => candidate.async)!;
-  throw createBackendEmissionFailure(
-    'rust',
-    module,
-    `async method ${declaration.binding.name}.${method.name} has no represented Rust native-future/task carrier boundary`,
-    'rust-async-task-carrier-unrepresented',
-    { column: declaration.origin.column, line: declaration.origin.line },
+}
+
+function isIrSimpleAsyncMethodFieldRust(field: Readonly<IrClassField>): boolean {
+  return (
+    !field.abstract &&
+    !field.branded &&
+    !field.declare &&
+    !field.optional &&
+    !field.static &&
+    field.parameterProperty === undefined &&
+    isIrRequiredPrimitiveTypeRust(field.type)
+  );
+}
+
+function isIrSimpleAsyncMethodTaskTypeRust(type: Readonly<IrType>): boolean {
+  if (!isIrTaskTypeRust(type)) return false;
+  const awaited = type.typeArguments[0];
+  return awaited !== undefined && isIrSimpleAsyncMethodAwaitedTypeRust(awaited);
+}
+
+function isIrSimpleAsyncMethodAwaitedTypeRust(type: Readonly<IrType>): boolean {
+  return (
+    type.kind === 'primitive' &&
+    (type.name === 'boolean' || type.name === 'number' || type.name === 'string' || type.name === 'void')
+  );
+}
+
+function isIrSimpleAsyncMethodBodySupportedRust(
+  method: Readonly<IrClassMethod>,
+  declaration: Readonly<IrClassDeclaration>,
+): boolean {
+  const fields = new Map(
+    declaration.fields.filter((field) => !field.static).map((field) => [field.name, field] as const),
+  );
+  const allowedThisReferences = new WeakSet<object>();
+  const thisReferences: object[] = [];
+  let supported = true;
+  for (const statement of method.body) {
+    let statementHasAwait = false;
+    let statementHasThis = false;
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(expression) {
+        if (expression.kind === 'function') {
+          supported = false;
+          return false;
+        }
+        if (expression.kind === 'await') statementHasAwait = true;
+        if (
+          expression.kind === 'property' &&
+          !expression.optional &&
+          !expression.structuralAccess &&
+          expression.object.kind === 'identifier' &&
+          expression.object.reference.kind === 'this' &&
+          fields.has(expression.name)
+        ) {
+          allowedThisReferences.add(expression.object);
+        }
+        if (expression.kind === 'identifier' && expression.reference.kind === 'this') {
+          statementHasThis = true;
+          thisReferences.push(expression);
+        }
+        if (expression.kind === 'assignment' && isIrSimpleAsyncMethodThisFieldRust(expression.left)) {
+          const field = expression.left.kind === 'property' ? fields.get(expression.left.name) : undefined;
+          if (!field || !isIrSimpleAsyncMethodFieldAssignmentSupportedRust(expression.operator, field.type)) {
+            supported = false;
+          }
+        }
+        if (expression.kind === 'unary' && isIrSimpleAsyncMethodThisFieldRust(expression.operand)) {
+          const field = expression.operand.kind === 'property' ? fields.get(expression.operand.name) : undefined;
+          if (
+            (expression.operator !== '++' && expression.operator !== '--') ||
+            field?.type.kind !== 'primitive' ||
+            field.type.name !== 'number'
+          ) {
+            supported = false;
+          }
+        }
+        return undefined;
+      },
+    });
+    if (statementHasAwait && statementHasThis) supported = false;
+  }
+  return supported && thisReferences.every((reference) => allowedThisReferences.has(reference));
+}
+
+function isIrSimpleAsyncMethodThisFieldRust(expression: Readonly<IrExpression>): boolean {
+  return (
+    expression.kind === 'property' &&
+    !expression.optional &&
+    !expression.structuralAccess &&
+    expression.object.kind === 'identifier' &&
+    expression.object.reference.kind === 'this'
+  );
+}
+
+function isIrSimpleAsyncMethodFieldAssignmentSupportedRust(
+  operator: Extract<IrExpression, { kind: 'assignment' }>['operator'],
+  type: Readonly<IrType>,
+): boolean {
+  if (operator === '=') return true;
+  if (type.kind !== 'primitive') return false;
+  if (type.name === 'string') return operator === '+=';
+  if (type.name === 'boolean') return operator === '||=' || operator === '&&=';
+  return (
+    type.name === 'number' &&
+    ['+=', '-=', '*=', '/=', '%=', '**=', '>>>=', '&=', '|=', '^=', '<<=', '>>='].includes(operator)
   );
 }
 
@@ -3925,7 +4230,16 @@ function isIrOptionalClassArgumentRust(
 function emitIdentifierReferenceRust(reference: Readonly<IrIdentifierReference>, context: EmitContext): string {
   if (reference.kind === 'super')
     emissionError(context, 'super requires Rust inheritance lowering', 'rust-class-inheritance-unsupported');
-  if (reference.kind === 'this') return 'self';
+  if (reference.kind === 'this') {
+    if (context.asyncMethodReceiver) {
+      emissionRuleError(
+        context,
+        'an async method receiver may only be used through one direct primitive field borrow',
+        'rust-async-method-body-unrepresented',
+      );
+    }
+    return 'self';
+  }
   if (reference.kind === 'ambient') {
     if (reference.name === 'undefined') {
       emissionError(context, 'undefined expressions require Rust Option-aware lowering');
@@ -7194,6 +7508,68 @@ function getIrClassDeclarationLocationForTypeRust(
       candidate.kind === 'class' && candidate.exported && candidate.binding.name === imported.candidate.imported,
   );
   return declaration?.kind === 'class' && target ? { declaration, module: target } : undefined;
+}
+
+function emitAsyncSharedClassMethodCallRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'call' }>>,
+  context: EmitContext,
+): string | undefined {
+  if (expression.callee.kind !== 'property') return undefined;
+  const callee = expression.callee;
+  const receiverType = getIrSharedClassIdentityExpressionTypeRust(callee.object, context);
+  const location = getIrClassDeclarationLocationForTypeRust(receiverType, context, context.module);
+  const methods = location?.declaration.methods.filter(
+    (method) => !method.static && method.accessor === undefined && method.name === callee.name,
+  );
+  const method = methods?.length === 1 ? methods[0] : undefined;
+  if (!location || !method?.async) return undefined;
+  if (!isIrSimpleAsyncMethodOwnerSupportedRust(method, location.declaration)) {
+    emissionRuleError(
+      context,
+      `async method ${location.declaration.binding.name}.${method.name} lacks the exact owned Rc<RefCell<Self>> simple-class carrier`,
+      'rust-async-method-owner-carrier-unrepresented',
+    );
+  }
+  if (!isIrSimpleAsyncMethodBodySupportedRust(method, location.declaration)) {
+    emissionRuleError(
+      context,
+      `async method ${location.declaration.binding.name}.${method.name} uses a body outside the short receiver-field borrow carrier`,
+      'rust-async-method-body-unrepresented',
+    );
+  }
+  const receiver = callee.object;
+  const signature = expression.semantics.signature;
+  const exactCall =
+    !expression.optional &&
+    expression.typeArguments.length === 0 &&
+    !callee.optional &&
+    !callee.structuralAccess &&
+    receiver.kind === 'identifier' &&
+    receiver.reference.kind === 'binding' &&
+    getRustSharedClassBindingRepresentationRust(receiver.reference.binding, context) === 'shared-ref-cell-class' &&
+    expression.arguments.length === method.parameters.length &&
+    expression.arguments.every((argument) => argument.kind !== 'spread') &&
+    expression.semantics.defaultParameters === undefined &&
+    expression.semantics.optionalParameters === undefined &&
+    expression.semantics.overloadImplementation === undefined &&
+    signature?.providedArgumentCount !== 'dynamic' &&
+    signature?.restParameter === undefined &&
+    (signature === undefined ||
+      (signature.parameterCount === method.parameters.length &&
+        signature.providedArgumentCount === expression.arguments.length));
+  if (!exactCall || receiver.kind !== 'identifier' || receiver.reference.kind !== 'binding' || !receiverType) {
+    emissionRuleError(
+      context,
+      `async method ${location.declaration.binding.name}.${method.name} requires one exact identifier receiver, fixed owned arguments, and direct non-optional invocation`,
+      'rust-async-method-call-unrepresented',
+    );
+  }
+  context.needsRcImport.add('Rc');
+  const owner = emitType(receiverType, context);
+  const receiverName = emitIdentifierReferenceRust(receiver.reference, context);
+  return `${owner}::${getIrClassMethodTargetNameRust(method)}(Rc::clone(&${receiverName})${
+    expression.arguments.length > 0 ? `, ${emitCallArgumentsRust(expression, context).join(', ')}` : ''
+  })`;
 }
 
 function emitSharedClassMethodCallRust(

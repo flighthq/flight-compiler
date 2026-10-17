@@ -70,6 +70,7 @@ interface RustSimpleClassConstructorPlan {
 }
 
 interface RustSimpleClassMethodPlan {
+  readonly async: boolean;
   readonly identity: string;
   readonly mutatedClassParameterPositions: ReadonlySet<number>;
   readonly optionalClassParameters: ReadonlyMap<
@@ -499,8 +500,10 @@ function createRustReferenceModulePlan(
   const mutatedBindings = new Map<string, IrBindingIdentity>();
   const refusals = new Map<string, CompilerRustReferenceRepresentationRefusal>();
 
+  addRustAsyncClassMethodDeclarationRefusals(module, modules, moduleResolution, refusals);
   addRustSharedArrayRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassIdentityRefusals(module, modules, moduleResolution, refusals);
+  addRustAsyncClassMethodCallRefusals(module, modules, moduleResolution, refusals);
   addRustClassMethodParameterRefusals(module, modules, moduleResolution, refusals);
   addRustSharedClassMethodValueRefusals(module, modules, moduleResolution, refusals);
   addRustOptionalClassCarrierBoundaryRefusals(module, modules, moduleResolution, refusals);
@@ -1607,7 +1610,7 @@ function activateRustSharedClassMethodMutations(
   for (const module of modules) {
     for (const { call } of module.calls) {
       const method = getRustSimpleClassMethodCall(call, module, modules, moduleResolution);
-      if (!method?.mutating) continue;
+      if (!method || (!method.mutating && !method.plan.async)) continue;
       activateRustSharedClassGroupsUsedInExpression(module, method.receiver);
     }
   }
@@ -1621,7 +1624,9 @@ function activateRustSharedClassGroupsUsedInExpression(
   analyzeIrExpressionSubtreeTraversal(expression, {
     expression(candidate) {
       if (candidate.kind !== 'identifier' || candidate.reference.kind !== 'binding') return undefined;
-      const groupKey = module.sharedClasses.groupByBindingId.get(candidate.reference.binding.id);
+      const bindingId = candidate.reference.binding.id;
+      activateRustSharedClassBinding(module.sharedClasses, bindingId);
+      const groupKey = module.sharedClasses.groupByBindingId.get(bindingId);
       if (groupKey) groupKeys.add(groupKey);
       return undefined;
     },
@@ -2304,7 +2309,10 @@ function addRustSharedClassRefusals(
         `shared class binding ${evidence.binding.name} is reassigned after alias creation`,
       );
     }
-    if (evidence.boundaries.includes('suspension')) {
+    if (
+      evidence.boundaries.includes('suspension') &&
+      !isRustReferenceExactAsyncMethodReceiverBinding(evidence.binding.id, module, modules, moduleResolution)
+    ) {
       addRustReferenceRefusal(
         refusals,
         'rust-reference-shared-class-suspension-unrepresented',
@@ -2402,6 +2410,22 @@ function addRustSimpleClassDeclarationRefusals(
   subject: string,
   refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
 ): void {
+  const visitingClasses = new Set([`${moduleKey(module.module)}:${declaration.binding.id}`]);
+  for (const method of declaration.methods) {
+    if (!method.async) continue;
+    const ownerSupported =
+      isRustSimpleAsyncClassMethodOwnerSupported(method, declaration) &&
+      isRustSimpleClassConstructionSupported(declaration, module, modules, moduleResolution, new Set());
+    if (ownerSupported && isRustSimpleAsyncClassMethodBodySupported(method, declaration)) continue;
+    addRustReferenceRefusal(
+      refusals,
+      ownerSupported ? 'rust-async-method-body-unrepresented' : 'rust-async-method-owner-carrier-unrepresented',
+      `${subject}:method:${method.name}`,
+      ownerSupported
+        ? `async method ${declaration.binding.name}.${method.name} uses a body outside the short receiver-field borrow carrier`
+        : `async method ${declaration.binding.name}.${method.name} lacks the exact owned simple-class receiver carrier`,
+    );
+  }
   if (
     declaration.abstract ||
     declaration.extends !== undefined ||
@@ -2415,18 +2439,17 @@ function addRustSimpleClassDeclarationRefusals(
       `class ${declaration.binding.name} requires generic, abstract, or inheritance semantics outside the simple-class carrier`,
     );
   }
-  const visitingClasses = new Set([`${moduleKey(module.module)}:${declaration.binding.id}`]);
-  if (
-    declaration.methods.some(
-      (method) =>
-        getRustSimpleClassMethodPlan(method, declaration, module, modules, moduleResolution, visitingClasses) ===
-        undefined,
-    )
-  ) {
+  for (const method of declaration.methods) {
+    if (getRustSimpleClassMethodPlan(method, declaration, module, modules, moduleResolution, visitingClasses)) {
+      continue;
+    }
+    if (method.async) {
+      continue;
+    }
     addRustReferenceRefusal(
       refusals,
       'rust-reference-shared-class-member-unrepresented',
-      subject,
+      `${subject}:method:${method.name}`,
       `class ${declaration.binding.name} declares a member outside the synchronous primitive instance-method carrier`,
     );
   }
@@ -2506,6 +2529,28 @@ function isRustSharedClassIdentifierUseRepresented(
       getRustReferenceClassInstanceMethod(expression, parent.name, module, modules, moduleResolution)
     ) {
       return true;
+    }
+    if (isCallExpression(call) && call.callee === parent) {
+      const location = getRustReferenceClassInstanceMethodCandidate(
+        expression,
+        parent.name,
+        module,
+        modules,
+        moduleResolution,
+      );
+      if (
+        location?.method.async &&
+        getRustSimpleClassMethodPlan(
+          location.method,
+          location.declaration,
+          location.module,
+          modules,
+          moduleResolution,
+          new Set([`${moduleKey(location.module.module)}:${location.declaration.binding.id}`]),
+        )?.async
+      ) {
+        return true;
+      }
     }
     return (
       isCallExpression(call) &&
@@ -3390,6 +3435,7 @@ function addRustClassMethodParameterRefusals(
     if (declaration.kind !== 'class') continue;
     const visitingClasses = new Set([`${moduleKey(module.module)}:${declaration.binding.id}`]);
     for (const method of declaration.methods) {
+      if (method.async) continue;
       if (!isRustPotentialClassParameterMethod(method, module)) continue;
       if (getRustSimpleClassMethodPlan(method, declaration, module, modules, moduleResolution, visitingClasses)) {
         continue;
@@ -3447,6 +3493,91 @@ function addRustClassMethodParameterRefusals(
   });
 }
 
+function addRustAsyncClassMethodCallRefusals(
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+): void {
+  analyzeIrModuleTraversal(module.module, {
+    expression(expression, path_) {
+      if (expression.kind !== 'call' || expression.callee.kind !== 'property') return;
+      const location = getRustReferenceClassInstanceMethodCandidate(
+        expression.callee.object,
+        expression.callee.name,
+        module,
+        modules,
+        moduleResolution,
+      );
+      if (!location?.method.async) return;
+      const plan = getRustSimpleClassMethodPlan(
+        location.method,
+        location.declaration,
+        location.module,
+        modules,
+        moduleResolution,
+        new Set([`${moduleKey(location.module.module)}:${location.declaration.binding.id}`]),
+      );
+      if (!plan?.async || getRustSimpleClassMethodCall(expression, module, modules, moduleResolution)) return;
+      addRustReferenceRefusal(
+        refusals,
+        'rust-async-method-call-unrepresented',
+        `${plan.identity}:${moduleKey(module.module)}:${JSON.stringify(path_)}`,
+        `async method ${location.declaration.binding.name}.${location.method.name} requires one exact identifier receiver, fixed owned arguments, and direct non-optional invocation`,
+      );
+    },
+  });
+}
+
+function addRustAsyncClassMethodDeclarationRefusals(
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+  refusals: Map<string, CompilerRustReferenceRepresentationRefusal>,
+): void {
+  for (const declaration of module.module.declarations) {
+    if (declaration.kind !== 'class') continue;
+    for (const method of declaration.methods) {
+      if (!method.async) continue;
+      const ownerSupported =
+        isRustSimpleAsyncClassMethodOwnerSupported(method, declaration) &&
+        isRustSimpleClassConstructionSupported(declaration, module, modules, moduleResolution, new Set());
+      if (ownerSupported && isRustSimpleAsyncClassMethodBodySupported(method, declaration)) continue;
+      addRustReferenceRefusal(
+        refusals,
+        ownerSupported ? 'rust-async-method-body-unrepresented' : 'rust-async-method-owner-carrier-unrepresented',
+        getRustSimpleClassMethodIdentity(module, declaration, method),
+        ownerSupported
+          ? `async method ${declaration.binding.name}.${method.name} uses a body outside the short receiver-field borrow carrier`
+          : `async method ${declaration.binding.name}.${method.name} lacks the exact owned simple-class receiver carrier`,
+      );
+    }
+  }
+}
+
+function isRustReferenceExactAsyncMethodReceiverBinding(
+  bindingId: string,
+  module: RustReferenceModuleRecord,
+  modules: readonly RustReferenceModuleRecord[],
+  moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
+): boolean {
+  let represented = false;
+  analyzeIrModuleTraversal(module.module, {
+    expression(expression) {
+      if (expression.kind !== 'call') return;
+      const call = getRustSimpleClassMethodCall(expression, module, modules, moduleResolution);
+      if (
+        call?.plan.async &&
+        call.receiver.reference.kind === 'binding' &&
+        call.receiver.reference.binding.id === bindingId
+      ) {
+        represented = true;
+      }
+    },
+  });
+  return represented;
+}
+
 function addRustSharedClassMethodValueRefusals(
   module: RustReferenceModuleRecord,
   modules: readonly RustReferenceModuleRecord[],
@@ -3468,7 +3599,9 @@ function addRustSharedClassMethodValueRefusals(
       if (!location) return;
       addRustReferenceRefusal(
         refusals,
-        'rust-reference-shared-class-member-unrepresented',
+        location.method.async
+          ? 'rust-async-method-call-unrepresented'
+          : 'rust-reference-shared-class-member-unrepresented',
         `${moduleKey(module.module)}:method-value:${JSON.stringify(path_)}`,
         `instance method ${location.declaration.binding.name}.${location.method.name} is used as a value without represented Rust receiver binding`,
       );
@@ -5086,10 +5219,21 @@ function getRustSimpleClassMethodPlan(
   moduleResolution: CompilerRustReferenceRepresentationPlanInput['moduleResolution'],
   visitingClasses: ReadonlySet<string>,
 ): RustSimpleClassMethodPlan | undefined {
+  if (method.async) {
+    return isRustSimpleAsyncClassMethodOwnerSupported(method, declaration) &&
+      isRustSimpleAsyncClassMethodBodySupported(method, declaration)
+      ? {
+          async: true,
+          identity: getRustSimpleClassMethodIdentity(module, declaration, method),
+          mutatedClassParameterPositions: new Set(),
+          optionalClassParameters: new Map(),
+          requiredClassParameters: new Map(),
+        }
+      : undefined;
+  }
   if (
     method.abstract ||
     method.accessor !== undefined ||
-    method.async ||
     method.branded ||
     method.overloads.length > 0 ||
     method.static ||
@@ -5178,11 +5322,162 @@ function getRustSimpleClassMethodPlan(
     ]),
   );
   return {
+    async: false,
     identity: getRustSimpleClassMethodIdentity(module, declaration, method),
     mutatedClassParameterPositions,
     optionalClassParameters,
     requiredClassParameters,
   };
+}
+
+function isRustSimpleAsyncClassMethodOwnerSupported(
+  method: Readonly<IrClassMethod>,
+  declaration: Readonly<IrClassDeclaration>,
+): boolean {
+  const awaited =
+    method.returns.kind === 'named' &&
+    method.returns.reference.kind === 'ambient' &&
+    method.returns.reference.name === 'Promise' &&
+    method.returns.typeArguments.length === 1
+      ? method.returns.typeArguments[0]
+      : undefined;
+  const constructor = declaration.classConstructor;
+  const constructionSupported = constructor
+    ? constructor.parameters.every(
+        (parameter) =>
+          parameter.initializer === undefined &&
+          !parameter.optional &&
+          !parameter.rest &&
+          isRustSimpleClassPrimitiveType(parameter.type),
+      )
+    : declaration.fields.every((field) => field.initializer !== undefined);
+  return (
+    !declaration.abstract &&
+    declaration.extends === undefined &&
+    declaration.implements.length === 0 &&
+    declaration.typeParameters.length === 0 &&
+    declaration.fields.length > 0 &&
+    declaration.fields.every(isRustSimpleClassField) &&
+    constructionSupported &&
+    !method.abstract &&
+    method.accessor === undefined &&
+    method.async &&
+    !method.branded &&
+    method.overloads.length === 0 &&
+    !method.static &&
+    method.typeParameters.length === 0 &&
+    awaited !== undefined &&
+    isRustSimpleAsyncMethodAwaitedType(awaited) &&
+    method.parameters.every(
+      (parameter) =>
+        parameter.initializer === undefined &&
+        !parameter.optional &&
+        !parameter.rest &&
+        (isRustSimpleClassPrimitiveType(parameter.type) || isRustSimpleAsyncMethodTaskType(parameter.type)),
+    )
+  );
+}
+
+function isRustSimpleAsyncMethodTaskType(type: Readonly<IrType>): boolean {
+  if (
+    type.kind !== 'named' ||
+    type.reference.kind !== 'ambient' ||
+    type.reference.name !== 'Promise' ||
+    type.typeArguments.length !== 1
+  ) {
+    return false;
+  }
+  const awaited = type.typeArguments[0];
+  return awaited !== undefined && isRustSimpleAsyncMethodAwaitedType(awaited);
+}
+
+function isRustSimpleAsyncMethodAwaitedType(type: Readonly<IrType>): boolean {
+  return (
+    type.kind === 'primitive' &&
+    (type.name === 'boolean' || type.name === 'number' || type.name === 'string' || type.name === 'void')
+  );
+}
+
+function isRustSimpleAsyncClassMethodBodySupported(
+  method: Readonly<IrClassMethod>,
+  declaration: Readonly<IrClassDeclaration>,
+): boolean {
+  const fields = new Map(
+    declaration.fields.filter((field) => !field.static).map((field) => [field.name, field] as const),
+  );
+  const allowedThisReferences = new WeakSet<object>();
+  const thisReferences: object[] = [];
+  let supported = true;
+  for (const statement of method.body) {
+    let statementHasAwait = false;
+    let statementHasThis = false;
+    analyzeIrStatementSubtreeTraversal(statement, {
+      expression(expression) {
+        if (expression.kind === 'function') {
+          supported = false;
+          return false;
+        }
+        if (expression.kind === 'await') statementHasAwait = true;
+        if (
+          expression.kind === 'property' &&
+          !expression.optional &&
+          !expression.structuralAccess &&
+          expression.object.kind === 'identifier' &&
+          expression.object.reference.kind === 'this' &&
+          fields.has(expression.name)
+        ) {
+          allowedThisReferences.add(expression.object);
+        }
+        if (expression.kind === 'identifier' && expression.reference.kind === 'this') {
+          statementHasThis = true;
+          thisReferences.push(expression);
+        }
+        if (expression.kind === 'assignment' && hasRustSimpleAsyncMethodThisTarget(expression.left)) {
+          const field = expression.left.kind === 'property' ? fields.get(expression.left.name) : undefined;
+          if (!field || !isRustSimpleAsyncMethodFieldAssignmentSupported(expression.operator, field.type)) {
+            supported = false;
+          }
+        }
+        if (expression.kind === 'unary' && hasRustSimpleAsyncMethodThisTarget(expression.operand)) {
+          const field = expression.operand.kind === 'property' ? fields.get(expression.operand.name) : undefined;
+          if (
+            (expression.operator !== '++' && expression.operator !== '--') ||
+            field?.type.kind !== 'primitive' ||
+            field.type.name !== 'number'
+          ) {
+            supported = false;
+          }
+        }
+        return undefined;
+      },
+    });
+    if (statementHasAwait && statementHasThis) supported = false;
+  }
+  return supported && thisReferences.every((reference) => allowedThisReferences.has(reference));
+}
+
+function hasRustSimpleAsyncMethodThisTarget(expression: Readonly<IrExpression>): boolean {
+  return (
+    expression.kind === 'property' &&
+    !expression.optional &&
+    !expression.structuralAccess &&
+    expression.object.kind === 'identifier' &&
+    expression.object.reference.kind === 'this'
+  );
+}
+
+function isRustSimpleAsyncMethodFieldAssignmentSupported(
+  operator: Extract<IrExpression, { kind: 'assignment' }>['operator'],
+  type: Readonly<IrType>,
+): boolean {
+  if (operator === '=') return true;
+  if (type.kind !== 'primitive') return false;
+  if (type.name === 'string') return operator === '+=';
+  if (type.name === 'boolean') return operator === '||=' || operator === '&&=';
+  return (
+    type.name === 'number' &&
+    ['+=', '-=', '*=', '/=', '%=', '**=', '>>>=', '&=', '|=', '^=', '<<=', '>>='].includes(operator)
+  );
 }
 
 function isRustPotentialClassParameterMethod(

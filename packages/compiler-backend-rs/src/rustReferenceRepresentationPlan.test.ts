@@ -2200,7 +2200,6 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
 
   it('keeps unsupported class method boundaries as stable focused refusals', () => {
     const methodCases = [
-      `class Counter { value = 0; async read(): Promise<number> { return this.value; } }`,
       `class Counter { value = 0; read<T>(input: T): number { return this.value; } }`,
       `class Counter { value = 0; read(input: number): number; read(input: number): number { return this.value; } }`,
       `class Counter { value = 0; merge(other: Counter): number { return this.value; } }`,
@@ -2226,6 +2225,81 @@ describe('createCompilerRustReferenceRepresentationPlan', () => {
         expect.arrayContaining([expect.objectContaining({ code: 'rust-reference-shared-class-member-unrepresented' })]),
       );
     }
+  });
+
+  it('exempts only an exact async method receiver from the shared-class suspension refusal', () => {
+    const represented = lower(
+      'async-method-reference-plan.ts',
+      `class Counter {
+         value = 0;
+         async advance(task: Promise<number>): Promise<number> {
+           this.value += 1;
+           const amount = await task;
+           this.value += amount;
+           return this.value;
+         }
+       }
+       export async function run(task: Promise<number>): Promise<number> {
+         const counter = new Counter();
+         const pending = counter.advance(task);
+         await pending;
+         await pending;
+         return counter.value;
+       }`,
+    );
+    const ordinarySuspension = lower(
+      'ordinary-class-suspension-plan.ts',
+      `class Counter { value = 0; async read(): Promise<number> { return this.value; } }
+       export async function run(task: Promise<void>): Promise<number> {
+         const counter = new Counter();
+         const alias = counter;
+         await task;
+         alias.value = 1;
+         return counter.value;
+       }`,
+    );
+    const representedPlan = getModulePlan(
+      createCompilerRustReferenceRepresentationPlan({ modules: [represented] }),
+      represented,
+    );
+    const ordinaryPlan = getModulePlan(
+      createCompilerRustReferenceRepresentationPlan({ modules: [ordinarySuspension] }),
+      ordinarySuspension,
+    );
+
+    expect(representedPlan.refusals).toEqual([]);
+    expect(representedPlan.sharedClassBindings).toHaveLength(1);
+    expect(ordinaryPlan.refusals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'rust-reference-shared-class-suspension-unrepresented' }),
+      ]),
+    );
+  });
+
+  it('uses dedicated async method owner, body, and call refusals', () => {
+    const owner = lower(
+      'async-method-owner-plan.ts',
+      'class Counter { value = 0; static async read(): Promise<number> { return 1; } }',
+    );
+    const body = lower(
+      'async-method-body-plan.ts',
+      'class Counter { value = 0; async read(task: Promise<number>): Promise<number> { return this.value + await task; } }',
+    );
+    const call = lower(
+      'async-method-call-plan.ts',
+      `class Counter { value = 0; async read(task: Promise<number>): Promise<number> { return await task; } }
+       export function run(task: Promise<number>): void { const counter = new Counter(); counter.read?.(task); }`,
+    );
+
+    expect(getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [owner] }), owner).refusals).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-async-method-owner-carrier-unrepresented' })]),
+    );
+    expect(getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [body] }), body).refusals).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-async-method-body-unrepresented' })]),
+    );
+    expect(getModulePlan(createCompilerRustReferenceRepresentationPlan({ modules: [call] }), call).refusals).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'rust-async-method-call-unrepresented' })]),
+    );
   });
 
   it('refuses dynamic, optional, and overlapping shared-class method calls', () => {
