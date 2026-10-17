@@ -8818,7 +8818,7 @@ describe('emitIrModuleRust', () => {
     expect(() => emitIrModuleRust(result.module)).toThrow(
       expect.objectContaining({
         classification: 'target-runtime',
-        message: expect.stringContaining('typed ambient Error requires a represented Rust carrier and member API'),
+        message: expect.stringContaining('typed ambient Error requires a represented Rust error carrier and member API'),
         rule: 'rust-runtime-error-carrier-incomplete',
       }),
     );
