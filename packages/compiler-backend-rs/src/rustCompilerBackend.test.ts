@@ -15621,6 +15621,41 @@ export function set(fields: Fields, key: string, value: number): void { fields[k
     }
   });
 
+  describe('emitIrModuleRust optional shared-class argument union precedence', () => {
+    it('keeps an unplanned class-union argument on the contextual union refusal', () => {
+      const module = lower(
+        'unplanned-class-union.ts',
+        `class Alpha { value: number; constructor(value: number) { this.value = value; } }
+       class Beta { label: string; constructor(label: string) { this.label = label; } }
+       type Choice = Alpha | Beta | undefined;
+       function consume(_choice: Choice): number { return 1; }
+       export function run(value: Alpha): number { return consume(value); }`,
+      ).module;
+
+      expect(getEmissionRule(() => emitIrModuleRust(module))).toBe('rust-reference-shared-class-type-unrepresented');
+    });
+
+    it('is deterministic across identical optional shared-class ABI compilations', () => {
+      const source = `class Counter {
+      value = 1;
+      increment(): void { this.value += 1; }
+    }
+    function increment(value: Counter | undefined): void {
+      if (value !== undefined) value.increment();
+    }
+    export function run(): number {
+      const required: Counter = new Counter();
+      increment(required);
+      return required.value;
+    }`;
+      const first = emitIrModuleRust(lower('optional-shared-class-determinism.ts', source).module).contents;
+      const second = emitIrModuleRust(lower('optional-shared-class-determinism.ts', source).module).contents;
+
+      expect(second).toBe(first);
+      expect(first).toContain('increment(Some(Rc::clone(&required)))');
+    });
+  });
+
   it('refuses required class method parameters outside final direct primitive projection', () => {
     const cases = [
       `class Counter { value = 1; read(other: Counter, scale: number): number { return other.value * scale; } }`,

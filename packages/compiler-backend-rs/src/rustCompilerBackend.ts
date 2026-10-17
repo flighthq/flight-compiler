@@ -5708,6 +5708,10 @@ function emitCallArgumentsRust(
   const referencedMethod = getIrDirectClassMethodRust(expression, context);
   const emitPlannedArgument = (argument: Readonly<IrExpression>, index: number): string => {
     const representation = borrowed.get(index);
+    // A planned optional shared-class carrier owns its argument position. The contextual nominal-union
+    // constructors below must not claim it: the reference plan already emits the Rc/RefCell/Option
+    // carrier, and only an unplanned class union keeps the deterministic union refusal.
+    const optionalSharedClass = isRustOptionalSharedClassRepresentation(representation);
     if (ownedSharedArrayCallPlan?.parameterPositions.has(index)) {
       const parameter = ownedSharedArrayCallPlan.declaration.parameters[index];
       if (!parameter || representation !== undefined) {
@@ -5731,7 +5735,7 @@ function emitCallArgumentsRust(
     if (parameter) {
       const parameterType = parameter.rest && parameter.type.kind === 'array' ? parameter.type.element : parameter.type;
       const parameterPlan = createRustUnionRepresentationPlanForTypeRust(parameterType, context);
-      if (hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context)) {
+      if (!optionalSharedClass && hasIrTypeContextualGeneralUnionCandidateRust(parameterType, parameterPlan, context)) {
         if (
           (referencedFunction?.typeParameters.length ?? 0) > 0 ||
           parameter.rest ||
@@ -5749,6 +5753,7 @@ function emitCallArgumentsRust(
     }
     const methodParameter = referencedMethod?.method.parameters[index];
     if (
+      !optionalSharedClass &&
       methodParameter &&
       hasIrTypeContextualGeneralUnionCandidateRust(
         methodParameter.type,
