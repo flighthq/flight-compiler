@@ -1195,15 +1195,16 @@ describe('compileTypeScriptPackageGraph', () => {
       ]),
     ).toEqual([
       ['Broken', undefined, 'internal-error', 'emission'],
-      ['Collision-a', 'compiler-defect', 'duplicate-emitted-path', 'emission'],
-      ['Collision-b', 'compiler-defect', 'duplicate-emitted-path', 'emission'],
+      ['Collision-a', 'source-portability', 'duplicate-emitted-path', 'emission'],
+      ['Collision-b', 'source-portability', 'duplicate-emitted-path', 'emission'],
       ['Unsafe', 'compiler-defect', 'unsafe-emitted-path', 'emission'],
     ]);
   });
 
-  // An emitted path is package-relative, so the same name in two packages is the ordinary workspace shape and
-  // the same name twice in one package is the defect. The SDK emits 146 `contract.hpp`, one per package, and
-  // refusing those refused every module in the run.
+  // An emitted path is package-relative, so the same name in two packages is the ordinary workspace shape. Two
+  // source modules inside one package that normalize to one path are a source naming collision, not a compiler
+  // defect: the target derives paths from source names and folds case and Unicode. The SDK emits 146
+  // `contract.hpp`, one per package, and refusing those refused every module in the run.
   it('keeps a package-local name distinct across packages while still refusing it twice in one package', () => {
     const alpha = source('@flight/alpha', 'alpha', 'index.ts', 'export const alphaValue = 1;');
     const beta = source('@flight/beta', 'beta', 'index.ts', 'export const betaValue = 2;');
@@ -1235,9 +1236,11 @@ describe('compileTypeScriptPackageGraph', () => {
       ['@flight/beta', 'Index', 'duplicate-emitted-path'],
       ['@flight/beta', 'Twin', 'duplicate-emitted-path'],
     ]);
-    expect(result.report.modules[1]?.refusals[0]?.message).toBe(
-      'Backend emitted colliding package file path: @flight/beta/contract.hpp',
-    );
+    expect(result.report.modules[1]?.refusals[0]).toMatchObject({
+      classification: 'source-portability',
+      message:
+        'Package output path collision: @flight/beta/contract.hpp is emitted by @flight/beta/packages/beta/src/index.ts, @flight/beta/packages/beta/src/twin.ts; target paths are derived from source names and compared case- and Unicode-insensitively, so rename one source file or type',
+    });
   });
 
   it('preserves controlled unsupported lowering failures as unsupported IR refusals', () => {
@@ -2212,6 +2215,71 @@ describe('compileTypeScriptPackageGraph finalization refusal evidence', () => {
         },
       ]);
     }
+  });
+});
+
+describe('compileTypeScriptPackageGraph emitted path collisions', () => {
+  const collisionBackend = (paths: readonly string[]): CompilerBackend => ({
+    createEmissionSession: () => ({
+      emitModule: (module) => paths.map((path) => ({ contents: `${module.source}:${path}`, path })),
+    }),
+    emitModule: () => {
+      throw new Error('the emission session must be used');
+    },
+    name: 'fixture',
+  });
+  const compile = (backend: CompilerBackend, sources: readonly TypeScriptPackageGraphSource[]) =>
+    compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      graph: graph([], [], [{ dependencies: [], name: '@local/source', root: '/flight/packages/source' }]),
+      sources,
+    });
+
+  it('classifies a collision between distinct modules as source-portability with sorted subjects', () => {
+    const widget = source('@local/source', 'source', 'myWidget.ts', 'export const a = 1;');
+    const widgetLower = source('@local/source', 'source', 'my_widget.ts', 'export const b = 2;');
+    const backend = collisionBackend(['widget.rs']);
+    const first = compile(backend, [widget, widgetLower]);
+    const second = compile(backend, [widgetLower, widget]);
+
+    for (const result of [first, second]) {
+      const refused = result.report.modules.filter((module) => module.status === 'refused');
+      expect(refused).toHaveLength(2);
+      for (const module of refused) {
+        expect(module.outputFiles).toEqual([]);
+        expect(module.refusals).toHaveLength(1);
+        expect(module.refusals[0]).toMatchObject({
+          classification: 'source-portability',
+          code: 'duplicate-emitted-path',
+          stage: 'emission',
+        });
+        expect(module.refusals[0]!.message).toContain('Package output path collision: @local/source/widget.rs');
+        expect(module.refusals[0]!.message).toContain(
+          '@local/source/packages/source/src/myWidget.ts, @local/source/packages/source/src/my_widget.ts',
+        );
+        expect(module.refusals[0]!.message).toContain('case- and Unicode-insensitively');
+      }
+    }
+    const messageOf = (result: ReturnType<typeof compile>) =>
+      result.report.modules.find((module) => module.status === 'refused')!.refusals[0]!.message;
+    expect(messageOf(second)).toBe(messageOf(first));
+  });
+
+  it('keeps one module emitting two colliding paths classified as a compiler defect', () => {
+    const widget = source('@local/source', 'source', 'widget.ts', 'export const a = 1;');
+    const result = compile(collisionBackend(['Widget.rs', 'widget.rs']), [widget]);
+
+    const refused = result.report.modules.find((module) => module.status === 'refused');
+    expect(refused?.outputFiles).toEqual([]);
+    expect(refused?.refusals).toEqual([
+      {
+        classification: 'compiler-defect',
+        code: 'duplicate-emitted-path',
+        message: 'Backend emitted colliding package file path: @local/source/Widget.rs',
+        stage: 'emission',
+      },
+    ]);
   });
 });
 

@@ -1287,7 +1287,7 @@ function propagateCompilerPackageGraphRefusals(
 // the comparison still folds case and Unicode, because a case-only or canonically equivalent pair inside one
 // package is exactly the kind of collision this refuses.
 function refuseCompilerPackageGraphOutputCollisions(records: Map<string, ModuleEmissionRecord>): void {
-  const owners = new Map<string, Readonly<{ label: string; records: ModuleEmissionRecord[] }>>();
+  const owners = new Map<string, { label: string; records: ModuleEmissionRecord[] }>();
   for (const record of records.values()) {
     if (record.refusals.length > 0) continue;
     for (const file of record.files) {
@@ -1295,15 +1295,45 @@ function refuseCompilerPackageGraphOutputCollisions(records: Map<string, ModuleE
       const key = label.normalize('NFC').toLowerCase();
       const existing = owners.get(key);
       if (existing === undefined) owners.set(key, { label, records: [record] });
-      else existing.records.push(record);
+      else {
+        // Keep the spelling a person can act on, independent of module input order: the smallest
+        // original path in the group, not whichever happened to be visited first.
+        if (compareTextCodeUnits(label, existing.label) < 0) existing.label = label;
+        existing.records.push(record);
+      }
     }
   }
-  for (const { label, records: colliding } of owners.values()) {
-    if (colliding.length < 2) continue;
-    const message = `Backend emitted colliding package file path: ${label}`;
-    for (const record of colliding) {
+  for (const key of [...owners.keys()].sort(compareTextCodeUnits)) {
+    const { label, records: occurrences } = owners.get(key)!;
+    const colliding = [
+      ...new Map(occurrences.map((record) => [getCompilerPackageGraphModuleKey(record.module), record])).values(),
+    ];
+    if (colliding.length < 2) {
+      // One module emitted two paths that fold together: the module owns its own output list, so no
+      // source-name normalization can explain it and the backend is the owner.
+      if (occurrences.length < 2) continue;
+      const record = colliding[0]!;
       record.refusals.push({
         classification: 'compiler-defect',
+        code: 'duplicate-emitted-path',
+        message: `Backend emitted colliding package file path: ${label}`,
+        stage: 'emission',
+      });
+      record.files.splice(0);
+      continue;
+    }
+    // Distinct source modules normalized into one emitted path. The target derives paths from source
+    // names and folds case and Unicode so downstream filesystems behave alike, so the change that
+    // resolves this is a source rename, not a compiler fix.
+    const subjects = colliding
+      .map((record) => getCompilerPackageGraphModuleSubject(record.module))
+      .sort(compareTextCodeUnits);
+    const message =
+      `Package output path collision: ${label} is emitted by ${subjects.join(', ')}; ` +
+      'target paths are derived from source names and compared case- and Unicode-insensitively, so rename one source file or type';
+    for (const record of colliding) {
+      record.refusals.push({
+        classification: 'source-portability',
         code: 'duplicate-emitted-path',
         message,
         stage: 'emission',

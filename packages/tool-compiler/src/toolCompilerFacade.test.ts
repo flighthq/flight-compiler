@@ -718,6 +718,112 @@ describe('@flighthq/tool-compiler best-effort Rust imported targets', () => {
   });
 });
 
+describe('@flighthq/tool-compiler output path collision attribution', () => {
+  const collisionSources = () => [
+    {
+      packageName: '@scope/math',
+      packageRoot: '/flight/packages/math',
+      sourceFile: parseTypeScriptSource('/flight/packages/math/src/myWidget.ts', 'export const value = 1;'),
+      upstreamDirectory: '/flight',
+    },
+    {
+      packageName: '@scope/math',
+      packageRoot: '/flight/packages/math',
+      sourceFile: parseTypeScriptSource('/flight/packages/math/src/my_widget.ts', 'export const other = 2;'),
+      upstreamDirectory: '/flight',
+    },
+  ];
+  const compile = (
+    backend:
+      | ReturnType<typeof createRustCompilerBackend>
+      | ReturnType<typeof createCppCompilerBackend>
+      | ReturnType<typeof createHaxeCompilerBackend>,
+    sources: ReturnType<typeof collisionSources>,
+    bestEffort = false,
+  ) =>
+    compileTypeScriptPackageGraph({
+      backend,
+      backendOptions: {},
+      ...(bestEffort ? { bestEffort: true } : {}),
+      graph: {
+        entries: [],
+        moduleDependencies: [],
+        packages: [{ dependencies: [], name: '@scope/math', root: '/flight/packages/math' }],
+        schema: 'flight-compiler-package-graph/1',
+      },
+      sources,
+    });
+  const refusedRefusals = (result: ReturnType<typeof compile>) =>
+    result.report.modules
+      .filter((module) => module.status === 'refused')
+      .map((module) => module.refusals[0])
+      .filter((refusal) => refusal !== undefined);
+
+  it.each([
+    ['cpp', createCppCompilerBackend, '.hpp'],
+    ['haxe', createHaxeCompilerBackend, '.hx'],
+  ] as const)('classifies %s source-name collisions as source-portability', (_name, createBackend, extension) => {
+    const first = compile(createBackend(), collisionSources());
+    const second = compile(createBackend(), [...collisionSources()].reverse());
+
+    for (const result of [first, second]) {
+      const refusals = refusedRefusals(result);
+      expect(refusals).toHaveLength(2);
+      for (const refusal of refusals) {
+        expect(refusal).toMatchObject({
+          classification: 'source-portability',
+          code: 'duplicate-emitted-path',
+          stage: 'emission',
+        });
+        expect(refusal!.message).toContain('myWidget.ts');
+        expect(refusal!.message).toContain('my_widget.ts');
+        expect(refusal!.message).toContain(extension);
+        expect(refusal!.message).toContain('case- and Unicode-insensitively');
+      }
+    }
+    expect(refusedRefusals(second)).toEqual(refusedRefusals(first));
+  });
+
+  it('surfaces the Rust source-name collision at public binding planning', () => {
+    let failure: unknown;
+    try {
+      compile(createRustCompilerBackend(), collisionSources());
+    } catch (error) {
+      failure = error;
+    }
+    // The generic record-level classification is produced first, but Rust's public binding plan
+    // refuses the shared module locator before a report can be returned. That precedence is existing
+    // behavior this classification change must not alter.
+    expect(failure).toMatchObject({ code: 'rust-public-module-collision', kind: 'rust-public-binding-planning' });
+    expect(String((failure as Error).message)).toContain('packages/math/src/myWidget.ts');
+    expect(String((failure as Error).message)).toContain('packages/math/src/my_widget.ts');
+  });
+
+  it('preserves the cpp best-effort collision outcome', () => {
+    const result = compile(createCppCompilerBackend(), collisionSources(), true);
+    // C++ placeholders salvage the module body, so both colliding modules keep a file at the same
+    // planned path. That is existing behavior this classification change must not alter.
+    expect(result.compilation.files.map((file) => file.path)).toEqual(['my_widget.hpp', 'my_widget.hpp']);
+    expect(result.report.modules.map((module) => module.status)).toEqual(['refused', 'refused']);
+  });
+
+  it('preserves the haxe best-effort collision outcome', () => {
+    const result = compile(createHaxeCompilerBackend(), collisionSources(), true);
+    expect(result.compilation.files).toEqual([]);
+    expect(result.report.modules.map((module) => module.status)).toEqual(['refused', 'refused']);
+  });
+
+  it('preserves the Rust best-effort collision outcome', () => {
+    let failure: unknown;
+    try {
+      compile(createRustCompilerBackend(), collisionSources(), true);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ code: 'rust-source-tree-module-collision', kind: 'compiler-backend-finalization' });
+  });
+});
+
 describe('@flighthq/tool-compiler package subpath imports', () => {
   const compile = (
     consumerSource: string,
