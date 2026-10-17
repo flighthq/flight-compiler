@@ -849,7 +849,6 @@ function emitIrModuleRustWithContext(
   // Strict and ordinary emission keep the whole-module scan, whose sorted selection is required to
   // be independent of declaration order. Only a salvaging caller defers it to declaration attribution.
   if (salvage === undefined) assertStringMemberSemanticsRust(module);
-  const arrayBoundsPlan = createRustArrayBoundsPlan(module);
   const asyncAnalysis = analyzeIrModuleAsyncStateMachines(module);
   const asyncTryStatements = collectAsyncTryStatementsRust(module, asyncAnalysis);
   const constantIdentities = getRustConstantBindingIds(module);
@@ -939,6 +938,7 @@ function emitIrModuleRustWithContext(
     ...(referenceModulePlan?.sharedArrayBindings.map(({ binding }) => binding.id) ?? []),
     ...sharedArrayParameterIds,
   ]);
+  const arrayBoundsPlan = createRustArrayBoundsPlan(module, sharedArrayBindingIds);
   const sharedArrayReturnBindingIds = new Set(
     referenceModulePlan?.callables.flatMap((callable) =>
       callable.returns === 'shared-ref-cell-vec' ? [callable.binding.id] : [],
@@ -1903,6 +1903,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       if (asyncMethodSelfAssignment) return asyncMethodSelfAssignment;
       const typedArrayAssignment = emitTypedArrayElementAssignmentRust(expression, context);
       if (typedArrayAssignment) return typedArrayAssignment;
+      const provenArrayWrite = emitRustProvenBoundsArrayWriteAssignmentRust(expression, context);
+      if (provenArrayWrite) return provenArrayWrite;
       const sharedArrayAssignment = emitSharedArrayElementAssignmentRust(expression, context);
       if (sharedArrayAssignment) return sharedArrayAssignment;
       const sharedClassAssignment = emitSharedClassFieldAssignmentRust(expression, context);
@@ -2167,7 +2169,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
           const patterns = strict
             ? [`${union.name}::${evidence.literal === 'null' ? union.nullVariantName : union.undefinedVariantName}`]
             : [`${union.name}::${union.nullVariantName}`, `${union.name}::${union.undefinedVariantName}`];
-          const emittedOperand = emitRustDualSentinelRawCarrierRust(operand, context) ?? emitExpression(operand, context);
+          const emittedOperand =
+            emitRustDualSentinelRawCarrierRust(operand, context) ?? emitExpression(operand, context);
           const test = `matches!(&${emittedOperand}, ${patterns.join(' | ')})`;
           return expression.operator === '!=' || expression.operator === '!==' ? `!${test}` : test;
         }
@@ -2914,6 +2917,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (moduleStateUpdate) return moduleStateUpdate;
         const asyncMethodSelfUpdate = emitAsyncMethodSelfFieldUpdateRust(expression, context);
         if (asyncMethodSelfUpdate) return asyncMethodSelfUpdate;
+        const provenArrayUpdate = emitRustProvenBoundsArrayUpdateRust(expression, context);
+        if (provenArrayUpdate) return provenArrayUpdate;
         return emitNumericUpdateUnaryRust(expression, context);
       }
       if (expression.operator === 'void') {
@@ -3160,6 +3165,67 @@ function emitTypedArrayElementAssignmentRust(
     emissionError(context, `operator ${expression.operator} on a typed-array element requires Rust lowering`);
   }
   return `{ let ${receiverName} = &${receiver}; let ${indexName} = ${index}; let ${currentName} = ${receiverName}.get_index(${indexName}); let ${rightName} = ${right}; let ${valueName} = ${operation}; ${receiverName}.set_index(${indexName}, ${valueName}) }`;
+}
+
+const rustProvenArrayCompoundWriteOperators: ReadonlySet<IrAssignmentOperator> = new Set([
+  '%=' as const,
+  '*=' as const,
+  '+=' as const,
+  '-=' as const,
+  '/=' as const,
+]);
+
+// The guarded write lane's staged form. JavaScript reads the old element after evaluating the
+// reference and before evaluating the right side; Rust compound assignment would read it inside the
+// operator while holding a mutable borrow. Capturing the index, the current value, the right side,
+// and the updated value in that order is both exact and borrow-safe, writes once, and yields the
+// updated value for expression position. The receiver is a simple binding the plan already proved.
+function emitRustProvenBoundsArrayWriteAssignmentRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'assignment' }>>,
+  context: EmitContext,
+): string | undefined {
+  const left = expression.left;
+  if (left.kind !== 'element' || !rustProvenArrayCompoundWriteOperators.has(expression.operator)) return undefined;
+  if (!isRustEmittedProvenArrayWriteTargetRust(left, context)) return undefined;
+  const indexName = getGeneratedTargetNameRust('array_write_index', context);
+  const currentName = getGeneratedTargetNameRust('array_write_current', context);
+  const rightName = getGeneratedTargetNameRust('array_write_right', context);
+  const updatedName = getGeneratedTargetNameRust('array_write_updated', context);
+  const receiver = emitExpression(left.object, context);
+  const index = emitIndexOperandRust(left.index, context);
+  const right = emitExpression(expression.right, context);
+  const operator = expression.operator.slice(0, -1);
+  return `{ let ${indexName}: usize = ${index}; let ${currentName} = ${receiver}[${indexName}]; let ${rightName} = ${normalizeSourceTextGrouping(right)}; let ${updatedName} = ${currentName} ${operator} ${rightName}; ${receiver}[${indexName}] = ${updatedName}; ${updatedName} }`;
+}
+
+function emitRustProvenBoundsArrayUpdateRust(
+  expression: Readonly<Extract<IrExpression, { kind: 'unary' }>>,
+  context: EmitContext,
+): string | undefined {
+  const operand = expression.operand;
+  if (operand.kind !== 'element' || (expression.operator !== '++' && expression.operator !== '--')) {
+    return undefined;
+  }
+  if (!isRustEmittedProvenArrayWriteTargetRust(operand, context)) return undefined;
+  const indexName = getGeneratedTargetNameRust('array_update_index', context);
+  const previousName = getGeneratedTargetNameRust('array_update_previous', context);
+  const updatedName = getGeneratedTargetNameRust('array_update_updated', context);
+  const receiver = emitExpression(operand.object, context);
+  const index = emitIndexOperandRust(operand.index, context);
+  const arithmetic = expression.operator === '++' ? '+' : '-';
+  return `{ let ${indexName}: usize = ${index}; let ${previousName} = ${receiver}[${indexName}]; let ${updatedName} = ${previousName} ${arithmetic} 1.0; ${receiver}[${indexName}] = ${updatedName}; ${expression.postfix ? previousName : updatedName} }`;
+}
+
+function isRustEmittedProvenArrayWriteTargetRust(
+  element: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  context: EmitContext,
+): boolean {
+  if (element.optional || !context.arrayElementProvenReads.has(element)) return false;
+  const receiver = element.object;
+  if (receiver.kind !== 'identifier' || receiver.reference.kind !== 'binding') return false;
+  if (context.sharedArrayBindingIds.has(receiver.reference.binding.id)) return false;
+  const type = context.bindingTypes.get(receiver.reference.binding.id);
+  return type?.kind === 'array' && type.element.kind === 'primitive' && type.element.name === 'number';
 }
 
 function emitSharedArrayElementAssignmentRust(
@@ -8019,9 +8085,7 @@ function emitCallableObjectRecordRust(record: Readonly<RustCallableObjectRecord>
 // need, and a binding consumed once is left to move.
 function emitOwnedOperandRust(expression: Readonly<IrExpression>, context: EmitContext): string {
   const nominalExtraction =
-    expression.kind === 'identifier'
-      ? emitRustDualSentinelNominalArmExtractionRust(expression, context)
-      : undefined;
+    expression.kind === 'identifier' ? emitRustDualSentinelNominalArmExtractionRust(expression, context) : undefined;
   const source = nominalExtraction ?? emitExpression(expression, context);
   // The arm projection already borrows the carrier and clones the selected payload. Treating the
   // source binding as moved would clone that new owned payload a second time.
@@ -9726,8 +9790,7 @@ function emitRustDualSentinelNominalUnionMemberTestRust(
             const matches = memberIdentity
               ? plan.valueVariants.filter(
                   (variant) =>
-                    getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context)?.key ===
-                    memberIdentity.key,
+                    getIrExactNominalRecordIdentityRust(variant.sourceAlternative, context)?.key === memberIdentity.key,
                 )
               : [];
             if (matches.length !== 1) refuseRustDualSentinelNominalArmExtractionRust(context);
@@ -14976,7 +15039,10 @@ interface RustArrayBoundsRefusal {
     | 'rust-array-shift-result-observation-unrepresented';
 }
 
-function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsPlan {
+function createRustArrayBoundsPlan(
+  module: Readonly<IrModule>,
+  sharedArrayBindingIds: ReadonlySet<string>,
+): RustArrayBoundsPlan {
   const uses = new Map<Readonly<IrExpression>, RustArrayBoundsValueUse>();
   const signatures: Array<Readonly<{ path: CompilerIrTraversalPath; returns: Readonly<IrType> }>> = [];
   const pendingReturns: Array<Readonly<{ expression: Readonly<IrExpression>; path: CompilerIrTraversalPath }>> = [];
@@ -15039,7 +15105,8 @@ function createRustArrayBoundsPlan(module: Readonly<IrModule>): RustArrayBoundsP
   const arrayElementBindingIds = collectIrModuleArrayElementBindingIdsRust(module);
   const elementPlaces = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
   const optionElementReads = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
-  const provenElementReads = collectRustProvenBoundsElementReadsRust(module, bindingTypes);
+  const excludedWriteElements = collectRustExcludedProvenWriteElementsRust(module, bindingTypes, sharedArrayBindingIds);
+  const provenElementReads = collectRustProvenBoundsElementReadsRust(module, bindingTypes, excludedWriteElements);
   const refusals: RustArrayBoundsRefusal[] = [];
 
   for (const expression of elementReads) {
@@ -15177,6 +15244,7 @@ interface RustArrayIndexEvidence {
 
 interface RustArrayBoundsProvenReadContext {
   readonly bindingTypes: ReadonlyMap<string, Readonly<IrType>>;
+  readonly excludedWriteElements: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>;
   readonly integerEvidence: ReadonlyMap<string, RustArrayIndexEvidence>;
   readonly integerProven: Set<string>;
   readonly integerVisiting: Set<string>;
@@ -15190,9 +15258,11 @@ interface RustArrayBoundsProvenReadContext {
 function collectRustProvenBoundsElementReadsRust(
   module: Readonly<IrModule>,
   bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+  excludedWriteElements: ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>>,
 ): ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>> {
   const context: RustArrayBoundsProvenReadContext = {
     bindingTypes,
+    excludedWriteElements,
     integerEvidence: collectRustArrayIndexEvidenceRust(module),
     integerProven: new Set(),
     integerVisiting: new Set(),
@@ -15208,6 +15278,80 @@ function collectRustProvenBoundsElementReadsRust(
     for (const method of declaration.methods) walkRustGuardedStatementsRust(method.body, [], context);
   }
   return context.proven;
+}
+
+// A guarded write may only use the narrow carrier this lane owns: a plain owned Vec of numbers whose
+// compound right side cannot reach the receiver or index. Anything else stays on the existing
+// absence refusal rather than being marked proven and emitted with different borrow or carrier order.
+function collectRustExcludedProvenWriteElementsRust(
+  module: Readonly<IrModule>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+  sharedArrayBindingIds: ReadonlySet<string>,
+): ReadonlySet<Readonly<Extract<IrExpression, { kind: 'element' }>>> {
+  const excluded = new Set<Readonly<Extract<IrExpression, { kind: 'element' }>>>();
+  analyzeIrModuleTraversal(module, {
+    expression(expression) {
+      if (expression.kind === 'assignment' && expression.operator !== '=' && expression.left.kind === 'element') {
+        const element = expression.left;
+        if (!isRustNarrowGuardedArrayWriteTargetRust(element, bindingTypes, sharedArrayBindingIds)) {
+          excluded.add(element);
+          return;
+        }
+        const receiver = element.object;
+        if (receiver.kind !== 'identifier' || receiver.reference.kind !== 'binding') {
+          excluded.add(element);
+          return;
+        }
+        const referenced = collectRustExpressionReferencedBindingIdsRust(expression.right);
+        if (referenced.has(receiver.reference.binding.id)) {
+          excluded.add(element);
+          return;
+        }
+        if (
+          element.index.kind === 'identifier' &&
+          element.index.reference.kind === 'binding' &&
+          referenced.has(element.index.reference.binding.id)
+        ) {
+          excluded.add(element);
+        }
+        return;
+      }
+      if (
+        expression.kind === 'unary' &&
+        (expression.operator === '++' || expression.operator === '--') &&
+        expression.operand.kind === 'element' &&
+        !isRustNarrowGuardedArrayWriteTargetRust(expression.operand, bindingTypes, sharedArrayBindingIds)
+      ) {
+        excluded.add(expression.operand);
+      }
+    },
+  });
+  return excluded;
+}
+
+function isRustNarrowGuardedArrayWriteTargetRust(
+  element: Readonly<Extract<IrExpression, { kind: 'element' }>>,
+  bindingTypes: ReadonlyMap<string, Readonly<IrType>>,
+  sharedArrayBindingIds: ReadonlySet<string>,
+): boolean {
+  if (element.optional || !hasOnlyOrdinaryArrayReceiverRust(element)) return false;
+  const receiver = element.object;
+  if (receiver.kind !== 'identifier' || receiver.reference.kind !== 'binding') return false;
+  if (sharedArrayBindingIds.has(receiver.reference.binding.id)) return false;
+  const type = bindingTypes.get(receiver.reference.binding.id);
+  return type?.kind === 'array' && type.element.kind === 'primitive' && type.element.name === 'number';
+}
+
+function collectRustExpressionReferencedBindingIdsRust(expression: Readonly<IrExpression>): Set<string> {
+  const ids = new Set<string>();
+  analyzeIrExpressionSubtreeTraversal(expression, {
+    expression(node) {
+      if (node.kind === 'identifier' && node.reference.kind === 'binding') {
+        ids.add(node.reference.binding.id);
+      }
+    },
+  });
+  return ids;
 }
 
 function walkRustGuardedStatementsRust(
@@ -15371,6 +15515,7 @@ function markRustGuardedExpressionReadsRust(
   analyzeIrExpressionSubtreeTraversal(expression, {
     expression(node) {
       if (node.kind !== 'element' || node.optional || !hasOnlyOrdinaryArrayReceiverRust(node)) return;
+      if (context.excludedWriteElements.has(node)) return;
       const object = node.object;
       const index = node.index;
       if (

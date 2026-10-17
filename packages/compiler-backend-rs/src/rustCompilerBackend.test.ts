@@ -29054,6 +29054,211 @@ describe('emitIrModuleRust proven-bounds array element reads', () => {
   });
 });
 
+describe('emitIrModuleRust guarded indexed writes', () => {
+  it('stages a compound write under a while guard in JavaScript evaluation order', () => {
+    const result = lower(
+      'guarded-write.ts',
+      `export function add(values: number[], limit: number): number {
+        let total = 0;
+        let index = 0;
+        while (index >= 0 && index < values.length) {
+          values[index] += 2;
+          total = total + values[index];
+          index = index + 1;
+        }
+        return total;
+      }`,
+    );
+
+    expect(result.diagnostics).toEqual([]);
+    const output = emitIrModuleRust(result.module).contents;
+    expect(output).toContain(
+      '{ let array_write_index: usize = index as usize; let array_write_current = values[array_write_index]; let array_write_right = 2.0; let array_write_updated = array_write_current + array_write_right; values[array_write_index] = array_write_updated; array_write_updated };',
+    );
+    const staged = output.slice(output.indexOf('array_write_index'), output.indexOf('array_write_updated; };'));
+    expect(staged.indexOf('array_write_current')).toBeLessThan(staged.indexOf('array_write_right'));
+    expect(staged.indexOf('array_write_right')).toBeLessThan(staged.indexOf('array_write_updated'));
+    expect(output).not.toContain('values[index as usize] +=');
+    expect(emitIrModuleRust(result.module).contents).toBe(output);
+  });
+
+  it('yields the updated value in expression position and honors the guard mirrors', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'guarded-write-expression.ts',
+        `export function add(values: number[], step: number): number {
+          let index = 0;
+          if (0 <= index && values.length > index) { return values[index] += step; }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain(
+      'return { let array_write_index: usize = index as usize; let array_write_current = values[array_write_index]; let array_write_right = step;',
+    );
+    expect(output).toContain('values[array_write_index] = array_write_updated; array_write_updated };');
+  });
+
+  it.each(['+=', '-=', '*=', '/=', '%='])('stages the %s operator', (operator) => {
+    const output = emitIrModuleRust(
+      lower(
+        'guarded-write-operator.ts',
+        `export function apply(values: number[]): void {
+          let index = 0;
+          if (index >= 0 && index < values.length) { values[index] ${operator} 2; }
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain(`array_write_updated = array_write_current ${operator.slice(0, -1)} array_write_right;`);
+  });
+
+  it('yields the previous value for postfix updates and the updated value for prefix updates', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'guarded-write-update.ts',
+        `export function pick(values: number[]): number {
+          let index = 0;
+          if (index >= 0 && index < values.length) {
+            const old = values[index]++;
+            ++values[index];
+            return old + values[index];
+          }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+    const postfix = output.slice(output.indexOf('array_update_previous'), output.indexOf('array_update_previous_2'));
+    const prefix = output.slice(output.indexOf('array_update_previous_2'));
+
+    expect(output).toContain('let old: f64 = { let array_update_index: usize = index as usize;');
+    expect(postfix).toContain('values[array_update_index] = array_update_updated; array_update_previous };');
+    expect(prefix).toContain('values[array_update_index_2] = array_update_updated_2; array_update_updated_2 };');
+  });
+
+  it('evaluates the index once and allocates collision-safe staged names', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'guarded-write-single-evaluation.ts',
+        `export function twice(values: number[]): number {
+          let index = 0;
+          if (index >= 0 && index < values.length) {
+            values[index] += 1;
+            values[index] += 2;
+            return values[index];
+          }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output.match(/let array_write_index: usize = index as usize;/gu)).toHaveLength(1);
+    expect(output).toContain('let array_write_index_2: usize = index as usize;');
+    expect(output.match(/array_write_index\b/gu)?.length).toBeGreaterThan(1);
+  });
+
+  it.each([
+    {
+      name: 'an unguarded compound write',
+      source: `export function write(values: number[]): void {
+        let index = 0;
+        values[index] += 1;
+      }`,
+    },
+    {
+      name: 'a partial guard',
+      source: `export function write(values: number[]): void {
+        let index = 0;
+        while (index < values.length) { values[index] += 1; }
+      }`,
+    },
+    {
+      name: 'a mutation before the write',
+      source: `export function write(values: number[]): void {
+        let index = 0;
+        while (index >= 0 && index < values.length) { index = index + 1; values[index] += 1; }
+      }`,
+    },
+    {
+      name: 'a right side that references the receiver',
+      source: `export function write(values: number[]): void {
+        let index = 0;
+        if (index >= 0 && index < values.length) { values[index] += values[0]; }
+      }`,
+    },
+    {
+      name: 'a right side that references the index',
+      source: `export function write(values: number[]): void {
+        let index = 0;
+        if (index >= 0 && index < values.length) { values[index] += index; }
+      }`,
+    },
+    {
+      name: 'a string element',
+      source: `export function write(values: string[]): void {
+        let index = 0;
+        if (index >= 0 && index < values.length) { values[index] += "x"; }
+      }`,
+    },
+    {
+      name: 'a shared-reference array receiver',
+      source: `export function write(): void {
+        const values = [1];
+        const alias = values;
+        alias.push(2);
+        let index = 0;
+        if (index >= 0 && index < values.length) { values[index] += 1; }
+      }`,
+    },
+  ])('keeps $name on the absence refusal', ({ source }) => {
+    expect(getEmissionRule(() => emitIrModuleRust(lower('guarded-write-refused.ts', source).module))).toBe(
+      'rust-array-index-result-absence-unrepresented',
+    );
+  });
+
+  it('keeps the direct assignment control on its existing place emission', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'guarded-write-direct.ts',
+        `export function write(values: number[]): number {
+          let index = 0;
+          if (index >= 0 && index < values.length) { values[index] = 5; return values[index]; }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+
+    expect(output).toContain('values[index as usize] = 5.0;');
+    expect(output).not.toContain('array_write_index');
+  });
+
+  it.skipIf(!rustcAvailable)('compiles guarded compound and update writes', () => {
+    const output = emitIrModuleRust(
+      lower(
+        'guarded-write-native.ts',
+        `export function add(values: number[], limit: number): number {
+          let total = 0;
+          let index = 0;
+          while (index >= 0 && index < values.length) {
+            values[index] += 2;
+            total = total + values[index];
+            index = index + 1;
+          }
+          return total;
+        }
+        export function bump(values: number[]): number {
+          let index = 0;
+          if (index >= 0 && index < values.length) { return values[index]++; }
+          return 0;
+        }`,
+      ).module,
+    ).contents;
+
+    runRustSource(output, 'assert_eq!(add(vec![1.0, 2.0], 10.0), 7.0); assert_eq!(bump(vec![4.0]), 4.0);');
+  });
+});
+
 describe('emitIrModuleRust closed Object.keys enumeration', () => {
   it('evaluates literal values once in member order and returns keys in syntactic order', () => {
     const result = lower(
@@ -33224,9 +33429,7 @@ describe('emitIrModuleRust exact nominal general-union construction', () => {
     expect(consumerOutput).toContain('return Choice::Undefined;');
     expect(consumerOutput).toContain('return choice;');
     expect(consumerOutput).toContain('!matches!(&choice, Choice::Alpha(_))');
-    expect(consumerOutput).toContain(
-      'match &choice { Choice::Alpha(value) => value.clone(), _ => unreachable!() }',
-    );
+    expect(consumerOutput).toContain('match &choice { Choice::Alpha(value) => value.clone(), _ => unreachable!() }');
     expect(consumerOutput).not.toContain('AnonymousUnion');
   });
 
