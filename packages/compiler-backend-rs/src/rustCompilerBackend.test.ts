@@ -71,8 +71,74 @@ function compileRustSourceAgainstRuntime(contents: string): void {
   }
 }
 
+// A crate with two generated modules: the shape a namespace import needs, since a module alias only
+// resolves inside a crate that declares both modules. Type-checks the crate, which is the proof that the
+// alias and its member paths are real Rust.
+function compileRustModulePair(
+  providerModuleName: string,
+  providerContents: string,
+  consumerModuleName: string,
+  consumerContents: string,
+): void {
+  const directory = mkdtempSync(path.join(tmpdir(), 'flight-rust-module-pair-'));
+  try {
+    const runtime = path.join(directory, 'libflight_runtime.rlib');
+    const runtimeBuild = spawnSync(
+      'rustc',
+      [
+        '--edition',
+        '2021',
+        '--crate-name',
+        'flight_runtime',
+        '--crate-type=lib',
+        '-o',
+        runtime,
+        path.join(repositoryRoot, 'golden/support/rust/flight_runtime.rs'),
+      ],
+      { encoding: 'utf8' },
+    );
+    if (runtimeBuild.status !== 0) {
+      throw new Error(`${runtimeBuild.stdout ?? ''}${runtimeBuild.stderr ?? ''}`.trim());
+    }
+    writeFileSync(path.join(directory, `${providerModuleName}.rs`), providerContents);
+    writeFileSync(path.join(directory, `${consumerModuleName}.rs`), consumerContents);
+    const crateRoot = path.join(directory, 'lib.rs');
+    writeFileSync(crateRoot, `pub mod ${providerModuleName};\npub mod ${consumerModuleName};\n`);
+    const build = spawnSync(
+      'rustc',
+      [
+        '--edition',
+        '2021',
+        '--crate-type=lib',
+        '--emit=metadata',
+        '--extern',
+        `flight_runtime=${runtime}`,
+        '-o',
+        path.join(directory, 'subject.rmeta'),
+        crateRoot,
+      ],
+      { encoding: 'utf8' },
+    );
+    if (build.status !== 0) {
+      throw new Error(`${build.stdout ?? ''}${build.stderr ?? ''}`.trim());
+    }
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}
+
 function lower(file: string, source: string) {
   return lowerPackage('@flighthq/math', file, source);
+}
+
+// The stable refusal a caller branches on lives on the failure record, not in its prose.
+function getEmissionRule(emit: () => unknown): string | undefined {
+  try {
+    emit();
+    return undefined;
+  } catch (error) {
+    return (error as Readonly<{ rule?: string }>).rule;
+  }
 }
 
 function lowerPackage(packageName: string, file: string, source: string) {
@@ -12555,13 +12621,104 @@ describe('emitIrModuleRust import emission', () => {
     expect(output).toContain('helper');
   });
 
-  it('refuses namespace and default imports', () => {
+  it('lowers a namespace import as a module alias and paths its members', () => {
+    const provider = lowerPackage(
+      '@flighthq/core',
+      'util.ts',
+      'export function helper(): number { return 1; } export const Widget = 1;',
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/core',
+      'ns-import.ts',
+      `import * as util from './util.js'; export function run(): number { return util.helper(); }
+       export function read(): unknown { return util.Widget; }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './util.js',
+          target: { packageName: '@flighthq/core', source: 'packages/core/src/util.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const output = createRustCompilerBackend().emitModule(consumer, {
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    })[0]!.contents;
+
+    expect(output).toContain('use crate::util as util;');
+    expect(output).toContain('util::helper()');
+    // The member is spelled the way the declaring module allocated it, exactly as a named import is.
+    expect(output).toContain('util::WIDGET');
+    expect(output).not.toContain('util.');
+  });
+
+  it.skipIf(!rustcAvailable)('emits a namespace import the Rust compiler accepts', () => {
+    const provider = lowerPackage(
+      '@flighthq/core',
+      'util.ts',
+      'export function helper(): number { return 1; } export const Widget = 1;',
+    ).module;
+    const consumer = lowerPackage(
+      '@flighthq/core',
+      'ns-import.ts',
+      `import * as util from './util.js'; export function run(): number { return util.helper(); }
+       export function read(): unknown { return util.Widget; }`,
+    ).module;
+    const moduleResolution = {
+      edges: [
+        {
+          specifier: './util.js',
+          target: { packageName: '@flighthq/core', source: 'packages/core/src/util.ts' },
+        },
+      ],
+      schema: 'flight-compiler-module-resolution/1',
+    } as const;
+    const backend = createRustCompilerBackend();
+    const emitted = backend.emitModule(consumer, {
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    })[0]!;
+    const providerEmitted = backend.emitModule(provider, {
+      moduleResolution,
+      modules: [consumer, provider],
+      options: {},
+    })[0]!;
+
+    expect(() => compileRustModulePair('util', providerEmitted.contents, 'ns_import', emitted.contents)).not.toThrow();
+  });
+
+  it('refuses a namespace import whose module the graph cannot resolve', () => {
     const result = lowerPackage(
       '@flighthq/core',
       'ns-import.ts',
       `import * as util from './util.js'; export function run(): number { return util.helper(); }`,
     );
-    expect(() => emitIrModuleRust(result.module)).toThrow('imports require explicit Rust mapping');
+
+    expect(getEmissionRule(() => emitIrModuleRust(result.module))).toBe(
+      'rust-namespace-import-requires-module-resolution',
+    );
+  });
+
+  it('refuses a default import, a default export, and a re-export of a default export', () => {
+    const defaultImport = lowerPackage(
+      '@flighthq/core',
+      'default-import.ts',
+      `import value from './util.js'; export function read(): unknown { return value; }`,
+    );
+    const defaultExport = lowerPackage('@flighthq/core', 'default-export.ts', 'export default 1;');
+    const defaultReexport = lowerPackage(
+      '@flighthq/core',
+      'default-reexport.ts',
+      `export { default } from './util.js';`,
+    );
+
+    expect(getEmissionRule(() => emitIrModuleRust(defaultImport.module))).toBe('rust-default-import-unsupported');
+    expect(getEmissionRule(() => emitIrModuleRust(defaultExport.module))).toBe('rust-default-export-unsupported');
+    expect(getEmissionRule(() => emitIrModuleRust(defaultReexport.module))).toBe('rust-default-reexport-unsupported');
   });
 });
 

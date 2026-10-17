@@ -1459,6 +1459,8 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
       return emitObjectRestExpressionRust(expression, context);
     case 'property': {
       if (expression.optional) return emitOptionalPropertyExpressionRust(expression, context);
+      const namespaceImportMember = getRustNamespaceImportMemberRust(expression.object, expression.name, context);
+      if (namespaceImportMember !== undefined) return namespaceImportMember;
       const namespaceMember = expression.namespaceMember;
       if (namespaceMember?.kind === 'binding') {
         const owner = context.numericEnumNamespaceNames.get(namespaceMember.binding.id);
@@ -1950,11 +1952,38 @@ function emitFunction(declaration: Readonly<IrFunctionDeclaration>, outer: EmitC
 function emitImports(imports: readonly IrImport[], context: EmitContext): string[] {
   const lines = new Set<string>();
   for (const imported of imports) {
-    if (imported.bindings.length === 0) continue;
+    if (imported.bindings.length === 0) {
+      // A side-effect import says "evaluate this module". Rust's `use` imports no behaviour, so this
+      // emission cannot express it; it refuses instead of quietly emitting nothing.
+      emissionRuleError(
+        context,
+        `side-effect import of ${imported.specifier} has no Rust lowering: use imports no behaviour, so name what the module provides or evaluate it explicitly`,
+        'rust-side-effect-import-unsupported',
+      );
+    }
     const module = rustImportModule(imported.specifier, context);
-    const names = imported.bindings.map((binding) => {
-      if (binding.imported === '*' || binding.imported === 'default') {
-        emissionError(context, `${binding.imported} imports require explicit Rust mapping for ${imported.specifier}`);
+    const names: string[] = [];
+    for (const binding of imported.bindings) {
+      if (binding.imported === 'default') {
+        emissionRuleError(
+          context,
+          `default import ${binding.binding.name} from ${imported.specifier} has no Rust lowering: Rust modules have no default export, so name the export in the source`,
+          'rust-default-import-unsupported',
+        );
+      }
+      if (binding.imported === '*') {
+        // A namespace import is a module alias. Rust can name exactly that (`use path as alias;`), and
+        // the member access spells the alias with a path separator once the alias exists.
+        const targetModule = resolveImportModuleRust(imported.specifier, undefined, context);
+        if (!targetModule) {
+          emissionRuleError(
+            context,
+            `namespace import of ${imported.specifier} requires the imported module in the module graph to resolve its Rust path`,
+            'rust-namespace-import-requires-module-resolution',
+          );
+        }
+        lines.add(`use ${module} as ${getBindingTargetNameRust(binding.binding, context)};`);
+        continue;
       }
       // The name to import is the one the declaring module allocated for its declaration: a constant is
       // spelled screaming snake there, a type pascal, a value snake. Name shape is not evidence of which
@@ -1965,9 +1994,9 @@ function emitImports(imports: readonly IrImport[], context: EmitContext): string
         : undefined;
       const importedName = declaredName ?? getRustNameShapeFallback(binding.imported, binding.binding.space === 'type');
       const localName = getBindingTargetNameRust(binding.binding, context);
-      return importedName === localName ? importedName : `${importedName} as ${localName}`;
-    });
-    lines.add(`use ${module}::${emitUseTreeRust(names.sort())};`);
+      names.push(importedName === localName ? importedName : `${importedName} as ${localName}`);
+    }
+    if (names.length > 0) lines.add(`use ${module}::${emitUseTreeRust(names.sort())};`);
   }
   return [...lines].sort();
 }
@@ -1979,6 +2008,13 @@ function emitReexportsRust(exports: readonly IrExport[], context: EmitContext): 
   const lines = new Set<string>();
   for (const exported of exports) {
     if (exported.kind === 'local') continue;
+    if (exported.kind === 'default') {
+      emissionRuleError(
+        context,
+        'default export has no Rust lowering: a Rust module has no default export, so give the exported value a name',
+        'rust-default-export-unsupported',
+      );
+    }
     if (exported.kind === 'all') {
       lines.add(`pub use ${rustImportModule(exported.specifier, context)}::*;`);
       continue;
@@ -1989,6 +2025,13 @@ function emitReexportsRust(exports: readonly IrExport[], context: EmitContext): 
       continue;
     }
     if (exported.kind !== 'reexport') emissionError(context, 'default exports require Rust module-facade lowering');
+    if (exported.imported === 'default' || exported.exported === 'default') {
+      emissionRuleError(
+        context,
+        `re-export of the default export from ${exported.specifier} has no Rust lowering: name the export in the source`,
+        'rust-default-reexport-unsupported',
+      );
+    }
     const module = rustImportModule(exported.specifier, context);
     const targetModule = resolveImportModuleRust(exported.specifier, exported.imported, context);
     const preferredSpace = exported.typeOnly ? 'type' : 'value';
@@ -4459,6 +4502,25 @@ function getRustDeclaredExportSpaceRust(
   return getRustExportedTargetNameRust(module, exportedName, other, context) !== undefined ? other : preferredSpace;
 }
 
+// A namespace import is a module alias in Rust, so a member read off it is a path, not a field. The
+// member is spelled the way the declaring module allocated it, exactly as a named import is.
+function getRustNamespaceImportMemberRust(
+  object: Readonly<IrExpression>,
+  member: string,
+  context: EmitContext,
+): string | undefined {
+  if (object.kind !== 'identifier' || object.reference.kind !== 'binding') return undefined;
+  const bindingId = object.reference.binding.id;
+  const imported = context.module.imports.find((item) =>
+    item.bindings.some((candidate) => candidate.binding.id === bindingId && candidate.imported === '*'),
+  );
+  if (!imported) return undefined;
+  const targetModule = resolveImportModuleRust(imported.specifier, member, context);
+  const memberName =
+    targetModule === undefined ? undefined : getRustDeclaredExportNameRust(targetModule, member, 'value', context);
+  return `${getBindingTargetNameRust(object.reference.binding, context)}::${memberName ?? safeRustValueName(member)}`;
+}
+
 // The rule a name gets when nothing can be asked. A single-module emission has no declaring allocation
 // to read, and this is the rule it has always used; it is the fallback, not the answer.
 function getRustNameShapeFallback(name: string, typeOnly: boolean): string {
@@ -4652,6 +4714,12 @@ function emissionError(
     rule,
     classification === undefined ? undefined : { classification },
   );
+}
+
+// A refusal a caller can branch on carries a rule id: the report prints it and a corpus ledger keys on
+// it, which a message alone cannot support.
+function emissionRuleError(context: EmitContext, message: string, rule: string): never {
+  throw createBackendEmissionFailure('rust', context.module, message, rule);
 }
 
 function collectStringConcatenationOperands(expression: Readonly<IrExpression>): readonly IrExpression[] {
