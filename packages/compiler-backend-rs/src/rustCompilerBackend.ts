@@ -1504,7 +1504,11 @@ function emitExpression(expression: Readonly<IrExpression>, context: EmitContext
         if (closedSelection) return closedSelection;
       }
       if (expression.semantics.receivers.includes('object')) {
-        emissionError(context, 'computed object access requires JavaScript property-key coercion lowering');
+        emissionError(
+          context,
+          'computed object access requires JavaScript property-key coercion lowering',
+          'rust-computed-object-access-unsupported',
+        );
       }
       if (expression.semantics.receivers.includes('tuple')) {
         const index = getElementAccessTupleIndexRust(expression, context);
@@ -2631,7 +2635,11 @@ function emitRequiredElementExpressionRust(
   const closedSelection = emitClosedKeyElementSelectionRust(expression, context);
   if (closedSelection) return closedSelection;
   if (expression.semantics.receivers.includes('object')) {
-    emissionError(context, 'computed object access requires JavaScript property-key coercion lowering');
+    emissionError(
+      context,
+      'computed object access requires JavaScript property-key coercion lowering',
+      'rust-computed-object-access-unsupported',
+    );
   }
   if (expression.semantics.receivers.includes('tuple')) {
     const index = getElementAccessTupleIndexRust(expression, context);
@@ -2674,7 +2682,11 @@ function emitClosedKeyElementSelectionRust(
   }
   const properties = objectType ? getIrObjectTypePropertiesRust(objectType, context) : undefined;
   if (!objectType || !properties) {
-    emissionError(context, 'closed-key element access requires represented Rust object storage');
+    emissionError(
+      context,
+      'closed-key element access requires represented Rust object storage',
+      'rust-closed-key-selection-unsupported',
+    );
   }
 
   const members = new Map(
@@ -2685,7 +2697,11 @@ function emitClosedKeyElementSelectionRust(
   const selections = keys.map((key) => ({ key, property: members.get(key) }));
   const absent = selections.find((selection) => !selection.property);
   if (absent) {
-    emissionError(context, `closed key ${absent.key} is not a represented Rust object member`);
+    emissionError(
+      context,
+      `closed key ${absent.key} is not a represented Rust object member`,
+      'rust-closed-key-selection-unsupported',
+    );
   }
 
   const memberTypes = selections.map(({ property }) => {
@@ -2697,6 +2713,7 @@ function emitClosedKeyElementSelectionRust(
     emissionError(
       context,
       `closed-key selection over ${String(distinctTypes.length)} member types requires one Rust representation`,
+      'rust-closed-key-selection-unsupported',
     );
   }
 

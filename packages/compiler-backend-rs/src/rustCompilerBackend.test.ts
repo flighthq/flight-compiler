@@ -15239,7 +15239,7 @@ export function widen(command: Command): unknown { return command as Readonly<Pa
     expect(failure.classification).toBe('compiler-restriction');
   });
 
-  it('attaches the origin to a refusal that carries no rule, without a cast rule or a reclassification', () => {
+  it('attaches the origin to a structural refusal without borrowing another family rule', () => {
     const module = lower(
       'computed-origin.ts',
       `export function pick(values: { readonly name: string }, key: string): string {
@@ -15248,9 +15248,56 @@ export function widen(command: Command): unknown { return command as Readonly<Pa
     ).module;
     const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
 
-    expect(failure.rule).toBeUndefined();
+    expect(failure.rule).toBe('rust-computed-object-access-unsupported');
+    expect(failure.rule).not.toBe('rust-cast-requires-type-directed-lowering');
     expect(failure.line).toBe(1);
     expect(failure.column).toBe(1);
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+});
+
+describe('emitIrModuleRust structural key refusals', () => {
+  it('names the computed object access rule and keeps the declaration origin', () => {
+    const module = lower(
+      'index-signature-origin.ts',
+      `interface Fields { [name: string]: number }
+export function read(fields: Fields, key: string): number | undefined { return fields[key]; }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-computed-object-access-unsupported');
+    expect(failure.message).toContain('computed object access requires JavaScript property-key coercion lowering');
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('names the closed-key selection rule for a write that fits only one member', () => {
+    const module = lower(
+      'closed-key-origin.ts',
+      `interface Style { fontSize?: number; color?: string }
+export function set(style: Style, key: 'fontSize' | 'color', value: number | string): void { style[key] = value; }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBe('rust-closed-key-selection-unsupported');
+    expect(failure.message).toContain('closed-key selection over 2 member types requires one Rust representation');
+    expect(failure.line).toBe(2);
+    expect(failure.column).toBe(1);
+    expect(failure.classification).toBe('compiler-restriction');
+  });
+
+  it('leaves a neighbouring family without a structural-key rule and without a reclassification', () => {
+    const module = lower(
+      'intersection-rule-counterexample.ts',
+      `interface A { a: number }
+interface B { a: string }
+export function read(_value: A & B): number { return 1; }`,
+    ).module;
+    const failure = captureBackendEmissionFailure(() => emitIrModuleRust(module));
+
+    expect(failure.rule).toBeUndefined();
+    expect(failure.message).toContain('intersection types require Rust record or trait lowering');
     expect(failure.classification).toBe('compiler-restriction');
   });
 });
