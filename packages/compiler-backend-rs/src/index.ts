@@ -2,6 +2,10 @@ export { emitIrModuleRust } from './rustCompilerBackend.js';
 export { createRustCompilerPublicBindingBackend as createRustCompilerBackend } from './rustCompilerPublicBindingBackend.js';
 export { analyzeIrModuleOwnershipEvidenceRust } from './rustOwnershipEvidence.js';
 export { createCompilerRustModuleConstantPlan } from './rustModuleConstantPlan.js';
+export {
+  createCompilerRustModuleEvaluationRepresentationPlan,
+  isCompilerRustModuleEvaluationRepresentationPlanningFailure,
+} from './rustModuleEvaluationRepresentationPlan.js';
 export { createCompilerRustModuleStatePlan } from './rustModuleStatePlan.js';
 export { createCompilerRustReferenceRepresentationPlan } from './rustReferenceRepresentationPlan.js';
 export {

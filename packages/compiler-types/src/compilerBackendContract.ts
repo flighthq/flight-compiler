@@ -1,6 +1,6 @@
 import type { CompilerCppPublicBindingPlan, CompilerHaxeDualBindingPlan } from './compilerHaxeDualBindingContract.js';
-import type { CompilerModuleFacadePlan } from './compilerModuleFacadeContract.js';
 import type { CompilerModuleEvaluationPlan } from './compilerModuleEvaluationContract.js';
+import type { CompilerModuleFacadePlan } from './compilerModuleFacadeContract.js';
 import type { IrModule } from './compilerModuleIntermediateRepresentation.js';
 import type { CompilerModuleResolutionPlan } from './compilerModuleResolutionContract.js';
 import type { CompilerRefusalClassification } from './compilerRefusalClassificationContract.js';
